@@ -3,3 +3,8 @@ uvicorn~=0.34.0
 msal~=1.32.0
 python-jose[cryptography]== 3.4.0
 werkzeug~=2.3.7
+python-socketio~=5.13.0
+packaging==23.2
+itsdangerous~=2.2.0
+eventlet~=0.39.1
+redis~=5.2.1

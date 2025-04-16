@@ -24,3 +24,15 @@ def _request(
         raise IOError(resp, resp)
     resp_json = resp.json()
     return resp_json
+
+
+def get_access_token_from_header(authorization):
+    if not authorization:
+        raise BadRequest("Authorization header is required")
+
+    if authorization.startswith("Bearer "):
+        access_token = authorization.split("Bearer ")[1]
+    else:
+        access_token = authorization  # Assume the token is directly provide
+
+    return access_token
