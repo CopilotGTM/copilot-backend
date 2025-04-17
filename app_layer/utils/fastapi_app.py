@@ -1,6 +1,11 @@
 # app_layer/utils/fastapi_app.py
 
 import os
+from dotenv import load_dotenv
+from pathlib import Path
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
+load_dotenv(BASE_DIR / ".env", override=True)
+
 from fastapi.middleware.cors import CORSMiddleware
 from socketio import ASGIApp
 from starlette.middleware.sessions import SessionMiddleware
@@ -18,7 +23,6 @@ from core.redis_client import get_redis_client
 
 logger = get_logger()
 
-
 def create_fastapi_app():
 
     logger.info("Setting Up App Config")
@@ -33,6 +37,7 @@ def create_fastapi_app():
     )
 
     APP_ENV = os.getenv("ENV", "dev")
+    logger.info(f"App Environment: {APP_ENV}")
 
     # Add SessionMiddleware for session handling
     fastapp.add_middleware(
