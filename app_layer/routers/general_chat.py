@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import select, Session
 from core.dto.authentication import Authentication
 
-from models.chat import ChatSession, ChatMessage
+from models.chat_models import ChatSession, ChatMessage
 from core.app_state import fastapp
 
 auth = Authentication()
