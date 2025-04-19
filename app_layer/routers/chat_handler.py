@@ -66,6 +66,7 @@ def get_chats(
     Retrieve all non-deleted chat sessions for the authenticated user/org,
     ordered by most recent.
     """
+    logger.info("Fetching chat sessions for user/org")
     try:
         user_id = UUID(auth_data.get("user_id"))
         organisation_id = UUID(auth_data.get("organisation_id"))
@@ -85,9 +86,10 @@ def get_chats(
         )
         .order_by(ChatSessionDB.created_at.desc())
     )
+    statement = statement.execution_options(postgresql_literal_binds=True)
     results = master_session.exec(statement)
     chats = results.all()
-
+    logger.info("Fetched %d chat sessions for user/org", len(chats))
     return chats
 
 @chat_router.delete("/delete_chat", response_model=ChatSessionResponse)

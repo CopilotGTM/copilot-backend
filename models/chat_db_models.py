@@ -30,8 +30,7 @@ class ChatSession(SQLModel, table=True):
         default_factory=uuid4,
         primary_key=True,
     )
-    user_id: str = Field(index=True, nullable=False)
-
+    user_id: UUID = Field(nullable=False, index=True)
     # must match organisations.organisation_id (assumed UUID)
     organisation_id: UUID = Field(
         foreign_key="organisations.organisation_id",

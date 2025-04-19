@@ -6,8 +6,8 @@ import jwt
 from models.db_models import UserCredential
 from core.app_state import fastapp
 from app_layer.utils.logger import get_logger
+from core.database import get_master_session
 
-get_db = lambda: fastapp.state.master_session()
 logger = get_logger()
 
 
@@ -20,16 +20,19 @@ class Authentication:
         """
         Decode and validate JWT, raising 403 on error.
         """
+        logger.debug("Decoding token...")
         try:
             payload = jwt.decode(token, self.secret_key, algorithms=[self.algorithm])
+            logger.debug("Token decoded successfully: %s", payload)
             return payload
-        except jwt.PyJWTError:
+        except jwt.PyJWTError as e:
+            logger.error("Failed to decode token: %s", str(e))
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid or expired authentication token")
 
     async def verify_session(
         self,
         *,
-        session: Session = Depends(get_db),
+        session: Session = Depends(get_master_session),
         auth_token: Optional[str] = Cookie(None, alias=cookie_name),
     ) -> Dict[str, Any]:
         """
@@ -39,19 +42,32 @@ class Authentication:
         """
         logger.info("Verifying session...")
         if not auth_token:
+            logger.warning("Authentication token is missing")
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Authentication token missing")
 
+        logger.debug("Authentication token found, decoding...")
         payload = self.decode_token(auth_token)
         user_id = payload.get("user_id")
         org_id = payload.get("organisation_id")
 
         if not user_id or not org_id:
+            logger.warning("Invalid token payload: user_id or organisation_id missing")
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid token payload")
 
-        # verify user actually exists in DB
-        user = session.get(UserCredential, user_id)
-        if not user:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User not found")
+        logger.debug("Token payload validated: user_id=%s, organisation_id=%s", user_id, org_id)
 
-        # everything checks out
+        # verify user actually exists in DB
+        logger.debug("Checking if user exists in the database: user_id=%s", user_id)
+        stmt = select(UserCredential).where(
+            UserCredential.user_id == user_id,
+            UserCredential.organisation_id == org_id
+        )
+        user = session.exec(stmt).one_or_none()
+        if not user:
+            logger.warning("User not found in the database: user_id=%s, org_id=%s", user_id, org_id)
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="User not found"
+            )
+        logger.info("Session verified successfully for user_id=%s", user_id)
         return {"user_id": user_id, "organisation_id": org_id}
