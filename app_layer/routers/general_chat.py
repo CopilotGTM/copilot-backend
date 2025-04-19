@@ -1,93 +1,139 @@
-# app_layer/routers/general_chat.py
 from uuid import UUID
-from datetime import datetime
-from typing import List, Dict, Optional
-from app_layer.utils.logger import get_logger
+from typing import Any, Dict, List
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlmodel import select, Session
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlmodel import Session, select
+
 from core.dto.authentication import Authentication
-from models.chat_models import CreateChat
-from models.chat_db_models import ChatSession, ChatMessage
-from core.app_state import fastapp
-import logging
 from core.database import get_master_session
+from app_layer.utils.logger import get_logger
+from models.chat_models import CreateChat, DeleteChat, ChatSessionResponse
+from models.chat_db_models import ChatSession as ChatSessionDB
 
 auth = Authentication()
-chat_router = APIRouter()
 logger = get_logger()
+chat_router = APIRouter()
 
 
-from sqlmodel import SQLModel, Field
-
-
-class CreateChat(SQLModel):
-    title: str
-
-
-@chat_router.post("/create_chat", response_model=ChatSession)
+@chat_router.post("/create_chat", response_model=ChatSessionResponse)
 def create_chat(
     chat_in: CreateChat,
-    master_session: Session = Depends(get_master_session),  # ← here
-):
-
-    logger.info("Creating a new chat with title")
-    if not chat_in.title:
+    auth_data: Dict[str, Any] = Depends(auth.verify_session),
+    master_session: Session = Depends(get_master_session),
+) -> ChatSessionDB:
+    """
+    Create a new chat session for the authenticated user/org.
+    """
+    logger.info("Creating a new chat with title=%s", chat_in.title)
+    if not chat_in.title.strip():
         logger.warning("Attempted to create a chat with an empty title")
-        raise HTTPException(400, "Title cannot be null or empty")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Title cannot be null or empty",
+        )
 
-    chat = ChatSession(
-        # assagin uuids to user_id and organisation_id
-        user_id=UUID("12345678-1234-1234-1234-123456789012"),
-        organisation_id=UUID("87654321-4321-4321-4321-210987654321"),
+    # Extract and validate user/org IDs from the decoded JWT payload
+    try:
+        user_id = UUID(auth_data.get("user_id"))
+        organisation_id = UUID(auth_data.get("organisation_id"))
+    except (ValueError, TypeError):
+        logger.error("Invalid UUID in auth payload: %s", auth_data)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid authentication payload",
+        )
+
+    # Persist new chat session
+    chat = ChatSessionDB(
+        user_id=user_id,
+        organisation_id=organisation_id,
         title=chat_in.title,
     )
     master_session.add(chat)
     master_session.commit()
     master_session.refresh(chat)
-    logger.info(f"Chat created successfully with ID: {chat.id}")
+
+    logger.info("Chat created successfully with session_id=%s", chat.session_id)
     return chat
 
 
-# @chat_router.get("/get_chats", response_model=List[ChatSession])
-# def list_chats(user_id: str, session: Session = Depends(get_db)):
-#     return session.exec(
-#         select(ChatSession)
-#         .where(ChatSession.user_id == user_id)
-#         .where(ChatSession.is_deleted == False)
-#         .order_by(ChatSession.created_at.desc())
-#     ).all()
+@chat_router.get("/get_chats", response_model=List[ChatSessionResponse])
+def get_chats(
+    auth_data: Dict[str, Any] = Depends(auth.verify_session),
+    master_session: Session = Depends(get_master_session),
+) -> List[ChatSessionDB]:
+    """
+    Retrieve all non-deleted chat sessions for the authenticated user/org,
+    ordered by most recent.
+    """
+    try:
+        user_id = UUID(auth_data.get("user_id"))
+        organisation_id = UUID(auth_data.get("organisation_id"))
+    except (ValueError, TypeError):
+        logger.error("Invalid UUID in auth payload: %s", auth_data)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid authentication payload",
+        )
 
-# @chat_router.post("/{session_id}/messages", response_model=ChatMessage)
-# def add_msg(
-#     session_id: UUID,
-#     role: str,
-#     content: str,
-#     extra: Dict = {},
-#     session: Session = Depends(get_db),
-# ):
-#     chat = session.get(ChatSession, session_id)
-#     if not chat or chat.is_deleted:
-#         raise HTTPException(404, f"Chat {session_id} not found")
-#     msg = ChatMessage(
-#         session_id=session_id,
-#         role=role,
-#         content=content,
-#         timestamp=datetime.utcnow(),
-#         extra=extra,
-#     )
-#     session.add(msg)
-#     session.commit()
-#     session.refresh(msg)
-#     return msg
+    statement = (
+        select(ChatSessionDB)
+        .where(
+            ChatSessionDB.user_id == user_id,
+            ChatSessionDB.organisation_id == organisation_id,
+            ChatSessionDB.is_deleted == False,
+        )
+        .order_by(ChatSessionDB.created_at.desc())
+    )
+    results = master_session.exec(statement)
+    chats = results.all()
 
-# @chat_router.get("/{session_id}/messages", response_model=List[ChatMessage])
-# def get_msgs(session_id: UUID, session: Session = Depends(get_db)):
-#     chat = session.get(ChatSession, session_id)
-#     if not chat or chat.is_deleted:
-#         raise HTTPException(404, f"Chat {session_id} not found")
-#     return session.exec(
-#         select(ChatMessage)
-#         .where(ChatMessage.session_id == session_id)
-#         .order_by(ChatMessage.timestamp)
-#     ).all()
+    return chats
+
+@chat_router.delete("/delete_chat", response_model=ChatSessionResponse)
+def delete_chat(
+    delete_in: DeleteChat,
+    auth_data: Dict[str, Any] = Depends(auth.verify_session),
+    master_session: Session = Depends(get_master_session),
+) -> ChatSessionDB:
+    """
+    Soft-delete a chat session by marking is_deleted = True.
+    """
+    # Extract session_id from request model
+    session_id = delete_in.session_id
+
+    # Validate user/org IDs
+    try:
+        user_id = UUID(auth_data.get("user_id"))
+        organisation_id = UUID(auth_data.get("organisation_id"))
+    except (ValueError, TypeError):
+        logger.error("Invalid UUID in auth payload: %s", auth_data)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid authentication payload",
+        )
+
+    # Fetch the chat session to delete
+    statement = select(ChatSessionDB).where(
+        ChatSessionDB.session_id == session_id,
+        ChatSessionDB.user_id == user_id,
+        ChatSessionDB.organisation_id == organisation_id,
+        ChatSessionDB.is_deleted == False,
+    )
+    chat = master_session.exec(statement).one_or_none()
+
+    if not chat:
+        logger.warning("Chat session not found or already deleted: %s", session_id)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Chat session not found",
+        )
+
+    # Soft-delete
+    chat.is_deleted = True
+    master_session.add(chat)
+    master_session.commit()
+    master_session.refresh(chat)
+
+    logger.info("Chat session soft-deleted: %s", session_id)
+    return chat
