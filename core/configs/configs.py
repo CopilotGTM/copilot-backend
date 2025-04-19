@@ -5,6 +5,7 @@ from app_layer.utils.logger import get_logger
 
 logger = get_logger()
 
+
 class Config:
     def __init__(self):
         self.env = os.getenv("ENV", "dev")

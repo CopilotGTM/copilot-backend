@@ -53,7 +53,13 @@ def init_master_db(create_if_missing: bool = False):
     return engine
 
 
-def get_org_engine(db_name: str, user: str, password: str, echo: bool = True, create_if_missing: bool = False):
+def get_org_engine(
+    db_name: str,
+    user: str,
+    password: str,
+    echo: bool = True,
+    create_if_missing: bool = False,
+):
     """
     Engine for a per-organization DB.
     """
@@ -72,7 +78,11 @@ def init_org_db(db_name: str, user: str, password: str, create_if_missing: bool 
     Returns the org engine.
     """
     engine = get_org_engine(
-        db_name=db_name, user=user, password=password, echo=True, create_if_missing=create_if_missing
+        db_name=db_name,
+        user=user,
+        password=password,
+        echo=True,
+        create_if_missing=create_if_missing,
     )
     SQLModel.metadata.create_all(engine)
     return engine
@@ -88,3 +98,14 @@ def get_session_dependency(engine):
             yield session
 
     return _get_session
+
+
+# -------------------------
+# Module‑level initialization
+# -------------------------
+
+# 1) Initialize the master DB & tables immediately
+MASTER_ENGINE = init_master_db(create_if_missing=False)
+
+# 2) Export a reusable dependency to inject a Session in your routes
+get_master_session = get_session_dependency(MASTER_ENGINE)
