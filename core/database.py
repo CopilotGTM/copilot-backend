@@ -28,8 +28,7 @@ def _create_database_if_missing(host: str, port: str, user: str, password: str, 
 
 def get_master_engine(echo: bool = True, create_if_missing: bool = False):
     """
-    Return a SQLAlchemy engine for the central 'master' database.
-    Does NOT create tables by default.
+    Engine for your central 'master' DB, reading creds from env.
     """
     host, port = _get_env_host_port()
     user = os.getenv("DATABASE_USER", "postgres")
@@ -44,13 +43,14 @@ def get_master_engine(echo: bool = True, create_if_missing: bool = False):
     return create_engine(url, echo=echo)
 
 
-def create_master_tables(engine=None):
+def init_master_db(create_if_missing: bool = False):
     """
-    Create all tables on the master database engine.
-    If no engine is provided, it will instantiate one from env.
+    Optionally CREATE the master DB, then create all tables on it.
+    Returns the master engine.
     """
-    eng = engine or get_master_engine()
-    SQLModel.metadata.create_all(eng)
+    engine = get_master_engine(echo=True)
+    SQLModel.metadata.create_all(engine)
+    return engine
 
 
 def get_org_engine(
@@ -61,8 +61,7 @@ def get_org_engine(
     create_if_missing: bool = False,
 ):
     """
-    Return a SQLAlchemy engine for a per-organization database.
-    Does NOT create tables by default.
+    Engine for a per-organization DB.
     """
     host, port = _get_env_host_port()
     if create_if_missing:
@@ -73,13 +72,19 @@ def get_org_engine(
     return create_engine(url, echo=echo)
 
 
-def create_org_tables(db_name: str, user: str, password: str, engine=None):
+def init_org_db(db_name: str, user: str, password: str, create_if_missing: bool = False):
     """
-    Create all tables on the specified org database engine.
-    If no engine is provided, it will instantiate one.
+    Optionally CREATE the org DB, then create all tables on it.
+    Returns the org engine.
     """
-    eng = engine or get_org_engine(db_name=db_name, user=user, password=password)
-    SQLModel.metadata.create_all(eng)
+    engine = get_org_engine(
+        db_name=db_name,
+        user=user,
+        password=password,
+        echo=True,
+    )
+    SQLModel.metadata.create_all(engine)
+    return engine
 
 
 def get_session_dependency(engine):
@@ -94,9 +99,12 @@ def get_session_dependency(engine):
     return _get_session
 
 
-# Module-level initialization
-# Initialize the master engine without creating tables
-MASTER_ENGINE = get_master_engine(create_if_missing=False)
+# -------------------------
+# Module‑level initialization
+# -------------------------
 
-# Export a reusable dependency to inject a Session in your routes
+# 1) Initialize the master DB & tables immediately
+MASTER_ENGINE = init_master_db(create_if_missing=False)
+
+# 2) Export a reusable dependency to inject a Session in your routes
 get_master_session = get_session_dependency(MASTER_ENGINE)
