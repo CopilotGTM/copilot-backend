@@ -92,6 +92,7 @@ def get_chats(
     logger.info("Fetched %d chat sessions for user/org", len(chats))
     return chats
 
+
 @chat_router.delete("/delete_chat", response_model=ChatSessionResponse)
 def delete_chat(
     delete_in: DeleteChat,

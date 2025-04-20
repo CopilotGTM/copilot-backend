@@ -41,3 +41,51 @@ async def store_socket_connection(sid, environ):
     redis_client.hmset(connection_key, connection_data)
     redis_client.expire(connection_key, 7200)
     return connection_data
+
+
+async def remove_socket_connection(sid):
+    """
+    Remove the connection information from Redis.
+
+    Parameters:
+    sid (str): The session ID of the client.
+
+    Returns:
+    int: Number of keys that were removed (0 if none, 1 if removed).
+    """
+    # Prefix for Redis connection keys
+    REDIS_CONNECTION_PREFIX = "websocket:connections:"
+    connection_key = f"{REDIS_CONNECTION_PREFIX}{sid}"
+    redis_client = fastapp.state.redis_client
+    removed_count = redis_client.delete(connection_key)
+    if removed_count:
+        logger.info(f"Removed WebSocket connection from Redis: {connection_key}")
+    else:
+        logger.warning(f"No WebSocket connection found to remove for key: {connection_key}")
+    return removed_count
+
+
+async def get_socket_connection(sid):
+    """
+    Retrieve the connection metadata (and, if stored, the original environ dict)
+    for a given WebSocket session ID.
+    """
+    REDIS_CONNECTION_PREFIX = "websocket:connections:"
+    connection_key = f"{REDIS_CONNECTION_PREFIX}{sid}"
+    redis_client = fastapp.state.redis_client
+
+    # pull back all fields from the hash
+    data = redis_client.hgetall(connection_key)
+    if not data:
+        logger.warning(f"No data found in Redis for key: {connection_key}")
+        return None
+
+    # if you’ve chosen to store the raw environ JSON under the “environ” field,
+    # decode it back into a dict here
+    if "environ" in data:
+        try:
+            data["environ"] = json.loads(data["environ"])
+        except (TypeError, json.JSONDecodeError):
+            logger.warning(f"Could not JSON‑decode environ for key: {connection_key}")
+
+    return data
