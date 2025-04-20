@@ -84,10 +84,13 @@ async def connect(sid, environ):
                 pass
 
         # 4a. Save to Socket.IO session
-        await sio.save_session(sid, {
-            "user_id": str(user_id),
-            "organisation_id": str(organisation_id),
-        })
+        await sio.save_session(
+            sid,
+            {
+                "user_id": str(user_id),
+                "organisation_id": str(organisation_id),
+            },
+        )
 
         # 4b. Also inject into environ for Redis persistence
         environ["user_id"] = str(user_id)

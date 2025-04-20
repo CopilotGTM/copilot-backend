@@ -5,6 +5,7 @@ from app_layer.utils.logger import get_logger
 from socketio.exceptions import ConnectionRefusedError
 from models.chat_socket_models import ChatMessageReceived
 from fastapi import Depends
+
 # import your DB and models
 from sqlmodel import Session, select
 from models.chat_db_models import ChatSession, ChatMessage
@@ -15,8 +16,11 @@ logger = get_logger()
 
 WEBSOCKET_NAMESPACE = "/websocket/v1"
 
+
 @sio.event(namespace=WEBSOCKET_NAMESPACE)
-async def send_chat_messages(sid, data: ChatMessageReceived,
+async def send_chat_messages(
+    sid,
+    data: ChatMessageReceived,
     master_session: Session = Depends(get_master_session),
 ):
     """
@@ -31,7 +35,7 @@ async def send_chat_messages(sid, data: ChatMessageReceived,
         if not connection_details:
             logger.warning(f"Connection details not found for sid: {sid}")
             raise ConnectionRefusedError("Unauthorized")
-        
+
         # Extract user_id and org_id from the connection details
         environ = connection_details.get("environ")
         user_id = environ.get("user_id")
@@ -55,7 +59,6 @@ async def send_chat_messages(sid, data: ChatMessageReceived,
         master_session.add(chat_message)
         master_session.commit()
         master_session.refresh(chat_message)
-
 
     except Exception as e:
         logger.exception("Error in send_chat_messages")

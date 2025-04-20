@@ -33,5 +33,6 @@ class ChatSessionResponse(BaseModel):
     class Config:
         orm_mode = True
 
+
 class DeleteChat(BaseModel):
     session_id: UUID

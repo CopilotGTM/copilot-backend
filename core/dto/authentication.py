@@ -58,16 +58,10 @@ class Authentication:
 
         # verify user actually exists in DB
         logger.debug("Checking if user exists in the database: user_id=%s", user_id)
-        stmt = select(UserCredential).where(
-            UserCredential.user_id == user_id,
-            UserCredential.organisation_id == org_id
-        )
+        stmt = select(UserCredential).where(UserCredential.user_id == user_id, UserCredential.organisation_id == org_id)
         user = session.exec(stmt).one_or_none()
         if not user:
             logger.warning("User not found in the database: user_id=%s, org_id=%s", user_id, org_id)
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="User not found"
-            )
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User not found")
         logger.info("Session verified successfully for user_id=%s", user_id)
         return {"user_id": user_id, "organisation_id": org_id}

@@ -42,6 +42,7 @@ async def store_socket_connection(sid, environ):
     redis_client.expire(connection_key, 7200)
     return connection_data
 
+
 async def remove_socket_connection(sid):
     """
     Remove the connection information from Redis.
@@ -62,7 +63,6 @@ async def remove_socket_connection(sid):
     else:
         logger.warning(f"No WebSocket connection found to remove for key: {connection_key}")
     return removed_count
-
 
 
 async def get_socket_connection(sid):
