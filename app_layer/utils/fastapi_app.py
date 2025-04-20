@@ -22,6 +22,7 @@ from core.redis_client import get_redis_client
 from app_layer.routers.healthcheck import healthcheck_router
 from app_layer.routers.chat_handler import chat_router
 import app_layer.websockets.connect_handler
+import app_layer.websockets.chat_message_handler
 
 logger = get_logger()
 
