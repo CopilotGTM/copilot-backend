@@ -5,16 +5,19 @@ from app_layer.utils.logger import get_logger
 from socketio.exceptions import ConnectionRefusedError
 from models.chat_socket_models import ChatMessageReceived
 from fastapi import Depends
+import uuid
 
 # import your DB and models
 from sqlmodel import Session, select
 from models.chat_db_models import ChatSession, ChatMessage
 from core.database import get_master_session
 from core.redis_client import get_socket_connection
+from agents.general_agent.main import BasicChatAgent
 
 logger = get_logger()
 
 WEBSOCKET_NAMESPACE = "/websocket/v1"
+RESPONSE_EVENT = "recieve_chat_message"
 
 
 @sio.event(namespace=WEBSOCKET_NAMESPACE)
@@ -60,12 +63,42 @@ async def send_chat_messages(
         master_session.commit()
         master_session.refresh(chat_message)
 
+        # Getting Response from Agent
+        agent_connector = BasicChatAgent(provider="azure", model_name="o3-mini")
+        stream = agent_connector.agent_invoke("Hello How are you")
+
+        system_message_id = str(uuid.uuid4())
+        response_data = {
+            "chat_id": chat_id,
+            "message_id": system_message_id,
+            "isComplete": False,
+            "isLineComplete": False,
+            "isError": False,
+            "response": "",
+        }
+        full_response = ""
+
+        # Emit response during chat agent processing
+        async for response_chunk in stream:
+            full_response += response_chunk
+            response_data.update({"response": response_chunk, "isLineComplete": "\n" in response_chunk})
+            await sio.emit(RESPONSE_EVENT, response_data, room=sid, namespace=WEBSOCKET_NAMESPACE)
+
+        assistant_msg = ChatMessage(
+            session_id=chat_id,
+            message_id=system_message_id,
+            role="assistant",
+            content=full_response,
+            attachments=None,
+        )
+        master_session.add(assistant_msg)
+        master_session.commit()
+        master_session.refresh(assistant_msg)
+
     except Exception as e:
         logger.exception("Error in send_chat_messages")
-        # Let the client know something went wrong
-        await sio.emit(
-            "error",
-            {"msg": "could not send message"},
-            to=sid,
-            namespace=WEBSOCKET_NAMESPACE,
-        )
+        response_data.update({"errorResponse": "Failed to generate chat response.", "isError": True})
+        await sio.emit(RESPONSE_EVENT, response_data, room=sid, namespace=WEBSOCKET_NAMESPACE)
+    finally:
+        response_data.update({"isComplete": True, "response": ""})
+        await sio.emit(RESPONSE_EVENT, response_data, room=sid, namespace=WEBSOCKET_NAMESPACE)

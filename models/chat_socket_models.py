@@ -17,21 +17,6 @@ class AttachmentModel(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Free-form metadata")
 
 
-class ChatMessage(BaseModel):
-    """
-    Schema for a chat message from the frontend.
-    """
-
-    role: str = Field(..., description="Sender's role (user, assistant, etc.)")
-    message_id: UUID = Field(..., description="Unique message ID")
-    content: Optional[str] = Field(None, description="Text content of the message")
-    timestamp: datetime = Field(..., description="Message sent timestamp (ISO8601)")
-    attachments: List[AttachmentModel] = Field(default_factory=list, description="Attached files/images/etc.")
-    is_edited: bool = Field(False, description="True if the message was edited after sending")
-    edited_at: Optional[datetime] = Field(None, description="Last edit timestamp (if applicable)")
-    metadata: Dict[str, Any] = Field(default_factory=dict, description="Extra info (reactions, tags, etc.)")
-
-
 class ChatMessageReceived(BaseModel):
     """
     Schema for a received chat message event.
@@ -39,4 +24,10 @@ class ChatMessageReceived(BaseModel):
 
     session_id: UUID = Field(..., description="Conversation thread ID")
     user_id: str = Field(..., description="Sender's user ID")
-    message: ChatMessage = Field(..., description="Chat message object")
+    role: str = Field(..., description="Sender's role (user, assistant, etc.)")
+    message_id: UUID = Field(..., description="Unique message ID")
+    content: Optional[str] = Field(None, description="Text content of the message")
+    timestamp: datetime = Field(..., description="Message sent timestamp (ISO8601)")
+    attachments: List[AttachmentModel] = Field(default_factory=list, description="Attached files/images/etc.")
+    is_edited: bool = Field(False, description="True if the message was edited after sending")
+    edited_at: Optional[datetime] = Field(None, description="Last edit timestamp (if applicable)")
