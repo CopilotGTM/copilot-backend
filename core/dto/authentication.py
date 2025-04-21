@@ -1,8 +1,9 @@
-# core/dto/authentication.py
 from typing import Dict, Any, Optional
 from fastapi import Depends, HTTPException, status, Cookie
 from sqlmodel import Session, select
 import jwt
+from uuid import UUID
+from socketio.exceptions import ConnectionRefusedError
 from models.db_models import UserCredential
 from core.app_state import fastapp
 from app_layer.utils.logger import get_logger
@@ -18,9 +19,9 @@ class Authentication:
 
     def decode_token(self, token: str) -> Dict[str, Any]:
         """
-        Decode and validate JWT, raising 403 on error.
+        Decode and validate JWT for HTTP routes, raising HTTPException on error.
         """
-        logger.debug("Decoding token...")
+        logger.debug("Decoding token (HTTP)...")
         try:
             payload = jwt.decode(token, self.secret_key, algorithms=[self.algorithm])
             logger.debug("Token decoded successfully: %s", payload)
@@ -29,6 +30,17 @@ class Authentication:
             logger.error("Failed to decode token: %s", str(e))
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid or expired authentication token")
 
+    def decode_for_ws(self, token: str) -> Dict[str, Any]:
+        """
+        Decode and validate JWT for WebSocket, raising ConnectionRefusedError on error.
+        """
+        logger.debug("Decoding token (WebSocket)...")
+        try:
+            return jwt.decode(token, self.secret_key, algorithms=[self.algorithm])
+        except jwt.PyJWTError as e:
+            logger.error("WebSocket auth token decode failed: %s", str(e))
+            raise ConnectionRefusedError("Unauthorized")
+
     async def verify_session(
         self,
         *,
@@ -36,16 +48,13 @@ class Authentication:
         auth_token: Optional[str] = Cookie(None, alias=cookie_name),
     ) -> Dict[str, Any]:
         """
-        FastAPI dependency: verifies the auth_token cookie, checks user exists,
-        and returns the decoded payload with user_id and organisation_id.
-        Raises HTTP 403 if missing/invalid.
+        FastAPI dependency: verifies the auth_token cookie for HTTP routes.
         """
-        logger.info("Verifying session...")
+        logger.info("Verifying HTTP session...")
         if not auth_token:
             logger.warning("Authentication token is missing")
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Authentication token missing")
 
-        logger.debug("Authentication token found, decoding...")
         payload = self.decode_token(auth_token)
         user_id = payload.get("user_id")
         org_id = payload.get("organisation_id")
@@ -54,14 +63,14 @@ class Authentication:
             logger.warning("Invalid token payload: user_id or organisation_id missing")
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid token payload")
 
-        logger.debug("Token payload validated: user_id=%s, organisation_id=%s", user_id, org_id)
-
-        # verify user actually exists in DB
-        logger.debug("Checking if user exists in the database: user_id=%s", user_id)
-        stmt = select(UserCredential).where(UserCredential.user_id == user_id, UserCredential.organisation_id == org_id)
+        stmt = select(UserCredential).where(
+            UserCredential.user_id == UUID(user_id),
+            UserCredential.organisation_id == UUID(org_id),
+        )
         user = session.exec(stmt).one_or_none()
         if not user:
             logger.warning("User not found in the database: user_id=%s, org_id=%s", user_id, org_id)
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User not found")
-        logger.info("Session verified successfully for user_id=%s", user_id)
+
+        logger.info("HTTP session verified successfully for user_id=%s", user_id)
         return {"user_id": user_id, "organisation_id": org_id}
