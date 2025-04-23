@@ -11,6 +11,10 @@ class CreateChat(BaseModel):
     title: str
 
 
+class GetChat(BaseModel):
+    session_id: str
+
+
 class AccessTokenResponse(BaseModel):
     access_token: str = None
     refresh_token: str = None

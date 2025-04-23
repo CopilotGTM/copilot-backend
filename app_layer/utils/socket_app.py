@@ -2,4 +2,8 @@
 import socketio
 
 # Initialize the Socket.IO server
-sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
+sio = socketio.AsyncServer(
+    async_mode="asgi",
+    cors_allowed_origins="*",
+    credential_required=True,
+)
