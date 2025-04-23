@@ -145,7 +145,7 @@ def delete_chat(
 
 @chat_router.get("/get_chat", response_model=Dict[str, Any])
 def get_chat_by_id(
-    chat_data: GetChat,
+    session_id: str,
     auth_data: Dict[str, Any] = Depends(auth.verify_session),
     master_session: Session = Depends(get_master_session),
 ) -> Dict[str, Any]:
@@ -153,13 +153,13 @@ def get_chat_by_id(
     Retrieve a specific chat session by its ID for the authenticated user/org,
     along with its messages as a list of links.
     """
-    logger.info("Begin fetching chat session by ID: %s", chat_data.session_id)
+    logger.info("Begin fetching chat session by ID: %s", session_id)
 
     # Validate and extract user/org IDs from the authentication payload
     try:
         user_id = UUID(auth_data.get("user_id"))
         organisation_id = UUID(auth_data.get("organisation_id"))
-        session_id = UUID(chat_data.session_id)
+        session_id = UUID(session_id)  # Convert string to UUID
         logger.debug(
             "Extracted UUIDs - user_id: %s, organisation_id: %s, session_id: %s",
             user_id,
