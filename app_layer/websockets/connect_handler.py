@@ -1,5 +1,6 @@
 from contextlib import contextmanager
 from uuid import UUID
+import json
 
 from socketio.exceptions import ConnectionRefusedError
 from sqlmodel import select
@@ -8,7 +9,7 @@ from app_layer.utils.logger import get_logger
 from app_layer.utils.socket_app import sio
 from core.database import get_master_session
 from core.dto.authentication import Authentication
-from core.redis_client import store_socket_connection, remove_socket_connection
+from core.redis_client import store_socket_connection, remove_socket_connection, get_socket_connection
 from models.db_models import UserCredential
 
 logger = get_logger()
@@ -65,11 +66,9 @@ async def connect(sid, environ, auth):
     # Inject into environ for Redis persistence
     environ["user_id"] = str(user_id)
     environ["organisation_id"] = str(organisation_id)
-    logger.debug(f"Updated environ with user data: {environ}")
 
     # Store connection in Redis
-    connection_data = await store_socket_connection(sid, environ)
-    logger.info(f"WebSocket connection stored in Redis: {connection_data}")
+    await store_socket_connection(sid, environ)
 
 
 @sio.event(namespace=WEBSOCKET_NAMESPACE)

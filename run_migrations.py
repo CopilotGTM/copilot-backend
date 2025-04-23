@@ -15,17 +15,34 @@ def main():
 
     alembic_cfg = Config(ini_path)
 
-    # 1) generate a new revision with autogenerate
-    command.revision(
-        alembic_cfg,
-        message="create initial tables",
-        autogenerate=True,
-    )
+    try:
+        # Try to generate a new revision with autogenerate
+        command.revision(
+            alembic_cfg,
+            message="create initial tables",
+            autogenerate=True,
+        )
 
-    # 2) upgrade to the latest head
-    command.upgrade(alembic_cfg, "head")
+        # Upgrade to the latest head
+        command.upgrade(alembic_cfg, "head")
 
-    print("✅  Revision created and database upgraded to head.")
+        print("✅  Revision created and database upgraded to head.")
+    except Exception as e:
+        # If there's an error (like no previous revisions), try creating a fresh migration
+        if "Can't locate revision" in str(e):
+            print("No previous revisions found. Creating initial migration...")
+            # Create a new revision from scratch
+            command.revision(
+                alembic_cfg,
+                message="create initial tables",
+                autogenerate=True,
+                depends_on=None,
+                rev_id=None,
+            )
+            command.upgrade(alembic_cfg, "head")
+            print("✅  Initial revision created and database upgraded to head.")
+        else:
+            raise
 
 
 if __name__ == "__main__":

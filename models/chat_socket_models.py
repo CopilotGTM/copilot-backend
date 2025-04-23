@@ -23,11 +23,9 @@ class ChatMessageReceived(BaseModel):
     """
 
     session_id: UUID = Field(..., description="Conversation thread ID")
-    user_id: str = Field(..., description="Sender's user ID")
     role: str = Field(..., description="Sender's role (user, assistant, etc.)")
     message_id: UUID = Field(..., description="Unique message ID")
     content: Optional[str] = Field(None, description="Text content of the message")
     timestamp: datetime = Field(..., description="Message sent timestamp (ISO8601)")
     attachments: List[AttachmentModel] = Field(default_factory=list, description="Attached files/images/etc.")
     is_edited: bool = Field(False, description="True if the message was edited after sending")
-    edited_at: Optional[datetime] = Field(None, description="Last edit timestamp (if applicable)")
