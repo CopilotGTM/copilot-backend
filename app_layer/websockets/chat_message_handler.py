@@ -41,14 +41,14 @@ async def send_chat_messages(
             logger.warning(f"Connection details not found for sid: {sid}")
             raise ConnectionRefusedError("Unauthorized")
 
-        # Extract user_id and org_id from the connection details
+        # Extract user_id and organisation_id from the connection details
 
         connection_details = json.loads(connection_details)
         user_id = connection_details.get("user_id")
-        org_id = connection_details.get("organisation_id")
+        organisation_id = connection_details.get("organisation_id")
 
-        if not user_id or not org_id:
-            logger.error("Connect refused: token missing user_id/org_id")
+        if not user_id or not organisation_id:
+            logger.error("Connect refused: token missing user_id/organisation_id")
             raise ConnectionRefusedError("Invalid authentication payload")
 
         # Extract fields from your payload
@@ -59,7 +59,7 @@ async def send_chat_messages(
             session_id=chat_id,
             message_id=data.get("message_id"),
             role="user",
-            content=data.get("content"),
+            content=data.get("content", ""),
             attachments=data.get("attachments"),
         )
         master_session.add(chat_message)
@@ -77,13 +77,29 @@ async def send_chat_messages(
         }
         full_response = ""
 
+        # Getting list of documents from the chat messsage to send to the agent and take only last 6 messages
+        statement = (
+            select(ChatMessage).where(ChatMessage.session_id == chat_id).order_by(ChatMessage.timestamp.asc()).limit(6)
+        )
+        results = master_session.exec(statement)
+        chat_messages = results.all()
+
+        # Arrage the meesages based on the role and content we have two roles user and assistant
+        input_messages = []
+        for message in chat_messages:
+            if message.role == "user":
+                input_messages.append({"role": "user", "content": message.content})
+            else:
+                input_messages.append({"role": "assistant", "content": message.content})
+
         # Getting Response from Agent
         agent_connector = BasicChatAgent(provider="azure", model_name="o3-mini")
-        stream = agent_connector.agent_invoke(data.get("content"))
+        stream = agent_connector.agent_invoke(input_messages)
 
         # Emit response during chat agent processing
         for response_chunk in stream:
             full_response += response_chunk
+            logger.info(f"Response chunk: {response_chunk}")
             response_data.update({"response": response_chunk, "isLineComplete": "\n" in response_chunk})
             await sio.emit(RESPONSE_EVENT, response_data, room=sid, namespace=WEBSOCKET_NAMESPACE)
 
