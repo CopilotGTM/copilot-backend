@@ -19,3 +19,7 @@ pgvector[sqlalchemy]~=0.4.0
 pypdf~=3.17.4
 wikipedia~=1.4.0
 duckduckgo-search
+boto3~=1.38.0
+google-cloud-storage~=3.1.0
+azure-storage-blob~=12.25.1
+azure-common~=1.1.28
