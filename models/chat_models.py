@@ -40,3 +40,10 @@ class ChatSessionResponse(BaseModel):
 
 class DeleteChat(BaseModel):
     session_id: UUID
+
+
+class UploadFileURL(BaseModel):
+    file_name: str
+    file_type: str
+    file_size: int
+    session_id: UUID

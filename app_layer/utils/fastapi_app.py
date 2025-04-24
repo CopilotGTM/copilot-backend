@@ -21,6 +21,7 @@ from core.redis_client import get_redis_client
 
 from app_layer.routers.healthcheck import healthcheck_router
 from app_layer.routers.chat_handler import chat_router
+from app_layer.routers.upload_handler import upload_router
 import app_layer.websockets.chat_message_handler
 import app_layer.websockets.connect_handler
 
@@ -61,9 +62,15 @@ def create_fastapi_app():
     fastapp.state.master_db_engine = master_engine
     fastapp.state.master_session = get_session_dependency(master_engine)
 
+    # App Level Variables
+    fastapp.state.CLOUD_PROVIDER = os.getenv("CLOUD_PROVIDER")
+    fastapp.state.APPLICATION_STORAGE_NAME = os.getenv("APPLICATION_STORAGE_NAME")
+    fastapp.state.APPLICATION_REGION = os.getenv("APPLICATION_REGION")
+
     # Include routers here
     fastapp.include_router(healthcheck_router, tags=["healthcheck"])
     fastapp.include_router(chat_router, prefix="/chats", tags=["chats"])
+    fastapp.include_router(upload_router, prefix="/chats/upload/", tags=["uploads"])
 
     # Wrap in Socket.IO
     return ASGIApp(sio, other_asgi_app=fastapp)
