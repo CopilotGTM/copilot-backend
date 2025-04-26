@@ -70,7 +70,7 @@ def create_fastapi_app():
     # Include routers here
     fastapp.include_router(healthcheck_router, tags=["healthcheck"])
     fastapp.include_router(chat_router, prefix="/chats", tags=["chats"])
-    fastapp.include_router(upload_router, prefix="/chats/upload/", tags=["uploads"])
+    fastapp.include_router(upload_router, prefix="/chats/upload", tags=["uploads"])
 
     # Wrap in Socket.IO
     return ASGIApp(sio, other_asgi_app=fastapp)
