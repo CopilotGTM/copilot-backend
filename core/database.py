@@ -63,7 +63,7 @@ def get_master_engine(echo: bool = True, create_if_missing: bool = False):
 
 
 def init_master_db(create_if_missing: bool = False):
-    engine = get_master_engine(echo=True, create_if_missing=create_if_missing)
+    engine = get_master_engine(echo=False, create_if_missing=create_if_missing)
     SQLModel.metadata.create_all(engine)
     return engine
 
@@ -72,7 +72,7 @@ def get_org_engine(
     db_name: str,
     user: str,
     password: str,
-    echo: bool = True,
+    echo: bool = False,
     create_if_missing: bool = False,
 ):
     host, port = _get_env_host_port()
@@ -96,7 +96,7 @@ def init_org_db(db_name: str, user: str, password: str, create_if_missing: bool 
         db_name=db_name,
         user=user,
         password=password,
-        echo=True,
+        echo=False,
         create_if_missing=create_if_missing,
     )
     SQLModel.metadata.create_all(engine)
