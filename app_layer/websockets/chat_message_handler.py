@@ -12,7 +12,7 @@ from sqlmodel import Session, select
 from models.chat_db_models import ChatSession, ChatMessage
 from core.database import get_master_session
 from core.redis_client import get_socket_connection
-from agents.general_agent.main import BasicChatAgent
+from workflows.general_chat.chat_workflow import GeneralChatAgent
 import json
 from typing import Dict, Any
 
@@ -93,14 +93,13 @@ async def send_chat_messages(
                 input_messages.append({"role": "assistant", "content": message.content})
 
         # Getting Response from Agent
-        agent_connector = BasicChatAgent(provider="azure", model_name="o3-mini")
-        stream = agent_connector.agent_invoke(input_messages)
+        agent_connector = GeneralChatAgent(provider="azure", model_name="o3-mini")
 
         # Emit response during chat agent processing
-        for response_chunk in stream:
-            full_response += response_chunk
-            logger.info(f"Response chunk: {response_chunk}")
-            response_data.update({"response": response_chunk, "isLineComplete": "\n" in response_chunk})
+        for response_chunk in agent_connector.run(message_list=input_messages):
+            full_response += response_chunk.content
+            logger.info(f"Response chunk: {response_chunk.content}")
+            response_data.update({"response": response_chunk.content, "isLineComplete": "\n" in response_chunk.content})
             await sio.emit(RESPONSE_EVENT, response_data, room=sid, namespace=WEBSOCKET_NAMESPACE)
 
         assistant_msg = ChatMessage(
