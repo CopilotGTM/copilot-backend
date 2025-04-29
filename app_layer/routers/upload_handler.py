@@ -40,13 +40,17 @@ def get_upload_url(
     Generate a presigned URL for file upload.
     """
     try:
+        logger.info("--------------------------------------------------------------------")
+        logger.info(f"Received request to generate upload URL: {file_info}")
         file_name = file_info.file_name
         file_type = file_info.file_type
         file_size = file_info.file_size
         chat_id = file_info.session_id
 
+
         # Validate file size
         if file_size > MAX_FILE_SIZE_BYTES:
+            logger.error(f"File size exceeds maximum limit: {file_size} > {MAX_FILE_SIZE_BYTES}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"File size exceeds maximum limit of {MAX_FILE_SIZE_MB}MB",
@@ -54,6 +58,7 @@ def get_upload_url(
 
         # Validate file type
         if file_type not in ALLOWED_FILE_TYPES:
+            logger.error(f"Unsupported file type: {file_type}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Unsupported file type. Allowed types: {', '.join(ALLOWED_FILE_TYPES.values())}",
@@ -63,12 +68,14 @@ def get_upload_url(
         file_extension = os.path.splitext(file_name)[1].lower()
         expected_extension = ALLOWED_FILE_TYPES[file_type]
         if file_extension != expected_extension.lower():
+            logger.error(f"File extension does not match content type: {file_extension} != {expected_extension}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"File extension does not match the content type. Expected {expected_extension} for {file_type}",
             )
 
         # Extract and validate user/org IDs from the decoded JWT payload
+
         try:
             user_id = UUID(auth_data.get("user_id"))
             organisation_id = UUID(auth_data.get("organisation_id"))
@@ -88,6 +95,7 @@ def get_upload_url(
             cloud_name=fastapp.state.CLOUD_PROVIDER.lower(),
             container_name=fastapp.state.APPLICATION_STORAGE_NAME,
             blob_path=file_path,
+            file_type=file_type,
             expire_seconds=3600,
         )
 

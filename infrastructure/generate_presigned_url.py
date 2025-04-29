@@ -17,7 +17,7 @@ class GeneratePresignedURL:
             self.s3_client = None
 
     def generate_presigned_url(
-        self, cloud_name: str, container_name: str, blob_path: str, expire_seconds: int = 3600
+        self, cloud_name: str, container_name: str, blob_path: str, file_type: str,expire_seconds: int = 300
     ) -> Optional[str]:
         """
         Generate a presigned URL for file upload.
@@ -32,12 +32,12 @@ class GeneratePresignedURL:
         cloud_name = cloud_name.lower()
 
         if cloud_name == "aws":
-            return self._generate_s3_url(container_name, blob_path, expire_seconds)
+            return self._generate_s3_url(container_name, blob_path, file_type, expire_seconds)
         else:
             logger.error(f"Unsupported cloud provider: {cloud_name}")
             return None
 
-    def _generate_s3_url(self, bucket_name: str, file_path: str, expire_seconds: int) -> Optional[str]:
+    def _generate_s3_url(self, bucket_name: str, file_path: str, file_type, expire_seconds: int) -> Optional[str]:
         """Generate S3 presigned URL using boto3"""
         if not self.s3_client:
             logger.error("S3 client not initialized")
@@ -47,7 +47,7 @@ class GeneratePresignedURL:
             logger.info(f"Generating S3 presigned URL for {file_path} in bucket {bucket_name}")
             response = self.s3_client.generate_presigned_url(
                 "put_object",
-                Params={"Bucket": bucket_name, "Key": file_path, "ContentType": "application/octet-stream"},
+                Params={"Bucket": bucket_name, "Key": file_path, "ContentType": file_type},
                 ExpiresIn=expire_seconds,
             )
             logger.info(f"Successfully generated presigned URL for {file_path}")
