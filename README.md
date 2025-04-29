@@ -9,7 +9,7 @@ black . -l 120
 
 For local dev
 ```
-uvicorn app_layer.main:app --host 0.0.0.0 --port 8000 --reload
+uvicorn app_layer.main:app --host 0.0.0.0 --port 8000 --reload --log-level debug
 ```
 [README.md](README.md)
 For production

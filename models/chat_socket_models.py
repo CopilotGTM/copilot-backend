@@ -29,3 +29,4 @@ class ChatMessageReceived(BaseModel):
     timestamp: datetime = Field(..., description="Message sent timestamp (ISO8601)")
     attachments: List[AttachmentModel] = Field(default_factory=list, description="Attached files/images/etc.")
     is_edited: bool = Field(False, description="True if the message was edited after sending")
+    message_type: Optional[str] = Field(..., description="Type of Message (e.g., 'general', 'private')")

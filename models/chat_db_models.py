@@ -2,9 +2,9 @@
 import uuid
 from uuid import UUID, uuid4
 from datetime import datetime
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
-from pydantic import BaseModel, HttpUrl
+from pydantic import BaseModel, HttpUrl, Field
 from sqlmodel import SQLModel, Field, Relationship
 from sqlalchemy import Column
 from sqlalchemy.dialects.postgresql import JSONB
@@ -14,13 +14,12 @@ class AttachmentModel(BaseModel):
     """
     Predefined JSON schema for an attachment embedded in ChatMessage.attachments
     """
-
     filename: str
     url: HttpUrl
     mimetype: str
-    size_bytes: int = None
+    size_bytes: Optional[int] = None
     uploaded_at: datetime
-    metadata: Dict[str, Any] = {}
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ChatSession(SQLModel, table=True):
@@ -39,7 +38,7 @@ class ChatSession(SQLModel, table=True):
     )
 
     title: str = Field(default="Untitled Chat")
-    chat_type: str = Field(default="general", index=True)
+    chat_type: str = Field(default="GENERAL_CHAT", index=True)
     chat_version: str = Field(default="v1", index=True)
 
     # JSONB columns must be declared explicitly
@@ -68,7 +67,7 @@ class ChatMessage(SQLModel, table=True):
     )
 
     role: str = Field(default="user")
-    message_type: str = Field(default="default", index=True)
+    message_type: str = Field(default="GENERAL_MESSAGE", index=True)
     message_version: int = Field(default=1)
 
     content: str
