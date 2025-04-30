@@ -36,7 +36,7 @@ class QueryPlanning(BaseModel):
 
 class GeneralChatAgent(Workflow):
 
-    def __init__(self, provider: str = "azure", model_name: str = "o3-mini", **kwargs):
+    def __init__(self, provider: str = "azure", model_name: str = "o4-mini", **kwargs):
         super().__init__(**kwargs)
         self.df_url = get_master_db_url()
         self.knowledge_base = PDFKnowledgeBase(
@@ -51,7 +51,7 @@ class GeneralChatAgent(Workflow):
 
         self.plan_execution_agent = Agent(
             model=AzureOpenAI(
-                id="o3-mini",
+                id="o4-mini",
                 api_version="2024-12-01-preview",
             ),
             description=dedent("""
@@ -72,7 +72,7 @@ class GeneralChatAgent(Workflow):
 
     reformulation_agent = Agent(
         model=AzureOpenAI(
-            id="o3-mini",
+            id="o4-mini",
             api_version="2024-12-01-preview",
         ),
         description=dedent("""
@@ -88,7 +88,7 @@ class GeneralChatAgent(Workflow):
 
     planning_agent = Agent(
         model=AzureOpenAI(
-            id="o3-mini",
+            id="o4-mini",
             api_version="2024-12-01-preview",
         ),
         description=dedent("""
@@ -137,7 +137,7 @@ class GeneralChatAgent(Workflow):
 #     messages = [
 #         {
 #             "role": "user",
-#             "content": "What is the best way to get started with Xeno's organization?"
+#             "content": "How xeno can help pizza hut?",
 #         }
 #     ]
 #     for response in workflow.run(message_list=messages):
