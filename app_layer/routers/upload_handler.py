@@ -47,7 +47,6 @@ def get_upload_url(
         file_size = file_info.file_size
         chat_id = file_info.session_id
 
-
         # Validate file size
         if file_size > MAX_FILE_SIZE_BYTES:
             logger.error(f"File size exceeds maximum limit: {file_size} > {MAX_FILE_SIZE_BYTES}")

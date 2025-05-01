@@ -14,6 +14,7 @@ class AttachmentModel(BaseModel):
     """
     Predefined JSON schema for an attachment embedded in ChatMessage.attachments
     """
+
     filename: str
     url: HttpUrl
     mimetype: str
@@ -83,6 +84,11 @@ class ChatMessage(SQLModel, table=True):
     )
 
     timestamp: datetime = Field(default_factory=datetime.utcnow, index=True)
+
+    technical_deck_details: Dict[str, Any] = Field(
+        sa_column=Column("technical_deck_details", JSONB),
+        default_factory=dict,
+    )
 
     # back‑ref to session
     session: ChatSession = Relationship(back_populates="messages")
