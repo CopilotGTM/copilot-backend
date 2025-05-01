@@ -22,7 +22,7 @@ from core.redis_client import get_redis_client
 from app_layer.routers.healthcheck import healthcheck_router
 from app_layer.routers.chat_handler import chat_router
 from app_layer.routers.upload_handler import upload_router
-from app_layer.routers.transcript_format_api import transcript_router
+from app_layer.routers.transcript_format import transcript_router
 import app_layer.websockets.chat_message_handler
 import app_layer.websockets.connect_handler
 import app_layer.websockets.transcript_summary_handler

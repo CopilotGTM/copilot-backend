@@ -89,6 +89,10 @@ class ChatMessage(SQLModel, table=True):
         sa_column=Column("technical_deck_details", JSONB),
         default_factory=dict,
     )
+    rfp_details: Dict[str, Any] = Field(
+        sa_column=Column("rfp_details", JSONB),
+        default_factory=dict,
+    )
 
     # back‑ref to session
     session: ChatSession = Relationship(back_populates="messages")
