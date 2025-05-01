@@ -17,7 +17,7 @@ class GeneratePresignedURL:
             self.s3_client = None
 
     def generate_presigned_url(
-        self, cloud_name: str, container_name: str, blob_path: str, file_type: str,expire_seconds: int = 300
+        self, cloud_name: str, container_name: str, blob_path: str, file_type: str, expire_seconds: int = 300
     ) -> Optional[str]:
         """
         Generate a presigned URL for file upload.

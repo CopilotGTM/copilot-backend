@@ -16,6 +16,7 @@ from infrastructure.read_docx import open_docx
 load_dotenv()
 logger = get_logger()
 
+
 class TranscriptSummaryAgent(Workflow):
 
     def __init__(self, provider: str = "azure", model_name: str = "o4-mini", **kwargs):
@@ -26,7 +27,8 @@ class TranscriptSummaryAgent(Workflow):
             id="o4-mini",
             api_version="2024-12-01-preview",
         ),
-        description=dedent("""
+        description=dedent(
+            """
             You are an AI assistant tasked with analyzing a presales meeting transcript. Follow these exact instructions and formatting:
 
             # 1. Individuals
@@ -69,16 +71,17 @@ class TranscriptSummaryAgent(Workflow):
             - Individuals must be presented in a proper table format at the start.
 
             Always follow
-        """),
+        """
+        ),
         debug_mode=False,
-        markdown=True
+        markdown=True,
     )
 
     def run(self, attached_models: AttachmentModel = []) -> Iterator[RunResponse]:
 
+        logger.info("Starting TranscriptSummaryAgent workflow")
         file_metadata = attached_models[0]
-        transcript_file_path =  file_metadata["url"]
-        transcript_file_path = "x-local-test\Harika Discussion.docx"
+        transcript_file_path = file_metadata["url"]
         docs = open_docx(transcript_file_path)
 
         # Get complete text from the document as str variable
@@ -86,14 +89,11 @@ class TranscriptSummaryAgent(Workflow):
         for para in docs.paragraphs:
             full_text += para.text + "\n"
 
-        summary_response = self.summary_agent.run(
-            full_text
-        )
+        summary_response = self.summary_agent.run(full_text)
+        logger.info("Summary Response Generated")
 
-        yield RunResponse(
-            event=RunEvent.run_response,
-            content=summary_response.content
-        )
+        yield RunResponse(event=RunEvent.run_response, content=summary_response.content)
+
 
 # if __name__ == "__main__":
 #     workflow = TranscriptSummaryAgent()

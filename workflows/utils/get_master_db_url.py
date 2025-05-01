@@ -11,6 +11,7 @@ DATABASE_NAME = os.getenv("DATABASE_NAME", "postgres")
 DATABASE_USER = os.getenv("DATABASE_USER", "postgres")
 DATABASE_PASSWORD = os.getenv("DATABASE_PASSWORD", "")
 
+
 def get_master_db_url():
     """Get the master database URL."""
     encoded_password = urllib.parse.quote_plus(DATABASE_PASSWORD)

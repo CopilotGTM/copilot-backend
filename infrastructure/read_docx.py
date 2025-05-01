@@ -1,6 +1,7 @@
 import fsspec
 import docx
 
+
 def open_docx(path: str) -> docx.Document:
     """
     Works for:
