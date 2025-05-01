@@ -30,3 +30,12 @@ class ChatMessageReceived(BaseModel):
     attachments: List[AttachmentModel] = Field(default_factory=list, description="Attached files/images/etc.")
     is_edited: bool = Field(False, description="True if the message was edited after sending")
     message_type: Optional[str] = Field(..., description="Type of Message (e.g., 'general', 'private')")
+
+
+class SlideContentGenerationModel(BaseModel):
+    """
+    Schema for the slide content generation request.
+    """
+
+    session_id: UUID = Field(..., description="Conversation thread ID")
+    message_id: UUID = Field(..., description="Unique message ID")
