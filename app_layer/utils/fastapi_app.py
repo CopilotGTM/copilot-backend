@@ -26,6 +26,7 @@ from app_layer.routers.transcript_format_api import transcript_router
 import app_layer.websockets.chat_message_handler
 import app_layer.websockets.connect_handler
 import app_layer.websockets.transcript_summary_handler
+import app_layer.websockets.slide_content_generation
 
 logger = get_logger()
 
