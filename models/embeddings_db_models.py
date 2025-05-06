@@ -1,97 +1,44 @@
-# embeddings_db_models.py
-
-import uuid
-from uuid import UUID, uuid4
+# app_layer/models/embeddings_db_models.py
+from typing import Any, Dict, Optional, List
 from datetime import datetime
-from enum import Enum
-from typing import List, Dict, Any, Optional
 
-from pydantic import AnyUrl
-from sqlmodel import SQLModel, Field, Column, String
-from sqlalchemy.dialects.postgresql import JSONB, ENUM
+from sqlmodel import SQLModel, Field, Column
+from sqlalchemy import text, TIMESTAMP
+from sqlalchemy.dialects.postgresql import JSONB
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Index
-
-
-class ContentType(str, Enum):
-    text = "text"
-    image = "image"
-    ppt = "ppt"
-    pdf = "pdf"
-    audio = "audio"
-    video = "video"
-    table = "table"
 
 
 class OrganisationDocument(SQLModel, table=True):
-    __tablename__ = "organisation_documents"
+    __tablename__ = "knowledge_base"
 
-    document_id: UUID = Field(
-        default_factory=uuid4,
-        primary_key=True,
-        description="Primary key UUID for the document.",
-    )
-
-    organisation_id: UUID = Field(
-        foreign_key="organisations.organisation_id",
-        nullable=False,
-        index=True,
-        description="Foreign key to the owning organisation.",
-    )
-
-    title: str = Field(..., description="Short title or filename of the document.")
-
-    content_type: ContentType = Field(
-        default=ContentType.text,
-        sa_column=Column(ENUM(ContentType, name="content_type_enum", create_type=False), nullable=False, index=True),
-        description="Type of content (text, image, ppt, etc.)",
-    )
-
-    origin_metadata: Dict[str, Any] = Field(
+    id: str = Field(primary_key=True, index=True)
+    name: Optional[str] = Field(default=None, index=True)
+    meta_data: Dict[str, Any] = Field(
+        sa_column=Column(JSONB, server_default=text("'{}'::jsonb")),
         default_factory=dict,
-        sa_column=Column(JSONB),
-        description="Free-form JSON metadata (page numbers, tags, OCR data).",
     )
-    document_metadata: Dict[str, Any] = Field(
+    filters: Dict[str, Any] = Field(
+        sa_column=Column(JSONB, server_default=text("'{}'::jsonb")),
         default_factory=dict,
-        sa_column=Column(JSONB),
-        description="Free-form JSON metadata (page numbers, tags, OCR data).",
     )
-
-    source_url: Optional[AnyUrl] = Field(
+    content: Optional[str] = Field(default=None)
+    embedding: Optional[List[float]] = Field(
+        sa_column=Column(Vector),
         default=None,
-        sa_column=Column(String),
-        description="Link back to the original document, if available.",
     )
-
-    embedding: List[float] = Field(
-        sa_column=Column(
-            Vector(1536),
-            nullable=False,
-        ),
-        description="1536-dim semantic embedding for vector search.",
+    usage: Optional[Dict[str, Any]] = Field(
+        sa_column=Column(JSONB),
+        default_factory=dict,
     )
-
     created_at: datetime = Field(
-        default_factory=datetime.utcnow, nullable=False, description="Timestamp when the document was created."
+        sa_column=Column(TIMESTAMP(timezone=True), server_default=text("now()")),
+        default_factory=datetime.utcnow,
     )
     updated_at: datetime = Field(
-        default_factory=datetime.utcnow, nullable=False, description="Timestamp when the document was last updated."
+        sa_column=Column(
+            TIMESTAMP(timezone=True),
+            server_default=text("now()"),
+            server_onupdate=text("now()"),
+        )
     )
-
-    # Define HNSW index for vector similarity search
-    __table_args__ = (
-        Index(
-            "organisation_documents_embedding_hnsw_idx",
-            "embedding",
-            postgresql_using="hnsw",
-            postgresql_ops={"embedding": "vector_cosine_ops"},
-            postgresql_with={
-                "m": 16,  # Number of connections per layer
-                "ef_construction": 64,  # Size of dynamic candidate list for construction
-            },
-        ),
-    )
-
-    class Config:
-        from_attributes = True  # formerly orm_mode
+    content_hash: Optional[str] = Field(default=None, index=True)
