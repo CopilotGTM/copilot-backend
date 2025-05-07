@@ -5,6 +5,28 @@ from datetime import datetime
 from typing import Dict, Any
 
 from pydantic import BaseModel, EmailStr
+from typing import Optional, List, Dict, Any
+from uuid import UUID
+from datetime import datetime
+from pydantic import BaseModel, Field, HttpUrl
+
+
+class AttachmentModel(BaseModel):
+    """
+    Schema for an attachment in ChatMessage.attachments.
+    """
+
+    filename: str = Field(..., description="Original filename")
+    url: HttpUrl = Field(..., description="Publicly accessible URL")
+    mimetype: str = Field(..., description="MIME type, e.g. 'image/png'")
+    size_bytes: Optional[int] = Field(None, description="File size in bytes")
+    uploaded_at: datetime = Field(..., description="Upload timestamp (ISO8601)")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Free-form metadata")
+
+class ParseTranscript(BaseModel):
+    attachments: List[AttachmentModel]
+    session_id: UUID
+    message_id: UUID
 
 
 class CreateChat(BaseModel):

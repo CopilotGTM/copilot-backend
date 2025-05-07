@@ -12,7 +12,7 @@ from workflows.utils.get_master_db_url import get_master_db_url
 from models.chat_socket_models import AttachmentModel
 
 from infrastructure.read_docx import open_docx
-
+from workflows.utils.cloud_uri import to_s3_uri
 load_dotenv()
 logger = get_logger()
 
@@ -81,7 +81,7 @@ class TranscriptSummaryAgent(Workflow):
 
         logger.info("Starting TranscriptSummaryAgent workflow")
         file_metadata = attached_models[0]
-        transcript_file_path = file_metadata["url"]
+        transcript_file_path = to_s3_uri(file_metadata["url"])
         docs = open_docx(transcript_file_path)
 
         # Get complete text from the document as str variable

@@ -29,7 +29,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from core.dto.authentication import Authentication
 from app_layer.utils.logger import get_logger
-from models.chat_socket_models import AttachmentModel
+from models.chat_models import ParseTranscript
+from workflows.utils.cloud_uri import to_s3_uri
+
 
 # ── FastAPI plumbing ─────────────────────────────────────────────────────
 auth = Authentication()
@@ -134,15 +136,21 @@ def build_json(text: str) -> Dict[str, Any]:
 # ── API Endpoint ─────────────────────────────────────────────────────────
 @transcript_router.post("/parse_transcript", status_code=200, tags=["transcript"])
 def parse_transcript_api(
-    attachment: AttachmentModel, auth_data: Dict[str, Any] = Depends(auth.verify_session)
+    parse_data: ParseTranscript, 
+    # auth_data: Dict[str, Any] = Depends(auth.verify_session)
 ) -> Dict[str, Any]:
     """
     Fetch a .docx or .pdf from any fsspec-supported URL, parse it, and
     return structured meeting JSON.
     """
-    url = attachment.url
+    logger.info(f"Working on Transcript Formatting")
+    attachments = parse_data.attachments
+    attachment = attachments[0]
+    url = str(attachment.url)
     filename = attachment.filename
     ext = os.path.splitext(filename)[1].lower()
+
+    logger.info(f"Attachment Data {attachments}")
 
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail=f"Unsupported file type {ext}. Only .docx or .pdf allowed")
@@ -150,10 +158,13 @@ def parse_transcript_api(
     logger.info(f"Parsing transcript from: {url}")
 
     try:
-        plain = path_to_text("x-local-test\Harika Discussion.docx")
+        logger.info(f"URL {url}")
+        transcript_file_path = to_s3_uri(url)
+        logger.info(f"Parsed URl {transcript_file_path}")
+        plain = path_to_text(transcript_file_path)
         payload = build_json(plain)
         logger.info(f"Successfully parsed transcript {filename}")
-        logger.info(f"Parsed JSON: {payload}")
+        # logger.info(f"Parsed JSON: {payload}")
         return payload
 
     except HTTPException:
