@@ -19,7 +19,7 @@ logger = get_logger()
 
 WEBSOCKET_NAMESPACE = "/websocket/v1"
 RESPONSE_EVENT = "recieve_transcript_messages"
-
+CHAT_RESPONSE_EVENT = "recieve_chat_message"
 
 @sio.event(namespace=WEBSOCKET_NAMESPACE)
 async def send_transript_messages(
@@ -70,7 +70,37 @@ async def send_transript_messages(
         master_session.refresh(user_msg)
         logger.info(f"User Message Stored")
 
+        # Save Assistant Message in DB
         system_message_id = str(uuid.uuid4())
+        assistant_msg = ChatMessage(
+            session_id=chat_id,
+            message_id=system_message_id,
+            role="assistant",
+            content="Technical Deck Generation",
+            attachments=data.get("attachments"),
+            message_type="TECHNICAL_DECK",
+        )
+        master_session.add(assistant_msg)
+        master_session.commit()
+        master_session.refresh(assistant_msg)
+        logger.info(f"Assistant Message Stored")
+
+        response_data_for_message_id = {
+            "chat_id": chat_id,
+            "message_id": system_message_id,
+            "isComplete": False,
+            "isLineComplete": False,
+            "message_type": "TECHNICAL_DECK",
+            "isError": False,
+            "response": "",
+            "isFirstMessage": True,
+        }
+
+        # Sending a First Message to the user to share message id
+        logger.info(f"Sending a First Message to the user to share message id")
+        await sio.emit(CHAT_RESPONSE_EVENT, response_data_for_message_id, room=sid, namespace=WEBSOCKET_NAMESPACE)
+
+        # Final Output Response
         response_data = {
             "chat_id": chat_id,
             "message_id": system_message_id,
@@ -80,13 +110,6 @@ async def send_transript_messages(
             "response": "",
             "isFirstMessage": True,
         }
-
-        # Sending a First Message to the user to share message id
-        logger.info(f"Sending a First Message to the user to share message id")
-        await sio.emit(RESPONSE_EVENT, response_data, room=sid, namespace=WEBSOCKET_NAMESPACE)
-        response_data.update({"isFirstMessage": False})
-
-        # Final Output Response
         full_response: str = ""
 
         # Setting up agent
@@ -108,20 +131,12 @@ async def send_transript_messages(
                 }
             )
 
-        logger.info(f"Transcript Data Stored Prepared")
-        assistant_msg = ChatMessage(
-            session_id=chat_id,
-            message_id=system_message_id,
-            role="assistant",
-            content="",
-            attachments=data.get("attachments"),
-            message_type="TECHNICAL_DECK",
-            technical_deck_details={
-                "transcript_summary_list": transcript_summary,
-                "complete_transcript_summary": full_response,
-                "state": "TRANSCRIPT_SUMMARY",
-            },
-        )
+        logger.info("Transcript Data Stored Prepared")
+        assistant_msg.technical_deck_details = {
+            "transcript_summary_list": transcript_summary,
+            "complete_transcript_summary": full_response,
+            "state": "TRANSCRIPT_SUMMARY",
+        }
         master_session.add(assistant_msg)
         master_session.commit()
         master_session.refresh(assistant_msg)
