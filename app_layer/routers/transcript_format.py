@@ -92,9 +92,9 @@ def parse_transcript(block: str) -> List[Dict[str, str]]:
         if m:
             ts, spk, content = m.groups()
             last_ts = ts or last_ts
-            out.append({"Speaker": spk.strip(), "Content": content.strip(), "timestamp": last_ts})
+            out.append({"speaker": spk.strip(), "content": content.strip(), "timestamp": last_ts})
         elif out:
-            out[-1]["Content"] += " " + line
+            out[-1]["content"] += " " + line
     return out
 
 
@@ -103,19 +103,19 @@ def build_json(text: str) -> Dict[str, Any]:
     title = mt.group(1).strip() if mt else text.splitlines()[0][:60]
 
     sections = split_by_headers(text) or {"Transcript": text}
-    result: Dict[str, Any] = {"Meeting Title": title, "Sections": []}
+    result: Dict[str, Any] = {"meeting_title": title, "sections": []}
 
     for name in WANTED_SECTIONS:
         if name == "Transcript" and "Transcript" in sections:
             dialogs = parse_transcript(sections["Transcript"])
         else:
             body = sections.get(name, "")
-            dialogs = [{"Speaker": "System", "Content": body, "timestamp": ""}] if body else []
+            dialogs = [{"speaker": "System", "content": body, "timestamp": ""}] if body else []
         if dialogs:
-            result["Sections"].append({"Section Name": name, "Dialogues": dialogs})
+            result["sections"].append({"section_name": name, "dialogues": dialogs})
 
-    if not any(s["Section Name"] == "Transcript" for s in result["Sections"]):
-        result["Sections"].append({"Section Name": "Transcript", "Dialogues": parse_transcript(text)})
+    if not any(s["section_name"] == "Transcript" for s in result["sections"]):
+        result["sections"].append({"section_name": "Transcript", "dialogues": parse_transcript(text)})
     return result
 
 
