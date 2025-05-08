@@ -136,13 +136,22 @@ async def send_transript_messages(
                 (ChatMessage.session_id == chat_id) & (ChatMessage.message_id == system_message_id)
             )
         ).first()   
+        logger.info(assistant_msg)
 
         logger.info("Transcript Data Stored Prepared")
-        assistant_msg.technical_deck_details.update({
-            "transcript_summary_list": transcript_summary,
-            "complete_transcript_summary": full_response,
-            "state": "TRANSCRIPT_SUMMARY",
-        })
+        if not assistant_msg.technical_deck_details:
+            assistant_msg.technical_deck_details = {
+                "transcript_summary_list": transcript_summary,
+                "complete_transcript_summary": full_response,
+                "state": "TRANSCRIPT_SUMMARY",
+            }
+        else:
+            assistant_msg.technical_deck_details = {
+                **assistant_msg.technical_deck_details,
+                "transcript_summary_list": transcript_summary,
+                "complete_transcript_summary": full_response,
+                "state": "TRANSCRIPT_SUMMARY",
+            }
         master_session.add(assistant_msg)
         master_session.commit()
         master_session.refresh(assistant_msg)
