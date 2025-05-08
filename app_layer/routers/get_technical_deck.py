@@ -62,10 +62,20 @@ def get_technical_deck(
             return Response.not_found_error_response("Technical Deck not found")
 
         match state:
-            case "ALL":
-                return Response.success_response("Complete Technical Deck Details", tech_deck_details)
+            case "TRANSCRIPT_SUMMARY":
+                details = {
+                    "complete_transcript_summary": tech_deck_details.get("complete_transcript_summary", ""),
+                    "fomratted_transcript": tech_deck_details.get("fomratted_transcript", []),
+                }
+                return Response.success_response("Complete Technical Deck Details", details)
+            case "SLIDE_CONTENT":
+                details = {
+                    "slide_content_summary": tech_deck_details.get("slide_content_summary", []),
+                    "user_outline_input": tech_deck_details.get("user_outline_input", {}),
+                }
+                return Response.success_response("Complete Technical Deck Details", details)
             case _:
-                return Response.success_response("Complete Technical Deck Details", tech_deck_details)
+                return Response.not_found_error_response("Technical Deck does not exists", data=None)
 
     except Exception as e:
         logger.error("Error occurred: %s", str(e))
