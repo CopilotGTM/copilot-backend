@@ -68,7 +68,7 @@ async def send_transript_messages(
         master_session.add(user_msg)
         master_session.commit()
         master_session.refresh(user_msg)
-        logger.info(f"User Message Stored")
+        logger.info(f"User Message Stored - {user_msg}")
 
         # Save Assistant Message in DB
         system_message_id = str(uuid.uuid4())
@@ -83,7 +83,7 @@ async def send_transript_messages(
         master_session.add(assistant_msg)
         master_session.commit()
         master_session.refresh(assistant_msg)
-        logger.info(f"Assistant Message Stored")
+        logger.info(f"Assistant Message Stored {assistant_msg}")
 
         response_data_for_message_id = {
             "chat_id": chat_id,

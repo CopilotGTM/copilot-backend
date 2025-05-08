@@ -143,7 +143,7 @@ def parse_transcript_api(
         # Getting attachments and technical deck
         attachments = technical_deck.attachments
         deck_details = technical_deck.technical_deck_details
-        if not attachments or not deck_details:
+        if not attachments:
             logger.warning(f"No attachments or deck details found for session_id={session_id}")
             return Response.not_found_error_response(
                 f"No attachments or deck details found for session_id={session_id}", data=None
