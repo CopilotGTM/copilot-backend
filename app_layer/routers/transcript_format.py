@@ -1,44 +1,32 @@
 # app_layer/routers/transcript_format.py
-"""
-POST /parse_transcript
-======================
-
-Body (application/json)
-
-{
-  "url":  "s3://my-bucket/meetings/March_28.docx",   # any fsspec-supported URL
-  "file_name": "March_28.docx",                          # optional – inferred if omitted
-  "file_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-}
-
-↳ 200 OK → meeting-JSON
-"""
-
 from __future__ import annotations
 
 import os
 import re
 from io import BytesIO
 from typing import Any, Dict, List, Optional
+from uuid import UUID
 
 import fsspec
 import docx
 
 # import pdfplumber
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 
 from core.dto.authentication import Authentication
 from app_layer.utils.logger import get_logger
 from models.chat_models import ParseTranscript
 from workflows.utils.cloud_uri import to_s3_uri
 
+from sqlmodel import Session, select
+from models.chat_db_models import ChatSession, ChatMessage, AttachmentModel
+from core.database import get_master_session
+from models.http_response import Response
 
-# ── FastAPI plumbing ─────────────────────────────────────────────────────
 auth = Authentication()
 transcript_router = APIRouter()
 logger = get_logger()
 
-# ── limits / constants ───────────────────────────────────────────────────
 MAX_FILE_SIZE_MB = 50
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 ALLOWED_EXTENSIONS = {".docx", ".pdf"}
@@ -50,7 +38,6 @@ HEADER_RE = re.compile(rf"({'|'.join(re.escape(h) + r':?' for h in HEADERS)})", 
 LINE_RE = re.compile(r"(?:\[(\d{1,2}:\d{2}(?::\d{2})?)\]\s*)?([\w\s]+):\s*(.*)")
 
 
-# ── helpers: reading files via fsspec ─────────────────────────────────────
 def _check_size(fs: fsspec.AbstractFileSystem, path: str) -> None:
     try:
         size = fs.info(path).get("size", 0)
@@ -85,7 +72,6 @@ def path_to_text(path: str) -> str:
     raise HTTPException(status_code=400, detail="Only .docx or .pdf supported")
 
 
-# ── helpers: transcript parsing ──────────────────────────────────────────
 def split_by_headers(text: str) -> Dict[str, str]:
     parts = HEADER_RE.split(text)
     sections: Dict[str, str] = {}
@@ -133,44 +119,61 @@ def build_json(text: str) -> Dict[str, Any]:
     return result
 
 
-# ── API Endpoint ─────────────────────────────────────────────────────────
-@transcript_router.post("/parse_transcript", status_code=200, tags=["transcript"])
+@transcript_router.get("/parse_transcript", status_code=200, tags=["transcript"])
 def parse_transcript_api(
-    parse_data: ParseTranscript, 
-    # auth_data: Dict[str, Any] = Depends(auth.verify_session)
+    session_id: UUID = Query(..., description="Conversation thread ID"),
+    teachnical_deck_message_id: UUID = Query(..., description="Unique message ID"),
+    # auth_data: Dict[str, Any] = Depends(auth.verify_session),
+    master_session: Session = Depends(get_master_session),
 ) -> Dict[str, Any]:
     """
     Fetch a .docx or .pdf from any fsspec-supported URL, parse it, and
     return structured meeting JSON.
     """
-    logger.info(f"Working on Transcript Formatting")
-    attachments = parse_data.attachments
-    attachment = attachments[0]
-    url = str(attachment.url)
-    filename = attachment.filename
-    ext = os.path.splitext(filename)[1].lower()
-
-    logger.info(f"Attachment Data {attachments}")
-
-    if ext not in ALLOWED_EXTENSIONS:
-        raise HTTPException(status_code=400, detail=f"Unsupported file type {ext}. Only .docx or .pdf allowed")
-
-    logger.info(f"Parsing transcript from: {url}")
-
     try:
-        logger.info(f"URL {url}")
+        logger.info(f"Working on Transcript Formatting")
+        # Fetching Technical Deck Message Details
+        technical_deck: ChatMessage = master_session.exec(
+            select(ChatMessage).where(
+                (ChatMessage.session_id == session_id) & (ChatMessage.message_id == teachnical_deck_message_id)
+            )
+        ).first()
+        logger.info(f"Technical Deck Message Details Fetched")
+
+        # Getting attachments and technical deck
+        attachments = technical_deck.attachments
+        deck_details = technical_deck.technical_deck_details
+        if not attachments or not deck_details:
+            logger.warning(f"No attachments or deck details found for session_id={session_id}")
+            return Response.not_found_error_response(
+                f"No attachments or deck details found for session_id={session_id}", data=None
+            )
+
+        attachment = attachments[0]
+        url = str(attachment.get("url"))
+        filename = attachment.get("filename")
+        ext = os.path.splitext(filename)[1].lower()
+
+        logger.info(f"Attachment Data {attachments}")
+
+        if ext not in ALLOWED_EXTENSIONS:
+            return Response.bad_request_error_response(f"Unsupported file extension: {ext}", data=None)
+
+        logger.info(f"Parsing transcript from: {url}")
+
         transcript_file_path = to_s3_uri(url)
-        logger.info(f"Parsed URl {transcript_file_path}")
         plain = path_to_text(transcript_file_path)
         payload = build_json(plain)
         logger.info(f"Successfully parsed transcript {filename}")
-        # logger.info(f"Parsed JSON: {payload}")
-        return payload
 
-    except HTTPException:
-        raise  # already has proper status & message
+        fomratted_transcript = {"fomratted_transcript": [payload]}
+
+        technical_deck.technical_deck_details = {**deck_details, "fomratted_transcript": [payload]}
+        logger.info(f"Update Formatted Transcript")
+        master_session.add(technical_deck)
+        master_session.commit()
+        master_session.refresh(technical_deck)
+        return Response.success_response("Successfully parsed transcript", fomratted_transcript)
     except Exception as exc:
         logger.exception("Transcript parsing failed")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to parse transcript: {exc}"
-        )
+        return Response.internal_server_error_response(str(exc), data=None)

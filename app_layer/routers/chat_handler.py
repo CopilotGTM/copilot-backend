@@ -201,10 +201,8 @@ def get_chat_by_id(
     # Fetch the messages associated with the chat session
     logger.info("Querying for messages for chat session: %s", session_id)
     message_statement = (
-        select(ChatMessageDB)
-        .where(ChatMessageDB.session_id == session_id)
-        .order_by(ChatMessageDB.timestamp.asc())
-    )   
+        select(ChatMessageDB).where(ChatMessageDB.session_id == session_id).order_by(ChatMessageDB.timestamp.asc())
+    )
     messages = master_session.exec(message_statement).all()
     logger.debug("Number of messages fetched: %d", len(messages))
 
