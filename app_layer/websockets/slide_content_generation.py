@@ -11,6 +11,7 @@ from sqlmodel import Session, select
 from models.chat_db_models import ChatSession, ChatMessage, AttachmentModel
 from core.database import get_master_session
 from core.redis_client import get_socket_connection
+from uuid import UUID
 
 from workflows.generate_slide_content.slide_content_workflow import SlideContentGenerator
 
@@ -34,11 +35,9 @@ async def generate_slide_content(
     session_gen = None
     master_session = None
     try:
-        logger.info("--------------------------------------------------------------------")
-        logger.info(f"WebSocket message received: sid={sid}, data={data}")
+        logger.info(f"Slide Content Generation WebSocket message received: sid={sid}, data={data}")
 
         # Auth / connection details
-        logger.info(f"Extracting connection details for sid: {sid}")
         connection_details = await get_socket_connection(sid)
         if not connection_details:
             logger.warning(f"Connection details not found for sid: {sid}")
@@ -53,11 +52,9 @@ async def generate_slide_content(
             raise ConnectionRefusedError("Invalid authentication payload")
 
         # Getting Database Connection
-        logger.info("Getting DB connection")
         chat_id = data.get("session_id")
         system_message_id = data.get("message_id")
-        session_gen = get_master_session()
-        master_session = next(session_gen)
+        master_session = next(get_master_session())
 
         # Read the Message from chat message using chat_id
         logger.info(f"Fetching chat message for session_id: {chat_id}")
@@ -94,13 +91,13 @@ async def generate_slide_content(
         logger.info("Generating slide content")
         agent_connector = SlideContentGenerator(provider="azure", model_name="o3-mini")
 
-        for response_chunk in agent_connector.run(input_summary=input_summary):
+        async for response_chunk in agent_connector.run_workflow(input_summary=input_summary):
             full_response.append(response_chunk.content)
-            logger.info(f"Response chunk: {response_chunk.content}")
             response_data.update({"response": response_chunk.content})
             await sio.emit(RESPONSE_EVENT, response_data, room=sid, namespace=WEBSOCKET_NAMESPACE)
 
         # Saving slide content to DB
+        details["state"] == "SLIDE_CONTENT"
         existing_assistant.technical_deck_details = {**details, "slide_content_summary": full_response}
         logger.info(f"Transcript Data Stored Prepared")
         master_session.add(existing_assistant)

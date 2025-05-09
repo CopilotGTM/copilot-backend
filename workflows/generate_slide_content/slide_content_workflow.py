@@ -7,6 +7,7 @@ from agno.agent import Agent
 from agno.models.azure import AzureOpenAI
 from agno.tools.duckduckgo import DuckDuckGoTools
 from agno.tools.wikipedia import WikipediaTools
+import asyncio
 
 from agno.knowledge.pdf import PDFKnowledgeBase
 from agno.vectordb.pgvector import PgVector
@@ -98,18 +99,18 @@ class SlideContentGenerator(Workflow):
             markdown=True,
         )
 
-    def run(self, input_summary: str) -> Iterator[RunResponse]:
+    async def run_workflow(self, input_summary: str) -> AsyncIterator[RunResponse]:
 
         # 1) Planning
         logger.info("working on the planning phase")
         logger.info("Generating Solutioning Narration")
-        story_narration = self.story_narration_outline.run(input_summary)
+        story_narration = await self.story_narration_outline.arun(input_summary)
         story_narration_outline = story_narration.content
         logger.info(f"Solutioning Narration Generated")
 
         # 2) Slide Outline Generation
         logger.info("Generating Slide Outline")
-        slide_outline = self.generate_outline.run(
+        slide_outline = await self.generate_outline.arun(
             f"""
                 Summary of the meeting: 
                 {input_summary}
@@ -123,7 +124,7 @@ class SlideContentGenerator(Workflow):
 
         logger.info("Generating Slide Content")
         for slide in slide_outline.content.slide_outline:
-            slide_content = self.generate_slide_content.run(
+            slide_content = await self.generate_slide_content.arun(
                 f"""
                     Slide Number: {slide.slide_number},
                     -----------------------------------------------------
@@ -150,8 +151,13 @@ class SlideContentGenerator(Workflow):
         logger.info(f"Slide Content Generated")
 
 
-# if __name__ == "__main__":
-#     workflow = SlideSummaryGenerator()
+# async def main():
 
-#     for response in workflow.run(input_summary=meeting_summary):
-#         print(response.content)
+#     transcript_summary_agent = SlideContentGenerator()
+#     logger.info("Workflow execution started.")
+#     async for response in transcript_summary_agent.run_workflow(input_summary):
+#         logger.info(response.content)  # Prints each chunk directly
+
+
+# if __name__ == "__main__":
+#     asyncio.run(main())
