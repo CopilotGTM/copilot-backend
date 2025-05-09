@@ -1,6 +1,7 @@
 from pydantic import BaseModel, Field
 from typing import List, Dict, AsyncIterator, Iterator
 from textwrap import dedent
+import asyncio
 
 from agno.workflow import Workflow, RunResponse, RunEvent
 from agno.agent import Agent
@@ -69,7 +70,7 @@ class GeneralChatAgent(Workflow):
             knowledge=self.knowledge_base,
             # response_model=QueryPlanning,
             # structured_outputs=True,
-            debug_mode=True,
+            debug_mode=False,
             markdown=True,
         )
 
@@ -117,7 +118,7 @@ class GeneralChatAgent(Workflow):
         markdown=True,
     )
 
-    def run(self, message_list: List[Dict[str, str]]) -> Iterator[RunResponse]:
+    async def run_workflow(self, message_list: List[Dict[str, str]]) -> AsyncIterator[RunResponse]:
 
         # 1) Reformulation
         reformulation_response = self.reformulation_agent.run(messages=message_list)
@@ -129,19 +130,27 @@ class GeneralChatAgent(Workflow):
         logger.info(f"Query Planning Response: {planning_response.content}")
 
         # 3) Planning Execution
-        execution_response = self.plan_execution_agent.run(
-            messages=[{"role": "user", "content": planning_response.content.plan}]
+        execution_response = await self.plan_execution_agent.arun(
+            messages=[{"role": "user", "content": planning_response.content.plan}],
+            stream=True
         )
-        yield RunResponse(event=RunEvent.run_response, content=execution_response.content)
+        
+        async for chunk in execution_response:
+            yield RunResponse(event=RunEvent.run_response, content=chunk.content)
+        # yield RunResponse(event=RunEvent.run_response, content=execution_response.content)
 
-
-# if __name__ == "__main__":
-#     workflow = GeneralChatAgent()
+# async def main():
 #     messages = [
 #         {
 #             "role": "user",
 #             "content": "How xeno can help pizza hut?",
 #         }
 #     ]
-#     for response in workflow.run(message_list=messages):
-#         print(response.content)
+#     chat = GeneralChatAgent()
+
+#     logger.info("Workflow execution started.")
+#     async for response in chat.run_workflow(messages):
+#         logger.info(response.content)  # Prints each chunk directly
+
+# if __name__ == "__main__":
+#     asyncio.run(main())
