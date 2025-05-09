@@ -1,5 +1,6 @@
-from pydantic import BaseModel, Field
-from typing import List, Dict, AsyncIterator, Iterator
+from pydantic import BaseModel
+import asyncio
+from typing import AsyncIterator, List, Dict
 from textwrap import dedent
 
 from agno.workflow import Workflow, RunResponse, RunEvent
@@ -13,6 +14,7 @@ from models.chat_socket_models import AttachmentModel
 
 from infrastructure.read_docx import open_docx
 from workflows.utils.cloud_uri import to_s3_uri
+
 load_dotenv()
 logger = get_logger()
 
@@ -77,25 +79,44 @@ class TranscriptSummaryAgent(Workflow):
         markdown=True,
     )
 
-    def run(self, attached_models: AttachmentModel = []) -> Iterator[RunResponse]:
-
+    async def run_workflow(self, attached_models: List[AttachmentModel]) -> AsyncIterator[RunResponse]:
         logger.info("Starting TranscriptSummaryAgent workflow")
+
+        if not attached_models:
+            raise ValueError("No attachments provided.")
+
         file_metadata = attached_models[0]
         transcript_file_path = to_s3_uri(file_metadata["url"])
         docs = open_docx(transcript_file_path)
 
-        # Get complete text from the document as str variable
-        full_text = ""
-        for para in docs.paragraphs:
-            full_text += para.text + "\n"
+        full_text = "\n".join([para.text for para in docs.paragraphs])
 
-        summary_response = self.summary_agent.run(full_text)
-        logger.info("Summary Response Generated")
+        # Properly await coroutine before using async for
+        summary_response = await self.summary_agent.arun(full_text, stream=True)
+        logger.info("Summary response initiated")
 
-        yield RunResponse(event=RunEvent.run_response, content=summary_response.content)
+        async for chunk in summary_response:
+            yield RunResponse(event=RunEvent.run_response, content=chunk.content)
+
+
+# async def main():
+#     attachments = [
+#         {
+#             "filename": "Harika Discussion.docx",
+#             "url": "https://gtm-dev-application.s3.amazonaws.com/uploads/8c67b20f-9305-4f93-9e14-895f39b30b83/c9ac5227-c27d-4676-bf3f-42b712775e45/ffda9a64-071e-4fd8-9852-3924785bc817/Harika%20Discussion.docx",
+#             "mimetype": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+#             "size_bytes": 1926221,
+#             "uploaded_at": "2025-05-07T10:12:12.910Z",
+#             "metadata": {}
+#         }
+#     ]
+
+#     transcript_summary_agent = TranscriptSummaryAgent()
+
+#     logger.info("Workflow execution started.")
+#     async for response in transcript_summary_agent.run_workflow(attachments):
+#         logger.info(response.content)  # Prints each chunk directly
 
 
 # if __name__ == "__main__":
-#     workflow = TranscriptSummaryAgent()
-#     for response in workflow.run():
-#         print(response.content)
+#     asyncio.run(main())

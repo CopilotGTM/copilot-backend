@@ -33,16 +33,15 @@ async def send_chat_messages(
     3. Broadcast the new message to everyone in that session’s room
     """
     try:
-        logger.info("--------------------------------------------------------------------")
         logger.info(f"WebSocket message received: sid={sid}, data={data}")
-        # Validate the incoming payload
+
+        # Auth / connection details
         connection_details = await get_socket_connection(sid)
         if not connection_details:
             logger.warning(f"Connection details not found for sid: {sid}")
             raise ConnectionRefusedError("Unauthorized")
 
         # Extract user_id and organisation_id from the connection details
-
         connection_details = json.loads(connection_details)
         user_id = connection_details.get("user_id")
         organisation_id = connection_details.get("organisation_id")
@@ -55,6 +54,7 @@ async def send_chat_messages(
         chat_id = data.get("session_id")
         session_gen = get_master_session()
         master_session = next(session_gen)
+
         chat_message = ChatMessage(
             session_id=chat_id,
             message_id=data.get("message_id"),
@@ -96,9 +96,8 @@ async def send_chat_messages(
         agent_connector = GeneralChatAgent(provider="azure", model_name="o3-mini")
 
         # Emit response during chat agent processing
-        for response_chunk in agent_connector.run(message_list=input_messages):
+        async for response_chunk in agent_connector.run_workflow(message_list=input_messages):
             full_response += response_chunk.content
-            logger.info(f"Response chunk: {response_chunk.content}")
             response_data.update({"response": response_chunk.content, "isLineComplete": "\n" in response_chunk.content})
             await sio.emit(RESPONSE_EVENT, response_data, room=sid, namespace=WEBSOCKET_NAMESPACE)
 

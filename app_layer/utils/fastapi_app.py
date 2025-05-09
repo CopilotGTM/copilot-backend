@@ -23,6 +23,7 @@ from app_layer.routers.healthcheck import healthcheck_router
 from app_layer.routers.chat_handler import chat_router
 from app_layer.routers.upload_handler import upload_router
 from app_layer.routers.transcript_format import transcript_router
+from app_layer.routers.get_technical_deck import technical_deck
 import app_layer.websockets.chat_message_handler
 import app_layer.websockets.connect_handler
 import app_layer.websockets.transcript_summary_handler
@@ -75,6 +76,7 @@ def create_fastapi_app():
     fastapp.include_router(chat_router, prefix="/chats", tags=["chats"])
     fastapp.include_router(upload_router, prefix="/chats/upload", tags=["uploads"])
     fastapp.include_router(transcript_router, prefix="/chats/transcript", tags=["transcript"])
+    fastapp.include_router(technical_deck, prefix="/chats/technical_deck", tags=["technical_deck"])
 
     # Wrap in Socket.IO
     return ASGIApp(sio, other_asgi_app=fastapp)

@@ -23,6 +23,7 @@ class AttachmentModel(BaseModel):
     uploaded_at: datetime = Field(..., description="Upload timestamp (ISO8601)")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Free-form metadata")
 
+
 class ParseTranscript(BaseModel):
     attachments: List[AttachmentModel]
     session_id: UUID

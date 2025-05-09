@@ -32,7 +32,7 @@ async def connect(sid, environ, auth):
     """
     logger.info(f"WebSocket connection attempt: sid={sid}")
 
-    token = auth.get("token")
+    token = auth.get("token") if auth else environ.get("HTTP_TOKEN")
     if not token:
         logger.warning("Connect refused: no auth token provided in cookies")
         raise ConnectionRefusedError("Unauthorized")
