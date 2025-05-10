@@ -73,7 +73,10 @@ def get_technical_deck(
                     "slide_content_summary": tech_deck_details.get("slide_content_summary", []),
                     "user_outline_input": tech_deck_details.get("user_outline_input", {}),
                 }
-                return Response.success_response("Complete Technical Deck Details", details)
+            case "SLIDE_TEMPLATE":
+                return Response.success_response("Complete Technical Deck Details", {})
+            case "SLIDE_OUTPUT":
+                return Response.success_response("Complete Technical Deck Details", {})
             case _:
                 return Response.not_found_error_response("Technical Deck does not exists", data=None)
 
