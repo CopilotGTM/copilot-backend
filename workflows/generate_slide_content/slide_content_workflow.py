@@ -65,12 +65,11 @@ class SlideContentGenerator(Workflow):
         self.story_narration_outline = Agent(
             model=AzureOpenAI(
                 id="o4-mini",
-                api_version="2024-12-01-preview",
+                api_version="2025-04-01-preview",
+                reasoning_effort="high"
             ),
             description=TECHNICAL_WIN_STRATEGY_PROMPT,
             knowledge=self.knowledge_base,
-            # response_model=SlideOutline,
-            # structured_outputs=True,
             debug_mode=False,
             markdown=True,
         )
@@ -83,6 +82,7 @@ class SlideContentGenerator(Workflow):
             description=SLIDE_OUTLINE_PROMPT,
             knowledge=self.knowledge_base,
             response_model=SlideOutline,
+            reasoning = True,
             structured_outputs=True,
             debug_mode=False,
             markdown=True,
@@ -95,7 +95,6 @@ class SlideContentGenerator(Workflow):
             ),
             description=SLIDE_CONTENT_PROMPT,
             knowledge=self.knowledge_base,
-            debug_mode=False,
             markdown=True,
         )
 
@@ -122,8 +121,22 @@ class SlideContentGenerator(Workflow):
         )
         logger.info(f"Slide Outline Generated")
 
+        previous_slides: List[Dict] = []
+
         logger.info("Generating Slide Content")
         for slide in slide_outline.content.slide_outline:
+            logger.info(f"Slide Number: {slide.slide_number}, Slide Title: {slide.slide_title}")
+
+            # Add previous slides to the prompt
+            if previous_slides:
+                previous_slides_str = "\n".join(
+                    [
+                        f"Slide Number: {s['slide_number']}, Slide Title: {s['slide_title']}, Slide Content: {s['slide_content']}"
+                        for s in previous_slides
+                    ]
+                )
+            else:
+                previous_slides_str = ""
             slide_content = await self.generate_slide_content.arun(
                 f"""
                     Slide Number: {slide.slide_number},
@@ -136,6 +149,9 @@ class SlideContentGenerator(Workflow):
                     -----------------------------------------------------
                     Solutioning Narration Suggested by Senior Sales Engineer: 
                     {story_narration_outline}
+                    -----------------------------------------------------
+                    Data of Earlier Slides Created:
+                    {previous_slides_str}
                 """
             )
 
@@ -144,6 +160,10 @@ class SlideContentGenerator(Workflow):
                 "slide_title": slide.slide_title,
                 "slide_content": slide_content.content,
             }
+
+            # Append to our history before yielding
+            previous_slides.append(output_format)
+
             yield RunResponse(
                 event=RunEvent.run_response,
                 content=output_format,
