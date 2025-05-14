@@ -63,11 +63,7 @@ class SlideContentGenerator(Workflow):
         )
 
         self.story_narration_outline = Agent(
-            model=AzureOpenAI(
-                id="o4-mini",
-                api_version="2025-04-01-preview",
-                reasoning_effort="high"
-            ),
+            model=AzureOpenAI(id="o4-mini", api_version="2025-04-01-preview", reasoning_effort="high"),
             description=TECHNICAL_WIN_STRATEGY_PROMPT,
             knowledge=self.knowledge_base,
             debug_mode=False,
@@ -82,7 +78,7 @@ class SlideContentGenerator(Workflow):
             description=SLIDE_OUTLINE_PROMPT,
             knowledge=self.knowledge_base,
             response_model=SlideOutline,
-            reasoning = True,
+            reasoning=True,
             structured_outputs=True,
             debug_mode=False,
             markdown=True,

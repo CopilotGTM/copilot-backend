@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
+
 def main():
     # locate your alembic.ini (adjust if it's elsewhere)
     here = os.path.dirname(__file__)
