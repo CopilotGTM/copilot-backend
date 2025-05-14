@@ -63,7 +63,7 @@ class UploadFileURL(BaseModel):
     session_id: UUID
 
 class Pagination(_Base, Generic[T]):   # correct order ✅
-    items: List[ChatSessionResponse]
+    chats: List[ChatSessionResponse]
     cursor: Optional[str] = None
 
 

@@ -110,7 +110,7 @@ def get_chats(
             encode_cursor(items[-1].created_at, items[-1].session_id) if has_more else None
         )
         logger.info("Data Success")
-        payload = Pagination[ChatSessionResponse](items=items, cursor=next_cursor)
+        payload = Pagination[ChatSessionResponse](chats=items, cursor=next_cursor)
         return payload
     except Exception as error:
         logger.error(f"Unable to retrieve chat List user- {user_id}. Error - {error}")
