@@ -32,9 +32,6 @@ class ParseTranscript(BaseModel):
 class CreateChat(BaseModel):
     title: str
 
-class GetChat(BaseModel):
-    session_id: str
-
 class AccessTokenResponse(BaseModel):
     access_token: Optional[str] = None
     refresh_token: Optional[str] = None
@@ -67,4 +64,9 @@ class UploadFileURL(BaseModel):
 
 class Pagination(_Base, Generic[T]):   # correct order ✅
     items: List[ChatSessionResponse]
+    cursor: Optional[str] = None
+
+
+class PaginationChatMessages(_Base, Generic[T]):   # correct order ✅
+    chat: Dict[str, Any]
     cursor: Optional[str] = None

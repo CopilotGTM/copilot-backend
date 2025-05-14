@@ -8,7 +8,7 @@ from sqlalchemy import or_, and_
 from core.dto.authentication import Authentication
 from core.database import get_master_session
 from app_layer.utils.logger import get_logger
-from models.chat_models import CreateChat, DeleteChat, ChatSessionResponse, GetChat, Pagination
+from models.chat_models import CreateChat, DeleteChat, ChatSessionResponse, Pagination, PaginationChatMessages
 from models.chat_db_models import ChatSession as ChatSessionDB
 from models.chat_db_models import ChatMessage as ChatMessageDB
 from models.http_response import Response
@@ -166,9 +166,14 @@ def delete_chat(
     return chat
 
 
-@chat_router.get("/get_chat", response_model=Dict[str, Any])
+@chat_router.get("/get_chat", response_model=PaginationChatMessages)
 def get_chat_by_id(
     session_id: str,
+    limit: int = Query(20, ge=1, le=100),
+    cursor: Optional[str] = Query(
+        None,
+        description="Opaque cursor returned by the previous call (omit for first page)",
+    ),
     auth_data: Dict[str, Any] = Depends(auth.verify_session),
     master_session: Session = Depends(get_master_session),
 ) -> Dict[str, Any]:
@@ -182,9 +187,6 @@ def get_chat_by_id(
         # Extracting User Details
         user_id = UUID(auth_data.get("user_id"))
         organisation_id = UUID(auth_data.get("organisation_id"))
-
-        # Extracting Payload Information
-        session_id = UUID(session_id)  # Convert string to UUID
 
         # Fetch chat session
         logger.info("Querying for chat session: %s", session_id)
@@ -205,13 +207,32 @@ def get_chat_by_id(
             )
             return Response.not_found_error_response("Chat Session does not exist", data=None)
 
-        # Fetch the messages associated with the chat session
-        logger.info("Querying for messages for chat session: %s", session_id)
-        message_statement = (
-            select(ChatMessageDB).where(ChatMessageDB.session_id == session_id).order_by(ChatMessageDB.timestamp.asc())
+        filters = [ChatMessageDB.session_id == session_id]
+        if cursor:
+            ts, mid = decode_cursor(cursor)
+            filters.append(
+                or_(
+                    ChatMessageDB.timestamp > ts,
+                    and_(
+                        ChatMessageDB.timestamp == ts,
+                        ChatMessageDB.message_id > mid,
+                    ),
+                )
+            )
+
+        msg_stmt = (
+            select(ChatMessageDB)
+            .where(*filters)
+            .order_by(ChatMessageDB.timestamp.asc(), ChatMessageDB.message_id.asc())
+            .limit(limit + 1)
         )
-        messages = master_session.exec(message_statement).all()
-        
+        messages = master_session.exec(msg_stmt).all()
+        has_more = len(messages) == limit + 1
+        page_items = messages[:limit]
+
+        next_cursor = (
+            encode_cursor(page_items[-1].timestamp, page_items[-1].session_id) if has_more else None
+        )
 
         messages_list = []
         for message in messages:
@@ -237,9 +258,9 @@ def get_chat_by_id(
             "updated_at": chat.updated_at.isoformat(),
             "messages": messages_list,
         }
-
+        payload = PaginationChatMessages(chat=chat_response, cursor=next_cursor)
         logger.info("Successfully fetched chat session: %s", session_id)
-        return Response.success_response("Chat session retrieved successfully", chat_response)
+        return payload
     except Exception as error:
         logger.error(f"Unable to retrieve chat session. Error - {error}")
         return Response.internal_server_error_response("Unable to retrieve chat session", data=None)
