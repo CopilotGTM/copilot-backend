@@ -247,7 +247,7 @@ def get_chat_by_id(
                 "state": ""
             }
             if message.message_type=="TECHNICAL_DECK" and message.role=='assistant':
-                message_dict["state"] = message.technical_deck_details["state"]
+                message_dict["state"] = message.technical_deck_details.get("state", "")
             
             messages_list.append(message_dict)
 
