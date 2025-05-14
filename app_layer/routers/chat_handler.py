@@ -1,16 +1,18 @@
 from uuid import UUID
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlmodel import Session, select
+from sqlalchemy import or_, and_
 
 from core.dto.authentication import Authentication
 from core.database import get_master_session
 from app_layer.utils.logger import get_logger
-from models.chat_models import CreateChat, DeleteChat, ChatSessionResponse, GetChat
+from models.chat_models import CreateChat, DeleteChat, ChatSessionResponse, GetChat, Pagination
 from models.chat_db_models import ChatSession as ChatSessionDB
 from models.chat_db_models import ChatMessage as ChatMessageDB
 from models.http_response import Response
+from app_layer.utils.cursor import encode_cursor, decode_cursor
 
 auth = Authentication()
 logger = get_logger()
@@ -59,40 +61,61 @@ def create_chat(
     return chat
 
 
-@chat_router.get("/get_chats", response_model=List[ChatSessionResponse])
+@chat_router.get("/get_chats", response_model=Pagination)
 def get_chats(
+    limit: int = Query(20, ge=1, le=100),
+    cursor: Optional[str] = Query(
+        None,
+        description="Opaque cursor returned by the previous call (omit for first page)",
+    ),
     auth_data: Dict[str, Any] = Depends(auth.verify_session),
     master_session: Session = Depends(get_master_session),
-) -> List[ChatSessionDB]:
-    """
-    Retrieve all non-deleted chat sessions for the authenticated user/org,
-    ordered by most recent.
-    """
-    logger.info("Fetching chat sessions for user/org")
+):
+    """Return the next slice of chats for the authenticated user/org."""
     try:
-        user_id = UUID(auth_data.get("user_id"))
-        organisation_id = UUID(auth_data.get("organisation_id"))
-    except (ValueError, TypeError):
-        logger.error("Invalid UUID in auth payload: %s", auth_data)
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Invalid authentication payload",
-        )
+        user_id = UUID(auth_data["user_id"])
+        organisation_id = UUID(auth_data["organisation_id"])
 
-    statement = (
-        select(ChatSessionDB)
-        .where(
+        filters = [
             ChatSessionDB.user_id == user_id,
             ChatSessionDB.organisation_id == organisation_id,
-            ChatSessionDB.is_deleted == False,
+            ChatSessionDB.is_deleted.is_(False),
+        ]
+
+        # key-set pagination (created_at DESC, session_id DESC)
+        if cursor:
+            ts, sid = decode_cursor(cursor)
+            filters.append(
+                or_(
+                    ChatSessionDB.created_at < ts,
+                    and_(
+                        ChatSessionDB.created_at == ts,
+                        ChatSessionDB.session_id < sid,
+                    ),
+                )
+            )
+
+        stmt = (
+            select(ChatSessionDB)
+            .where(*filters)
+            .order_by(ChatSessionDB.created_at.desc(), ChatSessionDB.session_id.desc())
+            .limit(limit + 1)  # grab one extra row to detect “more”
         )
-        .order_by(ChatSessionDB.created_at.desc())
-    )
-    statement = statement.execution_options(postgresql_literal_binds=True)
-    results = master_session.exec(statement)
-    chats = results.all()
-    logger.info("Fetched %d chat sessions for user/org", len(chats))
-    return chats
+
+        rows: List[ChatSessionDB] = master_session.exec(stmt).all()
+        has_more = len(rows) == limit + 1
+        items = rows[:limit]
+
+        next_cursor = (
+            encode_cursor(items[-1].created_at, items[-1].session_id) if has_more else None
+        )
+        logger.info("Data Success")
+        payload = Pagination[ChatSessionResponse](items=items, cursor=next_cursor)
+        return payload
+    except Exception as error:
+        logger.error(f"Unable to retrieve chat List user- {user_id}. Error - {error}")
+        return Response.internal_server_error_response("Unable to retrieve chat List", data=None)
+ 
 
 @chat_router.delete("/delete_chat", response_model=ChatSessionResponse)
 def delete_chat(
