@@ -10,6 +10,7 @@ from app_layer.utils.logger import get_logger
 from models.chat_models import CreateChat, DeleteChat, ChatSessionResponse, GetChat
 from models.chat_db_models import ChatSession as ChatSessionDB
 from models.chat_db_models import ChatMessage as ChatMessageDB
+from models.http_response import Response
 
 auth = Authentication()
 logger = get_logger()
@@ -93,7 +94,6 @@ def get_chats(
     logger.info("Fetched %d chat sessions for user/org", len(chats))
     return chats
 
-
 @chat_router.delete("/delete_chat", response_model=ChatSessionResponse)
 def delete_chat(
     delete_in: DeleteChat,
@@ -155,77 +155,68 @@ def get_chat_by_id(
     """
     logger.info("Begin fetching chat session by ID: %s", session_id)
 
-    # Validate and extract user/org IDs from the authentication payload
     try:
+        # Extracting User Details
         user_id = UUID(auth_data.get("user_id"))
         organisation_id = UUID(auth_data.get("organisation_id"))
+
+        # Extracting Payload Information
         session_id = UUID(session_id)  # Convert string to UUID
-        logger.debug(
-            "Extracted UUIDs - user_id: %s, organisation_id: %s, session_id: %s",
-            user_id,
-            organisation_id,
-            session_id,
-        )
-    except (ValueError, TypeError) as e:
-        logger.error(
-            "Invalid UUID in auth payload: %s | Error: %s",
-            auth_data,
-            str(e),
-        )
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Invalid authentication payload",
-        )
 
-    # Fetch the chat session
-    logger.info("Querying for chat session: %s", session_id)
-    statement = select(ChatSessionDB).where(
-        ChatSessionDB.session_id == session_id,
-        ChatSessionDB.user_id == user_id,
-        ChatSessionDB.organisation_id == organisation_id,
-    )
-    chat = master_session.exec(statement).one_or_none()
-
-    if not chat:
-        logger.warning(
-            "Chat session not found: session_id=%s, user_id=%s, organisation_id=%s",
-            session_id,
-            user_id,
-            organisation_id,
+        # Fetch chat session
+        logger.info("Querying for chat session: %s", session_id)
+        statement = select(ChatSessionDB).where(
+            ChatSessionDB.session_id == session_id,
+            ChatSessionDB.user_id == user_id,
+            ChatSessionDB.organisation_id == organisation_id,
+            ChatSessionDB.is_deleted == False,
         )
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Chat session not found",
+        chat = master_session.exec(statement).one_or_none()
+
+        if not chat:
+            logger.warning(
+                "Chat session not found: session_id=%s, user_id=%s, organisation_id=%s",
+                session_id,
+                user_id,
+                organisation_id,
+            )
+            return Response.not_found_error_response("Chat Session does not exist", data=None)
+
+        # Fetch the messages associated with the chat session
+        logger.info("Querying for messages for chat session: %s", session_id)
+        message_statement = (
+            select(ChatMessageDB).where(ChatMessageDB.session_id == session_id).order_by(ChatMessageDB.timestamp.asc())
         )
+        messages = master_session.exec(message_statement).all()
+        
 
-    # Fetch the messages associated with the chat session
-    logger.info("Querying for messages for chat session: %s", session_id)
-    message_statement = (
-        select(ChatMessageDB).where(ChatMessageDB.session_id == session_id).order_by(ChatMessageDB.timestamp.asc())
-    )
-    messages = master_session.exec(message_statement).all()
-    logger.debug("Number of messages fetched: %d", len(messages))
+        messages_list = []
+        for message in messages:
+            message_dict = {
+                "message_id": str(message.message_id),
+                "content": message.content,
+                "timestamp": message.timestamp,
+                "role": message.role,
+                "message_type": message.message_type,
+                "message_version": message.message_version,
+                "attachments": message.attachments,
+                "state": ""
+            }
+            if message.message_type=="TECHNICAL_DECK" and message.role=='assistant':
+                message_dict["state"] = message.technical_deck_details["state"]
+            
+            messages_list.append(message_dict)
 
-    messages_list = [
-        {
-            "message_id": str(message.message_id),
-            "content": message.content,
-            "timestamp": message.timestamp,
-            "role": message.role,
-            "message_type": message.message_type,
-            "message_version": message.message_version,
-            "attachments": message.attachments,
+        chat_response = {
+            "session_id": str(chat.session_id),
+            "title": chat.title,
+            "created_at": chat.created_at.isoformat(),
+            "updated_at": chat.updated_at.isoformat(),
+            "messages": messages_list,
         }
-        for message in messages
-    ]
 
-    chat_response = {
-        "session_id": str(chat.session_id),
-        "title": chat.title,
-        "created_at": chat.created_at.isoformat(),
-        "updated_at": chat.updated_at.isoformat(),
-        "messages": messages_list,
-    }
-
-    logger.info("Successfully fetched chat session: %s", session_id)
-    return chat_response
+        logger.info("Successfully fetched chat session: %s", session_id)
+        return Response.success_response("Chat session retrieved successfully", chat_response)
+    except Exception as error:
+        logger.error(f"Unable to retrieve chat session. Error - {error}")
+        return Response.internal_server_error_response("Unable to retrieve chat session", data=None)
