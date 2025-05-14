@@ -2,14 +2,15 @@
 
 from uuid import UUID
 from datetime import datetime
-from typing import Dict, Any
 
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, Field, HttpUrl, ConfigDict
 from typing import Optional, List, Dict, Any
 from uuid import UUID
 from datetime import datetime
-from pydantic import BaseModel, Field, HttpUrl
+from typing import Generic, List, Optional, TypeVar
+from pydantic.generics import GenericModel as _Base
 
+T = TypeVar("T")
 
 class AttachmentModel(BaseModel):
     """
@@ -23,27 +24,19 @@ class AttachmentModel(BaseModel):
     uploaded_at: datetime = Field(..., description="Upload timestamp (ISO8601)")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Free-form metadata")
 
-
 class ParseTranscript(BaseModel):
     attachments: List[AttachmentModel]
     session_id: UUID
     message_id: UUID
 
-
 class CreateChat(BaseModel):
     title: str
 
-
-class GetChat(BaseModel):
-    session_id: str
-
-
 class AccessTokenResponse(BaseModel):
-    access_token: str = None
-    refresh_token: str = None
+    access_token: Optional[str] = None
+    refresh_token: Optional[str] = None
     token_type: str
     expires_in: int
-
 
 class ChatSessionResponse(BaseModel):
     session_id: UUID
@@ -58,15 +51,22 @@ class ChatSessionResponse(BaseModel):
     updated_at: datetime
 
     class Config:
-        orm_mode = True
-
+        from_attributes = True
 
 class DeleteChat(BaseModel):
     session_id: UUID
-
 
 class UploadFileURL(BaseModel):
     file_name: str
     file_type: str
     file_size: int
     session_id: UUID
+
+class Pagination(_Base, Generic[T]):   # correct order ✅
+    chats: List[ChatSessionResponse]
+    cursor: Optional[str] = None
+
+
+class PaginationChatMessages(_Base, Generic[T]):   # correct order ✅
+    chat: Dict[str, Any]
+    cursor: Optional[str] = None
