@@ -106,16 +106,14 @@ def get_chats(
         has_more = len(rows) == limit + 1
         items = rows[:limit]
 
-        next_cursor = (
-            encode_cursor(items[-1].created_at, items[-1].session_id) if has_more else None
-        )
+        next_cursor = encode_cursor(items[-1].created_at, items[-1].session_id) if has_more else None
         logger.info("Data Success")
         payload = Pagination[ChatSessionResponse](chats=items, cursor=next_cursor)
         return payload
     except Exception as error:
         logger.error(f"Unable to retrieve chat List user- {user_id}. Error - {error}")
         return Response.internal_server_error_response("Unable to retrieve chat List", data=None)
- 
+
 
 @chat_router.delete("/delete_chat", response_model=ChatSessionResponse)
 def delete_chat(
@@ -212,10 +210,10 @@ def get_chat_by_id(
             ts, mid = decode_cursor(cursor)
             filters.append(
                 or_(
-                    ChatMessageDB.timestamp > ts,
+                    ChatMessageDB.timestamp < ts,
                     and_(
                         ChatMessageDB.timestamp == ts,
-                        ChatMessageDB.message_id > mid,
+                        ChatMessageDB.message_id < mid,
                     ),
                 )
             )
@@ -223,19 +221,17 @@ def get_chat_by_id(
         msg_stmt = (
             select(ChatMessageDB)
             .where(*filters)
-            .order_by(ChatMessageDB.timestamp.asc(), ChatMessageDB.message_id.asc())
+            .order_by(ChatMessageDB.timestamp.desc(), ChatMessageDB.message_id.desc())
             .limit(limit + 1)
         )
         messages = master_session.exec(msg_stmt).all()
         has_more = len(messages) == limit + 1
         page_items = messages[:limit]
 
-        next_cursor = (
-            encode_cursor(page_items[-1].timestamp, page_items[-1].session_id) if has_more else None
-        )
+        next_cursor = encode_cursor(page_items[-1].timestamp, page_items[-1].message_id) if has_more else None
 
         messages_list = []
-        for message in messages:
+        for message in page_items:
             message_dict = {
                 "message_id": str(message.message_id),
                 "content": message.content,
@@ -244,12 +240,15 @@ def get_chat_by_id(
                 "message_type": message.message_type,
                 "message_version": message.message_version,
                 "attachments": message.attachments,
-                "state": ""
+                "state": "",
             }
-            if message.message_type=="TECHNICAL_DECK" and message.role=='assistant':
-                message_dict["state"] = message.technical_deck_details["state"]
-            
+            if message.message_type == "TECHNICAL_DECK" and message.role == "assistant":
+                message_dict["state"] = message.technical_deck_details.get("state", "")
+
             messages_list.append(message_dict)
+
+        # Reverse the list to show latest messages at the bottom
+        messages_list.reverse()
 
         chat_response = {
             "session_id": str(chat.session_id),

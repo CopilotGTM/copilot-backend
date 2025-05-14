@@ -131,13 +131,13 @@ class GeneralChatAgent(Workflow):
 
         # 3) Planning Execution
         execution_response = await self.plan_execution_agent.arun(
-            messages=[{"role": "user", "content": planning_response.content.plan}],
-            stream=True
+            messages=[{"role": "user", "content": planning_response.content.plan}], stream=True
         )
-        
+
         async for chunk in execution_response:
             yield RunResponse(event=RunEvent.run_response, content=chunk.content)
         # yield RunResponse(event=RunEvent.run_response, content=execution_response.content)
+
 
 # async def main():
 #     messages = [

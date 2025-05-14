@@ -21,6 +21,7 @@ WEBSOCKET_NAMESPACE = "/websocket/v1"
 RESPONSE_EVENT = "recieve_transcript_messages"
 CHAT_RESPONSE_EVENT = "recieve_chat_message"
 
+
 @sio.event(namespace=WEBSOCKET_NAMESPACE)
 async def send_transript_messages(
     sid,
@@ -135,7 +136,7 @@ async def send_transript_messages(
             select(ChatMessage).where(
                 (ChatMessage.session_id == chat_id) & (ChatMessage.message_id == system_message_id)
             )
-        ).first()   
+        ).first()
         logger.info(assistant_msg)
 
         logger.info("Transcript Data Stored Prepared")
