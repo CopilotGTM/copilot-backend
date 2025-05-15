@@ -29,6 +29,7 @@ import app_layer.websockets.chat_message_handler
 import app_layer.websockets.connect_handler
 import app_layer.websockets.technical_deck.transcript_summary_handler
 import app_layer.websockets.technical_deck.slide_content_generation
+import app_layer.websockets.technical_deck.technical_deck_generation
 
 logger = get_logger()
 

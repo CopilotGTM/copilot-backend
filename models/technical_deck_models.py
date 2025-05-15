@@ -26,3 +26,15 @@ class TemplateSelection(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class GenerateTechnicalDeckRequest(BaseModel):
+    """
+    A data model representing a request to generate a technical deck.
+    """
+
+    session_id: UUID = Field(..., description="The unique identifier of the session.")
+    message_id: UUID = Field(..., description="The unique identifier of the message.")
+
+    class Config:
+        from_attributes = True
