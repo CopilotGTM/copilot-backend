@@ -3,15 +3,12 @@ from app_layer.utils.socket_app import sio
 from app_layer.utils.logger import get_logger
 from socketio.exceptions import ConnectionRefusedError
 from models.chat_socket_models import SlideContentGenerationModel
-import uuid
 import json
-from typing import Dict, Any, List
 
-from sqlmodel import Session, select
-from models.chat_db_models import ChatSession, ChatMessage, AttachmentModel
+from sqlmodel import select
+from models.chat_db_models import ChatMessage
 from core.database import get_master_session
 from core.redis_client import get_socket_connection
-from uuid import UUID
 
 from workflows.generate_slide_content.slide_content_workflow import SlideContentGenerator
 

@@ -27,8 +27,8 @@ from app_layer.routers.get_technical_deck import technical_deck
 from app_layer.routers.technical_deck.select_template import select_template
 import app_layer.websockets.chat_message_handler
 import app_layer.websockets.connect_handler
-import app_layer.websockets.transcript_summary_handler
-import app_layer.websockets.slide_content_generation
+import app_layer.websockets.technical_deck.transcript_summary_handler
+import app_layer.websockets.technical_deck.slide_content_generation
 
 logger = get_logger()
 

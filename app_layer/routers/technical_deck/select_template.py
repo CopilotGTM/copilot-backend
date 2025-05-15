@@ -16,11 +16,12 @@ auth = Authentication()
 logger = get_logger()
 select_template = APIRouter()
 
+
 @select_template.post("/select_template")
 async def select_template_handler(
     template_selection: TemplateSelection,
     auth_data: Dict[str, Any] = Depends(auth.verify_session),
-    master_session: Session = Depends(get_master_session)
+    master_session: Session = Depends(get_master_session),
 ):
     """
     Handle the selection of a template for a technical deck.
@@ -61,7 +62,7 @@ async def select_template_handler(
         if not chat:
             logger.error(f"Chat session not found for user/org: {user_id}/{organisation_id}")
             return Response.not_found_error_response(message="Chat session not found")
-        
+
         # Fetch deck message to update
         statement = select(ChatMessageDB).where(
             ChatMessageDB.message_id == template_selection.message_id,

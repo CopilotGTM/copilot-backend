@@ -5,11 +5,10 @@ from socketio.exceptions import ConnectionRefusedError
 from models.chat_socket_models import ChatMessageReceived
 import uuid
 import json
-from typing import Dict, Any, List
+from typing import Dict, List
 
-# ─── DB + models ────────────────────────────────────────────────────────────────
-from sqlmodel import Session, select
-from models.chat_db_models import ChatSession, ChatMessage, AttachmentModel
+from sqlmodel import select
+from models.chat_db_models import ChatMessage
 from core.database import get_master_session
 from core.redis_client import get_socket_connection
 
