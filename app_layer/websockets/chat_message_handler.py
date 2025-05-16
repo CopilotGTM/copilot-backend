@@ -4,17 +4,15 @@ from app_layer.utils.socket_app import sio
 from app_layer.utils.logger import get_logger
 from socketio.exceptions import ConnectionRefusedError
 from models.chat_socket_models import ChatMessageReceived
-from fastapi import Depends
 import uuid
 
 # import your DB and models
-from sqlmodel import Session, select
-from models.chat_db_models import ChatSession, ChatMessage
+from sqlmodel import select
+from models.chat_db_models import ChatMessage
 from core.database import get_master_session
 from core.redis_client import get_socket_connection
 from workflows.general_chat.chat_workflow import GeneralChatAgent
 import json
-from typing import Dict, Any
 
 logger = get_logger()
 
@@ -79,24 +77,21 @@ async def send_chat_messages(
 
         # Getting list of documents from the chat messsage to send to the agent and take only last 6 messages
         statement = (
-            select(ChatMessage).where(ChatMessage.session_id == chat_id).order_by(ChatMessage.timestamp.asc()).limit(6)
+            select(ChatMessage).where(ChatMessage.session_id == chat_id).order_by(ChatMessage.timestamp.desc()).limit(6)
         )
         results = master_session.exec(statement)
         chat_messages = results.all()
 
-        # Arrage the meesages based on the role and content we have two roles user and assistant
-        input_messages = []
-        for message in chat_messages:
-            if message.role == "user":
-                input_messages.append({"role": "user", "content": message.content})
-            else:
-                input_messages.append({"role": "assistant", "content": message.content})
+        # Reverse to have most recent message at the bottom
+        chat_messages = list(reversed(chat_messages))
 
         # Getting Response from Agent
-        agent_connector = GeneralChatAgent(provider="azure", model_name="o3-mini")
+        agent_connector = GeneralChatAgent(
+            provider="azure", model_name="o3-mini", sio=sio, websocket_room=sid, system_message_id=system_message_id
+        )
 
         # Emit response during chat agent processing
-        async for response_chunk in agent_connector.run_workflow(message_list=input_messages):
+        async for response_chunk in agent_connector.run_workflow(message_list=chat_messages):
             full_response += response_chunk.content
             response_data.update({"response": response_chunk.content, "isLineComplete": "\n" in response_chunk.content})
             await sio.emit(RESPONSE_EVENT, response_data, room=sid, namespace=WEBSOCKET_NAMESPACE)
@@ -108,14 +103,15 @@ async def send_chat_messages(
             content=full_response,
             attachments=None,
         )
+        logger.info("Message Saved Successfully")
         master_session.add(assistant_msg)
         master_session.commit()
         master_session.refresh(assistant_msg)
+        logger.info(f"General Message Flow Completed")
 
     except Exception as e:
         logger.exception("Error in send_chat_messages")
         response_data.update({"errorResponse": "Failed to generate chat response.", "isError": True})
-        await sio.emit(RESPONSE_EVENT, response_data, room=sid, namespace=WEBSOCKET_NAMESPACE)
     finally:
         response_data.update({"isComplete": True, "response": ""})
         await sio.emit(RESPONSE_EVENT, response_data, room=sid, namespace=WEBSOCKET_NAMESPACE)
