@@ -175,3 +175,12 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# PyPI configuration file
+.pypirc
+*env
+Dockerfile
+
+x-local-test
+.env.development
+.DS_Store
