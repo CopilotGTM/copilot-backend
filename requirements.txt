@@ -32,7 +32,7 @@ google-cloud-storage==3.1.0
 
 # Additional utilities
 packaging==23.2
-agno==1.4.5
+agno==1.5.0
 pgvector==0.4.0
 pypdf==3.17.4
 wikipedia==1.4.0
@@ -40,3 +40,4 @@ duckduckgo-search
 python-docx==1.1.2
 pandas==2.2.3
 fsspec==2025.3.2
+PyPDF2

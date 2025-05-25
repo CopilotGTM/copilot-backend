@@ -38,7 +38,7 @@ class DeckGeneration(Workflow):
             "type": "cover",
             "data": {
                 "title": "Xeno ",
-                "text?": "Loyalty Construct and Benefits To Grow Repeat Revenue 💰💰💰  ",
+                "text": "Loyalty Construct and Benefits To Grow Repeat Revenue 💰💰💰  ",
                 "image": "https://test-gtmcopilot.s3.us-east-1.amazonaws.com/test.png",
             },
         }
