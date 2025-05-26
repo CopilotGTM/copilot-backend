@@ -15,130 +15,31 @@ from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from datetime import datetime
 
+
 from core.dto.authentication import Authentication
 from core.database import get_master_session
 from app_layer.utils.logger import get_logger
 from models.chat_models import UploadFileURL
 from core.app_state import fastapp
 from workflows.rfp_sheet_mapping.sheet_mapping_workflow import SheetIdentificationWorkflow
+from infrastructure.get_cloud_uri import CloudURIConverter, CloudConfig
+from infrastructure.cloud_file_reader import get_cloud_reader
 
 from models.chat_socket_models import ChatMessageReceived, AttachmentModel
 from models.chat_db_models import ChatSession, ChatMessage
 from models.http_response import Response
 
+from core.rfp_sheet_utils.unmerge_data import get_unmerged_cell_data
+from core.rfp_sheet_utils.sheet_processor import process_sheets_in_parallel
+
 auth = Authentication()
 logger = get_logger()
 rfp__sheet_router = APIRouter()
 
-
-def get_s3_client():
-    """Create and return an S3 client"""
-    return boto3.client("s3", region_name="us-east-1")
-
-
-def parse_s3_url(url: str) -> Tuple[str, str]:
-    """
-    Parse S3 URL into bucket name and key using standard URL parsing
-
-    Args:
-        url: The S3 URL to parse (can be string or HttpUrl)
-
-    Returns:
-        tuple: (bucket_name, key)
-
-    Example:
-        >>> parse_s3_url("https://my-bucket.s3.amazonaws.com/path/to/file.xlsx")
-        ('my-bucket', 'path/to/file.xlsx')
-    """
-    try:
-        # Convert HttpUrl to string if needed
-        url_str = str(url)
-
-        # Parse the URL into components
-        parsed: ParseResult = urlparse(url_str)
-
-        if not parsed.netloc:
-            raise ValueError("Invalid URL: missing hostname")
-
-        # Extract bucket name from hostname (remove .s3.amazonaws.com)
-        bucket_name = parsed.netloc.split(".")[0]
-
-        if not bucket_name:
-            raise ValueError("Invalid S3 URL: could not extract bucket name")
-
-        # Get the path and remove leading slash
-        # First replace + with %20, then URL decode
-        path = parsed.path.lstrip("/")
-        path = path.replace("+", "%20")  # Replace + with %20 before decoding
-        key = unquote(path)
-
-        if not key:
-            raise ValueError("Invalid S3 URL: empty key")
-
-        logger.info(f"Successfully parsed S3 URL - Bucket: {bucket_name}, Key: {key}")
-        return bucket_name, key
-
-    except Exception as e:
-        logger.error(f"Error parsing S3 URL '{url}': {str(e)}")
-        raise ValueError(f"Invalid S3 URL format: {url}")
-
-
-def read_excel_from_url(url: str) -> Dict[str, Any]:
-    """
-    Read Excel file from S3 URL and return sheet information using openpyxl
-
-    Args:
-        url: The S3 URL of the Excel file
-
-    Returns:
-        Dict[str, Any]: Dictionary with sheet information
-    """
-    try:
-        # Parse the S3 URL
-        bucket_name, key = parse_s3_url(url)
-        logger.info(f"Successfully parsed S3 URL - Bucket: {bucket_name}, Key: {key}")
-
-        # Get S3 client
-        s3 = get_s3_client()
-
-        # Download file to memory
-        excel_obj = BytesIO()
-        s3.download_fileobj(Bucket=bucket_name, Key=key, Fileobj=excel_obj)
-        excel_obj.seek(0)
-        logger.info("Successfully downloaded Excel file from S3")
-
-        # Load workbook
-        workbook = load_workbook(excel_obj, read_only=True, data_only=True)
-        sheets_data = {}
-
-        for sheet_name in workbook.sheetnames:
-            logger.info(f"Processing sheet: {sheet_name}")
-            sheet = workbook[sheet_name]
-
-            # Get data for up to 50 rows
-            rows_data = []
-            for i, row in enumerate(sheet.rows):
-                if i > 50:  # Get up to 50 rows
-                    break
-                row_data = [cell.value for cell in row]
-                rows_data.append(row_data)
-
-            sheets_data[sheet_name] = rows_data
-            logger.info(f"Completed processing sheet {sheet_name}")
-
-        workbook.close()
-        logger.info(f"Successfully processed all sheets. Total sheets: {len(sheets_data)}")
-        return sheets_data
-
-    except Exception as e:
-        logger.error(f"Error reading Excel file from URL: {e}")
-        raise
-
-
 @rfp__sheet_router.post("/sheet_identification", response_model=UploadFileURL)
 async def sheet_list(
     data: ChatMessageReceived,
-    auth_data: Dict[str, Any] = Depends(auth.verify_session),
+    # auth_data: Dict[str, Any] = Depends(auth.verify_session),
     master_session: Session = Depends(get_master_session),
 ) -> Dict[str, str]:
     """Process RFP sheet and return sheet details"""
@@ -146,8 +47,8 @@ async def sheet_list(
     try:
 
         # Extract and validate user/org IDs from the decoded payload
-        user_id = UUID(auth_data.get("user_id"))
-        organisation_id = UUID(auth_data.get("organisation_id"))
+        # user_id = UUID(auth_data.get("user_id"))
+        # organisation_id = UUID(auth_data.get("organisation_id"))
 
         # Extract attachments from the request data and validate that a file was provided
         input_file: List[AttachmentModel] = data.attachments
@@ -207,30 +108,22 @@ async def sheet_list(
         logger.info(f"Assistant Message Stored {assistant_msg}")
 
         # Read the Excel file from S3 URL
-        file_url = input_file[0].url
-        sheets_data = read_excel_from_url(file_url)
+        cloud_config = CloudConfig(
+            fastapp.state.CLOUD_PROVIDER, 
+            fastapp.state.APPLICATION_REGION
+        )
+        file_url = str(input_file[0].url)
+        storage_uri = CloudURIConverter(cloud_config).convert_url(file_url)
+        sheet_object = get_cloud_reader(cloud_config).read_file_to_memory(storage_uri)
+        workbook = load_workbook(sheet_object, data_only=True)
+        sheet_wise_data = get_unmerged_cell_data(workbook)
 
-        # Initialize the workflow
-        workflow = SheetIdentificationWorkflow(websocket_room=str(session_id), system_message_id=system_message_id)
-
-        # Process sheets in parallel using asyncio
-        workflow = SheetIdentificationWorkflow()
-        sheets_details = []
-
-        for sheet_name, sheet_info in sheets_data.items():
-            slide_output = await workflow.run_workflow({"sheet_name": sheet_name, "rows": sheet_info})
-            sheets_details.append(slide_output)
-
-        sheet_list_details = [
-            {
-                "sheet_name": sheet.sheet_name,
-                "columns": [
-                    {"name": column.name, "is_question_column": False, "is_answer_column": False}
-                    for column in sheet.columns
-                ],
-            }
-            for sheet in sheets_details
-        ]
+        # Process sheets in parallel using the utility function
+        sheet_list_details = await process_sheets_in_parallel(
+            sheets_data=sheet_wise_data,
+            session_id=str(session_id),
+            system_message_id=system_message_id
+        )
 
         # Update assistant message with sheet details
         assistant_msg.rfp_details = {"sheets_details": sheet_list_details, "state": "SHEET_IDENTIFICATION"}
@@ -239,7 +132,8 @@ async def sheet_list(
         master_session.refresh(assistant_msg)
 
         return Response.success_response(
-            message="Sheet analysis completed successfully", data={"sheets_details": sheet_list_details}
+            message="Sheet analysis completed successfully",
+            data={"sheets_details": sheet_list_details}
         )
 
     except ValueError as e:

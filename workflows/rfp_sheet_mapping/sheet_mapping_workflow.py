@@ -37,7 +37,7 @@ class SheetIdentificationWorkflow(Workflow):
 
         # Initialize the column identification agent
         self.column_identification_agent = Agent(
-            model=AzureOpenAI(id="gpt-4o", api_version="2024-12-01-preview"),
+            model=AzureOpenAI(id="gpt-4o-mini", api_version="2024-12-01-preview"),
             description=COLUMN_IDENTIFICATION_PROMPT,
             response_model=SheetInfo,
             structured_outputs=True,
@@ -61,7 +61,7 @@ class SheetIdentificationWorkflow(Workflow):
             await SendStatus.send_chat_status(self, "started", "Column identification started.")
 
             # Prepare the input for the agent
-            analysis_input = {"sheetName": sheet_data["sheet_name"], "rows": sheet_data["rows"]}
+            analysis_input = {"sheetName": sheet_data["sheet_name"], "rows": sheet_data["data"]}
             logger.info(f"Prepared analysis input for sheet: {sheet_data['sheet_name']}")
 
             # Run the analysis
