@@ -29,7 +29,7 @@ rfp__sheet_router = APIRouter()
 @rfp__sheet_router.post("/sheet_identification", response_model=SheetAnalysisResponse)
 async def sheet_list(
     data: ChatMessageReceived,
-    # auth_data: Dict[str, Any] = Depends(auth.verify_session),
+    auth_data: Dict[str, Any] = Depends(auth.verify_session),
     master_session: Session = Depends(get_master_session),
 ) -> Dict[str, str]:
     """Process RFP sheet and return sheet details"""
@@ -37,8 +37,8 @@ async def sheet_list(
     try:
 
         # Extract and validate user/org IDs from the decoded payload
-        # user_id = UUID(auth_data.get("user_id"))
-        # organisation_id = UUID(auth_data.get("organisation_id"))
+        user_id = UUID(auth_data.get("user_id"))
+        organisation_id = UUID(auth_data.get("organisation_id"))
 
         # Extract attachments from the request data and validate that a file was provided
         input_file: List[AttachmentModel] = data.attachments
@@ -120,7 +120,10 @@ async def sheet_list(
 
         return Response.success_response(
             message="Sheet analysis completed successfully",
-            data={"sheets_details": sheet_list_details}
+            data={
+                "sheets_details": sheet_list_details,
+                "message_id": system_message_id
+            }
         )
 
     except ValueError as e:

@@ -1,6 +1,7 @@
 from pydantic import BaseModel, Field
 from typing import List, Dict, AsyncIterator, Iterator, Literal
 from textwrap import dedent
+import time
 
 from agno.workflow import Workflow, RunResponse, RunEvent
 from agno.agent import Agent
@@ -20,15 +21,6 @@ from workflows.utils.get_master_db_url import get_master_db_url
 load_dotenv()
 logger = get_logger()
 
-
-class QueryReformulation(BaseModel):
-    """The reformulated query model"""
-
-    reformulated_query: str = Field(description="Refomulated the query for next steps with better context of history")
-    query_context: str = Field(description="The context of the query")
-    is_greeting: bool = Field(description="Whether the reformulated query is a greeting")
-
-
 class QueryPlanning(BaseModel):
     """A list of objects where each object represents one step and contains required tool."""
 
@@ -43,7 +35,7 @@ class OutputAnswer(BaseModel):
     confidence_level: Literal["high", "medium", "low"] = Field(description="The confidence level of the answer")
 
 
-class GeneralChatAgent(Workflow):
+class RfpAgent(Workflow):
 
     def __init__(self, provider: str = "azure", model_name: str = "o4-mini", **kwargs):
         super().__init__(**kwargs)
@@ -51,9 +43,10 @@ class GeneralChatAgent(Workflow):
         self.knowledge_base = PDFKnowledgeBase(
             path="",
             vector_db=PgVector(
-                table_name="xeno_knowledge",
+                table_name="knowledge_base",
                 db_url=self.df_url,
                 embedder=AzureOpenAIEmbedder(),
+                schema='public'
             ),
             chunking_strategy=RecursiveChunking(),
         )
@@ -71,27 +64,8 @@ class GeneralChatAgent(Workflow):
                 Use the tools in the plan to get the information and generate a response.
             """
             ),
-            tools=[
-                DuckDuckGoTools(),
-                WikipediaTools(),
-            ],
             knowledge=self.knowledge_base,
             response_model=OutputAnswer,
-            structured_outputs=True,
-            debug_mode=False,
-            markdown=False,
-        )
-
-        self.reformulation_agent = Agent(
-            model=self.model,
-            description=dedent(
-                """
-                You are a query reformulation tool for downstream LLMs.
-                Use historical context to rewrite the user's question as a single, concise query.
-                Do NOT add explanations, examples, or background—output only the revised question itself.
-            """
-            ),
-            response_model=QueryReformulation,
             structured_outputs=True,
             debug_mode=False,
             markdown=False,
@@ -120,21 +94,34 @@ class GeneralChatAgent(Workflow):
             markdown=False,
         )
 
-    def run(self, message_list: List[Dict[str, str]]) -> RunResponse:
+    def run(self, input_message: str) -> RunResponse:
         try:
-            # 1) Reformulation
-            reformulation_response = self.reformulation_agent.run(messages=message_list)
-
+            start_time = time.time()
+            logger.info("Starting query planning phase")
+            
             # 2) Query Planning
             planning_response = self.planning_agent.run(
-                messages=[{"role": "user", "content": reformulation_response.content.reformulated_query}]
+                messages=[{"role": "user", "content":input_message}]
             )
+            planning_time = time.time() - start_time
+            logger.info(f"Query planning completed in {planning_time:.2f} seconds")
 
             # 3) Planning Execution
+            execution_start = time.time()
+            logger.info("Starting plan execution phase")
             execution_response = self.plan_execution_agent.run(
                 messages=[{"role": "user", "content": planning_response.content.plan}]
             )
-            return RunResponse(event=RunEvent.run_response, content=execution_response.content.model_dump())
+            execution_time = time.time() - execution_start
+            logger.info(f"Plan execution completed in {execution_time:.2f} seconds")
+            
+            total_time = time.time() - start_time
+            logger.info(f"Total processing time: {total_time:.2f} seconds")
+            
+            return RunResponse(
+                event=RunEvent.run_response, 
+                content=execution_response.content.model_dump()
+            )
 
         except Exception as exc:  # pylint: disable=broad-except
             logger.exception("GeneralChatAgent failure")

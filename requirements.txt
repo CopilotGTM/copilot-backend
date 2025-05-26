@@ -13,6 +13,7 @@ itsdangerous==2.2.0
 eventlet==0.39.1
 redis==5.2.1
 python-dotenv==0.21.0
+PyJWT==2.8.0
 
 # Database and ORM
 sqlmodel==0.0.24
