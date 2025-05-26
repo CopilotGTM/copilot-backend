@@ -69,8 +69,6 @@ class SheetIdentificationWorkflow(Workflow):
             analysis_response = await self.column_identification_agent.arun(
                 messages=[{"role": "user", "content": json.dumps(analysis_input)}], stream=True
             )
-            logger.info(f"Received response from column identification agent- {analysis_response.content}")
-
             # Send completion status
             logger.info("Column identification completed successfully")
             await SendStatus.send_chat_status(self, "completed", "Column identification completed.")

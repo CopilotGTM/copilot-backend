@@ -1,42 +1,32 @@
 from uuid import UUID
 from typing import Any, Dict, List, Tuple
-import os
-import requests
-import boto3
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlmodel import Session, select
-from urllib.parse import urlparse, unquote, ParseResult
-from io import BytesIO
-import openpyxl
+from fastapi import APIRouter, Depends
+from sqlmodel import Session
 from openpyxl import load_workbook
 import uuid
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
-from functools import partial
 from datetime import datetime
 
 
 from core.dto.authentication import Authentication
 from core.database import get_master_session
 from app_layer.utils.logger import get_logger
-from models.chat_models import UploadFileURL
 from core.app_state import fastapp
-from workflows.rfp_sheet_mapping.sheet_mapping_workflow import SheetIdentificationWorkflow
 from infrastructure.get_cloud_uri import CloudURIConverter, CloudConfig
 from infrastructure.cloud_file_reader import get_cloud_reader
 
 from models.chat_socket_models import ChatMessageReceived, AttachmentModel
-from models.chat_db_models import ChatSession, ChatMessage
+from models.chat_db_models import ChatMessage
 from models.http_response import Response
 
 from core.rfp_sheet_utils.unmerge_data import get_unmerged_cell_data
 from core.rfp_sheet_utils.sheet_processor import process_sheets_in_parallel
+from models.rfp_models.sheet_analysis_response import SheetAnalysisResponse
 
 auth = Authentication()
 logger = get_logger()
 rfp__sheet_router = APIRouter()
 
-@rfp__sheet_router.post("/sheet_identification", response_model=UploadFileURL)
+@rfp__sheet_router.post("/sheet_identification", response_model=SheetAnalysisResponse)
 async def sheet_list(
     data: ChatMessageReceived,
     # auth_data: Dict[str, Any] = Depends(auth.verify_session),
@@ -102,10 +92,6 @@ async def sheet_list(
             message_type="RFP_SHEET",
             timestamp=datetime.utcnow().isoformat(),
         )
-        master_session.add(assistant_msg)
-        master_session.commit()
-        master_session.refresh(assistant_msg)
-        logger.info(f"Assistant Message Stored {assistant_msg}")
 
         # Read the Excel file from S3 URL
         cloud_config = CloudConfig(
@@ -130,6 +116,7 @@ async def sheet_list(
         master_session.add(assistant_msg)
         master_session.commit()
         master_session.refresh(assistant_msg)
+        logger.info(f"Assistant Message Stored")
 
         return Response.success_response(
             message="Sheet analysis completed successfully",
