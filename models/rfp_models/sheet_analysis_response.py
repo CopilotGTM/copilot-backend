@@ -4,8 +4,8 @@ from uuid import UUID
 
 class Column(BaseModel):
     name: str
-    is_question_column: bool = False
-    is_answer_column: bool = False
+    is_question_column: Optional[bool] = Field(default=False)
+    is_answer_column: Optional[bool] = Field(default=False)
 
 class SheetDetail(BaseModel):
     sheet_name: str

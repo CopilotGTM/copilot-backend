@@ -27,7 +27,8 @@ def process_single_answer_sync(workflow: RfpAgent, row_obj: Dict) -> Dict:
             "row_number": row_obj["row_number"],
             "answer": answer.content["answer"],
             "confidence_score": answer.content["confidence_score"],
-            "confidence_level": answer.content["confidence_level"]
+            "confidence_level": answer.content["confidence_level"],
+            "answer_column": row_obj.get("answer_column", "")  # Add answer column to response
         }
     except Exception as e:
         end_time = time.time()

@@ -134,6 +134,8 @@ async def send_sheet_selections(
                     answer_column=answer_column
                 )
                 if row_object:
+                    # Add answer column to row object
+                    row_object["answer_column"] = answer_column
                     row_objects.append(row_object)
             
             # Process answers for all row objects in parallel
