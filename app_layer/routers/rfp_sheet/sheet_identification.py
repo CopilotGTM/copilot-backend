@@ -26,6 +26,7 @@ auth = Authentication()
 logger = get_logger()
 rfp__sheet_router = APIRouter()
 
+
 @rfp__sheet_router.post("/sheet_identification", response_model=SheetAnalysisResponse)
 async def sheet_list(
     data: ChatMessageReceived,
@@ -94,10 +95,7 @@ async def sheet_list(
         )
 
         # Read the Excel file from S3 URL
-        cloud_config = CloudConfig(
-            fastapp.state.CLOUD_PROVIDER, 
-            fastapp.state.APPLICATION_REGION
-        )
+        cloud_config = CloudConfig(fastapp.state.CLOUD_PROVIDER, fastapp.state.APPLICATION_REGION)
         file_url = str(input_file[0].url)
         storage_uri = CloudURIConverter(cloud_config).convert_url(file_url)
         sheet_object = get_cloud_reader(cloud_config).read_file_to_memory(storage_uri)
@@ -106,9 +104,7 @@ async def sheet_list(
 
         # Process sheets in parallel using the utility function
         sheet_list_details = await process_sheets_in_parallel(
-            sheets_data=sheet_wise_data,
-            session_id=str(session_id),
-            system_message_id=system_message_id
+            sheets_data=sheet_wise_data, session_id=str(session_id), system_message_id=system_message_id
         )
 
         # Update assistant message with sheet details
@@ -120,10 +116,7 @@ async def sheet_list(
 
         return Response.success_response(
             message="Sheet analysis completed successfully",
-            data={
-                "sheets_details": sheet_list_details,
-                "message_id": system_message_id
-            }
+            data={"sheets_details": sheet_list_details, "message_id": system_message_id},
         )
 
     except ValueError as e:

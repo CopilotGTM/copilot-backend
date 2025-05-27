@@ -84,45 +84,69 @@ async def send_sheet_selections(
         full_response: List = []
 
         # Processing to Generate Response
-        cloud_config = CloudConfig(
-            fastapp.state.CLOUD_PROVIDER, 
-            fastapp.state.APPLICATION_REGION
-        )
+        cloud_config = CloudConfig(fastapp.state.CLOUD_PROVIDER, fastapp.state.APPLICATION_REGION)
         input_file: List[AttachmentModel] = existing_rfp_details.attachments
         logger.info(f"Attachments {input_file}")
         file_url = str(input_file[0].get("url"))
         storage_uri = CloudURIConverter(cloud_config).convert_url(file_url)
         sheet_object = get_cloud_reader(cloud_config).read_file_to_memory(storage_uri)
-        workbook = load_workbook(sheet_object, data_only=True)        
-        
-        sheet_selected = [i for i in sheet_details if i.get("is_sheet_selected")]
+        workbook = load_workbook(sheet_object, data_only=True)
+
+        existing_sheet_details = existing_rfp_details.rfp_details.get("sheets_details", [])
+
+        # Update is_sheet_selected based on new selections
+        for existing_sheet in existing_sheet_details:
+            # Find matching sheet in new selections
+            matching_sheet = next(
+                (sheet for sheet in sheet_details if sheet.get("sheet_name") == existing_sheet.get("sheet_name")), None
+            )
+            if matching_sheet:
+                existing_sheet["is_sheet_selected"] = True
+                # Update column flags based on question and answer columns
+                for column in existing_sheet.get("columns", []):
+                    column["is_question_column"] = column["name"] == matching_sheet.get("question_column")
+                    column["is_answer_column"] = column["name"] == matching_sheet.get("answer_column")
+            else:
+                existing_sheet["is_sheet_selected"] = False
+                # Reset column flags if sheet is not selected
+                for column in existing_sheet.get("columns", []):
+                    column["is_question_column"] = False
+                    column["is_answer_column"] = False
+
+        logger.info(f"{existing_sheet_details}")
+
+        sheet_selected = [i for i in existing_sheet_details if i.get("is_sheet_selected")]
         for selected in sheet_selected:
             # Get column configurations
             columns = selected.get("columns", [])
             column_row_number = selected.get("column_row_number", 1)
-            
+
             # Extract question and answer columns
             question_columns = [col["name"] for col in columns if col.get("is_question_column", False)]
             answer_columns = [col["name"] for col in columns if col.get("is_answer_column", False)]
-            
+
             # Validate that only one column is selected for each type
             if len(question_columns) > 1:
-                logger.error(f"Multiple question columns selected in sheet {selected.get('sheet_name')}. Only one question column is allowed.")
+                logger.error(
+                    f"Multiple question columns selected in sheet {selected.get('sheet_name')}. Only one question column is allowed."
+                )
                 continue
-                
+
             if len(answer_columns) > 1:
-                logger.error(f"Multiple answer columns selected in sheet {selected.get('sheet_name')}. Only one answer column is allowed.")
+                logger.error(
+                    f"Multiple answer columns selected in sheet {selected.get('sheet_name')}. Only one answer column is allowed."
+                )
                 continue
-            
+
             # Get the single selected column for each type (if any)
             question_column = question_columns[0] if question_columns else None
             answer_column = answer_columns[0] if answer_columns else None
-                   
+
             data = get_unmerged_sheet_data(workbook, selected.get("sheet_name", ""))
             if not data:
                 logger.warning(f"No data found for sheet: {selected.get('sheet_name')}")
                 continue
-                
+
             # Process each row in the sheet data
             row_objects = []
             for row_index, row_data in enumerate(data.get("data", []), start=2):
@@ -131,22 +155,18 @@ async def send_sheet_selections(
                     row_data=row_data,
                     row_index=row_index,
                     question_column=question_column,
-                    answer_column=answer_column
+                    answer_column=answer_column,
                 )
                 if row_object:
                     # Add answer column to row object
                     row_object["answer_column"] = answer_column
                     row_objects.append(row_object)
-            
+
             # Process answers for all row objects in parallel
             if row_objects:
                 processed_answers = await process_answers_in_parallel(
-                    row_objects=row_objects,
-                    session_id=session_id,
-                    system_message_id=system_message_id
+                    row_objects=row_objects, session_id=session_id, system_message_id=system_message_id
                 )
-                    
-
 
     finally:
         # response_data.update({"isComplete": True, "response": ""})

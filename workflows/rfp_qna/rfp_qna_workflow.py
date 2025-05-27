@@ -21,6 +21,7 @@ from workflows.utils.get_master_db_url import get_master_db_url
 load_dotenv()
 logger = get_logger()
 
+
 class QueryPlanning(BaseModel):
     """A list of objects where each object represents one step and contains required tool."""
 
@@ -43,10 +44,7 @@ class RfpAgent(Workflow):
         self.knowledge_base = PDFKnowledgeBase(
             path="",
             vector_db=PgVector(
-                table_name="knowledge_base",
-                db_url=self.df_url,
-                embedder=AzureOpenAIEmbedder(),
-                schema='public'
+                table_name="knowledge_base", db_url=self.df_url, embedder=AzureOpenAIEmbedder(), schema="public"
             ),
             chunking_strategy=RecursiveChunking(),
         )
@@ -98,11 +96,9 @@ class RfpAgent(Workflow):
         try:
             start_time = time.time()
             logger.info("Starting query planning phase")
-            
+
             # 2) Query Planning
-            planning_response = self.planning_agent.run(
-                messages=[{"role": "user", "content":input_message}]
-            )
+            planning_response = self.planning_agent.run(messages=[{"role": "user", "content": input_message}])
             planning_time = time.time() - start_time
             logger.info(f"Query planning completed in {planning_time:.2f} seconds")
 
@@ -114,14 +110,11 @@ class RfpAgent(Workflow):
             )
             execution_time = time.time() - execution_start
             logger.info(f"Plan execution completed in {execution_time:.2f} seconds")
-            
+
             total_time = time.time() - start_time
             logger.info(f"Total processing time: {total_time:.2f} seconds")
-            
-            return RunResponse(
-                event=RunEvent.run_response, 
-                content=execution_response.content.model_dump()
-            )
+
+            return RunResponse(event=RunEvent.run_response, content=execution_response.content.model_dump())
 
         except Exception as exc:  # pylint: disable=broad-except
             logger.exception("GeneralChatAgent failure")
