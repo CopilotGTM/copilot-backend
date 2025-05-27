@@ -25,11 +25,14 @@ from app_layer.routers.upload_handler import upload_router
 from app_layer.routers.transcript_format import transcript_router
 from app_layer.routers.get_technical_deck import technical_deck
 from app_layer.routers.technical_deck.select_template import select_template
+from app_layer.routers.rfp_sheet.sheet_identification import rfp__sheet_router
+
 import app_layer.websockets.chat_message_handler
 import app_layer.websockets.connect_handler
 import app_layer.websockets.technical_deck.transcript_summary_handler
 import app_layer.websockets.technical_deck.slide_content_generation
 import app_layer.websockets.technical_deck.technical_deck_generation
+import app_layer.websockets.rfp_sheet.rfp_answer_generation
 
 logger = get_logger()
 
@@ -80,6 +83,7 @@ def create_fastapi_app():
     fastapp.include_router(transcript_router, prefix="/chats/transcript", tags=["transcript"])
     fastapp.include_router(technical_deck, prefix="/chats/technical_deck", tags=["technical_deck"])
     fastapp.include_router(select_template, prefix="/chats/technical_deck", tags=["technical_deck", "select_template"])
+    fastapp.include_router(rfp__sheet_router, prefix="/chats/rfp_sheet", tags=["rfp sheet", "sheet identification"])
 
     # Wrap in Socket.IO
     return ASGIApp(sio, other_asgi_app=fastapp)

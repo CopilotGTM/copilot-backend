@@ -245,6 +245,9 @@ def get_chat_by_id(
             if message.message_type == "TECHNICAL_DECK" and message.role == "assistant":
                 message_dict["state"] = message.technical_deck_details.get("state", "")
 
+            if message.message_type == "RFP_SHEET" and message.role == "assistant":
+                message_dict["state"] = message.rfp_details.get("state", "")
+
             messages_list.append(message_dict)
 
         # Reverse the list to show latest messages at the bottom
