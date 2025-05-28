@@ -22,6 +22,7 @@ from workflows.general_chat.models import QueryReformulation
 from workflows.general_chat.models import QueryPlanning
 from workflows.utils.get_master_db_url import get_master_db_url
 from workflows.utils.source_collection import KBHits
+from workflows.utils.format_user_messages import format_user_messages
 import json
 
 load_dotenv()
