@@ -48,18 +48,6 @@ async def process_answers_in_parallel(row_objects: List[Dict], session_id: str, 
         total_start_time = time.time()
         logger.info(f"Starting parallel processing of {len(row_objects)} rows")
 
-        # Initialize response data
-        response_data = {
-            "chat_id": session_id,
-            "message_id": system_message_id,
-            "isComplete": False,
-            "isLineComplete": False,
-            "isError": False,
-            "response": "",
-            "isFirstMessage": False,
-        }
-        full_response: List = []
-
         # Initialize the workflow
         workflow = RfpAgent(provider="azure", model_name="o4-mini")
 
@@ -74,15 +62,21 @@ async def process_answers_in_parallel(row_objects: List[Dict], session_id: str, 
             tasks = []
 
             for row_obj in row_objects:
-
                 async def process_with_semaphore(row):
                     async with semaphore:
                         result = await loop.run_in_executor(executor, process_single_answer_sync, workflow, row)
                         if result:
                             # Send each answer to websocket as it's processed
-                            response_data.update({"response": result, "isLineComplete": True})
+                            response_data = {
+                                "chat_id": session_id,
+                                "message_id": system_message_id,
+                                "isComplete": False,
+                                "isLineComplete": True,
+                                "isError": False,
+                                "response": result,
+                                "isFirstMessage": False,
+                            }
                             await sio.emit(RESPONSE_EVENT, response_data, namespace=WEBSOCKET_NAMESPACE)
-                            full_response.append(result)
                         return result
 
                 tasks.append(process_with_semaphore(row_obj))
@@ -105,15 +99,31 @@ async def process_answers_in_parallel(row_objects: List[Dict], session_id: str, 
         )
         logger.info(f"Successfully processed {len(processed_answers)} out of {len(row_objects)} rows")
 
-        # Send final completion message
-        response_data.update({"isComplete": True, "isLineComplete": True, "response": ""})
-        await sio.emit(RESPONSE_EVENT, response_data, namespace=WEBSOCKET_NAMESPACE)
+        # # Send final completion message
+        # response_data = {
+        #     "chat_id": session_id,
+        #     "message_id": system_message_id,
+        #     "isComplete": True,
+        #     "isLineComplete": True,
+        #     "isError": False,
+        #     "response": "",
+        #     "isFirstMessage": False,
+        # }
+        # await sio.emit(RESPONSE_EVENT, response_data, namespace=WEBSOCKET_NAMESPACE)
 
         return processed_answers
 
     except Exception as e:
         logger.error(f"Error in parallel answer processing: {str(e)}")
         # Send error message to websocket
-        response_data.update({"isError": True, "isComplete": True, "isLineComplete": True, "response": str(e)})
+        response_data = {
+            "chat_id": session_id,
+            "message_id": system_message_id,
+            "isComplete": True,
+            "isLineComplete": True,
+            "isError": True,
+            "response": str(e),
+            "isFirstMessage": False,
+        }
         await sio.emit(RESPONSE_EVENT, response_data, namespace=WEBSOCKET_NAMESPACE)
         raise
