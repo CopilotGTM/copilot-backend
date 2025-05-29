@@ -62,7 +62,7 @@ class GeneralChatAgent(Workflow):
         )
 
         self.reformulation_agent = Agent(
-            model=AzureOpenAI(id="gpt-4.1-mini", api_version="2024-12-01-preview"),
+            model=AzureOpenAI(id="gpt-4o", api_version="2024-12-01-preview"),
             description=REFORMULATION_PROMPT,
             response_model=QueryReformulation,
             structured_outputs=True,
@@ -84,7 +84,6 @@ class GeneralChatAgent(Workflow):
             description=EXECUTION_PROMPT,
             tools=[DuckDuckGoTools()],
             knowledge=self.knowledge_base,
-            references_format="json",
             add_references=True,
             debug_mode=False,
             markdown=True,
@@ -96,20 +95,13 @@ class GeneralChatAgent(Workflow):
         await SendStatus.send_chat_status(self, "started", "Workflow execution started.")
         input_messages = format_user_messages(message_list)
 
-        start = time.time()
-
         # Reformulation
         reformulation_response: RunResponse = self.reformulation_agent.run(messages=message_list)
-        logger.info(f"Reformulation Response - Time - {time.time() - start}")
-        logger.info(f"Response - {reformulation_response.content}")
         if reformulation_response.content.is_greeting:
             yield RunResponse(
                 event=RunEvent.workflow_completed, content=reformulation_response.content.greeting_response
             )
             return
-
-        logger.info(f"Reformulation Response - Time - {time.time() - start}")
-        logger.info(f"Response - {reformulation_response.content}")
 
         # Query Planning
         # planning_response = self.planning_agent.run(
@@ -123,7 +115,7 @@ class GeneralChatAgent(Workflow):
             messages=input_messages, stream=True
         )
         kb_hits = KBHits()
-        async for chunk in kb_hits.stream(execution_response):
+        async for chunk in execution_response:
             yield RunResponse(event=RunEvent.run_response, content=chunk.content)
 
         yield RunResponse(event=RunEvent.workflow_completed, content="")
