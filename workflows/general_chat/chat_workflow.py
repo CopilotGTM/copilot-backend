@@ -2,6 +2,7 @@ import asyncio
 from typing import List, Dict, AsyncIterator
 from uuid import UUID
 from dotenv import load_dotenv
+import time
 
 from agno.workflow import Workflow, RunResponse, RunEvent
 from agno.agent import Agent
@@ -13,6 +14,8 @@ from agno.vectordb.pgvector import PgVector
 from agno.document.chunking.recursive import RecursiveChunking
 from agno.embedder.azure_openai import AzureOpenAIEmbedder
 
+# from agno.tools.googlesearch import GoogleSearchTools
+
 from app_layer.utils.logger import get_logger
 from workflows.utils.send_status import SendStatus
 from workflows.general_chat.prompts.reformulation import REFORMULATION_PROMPT
@@ -22,6 +25,7 @@ from workflows.general_chat.models import QueryReformulation
 from workflows.general_chat.models import QueryPlanning
 from workflows.utils.get_master_db_url import get_master_db_url
 from workflows.utils.source_collection import KBHits
+from workflows.utils.format_user_messages import format_user_messages
 import json
 
 load_dotenv()
@@ -50,36 +54,34 @@ class GeneralChatAgent(Workflow):
         self.knowledge_base = PDFKnowledgeBase(
             path="",
             vector_db=PgVector(
-                table_name="xeno_knowledge",
-                db_url=self.df_url,
-                embedder=AzureOpenAIEmbedder(),
+                table_name="knowledge_base", db_url=self.df_url, embedder=AzureOpenAIEmbedder(), schema="public"
             ),
             chunking_strategy=RecursiveChunking(),
         )
 
         self.reformulation_agent = Agent(
-            model=AzureOpenAI(id="o4-mini", api_version="2024-12-01-preview"),
+            model=AzureOpenAI(id="gpt-4o", api_version="2024-12-01-preview"),
             description=REFORMULATION_PROMPT,
             response_model=QueryReformulation,
             structured_outputs=True,
             markdown=True,
+            debug_mode=False,
         )
 
-        self.planning_agent = Agent(
-            model=AzureOpenAI(id="o4-mini", api_version="2024-12-01-preview"),
-            description=PLANNING_PROMPT,
-            response_model=QueryPlanning,
-            structured_outputs=True,
-            debug_mode=False,
-            markdown=True,
-        )
+        # self.planning_agent = Agent(
+        #     model=AzureOpenAI(id="gpt-4o", api_version="2024-12-01-preview"),
+        #     description=PLANNING_PROMPT,
+        #     response_model=QueryPlanning,
+        #     structured_outputs=True,
+        #     debug_mode=False,
+        #     markdown=True,
+        # )
 
         self.plan_execution_agent = Agent(
             model=AzureOpenAI(id="o4-mini", api_version="2024-12-01-preview"),
             description=EXECUTION_PROMPT,
-            tools=[DuckDuckGoTools(), WikipediaTools()],
+            tools=[DuckDuckGoTools()],
             knowledge=self.knowledge_base,
-            references_format="json",
             add_references=True,
             debug_mode=False,
             markdown=True,
@@ -89,6 +91,7 @@ class GeneralChatAgent(Workflow):
     async def run_workflow(self, message_list: List[Dict[str, str]]) -> AsyncIterator[RunResponse]:
 
         await SendStatus.send_chat_status(self, "started", "Workflow execution started.")
+        input_messages = format_user_messages(message_list)
 
         # Reformulation
         reformulation_response: RunResponse = self.reformulation_agent.run(messages=message_list)
@@ -99,17 +102,16 @@ class GeneralChatAgent(Workflow):
             return
 
         # Query Planning
-        planning_response = self.planning_agent.run(
-            messages=[{"role": "user", "content": reformulation_response.content.reformulated_query}]
-        )
-        logger.info(f"Query Planning Response: {planning_response.content}")
+        # planning_response = self.planning_agent.run(
+        #     messages=input_messages
+        # )
+        # logger.info(f"Planning Time - {time.time() - start}")
+        # logger.info(f"Query Planning Response: {planning_response.content}")
 
         # Planning Execution
-        execution_response = await self.plan_execution_agent.arun(
-            messages=[{"role": "user", "content": planning_response.content.plan}], stream=True
-        )
+        execution_response = await self.plan_execution_agent.arun(messages=input_messages, stream=True)
         kb_hits = KBHits()
-        async for chunk in kb_hits.stream(execution_response):
+        async for chunk in execution_response:
             yield RunResponse(event=RunEvent.run_response, content=chunk.content)
 
         yield RunResponse(event=RunEvent.workflow_completed, content="")
