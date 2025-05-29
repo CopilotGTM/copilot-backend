@@ -13,6 +13,7 @@ from agno.knowledge.pdf import PDFKnowledgeBase
 from agno.vectordb.pgvector import PgVector
 from agno.document.chunking.recursive import RecursiveChunking
 from agno.embedder.azure_openai import AzureOpenAIEmbedder
+
 # from agno.tools.googlesearch import GoogleSearchTools
 
 from app_layer.utils.logger import get_logger
@@ -53,10 +54,7 @@ class GeneralChatAgent(Workflow):
         self.knowledge_base = PDFKnowledgeBase(
             path="",
             vector_db=PgVector(
-                table_name="knowledge_base",
-                db_url=self.df_url,
-                embedder=AzureOpenAIEmbedder(),
-                schema='public'
+                table_name="knowledge_base", db_url=self.df_url, embedder=AzureOpenAIEmbedder(), schema="public"
             ),
             chunking_strategy=RecursiveChunking(),
         )
@@ -111,9 +109,7 @@ class GeneralChatAgent(Workflow):
         # logger.info(f"Query Planning Response: {planning_response.content}")
 
         # Planning Execution
-        execution_response = await self.plan_execution_agent.arun(
-            messages=input_messages, stream=True
-        )
+        execution_response = await self.plan_execution_agent.arun(messages=input_messages, stream=True)
         kb_hits = KBHits()
         async for chunk in execution_response:
             yield RunResponse(event=RunEvent.run_response, content=chunk.content)

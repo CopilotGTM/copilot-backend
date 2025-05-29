@@ -94,7 +94,9 @@ async def send_chat_messages(
         async for response_chunk in agent_connector.run_workflow(message_list=chat_messages):
             if response_chunk.content is not None:
                 full_response += response_chunk.content
-                response_data.update({"response": response_chunk.content, "isLineComplete": "\n" in response_chunk.content})
+                response_data.update(
+                    {"response": response_chunk.content, "isLineComplete": "\n" in response_chunk.content}
+                )
                 await sio.emit(RESPONSE_EVENT, response_data, room=sid, namespace=WEBSOCKET_NAMESPACE)
 
         assistant_msg = ChatMessage(
