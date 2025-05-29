@@ -9,7 +9,7 @@ from app_layer.utils.socket_app import sio
 logger = get_logger()
 
 # Maximum number of concurrent processes
-MAX_CONCURRENT_PROCESSES = 10
+MAX_CONCURRENT_PROCESSES = 20
 WEBSOCKET_NAMESPACE = "/websocket/v1"
 RESPONSE_EVENT = "recieve_sheet_answers"
 
@@ -20,7 +20,7 @@ def process_single_answer_sync(workflow: RfpAgent, row_obj: Dict) -> Dict:
     logger.info(f"Starting processing for row {row_obj['row_number']} in sheet {row_obj['sheetname']}")
 
     try:
-        answer = workflow.run(input_message=row_obj["input_message"])
+        answer = workflow.run_workflow(input_message=row_obj["input_message"])
         end_time = time.time()
         logger.info(f"Completed processing row {row_obj['row_number']} in {end_time - start_time:.2f} seconds")
         return {
@@ -62,6 +62,7 @@ async def process_answers_in_parallel(row_objects: List[Dict], session_id: str, 
             tasks = []
 
             for row_obj in row_objects:
+
                 async def process_with_semaphore(row):
                     async with semaphore:
                         result = await loop.run_in_executor(executor, process_single_answer_sync, workflow, row)
@@ -98,18 +99,6 @@ async def process_answers_in_parallel(row_objects: List[Dict], session_id: str, 
             f"Completed processing {len(processed_answers)} rows in {total_end_time - total_start_time:.2f} seconds"
         )
         logger.info(f"Successfully processed {len(processed_answers)} out of {len(row_objects)} rows")
-
-        # # Send final completion message
-        # response_data = {
-        #     "chat_id": session_id,
-        #     "message_id": system_message_id,
-        #     "isComplete": True,
-        #     "isLineComplete": True,
-        #     "isError": False,
-        #     "response": "",
-        #     "isFirstMessage": False,
-        # }
-        # await sio.emit(RESPONSE_EVENT, response_data, namespace=WEBSOCKET_NAMESPACE)
 
         return processed_answers
 
