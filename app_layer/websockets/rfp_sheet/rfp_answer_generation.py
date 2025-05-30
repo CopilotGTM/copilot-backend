@@ -72,21 +72,9 @@ async def send_sheet_selections(
             )
         ).first()
 
-        response_data = {
-            "chat_id": session_id,
-            "message_id": system_message_id,
-            "isComplete": False,
-            "isLineComplete": False,
-            "isError": False,
-            "response": "",
-            "isFirstMessage": False,
-        }
-        full_response: List = []
-
         # Processing to Generate Response
         cloud_config = CloudConfig(fastapp.state.CLOUD_PROVIDER, fastapp.state.APPLICATION_REGION)
         input_file: List[AttachmentModel] = existing_rfp_details.attachments
-        logger.info(f"Attachments {input_file}")
         file_url = str(input_file[0].get("url"))
         storage_uri = CloudURIConverter(cloud_config).convert_url(file_url)
         sheet_object = get_cloud_reader(cloud_config).read_file_to_memory(storage_uri)
@@ -106,14 +94,6 @@ async def send_sheet_selections(
                 for column in existing_sheet.get("columns", []):
                     column["is_question_column"] = column["name"] == matching_sheet.get("question_column")
                     column["is_answer_column"] = column["name"] == matching_sheet.get("answer_column")
-            else:
-                existing_sheet["is_sheet_selected"] = False
-                # Reset column flags if sheet is not selected
-                for column in existing_sheet.get("columns", []):
-                    column["is_question_column"] = False
-                    column["is_answer_column"] = False
-
-        logger.info(f"{existing_sheet_details}")
 
         sheet_selected = [i for i in existing_sheet_details if i.get("is_sheet_selected")]
         for selected in sheet_selected:
@@ -164,13 +144,24 @@ async def send_sheet_selections(
 
             # Process answers for all row objects in parallel
             if row_objects:
+                logger.info(f"length of row objects{len(row_objects)}")
                 processed_answers = await process_answers_in_parallel(
                     row_objects=row_objects, session_id=session_id, system_message_id=system_message_id
                 )
 
     finally:
-        # response_data.update({"isComplete": True, "response": ""})
-        # await sio.emit(RESPONSE_EVENT, response_data, room=sid, namespace=WEBSOCKET_NAMESPACE)
+        # Send final completion message
+        response_data = {
+            "chat_id": session_id,
+            "message_id": system_message_id,
+            "isComplete": True,
+            "isLineComplete": True,
+            "isError": False,
+            "response": "",
+            "isFirstMessage": False,
+        }
+        await sio.emit(RESPONSE_EVENT, response_data, namespace=WEBSOCKET_NAMESPACE)
+
         # # clean up DB session generator if we opened one
         try:
             if master_session is not None:

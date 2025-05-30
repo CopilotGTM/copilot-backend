@@ -20,7 +20,7 @@ def get_unmerged_sheet_data(workbook, target_sheet_name):
     headers = [cell.value for cell in sheet[1]]
 
     # Get data from remaining rows
-    for row in sheet.iter_rows(min_row=2):
+    for row in sheet.iter_rows(min_row=1):
         row_data = {}
         for header, cell in zip(headers, row):
             # Check if the cell is part of a merged range

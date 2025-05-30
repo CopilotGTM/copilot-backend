@@ -72,7 +72,7 @@ class SheetIdentificationWorkflow(Workflow):
             # Send completion status
             logger.info("Column identification completed successfully")
             await SendStatus.send_chat_status(self, "completed", "Column identification completed.")
-
+            analysis_response.content.sheet_name = sheet_data["sheet_name"]
             return analysis_response.content
 
         except Exception as e:
@@ -88,20 +88,32 @@ class SheetIdentificationWorkflow(Workflow):
 #     # Example sheet data
 #     sample_sheet = {
 #         "sheet_name": "Sheet1",
-#         "headers": ["Sheet Title", "Question", "Answer", "Category"],
-#         "sample_values": {
-#             "Sheet Title": ["Survey Responses", "What is your name?", "How old are you?"],
-#             "Question": ["", "What is your name?", "How old are you?"],
-#             "Answer": ["", "John Doe", "25"],
-#             "Category": ["", "Personal", "Personal"]
-#         },
-#         "row_count": 100
+#         "data": [
+#             {
+#                 "Sheet Title": "Survey Responses",
+#                 "Question": "",
+#                 "Answer": "",
+#                 "Category": ""
+#             },
+#             {
+#                 "Sheet Title": "What is your name?",
+#                 "Question": "What is your name?",
+#                 "Answer": "John Doe",
+#                 "Category": "Personal"
+#             },
+#             {
+#                 "Sheet Title": "How old are you?",
+#                 "Question": "How old are you?",
+#                 "Answer": "25",
+#                 "Category": "Personal"
+#             }
+#         ]
 #     }
 
 #     # Create and run the workflow
-#     workflow = SheetIdentificationWorkflow()
-#     async for response in workflow.run_workflow(sample_sheet):
-#         logger.info(response.content)
+#     workflow = SheetIdentificationWorkflow(websocket_room="test_room", system_message_id="test_message_id")
+#     response = await workflow.run_workflow(sample_sheet)
+#     logger.info(response)
 
 # if __name__ == "__main__":
 #     asyncio.run(main())

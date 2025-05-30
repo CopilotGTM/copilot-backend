@@ -93,6 +93,7 @@ async def sheet_list(
             message_type="RFP_SHEET",
             timestamp=datetime.utcnow().isoformat(),
         )
+        # cloud_config = CloudConfig("aws", "us-east-1")
 
         # Read the Excel file from S3 URL
         cloud_config = CloudConfig(fastapp.state.CLOUD_PROVIDER, fastapp.state.APPLICATION_REGION)

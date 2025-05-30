@@ -50,5 +50,4 @@ def create_row_object(
     # Create the object
     row_object = {"sheetname": sheet_name, "row_number": row_index, "input_message": input_message}
 
-    logger.info(f"Created row object: {row_object}")
     return row_object

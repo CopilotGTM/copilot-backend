@@ -25,15 +25,6 @@ class AWSProvider:
         self.config = config
         self.s3_client = boto3.client("s3", region_name=config.region)
 
-    def validate_bucket_access(self, bucket_name: str) -> bool:
-        """Validate if S3 bucket exists and is accessible."""
-        try:
-            self.s3_client.head_bucket(Bucket=bucket_name)
-            return True
-        except ClientError as e:
-            logger.error(f"Failed to access bucket {bucket_name}: {str(e)}")
-            return False
-
     def convert_to_storage_url(self, https_url: str) -> str:
         """Convert HTTPS URL to S3 URL."""
         try:
@@ -50,10 +41,6 @@ class AWSProvider:
 
             if not bucket_name:
                 raise ValueError("Invalid S3 URL: could not extract bucket name")
-
-            # Validate bucket access
-            if not self.validate_bucket_access(bucket_name):
-                raise ValueError(f"Bucket {bucket_name} does not exist or is not accessible")
 
             # Get the path and handle URL encoding
             path = parsed.path.lstrip("/")
@@ -79,11 +66,6 @@ class GCPProvider:
         self.config = config
         # TODO: Initialize GCP client when needed
         pass
-
-    def validate_bucket_access(self, bucket_name: str) -> bool:
-        """Validate if GCS bucket exists and is accessible."""
-        # TODO: Implement GCP bucket validation
-        return True
 
     def convert_to_storage_url(self, https_url: str) -> str:
         """Convert HTTPS URL to GCS URL."""
