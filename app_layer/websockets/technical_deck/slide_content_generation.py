@@ -94,13 +94,11 @@ async def generate_slide_content(
             await sio.emit(RESPONSE_EVENT, response_data, room=sid, namespace=WEBSOCKET_NAMESPACE)
 
         # Saving slide content to DB
-        details["state"] == "SLIDE_CONTENT"
+        details["state"] = "SLIDE_CONTENT"
         existing_assistant.technical_deck_details = {**details, "slide_content_summary": full_response}
-        logger.info(f"Transcript Data Stored Prepared")
         master_session.add(existing_assistant)
         master_session.commit()
         master_session.refresh(existing_assistant)
-        logger.info("Slide-content saved back to original assistant message")
         logger.info(f"Slide content saved to DB")
     except Exception as e:
         logger.exception("Error in send_transript_messages")
