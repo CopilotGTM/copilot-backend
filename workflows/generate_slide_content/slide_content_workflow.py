@@ -93,63 +93,13 @@ class SlideContentGenerator(Workflow):
                 content=output_format,
             )
 
-        # previous_slides: List[Dict] = []
+# async def main():
 
-        # logger.info("Generating Slide Content")
-        # for slide in slide_outline.content.slide_outline:
-        #     logger.info(f"Slide Number: {slide.slide_number}, Slide Title: {slide.slide_title}")
-
-        #     # Add previous slides to the prompt
-        #     if previous_slides:
-        #         previous_slides_str = "\n".join(
-        #             [
-        #                 f"Slide Number: {s['slide_number']}, Slide Title: {s['slide_title']}, Slide Content: {s['slide_content']}"
-        #                 for s in previous_slides
-        #             ]
-        #         )
-        #     else:
-        #         previous_slides_str = ""
-        #     slide_content = await self.generate_slide_content.arun(
-        #         f"""
-        #             Slide Number: {slide.slide_number},
-        #             -----------------------------------------------------
-        #             Proposed Slide Title: {slide.slide_title},
-        #             -----------------------------------------------------
-        #             Description: {slide.description},
-        #             -----------------------------------------------------
-        #             Meeting Summary: {input_summary}
-        #             -----------------------------------------------------
-        #             Solutioning Narration Suggested by Senior Sales Engineer: 
-        #             {story_narration_outline}
-        #             -----------------------------------------------------
-        #             Data of Earlier Slides Created:
-        #             {previous_slides_str}
-        #         """
-        #     )
-
-        #     output_format = {
-        #         "slide_number": slide.slide_number,
-        #         "slide_title": slide.slide_title,
-        #         "slide_content": slide_content.content,
-        #     }
-
-        #     # Append to our history before yielding
-        #     previous_slides.append(output_format)
-
-        yield RunResponse(
-            event=RunEvent.run_response,
-            content="",
-        )
-        # logger.info(f"Slide Content Generated")
+#     transcript_summary_agent = SlideContentGenerator()
+#     logger.info("Workflow execution started.")
+#     async for response in transcript_summary_agent.run_workflow(input_summary):
+#         logger.info(response.content)  # Prints each chunk directly
 
 
-async def main():
-
-    transcript_summary_agent = SlideContentGenerator()
-    logger.info("Workflow execution started.")
-    async for response in transcript_summary_agent.run_workflow(input_summary):
-        logger.info(response.content)  # Prints each chunk directly
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+# if __name__ == "__main__":
+#     asyncio.run(main())

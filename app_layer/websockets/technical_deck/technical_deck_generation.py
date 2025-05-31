@@ -47,7 +47,7 @@ async def generate_deck(
         # Extract fields from your payload
         session_id = data.get("session_id")
         master_session = next(get_master_session())
-        system_message_id = data.get("message_id")
+        system_message_id = data.get("system_message_id")
         full_response = []
         response_data = {
             "chat_id": session_id,
@@ -100,17 +100,18 @@ async def generate_deck(
         # Setting up agent
         agent_connector = DeckGeneration(provider="azure", model_name="o3-mini")
 
-        async for response_chunk in agent_connector.run_workflow():
+        async for response_chunk in agent_connector.run_workflow(deck_message):
             full_response.append(response_chunk.content)
             response_data.update({"response": response_chunk.content})
             await sio.emit(RESPONSE_EVENT, response_data, room=sid, namespace=WEBSOCKET_NAMESPACE)
 
         # Update the deck_message with generated technical deck details
         deck_message.technical_deck_details = {
-            **deck_message.technical_deck_details,  # Preserve existing details
-            "technical_deck": full_response,  # Add generated deck content
-            "state": "SLIDE_OUTPUT",  # Update state to indicate completion
+            **deck_message.technical_deck_details,
+            "technical_deck": full_response,
+            "state": "SLIDE_OUTPUT",
         }
+
         # Save changes to database
         master_session.add(deck_message)
         master_session.commit()
