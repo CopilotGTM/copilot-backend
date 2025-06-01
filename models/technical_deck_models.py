@@ -34,7 +34,7 @@ class GenerateTechnicalDeckRequest(BaseModel):
     """
 
     session_id: UUID = Field(..., description="The unique identifier of the session.")
-    message_id: UUID = Field(..., description="The unique identifier of the message.")
+    system_message_id: UUID = Field(..., description="The unique identifier of the message.")
 
     class Config:
         from_attributes = True
