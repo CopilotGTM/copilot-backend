@@ -12,6 +12,7 @@ from models.chat_db_models import ChatSession as ChatSessionDB
 
 from core.database import get_master_session
 from core.redis_client import get_socket_connection
+from models.websocket_response import WebSocketResponse
 
 from workflows.deck_generation.deck_generation_workflow import DeckGeneration
 
@@ -26,6 +27,9 @@ async def generate_deck(
     sid,
     data: GenerateTechnicalDeckRequest,
 ):
+    master_session = None
+    system_message_id = None
+    session_id = None
 
     try:
         logger.info(f"Transcript Summary WebSocket message received: sid={sid}, data={data}")
@@ -49,14 +53,6 @@ async def generate_deck(
         master_session = next(get_master_session())
         system_message_id = data.get("system_message_id")
         full_response = []
-        response_data = {
-            "chat_id": session_id,
-            "message_id": system_message_id,
-            "isComplete": False,
-            "isLineComplete": False,
-            "isError": False,
-            "response": "",
-        }
 
         # Fetch the chat session to verify
         statement = select(ChatSessionDB).where(
@@ -69,13 +65,14 @@ async def generate_deck(
 
         if not chat:
             logger.error(f"Chat session not found for user/org: {user_id}/{organisation_id}")
-            response_data.update(
-                {
-                    "errorResponse": "Chat session not found",
-                    "isError": True,
-                }
+            await WebSocketResponse.emit_error(
+                room=sid,
+                event=RESPONSE_EVENT,
+                chat_id=session_id,
+                message_id=system_message_id,
+                error_message="Chat session not found",
+                message_type="TECHNICAL_DECK"
             )
-            await sio.emit(RESPONSE_EVENT, response_data, room=sid, namespace=WEBSOCKET_NAMESPACE)
             return
 
         # Read the Message from chat message using session_id and message_id
@@ -88,22 +85,30 @@ async def generate_deck(
 
         if not deck_message:
             logger.error(f"No assistant ChatMessage found for session_id={session_id}")
-            response_data.update(
-                {
-                    "errorResponse": "No assistant ChatMessage found",
-                    "isError": True,
-                }
+            await WebSocketResponse.emit_error(
+                room=sid,
+                event=RESPONSE_EVENT,
+                chat_id=session_id,
+                message_id=system_message_id,
+                error_message="No assistant ChatMessage found",
+                message_type="TECHNICAL_DECK"
             )
-            await sio.emit(RESPONSE_EVENT, response_data, room=sid, namespace=WEBSOCKET_NAMESPACE)
             return
 
         # Setting up agent
         agent_connector = DeckGeneration(provider="azure", model_name="o3-mini")
 
         async for response_chunk in agent_connector.run_workflow(deck_message):
-            full_response.append(response_chunk.content)
-            response_data.update({"response": response_chunk.content})
-            await sio.emit(RESPONSE_EVENT, response_data, room=sid, namespace=WEBSOCKET_NAMESPACE)
+            if response_chunk.content is not None:
+                full_response.append(response_chunk.content)
+                await WebSocketResponse.emit_chunk(
+                    room=sid,
+                    event=RESPONSE_EVENT,
+                    chat_id=session_id,
+                    message_id=system_message_id,
+                    response=response_chunk.content,
+                    message_type="TECHNICAL_DECK"
+                )
 
         # Update the deck_message with generated technical deck details
         deck_message.technical_deck_details = {
@@ -117,21 +122,28 @@ async def generate_deck(
         master_session.commit()
         master_session.refresh(deck_message)
         logger.info("Technical deck generation completed successfully")
+
     except Exception as e:
         logger.exception("Error during technical deck generation")
-        # Send error status to client with descriptive message
-        response_data.update(
-            {
-                "errorResponse": "Failed to generate technical deck. Please try again later.",
-                "isError": True,
-            }
-        )
-        await sio.emit(RESPONSE_EVENT, response_data, room=sid, namespace=WEBSOCKET_NAMESPACE)
+        if system_message_id and session_id:
+            await WebSocketResponse.emit_error(
+                room=sid,
+                event=RESPONSE_EVENT,
+                chat_id=session_id,
+                message_id=system_message_id,
+                error_message="Failed to generate technical deck. Please try again later.",
+                message_type="TECHNICAL_DECK"
+            )
 
     finally:
-        # Send final completion status to client
-        response_data.update({"isComplete": True, "response": ""})
-        await sio.emit(RESPONSE_EVENT, response_data, room=sid, namespace=WEBSOCKET_NAMESPACE)
+        if system_message_id and session_id:
+            await WebSocketResponse.emit_completion(
+                room=sid,
+                event=RESPONSE_EVENT,
+                chat_id=session_id,
+                message_id=system_message_id,
+                message_type="TECHNICAL_DECK"
+            )
         # Cleanup database session
         try:
             if master_session is not None:
@@ -139,3 +151,4 @@ async def generate_deck(
         except Exception:
             logger.warning("Failed to close database session")
             pass
+        return

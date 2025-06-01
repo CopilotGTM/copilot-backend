@@ -12,6 +12,7 @@ from core.database import get_master_session
 from core.redis_client import get_socket_connection
 from models.chat_socket_models import AttachmentModel
 from core.app_state import fastapp
+from models.websocket_response import WebSocketResponse
 
 from workflows.transcript_summary.transcript_workflow import TranscriptSummaryAgent
 from models.rfp_models.sheet_analysis_response import SheetSelectionInput
@@ -40,6 +41,9 @@ async def send_sheet_selections(
     3. Stream the agent response
     4. Persist the assistant ChatMessage (+ transcript_summary in JSONB)
     """
+    master_session = None
+    system_message_id = None
+    session_id = None
 
     try:
         logger.info(f"Transcript Summary WebSocket message received: sid={sid}")
@@ -71,6 +75,18 @@ async def send_sheet_selections(
                 (ChatMessage.session_id == session_id) & (ChatMessage.message_id == system_message_id)
             )
         ).first()
+
+        if not existing_rfp_details:
+            logger.error(f"No RFP details found for session_id={session_id}")
+            await WebSocketResponse.emit_error(
+                room=sid,
+                event=RESPONSE_EVENT,
+                chat_id=session_id,
+                message_id=system_message_id,
+                error_message="No RFP details found",
+                message_type="RFP_SHEET"
+            )
+            return
 
         # Processing to Generate Response
         cloud_config = CloudConfig(fastapp.state.CLOUD_PROVIDER, fastapp.state.APPLICATION_REGION)
@@ -110,11 +126,27 @@ async def send_sheet_selections(
                 logger.error(
                     f"Multiple question columns selected in sheet {selected.get('sheet_name')}. Only one question column is allowed."
                 )
+                await WebSocketResponse.emit_error(
+                    room=sid,
+                    event=RESPONSE_EVENT,
+                    chat_id=session_id,
+                    message_id=system_message_id,
+                    error_message=f"Multiple question columns selected in sheet {selected.get('sheet_name')}. Only one question column is allowed.",
+                    message_type="RFP_SHEET"
+                )
                 continue
 
             if len(answer_columns) > 1:
                 logger.error(
                     f"Multiple answer columns selected in sheet {selected.get('sheet_name')}. Only one answer column is allowed."
+                )
+                await WebSocketResponse.emit_error(
+                    room=sid,
+                    event=RESPONSE_EVENT,
+                    chat_id=session_id,
+                    message_id=system_message_id,
+                    error_message=f"Multiple answer columns selected in sheet {selected.get('sheet_name')}. Only one answer column is allowed.",
+                    message_type="RFP_SHEET"
                 )
                 continue
 
@@ -125,6 +157,14 @@ async def send_sheet_selections(
             data = get_unmerged_sheet_data(workbook, selected.get("sheet_name", ""))
             if not data:
                 logger.warning(f"No data found for sheet: {selected.get('sheet_name')}")
+                await WebSocketResponse.emit_error(
+                    room=sid,
+                    event=RESPONSE_EVENT,
+                    chat_id=session_id,
+                    message_id=system_message_id,
+                    error_message=f"No data found for sheet: {selected.get('sheet_name')}",
+                    message_type="RFP_SHEET"
+                )
                 continue
 
             # Process each row in the sheet data
@@ -148,21 +188,39 @@ async def send_sheet_selections(
                 processed_answers = await process_answers_in_parallel(
                     row_objects=row_objects, session_id=session_id, system_message_id=system_message_id
                 )
+                # Emit chunk for each processed answer
+                for answer in processed_answers:
+                    await WebSocketResponse.emit_chunk(
+                        room=sid,
+                        event=RESPONSE_EVENT,
+                        chat_id=session_id,
+                        message_id=system_message_id,
+                        response=answer,
+                        message_type="RFP_SHEET"
+                    )
+
+    except Exception as e:
+        logger.exception("Error in send_sheet_selections")
+        if system_message_id and session_id:
+            await WebSocketResponse.emit_error(
+                room=sid,
+                event=RESPONSE_EVENT,
+                chat_id=session_id,
+                message_id=system_message_id,
+                error_message="Failed to process sheet selections. Please try again later.",
+                message_type="RFP_SHEET"
+            )
 
     finally:
-        # Send final completion message
-        response_data = {
-            "chat_id": session_id,
-            "message_id": system_message_id,
-            "isComplete": True,
-            "isLineComplete": True,
-            "isError": False,
-            "response": "",
-            "isFirstMessage": False,
-        }
-        await sio.emit(RESPONSE_EVENT, response_data, namespace=WEBSOCKET_NAMESPACE)
-
-        # # clean up DB session generator if we opened one
+        if system_message_id and session_id:
+            await WebSocketResponse.emit_completion(
+                room=sid,
+                event=RESPONSE_EVENT,
+                chat_id=session_id,
+                message_id=system_message_id,
+                message_type="RFP_SHEET"
+            )
+        # Clean up DB session generator if we opened one
         try:
             if master_session is not None:
                 master_session.close()
