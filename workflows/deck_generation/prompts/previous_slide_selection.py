@@ -1,10 +1,7 @@
 from textwrap import dedent
 
 OUTPUT_FORMAT = {
-    "fill": {
-        "type": "color",
-        "value": "#001141"
-    },
+    "fill": {"type": "color", "value": "#001141"},
     "elements": [
         {
             "type": "image",
@@ -18,17 +15,12 @@ OUTPUT_FORMAT = {
             "isFlipV": False,
             "isFlipH": False,
             "order": 1676,
-            "rect": {
-                "t": 15.874,
-                "b": 2.591,
-                "l": 0,
-                "r": 24.578
-            },
+            "rect": {"t": 15.874, "b": 2.591, "l": 0, "r": 24.578},
             "geom": "rect",
             "borderColor": "#000000",
             "borderWidth": 0,
             "borderType": "solid",
-            "borderStrokeDasharray": "0"
+            "borderStrokeDasharray": "0",
         },
         {
             "left": 275,
@@ -40,7 +32,7 @@ OUTPUT_FORMAT = {
             "borderType": "solid",
             "borderStrokeDasharray": "0",
             "fill": "",
-            "content": "<p style=\"text-align: left;\"><span style=\"color: #0F62FE;font-size: 22pt;font-family: Open Sans;font-weight: bold;\">Today's Agenda</span></p>",
+            "content": '<p style="text-align: left;"><span style="color: #0F62FE;font-size: 22pt;font-family: Open Sans;font-weight: bold;">Today\'s Agenda</span></p>',
             "isFlipV": False,
             "isFlipH": False,
             "rotate": 0,
@@ -48,7 +40,7 @@ OUTPUT_FORMAT = {
             "name": "Google Shape;54;p15",
             "order": 1722,
             "type": "text",
-            "isVertical": False
+            "isVertical": False,
         },
         {
             "left": 275,
@@ -60,7 +52,7 @@ OUTPUT_FORMAT = {
             "borderType": "solid",
             "borderStrokeDasharray": "0",
             "fill": "",
-            "content": "<p style=\"text-align: center;\"><span style=\"color: #1754F1;font-size: 12pt;font-family: Lexend;\">2</span></p>",
+            "content": '<p style="text-align: center;"><span style="color: #1754F1;font-size: 12pt;font-family: Lexend;">2</span></p>',
             "isFlipV": False,
             "isFlipH": True,
             "rotate": 0,
@@ -69,12 +61,7 @@ OUTPUT_FORMAT = {
             "order": 1773,
             "type": "shape",
             "shapType": "ellipse",
-            "cornerRadius": {
-                "topLeft": 0,
-                "topRight": 0,
-                "bottomRight": 0,
-                "bottomLeft": 0
-            }
+            "cornerRadius": {"topLeft": 0, "topRight": 0, "bottomRight": 0, "bottomLeft": 0},
         },
         {
             "left": 306,
@@ -86,7 +73,7 @@ OUTPUT_FORMAT = {
             "borderType": "solid",
             "borderStrokeDasharray": "0",
             "fill": "",
-            "content": "<p style=\"text-align: left;\"><span style=\"color: #121619;font-size: 16pt;font-family: Open Sans;font-weight: bold;\">State of Loyalty Program in Retail 2024</span></p>",
+            "content": '<p style="text-align: left;"><span style="color: #121619;font-size: 16pt;font-family: Open Sans;font-weight: bold;">State of Loyalty Program in Retail 2024</span></p>',
             "isFlipV": False,
             "isFlipH": False,
             "rotate": 0,
@@ -94,7 +81,7 @@ OUTPUT_FORMAT = {
             "name": "Google Shape;56;p15",
             "order": 1819,
             "type": "text",
-            "isVertical": False
+            "isVertical": False,
         },
         {
             "left": 275,
@@ -106,7 +93,7 @@ OUTPUT_FORMAT = {
             "borderType": "solid",
             "borderStrokeDasharray": "0",
             "fill": "",
-            "content": "<p style=\"text-align: center;\"><span style=\"color: #1754F1;font-size: 12pt;font-family: Lexend;\">3</span></p>",
+            "content": '<p style="text-align: center;"><span style="color: #1754F1;font-size: 12pt;font-family: Lexend;">3</span></p>',
             "isFlipV": False,
             "isFlipH": True,
             "rotate": 0,
@@ -115,12 +102,7 @@ OUTPUT_FORMAT = {
             "order": 1870,
             "type": "shape",
             "shapType": "ellipse",
-            "cornerRadius": {
-                "topLeft": 0,
-                "topRight": 0,
-                "bottomRight": 0,
-                "bottomLeft": 0
-            }
+            "cornerRadius": {"topLeft": 0, "topRight": 0, "bottomRight": 0, "bottomLeft": 0},
         },
         {
             "left": 308,
@@ -132,7 +114,7 @@ OUTPUT_FORMAT = {
             "borderType": "solid",
             "borderStrokeDasharray": "0",
             "fill": "",
-            "content": "<p style=\"text-align: left;\"><span style=\"color: #121619;font-size: 16pt;font-family: Open Sans;font-weight: bold;\">Loyalty Program Examples & Recommendation</span></p>",
+            "content": '<p style="text-align: left;"><span style="color: #121619;font-size: 16pt;font-family: Open Sans;font-weight: bold;">Loyalty Program Examples & Recommendation</span></p>',
             "isFlipV": False,
             "isFlipH": False,
             "rotate": 0,
@@ -140,7 +122,7 @@ OUTPUT_FORMAT = {
             "name": "Google Shape;58;p15",
             "order": 1916,
             "type": "text",
-            "isVertical": False
+            "isVertical": False,
         },
         {
             "left": 275,
@@ -152,7 +134,7 @@ OUTPUT_FORMAT = {
             "borderType": "solid",
             "borderStrokeDasharray": "0",
             "fill": "",
-            "content": "<p style=\"text-align: center;\"><span style=\"color: #1754F1;font-size: 12pt;font-family: Lexend;\">1</span></p>",
+            "content": '<p style="text-align: center;"><span style="color: #1754F1;font-size: 12pt;font-family: Lexend;">1</span></p>',
             "isFlipV": False,
             "isFlipH": True,
             "rotate": 0,
@@ -161,12 +143,7 @@ OUTPUT_FORMAT = {
             "order": 1967,
             "type": "shape",
             "shapType": "ellipse",
-            "cornerRadius": {
-                "topLeft": 0,
-                "topRight": 0,
-                "bottomRight": 0,
-                "bottomLeft": 0
-            }
+            "cornerRadius": {"topLeft": 0, "topRight": 0, "bottomRight": 0, "bottomLeft": 0},
         },
         {
             "left": 306,
@@ -178,7 +155,7 @@ OUTPUT_FORMAT = {
             "borderType": "solid",
             "borderStrokeDasharray": "0",
             "fill": "",
-            "content": "<p style=\"text-align: left;\"><span style=\"color: #121619;font-size: 16pt;font-family: Open Sans;font-weight: bold;\">About Xeno</span></p>",
+            "content": '<p style="text-align: left;"><span style="color: #121619;font-size: 16pt;font-family: Open Sans;font-weight: bold;">About Xeno</span></p>',
             "isFlipV": False,
             "isFlipH": False,
             "rotate": 0,
@@ -186,7 +163,7 @@ OUTPUT_FORMAT = {
             "name": "Google Shape;60;p15",
             "order": 2013,
             "type": "text",
-            "isVertical": False
+            "isVertical": False,
         },
         {
             "left": 308,
@@ -198,7 +175,7 @@ OUTPUT_FORMAT = {
             "borderType": "solid",
             "borderStrokeDasharray": "0",
             "fill": "",
-            "content": "<p style=\"text-align: left;\"><span style=\"color: #121619;font-size: 16pt;font-family: Open Sans;font-weight: bold;\">Email Marketing</span></p>",
+            "content": '<p style="text-align: left;"><span style="color: #121619;font-size: 16pt;font-family: Open Sans;font-weight: bold;">Email Marketing</span></p>',
             "isFlipV": False,
             "isFlipH": False,
             "rotate": 0,
@@ -206,8 +183,8 @@ OUTPUT_FORMAT = {
             "name": "Google Shape;62;p15",
             "order": 2110,
             "type": "text",
-            "isVertical": False
-        }
+            "isVertical": False,
+        },
     ],
     "layoutElements": [
         {
@@ -219,10 +196,7 @@ OUTPUT_FORMAT = {
             "borderWidth": 0.75,
             "borderType": "solid",
             "borderStrokeDasharray": "0",
-            "fill": {
-                "type": "color",
-                "value": "#FFFFFF"
-            },
+            "fill": {"type": "color", "value": "#FFFFFF"},
             "content": "",
             "isFlipV": False,
             "isFlipH": False,
@@ -231,14 +205,14 @@ OUTPUT_FORMAT = {
             "name": "Google Shape;387;p100",
             "order": 886,
             "type": "shape",
-            "shapType": "rect"
+            "shapType": "rect",
         }
     ],
-    "note": ""
+    "note": "",
 }
 
 SLIDE_SELECTION_PROMPT = dedent(
-f"""
+    f"""
     You are a senior pre sales engineer for Xeno. who is expert at making slides and designing slides for clients.
 
     **user Input**

@@ -1,9 +1,10 @@
 from pydantic import BaseModel, Field
 from typing import List
 
+
 class SlideItem(BaseModel):
     """Represents a single slide in a presentation outline.
-    
+
     Attributes:
         slide_number (int): The sequential number of the slide in the presentation
         slide_title (str): The title/heading of the slide
@@ -17,7 +18,7 @@ class SlideItem(BaseModel):
 
 class SlideOutline(BaseModel):
     """Represents a complete outline of slides for a presentation.
-    
+
     Attributes:
         slide_outline (List[SlideItem]): An ordered list of slides that make up the presentation
     """
@@ -27,7 +28,7 @@ class SlideOutline(BaseModel):
 
 class SolutionNarration(BaseModel):
     """Represents the narrative content for a solution presentation.
-    
+
     Attributes:
         solutioning_narration (str): The detailed narrative content explaining the solution
     """

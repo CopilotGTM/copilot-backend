@@ -30,7 +30,9 @@ class SlideContentGenerator(Workflow):
         self.df_url = get_master_db_url()
         self.knowledge_base = PDFKnowledgeBase(
             path="",
-            vector_db=PgVector(table_name="knowledge_base", db_url=self.df_url, embedder=AzureOpenAIEmbedder(), schema="public"),
+            vector_db=PgVector(
+                table_name="knowledge_base", db_url=self.df_url, embedder=AzureOpenAIEmbedder(), schema="public"
+            ),
             chunking_strategy=RecursiveChunking(),
         )
         self.master_session = next(get_master_session())
@@ -92,6 +94,7 @@ class SlideContentGenerator(Workflow):
                 event=RunEvent.run_response,
                 content=output_format,
             )
+
 
 # async def main():
 

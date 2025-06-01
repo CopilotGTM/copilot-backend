@@ -21,6 +21,7 @@ from sqlmodel import select
 from models.embeddings_db_models import OrganisationDocument
 from workflows.deck_generation.tools.solution_deck_search_tool import SolutionDeckSearchTool
 from workflows.deck_generation.prompts.previous_slide_selection import SLIDE_SELECTION_PROMPT
+
 load_dotenv()
 logger = get_logger()
 
@@ -33,17 +34,17 @@ class DeckGeneration(Workflow):
         self.presentation_base = PDFKnowledgeBase(
             path="",
             vector_db=PgVector(
-                table_name="knowledge_base", 
-                db_url=self.df_url, 
-                embedder=AzureOpenAIEmbedder(), 
+                table_name="knowledge_base",
+                db_url=self.df_url,
+                embedder=AzureOpenAIEmbedder(),
                 schema="public",
             ),
             chunking_strategy=RecursiveChunking(),
         )
         self.master_session = next(get_master_session())
         self.embedder = AzureOpenAIEmbedder()
-        
-        self.previous_slide_extraction:Agent = Agent(
+
+        self.previous_slide_extraction: Agent = Agent(
             model=AzureOpenAI(id="o4-mini", api_version="2024-12-01-preview"),
             tools=[SolutionDeckSearchTool()],
             # knowledge=SolutionDeckSearchTool(),
@@ -64,7 +65,7 @@ class DeckGeneration(Workflow):
         for slide_section in slide_outline:
             logger
             output = self.previous_slide_extraction.run(
-                message = f"""
+                message=f"""
                     #### Meeting Summary
                      {transcript_summary}
 
@@ -74,23 +75,21 @@ class DeckGeneration(Workflow):
             )
 
             # Yield the response for this section
-            yield RunResponse(
-                content=output.content,
-                event=RunEvent.run_response
-            )
+            yield RunResponse(content=output.content, event=RunEvent.run_response)
+
 
 # async def main():
 #     # Initialize the deck generation workflow
 #     chat = DeckGeneration()
 #     output = []
-    
+
 #     logger.info("Workflow execution started.")
-    
+
 #     # Run the workflow and collect responses
 #     async for response in chat.run_workflow(deck_message):
 #         logger.info(f"Received response: {response.content}")
 #         output.append(response.content)
-    
+
 #     logger.info(f"Workflow completed. Total responses: {len(output)}")
 #     return output
 
