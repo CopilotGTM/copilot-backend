@@ -109,7 +109,7 @@ async def send_transript_messages(
                     chat_id=chat_id,
                     message_id=system_message_id,
                     response=response_chunk.content,
-                    message_type="TECHNICAL_DECK"
+                    message_type="TECHNICAL_DECK",
                 )
 
         # Build transcript_summary list: [{'url': <file>, 'summary': <text>}]
@@ -159,7 +159,7 @@ async def send_transript_messages(
                 chat_id=chat_id,
                 message_id=system_message_id,
                 error_message="Failed to generate transcript summary.",
-                message_type="TECHNICAL_DECK"
+                message_type="TECHNICAL_DECK",
             )
 
     finally:
@@ -169,7 +169,7 @@ async def send_transript_messages(
                 event=RESPONSE_EVENT,
                 chat_id=chat_id,
                 message_id=system_message_id,
-                message_type="TECHNICAL_DECK"
+                message_type="TECHNICAL_DECK",
             )
         # clean up DB session generator if we opened one
         try:

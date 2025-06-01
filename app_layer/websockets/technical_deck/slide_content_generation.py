@@ -83,7 +83,7 @@ async def generate_slide_content(
             chat_id=chat_id,
             message_id=system_message_id,
             response="",
-            message_type="TECHNICAL_DECK"
+            message_type="TECHNICAL_DECK",
         )
 
         full_response: list = []
@@ -101,7 +101,7 @@ async def generate_slide_content(
                     chat_id=chat_id,
                     message_id=system_message_id,
                     response=response_chunk.content,
-                    message_type="TECHNICAL_DECK"
+                    message_type="TECHNICAL_DECK",
                 )
 
         # Saving slide content to DB
@@ -121,7 +121,7 @@ async def generate_slide_content(
                 chat_id=chat_id,
                 message_id=system_message_id,
                 error_message="Failed to generate slide content.",
-                message_type="TECHNICAL_DECK"
+                message_type="TECHNICAL_DECK",
             )
 
     finally:
@@ -131,7 +131,7 @@ async def generate_slide_content(
                 event=RESPONSE_EVENT,
                 chat_id=chat_id,
                 message_id=system_message_id,
-                message_type="TECHNICAL_DECK"
+                message_type="TECHNICAL_DECK",
             )
         # clean up DB session generator if we opened one
         try:

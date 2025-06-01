@@ -84,7 +84,7 @@ async def send_sheet_selections(
                 chat_id=session_id,
                 message_id=system_message_id,
                 error_message="No RFP details found",
-                message_type="RFP_SHEET"
+                message_type="RFP_SHEET",
             )
             return
 
@@ -132,7 +132,7 @@ async def send_sheet_selections(
                     chat_id=session_id,
                     message_id=system_message_id,
                     error_message=f"Multiple question columns selected in sheet {selected.get('sheet_name')}. Only one question column is allowed.",
-                    message_type="RFP_SHEET"
+                    message_type="RFP_SHEET",
                 )
                 continue
 
@@ -146,7 +146,7 @@ async def send_sheet_selections(
                     chat_id=session_id,
                     message_id=system_message_id,
                     error_message=f"Multiple answer columns selected in sheet {selected.get('sheet_name')}. Only one answer column is allowed.",
-                    message_type="RFP_SHEET"
+                    message_type="RFP_SHEET",
                 )
                 continue
 
@@ -163,7 +163,7 @@ async def send_sheet_selections(
                     chat_id=session_id,
                     message_id=system_message_id,
                     error_message=f"No data found for sheet: {selected.get('sheet_name')}",
-                    message_type="RFP_SHEET"
+                    message_type="RFP_SHEET",
                 )
                 continue
 
@@ -196,7 +196,7 @@ async def send_sheet_selections(
                         chat_id=session_id,
                         message_id=system_message_id,
                         response=answer,
-                        message_type="RFP_SHEET"
+                        message_type="RFP_SHEET",
                     )
 
     except Exception as e:
@@ -208,7 +208,7 @@ async def send_sheet_selections(
                 chat_id=session_id,
                 message_id=system_message_id,
                 error_message="Failed to process sheet selections. Please try again later.",
-                message_type="RFP_SHEET"
+                message_type="RFP_SHEET",
             )
 
     finally:
@@ -218,7 +218,7 @@ async def send_sheet_selections(
                 event=RESPONSE_EVENT,
                 chat_id=session_id,
                 message_id=system_message_id,
-                message_type="RFP_SHEET"
+                message_type="RFP_SHEET",
             )
         # Clean up DB session generator if we opened one
         try:

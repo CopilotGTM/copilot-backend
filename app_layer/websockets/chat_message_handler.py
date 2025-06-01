@@ -87,21 +87,14 @@ async def send_chat_messages(sid: str, data: ChatMessageReceived) -> None:
 
         # Get last 6 messages for context
         statement = (
-            select(ChatMessage)
-            .where(ChatMessage.session_id == chat_id)
-            .order_by(ChatMessage.timestamp.desc())
-            .limit(6)
+            select(ChatMessage).where(ChatMessage.session_id == chat_id).order_by(ChatMessage.timestamp.desc()).limit(6)
         )
         results = master_session.exec(statement)
         chat_messages = list(reversed(results.all()))  # Reverse to have most recent message at bottom
 
         # Initialize and run chat agent
         agent_connector = GeneralChatAgent(
-            provider="azure",
-            model_name="o3-mini",
-            sio=sio,
-            websocket_room=sid,
-            system_message_id=system_message_id
+            provider="azure", model_name="o3-mini", sio=sio, websocket_room=sid, system_message_id=system_message_id
         )
 
         # Process and emit response chunks
@@ -114,7 +107,7 @@ async def send_chat_messages(sid: str, data: ChatMessageReceived) -> None:
                     chat_id=chat_id,
                     message_id=system_message_id,
                     response=response_chunk.content,
-                    message_type="GENERAL_CHAT"
+                    message_type="GENERAL_CHAT",
                 )
 
         # Save assistant's response
@@ -139,7 +132,7 @@ async def send_chat_messages(sid: str, data: ChatMessageReceived) -> None:
                 chat_id=chat_id,
                 message_id=system_message_id,
                 error_message="Failed to generate chat response.",
-                message_type="GENERAL_CHAT"
+                message_type="GENERAL_CHAT",
             )
 
     finally:
@@ -149,16 +142,16 @@ async def send_chat_messages(sid: str, data: ChatMessageReceived) -> None:
                 event=RESPONSE_EVENT,
                 chat_id=chat_id,
                 message_id=system_message_id,
-                message_type="GENERAL_CHAT"
+                message_type="GENERAL_CHAT",
             )
-        
+
         # Clean up database connections
         if session_gen:
             try:
                 session_gen.close()
             except Exception:
                 pass
-        
+
         if master_session:
             try:
                 master_session.close()

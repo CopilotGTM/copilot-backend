@@ -3,6 +3,7 @@ from socketio import AsyncServer
 from models.chat_socket_models import ChatMessageReceived
 from app_layer.utils.socket_app import sio as InputSio
 
+
 class WebSocketResponse:
     sio = InputSio
     namespace = "/websocket/v1"
@@ -25,7 +26,7 @@ class WebSocketResponse:
     ):
         """
         Emit a WebSocket response with standardized structure
-        
+
         Args:
             room: The room to emit to
             event: The event name to emit to
@@ -72,7 +73,7 @@ class WebSocketResponse:
     ):
         """
         Emit the first message to share message ID with the client
-        
+
         Args:
             room: The room to emit to
             event: The event name to emit to
@@ -107,7 +108,7 @@ class WebSocketResponse:
     ):
         """
         Emit a response chunk
-        
+
         Args:
             room: The room to emit to
             event: The event name to emit to
@@ -145,7 +146,7 @@ class WebSocketResponse:
     ):
         """
         Emit an error response
-        
+
         Args:
             room: The room to emit to
             event: The event name to emit to
@@ -180,7 +181,7 @@ class WebSocketResponse:
     ):
         """
         Emit a completion message
-        
+
         Args:
             room: The room to emit to
             event: The event name to emit to
@@ -197,4 +198,4 @@ class WebSocketResponse:
             is_complete=True,
             message_type=message_type,
             additional_data=additional_data,
-        ) 
+        )

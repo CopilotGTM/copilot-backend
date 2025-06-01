@@ -71,7 +71,7 @@ async def generate_deck(
                 chat_id=session_id,
                 message_id=system_message_id,
                 error_message="Chat session not found",
-                message_type="TECHNICAL_DECK"
+                message_type="TECHNICAL_DECK",
             )
             return
 
@@ -91,7 +91,7 @@ async def generate_deck(
                 chat_id=session_id,
                 message_id=system_message_id,
                 error_message="No assistant ChatMessage found",
-                message_type="TECHNICAL_DECK"
+                message_type="TECHNICAL_DECK",
             )
             return
 
@@ -107,7 +107,7 @@ async def generate_deck(
                     chat_id=session_id,
                     message_id=system_message_id,
                     response=response_chunk.content,
-                    message_type="TECHNICAL_DECK"
+                    message_type="TECHNICAL_DECK",
                 )
 
         # Update the deck_message with generated technical deck details
@@ -132,7 +132,7 @@ async def generate_deck(
                 chat_id=session_id,
                 message_id=system_message_id,
                 error_message="Failed to generate technical deck. Please try again later.",
-                message_type="TECHNICAL_DECK"
+                message_type="TECHNICAL_DECK",
             )
 
     finally:
@@ -142,7 +142,7 @@ async def generate_deck(
                 event=RESPONSE_EVENT,
                 chat_id=session_id,
                 message_id=system_message_id,
-                message_type="TECHNICAL_DECK"
+                message_type="TECHNICAL_DECK",
             )
         # Cleanup database session
         try:
