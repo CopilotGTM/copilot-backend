@@ -11,6 +11,7 @@ from sqlmodel import select
 from models.chat_db_models import ChatMessage
 from core.database import get_master_session
 from core.redis_client import get_socket_connection
+from models.websocket_response import WebSocketResponse
 
 from workflows.transcript_summary.transcript_workflow import TranscriptSummaryAgent
 
@@ -32,6 +33,8 @@ async def send_transript_messages(
     3. Stream the agent response
     4. Persist the assistant ChatMessage (+ transcript_summary in JSONB)
     """
+    system_message_id = None
+    master_session = None
 
     try:
         logger.info(f"Transcript Summary WebSocket message received: sid={sid}, data={data}")
@@ -52,8 +55,6 @@ async def send_transript_messages(
 
         # Extract fields from your payload
         chat_id = data.get("session_id")
-
-        # Persist the user ChatMessage
         master_session = next(get_master_session())
 
         # Save user message in DB
@@ -68,7 +69,6 @@ async def send_transript_messages(
         master_session.add(user_msg)
         master_session.commit()
         master_session.refresh(user_msg)
-        logger.info(f"User Message Stored - {user_msg}")
 
         # Save Assistant Message in DB
         system_message_id = str(uuid.uuid4())
@@ -85,40 +85,32 @@ async def send_transript_messages(
         master_session.refresh(assistant_msg)
         logger.info(f"Assistant Message Stored {assistant_msg}")
 
-        response_data_for_message_id = {
-            "chat_id": chat_id,
-            "message_id": system_message_id,
-            "isComplete": False,
-            "isLineComplete": False,
-            "message_type": "TECHNICAL_DECK",
-            "isError": False,
-            "response": "",
-            "isFirstMessage": True,
-        }
+        # Emit first message
+        await WebSocketResponse.emit_first_message(
+            room=sid,
+            event=CHAT_RESPONSE_EVENT,
+            chat_id=chat_id,
+            message_id=system_message_id,
+            response="",
+            message_type="TECHNICAL_DECK",
+        )
 
-        # Sending a First Message to the user to share message id
-        logger.info(f"Sending a First Message to the user to share message id")
-        await sio.emit(CHAT_RESPONSE_EVENT, response_data_for_message_id, room=sid, namespace=WEBSOCKET_NAMESPACE)
-
-        # Final Output Response
-        response_data = {
-            "chat_id": chat_id,
-            "message_id": system_message_id,
-            "isComplete": False,
-            "isLineComplete": False,
-            "isError": False,
-            "response": "",
-            "isFirstMessage": True,
-        }
         full_response: str = ""
 
         # Setting up agent
         agent_connector = TranscriptSummaryAgent(provider="azure", model_name="o3-mini")
 
         async for response_chunk in agent_connector.run_workflow(attached_models=data.get("attachments")):
-            full_response += response_chunk.content
-            response_data.update({"response": response_chunk.content})
-            await sio.emit(RESPONSE_EVENT, response_data, room=sid, namespace=WEBSOCKET_NAMESPACE)
+            if response_chunk.content is not None:
+                full_response += response_chunk.content
+                await WebSocketResponse.emit_chunk(
+                    room=sid,
+                    event=RESPONSE_EVENT,
+                    chat_id=chat_id,
+                    message_id=system_message_id,
+                    response=response_chunk.content,
+                    message_type="TECHNICAL_DECK"
+                )
 
         # Build transcript_summary list: [{'url': <file>, 'summary': <text>}]
         transcript_summary: List[Dict[str, str]] = []
@@ -157,20 +149,28 @@ async def send_transript_messages(
         master_session.refresh(assistant_msg)
         logger.info(f"Transcript Data Stored")
         logger.info(f"Transcript Generation Completes")
+
     except Exception as e:
         logger.exception("Error in send_transript_messages")
-        # send error status to client
-        response_data.update(
-            {
-                "errorResponse": "Failed to generate chat response.",
-                "isError": True,
-            }
-        )
-        await sio.emit(RESPONSE_EVENT, response_data, room=sid, namespace=WEBSOCKET_NAMESPACE)
+        if system_message_id:
+            await WebSocketResponse.emit_error(
+                room=sid,
+                event=RESPONSE_EVENT,
+                chat_id=chat_id,
+                message_id=system_message_id,
+                error_message="Failed to generate transcript summary.",
+                message_type="TECHNICAL_DECK"
+            )
 
     finally:
-        response_data.update({"isComplete": True, "response": ""})
-        await sio.emit(RESPONSE_EVENT, response_data, room=sid, namespace=WEBSOCKET_NAMESPACE)
+        if system_message_id:
+            await WebSocketResponse.emit_completion(
+                room=sid,
+                event=RESPONSE_EVENT,
+                chat_id=chat_id,
+                message_id=system_message_id,
+                message_type="TECHNICAL_DECK"
+            )
         # clean up DB session generator if we opened one
         try:
             if master_session is not None:

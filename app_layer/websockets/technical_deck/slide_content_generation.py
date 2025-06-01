@@ -9,6 +9,7 @@ from sqlmodel import select
 from models.chat_db_models import ChatMessage
 from core.database import get_master_session
 from core.redis_client import get_socket_connection
+from models.websocket_response import WebSocketResponse
 
 from workflows.generate_slide_content.slide_content_workflow import SlideContentGenerator
 
@@ -31,6 +32,9 @@ async def generate_slide_content(
     """
     session_gen = None
     master_session = None
+    system_message_id = None
+    chat_id = None
+
     try:
         logger.info(f"Slide Content Generation WebSocket message received: sid={sid}, data={data}")
 
@@ -72,16 +76,16 @@ async def generate_slide_content(
             logger.error(f"Assistant message for session_id={chat_id} lacks `complete_transcript_summary`.")
             raise RuntimeError(f"Assistant message for session_id={chat_id} " "lacks `complete_transcript_summary`.")
 
-        # Response formats
-        logger.info("Preparing response formats")
-        response_data = {
-            "chat_id": chat_id,
-            "message_id": system_message_id,
-            "isComplete": False,
-            "isLineComplete": False,
-            "isError": False,
-            "response": "",
-        }
+        # Emit first message
+        await WebSocketResponse.emit_first_message(
+            room=sid,
+            event=RESPONSE_EVENT,
+            chat_id=chat_id,
+            message_id=system_message_id,
+            response="",
+            message_type="TECHNICAL_DECK"
+        )
+
         full_response: list = []
 
         # Getting Response from Agent
@@ -89,9 +93,16 @@ async def generate_slide_content(
         agent_connector = SlideContentGenerator(provider="azure", model_name="o3-mini")
 
         async for response_chunk in agent_connector.run_workflow(input_summary=input_summary):
-            full_response.append(response_chunk.content)
-            response_data.update({"response": response_chunk.content})
-            await sio.emit(RESPONSE_EVENT, response_data, room=sid, namespace=WEBSOCKET_NAMESPACE)
+            if response_chunk.content is not None:
+                full_response.append(response_chunk.content)
+                await WebSocketResponse.emit_chunk(
+                    room=sid,
+                    event=RESPONSE_EVENT,
+                    chat_id=chat_id,
+                    message_id=system_message_id,
+                    response=response_chunk.content,
+                    message_type="TECHNICAL_DECK"
+                )
 
         # Saving slide content to DB
         details["state"] = "SLIDE_CONTENT"
@@ -100,20 +111,28 @@ async def generate_slide_content(
         master_session.commit()
         master_session.refresh(existing_assistant)
         logger.info(f"Slide content saved to DB")
+
     except Exception as e:
-        logger.exception("Error in send_transript_messages")
-        # send error status to client
-        response_data.update(
-            {
-                "errorResponse": "Failed to generate chat response.",
-                "isError": True,
-            }
-        )
-        await sio.emit(RESPONSE_EVENT, response_data, room=sid, namespace=WEBSOCKET_NAMESPACE)
+        logger.exception("Error in generate_slide_content")
+        if system_message_id and chat_id:
+            await WebSocketResponse.emit_error(
+                room=sid,
+                event=RESPONSE_EVENT,
+                chat_id=chat_id,
+                message_id=system_message_id,
+                error_message="Failed to generate slide content.",
+                message_type="TECHNICAL_DECK"
+            )
 
     finally:
-        response_data.update({"isComplete": True, "response": ""})
-        await sio.emit(RESPONSE_EVENT, response_data, room=sid, namespace=WEBSOCKET_NAMESPACE)
+        if system_message_id and chat_id:
+            await WebSocketResponse.emit_completion(
+                room=sid,
+                event=RESPONSE_EVENT,
+                chat_id=chat_id,
+                message_id=system_message_id,
+                message_type="TECHNICAL_DECK"
+            )
         # clean up DB session generator if we opened one
         try:
             if session_gen is not None:
