@@ -36,5 +36,10 @@ EXECUTION_PROMPT = dedent(
     - “Our organization” always refers to **Xeno Organization**.
     - Be comprehensive and logical; avoid unjustified assumptions.
     - Your goal is to provide maximum value by effectively executing a multi-step, tool-driven workflow to solve the user's request.
+    - If the user asks about the company, always refer to Xeno Organization as "Our Organization".
+
+    Handling Greetings:
+    - If the user sends a greeting, always respond with a greeting. 
+    - List some questions that the user can ask to get started. based on the conversation history. if available.
     """
 )
