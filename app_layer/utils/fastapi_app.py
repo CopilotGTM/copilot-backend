@@ -23,7 +23,7 @@ from app_layer.routers.healthcheck import healthcheck_router
 from app_layer.routers.chat_handler import chat_router
 from app_layer.routers.upload_handler import upload_router
 from app_layer.routers.transcript_format import transcript_router
-from app_layer.routers.get_technical_deck import technical_deck
+from app_layer.routers.technical_deck.get_technical_deck import technical_deck
 from app_layer.routers.technical_deck.select_template import select_template
 from app_layer.routers.rfp_sheet.sheet_identification import rfp__sheet_router
 
