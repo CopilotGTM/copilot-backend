@@ -13,10 +13,10 @@ from dotenv import load_dotenv
 from app_layer.utils.logger import get_logger
 from workflows.utils.get_master_db_url import get_master_db_url
 
-from workflows.generate_slide_content.prompts.solution_narration import TECHNICAL_WIN_STRATEGY_PROMPT
-from workflows.generate_slide_content.prompts.slides_outline import SLIDE_OUTLINE_PROMPT
-from workflows.generate_slide_content.prompts.slide_content import SLIDE_CONTENT_PROMPT
-from workflows.generate_slide_content.models import SlideItem, SlideOutline, SolutionNarration
+from workflows.generate_slide_outline.prompts.solution_narration import TECHNICAL_WIN_STRATEGY_PROMPT
+from workflows.generate_slide_outline.prompts.slides_outline import SLIDE_OUTLINE_PROMPT
+from workflows.generate_slide_outline.prompts.slide_content import SLIDE_CONTENT_PROMPT
+from workflows.generate_slide_outline.models import SlideItem, SlideOutline, SolutionNarration
 from core.database import get_master_session
 
 load_dotenv()
