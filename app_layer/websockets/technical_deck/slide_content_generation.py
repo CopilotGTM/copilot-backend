@@ -71,7 +71,7 @@ async def generate_slide_content(
 
         details = existing_assistant.technical_deck_details or {}
         input_summary = details.get("complete_transcript_summary")
-        logger.info(f"Input summary: {input_summary}")
+
         if not input_summary:
             logger.error(f"Assistant message for session_id={chat_id} lacks `complete_transcript_summary`.")
             raise RuntimeError(f"Assistant message for session_id={chat_id} " "lacks `complete_transcript_summary`.")
