@@ -63,11 +63,12 @@ class TranscriptSummaryAgent(Workflow):
             - Capture important aspects: pain points, proposed solutions, requirements, questions, objections, commitments, decisions, etc.
 
             # Definitions
-              Every business has its own terminologies. List all the terminologies which are discussed in the meeting. You have to review the transcript thoroughly to get all these points.
-              This can be small intricacies of the business which will be helpful in the final deck creation.
+              Every business has its own terminologies. And specific business rules that re defined to run business.
+              Clearly mention all such and then definations. provide the points in order of decresing importance. You should clearly identify such business rules defined by business.
             - This should cover all the business terminologies which are discussed in the meeting. 
             - Also include the internal definitions and limits set by the business for different programs/events/tools etc
             - Terminology: Crisp Explanations
+            - Only show at max top 8 points.
 
             # Requirements
               Once all the sections are clearly outlined. List out all the requirements of the client that Xeno needs to take care. These requirements should capture all the pain points that client has shared in the meeting.
