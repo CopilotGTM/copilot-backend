@@ -1,4 +1,4 @@
-from typing import List, Dict, AsyncIterator
+from typing import AsyncIterator
 from agno.workflow import Workflow, RunResponse, RunEvent
 from agno.agent import Agent
 from agno.models.azure import AzureOpenAI
@@ -15,7 +15,6 @@ from workflows.utils.get_master_db_url import get_master_db_url
 
 from workflows.generate_slide_outline.prompts.solution_narration import TECHNICAL_WIN_STRATEGY_PROMPT
 from workflows.generate_slide_outline.prompts.slides_outline import SLIDE_OUTLINE_PROMPT
-from workflows.generate_slide_outline.prompts.slide_content import SLIDE_CONTENT_PROMPT
 from workflows.generate_slide_outline.models import SlideItem, SlideOutline, SolutionNarration
 from core.database import get_master_session
 
@@ -56,18 +55,13 @@ class SlideContentGenerator(Workflow):
             markdown=True,
         )
 
-        self.generate_slide_content = Agent(
-            model=AzureOpenAI(id="o4-mini", api_version="2025-04-01-preview"),
-            description=SLIDE_CONTENT_PROMPT,
-            knowledge=self.knowledge_base,
-            markdown=True,
-        )
-
     async def run_workflow(self, input_summary: str) -> AsyncIterator[RunResponse]:
 
         # 1) Planning
         logger.info("Generating Solutioning Narration")
-        story_narration = await self.story_narration_outline.arun(input_summary)
+        story_narration = await self.story_narration_outline.arun(
+            messages=[{"role":"user", "content": f"This is generated input Summary {input_summary}"}]
+        )
         story_narration_outline = story_narration.content
         logger.info(f"{story_narration_outline}")
 
