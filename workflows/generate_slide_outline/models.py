@@ -11,9 +11,9 @@ class SlideItem(BaseModel):
         description (str): A brief explanation of the slide's purpose and importance
     """
 
-    slide_number: int = Field(..., description="The number of the slide")
-    slide_title: str = Field(..., description="The title of the slide")
-    description: str = Field(..., description="Why this slide is important")
+    slide_number: int = Field(..., description="The sequential number of the slide in the presentation")
+    slide_title: str = Field(..., description="Just an normal Heading for the Section")
+    description: str = Field(..., description="A brief explanation of Section and Purpose")
 
 
 class SlideOutline(BaseModel):

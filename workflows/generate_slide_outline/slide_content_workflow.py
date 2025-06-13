@@ -68,14 +68,10 @@ class SlideContentGenerator(Workflow):
         # 2) Slide Outline Generation
         logger.info("Generating Slide Outline")
         slide_outline = await self.generate_outline.arun(
-            f"""
-                Summary of the meeting: 
-                {input_summary}
-                -----------------------------------------------------
-                -----------------------------------------------------
-                Solutioning Narration Suggested by Senior Sales Engineer: 
-                {story_narration_outline}
-            """
+            messages=[
+                {"role":"user", "content": f"Summary of the meeting:{input_summary}"},
+                {"role":"assistant", "content": f"Solutioning Narration Suggested:{story_narration_outline}"}
+            ]
         )
 
         for i in slide_outline.content.slide_outline:
