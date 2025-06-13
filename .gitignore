@@ -181,6 +181,6 @@ cython_debug/
 *env
 Dockerfile
 
-x-local-test
+testing_local
 .env.development
 .DS_Store

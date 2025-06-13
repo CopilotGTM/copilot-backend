@@ -11,7 +11,7 @@ from core.database import get_master_session
 from core.redis_client import get_socket_connection
 from models.websocket_response import WebSocketResponse
 
-from workflows.generate_slide_content.slide_content_workflow import SlideContentGenerator
+from workflows.generate_slide_outline.slide_content_workflow import SlideContentGenerator
 
 logger = get_logger()
 
@@ -71,7 +71,7 @@ async def generate_slide_content(
 
         details = existing_assistant.technical_deck_details or {}
         input_summary = details.get("complete_transcript_summary")
-        logger.info(f"Input summary: {input_summary}")
+
         if not input_summary:
             logger.error(f"Assistant message for session_id={chat_id} lacks `complete_transcript_summary`.")
             raise RuntimeError(f"Assistant message for session_id={chat_id} " "lacks `complete_transcript_summary`.")
