@@ -13,8 +13,7 @@ from models.chat_db_models import ChatSession as ChatSessionDB
 from core.database import get_master_session
 from core.redis_client import get_socket_connection
 from models.websocket_response import WebSocketResponse
-
-from workflows.deck_generation.deck_generation_workflow import DeckGeneration
+from app_layer.tasks.technical_deck import generate_deck_task
 
 logger = get_logger()
 
@@ -52,7 +51,6 @@ async def generate_deck(
         session_id = data.get("session_id")
         master_session = next(get_master_session())
         system_message_id = data.get("system_message_id")
-        full_response = []
 
         # Fetch the chat session to verify
         statement = select(ChatSessionDB).where(
@@ -95,33 +93,25 @@ async def generate_deck(
             )
             return
 
-        # Setting up agent
-        agent_connector = DeckGeneration(provider="azure", model_name="o3-mini")
-
-        async for response_chunk in agent_connector.run_workflow(deck_message):
-            if response_chunk.content is not None:
-                full_response.append(response_chunk.content)
-                await WebSocketResponse.emit_chunk(
-                    room=sid,
-                    event=RESPONSE_EVENT,
-                    chat_id=session_id,
-                    message_id=system_message_id,
-                    response=response_chunk.content,
-                    message_type="TECHNICAL_DECK",
-                )
-
-        # Update the deck_message with generated technical deck details
-        deck_message.technical_deck_details = {
-            **deck_message.technical_deck_details,
-            "technical_deck": full_response,
-            "state": "SLIDE_OUTPUT",
+        # Prepare task data
+        task_data = {
+            "session_id": session_id,
+            "system_message_id": system_message_id,
+            "user_id": user_id,
+            "organisation_id": organisation_id
         }
+        await WebSocketResponse.emit_chunk(
+            room=sid,
+            event=RESPONSE_EVENT,
+            chat_id=session_id,
+            message_id=system_message_id,
+            response="",
+            message_type="TECHNICAL_DECK",
+        )
 
-        # Save changes to database
-        master_session.add(deck_message)
-        master_session.commit()
-        master_session.refresh(deck_message)
-        logger.info("Technical deck generation completed successfully")
+        # Start the Celery task
+        generate_deck_task.delay(sid, json.dumps(task_data))
+        logger.info("Technical deck generation task started")
 
     except Exception as e:
         logger.exception("Error during technical deck generation")
@@ -136,15 +126,15 @@ async def generate_deck(
             )
 
     finally:
-        if system_message_id and session_id:
-            await WebSocketResponse.emit_completion(
-                room=sid,
-                event=RESPONSE_EVENT,
-                chat_id=session_id,
-                message_id=system_message_id,
-                message_type="TECHNICAL_DECK",
-            )
-        # Cleanup database session
+        # if system_message_id and session_id:
+        #     await WebSocketResponse.emit_completion(
+        #         room=sid,
+        #         event=RESPONSE_EVENT,
+        #         chat_id=session_id,
+        #         message_id=system_message_id,
+        #         message_type="TECHNICAL_DECK",
+        #     )
+        # # Cleanup database session
         try:
             if master_session is not None:
                 master_session.close()

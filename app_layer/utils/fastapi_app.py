@@ -33,6 +33,7 @@ import app_layer.websockets.technical_deck.transcript_summary_handler
 import app_layer.websockets.technical_deck.slide_content_generation
 import app_layer.websockets.technical_deck.technical_deck_generation
 import app_layer.websockets.rfp_sheet.rfp_answer_generation
+import app_layer.websockets.redis_subscriber
 
 logger = get_logger()
 

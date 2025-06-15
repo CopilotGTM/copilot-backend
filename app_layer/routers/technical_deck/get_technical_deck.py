@@ -78,9 +78,9 @@ def get_technical_deck(
                 return Response.success_response("Complete Technical Deck Details", {})
             case "SLIDE_OUTPUT":
                 details = {
-                    "technical_deck": tech_deck_details.get("technical_deck", []),
+                    "technical_deck_url": tech_deck_details.get("technical_deck_url", ""),
                 }
-                return Response.success_response("Complete Technical Deck Details", {})
+                return Response.success_response("Complete Technical Deck Details", details)
             case _:
                 return Response.not_found_error_response("Technical Deck does not exists", data=None)
 
