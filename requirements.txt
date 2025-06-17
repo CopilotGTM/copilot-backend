@@ -37,6 +37,7 @@ pgvector==0.4.0
 pypdf==3.17.4
 wikipedia==1.4.0
 duckduckgo-search
+PyMuPDF==1.23.26  # For PDF handling
 
 python-docx~=1.1.2
 pandas~=2.2.3

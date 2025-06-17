@@ -7,16 +7,13 @@ from io import BytesIO
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-import fsspec
-import docx
-
-# import pdfplumber
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 
 from core.dto.authentication import Authentication
 from app_layer.utils.logger import get_logger
 from models.chat_models import ParseTranscript
-from workflows.utils.cloud_uri import to_s3_uri
+from infrastructure.document_reader import DocumentReader
+from infrastructure.cloud_file_reader import CloudConfig
 
 from sqlmodel import Session, select
 from models.chat_db_models import ChatSession, ChatMessage, AttachmentModel
@@ -27,6 +24,11 @@ auth = Authentication()
 transcript_router = APIRouter()
 logger = get_logger()
 
+CLOUD_PROVIDER = os.getenv("CLOUD_PROVIDER")
+APPLICATION_STORAGE_NAME = os.getenv("APPLICATION_STORAGE_NAME")
+APPLICATION_REGION = os.getenv("APPLICATION_REGION")
+
+
 MAX_FILE_SIZE_MB = 50
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 ALLOWED_EXTENSIONS = {".docx", ".pdf"}
@@ -36,40 +38,6 @@ WANTED_SECTIONS = ["Outcome", "Next Steps", "Transcript"]
 
 HEADER_RE = re.compile(rf"({'|'.join(re.escape(h) + r':?' for h in HEADERS)})", re.I)
 LINE_RE = re.compile(r"(?:\[(\d{1,2}:\d{2}(?::\d{2})?)\]\s*)?([\w\s]+):\s*(.*)")
-
-
-def _check_size(fs: fsspec.AbstractFileSystem, path: str) -> None:
-    try:
-        size = fs.info(path).get("size", 0)
-        if size and size > MAX_FILE_SIZE_BYTES:
-            raise HTTPException(status_code=400, detail=f"File exceeds {MAX_FILE_SIZE_MB} MB limit")
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="File not found")
-
-
-def _load_docx(path: str) -> str:
-    with fsspec.open(path, "rb") as fp:
-        d = docx.Document(fp)
-    return "\n".join(p.text.strip() for p in d.paragraphs if p.text.strip())
-
-
-# def _load_pdf(path: str) -> str:
-#     with fsspec.open(path, "rb") as fp:
-#         with pdfplumber.open(fp) as pdf:
-#             pages = [p.extract_text() or "" for p in pdf.pages]
-#     return "\n".join(pages)
-
-
-def path_to_text(path: str) -> str:
-    ext = os.path.splitext(path)[1].lower()
-    fs, fs_path = fsspec.core.url_to_fs(path)
-    _check_size(fs, fs_path)
-
-    if ext == ".docx":
-        return _load_docx(path)
-    # if ext == ".pdf":
-    #     return _load_pdf(path)
-    raise HTTPException(status_code=400, detail="Only .docx or .pdf supported")
 
 
 def split_by_headers(text: str) -> Dict[str, str]:
@@ -150,7 +118,7 @@ def parse_transcript_api(
             )
 
         attachment = attachments[0]
-        url = str(attachment.get("url"))
+        file_url = str(attachment.get("url"))
         filename = attachment.get("filename")
         ext = os.path.splitext(filename)[1].lower()
 
@@ -159,21 +127,30 @@ def parse_transcript_api(
         if ext not in ALLOWED_EXTENSIONS:
             return Response.bad_request_error_response(f"Unsupported file extension: {ext}", data=None)
 
-        logger.info(f"Parsing transcript from: {url}")
+        logger.info(f"Parsing transcript from: {file_url}")
 
-        transcript_file_path = to_s3_uri(url)
-        plain = path_to_text(transcript_file_path)
-        payload = build_json(plain)
-        logger.info(f"Successfully parsed transcript {filename}")
+        try:
+            # Initialize cloud-agnostic document reader
+            cloud_config = CloudConfig(CLOUD_PROVIDER, APPLICATION_REGION)
+            document_reader = DocumentReader(cloud_config)
 
-        fomratted_transcript = {"fomratted_transcript": [payload]}
+            # Read and process the document
+            plain = document_reader.read_document(file_url)
+            payload = build_json(plain)
+            logger.info(f"Successfully parsed transcript {filename}")
 
-        technical_deck.technical_deck_details = {**deck_details, "fomratted_transcript": [payload]}
-        logger.info(f"Update Formatted Transcript")
-        master_session.add(technical_deck)
-        master_session.commit()
-        master_session.refresh(technical_deck)
-        return Response.success_response("Successfully parsed transcript", fomratted_transcript)
+            formatted_transcript = {"formatted_transcript": [payload]}
+
+            technical_deck.technical_deck_details = {**deck_details, "formatted_transcript": [payload]}
+            logger.info(f"Update Formatted Transcript")
+            master_session.add(technical_deck)
+            master_session.commit()
+            master_session.refresh(technical_deck)
+            return Response.success_response("Successfully parsed transcript", formatted_transcript)
+        except ValueError as e:
+            logger.error(f"Error processing document: {str(e)}")
+            return Response.bad_request_error_response(str(e), data=None)
+
     except Exception as exc:
         logger.exception("Transcript parsing failed")
         return Response.internal_server_error_response(str(exc), data=None)

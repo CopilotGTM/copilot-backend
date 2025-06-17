@@ -36,17 +36,14 @@ class PPTXExtractor:
 
         if len(text) > 100:
             sentences = re.split(r"[.!?]+\s+", text)
-            cleaned = [
-                s if s.endswith((".", "!", "?")) else s + "."
-                for s in sentences if s.strip()
-            ]
+            cleaned = [s if s.endswith((".", "!", "?")) else s + "." for s in sentences if s.strip()]
             if len(cleaned) > 1:
                 return cleaned
 
         if len(text) > 200:
             words = text.split()
             size = max(10, len(words) // 3)
-            return [" ".join(words[i:i + size]) for i in range(0, len(words), size)]
+            return [" ".join(words[i : i + size]) for i in range(0, len(words), size)]
 
         return [text]
 
@@ -113,14 +110,9 @@ class PPTXExtractor:
 
                         for para in shape.text_frame.paragraphs:
                             if para.runs:
-                                txt_chunks.extend([
-                                    run.text.strip()
-                                    for run in para.runs if run.text.strip()
-                                ])
+                                txt_chunks.extend([run.text.strip() for run in para.runs if run.text.strip()])
                             elif para.text.strip():
-                                txt_chunks.extend(
-                                    self.split_text_intelligently(para.text.strip())
-                                )
+                                txt_chunks.extend(self.split_text_intelligently(para.text.strip()))
 
                         if not txt_chunks:
                             txt_chunks.extend(self.split_text_intelligently(txt_full))
@@ -129,12 +121,9 @@ class PPTXExtractor:
                             anon_text_idx += 1
                             sid = f"anon_text_{anon_text_idx}"
 
-                        slide_texts.append({
-                            "id": sid,
-                            "type": "textbox",
-                            "fullText": txt_full,
-                            "textArray": txt_chunks
-                        })
+                        slide_texts.append(
+                            {"id": sid, "type": "textbox", "fullText": txt_full, "textArray": txt_chunks}
+                        )
                         all_text.append(txt_full)
 
                     # Process tables
@@ -145,12 +134,9 @@ class PPTXExtractor:
                                 anon_table_idx += 1
                                 sid = f"anon_table_{anon_table_idx}"
 
-                            slide_texts.append({
-                                "id": sid,
-                                "type": "table",
-                                "fullText": " ".join(chunks),
-                                "textArray": chunks
-                            })
+                            slide_texts.append(
+                                {"id": sid, "type": "table", "fullText": " ".join(chunks), "textArray": chunks}
+                            )
                             all_text.extend(chunks)
 
                     # Process images
@@ -158,24 +144,17 @@ class PPTXExtractor:
                         if sid is None:
                             anon_img_idx += 1
                             sid = f"anon_img_{anon_img_idx}"
-                        slide_imgs.append({
-                            "id": sid,
-                            "name": f"slide_{s_idx}_image_{sid}.png"
-                        })
+                        slide_imgs.append({"id": sid, "name": f"slide_{s_idx}_image_{sid}.png"})
 
-                slides_out.append({
-                    "slide_number": s_idx,
-                    "texts": slide_texts,
-                    "images": slide_imgs
-                })
+                slides_out.append({"slide_number": s_idx, "texts": slide_texts, "images": slide_imgs})
 
             return {
                 "metadata": {
                     "file_name": Path(pptx_path).name,
                     "total_slides": len(slides_out),
-                    "extraction_date": "2025-06-17T00:00:00Z"
+                    "extraction_date": "2025-06-17T00:00:00Z",
                 },
-                "slides": slides_out
+                "slides": slides_out,
             }
 
         except Exception as exc:
