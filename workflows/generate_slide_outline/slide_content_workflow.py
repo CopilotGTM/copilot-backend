@@ -81,8 +81,8 @@ class SlideContentGenerator(Workflow):
                 "slide_content": i.description,
             }
             yield RunResponse(
-                event=RunEvent.run_response,
                 content=output_format,
+                status="RUNNING",
             )
 
 

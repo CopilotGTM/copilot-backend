@@ -125,7 +125,9 @@ class TranscriptSummaryAgent(Workflow):
         logger.info("Summary response initiated")
 
         async for chunk in summary_response:
-            yield RunResponse(event=RunEvent.run_response, content=chunk.content)
+            if chunk.event == "RunResponseContent":
+                yield RunResponse(status="RUNNING", content=chunk.content)
+        yield RunResponse(content="", status="COMPLETED")
 
 
 # async def main():

@@ -52,12 +52,12 @@ class RfpAgent(Workflow):
             execution_time = time.time() - execution_start
             logger.info(f"Total processing time: {execution_time:.2f} seconds")
 
-            return RunResponse(event=RunEvent.run_response, content=execution_response.content.model_dump())
+            return RunResponse(status="COMPLETED", content=execution_response.content.model_dump())
 
         except Exception as exc:  # pylint: disable=broad-except
             logger.exception("GeneralChatAgent failure")
             return RunResponse(
-                event=RunEvent.run_response,
+                status="COMPLETED",
                 content={
                     "answer": "Sorry, I hit an unexpected error while processing your request.",
                     "confidence_score": 0.0,
@@ -65,7 +65,6 @@ class RfpAgent(Workflow):
                     "error": str(exc),
                 },
             )
-
 
 # if __name__ == "__main__":
 #     workflow = RfpAgent()
