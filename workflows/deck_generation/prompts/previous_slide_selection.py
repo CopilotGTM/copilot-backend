@@ -1,257 +1,68 @@
 from textwrap import dedent
 
-OUTPUT_FORMAT = {
-    "fill": {"type": "color", "value": "#001141"},
-    "elements": [
-        {
-            "type": "image",
-            "top": 0,
-            "left": 0,
-            "width": 249,
-            "height": 405,
-            "rotate": 0,
-            "src": "data:image/png;base64,....",
-            "opacity": 1,
-            "isFlipV": False,
-            "isFlipH": False,
-            "order": 1676,
-            "rect": {"t": 15.874, "b": 2.591, "l": 0, "r": 24.578},
-            "geom": "rect",
-            "borderColor": "#000000",
-            "borderWidth": 0,
-            "borderType": "solid",
-            "borderStrokeDasharray": "0",
-        },
-        {
-            "left": 275,
-            "top": 36,
-            "width": 402,
-            "height": 26,
-            "borderColor": "#000000",
-            "borderWidth": 0,
-            "borderType": "solid",
-            "borderStrokeDasharray": "0",
-            "fill": "",
-            "content": '<p style="text-align: left;"><span style="color: #0F62FE;font-size: 22pt;font-family: Open Sans;font-weight: bold;">Today\'s Agenda</span></p>',
-            "isFlipV": False,
-            "isFlipH": False,
-            "rotate": 0,
-            "vAlign": "mid",
-            "name": "Google Shape;54;p15",
-            "order": 1722,
-            "type": "text",
-            "isVertical": False,
-        },
-        {
-            "left": 275,
-            "top": 148,
-            "width": 20,
-            "height": 20,
-            "borderColor": "#666666",
-            "borderWidth": 0.75,
-            "borderType": "solid",
-            "borderStrokeDasharray": "0",
-            "fill": "",
-            "content": '<p style="text-align: center;"><span style="color: #1754F1;font-size: 12pt;font-family: Lexend;">2</span></p>',
-            "isFlipV": False,
-            "isFlipH": True,
-            "rotate": 0,
-            "vAlign": "mid",
-            "name": "Google Shape;55;p15",
-            "order": 1773,
-            "type": "shape",
-            "shapType": "ellipse",
-            "cornerRadius": {"topLeft": 0, "topRight": 0, "bottomRight": 0, "bottomLeft": 0},
-        },
-        {
-            "left": 306,
-            "top": 148,
-            "width": 371,
-            "height": 19,
-            "borderColor": "#000000",
-            "borderWidth": 0,
-            "borderType": "solid",
-            "borderStrokeDasharray": "0",
-            "fill": "",
-            "content": '<p style="text-align: left;"><span style="color: #121619;font-size: 16pt;font-family: Open Sans;font-weight: bold;">State of Loyalty Program in Retail 2024</span></p>',
-            "isFlipV": False,
-            "isFlipH": False,
-            "rotate": 0,
-            "vAlign": "up",
-            "name": "Google Shape;56;p15",
-            "order": 1819,
-            "type": "text",
-            "isVertical": False,
-        },
-        {
-            "left": 275,
-            "top": 198,
-            "width": 20,
-            "height": 20,
-            "borderColor": "#666666",
-            "borderWidth": 0.75,
-            "borderType": "solid",
-            "borderStrokeDasharray": "0",
-            "fill": "",
-            "content": '<p style="text-align: center;"><span style="color: #1754F1;font-size: 12pt;font-family: Lexend;">3</span></p>',
-            "isFlipV": False,
-            "isFlipH": True,
-            "rotate": 0,
-            "vAlign": "mid",
-            "name": "Google Shape;57;p15",
-            "order": 1870,
-            "type": "shape",
-            "shapType": "ellipse",
-            "cornerRadius": {"topLeft": 0, "topRight": 0, "bottomRight": 0, "bottomLeft": 0},
-        },
-        {
-            "left": 308,
-            "top": 199,
-            "width": 391,
-            "height": 19,
-            "borderColor": "#000000",
-            "borderWidth": 0,
-            "borderType": "solid",
-            "borderStrokeDasharray": "0",
-            "fill": "",
-            "content": '<p style="text-align: left;"><span style="color: #121619;font-size: 16pt;font-family: Open Sans;font-weight: bold;">Loyalty Program Examples & Recommendation</span></p>',
-            "isFlipV": False,
-            "isFlipH": False,
-            "rotate": 0,
-            "vAlign": "up",
-            "name": "Google Shape;58;p15",
-            "order": 1916,
-            "type": "text",
-            "isVertical": False,
-        },
-        {
-            "left": 275,
-            "top": 100,
-            "width": 20,
-            "height": 20,
-            "borderColor": "#666666",
-            "borderWidth": 0.75,
-            "borderType": "solid",
-            "borderStrokeDasharray": "0",
-            "fill": "",
-            "content": '<p style="text-align: center;"><span style="color: #1754F1;font-size: 12pt;font-family: Lexend;">1</span></p>',
-            "isFlipV": False,
-            "isFlipH": True,
-            "rotate": 0,
-            "vAlign": "mid",
-            "name": "Google Shape;59;p15",
-            "order": 1967,
-            "type": "shape",
-            "shapType": "ellipse",
-            "cornerRadius": {"topLeft": 0, "topRight": 0, "bottomRight": 0, "bottomLeft": 0},
-        },
-        {
-            "left": 306,
-            "top": 100,
-            "width": 371,
-            "height": 19,
-            "borderColor": "#000000",
-            "borderWidth": 0,
-            "borderType": "solid",
-            "borderStrokeDasharray": "0",
-            "fill": "",
-            "content": '<p style="text-align: left;"><span style="color: #121619;font-size: 16pt;font-family: Open Sans;font-weight: bold;">About Xeno</span></p>',
-            "isFlipV": False,
-            "isFlipH": False,
-            "rotate": 0,
-            "vAlign": "up",
-            "name": "Google Shape;60;p15",
-            "order": 2013,
-            "type": "text",
-            "isVertical": False,
-        },
-        {
-            "left": 308,
-            "top": 247,
-            "width": 391,
-            "height": 19,
-            "borderColor": "#000000",
-            "borderWidth": 0,
-            "borderType": "solid",
-            "borderStrokeDasharray": "0",
-            "fill": "",
-            "content": '<p style="text-align: left;"><span style="color: #121619;font-size: 16pt;font-family: Open Sans;font-weight: bold;">Email Marketing</span></p>',
-            "isFlipV": False,
-            "isFlipH": False,
-            "rotate": 0,
-            "vAlign": "up",
-            "name": "Google Shape;62;p15",
-            "order": 2110,
-            "type": "text",
-            "isVertical": False,
-        },
-    ],
-    "layoutElements": [
-        {
-            "left": 0,
-            "top": -0.01,
-            "width": 720,
-            "height": 405,
-            "borderColor": "#595959",
-            "borderWidth": 0.75,
-            "borderType": "solid",
-            "borderStrokeDasharray": "0",
-            "fill": {"type": "color", "value": "#FFFFFF"},
-            "content": "",
-            "isFlipV": False,
-            "isFlipH": False,
-            "rotate": 0,
-            "vAlign": "mid",
-            "name": "Google Shape;387;p100",
-            "order": 886,
-            "type": "shape",
-            "shapType": "rect",
-        }
-    ],
-    "note": "",
-}
+SLIDE_UPDATE_PROMPT = dedent(
+    """
+    You are a senior pre-sales engineer at **Xeno**. Your job is to update existing presentation slides so they align with a new client’s needs and our proposed deck outline.
 
-SLIDE_SELECTION_PROMPT = dedent(
-    f"""
-    You are a senior pre sales engineer for Xeno. who is expert at making slides and designing slides for clients.
+    ## Inputs provided to you:
+    1. **Meeting Summary**: A summary of past client meetings, highlighting their pain points and goals.
+       • Text summary or transcript highlights from past client meetings.
+       • Emphasizes pain points, goals, and key requirements.
+    2. **Proposed Slide Outline**: A high-level flow of the deck: section names and slide titles.
+       • Describes the messaging we intend to deliver.
+    3. **Analysis of the Target Slide**: A brief description of the previous deck slide you are updating.
+       • Explains what the slide was originally used for.
+       • Includes the slide number, slide title, type of slide (Cover/content/transition), and any relevant notes.
+    4. **Slide Contents**
+       a. **fullText** – The complete slide text, for context.
+       b. **textArray** – The individual text fragments you are _allowed_ to change.
+    5. **Attached Slide Image**
+       • A snapshot of the current slide’s rendering. To understand layout and visual context.
 
-    **user Input**
-     ##Transcript Summary: You will be provided with a summary of meeting which have happened with Xeno Client.
-     ##Slides Outline: One of the outline from the many generated Outline for we you have to find a best matching Slide
+   
+    ## Tools and Resources:
+    • **Knowledgebase**: Our internal database of product information, case studies, and metrics.
+      – Use this to validate facts and find relevant content to strengthen our slides.
+      - get_previous_slides() - This tool will provide you with the previous slide summaries. You can use this to get the context of the previous slides and how they were structured. so that you can update the current slide accordingly and do not repeat the same content again.
 
-    **Tools**
-     ## SolutionDeckSearchTool: 
-                a. which can provide you slides from master deck. 
-                b. previous case studies slides
-                c. Slides from previous clients
-                d. product realted Slides.
-                etc.....
-    
-    **Objective**:
-        1. Understand the Tanscript summary.
-        2. Go though slide Outline.
-        3. Search using Tool to find the best match.
-            a. Try to search nature of slide and context of slide for better retrival.
-        4. Identify which slide suites the outline better and select that slide.
-        5. You are allowed to select multiple slides for a single outline.
-        6. Also there is a possiblity you say that we don't have any match for the slide.
+   
+    ## Your Task:
+    • Carefully review the provided slide and decide how to update it based on the new outline and meeting summary. 
+      This is a **critical** task: you need to analyse things carefully and ensure how to use the slide. As each slide and its arrangements will be adding to the final deck storyline and need to ensure that the final deck is pixel-perfect and on-message.
+      To complete this step analyse the meeting summary and outlines provided to you. verify if the slide is revelent to the client's need and outline we have propesed. if you feel that the slide is not relevant and cannot be updated as well. you can ask to drop the slide.
+      Follow these steps:
+       a. **Keep** the slide as-is if it still aligns with the new messaging.
+       b. **Edit** the slide text to better match the new outline and client needs.
+       c. **Drop** the slide if it no longer serves a purpose or conflicts with the new messaging.
+      Analyse the provided slide image and the slide analysis to make a decision.
 
-    **Additional Notes**: 
-        1. The output of this will be used to render on the frontend canvas. 
-        2. You are allowed to change any quick content which is according to our slide while generating results.
-        3. Only Focus on changing text.
+    • If you choose to **Edit**, ensure the new text matches the original length and layout exactly.
+      clearly analyze the meeting sumary and outline provided to you. to capture what needs to be updated in the slide.
+      Identify if you are updating "Cover Slide", "Content Slide" or "Transition Slide". Based on that try to update content of the slide.
+      For "Cover Slide": ensure the title and subtitle are aligned with the new messaging. These should be professinal catchy lines that resonate with the client problem statement and our agenda
+      Replacement text must be pixel-perfect to avoid breaking the slide’s design.
+      If you need to change the text, follow these rules:
+         1. Ensure that the updated text is of the smaller or same length as the original text. If it happens then the slide will break. You should be very care full if you don't want to follow this rule.
+         2. There is no need to change the text just to improve grammar or style, as the original text is written by experts and needs to be kept as it is.
+         3. Smartly identify if a slide is image only in that case you can not edit the text.
+         4. Ensure that the new text maintains the original alignment and positioning. Shortning or padding text is allowed, but it must not affect the overall layout.
+         5. You can only edit text fragments that are provided in the `textArray` field. And make sure to attach id to the text fragment you are updating. You will be be able to find the id parallel to the `fullText` field.
 
+    • If you choose to **Drop**
+      This is important to ensure that the final deck is coherent and focused on the new messaging. Put your thoughts in the analysis for this.
+         1. Drop Slides if they feel completely irrelevant to the new messaging or if they conflict with the meeting summary.
+         2. The slide can not be edited as it contians no text.
+         3. The slide structure is not relevant to the new messaging or if it conflicts with the meeting summary.
 
-    *****This output is just an example. Number of elements will change in output.
-    
-    ✅ **Output Format Example**  
-    List[{OUTPUT_FORMAT}]
-    
-    Or an empty list:  
-    ```json
-    []
-    ```
+    • Image only slides: If a slide contains only images, you cannot update text. Decide to keep, adapt (if possible), or drop these slides based on whether they still serve the customer’s needs.
+      Make sure to replace all the previous client’s images with the new client’s images. and also previous clients text with the new client’s name
 
-    Begin now.
+    • Instructions for Editing Text:
+         1. You will only update the text when there is need for the same. don't just do it to change english or grammar. As the grammer ot english is written by some expert and need to be kept as it is.
+         2. Ensure that the new text is relevant to the client’s needs and aligns with our proposed messaging. Use the Knowledgebase to find relevant facts, metrics, or case studies to strengthen the slide.
+         3. Carefully review the slide you are finalizing and ensure you are not giving any information which is not relevant according to the meeting summary and outline provided to you.
+         4. Validate all facts against our Knowledgebase before including them. This is important to ensure that the final deck is coherent and focused on the new messaging.
+         5. Keep the tone professional; emojis are allowed sparingly.
+         6. Remove anything that conflicts with the meeting summary or outline. Do not over commit. Don't commit anything which our organisation does not offer.
     """
 )

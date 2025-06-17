@@ -27,12 +27,13 @@ from app_layer.routers.technical_deck.get_technical_deck import technical_deck
 from app_layer.routers.technical_deck.select_template import select_template
 from app_layer.routers.rfp_sheet.sheet_identification import rfp__sheet_router
 
-import app_layer.websockets.chat_message_handler
-import app_layer.websockets.connect_handler
-import app_layer.websockets.technical_deck.transcript_summary_handler
-import app_layer.websockets.technical_deck.slide_content_generation
-import app_layer.websockets.technical_deck.technical_deck_generation
-import app_layer.websockets.rfp_sheet.rfp_answer_generation
+import app_layer.events.chat_message_handler
+import app_layer.events.connect_handler
+import app_layer.events.technical_deck.transcript_summary_handler
+import app_layer.events.technical_deck.slide_content_generation
+import app_layer.events.technical_deck.technical_deck_generation
+import app_layer.events.rfp_sheet.rfp_answer_generation
+import app_layer.events.redis_subscriber
 
 logger = get_logger()
 

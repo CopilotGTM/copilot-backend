@@ -184,3 +184,5 @@ Dockerfile
 testing_local
 .env.development
 .DS_Store
+output_images
+Solution Deck 1.pptx

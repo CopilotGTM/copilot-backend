@@ -25,11 +25,7 @@ class TranscriptSummaryAgent(Workflow):
         super().__init__(**kwargs)
 
     summary_agent = Agent(
-        model=AzureOpenAI(
-            id="o4-mini",
-            api_version="2024-12-01-preview",
-            reasoning_effort="high"
-        ),
+        model=AzureOpenAI(id="o4-mini", api_version="2024-12-01-preview", reasoning_effort="high"),
         description=dedent(
             """
             You are an AI assistant tasked with analyzing a presales meeting transcript. Thoroughly analyze the meeting transcript. 
@@ -56,6 +52,8 @@ class TranscriptSummaryAgent(Workflow):
             # Meeting Discussion Organized into Logical Sections
               Analyze the meeting transcript and determine 2 to 4 logical sections based on the flow and themes of the conversation. These sections should clearly explain all the points discussed in the meeting.
               As these sections will determine the next steps for the users. Capture all the numbers clearly as these numbers will be useful for our sales pitch.
+              Try not to include small chit-chat or irrelevant discussions sections. These discussions generally happens at the start of the meeting. Focus on the main points discussed in the meeting.
+              This small chit chat converstation have no relation with the final meeting outcome.
             - For each section:
             - Create a clear sub-heading: ## [Section Name] (for example: "Case Study Discussion" or "Technical Challenges and Solutions")
             - Summarize the points discussed under this section using bullet points. Try to capture all the points associated with the section.
@@ -129,7 +127,9 @@ class TranscriptSummaryAgent(Workflow):
         logger.info("Summary response initiated")
 
         async for chunk in summary_response:
-            yield RunResponse(event=RunEvent.run_response, content=chunk.content)
+            if chunk.event == "RunResponseContent":
+                yield RunResponse(status="RUNNING", content=chunk.content)
+        yield RunResponse(content="", status="COMPLETED")
 
 
 # async def main():

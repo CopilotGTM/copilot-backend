@@ -19,7 +19,6 @@ from app_layer.utils.logger import get_logger
 from workflows.utils.send_status import SendStatus
 from workflows.general_chat.prompts.execution import EXECUTION_PROMPT
 from workflows.utils.get_master_db_url import get_master_db_url
-from workflows.utils.source_collection import KBHits
 from workflows.utils.format_user_messages import format_user_messages
 
 load_dotenv()
@@ -71,12 +70,10 @@ class GeneralChatAgent(Workflow):
 
         # Planning Execution
         execution_response = await self.execution_agent.arun(messages=input_messages, stream=True)
-        kb_hits = KBHits()
-        async for chunk in kb_hits.stream(execution_response):
-            # logger.info(f"KB Hits: {kb_hits}")
-            yield RunResponse(event=RunEvent.run_response, content=chunk.content)
-        logger.info(f"KB Hits: {kb_hits}")
-        yield RunResponse(event=RunEvent.workflow_completed, content="")
+        async for chunk in execution_response:
+            if chunk.event == "RunResponseContent":
+                yield RunResponse(status="RUNNING", content=chunk.content)
+        yield RunResponse(content="", status="COMPLETED")
 
 
 # async def main():
