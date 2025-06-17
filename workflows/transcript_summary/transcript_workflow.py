@@ -2,7 +2,7 @@ from pydantic import BaseModel
 import asyncio
 from typing import AsyncIterator, List, Dict
 from textwrap import dedent
-
+import os
 from agno.workflow import Workflow, RunResponse, RunEvent
 from agno.agent import Agent
 from agno.models.azure import AzureOpenAI
@@ -12,17 +12,25 @@ from app_layer.utils.logger import get_logger
 from workflows.utils.get_master_db_url import get_master_db_url
 from models.chat_socket_models import AttachmentModel
 
-from infrastructure.read_docx import open_docx
-from workflows.utils.cloud_uri import to_s3_uri
+from infrastructure.document_reader import DocumentReader
+from infrastructure.cloud_file_reader import CloudConfig
+from core.app_state import fastapp
 
 load_dotenv()
 logger = get_logger()
+
+CLOUD_PROVIDER = os.getenv("CLOUD_PROVIDER")
+APPLICATION_STORAGE_NAME = os.getenv("APPLICATION_STORAGE_NAME")
+APPLICATION_REGION = os.getenv("APPLICATION_REGION")
 
 
 class TranscriptSummaryAgent(Workflow):
 
     def __init__(self, provider: str = "azure", model_name: str = "o4-mini", **kwargs):
         super().__init__(**kwargs)
+        # Initialize the document reader with cloud configuration
+        cloud_config = CloudConfig(CLOUD_PROVIDER, APPLICATION_REGION)
+        self.document_reader = DocumentReader(cloud_config)
 
     summary_agent = Agent(
         model=AzureOpenAI(id="o4-mini", api_version="2024-12-01-preview", reasoning_effort="high"),
@@ -117,19 +125,24 @@ class TranscriptSummaryAgent(Workflow):
             raise ValueError("No attachments provided.")
 
         file_metadata = attached_models[0]
-        transcript_file_path = to_s3_uri(file_metadata["url"])
-        docs = open_docx(transcript_file_path)
+        file_url = str(file_metadata["url"])
 
-        full_text = "\n".join([para.text for para in docs.paragraphs])
+        try:
+            # Read the document content using cloud-agnostic document reader
+            text_content = self.document_reader.read_document(file_url)
 
-        # Properly await coroutine before using async for
-        summary_response = await self.summary_agent.arun(full_text, stream=True)
-        logger.info("Summary response initiated")
+            # Generate summary using the agent
+            summary_response = await self.summary_agent.arun(text_content, stream=True)
+            logger.info("Summary response initiated")
 
-        async for chunk in summary_response:
-            if chunk.event == "RunResponseContent":
-                yield RunResponse(status="RUNNING", content=chunk.content)
-        yield RunResponse(content="", status="COMPLETED")
+            async for chunk in summary_response:
+                if chunk.event == "RunResponseContent":
+                    yield RunResponse(status="RUNNING", content=chunk.content)
+            yield RunResponse(content="", status="COMPLETED")
+
+        except Exception as e:
+            logger.error(f"Error processing transcript: {str(e)}")
+            raise
 
 
 # async def main():

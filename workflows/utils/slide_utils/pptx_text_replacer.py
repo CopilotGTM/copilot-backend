@@ -11,7 +11,7 @@ from pptx import Presentation
 class PPTXTextReplacer:
     """
     Replace text in PowerPoint presentations using shape IDs.
-    
+
     This class handles text replacement in text boxes and table cells,
     using shape IDs found in shape.name (e.g. '417') as identifiers.
     """
@@ -46,9 +46,7 @@ class PPTXTextReplacer:
         for item in replacements:
             sid = item.get("id")
             if sid:
-                mapping.setdefault(str(sid), []).append(
-                    {"old": item["previous_text"], "new": item["updated_text"]}
-                )
+                mapping.setdefault(str(sid), []).append({"old": item["previous_text"], "new": item["updated_text"]})
         return mapping
 
     @staticmethod

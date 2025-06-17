@@ -129,11 +129,10 @@ class DeckGeneration(Workflow):
             structured_outputs=True,
         )
 
-
     def get_previous_slides(self) -> str:
         """
         Returns a string containing all previous slide summaries.
-        
+
         Returns:
             str: String containing summaries of all previously processed slides, separated by newlines
         """
@@ -178,7 +177,7 @@ class DeckGeneration(Workflow):
                     }
 
                     # Store the slide summary
-                    self.previous_slides.append(content.get('slide_summary'))
+                    self.previous_slides.append(content.get("slide_summary"))
                     logger.info(f"Slide summary - {content.get('slide_summary')}")
 
                     # Ensure the slide number is valid
