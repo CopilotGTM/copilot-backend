@@ -98,16 +98,8 @@ async def generate_deck(
             "session_id": session_id,
             "system_message_id": system_message_id,
             "user_id": user_id,
-            "organisation_id": organisation_id
+            "organisation_id": organisation_id,
         }
-        await WebSocketResponse.emit_chunk(
-            room=sid,
-            event=RESPONSE_EVENT,
-            chat_id=session_id,
-            message_id=system_message_id,
-            response="",
-            message_type="TECHNICAL_DECK",
-        )
 
         # Start the Celery task
         generate_deck_task.delay(sid, json.dumps(task_data))

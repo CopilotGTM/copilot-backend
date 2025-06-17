@@ -60,7 +60,7 @@ class SlideContentGenerator(Workflow):
         # 1) Planning
         logger.info("Generating Solutioning Narration")
         story_narration = await self.story_narration_outline.arun(
-            messages=[{"role":"user", "content": f"This is generated input Summary {input_summary}"}]
+            messages=[{"role": "user", "content": f"This is generated input Summary {input_summary}"}]
         )
         story_narration_outline = story_narration.content
         logger.info(f"{story_narration_outline}")
@@ -69,8 +69,8 @@ class SlideContentGenerator(Workflow):
         logger.info("Generating Slide Outline")
         slide_outline = await self.generate_outline.arun(
             messages=[
-                {"role":"user", "content": f"Summary of the meeting:{input_summary}"},
-                {"role":"assistant", "content": f"Solutioning Narration Suggested:{story_narration_outline}"}
+                {"role": "user", "content": f"Summary of the meeting:{input_summary}"},
+                {"role": "assistant", "content": f"Solutioning Narration Suggested:{story_narration_outline}"},
             ]
         )
 

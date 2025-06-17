@@ -25,7 +25,7 @@ def get_redis_client() -> redis.Redis:
         socket_timeout=30,  # Increased timeout
         socket_connect_timeout=30,  # Added connection timeout
         retry_on_timeout=True,  # Enable retry on timeout
-        health_check_interval=30  # Check connection health every 30 seconds
+        health_check_interval=30,  # Check connection health every 30 seconds
     )
     redis_client.ping()
     return redis_client

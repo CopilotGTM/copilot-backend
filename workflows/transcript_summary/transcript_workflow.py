@@ -25,11 +25,7 @@ class TranscriptSummaryAgent(Workflow):
         super().__init__(**kwargs)
 
     summary_agent = Agent(
-        model=AzureOpenAI(
-            id="o4-mini",
-            api_version="2024-12-01-preview",
-            reasoning_effort="high"
-        ),
+        model=AzureOpenAI(id="o4-mini", api_version="2024-12-01-preview", reasoning_effort="high"),
         description=dedent(
             """
             You are an AI assistant tasked with analyzing a presales meeting transcript. Thoroughly analyze the meeting transcript. 

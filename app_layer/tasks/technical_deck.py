@@ -9,27 +9,24 @@ from sqlmodel import select
 from core.database import get_master_session
 from models.chat_db_models import ChatSession as ChatSessionDB, ChatMessage as ChatMessageDB
 from workflows.deck_generation.deck_generation_workflow import DeckGeneration
-from agno.workflow import RunEvent
-from models.websocket_response import WebSocketResponse
+
 
 logger = get_logger()
 WEBSOCKET_NAMESPACE = "/websocket/v1"
 RESPONSE_EVENT = "receive_generated_deck"
 REDIS_CHANNEL = "websocket_messages"
 
+
 def publish_websocket_message(sid, event, data):
     """Publish websocket message to Redis channel"""
     try:
         redis_client = get_redis_client()
-        message = {
-            "sid": sid,
-            "event": event,
-            "data": data
-        }
+        message = {"sid": sid, "event": event, "data": data}
         redis_client.publish(REDIS_CHANNEL, json.dumps(message))
         logger.info(f"Published message to Redis channel {REDIS_CHANNEL}")
     except Exception as e:
         logger.error(f"Error publishing websocket message: {e}")
+
 
 @celery.task(bind=True)
 def generate_deck_task(self, sid, data_json):
@@ -38,7 +35,9 @@ def generate_deck_task(self, sid, data_json):
     system_message_id = data["system_message_id"]
     user_id = data["user_id"]
     organisation_id = data["organisation_id"]
-    logger.info(f"Celery task generate_deck_task started: sid={sid}, session_id={session_id}, message_id={system_message_id}")
+    logger.info(
+        f"Celery task generate_deck_task started: sid={sid}, session_id={session_id}, message_id={system_message_id}"
+    )
 
     master_session = next(get_master_session())
     try:
@@ -49,7 +48,9 @@ def generate_deck_task(self, sid, data_json):
             ChatSessionDB.is_deleted == False,
         )
         chat = master_session.exec(statement).one_or_none()
-        logger.info(f"Fetched chat session: session_id={session_id}, user_id={user_id}, organisation_id={organisation_id}")
+        logger.info(
+            f"Fetched chat session: session_id={session_id}, user_id={user_id}, organisation_id={organisation_id}"
+        )
         if not chat:
             raise RuntimeError("Chat session not found")
 
@@ -67,17 +68,20 @@ def generate_deck_task(self, sid, data_json):
         async def _run_workflow():
             full_response = ""
             async for chunk in agent.run_workflow(deck_message):
-                is_complete = chunk.event == RunEvent.workflow_completed
+                is_complete = chunk.status == "COMPLETED"
                 if chunk.content:
-                    full_response = full_response + chunk.content
+                    full_response = full_response + chunk.content.get("public_url", "")
                     response_data = {
                         "chat_id": session_id,
                         "message_id": system_message_id,
                         "isComplete": is_complete,
                         "isLineComplete": True,
                         "isError": False,
-                        "response": chunk.content,
+                        "response": chunk.content.get("public_url", ""),
                         "message_type": "TECHNICAL_DECK",
+                        "extras": {
+                            "completion_percentage": chunk.content.get("completion_percentage", 0),
+                        },
                     }
                     publish_websocket_message(sid, RESPONSE_EVENT, response_data)
             return full_response
