@@ -1,199 +1,182 @@
 #!/usr/bin/env python3
 """
-PPTX Text Extractor - Extract text content and structure from PowerPoint presentations
+PPTX Text Extractor – keeps raw IDs and handles tables
 """
-import os
-from pptx import Presentation
+import re
 from pathlib import Path
-from datetime import datetime
+from pptx import Presentation
 
 
 class PPTXExtractor:
-    """Extract text content from PPTX files with intelligent text splitting."""
+    """Class to extract text and other content from PowerPoint presentations."""
 
-    def __init__(self):
-        """Initialize the extractor."""
-        pass
-
-    def split_text_intelligently(self, text):
-        """Split text into meaningful portions for better AI processing."""
+    # text helpers
+    def split_text_intelligently(self, text: str):
+        """Same splitting logic you already had (slightly compacted)."""
         if not text.strip():
             return []
 
-        # Clean up text
         text = text.strip()
-        portions = []
-
-        # Method 1: Split by line breaks (most common in PPTX)
-        lines = [line.strip() for line in text.split("\n") if line.strip()]
+        lines = [l for l in (ln.strip() for ln in text.split("\n")) if l]
         if len(lines) > 1:
-            portions = lines
-        else:
-            # Method 2: Split by bullet points or numbered lists
-            import re
+            return lines
 
-            bullet_pattern = r"[•·▪▫◦‣⁃]\s*"
-            number_pattern = r"\d+\.\s+"
+        bullet_pat = r"[•·▪▫◦‣⁃]\s*"
+        num_pat = r"\d+\.\s+"
+        if re.search(bullet_pat, text):
+            return [p for p in re.split(bullet_pat, text) if p.strip()]
+        if re.search(num_pat, text):
+            return [p for p in re.split(num_pat, text) if p.strip()]
 
-            # Try bullet points
-            if re.search(bullet_pattern, text):
-                parts = re.split(bullet_pattern, text)
-                portions = [part.strip() for part in parts if part.strip()]
-            # Try numbered lists
-            elif re.search(number_pattern, text):
-                parts = re.split(number_pattern, text)
-                portions = [part.strip() for part in parts if part.strip()]
-            else:
-                # Method 3: Split by common separators
-                separators = [" - ", " | ", " / ", ": ", "; "]
-                for sep in separators:
-                    if sep in text and len(text.split(sep)) > 1:
-                        portions = [part.strip() for part in text.split(sep) if part.strip()]
-                        break
+        for sep in (" - ", " | ", " / ", ": ", "; "):
+            if sep in text:
+                parts = [p.strip() for p in text.split(sep) if p.strip()]
+                if parts:
+                    return parts
 
-                # Method 4: Split by sentences (for longer text)
-                if not portions and len(text) > 100:
-                    sentences = re.split(r"[.!?]+\s+", text)
-                    if len(sentences) > 1:
-                        cleaned_sentences = []
-                        for i, sentence in enumerate(sentences):
-                            sentence = sentence.strip()
-                            if sentence:
-                                # Add punctuation back if it was removed
-                                if i < len(sentences) - 1 and not sentence.endswith((".", "!", "?")):
-                                    sentence += "."
-                                cleaned_sentences.append(sentence)
-                        portions = cleaned_sentences
+        if len(text) > 100:
+            sentences = re.split(r"[.!?]+\s+", text)
+            cleaned = [
+                s if s.endswith((".", "!", "?")) else s + "."
+                for s in sentences if s.strip()
+            ]
+            if len(cleaned) > 1:
+                return cleaned
 
-                # Method 5: Split long text into chunks (last resort)
-                if not portions and len(text) > 200:
-                    words = text.split()
-                    chunk_size = max(10, len(words) // 3)  # Create roughly 3 chunks
-                    chunks = []
-                    for i in range(0, len(words), chunk_size):
-                        chunk = " ".join(words[i : i + chunk_size])
-                        chunks.append(chunk)
-                    portions = chunks
+        if len(text) > 200:
+            words = text.split()
+            size = max(10, len(words) // 3)
+            return [" ".join(words[i:i + size]) for i in range(0, len(words), size)]
 
-        # Fallback: use full text as single portion
-        if not portions:
-            portions = [text]
+        return [text]
 
-        return portions
+    # id helper
+    @staticmethod
+    def _raw_shape_id(shape) -> str | None:
+        """
+        Return the raw numeric/string ID embedded in shape.name.
+        Format: 'Anything;ID;pSomething'
+        If not present, return None.
+        """
+        name = getattr(shape, "name", "")
+        if ";" in name:
+            parts = name.split(";")
+            if len(parts) > 1 and parts[1].strip():
+                return parts[1].strip()
+        return None
 
-    def extract_from_pptx(self, pptx_path):
-        """Extract text content from PPTX file."""
+    # table helper
+    def extract_table_cells(self, table):
+        """Flatten the table into a cleaned list of strings."""
+        cells = []
+        for row in table.rows:
+            for cell in row.cells:
+                txt = (cell.text_frame.text or "").strip() if cell.text_frame else ""
+                if txt:
+                    cells.extend(self.split_text_intelligently(txt))
+        return cells
+
+    # main api
+    def extract_from_pptx(self, pptx_path: str):
+        """
+        Extract text and images from a PowerPoint presentation.
+
+        Args:
+            pptx_path: Path to the PowerPoint file.
+
+        Returns:
+            Dictionary containing metadata and extracted content from slides.
+
+        Raises:
+            RuntimeError: If there's an error processing the PPTX file.
+        """
         try:
-            presentation = Presentation(pptx_path)
+            prs = Presentation(pptx_path)
+            slides_out = []
 
-            slides_data = []
+            anon_text_idx = 0  # fallback IDs when shape has no name
+            anon_table_idx = 0
+            anon_img_idx = 0
 
-            for slide_index, slide in enumerate(presentation.slides):
-                slide_number = slide_index + 1
-
-                # Extract text and images from slide
-                texts = []
-                images = []
+            for s_idx, slide in enumerate(prs.slides, start=1):
+                slide_texts = []
+                slide_imgs = []
                 all_text = []
-                text_id_counter = 0
-                image_id_counter = 0
 
                 for shape in slide.shapes:
-                    try:
-                        # Extract text
-                        if hasattr(shape, "text_frame") and shape.text_frame.text.strip():
-                            shape_text = shape.text_frame.text.strip()
-                            all_text.append(shape_text)
+                    sid = self._raw_shape_id(shape)
 
-                            # Create text array from individual portions
-                            text_array = []
-                            if hasattr(shape.text_frame, "paragraphs"):
-                                # Extract from individual paragraphs and runs
-                                for paragraph in shape.text_frame.paragraphs:
-                                    if hasattr(paragraph, "runs") and paragraph.runs:
-                                        for run in paragraph.runs:
-                                            if run.text.strip():
-                                                text_array.append(run.text.strip())
-                                    elif paragraph.text.strip():
-                                        # Split paragraph text intelligently
-                                        portions = self.split_text_intelligently(paragraph.text.strip())
-                                        text_array.extend(portions)
-                            else:
-                                # Fallback: Split shape text intelligently
-                                text_chunks = self.split_text_intelligently(shape_text)
-                                text_array.extend(text_chunks)
+                    # Process text boxes and placeholders
+                    if getattr(shape, "text_frame", None) and shape.text_frame.text.strip():
+                        txt_full = shape.text_frame.text.strip()
+                        txt_chunks = []
 
-                            # Only add if there's actual text content
-                            if shape_text or text_array:
-                                # Get shape ID from name (format: "Google Shape;417;p131")
-                                shape_id = None
-                                shape_name = getattr(shape, "name", "")
-                                if shape_name and ";" in shape_name:
-                                    try:
-                                        shape_id = shape_name.split(";")[1]  # Get the ID part
-                                    except:
-                                        pass
+                        for para in shape.text_frame.paragraphs:
+                            if para.runs:
+                                txt_chunks.extend([
+                                    run.text.strip()
+                                    for run in para.runs if run.text.strip()
+                                ])
+                            elif para.text.strip():
+                                txt_chunks.extend(
+                                    self.split_text_intelligently(para.text.strip())
+                                )
 
-                                # Debug print shape properties
+                        if not txt_chunks:
+                            txt_chunks.extend(self.split_text_intelligently(txt_full))
 
-                                if shape_id is None:
-                                    text_id_counter += 1
-                                    shape_id = f"text_{text_id_counter}"
+                        if sid is None:
+                            anon_text_idx += 1
+                            sid = f"anon_text_{anon_text_idx}"
 
-                                text_item = {
-                                    "id": str(shape_id),  # Use ID from shape name
-                                    "fullText": shape_text,
-                                    "textArray": text_array,
-                                }
-                                texts.append(text_item)
+                        slide_texts.append({
+                            "id": sid,
+                            "type": "textbox",
+                            "fullText": txt_full,
+                            "textArray": txt_chunks
+                        })
+                        all_text.append(txt_full)
 
-                        # Extract images
-                        if hasattr(shape, "image"):
-                            # Get shape ID from name (format: "Google Shape;417;p131")
-                            shape_id = None
-                            shape_name = getattr(shape, "name", "")
-                            if shape_name and ";" in shape_name:
-                                try:
-                                    shape_id = shape_name.split(";")[1]  # Get the ID part
-                                except:
-                                    pass
+                    # Process tables
+                    elif getattr(shape, "has_table", False):
+                        chunks = self.extract_table_cells(shape.table)
+                        if chunks:
+                            if sid is None:
+                                anon_table_idx += 1
+                                sid = f"anon_table_{anon_table_idx}"
 
-                            # Debug print image shape properties
+                            slide_texts.append({
+                                "id": sid,
+                                "type": "table",
+                                "fullText": " ".join(chunks),
+                                "textArray": chunks
+                            })
+                            all_text.extend(chunks)
 
-                            if shape_id is None:
-                                image_id_counter += 1
-                                shape_id = f"image_{image_id_counter}"
+                    # Process images
+                    if getattr(shape, "image", None):
+                        if sid is None:
+                            anon_img_idx += 1
+                            sid = f"anon_img_{anon_img_idx}"
+                        slide_imgs.append({
+                            "id": sid,
+                            "name": f"slide_{s_idx}_image_{sid}.png"
+                        })
 
-                            image_item = {
-                                "id": str(shape_id),  # Use ID from shape name
-                                "name": f"slide_{slide_number}_image_{shape_id}.png",
-                            }
-                            images.append(image_item)
-
-                    except Exception as e:
-                        # Skip problematic shapes and continue
-                        continue
-
-                # Combine all text for slide type detection
-                full_text = " ".join(all_text)
-
-                slide_data = {
-                    "slide_number": slide_number,
-                    "texts": texts,
-                    "images": images,
-                }
-
-                slides_data.append(slide_data)
-                total_text_chunks = sum(len(text["textArray"]) for text in texts)
+                slides_out.append({
+                    "slide_number": s_idx,
+                    "texts": slide_texts,
+                    "images": slide_imgs
+                })
 
             return {
                 "metadata": {
                     "file_name": Path(pptx_path).name,
-                    "total_slides": len(slides_data),
-                    "extraction_date": "2024-06-08T20:16:00Z",
+                    "total_slides": len(slides_out),
+                    "extraction_date": "2025-06-17T00:00:00Z"
                 },
-                "slides": slides_data,
+                "slides": slides_out
             }
 
-        except Exception as e:
-            raise Exception(f"Error processing PPTX file: {e}")
+        except Exception as exc:
+            raise RuntimeError(f"Error processing PPTX file: {exc}")
