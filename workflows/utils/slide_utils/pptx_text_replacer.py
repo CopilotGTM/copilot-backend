@@ -109,3 +109,47 @@ class PPTXTextReplacer:
             self.presentation.save(self.pptx_output)
         else:
             print(f"   ⚠️ No replacements made")
+
+    def delete_slides(self, slide_numbers: list[int]) -> bool:
+        """Delete multiple slides from the presentation by their numbers.
+
+        Args:
+            slide_numbers: List of 1-based indices of the slides to delete.
+
+        Returns:
+            bool: True if all specified slides were successfully deleted, False if any deletion failed.
+        """
+        if not slide_numbers:
+            print("⚠️ No slide numbers provided")
+            return False
+
+        # Validate all slide numbers first
+        total_slides = len(self.presentation.slides)
+        validated_indices = []
+        
+        for slide_number in slide_numbers:
+            try:
+                idx = int(slide_number) - 1
+                if idx < 0 or idx >= total_slides:
+                    print(f"⚠️ Slide {slide_number} out of range")
+                    return False
+                validated_indices.append(idx)
+            except Exception:
+                print(f"⚠️ Invalid slide number: {slide_number}")
+                return False
+
+        # Sort indices in reverse order to prevent index shifting issues
+        validated_indices.sort(reverse=True)
+        
+        # Get the XML slides
+        xml_slides = self.presentation.slides._sldIdLst
+        
+        # Delete slides in reverse order
+        for idx in validated_indices:
+            xml_slides.remove(xml_slides[idx])
+            print(f"🗑️ Deleted slide {idx + 1}")
+        
+        # Save the presentation after all deletions
+        self.presentation.save(self.pptx_output)
+        print(f"✅ Successfully deleted {len(validated_indices)} slides")
+        return True

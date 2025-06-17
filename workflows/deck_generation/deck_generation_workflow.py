@@ -10,7 +10,7 @@ from uuid import UUID, uuid4
 import boto3
 
 # Agno framework imports
-from agno.workflow import Workflow, RunResponse, RunEvent
+from agno.workflow import Workflow, RunResponse
 from agno.agent import Agent
 from agno.models.azure import AzureOpenAI
 from agno.knowledge.pdf import PDFKnowledgeBase
@@ -32,7 +32,7 @@ from workflows.utils.slide_utils.pptx_text_replacer import PPTXTextReplacer
 from workflows.deck_generation.prompts.previous_slide_selection import SLIDE_UPDATE_PROMPT
 from workflows.deck_generation.models import TextMapping
 
-# from testing_local.test import deck_message
+from testing_local.test import deck_message
 from workflows.deck_generation.slide_mapping import SLIDE_MAPPING
 
 load_dotenv()
@@ -89,6 +89,9 @@ class DeckGeneration(Workflow):
     def __init__(self, provider: str = "azure", model_name: str = "o4-mini", **kwargs):
         super().__init__(**kwargs)
 
+        # Initialize list to store previous slide summaries
+        self.previous_slides = []
+
         df_url = get_master_db_url()
         self.knowledge_base = PDFKnowledgeBase(
             path="",
@@ -111,6 +114,7 @@ class DeckGeneration(Workflow):
         self.pptx_extractor = PPTXExtractor()
         self.pptx_basic_slide_manager = PptxBasicSlideManager("./Solution Deck 1.pptx")
         self.pptx_text_replacer = PPTXTextReplacer(self.output_pptx_path)
+        self.delete_slide = []
 
         # Read the input PPT and create a copy for output
         self.slide_text = self.pptx_extractor.extract_from_pptx(self.input_pptx_path)
@@ -118,11 +122,23 @@ class DeckGeneration(Workflow):
         # Configure the Agent for slide-by-slide updates, keeping only user memories
         self.previous_slide_extraction: Agent = Agent(
             model=AzureOpenAI(id="gpt-4.1", api_version="2024-12-01-preview"),
+            tools=[self.get_previous_slides()],
             knowledge=self.knowledge_base,
             description=SLIDE_UPDATE_PROMPT,
             response_model=TextMapping,
             structured_outputs=True,
         )
+
+
+    def get_previous_slides(self) -> str:
+        """
+        Returns a string containing all previous slide summaries.
+        
+        Returns:
+            str: String containing summaries of all previously processed slides, separated by newlines
+        """
+        logger.info("Retrieving previous slide summaries.")
+        return "\n".join(self.previous_slides) if self.previous_slides else ""
 
     async def run_workflow(self, deck_message: ChatMessageDB) -> AsyncIterator[RunResponse]:
         try:
@@ -136,7 +152,7 @@ class DeckGeneration(Workflow):
 
         slide_count = self.pptx_basic_slide_manager.get_slide_count()
 
-        for slide_number in range(1, 2 + 1):
+        for slide_number in range(1, slide_count + 1):
             mapped_slide = [i for i in SLIDE_MAPPING if i["slide_number"] == slide_number]
 
             # Get current slide content
@@ -160,33 +176,41 @@ class DeckGeneration(Workflow):
                         "slide_number": slide_number,
                         "replacement_texts": content.get("replacements", []),
                     }
+
+                    # Store the slide summary
+                    self.previous_slides.append(content.get('slide_summary'))
+                    logger.info(f"Slide summary - {content.get('slide_summary')}")
+
+                    # Ensure the slide number is valid
                     if slide_replacement["replacement_texts"]:
                         self.pptx_text_replacer.run(slide_replacement)
                 else:
-                    pass  # Slide not required, no action needed
+                    self.delete_slide.append(slide_number)
             yield RunResponse(
                 content={"completion_percentage": round((slide_number / slide_count) * 100, 2), "public_url": ""}
             )
+        # Delete slides that are marked for deletion
+        self.pptx_text_replacer.delete_slides(self.delete_slide)
 
         # Upload the generated PPT and create a downloadable URL
         public_url = upload_to_s3(self.output_pptx_path)
         yield RunResponse(content={"completion_percentage": 100, "public_url": public_url}, status="COMPLETED")
 
 
-# async def main():
-#     chat = DeckGeneration()
-#     output = []
+async def main():
+    chat = DeckGeneration()
+    output = []
 
-#     logger.info("Workflow execution started.")
+    logger.info("Workflow execution started.")
 
-#     try:
-#         async for response in chat.run_workflow(deck_message):
-#             logger.info(f"Received response: {response}")
-#     except Exception as e:
-#         logger.error(f"Error in workflow: {str(e)}")
+    try:
+        async for response in chat.run_workflow(deck_message):
+            logger.info(f"Received response: {response}")
+    except Exception as e:
+        logger.error(f"Error in workflow: {str(e)}")
 
-#     logger.info(f"Workflow completed.")
-#     return output
+    logger.info(f"Workflow completed.")
+    return output
 
-# if __name__ == "__main__":
-#     asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())

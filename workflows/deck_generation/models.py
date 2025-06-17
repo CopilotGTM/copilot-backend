@@ -22,7 +22,7 @@ class TextMapping(BaseModel):
     slide_required: bool = Field(False, description="Whether the corresponding slide should also be updated.")
     slide_summary: str = Field(
         ...,
-        description="Explanation of this new slide and its purpose for the meeting. Keep it concise. 20-25 words max.",
+        description="one line summary of new slide and its type. 20-25 words max.",
     )
 
     class Config:
