@@ -35,11 +35,9 @@ def redis_subscriber():
                     logger.debug("Waiting for message...")
                     message = pubsub.get_message(timeout=1.0)
                     if message:
-                        logger.info(f"Received message type: {message['type']}")
                         if message["type"] == "message":
                             try:
                                 data = json.loads(message["data"])
-                                logger.info(f"Processing message: {json.dumps(data, indent=2)}")
                                 sid = data["sid"]
                                 event = data["event"]
                                 message_data = data["data"]
@@ -49,7 +47,6 @@ def redis_subscriber():
                                 asyncio.set_event_loop(loop)
 
                                 # Emit message asynchronously
-                                logger.info(f"Emitting to websocket client {sid}")
                                 loop.run_until_complete(emit_websocket_message(event, message_data, sid))
                                 loop.close()
 

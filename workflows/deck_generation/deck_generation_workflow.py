@@ -32,7 +32,7 @@ from workflows.utils.slide_utils.pptx_text_replacer import PPTXTextReplacer
 from workflows.deck_generation.prompts.previous_slide_selection import SLIDE_UPDATE_PROMPT
 from workflows.deck_generation.models import TextMapping
 
-from testing_local.test import deck_message
+# from testing_local.test import deck_message
 from workflows.deck_generation.slide_mapping import SLIDE_MAPPING
 
 load_dotenv()
@@ -197,20 +197,20 @@ class DeckGeneration(Workflow):
         yield RunResponse(content={"completion_percentage": 100, "public_url": public_url}, status="COMPLETED")
 
 
-async def main():
-    chat = DeckGeneration()
-    output = []
+# async def main():
+#     chat = DeckGeneration()
+#     output = []
 
-    logger.info("Workflow execution started.")
+#     logger.info("Workflow execution started.")
 
-    try:
-        async for response in chat.run_workflow(deck_message):
-            logger.info(f"Received response: {response}")
-    except Exception as e:
-        logger.error(f"Error in workflow: {str(e)}")
+#     try:
+#         async for response in chat.run_workflow(deck_message):
+#             logger.info(f"Received response: {response}")
+#     except Exception as e:
+#         logger.error(f"Error in workflow: {str(e)}")
 
-    logger.info(f"Workflow completed.")
-    return output
+#     logger.info(f"Workflow completed.")
+#     return output
 
-if __name__ == "__main__":
-    asyncio.run(main())
+# if __name__ == "__main__":
+#     asyncio.run(main())
