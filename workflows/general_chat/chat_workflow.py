@@ -63,7 +63,7 @@ class GeneralChatAgent(Workflow):
                 schema="public"
             ),
             chunking_strategy=RecursiveChunking(),
-        )        
+        )
         self.execution_agent = Agent(
             model=AzureOpenAI(id="o4-mini", api_version="2024-12-01-preview"),
             description=EXECUTION_PROMPT,
@@ -78,61 +78,61 @@ class GeneralChatAgent(Workflow):
     async def run_workflow(self, message_list: List[ChatMessage]) -> AsyncIterator[RunResponse]:
         await SendStatus.send_chat_status(self, "started", "Workflow execution started.")
 
-        # Convert messages to dict format for processing
         processed_messages = []
-        
         for message in message_list:
             message_dict = Message(role=message.role, content=message.content)
-
             if message.role == "user" and message.attachments:
-                # Process attachments if the message is from the user
-                attachment_content = await self._process_attachments(message.attachments)
-                message_dict.content += attachment_content
+                # process documents and images separately
+                docs = await self._process_documents(message.attachments)
+                imgs = self._extract_images(message.attachments)
+                message_dict.content += docs
             processed_messages.append(message_dict)
 
-        # Planning Execution
-        execution_response = await self.execution_agent.arun(messages=processed_messages, stream=True)
+        execution_response = await self.execution_agent.arun(
+            messages=processed_messages, images=imgs, stream=True
+        )
         async for chunk in execution_response:
             if chunk.event == "RunResponseContent":
                 yield RunResponse(status="RUNNING", content=chunk.content)
         yield RunResponse(content="", status="COMPLETED")
 
-    async def _process_attachments(self, attachments: List[dict]) -> str:
+    async def _process_documents(self, attachments: List[dict]) -> str:
         """
-        Process a list of attachments and return their combined content.
-        
-        Args:
-            attachments: List of attachment dictionaries
-            
-        Returns:
-            str: Combined content from all attachments
-            
-        Raises:
-            Exception: If there's an error processing any attachment
+        Extract and return text content for PDF and DOCX attachments.
         """
-        attachment_content = ""
-        for attachment_dict in attachments:
-            # Convert dict to AttachmentModel if it's not already
-            attachment = (
-                attachment_dict if isinstance(attachment_dict, AttachmentModel)
-                else AttachmentModel(**attachment_dict)
-            )
-            file_url = str(attachment.url)
-            # Read the document content using cloud-agnostic document reader asynchronously
-            content = await asyncio.to_thread(self.document_reader.read_document, file_url)
-            attachment_content += f"\nContent from {attachment.filename}:\n{content}\n"
-            logger.info(f"Processed attachment from message: {attachment.filename}")
-        
-        return attachment_content
+        content_acc = ""
+        for att in attachments:
+            attachment = att if isinstance(att, AttachmentModel) else AttachmentModel(**att)
+            mimetype = (attachment.mimetype or "").lower()
+            if mimetype in (
+                "application/pdf",
+                "application/msword",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            ):
+                file_url = str(attachment.url)
+                text = await asyncio.to_thread(self.document_reader.read_document, file_url)
+                content_acc += f"\nContent from {attachment.filename}:\n{text}\n"
+                logger.info(f"Processed document attachment: {attachment.filename}")
+        return content_acc
+
+    def _extract_images(self, attachments: List[dict]) -> List[Image]:
+        """
+        Return a list of Image instances for image attachments.
+        """
+        images: List[Image] = []
+        for att in attachments:
+            attachment = att if isinstance(att, AttachmentModel) else AttachmentModel(**att)
+            mimetype = (attachment.mimetype or "").lower()
+            if mimetype.startswith("image/"):
+                images.append(Image(url=str(attachment.url)))
+                logger.info(f"Extracted image attachment: {attachment.filename}")
+        return images
 
 
 # async def main():
 #     messages = [Message(role="user", content="How xeno can help pizza hut?")]
 #     chat = GeneralChatAgent()
-
-#     logger.info("Workflow execution started.")
 #     async for response in chat.run_workflow(messages):
 #         pass
-
 # if __name__ == "__main__":
 #     asyncio.run(main())
