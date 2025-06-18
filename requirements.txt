@@ -23,7 +23,7 @@ alembic==1.15.2
 
 # Azure and OpenAI
 azure-ai-inference==1.0.0b9
-openai==1.84.0
+openai==1.88.0
 azure-storage-blob==12.25.1
 azure-common==1.1.28
 

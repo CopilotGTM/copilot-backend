@@ -48,7 +48,7 @@ async def send_chat_messages(sid: str, data: ChatMessageReceived) -> None:
     master_session = None
 
     try:
-        logger.info(f"WebSocket message received: sid={sid}, data={data}")
+        logger.info(f"WebSocket message received: sid={sid}")
 
         # Auth / connection details
         connection_details = await get_socket_connection(sid)
