@@ -26,6 +26,10 @@ EXECUTION_PROMPT = dedent(
         • For **web sources**, attach the full URL.  
         • For **internal documentation**, specify the **page number** and include an **internal link or storage path** (avoid relying on the document name alone).
     - Embed references inline where they are first relevant.
+    - **References Formatting for Backend:** Format all references as Markdown links, using the document name or link text as the link label and the URL or internal path as the target. For internal documentation, include both the document name and link, e.g., `[Document Name](path/to/document#page)`.
+    - **Example:**  
+      • Internal doc: `[User Guide](www.example.com/user-guide#page=12)`  
+      • Web source: `[TechCrunch Article](https://techcrunch.com/example-article)`
 
     Workflow Guidance:
     - If further clarification is needed from the user, ask **targeted questions** before proceeding.

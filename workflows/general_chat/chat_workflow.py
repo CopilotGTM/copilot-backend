@@ -79,13 +79,18 @@ class GeneralChatAgent(Workflow):
         await SendStatus.send_chat_status(self, "started", "Workflow execution started.")
 
         processed_messages = []
+        imgs = []  # Initialize imgs list
         for message in message_list:
             message_dict = Message(role=message.role, content=message.content)
             if message.role == "user" and message.attachments:
                 # process documents and images separately
                 docs = await self._process_documents(message.attachments)
-                imgs = self._extract_images(message.attachments)
-                message_dict.content += docs
+                if docs:
+                    message_dict.content += docs
+                # Extract images if any
+                image_list = self._extract_images(message.attachments)
+                if image_list:
+                    imgs.extend(image_list)
             processed_messages.append(message_dict)
 
         execution_response = await self.execution_agent.arun(
