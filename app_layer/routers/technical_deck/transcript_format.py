@@ -53,13 +53,11 @@ def parse_transcript_api(
                 (ChatMessage.session_id == session_id) & (ChatMessage.message_id == teachnical_deck_message_id)
             )
         ).first()
-        
+
         if not technical_deck:
             logger.warning(f"No technical deck found for session_id={session_id}")
-            return Response.not_found_error_response(
-                f"No technical deck found for session_id={session_id}", data=None
-            )
-            
+            return Response.not_found_error_response(f"No technical deck found for session_id={session_id}", data=None)
+
         logger.info(f"Technical Deck Message Details Fetched")
 
         # Getting attachments and technical deck
@@ -87,10 +85,10 @@ def parse_transcript_api(
             # Initialize cloud-agnostic document reader
             cloud_config = CloudConfig(CLOUD_PROVIDER, APPLICATION_REGION)
             document_reader = DocumentReader(cloud_config)
-            
+
             # Read and process the document
             text_content = document_reader.read_document(file_url)
-            
+
             # Initialize transcript parser with robust parsing
             parser = TranscriptParser()
             payload = parser.parse_transcript(text_content)
@@ -104,11 +102,11 @@ def parse_transcript_api(
             master_session.commit()
             master_session.refresh(technical_deck)
             return Response.success_response("Successfully parsed transcript", formatted_transcript)
-            
+
         except ValueError as e:
             logger.error(f"Error processing document: {str(e)}")
             return Response.bad_request_error_response(str(e), data=None)
-            
+
     except Exception as exc:
         logger.exception("Transcript parsing failed")
         return Response.internal_server_error_response(str(exc), data=None)

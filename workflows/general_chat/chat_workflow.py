@@ -57,10 +57,7 @@ class GeneralChatAgent(Workflow):
         self.knowledge_base = PDFKnowledgeBase(
             path="",
             vector_db=PgVector(
-                table_name="knowledge_base",
-                db_url=self.df_url,
-                embedder=AzureOpenAIEmbedder(),
-                schema="public"
+                table_name="knowledge_base", db_url=self.df_url, embedder=AzureOpenAIEmbedder(), schema="public"
             ),
             chunking_strategy=RecursiveChunking(),
         )
@@ -125,9 +122,7 @@ class GeneralChatAgent(Workflow):
                     imgs.extend(image_list)
             processed_messages.append(message_dict)
 
-        execution_response = await self.execution_agent.arun(
-            messages=processed_messages, images=imgs, stream=True
-        )
+        execution_response = await self.execution_agent.arun(messages=processed_messages, images=imgs, stream=True)
 
         async for chunk in execution_response:
             match chunk.event:
@@ -163,7 +158,7 @@ class GeneralChatAgent(Workflow):
                                     "name": orig.get("filename"),
                                     "mimetype": orig.get("mimetype"),
                                     "url": orig.get("uri"),
-                                    "snippet": ""
+                                    "snippet": "",
                                 }
                                 sources.append(source_entry)
                         await SendStatus.send_chat_status(self, "Search Results", "", sources, "sources")
@@ -183,7 +178,7 @@ class GeneralChatAgent(Workflow):
                                     "name": title,
                                     "mimetype": "text/html",
                                     "url": url,
-                                    "snippet": result.get("body", "")[:20]
+                                    "snippet": result.get("body", "")[:20],
                                 }
                                 sources.append(source_entry)
                         await SendStatus.send_chat_status(self, "Search Results", "", sources, "sources")
@@ -191,6 +186,7 @@ class GeneralChatAgent(Workflow):
                     logger.info(f"{chunk}")
                     pass
         yield RunResponse(content="", status="COMPLETED")
+
 
 # async def main():
 #     messages = [Message(role="user", content="How xeno can help pizza hut?")]

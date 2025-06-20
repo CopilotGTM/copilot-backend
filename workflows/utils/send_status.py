@@ -10,11 +10,13 @@ WEBSOCKET_NAMESPACE = "/websocket/v1"
 
 class SendStatus:
     @classmethod
-    async def send_chat_status(cls, self, status:str, status_message:str = "", sources: List = [], status_type="general_status"):
+    async def send_chat_status(
+        cls, self, status: str, status_message: str = "", sources: List = [], status_type="general_status"
+    ):
         if self.sio:
             await self.sio.emit(
                 "chat_status_response",
-                {   
+                {
                     "id": self.system_message_id,
                     "status": status,
                     "status_message": status_message,
