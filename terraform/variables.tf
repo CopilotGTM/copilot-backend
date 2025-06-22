@@ -33,7 +33,44 @@ variable "vnet_public_subnets" {
 }
 
 variable "vnet_private_subnets" {
-  description = "Address prefixes for private subnets (list of CIDRs)."
+  description = <<-DESC
+    Address prefixes for private subnets (list of CIDRs).
+    Best practice: Use two:
+      - One for AKS/microservices (e.g., 10.0.2.0/24)
+      - One for data/stateful (Redis, DB) (e.g., 10.0.3.0/24)
+  DESC
   type        = list(string)
-  default     = ["10.0.2.0/24"]
+  default     = ["10.0.2.0/24", "10.0.3.0/24"]
+}
+variable "aks_name" {
+  description = "The name of the AKS cluster."
+  type        = string
+}
+
+variable "aks_dns_prefix" {
+  description = "The DNS prefix for the AKS cluster."
+  type        = string
+}
+
+variable "aks_node_count" {
+  description = "Node count in the default AKS agent pool."
+  type        = number
+  default     = 2
+}
+
+variable "aks_vm_size" {
+  description = "VM size for AKS agent pool."
+  type        = string
+  default     = "Standard_DS2_v2"
+}
+variable "aks_service_cidr" {
+  description = "Kubernetes service CIDR (must NOT overlap with any VNet or subnet)."
+  type        = string
+  default     = "10.1.0.0/16"
+}
+
+variable "aks_dns_service_ip" {
+  description = "Kubernetes DNS service IP (must be inside the service CIDR)."
+  type        = string
+  default     = "10.1.0.10"
 }
