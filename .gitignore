@@ -2,9 +2,10 @@
 .terraform/
 # Terraform lock file
 .terraform.lock.hcl
+terraform/terraform.lock.hcl
 
 # Terraform plan/output
-tfplan
+terraform/tfplan
 
 # .tfstate files
 *.tfstate
