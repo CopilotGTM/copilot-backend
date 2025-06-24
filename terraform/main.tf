@@ -30,7 +30,7 @@ module "aks" {
 }
 module "acr" {
   source              = "./modules/acr"
-  acr_name            = "${var.env}acr${random_integer.suffix.result}"
+  acr_name            = "copilottechnicaldeck"
   resource_group_name = module.resource_group.resource_group_name
   location            = var.location
   sku                 = "Basic"
