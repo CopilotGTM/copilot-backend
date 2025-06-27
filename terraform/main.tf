@@ -37,6 +37,27 @@ module "acr" {
   admin_enabled       = false
 }
 
+resource "azurerm_role_assignment" "aks_acr_pull" {
+  principal_id         = module.aks.aks_principal_id
+  role_definition_name = "AcrPull"
+  scope                = module.acr.acr_id
+}
+
+module "redis" {
+  source              = "./modules/redis"
+  redis_name          = "copilotredis${random_integer.suffix.result}"
+  resource_group_name = module.resource_group.resource_group_name
+  location            = var.location
+  # 0 = 250MB (Basic C0), 1 = 1GB (Basic C1), etc.
+  capacity            = 0
+  family              = "C"
+  enable_non_ssl_port = false
+  tags                = {
+    environment = var.env
+    project     = "copilot"
+  }
+}
+
 resource "random_integer" "suffix" {
   min = 10000
   max = 99999

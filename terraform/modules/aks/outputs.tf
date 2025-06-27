@@ -13,3 +13,8 @@ output "kube_config" {
   value       = azurerm_kubernetes_cluster.this.kube_config_raw
   sensitive   = true
 }
+
+output "aks_principal_id" {
+  description = "The managed identity principal ID of the AKS cluster."
+  value       = azurerm_kubernetes_cluster.this.identity[0].principal_id
+}
