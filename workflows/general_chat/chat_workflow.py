@@ -1,8 +1,9 @@
 import asyncio
-from typing import List, Dict, AsyncIterator
+from typing import List, AsyncIterator
 from uuid import UUID
 from dotenv import load_dotenv
 import os
+import json
 
 from agno.workflow import Workflow, RunResponse
 from agno.agent import Agent
@@ -21,7 +22,6 @@ from workflows.general_chat.prompts.execution import EXECUTION_PROMPT
 from workflows.utils.get_master_db_url import get_master_db_url
 from infrastructure.document_reader import DocumentReader
 from infrastructure.cloud_file_reader import CloudConfig
-
 from models.chat_db_models import ChatMessage, AttachmentModel
 
 load_dotenv()
@@ -57,10 +57,7 @@ class GeneralChatAgent(Workflow):
         self.knowledge_base = PDFKnowledgeBase(
             path="",
             vector_db=PgVector(
-                table_name="knowledge_base",
-                db_url=self.df_url,
-                embedder=AzureOpenAIEmbedder(),
-                schema="public"
+                table_name="knowledge_base", db_url=self.df_url, embedder=AzureOpenAIEmbedder(), schema="public"
             ),
             chunking_strategy=RecursiveChunking(),
         )
@@ -74,27 +71,6 @@ class GeneralChatAgent(Workflow):
             markdown=True,
             show_tool_calls=True,
         )
-
-    async def run_workflow(self, message_list: List[ChatMessage]) -> AsyncIterator[RunResponse]:
-        await SendStatus.send_chat_status(self, "started", "Workflow execution started.")
-
-        processed_messages = []
-        for message in message_list:
-            message_dict = Message(role=message.role, content=message.content)
-            if message.role == "user" and message.attachments:
-                # process documents and images separately
-                docs = await self._process_documents(message.attachments)
-                imgs = self._extract_images(message.attachments)
-                message_dict.content += docs
-            processed_messages.append(message_dict)
-
-        execution_response = await self.execution_agent.arun(
-            messages=processed_messages, images=imgs, stream=True
-        )
-        async for chunk in execution_response:
-            if chunk.event == "RunResponseContent":
-                yield RunResponse(status="RUNNING", content=chunk.content)
-        yield RunResponse(content="", status="COMPLETED")
 
     async def _process_documents(self, attachments: List[dict]) -> str:
         """
@@ -127,6 +103,89 @@ class GeneralChatAgent(Workflow):
                 images.append(Image(url=str(attachment.url)))
                 logger.info(f"Extracted image attachment: {attachment.filename}")
         return images
+
+    async def run_workflow(self, message_list: List[ChatMessage]) -> AsyncIterator[RunResponse]:
+        await SendStatus.send_chat_status(self, "Thinking...")
+
+        processed_messages = []
+        imgs = []  # Initialize imgs list
+        for message in message_list:
+            message_dict = Message(role=message.role, content=message.content)
+            if message.role == "user" and message.attachments:
+                # process documents and images separately
+                docs = await self._process_documents(message.attachments)
+                if docs:
+                    message_dict.content += docs
+                # Extract images if any
+                image_list = self._extract_images(message.attachments)
+                if image_list:
+                    imgs.extend(image_list)
+            processed_messages.append(message_dict)
+
+        execution_response = await self.execution_agent.arun(messages=processed_messages, images=imgs, stream=True)
+
+        async for chunk in execution_response:
+            match chunk.event:
+                case "RunResponseContent":
+                    yield RunResponse(status="RUNNING", content=chunk.content)
+                case "ToolCallStarted":
+                    tool_name = chunk.tool.tool_name
+                    if tool_name == "asearch_knowledge_base":
+                        # Handle knowledge base search
+                        query = chunk.tool.tool_args.get("query", "")
+                        await SendStatus.send_chat_status(self, f"Searching Knowledge Base - {query}", "", [], "search")
+                    elif tool_name == "duckduckgo_search":
+                        # Handle DuckDuckGo search
+                        query = chunk.tool.tool_args.get("query", "")
+                        await SendStatus.send_chat_status(self, f"Searching Internet - {query}", "", [], "search")
+                case "ToolCallCompleted":
+                    tool_name = chunk.tool.tool_name
+                    if tool_name == "asearch_knowledge_base":
+                        # file filename mine type and link from search metadata
+                        results = json.loads(chunk.tool.result)
+                        seen = set()
+                        sources = []
+                        for idx, result in enumerate(results):
+                            # Safely extract metadata and origin
+                            metadata = result.get("meta_data")
+                            if not metadata or "origin" not in metadata:
+                                continue
+                            orig = metadata["origin"]
+                            key = (orig.get("filename"), orig.get("mimetype"), orig.get("uri"))
+                            if key not in seen:
+                                seen.add(key)
+                                source_entry = {
+                                    "name": orig.get("filename"),
+                                    "mimetype": orig.get("mimetype"),
+                                    "url": orig.get("uri"),
+                                    "snippet": "",
+                                }
+                                sources.append(source_entry)
+                        await SendStatus.send_chat_status(self, "Search Results", "", sources, "sources")
+                    elif tool_name == "duckduckgo_search":
+                        # Handle DuckDuckGo search results
+                        results = json.loads(chunk.tool.result)
+                        seen = set()
+                        sources = []
+                        for idx, result in enumerate(results):
+                            title = result.get("title")
+                            url = result.get("href")
+                            snippet = result.get("snippet", "")
+                            key = (title, url)
+                            if title and url and key not in seen:
+                                seen.add(key)
+                                source_entry = {
+                                    "name": title,
+                                    "mimetype": "text/html",
+                                    "url": url,
+                                    "snippet": result.get("body", "")[:20],
+                                }
+                                sources.append(source_entry)
+                        await SendStatus.send_chat_status(self, "Search Results", "", sources, "sources")
+                case _:
+                    logger.info(f"{chunk}")
+                    pass
+        yield RunResponse(content="", status="COMPLETED")
 
 
 # async def main():
