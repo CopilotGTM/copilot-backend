@@ -36,6 +36,11 @@ module "acr" {
   sku                 = "Basic"
   admin_enabled       = false
 }
+resource "azurerm_role_assignment" "aks_kubelet_acr_pull" {
+  principal_id         = "183d37e0-c2d9-4c51-b6e2-2e5b2e996f4d"
+  role_definition_name = "AcrPull"
+  scope                = module.acr.acr_id
+}
 
 resource "azurerm_role_assignment" "aks_acr_pull" {
   principal_id         = module.aks.aks_principal_id
