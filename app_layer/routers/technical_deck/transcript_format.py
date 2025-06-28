@@ -84,29 +84,35 @@ def parse_transcript_api(
         try:
             # Initialize cloud-agnostic document reader
             cloud_config = CloudConfig(CLOUD_PROVIDER, APPLICATION_REGION)
+            logger.debug("Instantiating DocumentReader")
             document_reader = DocumentReader(cloud_config)
 
             # Read and process the document
+            logger.info(f"Reading document from url: {file_url}")
             text_content = document_reader.read_document(file_url)
+            logger.debug(f"Document read, content length: {len(text_content) if text_content else 0}")
 
             # Initialize transcript parser with robust parsing
             parser = TranscriptParser()
+            logger.debug("Parsing transcript text content...")
             payload = parser.parse_transcript(text_content)
             logger.info(f"Successfully parsed transcript {filename}")
 
             formatted_transcript = {"formatted_transcript": [payload]}
 
             technical_deck.technical_deck_details = {**deck_details, "formatted_transcript": [payload]}
-            logger.info(f"Update Formatted Transcript")
+            logger.info(f"Update Formatted Transcript details for message_id={teachnical_deck_message_id}")
             master_session.add(technical_deck)
+            logger.debug("Submitting updated technical_deck to DB (commit/refresh)...")
             master_session.commit()
             master_session.refresh(technical_deck)
+            logger.info(f"DB update/commit/refresh complete for technical_deck")
             return Response.success_response("Successfully parsed transcript", formatted_transcript)
 
         except ValueError as e:
-            logger.error(f"Error processing document: {str(e)}")
+            logger.error(f"Error processing document: {str(e)}", exc_info=True)
             return Response.bad_request_error_response(str(e), data=None)
 
     except Exception as exc:
-        logger.exception("Transcript parsing failed")
+        logger.exception(f"Transcript parsing failed: {str(exc)}", exc_info=True)
         return Response.internal_server_error_response(str(exc), data=None)
