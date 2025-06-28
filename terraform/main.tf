@@ -63,6 +63,16 @@ module "redis" {
   }
 }
 
+module "frontend_app_service" {
+  source                  = "./modules/app_service"
+  app_service_plan_name   = "frontend-asp-${var.env}"
+  app_service_name        = "copilot-frontend-${var.env}"
+  resource_group_name     = module.resource_group.resource_group_name
+  location                = var.location
+  node_version            = "20-lts"
+  app_settings            = {}
+}
+
 resource "random_integer" "suffix" {
   min = 10000
   max = 99999
