@@ -23,12 +23,12 @@ def get_redis_client() -> redis.Redis:
         port=redis_port,
         password=redis_password,
         decode_responses=True,
-        socket_timeout=30,  # Increased timeout
-        socket_connect_timeout=30,  # Added connection timeout
-        retry_on_timeout=True,  # Enable retry on timeout
-        health_check_interval=30,  # Check connection health every 30 seconds
-        ssl=True
-
+        socket_timeout=30,
+        socket_connect_timeout=30,
+        retry_on_timeout=True,
+        health_check_interval=30,
+        ssl=True,
+        socket_keepalive=True
     )
     redis_client.ping()
     return redis_client
