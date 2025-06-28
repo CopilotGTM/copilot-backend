@@ -16,20 +16,22 @@ def get_redis_client() -> redis.Redis:
     Return the Redis client instance.
     """
     config = Config()
-    redis_host, redis_port = config.get_redis_client_details
+    redis_host, redis_port, redis_password = config.get_redis_client_details
     logger.info(f"Redis Host - {redis_host}")
     redis_client = redis.Redis(
         host=redis_host,
         port=redis_port,
+        password=redis_password,
         decode_responses=True,
         socket_timeout=30,  # Increased timeout
         socket_connect_timeout=30,  # Added connection timeout
         retry_on_timeout=True,  # Enable retry on timeout
         health_check_interval=30,  # Check connection health every 30 seconds
+        ssl=True
+
     )
     redis_client.ping()
     return redis_client
-
 
 async def store_socket_connection(sid, environ):
     """
