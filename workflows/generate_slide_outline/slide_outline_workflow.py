@@ -65,6 +65,12 @@ class SlideContentGenerator(Workflow):
         story_narration_outline = story_narration.content
         logger.info(f"{story_narration_outline}")
 
+        yield RunResponse(
+            content=story_narration_outline,
+            status="RUNNING",
+            content_type="SOLUTION_NARRATION"
+        )
+
         # 2) Slide Outline Generation
         logger.info("Generating Slide Outline")
         slide_outline = await self.generate_outline.arun(
@@ -83,6 +89,7 @@ class SlideContentGenerator(Workflow):
             yield RunResponse(
                 content=output_format,
                 status="RUNNING",
+                content_type="SOLUTION_OUTLINE"
             )
 
 

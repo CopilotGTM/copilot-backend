@@ -93,20 +93,24 @@ async def generate_slide_content(
         agent_connector = SlideContentGenerator(provider="azure", model_name="o3-mini")
 
         async for response_chunk in agent_connector.run_workflow(input_summary=input_summary):
-            if response_chunk.content is not None:
-                full_response.append(response_chunk.content)
-                await WebSocketResponse.emit_chunk(
-                    room=sid,
-                    event=RESPONSE_EVENT,
-                    chat_id=chat_id,
-                    message_id=system_message_id,
-                    response=response_chunk.content,
-                    message_type="TECHNICAL_DECK",
-                )
+            if response_chunk.content_type == "SOLUTION_OUTLINE":
+                if response_chunk.content is not None:
+                    full_response.append(response_chunk.content)
+                    await WebSocketResponse.emit_chunk(
+                        room=sid,
+                        event=RESPONSE_EVENT,
+                        chat_id=chat_id,
+                        message_id=system_message_id,
+                        response=response_chunk.content,
+                        message_type="TECHNICAL_DECK",
+                    )
+            elif response_chunk.content_type == "SOLUTION_NARRATION":
+                solution_narration: str = response_chunk.content
+                logger.info(f"Solution Narration Generated")
 
         # Saving slide content to DB
         details["state"] = "SLIDE_CONTENT"
-        existing_assistant.technical_deck_details = {**details, "slide_content_summary": full_response}
+        existing_assistant.technical_deck_details = {**details, "slide_content_summary": full_response, "solution_narration": solution_narration}
         master_session.add(existing_assistant)
         master_session.commit()
         master_session.refresh(existing_assistant)
