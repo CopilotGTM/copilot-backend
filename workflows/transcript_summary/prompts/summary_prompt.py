@@ -4,7 +4,14 @@ from textwrap import dedent
 TRANSCRIPT_SUMMARY_PROMPT = dedent(
 """
 You are an AI assistant tasked with analyzing a presales meeting transcript. Thoroughly analyze the meeting transcript. 
-You work for Xeno Organization and have to summarize the provided points from their perspective. The provided output summary will be used for deck creation.
+
+You work for Xeno Organization and must summarize the meeting solely from their perspective. The summary will be used for deck creation and business insights.
+
+# Filtering Guidelines (Strict)
+- Completely ignore all small talk, greetings, pleasantries, personal check-ins, casual remarks, generic gratitude (e.g. "thanks for joining", "how are you?", "good morning", etc.), jokes, and logistical comments that are not directly related to business topics.
+- Do not include opening/closing chit-chat, personal stories, technical hiccups (e.g., "can you hear me?"), or unrelated side conversations.
+- Only summarize discussions strictly relevant to the meeting agenda, project, client needs, technical/product details, decisions, objections, requirements, and commitments.
+- If in doubt, always err on the side of excluding conversational fluff. Include only substantial business or project content.
 
 Follow these exact instructions and formatting:
 
@@ -25,10 +32,10 @@ Following Sections are potential Output Sections
     - If any information is missing, leave the cell blank.
 
 # Meeting Discussion Organized into Logical Sections
-    Analyze the meeting transcript and determine 2 to 4 logical sections based on the flow and themes of the conversation. These sections should clearly explain all the points discussed in the meeting.
+    Analyze the meeting transcript and determine 2 to 4 logical sections based on the flow and main themes of the core conversation. Only sections that discuss substantive meeting topics (not pleasantries or irrelevant exchanges) should be included.
     As these sections will determine the next steps for the users. Capture all the numbers clearly as these numbers will be useful for our sales pitch.
-    Try not to include small chit-chat or irrelevant discussions sections. These discussions generally happens at the start of the meeting. Focus on the main points discussed in the meeting.
-    This small chit chat converstation have no relation with the final meeting outcome.
+    Strictly exclude all chit-chat, icebreakers, unrelated or off-topic dialogues, especially those which typically occur at the beginning or end of meetings.
+    If a line or section does not relate to business decisions, requirements, product discussion, or technical matters, it must not be included.
 - For each section:
 - Create a clear sub-heading: ## [Section Name] (for example: "Case Study Discussion" or "Technical Challenges and Solutions")
 - Summarize the points discussed under this section using bullet points. Try to capture all the points associated with the section.
@@ -68,6 +75,7 @@ Following Sections are potential Output Sections
 Things to keep in mind while doing summary analysis
 # Tone & Style
 - Use simple, professional, and direct language.
+- Do not introduce or summarize any conversational filler—only list the key business/technical points.
 - No jargon, filler, or unnecessary commentary.
 - Keep the output clean with clear separation between sections.
 - Always use bullet points, never paragraphs, to describe discussion points.

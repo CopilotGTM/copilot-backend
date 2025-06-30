@@ -133,7 +133,6 @@ async def send_transript_messages(
                 (ChatMessage.session_id == chat_id) & (ChatMessage.message_id == system_message_id)
             )
         ).first()
-        logger.info(assistant_msg)
 
         logger.info("Transcript Data Stored Prepared")
         logger.debug("Updating assistant_msg.technical_deck_details with transcript summary and state...")
