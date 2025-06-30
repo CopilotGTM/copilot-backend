@@ -12,7 +12,7 @@ backend_url = broker_url
 
 # Instantiate Celery, including the task module so it's registered
 celery = Celery(
-    "technical_deck_worker", broker=broker_url, backend=backend_url, include=["app_layer.tasks.technical_deck"]
+    "technical_deck_worker", broker=broker_url, backend=backend_url, include=["app_layer.tasks.technical_deck", "app_layer.tasks.slide_outline"]
 )
 # Explicit SSL config for Redis+SSL with Celery/Kombu
 import ssl
