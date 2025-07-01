@@ -27,7 +27,7 @@ def get_redis_client() -> redis.Redis:
         socket_connect_timeout=30,
         retry_on_timeout=True,
         health_check_interval=30,
-        ssl=True,
+        ssl=False,
         socket_keepalive=True
     )
     redis_client.ping()
