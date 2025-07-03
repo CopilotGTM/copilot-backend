@@ -67,6 +67,7 @@ async def send_transript_messages(
             message_type=data.get("message_type", "TECHNICAL_DECK"),
         )
         master_session.add(user_msg)
+        logger.debug(f"User message added to session. Committing to DB...")
         master_session.commit()
         master_session.refresh(user_msg)
 
@@ -81,6 +82,7 @@ async def send_transript_messages(
             message_type="TECHNICAL_DECK",
         )
         master_session.add(assistant_msg)
+        logger.debug("Assistant message added to session. Committing to DB...")
         master_session.commit()
         master_session.refresh(assistant_msg)
         logger.info(f"Assistant Message Stored {assistant_msg}")
@@ -98,8 +100,10 @@ async def send_transript_messages(
         full_response: str = ""
 
         # Setting up agent
+        logger.info("Setting up TranscriptSummaryAgent for transcript summary generation...")
         agent_connector = TranscriptSummaryAgent(provider="azure", model_name="o3-mini")
 
+        logger.debug("Beginning streaming of transcript summary agent response...")
         async for response_chunk in agent_connector.run_workflow(attached_models=data.get("attachments")):
             if response_chunk.content is not None:
                 full_response += response_chunk.content
@@ -114,6 +118,7 @@ async def send_transript_messages(
 
         # Build transcript_summary list: [{'url': <file>, 'summary': <text>}]
         transcript_summary: List[Dict[str, str]] = []
+        logger.debug("Building transcript_summary list from attachments...")
         for att in data.get("attachments", []):
             url = att.get("url") if isinstance(att, dict) else att.url
             transcript_summary.append(
@@ -128,9 +133,9 @@ async def send_transript_messages(
                 (ChatMessage.session_id == chat_id) & (ChatMessage.message_id == system_message_id)
             )
         ).first()
-        logger.info(assistant_msg)
 
         logger.info("Transcript Data Stored Prepared")
+        logger.debug("Updating assistant_msg.technical_deck_details with transcript summary and state...")
         if not assistant_msg.technical_deck_details:
             assistant_msg.technical_deck_details = {
                 "transcript_summary_list": transcript_summary,
@@ -145,6 +150,7 @@ async def send_transript_messages(
                 "state": "TRANSCRIPT_SUMMARY",
             }
         master_session.add(assistant_msg)
+        logger.debug("Committing updated assistant message with transcript summary to DB...")
         master_session.commit()
         master_session.refresh(assistant_msg)
         logger.info(f"Transcript Data Stored")
@@ -153,6 +159,7 @@ async def send_transript_messages(
     except Exception as e:
         logger.exception("Error in send_transript_messages")
         if system_message_id:
+            logger.error("Emitting error message to client due to exception in transcript summary handler.")
             await WebSocketResponse.emit_error(
                 room=sid,
                 event=RESPONSE_EVENT,
@@ -174,6 +181,8 @@ async def send_transript_messages(
         # clean up DB session generator if we opened one
         try:
             if master_session is not None:
+                logger.debug("Closing master_session in finally block.")
                 master_session.close()
-        except Exception:
+        except Exception as close_exc:
+            logger.warning(f"Exception while closing master_session: {str(close_exc)}")
             pass

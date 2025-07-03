@@ -65,7 +65,7 @@ def get_technical_deck(
             case "TRANSCRIPT_SUMMARY":
                 details = {
                     "complete_transcript_summary": tech_deck_details.get("complete_transcript_summary", ""),
-                    "fomratted_transcript": tech_deck_details.get("fomratted_transcript", []),
+                    "formatted_transcript": tech_deck_details.get("formatted_transcript", []),
                 }
                 return Response.success_response("Complete Technical Deck Details", details)
             case "SLIDE_CONTENT":
@@ -81,6 +81,8 @@ def get_technical_deck(
                     "technical_deck_url": tech_deck_details.get("technical_deck_url", ""),
                 }
                 return Response.success_response("Complete Technical Deck Details", details)
+            case "ALL":
+                return Response.success_response("Complete Technical Deck Details", message)
             case _:
                 return Response.not_found_error_response("Technical Deck does not exists", data=None)
 
