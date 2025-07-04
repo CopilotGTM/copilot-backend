@@ -6,7 +6,7 @@ module "resource_group" {
 
 module "vnet" {
   source              = "../modules/vnet"
-  vnet_name           = var.vnet_name
+  vnet_name           = "${var.vnet_name}-${var.env}"
   address_space       = var.vnet_address_space
   location            = module.resource_group.resource_group_location
   resource_group_name = module.resource_group.resource_group_name
@@ -17,8 +17,8 @@ module "vnet" {
 
 module "aks" {
   source               = "../modules/aks"
-  aks_name             = var.aks_name
-  dns_prefix           = var.aks_dns_prefix
+  aks_name             = "${var.aks_name}-${var.env}"          # Unique per environment
+  dns_prefix           = "${var.aks_dns_prefix}-${var.env}"    # Unique per environment
   location             = module.resource_group.resource_group_location
   resource_group_name  = module.resource_group.resource_group_name
   subnet_id            = module.vnet.private_subnet_ids[0]
@@ -31,7 +31,7 @@ module "aks" {
 
 module "acr" {
   source              = "../modules/acr"
-  acr_name            = var.acr_name
+  acr_name            = "${var.acr_name}${var.env}"
   resource_group_name = module.resource_group.resource_group_name
   location            = var.location
   sku                 = "Basic"
@@ -39,20 +39,15 @@ module "acr" {
 }
 
 resource "azurerm_role_assignment" "aks_kubelet_acr_pull" {
-  principal_id         = "183d37e0-c2d9-4c51-b6e2-2e5b2e996f4d"
-  role_definition_name = "AcrPull"
-  scope                = module.acr.acr_id
-}
-
-resource "azurerm_role_assignment" "aks_acr_pull" {
   principal_id         = module.aks.aks_principal_id
   role_definition_name = "AcrPull"
   scope                = module.acr.acr_id
+  principal_type       = "ServicePrincipal"
 }
 
 module "redis" {
   source              = "../modules/redis"
-  redis_name          = var.redis_name
+  redis_name          = "${var.redis_name}-${var.env}"
   resource_group_name = module.resource_group.resource_group_name
   location            = var.location
   capacity            = 0
@@ -65,8 +60,8 @@ module "redis" {
 
 module "frontend_app_service" {
   source                  = "../modules/app_service"
-  app_service_plan_name   = var.frontend_app_service_plan_name
-  app_service_name        = var.frontend_app_service_name
+  app_service_plan_name   = "${var.frontend_app_service_plan_name}-${var.env}"
+  app_service_name        = "${var.frontend_app_service_name}-${var.env}"
   resource_group_name     = module.resource_group.resource_group_name
   location                = var.location
   node_version            = "20-lts"
@@ -76,4 +71,16 @@ module "frontend_app_service" {
 resource "random_integer" "suffix" {
   min = 10000
   max = 99999
+}
+module "storage_account" {
+  source                  = "../modules/storage_account"
+  storage_account_name    = "${var.storage_account_name}${var.env}"
+  resource_group_name     = module.resource_group.resource_group_name
+  location                = var.location
+  account_tier            = "Standard"
+  account_replication_type = "LRS"
+  tags = {
+    environment = var.env
+    project     = var.project_name
+  }
 }

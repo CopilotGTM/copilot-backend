@@ -105,3 +105,12 @@ variable "project_name" {
   description = "The project tag to apply across resources."
   type        = string
 }
+variable "storage_account_name" {
+  description = "Base name for the Azure Storage Account resource (without env suffix)."
+  type        = string
+}
+
+variable "mongodb_account_name" {
+  description = "Base name for the Azure CosmosDB (MongoDB API) account (without env suffix)."
+  type        = string
+}
