@@ -41,3 +41,14 @@ override.tf.json
 # Ignore CLI configuration files
 .terraformrc
 terraform.rc
+terraform/tfplan
+
+# Ignore VSCode project files
+.vscode/
+
+# macOS system file
+.DS_Store
+
+# Windows system file
+Thumbs.db
+tfplan

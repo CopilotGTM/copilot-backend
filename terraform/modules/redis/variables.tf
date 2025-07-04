@@ -25,11 +25,6 @@ variable "family" {
   default     = "C"
 }
 
-variable "enable_non_ssl_port" {
-  description = "Enable the non-SSL port."
-  type        = bool
-  default     = false
-}
 
 variable "tags" {
   description = "Tags to apply to resources."

@@ -53,11 +53,9 @@ module "redis" {
   redis_name          = "copilotredis${random_integer.suffix.result}"
   resource_group_name = module.resource_group.resource_group_name
   location            = var.location
-  # 0 = 250MB (Basic C0), 1 = 1GB (Basic C1), etc.
   capacity            = 0
   family              = "C"
-  enable_non_ssl_port = false
-  tags                = {
+  tags = {
     environment = var.env
     project     = "copilot"
   }
