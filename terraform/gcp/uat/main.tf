@@ -1,0 +1,1 @@
+# Root Terraform file for GCP - uat environment

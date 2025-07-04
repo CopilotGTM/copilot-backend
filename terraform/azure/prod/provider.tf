@@ -1,0 +1,1 @@
+# Provider config for Azure prod environment

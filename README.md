@@ -112,3 +112,50 @@ module "kafka" {
 This structure makes it easy to grow your cloud infrastructure in a clean, reusable, and scalable way.
 
 ---
+## Setting Up a Production-Grade Terraform State Backend in Azure
+
+**Follow these steps before running any Terraform plan/apply:**
+
+### 1. Create a dedicated resource group for Terraform state
+```sh
+az group create --name gtm-tfstate --location eastus
+```
+
+### 2. Create a globally unique storage account (choose your own unique name)
+```sh
+az storage account create --name gtmstatestor001 --resource-group gtm-tfstate --location eastus --sku Standard_LRS --encryption-services blob
+```
+
+### 3. Enable blob versioning and soft delete for data protection
+```sh
+az storage account blob-service-properties update --account-name gtmstatestor001 --enable-change-feed true
+az storage account blob-service-properties update --account-name gtmstatestor001 --enable-delete-retention true --delete-retention-days 30
+```
+
+### 4. Create a blob container for Terraform state files
+```sh
+az storage container create --name tfstate --account-name gtmstatestor001
+```
+
+### 5. Example backend block for your Terraform config:
+```hcl
+terraform {
+  backend "azurerm" {
+    resource_group_name  = "gtm-tfstate"
+    storage_account_name = "gtmstatestor001"
+    container_name       = "tfstate"
+    key                  = "azure/dev/terraform.tfstate"
+  }
+}
+```
+**Tip:** Use a different `key` for each environment (dev, uat, prod) to isolate state.
+
+---
+
+**Ensure you have the correct permissions to create these resources in Azure. Run all commands from your terminal or CI/CD pipeline before Terraform deployment.**
+> **UPDATE:**
+> If you encounter "ParentResourceNotFound" errors during blob property updates, explicitly specify the resource group using `--resource-group`:
+```sh
+az storage account blob-service-properties update --account-name gtmstatestor001 --resource-group gtm-tfstate --enable-change-feed true
+az storage account blob-service-properties update --account-name gtmstatestor001 --resource-group gtm-tfstate --enable-delete-retention true --delete-retention-days 30
+```

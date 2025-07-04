@@ -1,0 +1,1 @@
+# Variables for Azure uat environment

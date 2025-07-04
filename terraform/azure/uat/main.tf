@@ -1,0 +1,1 @@
+# Root Terraform config for Azure - uat environment

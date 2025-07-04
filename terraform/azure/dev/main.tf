@@ -1,12 +1,12 @@
 module "resource_group" {
-  source              = "./modules/resource_group"
+  source              = "../modules/resource_group"
   resource_group_name = "${var.resource_group_name}-${var.env}"
   location            = var.location
 }
 
 module "vnet" {
-  source              = "./modules/vnet"
-  vnet_name           = "vnet-${var.env}"
+  source              = "../modules/vnet"
+  vnet_name           = var.vnet_name
   address_space       = var.vnet_address_space
   location            = module.resource_group.resource_group_location
   resource_group_name = module.resource_group.resource_group_name
@@ -16,7 +16,7 @@ module "vnet" {
 }
 
 module "aks" {
-  source               = "./modules/aks"
+  source               = "../modules/aks"
   aks_name             = var.aks_name
   dns_prefix           = var.aks_dns_prefix
   location             = module.resource_group.resource_group_location
@@ -28,14 +28,16 @@ module "aks" {
   dns_service_ip       = var.aks_dns_service_ip
   env                  = var.env
 }
+
 module "acr" {
-  source              = "./modules/acr"
-  acr_name            = "copilottechnicaldeck"
+  source              = "../modules/acr"
+  acr_name            = var.acr_name
   resource_group_name = module.resource_group.resource_group_name
   location            = var.location
   sku                 = "Basic"
   admin_enabled       = false
 }
+
 resource "azurerm_role_assignment" "aks_kubelet_acr_pull" {
   principal_id         = "183d37e0-c2d9-4c51-b6e2-2e5b2e996f4d"
   role_definition_name = "AcrPull"
@@ -49,22 +51,22 @@ resource "azurerm_role_assignment" "aks_acr_pull" {
 }
 
 module "redis" {
-  source              = "./modules/redis"
-  redis_name          = "copilotredis${random_integer.suffix.result}"
+  source              = "../modules/redis"
+  redis_name          = var.redis_name
   resource_group_name = module.resource_group.resource_group_name
   location            = var.location
   capacity            = 0
   family              = "C"
   tags = {
     environment = var.env
-    project     = "copilot"
+    project     = var.project_name
   }
 }
 
 module "frontend_app_service" {
-  source                  = "./modules/app_service"
-  app_service_plan_name   = "frontend-asp-${var.env}"
-  app_service_name        = "copilot-frontend-${var.env}"
+  source                  = "../modules/app_service"
+  app_service_plan_name   = var.frontend_app_service_plan_name
+  app_service_name        = var.frontend_app_service_name
   resource_group_name     = module.resource_group.resource_group_name
   location                = var.location
   node_version            = "20-lts"
