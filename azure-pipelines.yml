@@ -60,7 +60,7 @@ stages:
       variables:
         - group: copilot-dev-test
       pool:
-        name: 'StaticAgentPool'
+        name: 'Azure Pipelines'
       strategy:
           runOnce:
             deploy:
