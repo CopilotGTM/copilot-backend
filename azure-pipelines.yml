@@ -12,7 +12,6 @@ parameters:
     values:
       - development
       - production
-
 variables:
   - name: ACR_LOGIN_SERVER
     value: 'appcopilotgtmdev.azurecr.io'
@@ -23,7 +22,7 @@ variables:
   - name: KUBECONFIG_FILE
     value: $(Pipeline.Workspace)/kubeconfig.yaml
   - name: ACR_SERVICE_CONNECTION
-    value: 'copilottechnicaldeck-acr'
+    value: 'appcopilotgtmdev'
   - name: DEPLOY_ENVIRONMENT
     value: ${{ parameters.deployEnvironment }}
 stages:
