@@ -120,6 +120,11 @@ variable "devops_project_name" {
   description = "Azure DevOps project name used for pipeline creation (should match your DevOps project)."
   type        = string
 }
+# Azure DevOps deployment environment name for pipeline deployments
+variable "devops_environment_name" {
+  description = "Name of the Azure DevOps Deployment Environment (e.g., 'development', 'uat', 'production'). Used by azuredevops_environment resource."
+  type        = string
+}
 
 variable "backend_repo_name" {
   description = "Azure DevOps repository name containing the YAML pipeline definition."

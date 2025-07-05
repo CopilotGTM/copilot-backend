@@ -106,6 +106,13 @@ module "devops_pipeline" {
   # pipeline_path left default (root)
 }
 
+# Create Azure DevOps Environment for pipeline deployment targets using tfvars
+resource "azuredevops_environment" "pipeline_env" {
+  project_id = data.azuredevops_project.this.id
+  name       = var.devops_environment_name
+  description = "Deployment environment '${var.devops_environment_name}' for Helm/AKS pipeline targets in DevOps project ${var.devops_project_name}"
+}
+
 # Role assignment for Azure DevOps pipeline service principal
 
 # Provide your Azure DevOps service principal objectId as a variable or output: var.azuredevops_sp_object_id
