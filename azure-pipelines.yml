@@ -33,7 +33,7 @@ stages:
         displayName: Build and Push to ACR
 
         pool:
-          name: 'StaticAgentPool'
+          name: 'EphemeralAgentPool'
         steps:
           - checkout: self
           - task: Docker@2
@@ -60,7 +60,7 @@ stages:
       variables:
         - group: copilot-dev-test
       pool:
-        name: 'StaticAgentPool'
+        name: 'EphemeralAgentPool'
       strategy:
           runOnce:
             deploy:
