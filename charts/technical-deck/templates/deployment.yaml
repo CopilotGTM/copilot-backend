@@ -18,18 +18,18 @@ spec:
         - name: {{ .Chart.Name }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: IfNotPresent
-          env:
-            - name: ENVIRONMENT
-              value: {{ .Values.env.ENVIRONMENT | quote }}
-          {{- if .Values.env }}
-          {{- range $key, $value := .Values.env }}
-            {{- if ne $key "ENVIRONMENT" }}
-            - name: {{ $key }}
-              value: {{ $value | quote }}
-            {{- end }}
-          {{- end }}
-          {{- end }}
-          ports:
-            - containerPort: {{ .Values.service.port }}
+{{- if or .Values.envNonSecret .Values.secrets }}
+          envFrom:
+{{- if .Values.envNonSecret }}
+            - configMapRef:
+                name: {{ include "technical-deck.fullname" . }}-env
+{{- end }}
+{{- if .Values.secrets }}
+            - secretRef:
+                name: {{ include "technical-deck.fullname" . }}-secret
+{{- end }}
+{{- end }}
+         ports:
+           - containerPort: {{ .Values.service.port }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}

@@ -8,8 +8,17 @@ service:
   port: 80
   type: ClusterIP
 
-env:
+# Non-sensitive env vars (from .env.development or Azure Pipeline var group - injected into ConfigMap)
+envNonSecret:
   ENVIRONMENT: development
+  # EXAMPLE_VAR: some-value
+  # Add more non-secret variables here as needed. Values can be overridden via Azure Pipeline variable group.
+
+# Sensitive env vars (to be provided via Azure DevOps pipeline secrets - injected into Secret)
+envSecret:
+  # DATABASE_PASSWORD: ""
+  # API_KEY: ""
+  # Only set in pipeline (never commit actual secrets here)
 
 serviceAccount:
   create: true

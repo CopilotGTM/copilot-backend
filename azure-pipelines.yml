@@ -1,0 +1,132 @@
+trigger:
+  branches:
+    include:
+      - main
+      - dev
+
+variables:
+  - name: ACR_LOGIN_SERVER
+    value: 'appcopilotgtmdev.azurecr.io'
+  - name: HELM_RELEASE_NAME
+    value: technical-deck-dev
+  - name: CHART_PATH
+    value: charts/technical-deck
+  - name: KUBECONFIG_FILE
+    value: $(Pipeline.Workspace)/kubeconfig.yaml
+stages:
+  - stage: BuildAndPush
+    displayName: Build & Push Docker Image to ACR
+    jobs:
+      - job: dockerBuildPush
+        displayName: Build and Push to ACR
+
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - checkout: self
+          - task: Docker@2
+            displayName: Build Docker Image
+            inputs:
+              containerRegistry: '<Azure DevOps ACR service connection>' 
+              repository: '$(ACR_LOGIN_SERVER)/technical-deck'
+              command: 'buildAndPush'
+              Dockerfile: '**/Dockerfile'
+              tags: |
+                $(Build.BuildId)
+                latest
+          - script: |
+              echo "Pushed image: $(ACR_LOGIN_SERVER)/technical-deck:$(Build.BuildId)"
+            displayName: Print image info
+
+  - stage: Deploy
+    displayName: Helm Deploy/Upgrade to AKS
+    dependsOn: BuildAndPush
+    jobs:
+    - deployment: HelmDeploy
+      displayName: Deploy to AKS / Rollback on Failure
+      environment: '$(Build.SourceBranchName)'
+      variables:
+        - group: copilot-dev-test
+      pool:
+        vmImage: 'ubuntu-latest'
+      strategy:
+          runOnce:
+            deploy:
+              steps:
+                - script: |
+                    echo "$(AKS_KUBECONFIG)" > $(KUBECONFIG_FILE)
+                  displayName: Write kubeconfig to disk
+                  env:
+                    AKS_KUBECONFIG: $(AKS_KUBECONFIG)
+                - script: |
+                    grep -v '^#' .env.development | grep -v '^\s*$' | grep -Ev 'DATABASE_PASSWORD|API_KEY|SECRET' > nonsecret.env
+                  displayName: Extract non-secret envs for ConfigMap
+
+                - task: PublishPipelineArtifact@1
+                  inputs:
+                    targetPath: nonsecret.env
+                    artifact: nonsecret-env
+                  displayName: Publish non-secret env artifact (for audit/debug, optional)
+                - script: |
+                    export KUBECONFIG=$(KUBECONFIG_FILE)
+                    # Prepare --set strings for secrets (all supplied as secure pipeline variables)
+                    helm upgrade --install $(HELM_RELEASE_NAME) $(CHART_PATH) \
+                      --namespace default \
+                      --set image.repository=$(ACR_LOGIN_SERVER)/technical-deck \
+                      --set image.tag=$(Build.BuildId) \
+                      --set-file envConfig=nonsecret.env \
+                      --set secrets.DATABASE_HOST=$(DATABASE_HOST) \
+                      --set secrets.DATABASE_USER=$(DATABASE_USER) \
+                      --set secrets.DATABASE_PORT=$(DATABASE_PORT) \
+                      --set secrets.DATABASE_NAME=$(DATABASE_NAME) \
+                      --set secrets.DATABASE_PASSWORD=$(DATABASE_PASSWORD) \
+                      --set secrets.REDIS_HOST=$(REDIS_HOST) \
+                      --set secrets.REDIS_PORT=$(REDIS_PORT) \
+                      --set secrets.REDIS_PASSWORD=$(REDIS_PASSWORD) \
+                      --set secrets.AZURE_OPENAI_API_KEY=$(AZURE_OPENAI_API_KEY) \
+                      --set secrets.AZURE_OPENAI_ENDPOINT=$(AZURE_OPENAI_ENDPOINT) \
+                      --set secrets.AZURE_EMBEDDER_OPENAI_API_KEY=$(AZURE_EMBEDDER_OPENAI_API_KEY) \
+                      --set secrets.AZURE_EMBEDDER_OPENAI_ENDPOINT=$(AZURE_EMBEDDER_OPENAI_ENDPOINT) \
+                      --set secrets.AZURE_EMBEDDER_DEPLOYMENT=$(AZURE_EMBEDDER_DEPLOYMENT) \
+                      --set secrets.CLOUD_PROVIDER=$(CLOUD_PROVIDER) \
+                      --set secrets.APPLICATION_STORAGE_NAME=$(APPLICATION_STORAGE_NAME) \
+                      --set secrets.APPLICATION_REGION=$(APPLICATION_REGION)
+                  displayName: Helm Upgrade/Install
+                  env:
+                    KUBECONFIG: $(KUBECONFIG_FILE)
+                    DATABASE_HOST: $(DATABASE_HOST)
+                    DATABASE_USER: $(DATABASE_USER)
+                    DATABASE_PORT: $(DATABASE_PORT)
+                    DATABASE_NAME: $(DATABASE_NAME)
+                    DATABASE_PASSWORD: $(DATABASE_PASSWORD)
+                    REDIS_HOST: $(REDIS_HOST)
+                    REDIS_PORT: $(REDIS_PORT)
+                    REDIS_PASSWORD: $(REDIS_PASSWORD)
+                    AZURE_OPENAI_API_KEY: $(AZURE_OPENAI_API_KEY)
+                    AZURE_OPENAI_ENDPOINT: $(AZURE_OPENAI_ENDPOINT)
+                    AZURE_EMBEDDER_OPENAI_API_KEY: $(AZURE_EMBEDDER_OPENAI_API_KEY)
+                    AZURE_EMBEDDER_OPENAI_ENDPOINT: $(AZURE_EMBEDDER_OPENAI_ENDPOINT)
+                    AZURE_EMBEDDER_DEPLOYMENT: $(AZURE_EMBEDDER_DEPLOYMENT)
+                    CLOUD_PROVIDER: $(CLOUD_PROVIDER)
+                    APPLICATION_STORAGE_NAME: $(APPLICATION_STORAGE_NAME)
+                    APPLICATION_REGION: $(APPLICATION_REGION)
+                - script: |
+                    kubectl get pods -n default
+                    kubectl get deployments -n default
+                  displayName: List AKS Deployments/Pods
+                - task: Bash@3
+                  displayName: Rollback on Helm Deploy Failure
+                  condition: failed()
+                  inputs:
+                    targetType: 'inline'
+                    script: |
+                      export KUBECONFIG=$(KUBECONFIG_FILE)
+                      if helm status $(HELM_RELEASE_NAME); then
+                        REVISION=$(helm history $(HELM_RELEASE_NAME) | awk 'NR==2{print $1}')
+                        if [ ! -z "$REVISION" ]; then
+                          echo "Rolling back to previous successful release (revision $REVISION)..."
+                          helm rollback $(HELM_RELEASE_NAME) $REVISION
+                        else
+                          echo "No previous revision found for rollback."
+                        fi
+                      fi
