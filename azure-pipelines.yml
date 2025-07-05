@@ -4,6 +4,15 @@ trigger:
       - main
       - dev
 
+parameters:
+  - name: deployEnvironment
+    displayName: "Select deployment environment"
+    type: string
+    default: 'development'
+    values:
+      - development
+      - production
+
 variables:
   - name: ACR_LOGIN_SERVER
     value: 'appcopilotgtmdev.azurecr.io'
@@ -13,6 +22,10 @@ variables:
     value: charts/technical-deck
   - name: KUBECONFIG_FILE
     value: $(Pipeline.Workspace)/kubeconfig.yaml
+  - name: ACR_SERVICE_CONNECTION
+    value: 'copilottechnicaldeck-acr'
+  - name: DEPLOY_ENVIRONMENT
+    value: ${{ parameters.deployEnvironment }}
 stages:
   - stage: BuildAndPush
     displayName: Build & Push Docker Image to ACR
@@ -27,7 +40,7 @@ stages:
           - task: Docker@2
             displayName: Build Docker Image
             inputs:
-              containerRegistry: 'copilottechnicaldeck-acr'
+              containerRegistry: '$(ACR_SERVICE_CONNECTION)'
               repository: '$(ACR_LOGIN_SERVER)/technical-deck'
               command: 'buildAndPush'
               Dockerfile: '**/Dockerfile'
@@ -44,7 +57,7 @@ stages:
     jobs:
     - deployment: HelmDeploy
       displayName: Deploy to AKS / Rollback on Failure
-      # environment: '$(Build.SourceBranchName)'  # Commented out invalid environment usage; add real environment if needed
+      environment: '$(DEPLOY_ENVIRONMENT)'  # <-- Set to a valid Azure DevOps environment name
       variables:
         - group: copilot-dev-test
       pool:
