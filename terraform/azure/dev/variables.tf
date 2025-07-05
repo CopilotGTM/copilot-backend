@@ -126,6 +126,25 @@ variable "devops_environment_name" {
   type        = string
 }
 
+# Service principal credentials for Azure DevOps service connection to ACR
+variable "acr_sp_tenant_id" {
+  description = "Azure Active Directory tenant ID for the service principal used in ACR service connection."
+  type        = string
+  sensitive   = true
+}
+
+variable "acr_sp_client_id" {
+  description = "Client/application ID of the service principal used in ACR service connection."
+  type        = string
+  sensitive   = true
+}
+
+variable "acr_sp_client_secret" {
+  description = "Client secret of the service principal used in ACR service connection."
+  type        = string
+  sensitive   = true
+}
+
 variable "backend_repo_name" {
   description = "Azure DevOps repository name containing the YAML pipeline definition."
   type        = string
@@ -153,8 +172,34 @@ variable "backend_yml_path" {
   type        = string
   default     = "azure-pipelines.yml"
 }
+
 # Display name of the Azure DevOps pipeline service principal (used for automatic lookup)
 variable "azuredevops_sp_display_name" {
   description = "Display name of the Azure AD service principal used by the Azure DevOps service connection for the pipeline. Find this in Azure AD > App registrations."
+  type        = string
+}
+# Static DevOps Agent Credentials
+
+variable "admin_username" {
+  description = "Admin username for the static DevOps agent VM."
+  type        = string
+  default     = "azureuser"
+}
+
+variable "admin_password" {
+  description = "Admin password for the static DevOps agent VM."
+  type        = string
+  sensitive   = true
+}
+
+# Static DevOps Agent Auto-Registration Variables
+
+variable "agent_pool" {
+  description = "Name of the Azure DevOps agent pool to register this agent in."
+  type        = string
+}
+
+variable "agent_name" {
+  description = "Name to assign to this DevOps agent instance."
   type        = string
 }
