@@ -55,7 +55,7 @@ To run the FastAPI app and Celery worker locally with hot-reload and debug loggi
 
 ```bash
 # Start FastAPI server (with reload and debug logging)
-uvicorn app_layer.main:app --host 0.0.0.0 --port 8000 --reload --log-level debug
+uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload --log-level debug
 
 # In a separate terminal, start Celery worker
 celery -A celery_app worker --loglevel=info -P solo
