@@ -114,3 +114,42 @@ variable "mongodb_account_name" {
   description = "Base name for the Azure CosmosDB (MongoDB API) account (without env suffix)."
   type        = string
 }
+# Project and repository for pipeline creation in Azure DevOps
+
+variable "devops_project_name" {
+  description = "Azure DevOps project name used for pipeline creation (should match your DevOps project)."
+  type        = string
+}
+
+variable "backend_repo_name" {
+  description = "Azure DevOps repository name containing the YAML pipeline definition."
+  type        = string
+}
+# Azure DevOps organization (ORG) URL for provider (e.g. https://dev.azure.com/yourorg)
+variable "org_service_url" {
+  description = "The URL of your Azure DevOps organization (e.g. https://dev.azure.com/yourorg)."
+  type        = string
+}
+# Azure DevOps PAT variable (never assign value here!)
+variable "azuredevops_pat" {
+  description = "Personal Access Token for Azure DevOps automation. Pass via environment variable or .tfvars (DO NOT hardcode in source for security)."
+  type        = string
+  sensitive   = true
+}
+# Pipeline name for Azure DevOps build definition. Must NOT contain '/' or invalid characters.
+variable "backend_pipeline_name" {
+  description = "Name of the Azure DevOps pipeline resource. Cannot contain '/' or special characters."
+  type        = string
+}
+
+# YAML path for Azure DevOps pipeline definition file
+variable "backend_yml_path" {
+  description = "Relative path (from repo root) to the Azure Pipelines YAML file."
+  type        = string
+  default     = "azure-pipelines.yml"
+}
+# Display name of the Azure DevOps pipeline service principal (used for automatic lookup)
+variable "azuredevops_sp_display_name" {
+  description = "Display name of the Azure AD service principal used by the Azure DevOps service connection for the pipeline. Find this in Azure AD > App registrations."
+  type        = string
+}

@@ -84,3 +84,46 @@ module "storage_account" {
     project     = var.project_name
   }
 }
+
+# Azure DevOps resources: data sources for project and repository
+data "azuredevops_project" "this" {
+  name = var.devops_project_name
+}
+
+data "azuredevops_git_repository" "this" {
+  project_id = data.azuredevops_project.this.id
+  name       = var.backend_repo_name
+}
+
+# Pipeline module call: creates the YAML pipeline resource in Azure DevOps
+module "devops_pipeline" {
+  source        = "../modules/devops_pipeline"
+  project_id    = data.azuredevops_project.this.id
+  pipeline_name = var.backend_pipeline_name
+  repo_id       = data.azuredevops_git_repository.this.id
+  branch_name   = "refs/heads/main"             # <-- Or your default branch
+  yml_path      = var.backend_yml_path
+  # pipeline_path left default (root)
+}
+
+# Role assignment for Azure DevOps pipeline service principal
+
+# Provide your Azure DevOps service principal objectId as a variable or output: var.azuredevops_sp_object_id
+# Provide your ACR and AKS resource IDs from module outputs if not already available
+
+resource "azurerm_role_assignment" "pipeline_acr_push" {
+  scope                = module.acr.acr_id      # Your ACR resource ID
+  role_definition_name = "AcrPush"
+  principal_id         = data.azuread_service_principal.devops_pipeline.object_id
+}
+
+resource "azurerm_role_assignment" "pipeline_aks_writer" {
+  scope                = module.aks.aks_id      # Your AKS resource ID
+  role_definition_name = "Azure Kubernetes Service RBAC Writer"
+  principal_id         = data.azuread_service_principal.devops_pipeline.object_id
+}
+
+# Lookup the Azure DevOps pipeline service principal by display name
+data "azuread_service_principal" "devops_pipeline" {
+  display_name = var.azuredevops_sp_display_name
+}
