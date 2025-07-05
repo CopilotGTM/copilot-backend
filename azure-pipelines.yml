@@ -33,7 +33,7 @@ stages:
         displayName: Build and Push to ACR
 
         pool:
-          name: 'StaticAgentPool'
+          name: 'Azure Pipelines'
         steps:
           - checkout: self
           - task: Docker@2
