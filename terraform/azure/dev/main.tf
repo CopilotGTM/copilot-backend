@@ -153,3 +153,20 @@ module "service_connection" {
   client_id                = module.service_principal.client_id
   client_secret            = module.service_principal.client_secret
 }
+
+# -----------------------------------------------------------------
+# Azure DevOps Pipeline (CI/CD)
+# -----------------------------------------------------------------
+data "azuredevops_git_repository" "repo" {
+  project_id = data.azuredevops_project.project.id
+  name       = var.backend_repo_name
+}
+
+module "pipeline" {
+  source            = "../modules/pipeline"
+  devops_project_id = data.azuredevops_project.project.id
+  pipeline_name     = var.backend_pipeline_name
+  repo_id           = data.azuredevops_git_repository.repo.id
+  branch_name       = "main"
+  yml_path          = var.backend_yml_path
+}
