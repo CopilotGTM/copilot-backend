@@ -129,8 +129,8 @@ variable "storage_account_name" {
   type        = string
 }
 
-variable "mongodb_account_name" {
-  description = "Base name for the Azure CosmosDB (MongoDB API) account (without env suffix)."
+variable "sp_name" {
+  description = "The display name for the service principal for Azure DevOps."
   type        = string
 }
 # Project and repository for pipeline creation in Azure DevOps

@@ -124,3 +124,11 @@ resource "azurerm_role_assignment" "app_service_acr_pull" {
 #     project     = var.project_name
 #   }
 # }
+# -----------------------------------------------------------------
+# Service Principal for Azure DevOps
+# -----------------------------------------------------------------
+module "service_principal" {
+  source          = "../modules/service_principal"
+  sp_name         = var.sp_name
+  subscription_id = var.subscription_id
+}
