@@ -13,6 +13,10 @@ resource "azurerm_linux_web_app" "this" {
   resource_group_name = var.resource_group_name
   service_plan_id     = azurerm_service_plan.this.id
 
+  identity {
+    type = "SystemAssigned"
+  }
+
   site_config {
     application_stack {
       node_version = var.node_version

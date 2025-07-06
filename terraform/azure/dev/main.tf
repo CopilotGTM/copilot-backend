@@ -19,7 +19,6 @@ module "vnet" {
   public_subnets      = var.vnet_public_subnets
   private_subnets     = var.vnet_private_subnets
   env                 = var.env
-  # private_subnet_dependencies = [module.ephemeral_build_agent]
 }
 
 # -----------------------------------------------------------------
@@ -92,6 +91,17 @@ module "frontend_app_service" {
   sku_name                = var.frontend_sku_name
   os_type                 = var.frontend_os_type
   https_only              = var.frontend_https_only
+}
+
+# -----------------------------------------------------------------
+# Role Assignment: Allow App Service to pull images from ACR
+# -----------------------------------------------------------------
+resource "azurerm_role_assignment" "app_service_acr_pull" {
+  principal_id         = module.frontend_app_service.app_service_principal_id
+  role_definition_name = "AcrPull"
+  scope                = module.acr.acr_id
+  principal_type       = "ServicePrincipal"
+  depends_on           = [module.frontend_app_service.app_service_id]
 }
 
 # # -----------------------------------------------------------------
