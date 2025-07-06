@@ -201,3 +201,27 @@ module "key_vault" {
 }
 
 data "azurerm_client_config" "current" {}
+
+resource "azuredevops_variable_group" "secrets" {
+  project_id = data.azuredevops_project.project.id
+  name       = "app-secrets-${var.env}"
+  description = "Service-principal creds and other secrets for ${var.env}"
+
+  variable {
+    name         = "ENV"
+    value        = "dev"
+    is_secret    = false
+  }
+
+  variable {
+    name         = "CLOUD_PROVIDER"
+    value        = "azure"
+    is_secret    = false
+  }
+
+  variable {
+    name         = "APPLICATION_REGION"
+    value        = "eastus"
+    is_secret    = false
+  }
+}
