@@ -40,56 +40,56 @@ module "aks" {
   env                  = var.env
 }
 
-# # -----------------------------------------------------------------
-# # Azure Container Registry: Stores container images for AKS and DevOps pipelines
-# # -----------------------------------------------------------------
-# module "acr" {
-#   source              = "../modules/acr"
-#   acr_name            = "${var.acr_name}${var.env}"
-#   resource_group_name = module.resource_group.resource_group_name
-#   location            = var.location
-#   sku                 = "Basic"
-#   admin_enabled       = false
-# }
+# -----------------------------------------------------------------
+# Azure Container Registry: Stores container images for AKS and DevOps pipelines
+# -----------------------------------------------------------------
+module "acr" {
+  source              = "../modules/acr"
+  acr_name            = "${var.acr_name}${var.env}"
+  resource_group_name = module.resource_group.resource_group_name
+  location            = var.location
+  sku                 = var.acr_type
+}
 
-# # -----------------------------------------------------------------
-# # Role Assignment: Allow AKS kubelet to pull images from ACR
-# # -----------------------------------------------------------------
-# resource "azurerm_role_assignment" "aks_kubelet_acr_pull" {
-#   principal_id         = module.aks.aks_principal_id
-#   role_definition_name = "AcrPull"
-#   scope                = module.acr.acr_id
-#   principal_type       = "ServicePrincipal"
-# }
+# -----------------------------------------------------------------
+# Role Assignment: Allow AKS kubelet to pull images from ACR
+# -----------------------------------------------------------------
+resource "azurerm_role_assignment" "aks_kubelet_acr_pull" {
+  principal_id         = module.aks.aks_principal_id
+  role_definition_name = "AcrPull"
+  scope                = module.acr.acr_id
+  principal_type       = "ServicePrincipal"
+}
 
-# # -----------------------------------------------------------------
-# # Azure Redis Cache: In-memory data store for caching and sessions
-# # -----------------------------------------------------------------
-# module "redis" {
-#   source              = "../modules/redis"
-#   redis_name          = "${var.redis_name}-${var.env}"
-#   resource_group_name = module.resource_group.resource_group_name
-#   location            = var.location
-#   capacity            = 0
-#   family              = "C"
-#   tags = {
-#     environment = var.env
-#     project     = var.project_name
-#   }
-# }
+# -----------------------------------------------------------------
+# Azure Redis Cache: In-memory data store for caching and sessions
+# -----------------------------------------------------------------
+module "redis" {
+  source              = "../modules/redis"
+  redis_name          = "${var.redis_name}-${var.env}"
+  resource_group_name = module.resource_group.resource_group_name
+  location            = var.location
+  capacity            = var.redis_capacity
+  family              = var.redis_family
+  sku_name            = var.redis_sku_name
+  tags = {
+    environment = var.env
+    project     = var.project_name
+  }
+}
 
-# # -----------------------------------------------------------------
-# # App Service: Azure Web App for frontend hosting (Node.js)
-# # -----------------------------------------------------------------
-# module "frontend_app_service" {
-#   source                  = "../modules/app_service"
-#   app_service_plan_name   = "${var.frontend_app_service_plan_name}-${var.env}"
-#   app_service_name        = "${var.frontend_app_service_name}-${var.env}"
-#   resource_group_name     = module.resource_group.resource_group_name
-#   location                = var.location
-#   node_version            = "20-lts"
-#   app_settings            = {}
-# }
+# -----------------------------------------------------------------
+# App Service: Azure Web App for frontend hosting (Node.js)
+# -----------------------------------------------------------------
+module "frontend_app_service" {
+  source                  = "../modules/app_service"
+  app_service_plan_name   = "${var.frontend_app_service_plan_name}-${var.env}"
+  app_service_name        = "${var.frontend_app_service_name}-${var.env}"
+  resource_group_name     = module.resource_group.resource_group_name
+  location                = var.location
+  node_version            = var.frontend_node_version
+  app_settings            = {}
+}
 
 # # -----------------------------------------------------------------
 # # Azure Storage Account: General purpose blob/file storage

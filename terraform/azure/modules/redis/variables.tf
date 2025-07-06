@@ -31,3 +31,9 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "sku_name" {
+  description = "The SKU of the Redis cache."
+  type        = string
+  default     = "Standard"
+}

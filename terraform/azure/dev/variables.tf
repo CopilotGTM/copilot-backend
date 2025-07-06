@@ -82,6 +82,7 @@ variable "aks_os_disk_size_gb" {
   type        = number
   default     = 128
 }
+
 variable "vnet_name" {
   description = "The name of the Azure Virtual Network to create."
   type        = string
@@ -90,6 +91,12 @@ variable "vnet_name" {
 variable "acr_name" {
   description = "The name of the Azure Container Registry to create."
   type        = string
+}
+
+variable "acr_type" {
+  description = "The SKU type of the Azure Container Registry (e.g., Basic, Standard, Premium)."
+  type        = string
+  default     = "Basic"
 }
 
 variable "redis_name" {
@@ -105,6 +112,12 @@ variable "frontend_app_service_plan_name" {
 variable "frontend_app_service_name" {
   description = "The name of the Frontend App Service."
   type        = string
+}
+
+variable "frontend_node_version" {
+  description = "Node.js version to use in the frontend App Service (e.g., '20-lts')."
+  type        = string
+  default     = "20-lts"
 }
 
 variable "project_name" {
@@ -188,4 +201,22 @@ variable "agent_pool" {
 variable "agent_name" {
   description = "Name to assign to this DevOps agent instance."
   type        = string
+}
+
+variable "redis_sku_name" {
+  description = "The SKU of the Redis cache."
+  type        = string
+  default     = "Standard"
+}
+
+variable "redis_family" {
+  description = "The SKU family of the Redis cache."
+  type        = string
+  default     = "C"
+}
+
+variable "redis_capacity" {
+  description = "The capacity of the Redis cache."
+  type        = number
+  default     = 0
 }

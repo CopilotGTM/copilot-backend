@@ -66,16 +66,15 @@ output "nat_gateway_public_ip" {
   value       = module.vnet.nat_gateway_public_ip
 }
 
-# # ---- ACR outputs for pipeline use ----
-# output "acr_login_server" {
-#   description = "The login server URL of the Azure Container Registry."
-#   value       = module.acr.acr_login_server
-# }
-# output "acr_id" {
-#   description = "The ID of the Azure Container Registry."
-#   value       = module.acr.acr_id
-# }
-# # Admin credentials not surfaced (admin_enabled = false)
+# ---- ACR outputs for pipeline use ----
+output "acr_login_server" {
+  description = "The login server URL of the Azure Container Registry."
+  value       = module.acr.acr_login_server
+}
+output "acr_id" {
+  description = "The ID of the Azure Container Registry."
+  value       = module.acr.acr_id
+}
 
 # ---- AKS outputs for pipeline use ----
 output "aks_name" {
@@ -94,4 +93,21 @@ output "aks_kube_config" {
 output "aks_principal_id" {
   description = "The managed identity principal ID of the AKS cluster."
   value       = module.aks.aks_principal_id
+}
+
+# ---- Redis outputs ----
+output "redis_hostname" {
+  description = "The hostname of the Redis cache."
+  value       = module.redis.hostname
+}
+
+output "redis_primary_access_key" {
+  description = "The primary access key for the Redis cache."
+  value       = module.redis.primary_access_key
+  sensitive   = true
+}
+
+output "redis_port" {
+  description = "The SSL port for the Redis cache."
+  value       = module.redis.port
 }
