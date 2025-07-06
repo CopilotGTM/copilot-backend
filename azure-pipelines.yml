@@ -22,7 +22,7 @@ variables:
   - name: KUBECONFIG_FILE
     value: $(Pipeline.Workspace)/kubeconfig.yaml
   - name: ACR_SERVICE_CONNECTION
-    value: 'arc-ci-cd-service'
+    value: 'copilot-acr-connection'
   - name: DEPLOY_ENVIRONMENT
     value: ${{ parameters.deployEnvironment }}
 stages:
