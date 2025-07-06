@@ -19,6 +19,7 @@ module "vnet" {
   public_subnets      = var.vnet_public_subnets
   private_subnets     = var.vnet_private_subnets
   env                 = var.env
+  depends_on          = [module.resource_group]
 }
 
 # -----------------------------------------------------------------
@@ -37,6 +38,7 @@ module "aks" {
   service_cidr         = var.aks_service_cidr
   dns_service_ip       = var.aks_dns_service_ip
   env                  = var.env
+  depends_on           = [module.vnet]
 }
 
 # -----------------------------------------------------------------
@@ -48,16 +50,7 @@ module "acr" {
   resource_group_name = module.resource_group.resource_group_name
   location            = var.location
   sku                 = var.acr_type
-}
-
-# -----------------------------------------------------------------
-# Role Assignment: Allow AKS kubelet to pull images from ACR
-# -----------------------------------------------------------------
-resource "azurerm_role_assignment" "aks_kubelet_acr_pull" {
-  principal_id         = module.aks.aks_principal_id
-  role_definition_name = "AcrPull"
-  scope                = module.acr.acr_id
-  principal_type       = "ServicePrincipal"
+  depends_on          = [module.resource_group]
 }
 
 # -----------------------------------------------------------------
@@ -75,6 +68,7 @@ module "redis" {
     environment = var.env
     project     = var.project_name
   }
+  depends_on          = [module.resource_group]
 }
 
 # -----------------------------------------------------------------
@@ -91,6 +85,17 @@ module "frontend_app_service" {
   sku_name                = var.frontend_sku_name
   os_type                 = var.frontend_os_type
   https_only              = var.frontend_https_only
+  depends_on              = [module.resource_group]
+}
+
+# -----------------------------------------------------------------
+# Role Assignment: Allow AKS kubelet to pull images from ACR
+# -----------------------------------------------------------------
+resource "azurerm_role_assignment" "aks_kubelet_acr_pull" {
+  principal_id         = module.aks.aks_principal_id
+  role_definition_name = "AcrPull"
+  scope                = module.acr.acr_id
+  principal_type       = "ServicePrincipal"
 }
 
 # -----------------------------------------------------------------
