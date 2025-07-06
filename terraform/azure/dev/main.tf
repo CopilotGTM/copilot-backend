@@ -131,4 +131,25 @@ module "service_principal" {
   source          = "../modules/service_principal"
   sp_name         = var.sp_name
   subscription_id = var.subscription_id
+# -----------------------------------------------------------------
+# Azure DevOps Service Connection (for ACR/AKS)
+# -----------------------------------------------------------------
+}
+
+# -----------------------------------------------------------------
+# Azure DevOps Service Connection (for ACR/AKS)
+# -----------------------------------------------------------------
+data "azuredevops_project" "project" {
+  name = var.devops_project_name
+}
+
+module "service_connection" {
+  source                   = "../modules/service_connection"
+  devops_project_id        = data.azuredevops_project.project.id
+  service_connection_name  = "arc-ci-cd-service"
+  subscription_id          = var.subscription_id
+  subscription_name        = "Copilot GTM Subscription"
+  tenant_id                = module.service_principal.tenant_id
+  client_id                = module.service_principal.client_id
+  client_secret            = module.service_principal.client_secret
 }

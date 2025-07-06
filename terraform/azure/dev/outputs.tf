@@ -111,3 +111,17 @@ output "redis_port" {
   description = "The SSL port for the Redis cache."
   value       = module.redis.port
 }
+output "service_connection_id" {
+  description = "Azure DevOps service connection ID used for ACR and AKS."
+  value       = module.service_connection.service_connection_id
+}
+
+output "service_connection_name" {
+  description = "Azure DevOps service connection name."
+  value       = module.service_connection.service_connection_name
+}
+
+output "service_connection_subscription_id" {
+  description = "Azure Subscription ID associated with service connection."
+  value       = module.service_connection.subscription_id
+}
