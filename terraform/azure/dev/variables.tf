@@ -76,6 +76,12 @@ variable "aks_dns_service_ip" {
   type        = string
   default     = "10.1.0.10"
 }
+
+variable "aks_os_disk_size_gb" {
+  description = "The size of the OS disk in GB for each node in the agent pool."
+  type        = number
+  default     = 128
+}
 variable "vnet_name" {
   description = "The name of the Azure Virtual Network to create."
   type        = string
@@ -126,25 +132,6 @@ variable "devops_environment_name" {
   type        = string
 }
 
-# Service principal credentials for Azure DevOps service connection to ACR
-variable "acr_sp_tenant_id" {
-  description = "Azure Active Directory tenant ID for the service principal used in ACR service connection."
-  type        = string
-  sensitive   = true
-}
-
-variable "acr_sp_client_id" {
-  description = "Client/application ID of the service principal used in ACR service connection."
-  type        = string
-  sensitive   = true
-}
-
-variable "acr_sp_client_secret" {
-  description = "Client secret of the service principal used in ACR service connection."
-  type        = string
-  sensitive   = true
-}
-
 variable "backend_repo_name" {
   description = "Azure DevOps repository name containing the YAML pipeline definition."
   type        = string
@@ -178,7 +165,6 @@ variable "azuredevops_sp_display_name" {
   description = "Display name of the Azure AD service principal used by the Azure DevOps service connection for the pipeline. Find this in Azure AD > App registrations."
   type        = string
 }
-# Static DevOps Agent Credentials
 
 variable "admin_username" {
   description = "Admin username for the static DevOps agent VM."

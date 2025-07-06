@@ -22,3 +22,28 @@ output "private_subnet_ids" {
   description = "IDs of all private subnets."
   value       = [for s in azurerm_subnet.private : s.id]
 }
+
+output "public_subnet_names" {
+  description = "Names of all public subnets."
+  value       = [for s in azurerm_subnet.public : s.name]
+}
+
+output "private_subnet_names" {
+  description = "Names of all private subnets."
+  value       = [for s in azurerm_subnet.private : s.name]
+}
+
+output "public_subnet_address_prefixes" {
+  description = "Address prefixes of all public subnets."
+  value       = flatten([for s in azurerm_subnet.public : s.address_prefixes])
+}
+
+output "private_subnet_address_prefixes" {
+  description = "Address prefixes of all private subnets."
+  value       = flatten([for s in azurerm_subnet.private : s.address_prefixes])
+}
+
+output "nat_gateway_public_ip" {
+  description = "The public IP address of the NAT Gateway."
+  value       = azurerm_public_ip.nat_gw.ip_address
+}

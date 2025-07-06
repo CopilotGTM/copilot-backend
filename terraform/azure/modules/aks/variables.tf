@@ -35,6 +35,12 @@ variable "vm_size" {
   default     = "Standard_DS2_v2"
 }
 
+variable "os_disk_size_gb" {
+  description = "The size of the OS disk in GB for each node in the agent pool."
+  type        = number
+  default     = 128
+}
+
 variable "env" {
   description = "Deployment environment (used for tagging)."
   type        = string

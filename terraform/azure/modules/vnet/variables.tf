@@ -32,3 +32,9 @@ variable "env" {
   description = "Environment identifier (e.g., dev, prod, staging)."
   type        = string
 }
+
+variable "private_subnet_dependencies" {
+  description = "A list of external resources that the private subnets depend on. This is used to enforce proper destruction order."
+  type        = any
+  default     = []
+}
