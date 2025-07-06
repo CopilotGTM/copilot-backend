@@ -170,3 +170,15 @@ module "pipeline" {
   branch_name       = "main"
   yml_path          = var.backend_yml_path
 }
+
+# -----------------------------------------------------------------
+# Azure DevOps Service Connection for ACR (Docker Registry)
+# -----------------------------------------------------------------
+module "service_connection_acr" {
+  source                = "../modules/service_connection_acr"
+  devops_project_id     = data.azuredevops_project.project.id
+  service_endpoint_name = "copilot-acr-connection"
+  acr_login_server      = module.acr.acr_login_server
+  acr_sp_app_id         = module.service_principal.client_id
+  acr_sp_app_secret     = module.service_principal.client_secret
+}
