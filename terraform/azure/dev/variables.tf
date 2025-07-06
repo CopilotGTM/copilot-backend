@@ -220,3 +220,21 @@ variable "redis_capacity" {
   type        = number
   default     = 0
 }
+
+variable "frontend_sku_name" {
+  description = "The SKU of the App Service Plan for the frontend."
+  type        = string
+  default     = "B1"
+}
+
+variable "frontend_os_type" {
+  description = "The OS type of the App Service Plan for the frontend."
+  type        = string
+  default     = "Linux"
+}
+
+variable "frontend_https_only" {
+  description = "Whether to enable HTTPS only on the App Service for the frontend."
+  type        = bool
+  default     = true
+}

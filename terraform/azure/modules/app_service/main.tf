@@ -3,8 +3,8 @@ resource "azurerm_service_plan" "this" {
   location            = var.location
   resource_group_name = var.resource_group_name
 
-  sku_name = "B1"
-  os_type  = "Linux"
+  sku_name = var.sku_name
+  os_type  = var.os_type
 }
 
 resource "azurerm_linux_web_app" "this" {
@@ -19,7 +19,7 @@ resource "azurerm_linux_web_app" "this" {
     }
   }
 
-  https_only = true
+  https_only = var.https_only
 
   app_settings = var.app_settings
 }

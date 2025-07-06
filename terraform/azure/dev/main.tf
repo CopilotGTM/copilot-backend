@@ -89,6 +89,9 @@ module "frontend_app_service" {
   location                = var.location
   node_version            = var.frontend_node_version
   app_settings            = {}
+  sku_name                = var.frontend_sku_name
+  os_type                 = var.frontend_os_type
+  https_only              = var.frontend_https_only
 }
 
 # # -----------------------------------------------------------------

@@ -29,3 +29,21 @@ variable "app_settings" {
   type        = map(string)
   default     = {}
 }
+
+variable "sku_name" {
+  description = "The SKU of the App Service Plan."
+  type        = string
+  default     = "B1"
+}
+
+variable "os_type" {
+  description = "The operating system for the App Service Plan."
+  type        = string
+  default     = "Linux"
+}
+
+variable "https_only" {
+  description = "Whether to enable HTTPS only on the App Service."
+  type        = bool
+  default     = true
+}
