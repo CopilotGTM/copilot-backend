@@ -124,6 +124,7 @@ resource "azurerm_role_assignment" "app_service_acr_pull" {
 #     project     = var.project_name
 #   }
 # }
+
 # -----------------------------------------------------------------
 # Service Principal for Azure DevOps
 # -----------------------------------------------------------------
@@ -182,3 +183,21 @@ module "service_connection_acr" {
   acr_sp_app_id         = module.service_principal.client_id
   acr_sp_app_secret     = module.service_principal.client_secret
 }
+
+# -----------------------------------------------------------------
+# Azure Key Vault
+# -----------------------------------------------------------------
+module "key_vault" {
+  source              = "../modules/key_vault"
+  key_vault_name      = "copilot-gtm-kv-${var.env}"
+  location            = var.location
+  resource_group_name = module.resource_group.resource_group_name
+  tenant_id           = data.azurerm_client_config.current.tenant_id
+  admin_object_id     = data.azurerm_client_config.current.object_id
+  tags = {
+    environment = var.env
+    project     = var.project_name
+  }
+}
+
+data "azurerm_client_config" "current" {}
