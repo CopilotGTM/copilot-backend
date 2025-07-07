@@ -6,5 +6,5 @@ variable "resource_group_name" {
 variable "location" {
   description = "The Azure region where the resource group will be created."
   type        = string
-  default     = "East US"
+  default     = "East US 2"
 }

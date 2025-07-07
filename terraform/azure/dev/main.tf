@@ -249,6 +249,48 @@ resource "azuredevops_variable_group" "secrets" {
 
   variable {
     name         = "APPLICATION_REGION"
-    value        = "eastus"
+    value        = "eastus2"
+  }
+
+  variable {
+    name         = "DATABASE_HOST"
+    value        = module.postgresql.db_host
+  }
+
+  variable {
+    name         = "DATABASE_USER"
+    value        = module.postgresql.db_user
+  }
+
+  variable {
+    name         = "DATABASE_PORT"
+    value        = tostring(module.postgresql.db_port)
+  }
+
+  variable {
+    name         = "DATABASE_NAME"
+    value        = module.postgresql.db_name
+  }
+
+  variable {
+    name         = "DATABASE_PASSWORD"
+    secret_value = random_password.db_admin.result
+    is_secret    = true
+  }
+
+  variable {
+    name         = "REDIS_HOST"
+    value        = module.redis.hostname
+  }
+
+  variable {
+    name         = "REDIS_PORT"
+    value        = tostring(module.redis.port)
+  }
+
+  variable {
+    name         = "REDIS_PASSWORD"
+    secret_value = module.redis.primary_access_key
+    is_secret    = true
   }
 }
