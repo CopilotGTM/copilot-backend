@@ -1,7 +1,7 @@
 replicaCount: 1
 
 image:
-  repository: copilottechnicaldeck.azurecr.io/technical-deck-app
+  repository: copilotgtmacrdev.azurecr.io/technical-deck-app
   tag: "latest"
 
 service:

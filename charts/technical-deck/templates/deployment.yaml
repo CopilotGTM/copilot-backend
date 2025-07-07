@@ -14,22 +14,10 @@ spec:
         app.kubernetes.io/instance: technical-deck
         app.kubernetes.io/name: technical-deck
     spec:
-      containers:
-        - name: {{ .Chart.Name }}
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
-          imagePullPolicy: IfNotPresent
-{{- if or .Values.envNonSecret .Values.secrets }}
-          envFrom:
-{{- if .Values.envNonSecret }}
-            - configMapRef:
-                name: {{ include "technical-deck.fullname" . }}-env
-{{- end }}
-{{- if .Values.secrets }}
-            - secretRef:
-                name: {{ include "technical-deck.fullname" . }}-secret
-{{- end }}
-{{- end }}
-         ports:
-           - containerPort: {{ .Values.service.port }}
-          resources:
-            {{- toYaml .Values.resources | nindent 12 }}
+       containers:
+         - name: {{ .Chart.Name }}
+           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+           imagePullPolicy: IfNotPresent
+           ports:
+             - containerPort: {{ .Values.service.port }}
+           resources: {}

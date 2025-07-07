@@ -1,3 +1,7 @@
+{{- define "technical-deck.chart" -}}
+{{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" }}
+{{- end -}}
+
 {{/*
 Simple chart name.
 */}}
