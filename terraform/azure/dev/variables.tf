@@ -244,3 +244,9 @@ variable "db_password" {
   type        = string
   default     = ""
 }
+
+variable "azure_openai_key" {
+  description = "Database password"
+  type        = string
+  default     = ""
+}

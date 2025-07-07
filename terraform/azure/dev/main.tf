@@ -279,6 +279,11 @@ resource "azuredevops_variable_group" "secrets" {
   }
 
   variable {
+    name         = "APPLICATION_STORAGE_NAME"
+    value        = "dev-app"
+  }
+
+  variable {
     name         = "DATABASE_HOST"
     value        = "dev-copilot-gtm.postgres.database.azure.com"
     # value        = module.postgresql.db_host
@@ -324,4 +329,31 @@ resource "azuredevops_variable_group" "secrets" {
     secret_value = module.redis.primary_access_key
     is_secret    = true
   }
+
+  variable {
+    name         = "AZURE_OPENAI_ENDPOINT"
+    value        = "https://nikhi-ma0k8gv3-eastus2.cognitiveservices.azure.com/"
+  }
+
+  variable {
+    name         = "AZURE_OPENAI_API_KEY"
+    secret_value = var.azure_openai_key
+    is_secret    = true
+  }
+
+  variable {
+    name         = "AZURE_EMBEDDER_OPENAI_ENDPOINT"
+    value        = "https://nikhi-ma0k8gv3-eastus2.cognitiveservices.azure.com/"
+  }
+  variable {
+    name         = "AZURE_EMBEDDER_DEPLOYMENT"
+    value        = "text-embedding-3-large"
+  }
+
+  variable {
+    name         = "AZURE_EMBEDDER_OPENAI_API_KEY"
+    secret_value = var.azure_openai_key
+    is_secret    = true
+  }
+
 }
