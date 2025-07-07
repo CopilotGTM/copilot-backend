@@ -1,4 +1,4 @@
-# Azure DevOps YAML Pipeline – Multi-environment Deployment (Updated to use app-secrets variable group)
+# Azure DevOps YAML Pipeline – Multi-environment Deployment (Static variable group assignment)
 
 trigger:
   branches:
@@ -19,6 +19,7 @@ parameters:
     default: 'dev'
     values:
       - dev
+      - production
 
 variables:
   - name: CHART_PATH
@@ -27,16 +28,12 @@ variables:
     value: $(Pipeline.Workspace)/kubeconfig.yaml
   - name: DEPLOY_ENVIRONMENT
     value: ${{ parameters.deployEnvironment }}
-
-# Set default ACR and release name; override with environment-specific variables in jobs
   - name: ACR_LOGIN_SERVER
     value: copilotgtmacrdev.azurecr.io
   - name: HELM_RELEASE_NAME
     value: technical-deck-dev
   - name: ACR_SERVICE_CONNECTION
     value: copilot-acr-connection
-  - name: ENV_VAR_GROUP
-    value: app-secrets-$(DEPLOY_ENVIRONMENT)
 
 stages:
   - stage: BuildAndPush
@@ -78,7 +75,10 @@ stages:
         displayName: Deploy to AKS / Rollback on Failure
         environment: '$(DEPLOY_ENVIRONMENT)'
         variables:
-          - group: $(ENV_VAR_GROUP)
+          - ${{ if eq(parameters.deployEnvironment, 'dev') }}:
+            - group: app-secrets-dev
+          - ${{ if eq(parameters.deployEnvironment, 'production') }}:
+            - group: app-secrets-production
         pool:
           vmImage: 'ubuntu-latest'
         strategy:
@@ -165,7 +165,3 @@ stages:
                           echo "No previous revision found for rollback."
                         fi
                       fi
-
-# Notes:
-# - 'app-secrets-development' and 'app-secrets-production' variable groups must exist in Azure DevOps and contain all required secret/env variables.
-# - Confirm all required variables in the variable groups and .env files for your deployment.
