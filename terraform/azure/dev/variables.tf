@@ -17,7 +17,7 @@ variable "subscription_id" {
 variable "location" {
   description = "The Azure region for the Resource Group."
   type        = string
-  default     = "East US 2"
+  default     = "EAST US 2"
 }
 
 variable "vnet_address_space" {

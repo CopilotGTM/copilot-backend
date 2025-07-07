@@ -23,6 +23,38 @@ module "vnet" {
 }
 
 # -----------------------------------------------------------------
+# Azure Key Vault
+# -----------------------------------------------------------------
+module "key_vault" {
+  source              = "../modules/key_vault"
+  key_vault_name      = "copilot-gtm-keyvault-${var.env}"
+  location            = var.location
+  resource_group_name = module.resource_group.resource_group_name
+  tenant_id           = data.azurerm_client_config.current.tenant_id
+  admin_object_id     = data.azurerm_client_config.current.object_id
+  tags = {
+    environment = var.env
+    project     = var.project_name
+  }
+}
+
+# # -----------------------------------------------------------------
+# # Azure Storage Account: General purpose blob/file storage
+# # -----------------------------------------------------------------
+# module "storage_account" {
+#   source                  = "../modules/storage_account"
+#   storage_account_name    = "${var.storage_account_name}${var.env}"
+#   resource_group_name     = module.resource_group.resource_group_name
+#   location                = var.location
+#   account_tier            = "Standard"
+#   account_replication_type = "LRS"
+#   tags = {
+#     environment = var.env
+#     project     = var.project_name
+#   }
+# }
+
+# -----------------------------------------------------------------
 # Azure Kubernetes Service: Managed Kubernetes cluster for containers
 # -----------------------------------------------------------------
 module "aks" {
@@ -71,6 +103,28 @@ module "redis" {
   depends_on          = [module.resource_group]
 }
 
+# # -----------------------------------------------------------------
+# # App Service: Azure Web App for frontend hosting (Node.js)
+# # -----------------------------------------------------------------
+# module "openai" {
+#   source                 = "../modules/openai"
+#   account_name           = "copilot-gtm-openai-${var.env}"
+#   location               = var.location
+#   resource_group_name    = module.resource_group.resource_group_name
+#   sku_name               = "S0"
+#   public_network_access_enabled = true
+#   tags                   = {
+#     environment = var.env
+#     project     = var.project_name
+#   }
+#   deployment_name        = "o4-mini"
+#   model_format           = "OpenAI"
+#   model_name             = "o4-mini"
+#   model_version          = "0613"
+#   deployment_sku_name    = "Standard"
+#   deployment_sku_capacity = 1
+# }
+
 # -----------------------------------------------------------------
 # App Service: Azure Web App for frontend hosting (Node.js)
 # -----------------------------------------------------------------
@@ -109,22 +163,6 @@ resource "azurerm_role_assignment" "app_service_acr_pull" {
   depends_on           = [module.frontend_app_service.app_service_id]
 }
 
-# # -----------------------------------------------------------------
-# # Azure Storage Account: General purpose blob/file storage
-# # -----------------------------------------------------------------
-# module "storage_account" {
-#   source                  = "../modules/storage_account"
-#   storage_account_name    = "${var.storage_account_name}${var.env}"
-#   resource_group_name     = module.resource_group.resource_group_name
-#   location                = var.location
-#   account_tier            = "Standard"
-#   account_replication_type = "LRS"
-#   tags = {
-#     environment = var.env
-#     project     = var.project_name
-#   }
-# }
-
 # -----------------------------------------------------------------
 # Service Principal for Azure DevOps
 # -----------------------------------------------------------------
@@ -147,7 +185,7 @@ data "azuredevops_project" "project" {
 module "service_connection" {
   source                   = "../modules/service_connection"
   devops_project_id        = data.azuredevops_project.project.id
-  service_connection_name  = "arc-ci-cd-service"
+  service_connection_name  = "copilotgtm-arc-ci-cd-service--${var.env}"
   subscription_id          = var.subscription_id
   subscription_name        = "Copilot GTM Subscription"
   tenant_id                = module.service_principal.tenant_id
@@ -178,33 +216,17 @@ module "pipeline" {
 module "service_connection_acr" {
   source                = "../modules/service_connection_acr"
   devops_project_id     = data.azuredevops_project.project.id
-  service_endpoint_name = "copilot-acr-connection"
+  service_endpoint_name = "copilotgtm-acr-connection-${var.env}"
   acr_login_server      = module.acr.acr_login_server
   acr_sp_app_id         = module.service_principal.client_id
   acr_sp_app_secret     = module.service_principal.client_secret
 }
 
-# -----------------------------------------------------------------
-# Azure Key Vault
-# -----------------------------------------------------------------
-module "key_vault" {
-  source              = "../modules/key_vault"
-  key_vault_name      = "copilot-gtm-kv-${var.env}"
-  location            = var.location
-  resource_group_name = module.resource_group.resource_group_name
-  tenant_id           = data.azurerm_client_config.current.tenant_id
-  admin_object_id     = data.azurerm_client_config.current.object_id
-  tags = {
-    environment = var.env
-    project     = var.project_name
-  }
-}
-
 data "azurerm_client_config" "current" {}
 
-# ─────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------
 # Generate a strong, random DB admin password
-# ─────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------
 resource "random_password" "db_admin" {
   length           = 32                # total characters
   override_special = "!@#$%&*()-_=+[]" # allowed special chars

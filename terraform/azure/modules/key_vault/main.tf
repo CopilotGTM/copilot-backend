@@ -10,7 +10,7 @@ resource "azurerm_key_vault" "this" {
   access_policy {
     tenant_id = var.tenant_id
     object_id = var.admin_object_id
-    secret_permissions = ["Get", "List", "Set", "Recover", "Backup", "Restore", "Purge"]
+    secret_permissions = ["Get", "List", "Set", "Delete", "Recover", "Backup", "Restore", "Purge"]
   }
 
   tags = var.tags
