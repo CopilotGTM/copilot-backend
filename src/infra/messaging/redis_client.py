@@ -18,6 +18,8 @@ def get_redis_client() -> redis.Redis:
     config = Config()
     redis_host, redis_port, redis_password = config.get_redis_client_details
     logger.info(f"Redis Host - {redis_host}")
+    # Set SSL based on environment: local disables SSL, others enable SSL
+    ssl_enabled = False if config.env == "local" else True
     redis_client = redis.Redis(
         host=redis_host,
         port=redis_port,
@@ -27,7 +29,7 @@ def get_redis_client() -> redis.Redis:
         socket_connect_timeout=30,
         retry_on_timeout=True,
         health_check_interval=30,
-        ssl=False,
+        ssl=ssl_enabled,
         socket_keepalive=True
     )
     redis_client.ping()
