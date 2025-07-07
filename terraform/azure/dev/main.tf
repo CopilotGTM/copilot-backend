@@ -19,7 +19,9 @@ module "vnet" {
   public_subnets      = var.vnet_public_subnets
   private_subnets     = var.vnet_private_subnets
   env                 = var.env
-  depends_on          = [module.resource_group]
+  depends_on          = [
+    module.resource_group
+  ]
 }
 
 # -----------------------------------------------------------------
@@ -27,7 +29,7 @@ module "vnet" {
 # -----------------------------------------------------------------
 module "key_vault" {
   source              = "../modules/key_vault"
-  key_vault_name      = "copilot-gtm-keyvault-${var.env}"
+  key_vault_name      = "copilotgtm-vault-${var.env}"
   location            = var.location
   resource_group_name = module.resource_group.resource_group_name
   tenant_id           = data.azurerm_client_config.current.tenant_id
@@ -36,6 +38,9 @@ module "key_vault" {
     environment = var.env
     project     = var.project_name
   }
+  depends_on = [
+    module.resource_group
+  ]
 }
 
 # # -----------------------------------------------------------------
@@ -55,6 +60,20 @@ module "key_vault" {
 # }
 
 # -----------------------------------------------------------------
+# Azure Container Registry: Stores container images for AKS and DevOps pipelines
+# -----------------------------------------------------------------
+module "acr" {
+  source              = "../modules/acr"
+  acr_name            = "${var.acr_name}${var.env}"
+  resource_group_name = module.resource_group.resource_group_name
+  location            = var.location
+  sku                 = var.acr_type
+  depends_on          = [
+    module.resource_group
+  ]
+}
+
+# -----------------------------------------------------------------
 # Azure Kubernetes Service: Managed Kubernetes cluster for containers
 # -----------------------------------------------------------------
 module "aks" {
@@ -70,20 +89,12 @@ module "aks" {
   service_cidr         = var.aks_service_cidr
   dns_service_ip       = var.aks_dns_service_ip
   env                  = var.env
-  depends_on           = [module.vnet]
+  depends_on           = [
+    module.vnet,
+    module.acr
+  ]
 }
 
-# -----------------------------------------------------------------
-# Azure Container Registry: Stores container images for AKS and DevOps pipelines
-# -----------------------------------------------------------------
-module "acr" {
-  source              = "../modules/acr"
-  acr_name            = "${var.acr_name}${var.env}"
-  resource_group_name = module.resource_group.resource_group_name
-  location            = var.location
-  sku                 = var.acr_type
-  depends_on          = [module.resource_group]
-}
 
 # -----------------------------------------------------------------
 # Azure Redis Cache: In-memory data store for caching and sessions
@@ -100,7 +111,10 @@ module "redis" {
     environment = var.env
     project     = var.project_name
   }
-  depends_on          = [module.resource_group]
+  depends_on = [
+    module.resource_group,
+    module.vnet
+  ]
 }
 
 # # -----------------------------------------------------------------
@@ -139,7 +153,9 @@ module "frontend_app_service" {
   sku_name                = var.frontend_sku_name
   os_type                 = var.frontend_os_type
   https_only              = var.frontend_https_only
-  depends_on              = [module.resource_group]
+  depends_on = [
+    module.resource_group
+  ]
 }
 
 # -----------------------------------------------------------------
@@ -150,6 +166,10 @@ resource "azurerm_role_assignment" "aks_kubelet_acr_pull" {
   role_definition_name = "AcrPull"
   scope                = module.acr.acr_id
   principal_type       = "ServicePrincipal"
+  depends_on           = [
+    module.acr,
+    module.aks
+  ]
 }
 
 # -----------------------------------------------------------------
@@ -160,7 +180,10 @@ resource "azurerm_role_assignment" "app_service_acr_pull" {
   role_definition_name = "AcrPull"
   scope                = module.acr.acr_id
   principal_type       = "ServicePrincipal"
-  depends_on           = [module.frontend_app_service.app_service_id]
+  depends_on           = [
+    module.acr,
+    module.frontend_app_service
+  ]
 }
 
 # -----------------------------------------------------------------
@@ -170,9 +193,6 @@ module "service_principal" {
   source          = "../modules/service_principal"
   sp_name         = var.sp_name
   subscription_id = var.subscription_id
-# -----------------------------------------------------------------
-# Azure DevOps Service Connection (for ACR/AKS)
-# -----------------------------------------------------------------
 }
 
 # -----------------------------------------------------------------
@@ -236,22 +256,26 @@ resource "random_password" "db_admin" {
   numeric          = true
 }
 
-# -----------------------------------------------------------------
-# PostgreSQL Flexible Server
-# -----------------------------------------------------------------
-module "postgresql" {
-  source                   = "../modules/postgresql"
-  env                      = var.env
-  resource_group_name      = module.resource_group.resource_group_name
-  location                 = module.resource_group.resource_group_location
-  db_admin_user            = "CopilotGTMAdmin"
-  db_admin_password        = random_password.db_admin.result
-  key_vault_id             = module.key_vault.key_vault_id
-  tags                     = {
-    environment = var.env
-    project     = var.project_name
-  }
-}
+# # -----------------------------------------------------------------
+# # PostgreSQL Flexible Server
+# # -----------------------------------------------------------------
+# module "postgresql" {
+#   source                   = "../modules/postgresql"
+#   env                      = var.env
+#   resource_group_name      = module.resource_group.resource_group_name
+#   location                 = "westus"
+#   db_admin_user            = "CopilotGTMAdmin"
+#   db_admin_password        = random_password.db_admin.result
+#   key_vault_id             = module.key_vault.key_vault_id
+#   tags                     = {
+#     environment = var.env
+#     project     = var.project_name
+#   }
+#   depends_on = [
+#     module.resource_group,
+#     module.key_vault
+#   ]
+# }
 
 
 resource "azuredevops_variable_group" "secrets" {
@@ -276,27 +300,32 @@ resource "azuredevops_variable_group" "secrets" {
 
   variable {
     name         = "DATABASE_HOST"
-    value        = module.postgresql.db_host
+    value        = "dev-copilot-gtm.postgres.database.azure.com"
+    # value        = module.postgresql.db_host
   }
 
   variable {
     name         = "DATABASE_USER"
-    value        = module.postgresql.db_user
+    value        = "copilotdatabase"
+    # value        = module.postgresql.db_user
   }
 
   variable {
     name         = "DATABASE_PORT"
-    value        = tostring(module.postgresql.db_port)
+    value        = "5432"
+    # value        = tostring(module.postgresql.db_port)
   }
 
   variable {
     name         = "DATABASE_NAME"
-    value        = module.postgresql.db_name
+    value        = "postgres"
+    # value        = module.postgresql.db_name
   }
 
   variable {
     name         = "DATABASE_PASSWORD"
-    secret_value = random_password.db_admin.result
+    secret_value = var.db_password
+    # secret_value = random_password.db_admin.result
     is_secret    = true
   }
 

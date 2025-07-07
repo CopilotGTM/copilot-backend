@@ -1,11 +1,11 @@
 resource "azurerm_key_vault_secret" "db_password" {
-  name         = "database-admin-user-password-${var.env}"
+  name         = "db-admin-password"
   value        = var.db_admin_password
   key_vault_id = var.key_vault_id
 }
 
 resource "azurerm_postgresql_flexible_server" "db" {
-  name                   = "app-db-${var.env}"
+  name                   = "copilotgtm-postgresdb-${var.env}"
   resource_group_name    = var.resource_group_name
   location               = var.location
   version                = var.db_version

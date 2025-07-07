@@ -238,3 +238,9 @@ variable "frontend_https_only" {
   type        = bool
   default     = true
 }
+
+variable "db_password" {
+  description = "Database password"
+  type        = string
+  default     = ""
+}
