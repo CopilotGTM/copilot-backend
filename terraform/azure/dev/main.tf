@@ -117,27 +117,7 @@ module "redis" {
   ]
 }
 
-# # -----------------------------------------------------------------
-# # App Service: Azure Web App for frontend hosting (Node.js)
-# # -----------------------------------------------------------------
-# module "openai" {
-#   source                 = "../modules/openai"
-#   account_name           = "copilot-gtm-openai-${var.env}"
-#   location               = var.location
-#   resource_group_name    = module.resource_group.resource_group_name
-#   sku_name               = "S0"
-#   public_network_access_enabled = true
-#   tags                   = {
-#     environment = var.env
-#     project     = var.project_name
-#   }
-#   deployment_name        = "o4-mini"
-#   model_format           = "OpenAI"
-#   model_name             = "o4-mini"
-#   model_version          = "0613"
-#   deployment_sku_name    = "Standard"
-#   deployment_sku_capacity = 1
-# }
+
 
 # -----------------------------------------------------------------
 # App Service: Azure Web App for frontend hosting (Node.js)
