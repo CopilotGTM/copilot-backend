@@ -31,9 +31,9 @@ variables:
   - name: ACR_LOGIN_SERVER
     value: copilotgtmacrdev.azurecr.io
   - name: HELM_RELEASE_NAME
-    value: technical-deck-dev
+    value: technical-deck
   - name: ACR_SERVICE_CONNECTION
-    value: copilot-acr-connection
+    value: copilotgtm-acr-connection-dev
 
 stages:
   - stage: BuildAndPush
