@@ -202,6 +202,36 @@ module "key_vault" {
 
 data "azurerm_client_config" "current" {}
 
+# ─────────────────────────────────────────────────────────────
+# Generate a strong, random DB admin password
+# ─────────────────────────────────────────────────────────────
+resource "random_password" "db_admin" {
+  length           = 32                # total characters
+  override_special = "!@#$%&*()-_=+[]" # allowed special chars
+  special          = true
+  upper            = true
+  lower            = true
+  numeric          = true
+}
+
+# -----------------------------------------------------------------
+# PostgreSQL Flexible Server
+# -----------------------------------------------------------------
+module "postgresql" {
+  source                   = "../modules/postgresql"
+  env                      = var.env
+  resource_group_name      = module.resource_group.resource_group_name
+  location                 = module.resource_group.resource_group_location
+  db_admin_user            = "CopilotGTMAdmin"
+  db_admin_password        = random_password.db_admin.result
+  key_vault_id             = module.key_vault.key_vault_id
+  tags                     = {
+    environment = var.env
+    project     = var.project_name
+  }
+}
+
+
 resource "azuredevops_variable_group" "secrets" {
   project_id = data.azuredevops_project.project.id
   name       = "app-secrets-${var.env}"
@@ -210,18 +240,15 @@ resource "azuredevops_variable_group" "secrets" {
   variable {
     name         = "ENV"
     value        = "dev"
-    is_secret    = false
   }
 
   variable {
     name         = "CLOUD_PROVIDER"
     value        = "azure"
-    is_secret    = false
   }
 
   variable {
     name         = "APPLICATION_REGION"
     value        = "eastus"
-    is_secret    = false
   }
 }
