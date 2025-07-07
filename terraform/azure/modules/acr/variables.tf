@@ -18,3 +18,13 @@ variable "sku" {
   type        = string
   default     = "Basic"
 }
+
+variable "subnet_id" {
+  description = "The ID of the subnet for the private endpoint"
+  type        = string
+}
+
+variable "vnet_id" {
+  description = "The ID of the virtual network for DNS linking"
+  type        = string
+}

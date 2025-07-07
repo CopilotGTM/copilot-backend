@@ -68,8 +68,11 @@ module "acr" {
   resource_group_name = module.resource_group.resource_group_name
   location            = var.location
   sku                 = var.acr_type
+  subnet_id           = module.vnet.private_subnet_ids[0]
+  vnet_id             = module.vnet.vnet_id
   depends_on          = [
-    module.resource_group
+    module.resource_group,
+    module.vnet
   ]
 }
 
@@ -142,10 +145,10 @@ module "frontend_app_service" {
 # Role Assignment: Allow AKS kubelet to pull images from ACR
 # -----------------------------------------------------------------
 resource "azurerm_role_assignment" "aks_kubelet_acr_pull" {
-  principal_id         = module.aks.aks_principal_id
+  principal_id         = module.aks.kubelet_identity_object_id
   role_definition_name = "AcrPull"
   scope                = module.acr.acr_id
-  principal_type       = "ServicePrincipal"
+  skip_service_principal_aad_check = true
   depends_on           = [
     module.acr,
     module.aks
