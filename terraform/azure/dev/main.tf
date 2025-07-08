@@ -99,15 +99,29 @@ module "aks" {
 }
 
 # -----------------------------------------------------------------
-# Cert-Manager: Kubernetes certificate management via Helm (moved to module)
+# Cert-Manager: Kubernetes certificate management via Helm (Stage 1)
 # -----------------------------------------------------------------
 module "cert_manager" {
   source                        = "../modules/cert_manager"
   aks_dependency                = module.aks
   ingress_controller_dependency = module.ingress_controller
-  letsencrypt_email             = "nikhil@copilotgtm.com"
-  dns_record_dependency         = azurerm_dns_a_record.devapi
-  devapi_dns_name               = "devapi.copilotgtm.com"
+}
+
+# -----------------------------------------------------------------
+# Cert-Manager Issuers and Certificates (Stage 2)
+# To be applied after cert-manager is installed and ready.
+# 
+# Two-stage apply process:
+#   1. terraform apply -target=module.aks -target=module.ingress_controller -target=azurerm_dns_a_record.devapi -target=module.cert_manager
+#   2. terraform apply
+# This ensures cert-manager CRDs/controllers are ready before creating ClusterIssuer/Certificate resources.
+# -----------------------------------------------------------------
+module "cert_manager_issuers" {
+  source                         = "../modules/cert_manager_issuers"
+  cert_manager_install_dependency = module.cert_manager
+  letsencrypt_email              = "nikhil@copilotgtm.com"
+  dns_record_dependency          = azurerm_dns_a_record.devapi
+  devapi_dns_name                = "devapi.copilotgtm.com"
 }
 
 # -----------------------------------------------------------------
