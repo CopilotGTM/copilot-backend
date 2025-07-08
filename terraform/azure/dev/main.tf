@@ -98,6 +98,17 @@ module "aks" {
   ]
 }
 
+# -----------------------------------------------------------------
+# Cert-Manager: Kubernetes certificate management via Helm (moved to module)
+# -----------------------------------------------------------------
+module "cert_manager" {
+  source                        = "../modules/cert_manager"
+  aks_dependency                = module.aks
+  ingress_controller_dependency = module.ingress_controller
+  letsencrypt_email             = "nikhil@copilotgtm.com"
+  dns_record_dependency         = azurerm_dns_a_record.devapi
+  devapi_dns_name               = "devapi.copilotgtm.com"
+}
 
 # -----------------------------------------------------------------
 # Azure Redis Cache: In-memory data store for caching and sessions
