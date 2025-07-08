@@ -120,54 +120,6 @@ module "redis" {
   ]
 }
 
-
-
-# -----------------------------------------------------------------
-# NGINX Ingress Controller via Helm
-resource "helm_release" "nginx_ingress" {
-  name       = "nginx-ingress"
-  repository = "https://kubernetes.github.io/ingress-nginx"
-  chart      = "ingress-nginx"
-  version    = "4.10.1"
-
-  namespace  = "copilot"
-  create_namespace = true
-
-  values = [
-    <<-EOF
-controller:
-  replicaCount: 2
-  service:
-    type: LoadBalancer
-EOF
-  ]
-}
-
-# Fetch the external IP of the NGINX Ingress Controller service
-data "kubernetes_service" "nginx_ingress" {
-  metadata {
-    name      = "nginx-ingress-copilot-controller"
-    namespace = "copilot"
-  }
-  depends_on = [helm_release.nginx_ingress]
-}
-
-# Reference the existing DNS zone for copilotgtm.com
-data "azurerm_dns_zone" "copilotgtm" {
-  name                = "copilotgtm.com"
-  resource_group_name = "master-resources"
-}
-
-# Create or update the A record for devapi.copilotgtm.com
-resource "azurerm_dns_a_record" "devapi" {
-  name                = "devapi"
-  zone_name           = data.azurerm_dns_zone.copilotgtm.name
-  resource_group_name = data.azurerm_dns_zone.copilotgtm.resource_group_name
-  ttl                 = 300
-  # Use try() to avoid errors if the external IP is not yet assigned. Re-apply after the IP is available.
-  records             = [try(data.kubernetes_service.nginx_ingress.status[0].load_balancer[0].ingress[0].ip, "0.0.0.0")]
-}
-
 # App Service: Azure Web App for frontend hosting (Node.js)
 # -----------------------------------------------------------------
 module "frontend_app_service" {
@@ -393,6 +345,7 @@ resource "azuredevops_variable_group" "secrets" {
     name         = "AZURE_EMBEDDER_OPENAI_ENDPOINT"
     value        = "https://nikhi-ma0k8gv3-eastus2.cognitiveservices.azure.com/"
   }
+  
   variable {
     name         = "AZURE_EMBEDDER_DEPLOYMENT"
     value        = "text-embedding-3-large"
@@ -405,3 +358,6 @@ resource "azuredevops_variable_group" "secrets" {
   }
 
 }
+# -----------------------------------------------------------------
+# DNS A Record: Route devapi.copilotgtm.com to the Application Gateway public IP
+# -----------------------------------------------------------------

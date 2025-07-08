@@ -159,3 +159,49 @@ terraform {
 az storage account blob-service-properties update --account-name gtmstatestor001 --resource-group gtm-tfstate --enable-change-feed true
 az storage account blob-service-properties update --account-name gtmstatestor001 --resource-group gtm-tfstate --enable-delete-retention true --delete-retention-days 30
 ```
+
+---
+
+## Automated cert-manager and TLS Certificate Setup (Production-Ready)
+
+This project uses a two-step, production-grade approach to automate cert-manager and TLS certificate provisioning for Kubernetes Ingress.
+
+### Prerequisites
+
+- Terraform installed
+- kubectl access to your AKS cluster
+- Azure credentials configured
+
+### Step 1: Install cert-manager and CRDs
+
+1. Navigate to the `terraform/azure/dev` directory:
+   ```sh
+   cd terraform/azure/dev
+   ```
+
+2. Apply only the cert-manager Helm release (this will install cert-manager and its CRDs):
+   ```sh
+   terraform apply -target=helm_release.cert_manager
+   ```
+   > If you see "Invalid target" errors, ensure the resource is named exactly `helm_release.cert_manager` in your .tf files and that the file (e.g., `cert-manager-step1.tf`) is present in the current directory. You can also run a normal `terraform apply` to apply all resources in the step if needed.
+
+3. Wait until cert-manager is running and the CRDs are present. You can check with:
+   ```sh
+   kubectl get crd | grep cert-manager
+   ```
+   Make sure you see resources like `clusterissuers.cert-manager.io`.
+
+### Step 2: Create ClusterIssuer and Certificate
+
+1. Apply the ClusterIssuer and Certificate resources:
+   ```sh
+   terraform apply -target=kubernetes_manifest.letsencrypt_prod_issuer -target=kubernetes_manifest.api_cert
+   ```
+
+2. cert-manager will automatically provision and renew TLS certificates for your domains (e.g., api.copilotgtm.com, devapi.copilotgtm.com).
+
+### Notes
+
+- This two-step process is required because cert-manager CRDs must be present before you can create ClusterIssuer or Certificate resources.
+- You only need to repeat Step 2 if you change certificate details or add new domains.
+- For more details, see `cert-manager-step1.tf` and `cert-manager-step2.tf` in the `terraform/azure/dev` directory.
