@@ -55,3 +55,30 @@ resource "azurerm_subnet_nat_gateway_association" "private" {
   subnet_id      = each.value.id
   nat_gateway_id = azurerm_nat_gateway.this.id
 }
+
+# Network Security Group for AKS private subnets
+resource "azurerm_network_security_group" "aks_private" {
+  name                = "${var.vnet_name}-aks-private-nsg"
+  location            = var.location
+  resource_group_name = var.resource_group_name
+
+  security_rule {
+    name                       = "Allow-HTTP-Inbound"
+    priority                   = 1001
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "80"
+    source_address_prefix      = "*"
+    destination_address_prefix = "*"
+    description                = "Allow inbound HTTP traffic to AKS nodes"
+  }
+}
+
+# Associate NSG with all private subnets
+resource "azurerm_subnet_network_security_group_association" "private" {
+  for_each                  = azurerm_subnet.private
+  subnet_id                 = each.value.id
+  network_security_group_id = azurerm_network_security_group.aks_private.id
+}

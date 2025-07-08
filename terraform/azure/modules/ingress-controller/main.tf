@@ -15,9 +15,22 @@ resource "helm_release" "nginx_ingress" {
     {
       name  = "controller.replicaCount"
       value = var.replica_count
+    },
+    {
+      name  = "controller.service.ports.http"
+      value = "80"
     }
   ]
 
   # Ensure AKS cluster is ready before installing ingress
   depends_on = [var.aks_dependency]
+}
+
+# Fetch the nginx ingress controller LoadBalancer service to get its public IP
+data "kubernetes_service" "nginx_ingress" {
+  metadata {
+    name      = "nginx-ingress-ingress-nginx-controller"
+    namespace = var.namespace
+  }
+  depends_on = [helm_release.nginx_ingress]
 }

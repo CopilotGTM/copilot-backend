@@ -12,3 +12,8 @@ output "nginx_ingress_status" {
   description = "Helm release status"
   value       = helm_release.nginx_ingress.status
 }
+
+output "nginx_ingress_public_ip" {
+  description = "The public IP address of the NGINX ingress controller LoadBalancer service"
+  value       = data.kubernetes_service.nginx_ingress.status[0].load_balancer[0].ingress[0].ip
+}
