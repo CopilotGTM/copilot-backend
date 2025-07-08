@@ -358,6 +358,3 @@ resource "azuredevops_variable_group" "secrets" {
   }
 
 }
-# -----------------------------------------------------------------
-# DNS A Record: Route devapi.copilotgtm.com to the Application Gateway public IP
-# -----------------------------------------------------------------
