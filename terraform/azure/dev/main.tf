@@ -110,7 +110,7 @@ module "cert_manager" {
 # -----------------------------------------------------------------
 # Cert-Manager Issuers and Certificates (Stage 2)
 # To be applied after cert-manager is installed and ready.
-# 
+#
 # Two-stage apply process:
 #   1. terraform apply -target=module.aks -target=module.ingress_controller -target=azurerm_dns_a_record.devapi -target=module.cert_manager
 #   2. terraform apply

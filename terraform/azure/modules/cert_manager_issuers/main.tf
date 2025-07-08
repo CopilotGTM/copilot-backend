@@ -1,19 +1,8 @@
 # Cert-Manager Issuers and Certificates: To be applied after cert-manager is installed and ready
 
-resource "null_resource" "wait_for_clusterissuer_crd" {
-  provisioner "local-exec" {
-    command = <<EOT
-      for i in {1..30}; do
-        kubectl get crd clusterissuers.cert-manager.io && \
-        kubectl -n cert-manager get deploy cert-manager-webhook && \
-        [ "$(kubectl -n cert-manager get deploy cert-manager-webhook -o jsonpath='{.status.availableReplicas}')" -ge 1 ] && exit 0
-        sleep 10
-      done
-      echo "Timeout waiting for cert-manager CRDs and webhook"
-      exit 1
-    EOT
-    interpreter = ["/bin/bash", "-c"]
-  }
+resource "time_sleep" "wait_for_crd_registration" {
+  create_duration = "90s"
+
   depends_on = [var.cert_manager_install_dependency]
 }
 
@@ -42,7 +31,7 @@ resource "kubernetes_manifest" "letsencrypt_clusterissuer" {
     }
   }
   depends_on = [
-    null_resource.wait_for_clusterissuer_crd,
+    time_sleep.wait_for_crd_registration,
     var.dns_record_dependency
   ]
 }
