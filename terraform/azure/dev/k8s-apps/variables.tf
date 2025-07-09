@@ -10,3 +10,13 @@ variable "ingress_controller_dependency" {
   description = "Ingress controller dependency object from parent module"
   type        = any
 }
+
+variable "namespace" {
+  description = "Namespace to be used for cert-manager and issuers"
+  type        = string
+}
+
+variable "dns_record_dependency" {
+  description = "Dependency on DNS A record, passed from root"
+  type        = any
+}

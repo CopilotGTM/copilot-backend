@@ -1,50 +1,31 @@
-variable "release_name" {
-  description = "Name for the Helm release"
-  type        = string
-  default     = "nginx-ingress"
-}
-
-variable "namespace" {
-  description = "Namespace to deploy nginx ingress controller"
-  type        = string
-  default     = "ingress-nginx"
-}
-
-variable "chart_version" {
-  description = "Chart version for nginx ingress controller"
-  type        = string
-  default     = "4.10.1"
-}
-
-variable "service_type" {
-  description = "nginx Ingress service type (LoadBalancer or ClusterIP)"
-  type        = string
-  default     = "LoadBalancer"
-}
-
-variable "replica_count" {
-  description = "Number of nginx ingress controller replicas"
-  type        = number
-  default     = 1
-}
-
-variable "aks_dependency" {
-  description = "Resource dependency for AKS cluster (pass module.aks)"
-  type        = any
-}
-
 variable "resource_group_name" {
-  description = "The name of the resource group"
+  description = "Name of the resource group to deploy into"
   type        = string
 }
 
 variable "location" {
-  description = "The Azure location where the resources will be created"
+  description = "Azure region for resources"
   type        = string
 }
 
-variable "tags" {
-  description = "A map of tags to assign to the resources"
-  type        = map(string)
-  default     = {}
+variable "namespace" {
+  description = "Kubernetes namespace for the ingress controller"
+  type        = string
+  default     = "nginx-ingress"
+}
+
+variable "release_name" {
+  description = "Helm release name for the ingress controller"
+  type        = string
+}
+
+variable "chart_version" {
+  description = "Version of the ingress-nginx Helm chart to install"
+  type        = string
+  default     = "4.13.0"
+}
+
+variable "values_file_path" {
+  description = "Path to your custom values.yaml"
+  type        = string
 }

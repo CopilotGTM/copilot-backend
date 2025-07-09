@@ -1,0 +1,13 @@
+controller:
+  replicaCount: 2
+  service:
+    annotations:
+      service.beta.kubernetes.io/azure-load-balancer-resource-group: "${resource_group_name}"
+    loadBalancerIP: "" # overridden via Terraform set attribute
+
+  ingressClassResource:
+    name: nginx
+    enabled: true
+
+defaultBackend:
+  enabled: true

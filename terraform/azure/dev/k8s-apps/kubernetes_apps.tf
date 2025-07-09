@@ -3,9 +3,9 @@
 # -----------------------------------------------------------------
 module "cert_manager" {
   source                        = "../../modules/cert_manager"
-  aks_dependency                = module.aks
-  ingress_controller_dependency = module.ingress_controller
-  namespace                     = module.ingress_controller.nginx_ingress_namespace
+  aks_dependency                = var.aks_dependency
+  ingress_controller_dependency = var.ingress_controller_dependency
+  namespace                     = var.namespace
 }
 
 # -----------------------------------------------------------------
@@ -15,11 +15,7 @@ module "cert_manager_issuers" {
   source                          = "../../modules/cert_manager_issuers"
   cert_manager_install_dependency = module.cert_manager
   letsencrypt_email               = "nikhil@copilotgtm.com"
-  dns_record_dependency           = azurerm_dns_a_record.devapi
-  namespace                       = module.ingress_controller.nginx_ingress_namespace
+  dns_record_dependency           = var.dns_record_dependency
+  namespace                       = var.namespace
   domain_name                     = "devapi.copilotgtm.com"
 }
-
-# -----------------------------------------------------------------
-# Ingress Controller (nginx) for AKS
-# -----------------------------------------------------------------

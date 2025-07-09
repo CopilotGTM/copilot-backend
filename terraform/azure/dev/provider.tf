@@ -8,6 +8,18 @@ terraform {
       source  = "microsoft/azuredevops"
       version = ">= 0.2.0"
     }
+    helm = {
+      source  = "hashicorp/helm"
+      version = ">= 2.5.1"
+    }
+    kubernetes = {
+      source  = "hashicorp/kubernetes"
+      version = ">= 2.11.0"
+    }
+    random = {
+      source  = "hashicorp/random"
+      version = ">= 3.1.0"
+    }
   }
   required_version = ">= 1.3.0"
 
@@ -34,12 +46,6 @@ provider "azuredevops" {
   personal_access_token = var.azuredevops_pat   # Pass securely via environment variable or tfvars (never hardcode)
 }
 
-provider "kubernetes" {
-  host                   = module.aks.host
-  client_certificate     = base64decode(module.aks.client_certificate)
-  client_key             = base64decode(module.aks.client_key)
-  cluster_ca_certificate = base64decode(module.aks.cluster_ca_certificate)
-}
 
 provider "helm" {
   kubernetes = {
@@ -48,4 +54,11 @@ provider "helm" {
     client_key             = base64decode(module.aks.client_key)
     cluster_ca_certificate = base64decode(module.aks.cluster_ca_certificate)
   }
+}
+
+provider "kubernetes" {
+  host                   = module.aks.host
+  client_certificate     = base64decode(module.aks.client_certificate)
+  client_key             = base64decode(module.aks.client_key)
+  cluster_ca_certificate = base64decode(module.aks.cluster_ca_certificate)
 }

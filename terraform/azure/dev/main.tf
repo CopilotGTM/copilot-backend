@@ -98,22 +98,22 @@ module "aks" {
   ]
 }
 
+
 # -----------------------------------------------------------------
-# Ingress Controller (nginx) for AKS
+# NGINX Ingress Controller: Public IP and Helm chart
 # -----------------------------------------------------------------
 module "ingress_controller" {
   source              = "../modules/ingress-controller"
-  release_name        = "nginx-ingress"
-  namespace           = "ingress-nginx"
-  chart_version       = "4.7.0"
-  replica_count       = 1
-  aks_dependency      = module.aks
   resource_group_name = module.resource_group.resource_group_name
-  location            = module.resource_group.resource_group_location
-  tags = {
-    environment = var.env
-    project     = var.project_name
+  location            = var.location
+  namespace           = "nginx-ingress"
+  release_name        = "ingress-nginx"
+  values_file_path    = "${path.module}/../modules/ingress-controller/values.yaml"
+  providers = {
+    kubernetes = kubernetes
+    helm       = helm
   }
+  depends_on          = [module.aks]
 }
 
 # -----------------------------------------------------------------
@@ -126,6 +126,17 @@ resource "azurerm_dns_a_record" "devapi" {
   ttl                 = 300
   records             = [module.ingress_controller.nginx_ingress_public_ip]
   depends_on          = [module.ingress_controller]
+}
+# -----------------------------------------------------------------
+# Kubernetes Applications: Cert-Manager, Issuers, Certificates, etc.
+# -----------------------------------------------------------------
+module "k8s_apps" {
+  source = "./k8s-apps"
+
+  aks_dependency                = module.aks
+  ingress_controller_dependency = module.ingress_controller
+  namespace                     = "nginx-ingress"
+  dns_record_dependency         = azurerm_dns_a_record.devapi
 }
 
 # -----------------------------------------------------------------
