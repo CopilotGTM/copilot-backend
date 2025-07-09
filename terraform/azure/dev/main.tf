@@ -127,17 +127,6 @@ resource "azurerm_dns_a_record" "devapi" {
   records             = [module.ingress_controller.nginx_ingress_public_ip]
   depends_on          = [module.ingress_controller]
 }
-# -----------------------------------------------------------------
-# Kubernetes Applications: Cert-Manager, Issuers, Certificates, etc.
-# -----------------------------------------------------------------
-module "k8s_apps" {
-  source = "./k8s-apps"
-
-  aks_dependency                = module.aks
-  ingress_controller_dependency = module.ingress_controller
-  namespace                     = "nginx-ingress"
-  dns_record_dependency         = azurerm_dns_a_record.devapi
-}
 
 # -----------------------------------------------------------------
 # Azure Redis Cache: In-memory data store for caching and sessions
