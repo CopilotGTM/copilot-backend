@@ -7,6 +7,12 @@ module "resource_group" {
   location            = var.location
 }
 
+resource "kubernetes_namespace" "copilotapps" {
+  metadata {
+    name = "copilot"
+  }
+}
+
 # -----------------------------------------------------------------
 # Virtual Network: Provides networking and subnets for AKS and App Services
 # -----------------------------------------------------------------
