@@ -7,3 +7,8 @@ variable "ingress_controller_dependency" {
   description = "Dependency on the ingress controller module to ensure cert-manager is installed after ingress."
   type        = any
 }
+
+variable "namespace" {
+  description = "The namespace where cert-manager will be installed"
+  type        = string
+}

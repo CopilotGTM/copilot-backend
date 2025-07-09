@@ -13,7 +13,12 @@ variable "dns_record_dependency" {
   type        = any
 }
 
-variable "devapi_dns_name" {
-  description = "DNS name for the devapi certificate."
+variable "namespace" {
+  description = "The namespace where the certificate will be created"
+  type        = string
+}
+
+variable "domain_name" {
+  description = "The domain name for the certificate"
   type        = string
 }

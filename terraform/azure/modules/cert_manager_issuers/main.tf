@@ -42,7 +42,7 @@ resource "kubernetes_manifest" "devapi_cert" {
     kind       = "Certificate"
     metadata = {
       name      = "devapi-copilotgtm-com"
-      namespace = "ingress-nginx"
+      namespace = var.namespace
     }
     spec = {
       secretName = "devapi-copilotgtm-com-tls"
@@ -50,7 +50,7 @@ resource "kubernetes_manifest" "devapi_cert" {
         name = "letsencrypt-prod"
         kind = "ClusterIssuer"
       }
-      dnsNames = [var.devapi_dns_name]
+      dnsNames = [var.domain_name]
     }
   }
   depends_on = [

@@ -99,29 +99,33 @@ module "aks" {
 }
 
 # -----------------------------------------------------------------
-# Cert-Manager: Kubernetes certificate management via Helm (Stage 1)
+# Ingress Controller (nginx) for AKS
 # -----------------------------------------------------------------
-module "cert_manager" {
-  source                        = "../modules/cert_manager"
-  aks_dependency                = module.aks
-  ingress_controller_dependency = module.ingress_controller
+module "ingress_controller" {
+  source              = "../modules/ingress-controller"
+  release_name        = "nginx-ingress"
+  namespace           = "ingress-nginx"
+  chart_version       = "4.7.0"
+  replica_count       = 1
+  aks_dependency      = module.aks
+  resource_group_name = module.resource_group.resource_group_name
+  location            = module.resource_group.resource_group_location
+  tags = {
+    environment = var.env
+    project     = var.project_name
+  }
 }
 
 # -----------------------------------------------------------------
-# Cert-Manager Issuers and Certificates (Stage 2)
-# To be applied after cert-manager is installed and ready.
-#
-# Two-stage apply process:
-#   1. terraform apply -target=module.aks -target=module.ingress_controller -target=azurerm_dns_a_record.devapi -target=module.cert_manager
-#   2. terraform apply
-# This ensures cert-manager CRDs/controllers are ready before creating ClusterIssuer/Certificate resources.
+# DNS A Record for devapi.copilotgtm.com -> nginx ingress public IP
 # -----------------------------------------------------------------
-module "cert_manager_issuers" {
-  source                         = "../modules/cert_manager_issuers"
-  cert_manager_install_dependency = module.cert_manager
-  letsencrypt_email              = "nikhil@copilotgtm.com"
-  dns_record_dependency          = azurerm_dns_a_record.devapi
-  devapi_dns_name                = "devapi.copilotgtm.com"
+resource "azurerm_dns_a_record" "devapi" {
+  name                = "devapi"
+  zone_name           = "copilotgtm.com"
+  resource_group_name = "master-resources"
+  ttl                 = 300
+  records             = [module.ingress_controller.nginx_ingress_public_ip]
+  depends_on          = [module.ingress_controller]
 }
 
 # -----------------------------------------------------------------
@@ -247,32 +251,9 @@ module "service_connection_acr" {
   acr_sp_app_secret     = module.service_principal.client_secret
 }
 
-# -----------------------------------------------------------------
-# Ingress Controller (nginx) for AKS
-# -----------------------------------------------------------------
-module "ingress_controller" {
-  source         = "../modules/ingress-controller"
-  release_name   = "nginx-ingress"
-  namespace      = "ingress-nginx"
-  chart_version  = "4.10.1"
-  service_type   = "LoadBalancer"
-  replica_count  = 1
-  aks_dependency = module.aks
-}
 
 data "azurerm_client_config" "current" {}
 
-# -----------------------------------------------------------------
-# DNS A Record for devapi.copilotgtm.com -> nginx ingress public IP
-# -----------------------------------------------------------------
-resource "azurerm_dns_a_record" "devapi" {
-  name                = "devapi"
-  zone_name           = "copilotgtm.com"
-  resource_group_name = "master-resources"
-  ttl                 = 300
-  records             = [module.ingress_controller.nginx_ingress_public_ip]
-  depends_on          = [module.ingress_controller]
-}
 
 # -----------------------------------------------------------------
 # Generate a strong, random DB admin password
