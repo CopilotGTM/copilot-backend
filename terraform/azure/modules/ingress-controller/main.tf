@@ -35,14 +35,17 @@ resource "helm_release" "nginx" {
   namespace  = var.namespace
   version    = var.chart_version
 
-  values = [file(var.values_file_path)]
-
   set = [
     {
-      name  = "controller.service.loadBalancerIP"
-      value = azurerm_public_ip.nginx_ip.ip_address
-    }
+      name  = "controller.service.annotations.\"service\\.beta\\.kubernetes\\.io/azure-load-balancer-resource-group\""
+      value = var.resource_group_name
+    },
+  {
+    name  = "controller.service.loadBalancerIP"
+    value = azurerm_public_ip.nginx_ip.ip_address
+  }
   ]
 
   depends_on = [azurerm_public_ip.nginx_ip]
+  timeout = 900
 }
