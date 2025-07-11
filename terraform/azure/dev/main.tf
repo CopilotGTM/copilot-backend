@@ -7,11 +7,6 @@ module "resource_group" {
   location            = var.location
 }
 
-resource "kubernetes_namespace" "copilotapps" {
-  metadata {
-    name = "copilot"
-  }
-}
 
 # -----------------------------------------------------------------
 # Virtual Network: Provides networking and subnets for AKS and App Services
@@ -104,24 +99,6 @@ module "aks" {
   ]
 }
 
-
-# -----------------------------------------------------------------
-# NGINX Ingress Controller: Public IP and Helm chart
-# -----------------------------------------------------------------
-module "ingress_controller" {
-  source              = "../modules/ingress-controller"
-  resource_group_name = module.resource_group.resource_group_name
-  location            = var.location
-  namespace           = "nginx-ingress"
-  release_name        = "ingress-nginx"
-  values_file_path    = "${path.module}/../modules/ingress-controller/values.yaml"
-  providers = {
-    kubernetes = kubernetes
-    helm       = helm
-  }
-  depends_on          = [module.aks]
-}
-
 # -----------------------------------------------------------------
 # DNS A Record for devapi.copilotgtm.com -> nginx ingress public IP
 # -----------------------------------------------------------------
@@ -130,8 +107,8 @@ resource "azurerm_dns_a_record" "devapi" {
   zone_name           = "copilotgtm.com"
   resource_group_name = "master-resources"
   ttl                 = 300
-  records             = [module.ingress_controller.nginx_ingress_public_ip]
-  depends_on          = [module.ingress_controller]
+  # records             = [module.ingress_controller.nginx_ingress_public_ip]
+  # depends_on          = [module.ingress_controller]
 }
 
 # -----------------------------------------------------------------

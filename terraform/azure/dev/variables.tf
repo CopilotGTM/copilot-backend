@@ -250,3 +250,22 @@ variable "azure_openai_key" {
   type        = string
   default     = ""
 }
+
+variable "letsencrypt_email" {
+  description = "Email address for Let's Encrypt registration"
+  type        = string
+}
+
+variable "certificates" {
+  description = "Map of certificates to create"
+  type = map(object({
+    name        = string
+    namespace   = string
+    secret_name = string
+    issuer_name = string
+    issuer_kind = string
+    common_name = string
+    dns_names   = list(string)
+  }))
+  default = {}
+}
