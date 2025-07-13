@@ -18,9 +18,9 @@ variable "resource_group_name" {
   type        = string
 }
 
-variable "subnet_id" {
-  description = "Subnet ID where AKS agent nodes will be placed."
-  type        = string
+variable "vnet_subnet_ids" {
+  description = "A list of subnet IDs where the AKS agent nodes will be placed."
+  type        = list(string)
 }
 
 variable "agent_count" {

@@ -27,15 +27,6 @@ module "cert_manager" {
       issuer_kind = "ClusterIssuer"
       common_name = "devapi.copilotgtm.com"
       dns_names   = ["devapi.copilotgtm.com"]
-    },
-    "web-copilotgtm-com" = {
-      name        = "web-copilotgtm-com"
-      namespace   = "copilot"
-      secret_name = "web-copilotgtm-com-tls"
-      issuer_name = "letsencrypt-prod"
-      issuer_kind = "ClusterIssuer"
-      common_name = "devweb.copilotgtm.com"
-      dns_names   = ["devweb.copilotgtm.com", "www.devweb.copilotgtm.com"]
     }
   }
 

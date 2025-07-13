@@ -5,10 +5,10 @@ resource "azurerm_kubernetes_cluster" "this" {
   dns_prefix          = var.dns_prefix
 
   default_node_pool {
-    name       = "agentpool"
-    node_count = var.agent_count
-    vm_size    = var.vm_size
-    vnet_subnet_id = var.subnet_id
+    name            = "agentpool"
+    node_count      = var.agent_count
+    vm_size         = var.vm_size
+    vnet_subnet_id  = var.vnet_subnet_ids[0]
     os_disk_size_gb = var.os_disk_size_gb
     temporary_name_for_rotation = "tempnp"
   }

@@ -92,7 +92,7 @@ module "aks" {
   dns_prefix           = "${var.aks_dns_prefix}-${var.env}"
   location             = module.resource_group.resource_group_location
   resource_group_name  = module.resource_group.resource_group_name
-  subnet_id            = module.vnet.private_subnet_ids[0]
+  vnet_subnet_ids      = module.vnet.private_subnet_ids
   agent_count          = var.aks_node_count
   vm_size              = var.aks_vm_size
   os_disk_size_gb      = var.aks_os_disk_size_gb
