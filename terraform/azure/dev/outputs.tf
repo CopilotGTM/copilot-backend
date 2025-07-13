@@ -1,3 +1,6 @@
+# -----------------------------------------------------------------
+# Resource Group Outputs
+# -----------------------------------------------------------------
 output "resource_group_name" {
   description = "The name of the created Azure Resource Group."
   value       = module.resource_group.resource_group_name
@@ -66,7 +69,9 @@ output "nat_gateway_public_ip" {
   value       = module.vnet.nat_gateway_public_ip
 }
 
-# ---- ACR outputs for pipeline use ----
+# -----------------------------------------------------------------
+# ACR Outputs
+# -----------------------------------------------------------------
 output "acr_login_server" {
   description = "The login server URL of the Azure Container Registry."
   value       = module.acr.acr_login_server
@@ -76,7 +81,9 @@ output "acr_id" {
   value       = module.acr.acr_id
 }
 
-# ---- AKS outputs for pipeline use ----
+# -----------------------------------------------------------------
+# AKS Outputs
+# -----------------------------------------------------------------
 output "aks_name" {
   description = "The name of the AKS cluster."
   value       = module.aks.aks_name
@@ -90,12 +97,39 @@ output "aks_kube_config" {
   value       = module.aks.kube_config
   sensitive   = true
 }
+
+output "aks_host" {
+  description = "The Kubernetes cluster API server address."
+  value       = module.aks.host
+  sensitive   = true
+}
+
+output "aks_client_certificate" {
+  description = "The client certificate for authenticating to the cluster."
+  value       = module.aks.client_certificate
+  sensitive   = true
+}
+
+output "aks_client_key" {
+  description = "The client key for authenticating to the cluster."
+  value       = module.aks.client_key
+  sensitive   = true
+}
+
+output "aks_cluster_ca_certificate" {
+  description = "The cluster CA certificate."
+  value       = module.aks.cluster_ca_certificate
+  sensitive   = true
+}
+
 output "aks_principal_id" {
   description = "The managed identity principal ID of the AKS cluster."
   value       = module.aks.aks_principal_id
 }
 
-# ---- Redis outputs ----
+# -----------------------------------------------------------------
+# Redis Outputs
+# -----------------------------------------------------------------
 output "redis_hostname" {
   description = "The hostname of the Redis cache."
   value       = module.redis.hostname
@@ -111,17 +145,21 @@ output "redis_port" {
   description = "The SSL port for the Redis cache."
   value       = module.redis.port
 }
-output "service_connection_id" {
-  description = "Azure DevOps service connection ID used for ACR and AKS."
-  value       = module.service_connection.service_connection_id
-}
 
-output "service_connection_name" {
-  description = "Azure DevOps service connection name."
-  value       = module.service_connection.service_connection_name
-}
+# # -----------------------------------------------------------------
+# # Service Connection Outputs
+# # -----------------------------------------------------------------
+# output "service_connection_id" {
+#   description = "Azure DevOps service connection ID used for ACR and AKS."
+#   value       = module.service_connection.service_connection_id
+# }
 
-output "service_connection_subscription_id" {
-  description = "Azure Subscription ID associated with service connection."
-  value       = module.service_connection.subscription_id
-}
+# output "service_connection_name" {
+#   description = "Azure DevOps service connection name."
+#   value       = module.service_connection.service_connection_name
+# }
+
+# output "service_connection_subscription_id" {
+#   description = "Azure Subscription ID associated with service connection."
+#   value       = module.service_connection.subscription_id
+# }

@@ -7,7 +7,6 @@ module "resource_group" {
   location            = var.location
 }
 
-
 # -----------------------------------------------------------------
 # Virtual Network: Provides networking and subnets for AKS and App Services
 # -----------------------------------------------------------------
@@ -24,6 +23,29 @@ module "vnet" {
     module.resource_group
   ]
 }
+
+# -----------------------------------------------------------------
+# Azure Redis Cache: In-memory data store for caching and sessions
+# -----------------------------------------------------------------
+module "redis" {
+  source              = "../modules/redis"
+  redis_name          = "${var.redis_name}-${var.env}"
+  resource_group_name = module.resource_group.resource_group_name
+  location            = var.location
+  capacity            = var.redis_capacity
+  family              = var.redis_family
+  sku_name            = var.redis_sku_name
+  tags = {
+    environment = var.env
+    project     = var.project_name
+  }
+  depends_on = [
+    module.resource_group,
+    module.vnet
+  ]
+}
+
+data "azurerm_client_config" "current" {}
 
 # -----------------------------------------------------------------
 # Azure Key Vault
@@ -43,22 +65,6 @@ module "key_vault" {
     module.resource_group
   ]
 }
-
-# # -----------------------------------------------------------------
-# # Azure Storage Account: General purpose blob/file storage
-# # -----------------------------------------------------------------
-# module "storage_account" {
-#   source                  = "../modules/storage_account"
-#   storage_account_name    = "${var.storage_account_name}${var.env}"
-#   resource_group_name     = module.resource_group.resource_group_name
-#   location                = var.location
-#   account_tier            = "Standard"
-#   account_replication_type = "LRS"
-#   tags = {
-#     environment = var.env
-#     project     = var.project_name
-#   }
-# }
 
 # -----------------------------------------------------------------
 # Azure Container Registry: Stores container images for AKS and DevOps pipelines
@@ -100,57 +106,6 @@ module "aks" {
 }
 
 # -----------------------------------------------------------------
-# DNS A Record for devapi.copilotgtm.com -> nginx ingress public IP
-# -----------------------------------------------------------------
-resource "azurerm_dns_a_record" "devapi" {
-  name                = "devapi"
-  zone_name           = "copilotgtm.com"
-  resource_group_name = "master-resources"
-  ttl                 = 300
-  # records             = [module.ingress_controller.nginx_ingress_public_ip]
-  # depends_on          = [module.ingress_controller]
-}
-
-# -----------------------------------------------------------------
-# Azure Redis Cache: In-memory data store for caching and sessions
-# -----------------------------------------------------------------
-module "redis" {
-  source              = "../modules/redis"
-  redis_name          = "${var.redis_name}-${var.env}"
-  resource_group_name = module.resource_group.resource_group_name
-  location            = var.location
-  capacity            = var.redis_capacity
-  family              = var.redis_family
-  sku_name            = var.redis_sku_name
-  tags = {
-    environment = var.env
-    project     = var.project_name
-  }
-  depends_on = [
-    module.resource_group,
-    module.vnet
-  ]
-}
-
-# App Service: Azure Web App for frontend hosting (Node.js)
-# -----------------------------------------------------------------
-module "frontend_app_service" {
-  source                  = "../modules/app_service"
-  app_service_plan_name   = "${var.frontend_app_service_plan_name}-${var.env}"
-  app_service_name        = "${var.frontend_app_service_name}-${var.env}"
-  resource_group_name     = module.resource_group.resource_group_name
-  location                = var.location
-  node_version            = var.frontend_node_version
-  app_settings            = {}
-  sku_name                = var.frontend_sku_name
-  os_type                 = var.frontend_os_type
-  https_only              = var.frontend_https_only
-  depends_on = [
-    module.resource_group
-  ]
-}
-
-# -----------------------------------------------------------------
 # Role Assignment: Allow AKS kubelet to pull images from ACR
 # -----------------------------------------------------------------
 resource "azurerm_role_assignment" "aks_kubelet_acr_pull" {
@@ -164,211 +119,251 @@ resource "azurerm_role_assignment" "aks_kubelet_acr_pull" {
   ]
 }
 
-# -----------------------------------------------------------------
-# Role Assignment: Allow App Service to pull images from ACR
-# -----------------------------------------------------------------
-resource "azurerm_role_assignment" "app_service_acr_pull" {
-  principal_id         = module.frontend_app_service.app_service_principal_id
-  role_definition_name = "AcrPull"
-  scope                = module.acr.acr_id
-  principal_type       = "ServicePrincipal"
-  depends_on           = [
-    module.acr,
-    module.frontend_app_service
-  ]
-}
-
-# -----------------------------------------------------------------
-# Service Principal for Azure DevOps
-# -----------------------------------------------------------------
-module "service_principal" {
-  source          = "../modules/service_principal"
-  sp_name         = var.sp_name
-  subscription_id = var.subscription_id
-}
-
-# -----------------------------------------------------------------
-# Azure DevOps Service Connection (for ACR/AKS)
-# -----------------------------------------------------------------
-data "azuredevops_project" "project" {
-  name = var.devops_project_name
-}
-
-module "service_connection" {
-  source                   = "../modules/service_connection"
-  devops_project_id        = data.azuredevops_project.project.id
-  service_connection_name  = "copilotgtm-arc-ci-cd-service--${var.env}"
-  subscription_id          = var.subscription_id
-  subscription_name        = "Copilot GTM Subscription"
-  tenant_id                = module.service_principal.tenant_id
-  client_id                = module.service_principal.client_id
-  client_secret            = module.service_principal.client_secret
-}
-
-# -----------------------------------------------------------------
-# Azure DevOps Pipeline (CI/CD)
-# -----------------------------------------------------------------
-data "azuredevops_git_repository" "repo" {
-  project_id = data.azuredevops_project.project.id
-  name       = var.backend_repo_name
-}
-
-module "pipeline" {
-  source            = "../modules/pipeline"
-  devops_project_id = data.azuredevops_project.project.id
-  pipeline_name     = var.backend_pipeline_name
-  repo_id           = data.azuredevops_git_repository.repo.id
-  branch_name       = "main"
-  yml_path          = var.backend_yml_path
-}
-
-# -----------------------------------------------------------------
-# Azure DevOps Service Connection for ACR (Docker Registry)
-# -----------------------------------------------------------------
-module "service_connection_acr" {
-  source                = "../modules/service_connection_acr"
-  devops_project_id     = data.azuredevops_project.project.id
-  service_endpoint_name = "copilotgtm-acr-connection-${var.env}"
-  acr_login_server      = module.acr.acr_login_server
-  acr_sp_app_id         = module.service_principal.client_id
-  acr_sp_app_secret     = module.service_principal.client_secret
-}
+# # # -----------------------------------------------------------------
+# # # Azure Storage Account: General purpose blob/file storage
+# # # -----------------------------------------------------------------
+# # module "storage_account" {
+# #   source                  = "../modules/storage_account"
+# #   storage_account_name    = "${var.storage_account_name}${var.env}"
+# #   resource_group_name     = module.resource_group.resource_group_name
+# #   location                = var.location
+# #   account_tier            = "Standard"
+# #   account_replication_type = "LRS"
+# #   tags = {
+# #     environment = var.env
+# #     project     = var.project_name
+# #   }
+# # }
 
 
-data "azurerm_client_config" "current" {}
 
 
-# -----------------------------------------------------------------
-# Generate a strong, random DB admin password
-# -----------------------------------------------------------------
-resource "random_password" "db_admin" {
-  length           = 32                # total characters
-  override_special = "!@#$%&*()-_=+[]" # allowed special chars
-  special          = true
-  upper            = true
-  lower            = true
-  numeric          = true
-}
 
+# # App Service: Azure Web App for frontend hosting (Node.js)
 # # -----------------------------------------------------------------
-# # PostgreSQL Flexible Server
-# # -----------------------------------------------------------------
-# module "postgresql" {
-#   source                   = "../modules/postgresql"
-#   env                      = var.env
-#   resource_group_name      = module.resource_group.resource_group_name
-#   location                 = "westus"
-#   db_admin_user            = "CopilotGTMAdmin"
-#   db_admin_password        = random_password.db_admin.result
-#   key_vault_id             = module.key_vault.key_vault_id
-#   tags                     = {
-#     environment = var.env
-#     project     = var.project_name
-#   }
+# module "frontend_app_service" {
+#   source                  = "../modules/app_service"
+#   app_service_plan_name   = "${var.frontend_app_service_plan_name}-${var.env}"
+#   app_service_name        = "${var.frontend_app_service_name}-${var.env}"
+#   resource_group_name     = module.resource_group.resource_group_name
+#   location                = var.location
+#   node_version            = var.frontend_node_version
+#   app_settings            = {}
+#   sku_name                = var.frontend_sku_name
+#   os_type                 = var.frontend_os_type
+#   https_only              = var.frontend_https_only
 #   depends_on = [
-#     module.resource_group,
-#     module.key_vault
+#     module.resource_group
 #   ]
 # }
 
 
-resource "azuredevops_variable_group" "secrets" {
-  project_id = data.azuredevops_project.project.id
-  name       = "app-secrets-${var.env}"
-  description = "Service-principal creds and other secrets for ${var.env}"
 
-  variable {
-    name         = "ENV"
-    value        = "dev"
-  }
+# # -----------------------------------------------------------------
+# # Role Assignment: Allow App Service to pull images from ACR
+# # -----------------------------------------------------------------
+# resource "azurerm_role_assignment" "app_service_acr_pull" {
+#   principal_id         = module.frontend_app_service.app_service_principal_id
+#   role_definition_name = "AcrPull"
+#   scope                = module.acr.acr_id
+#   principal_type       = "ServicePrincipal"
+#   depends_on           = [
+#     module.acr,
+#     module.frontend_app_service
+#   ]
+# }
 
-  variable {
-    name         = "CLOUD_PROVIDER"
-    value        = "azure"
-  }
+# # -----------------------------------------------------------------
+# # Service Principal for Azure DevOps
+# # -----------------------------------------------------------------
+# module "service_principal" {
+#   source          = "../modules/service_principal"
+#   sp_name         = var.sp_name
+#   subscription_id = var.subscription_id
+# }
 
-  variable {
-    name         = "APPLICATION_REGION"
-    value        = "eastus2"
-  }
+# # -----------------------------------------------------------------
+# # Azure DevOps Service Connection (for ACR/AKS)
+# # -----------------------------------------------------------------
+# data "azuredevops_project" "project" {
+#   name = var.devops_project_name
+# }
 
-  variable {
-    name         = "APPLICATION_STORAGE_NAME"
-    value        = "dev-app"
-  }
+# module "service_connection" {
+#   source                   = "../modules/service_connection"
+#   devops_project_id        = data.azuredevops_project.project.id
+#   service_connection_name  = "copilotgtm-arc-ci-cd-service--${var.env}"
+#   subscription_id          = var.subscription_id
+#   subscription_name        = "Copilot GTM Subscription"
+#   tenant_id                = module.service_principal.tenant_id
+#   client_id                = module.service_principal.client_id
+#   client_secret            = module.service_principal.client_secret
+# }
 
-  variable {
-    name         = "DATABASE_HOST"
-    value        = "dev-copilot-gtm.postgres.database.azure.com"
-    # value        = module.postgresql.db_host
-  }
+# # -----------------------------------------------------------------
+# # Azure DevOps Pipeline (CI/CD)
+# # -----------------------------------------------------------------
+# data "azuredevops_git_repository" "repo" {
+#   project_id = data.azuredevops_project.project.id
+#   name       = var.backend_repo_name
+# }
 
-  variable {
-    name         = "DATABASE_USER"
-    value        = "copilotdatabase"
-    # value        = module.postgresql.db_user
-  }
+# module "pipeline" {
+#   source            = "../modules/pipeline"
+#   devops_project_id = data.azuredevops_project.project.id
+#   pipeline_name     = var.backend_pipeline_name
+#   repo_id           = data.azuredevops_git_repository.repo.id
+#   branch_name       = "main"
+#   yml_path          = var.backend_yml_path
+# }
 
-  variable {
-    name         = "DATABASE_PORT"
-    value        = "5432"
-    # value        = tostring(module.postgresql.db_port)
-  }
+# # -----------------------------------------------------------------
+# # Azure DevOps Service Connection for ACR (Docker Registry)
+# # -----------------------------------------------------------------
+# module "service_connection_acr" {
+#   source                = "../modules/service_connection_acr"
+#   devops_project_id     = data.azuredevops_project.project.id
+#   service_endpoint_name = "copilotgtm-acr-connection-${var.env}"
+#   acr_login_server      = module.acr.acr_login_server
+#   acr_sp_app_id         = module.service_principal.client_id
+#   acr_sp_app_secret     = module.service_principal.client_secret
+# }
 
-  variable {
-    name         = "DATABASE_NAME"
-    value        = "postgres"
-    # value        = module.postgresql.db_name
-  }
 
-  variable {
-    name         = "DATABASE_PASSWORD"
-    secret_value = var.db_password
-    # secret_value = random_password.db_admin.result
-    is_secret    = true
-  }
+# data "azurerm_client_config" "current" {}
 
-  variable {
-    name         = "REDIS_HOST"
-    value        = module.redis.hostname
-  }
 
-  variable {
-    name         = "REDIS_PORT"
-    value        = tostring(module.redis.port)
-  }
+# # -----------------------------------------------------------------
+# # Generate a strong, random DB admin password
+# # -----------------------------------------------------------------
+# resource "random_password" "db_admin" {
+#   length           = 32                # total characters
+#   override_special = "!@#$%&*()-_=+[]" # allowed special chars
+#   special          = true
+#   upper            = true
+#   lower            = true
+#   numeric          = true
+# }
 
-  variable {
-    name         = "REDIS_PASSWORD"
-    secret_value = module.redis.primary_access_key
-    is_secret    = true
-  }
+# # # -----------------------------------------------------------------
+# # # PostgreSQL Flexible Server
+# # # -----------------------------------------------------------------
+# # module "postgresql" {
+# #   source                   = "../modules/postgresql"
+# #   env                      = var.env
+# #   resource_group_name      = module.resource_group.resource_group_name
+# #   location                 = "westus"
+# #   db_admin_user            = "CopilotGTMAdmin"
+# #   db_admin_password        = random_password.db_admin.result
+# #   key_vault_id             = module.key_vault.key_vault_id
+# #   tags                     = {
+# #     environment = var.env
+# #     project     = var.project_name
+# #   }
+# #   depends_on = [
+# #     module.resource_group,
+# #     module.key_vault
+# #   ]
+# # }
 
-  variable {
-    name         = "AZURE_OPENAI_ENDPOINT"
-    value        = "https://nikhi-ma0k8gv3-eastus2.cognitiveservices.azure.com/"
-  }
 
-  variable {
-    name         = "AZURE_OPENAI_API_KEY"
-    secret_value = var.azure_openai_key
-    is_secret    = true
-  }
+# resource "azuredevops_variable_group" "secrets" {
+#   project_id = data.azuredevops_project.project.id
+#   name       = "app-secrets-${var.env}"
+#   description = "Service-principal creds and other secrets for ${var.env}"
 
-  variable {
-    name         = "AZURE_EMBEDDER_OPENAI_ENDPOINT"
-    value        = "https://nikhi-ma0k8gv3-eastus2.cognitiveservices.azure.com/"
-  }
+#   variable {
+#     name         = "ENV"
+#     value        = "dev"
+#   }
+
+#   variable {
+#     name         = "CLOUD_PROVIDER"
+#     value        = "azure"
+#   }
+
+#   variable {
+#     name         = "APPLICATION_REGION"
+#     value        = "eastus2"
+#   }
+
+#   variable {
+#     name         = "APPLICATION_STORAGE_NAME"
+#     value        = "dev-app"
+#   }
+
+#   variable {
+#     name         = "DATABASE_HOST"
+#     value        = "dev-copilot-gtm.postgres.database.azure.com"
+#     # value        = module.postgresql.db_host
+#   }
+
+#   variable {
+#     name         = "DATABASE_USER"
+#     value        = "copilotdatabase"
+#     # value        = module.postgresql.db_user
+#   }
+
+#   variable {
+#     name         = "DATABASE_PORT"
+#     value        = "5432"
+#     # value        = tostring(module.postgresql.db_port)
+#   }
+
+#   variable {
+#     name         = "DATABASE_NAME"
+#     value        = "postgres"
+#     # value        = module.postgresql.db_name
+#   }
+
+#   variable {
+#     name         = "DATABASE_PASSWORD"
+#     secret_value = var.db_password
+#     # secret_value = random_password.db_admin.result
+#     is_secret    = true
+#   }
+
+#   variable {
+#     name         = "REDIS_HOST"
+#     value        = module.redis.hostname
+#   }
+
+#   variable {
+#     name         = "REDIS_PORT"
+#     value        = tostring(module.redis.port)
+#   }
+
+#   variable {
+#     name         = "REDIS_PASSWORD"
+#     secret_value = module.redis.primary_access_key
+#     is_secret    = true
+#   }
+
+#   variable {
+#     name         = "AZURE_OPENAI_ENDPOINT"
+#     value        = "https://nikhi-ma0k8gv3-eastus2.cognitiveservices.azure.com/"
+#   }
+
+#   variable {
+#     name         = "AZURE_OPENAI_API_KEY"
+#     secret_value = var.azure_openai_key
+#     is_secret    = true
+#   }
+
+#   variable {
+#     name         = "AZURE_EMBEDDER_OPENAI_ENDPOINT"
+#     value        = "https://nikhi-ma0k8gv3-eastus2.cognitiveservices.azure.com/"
+#   }
   
-  variable {
-    name         = "AZURE_EMBEDDER_DEPLOYMENT"
-    value        = "text-embedding-3-large"
-  }
+#   variable {
+#     name         = "AZURE_EMBEDDER_DEPLOYMENT"
+#     value        = "text-embedding-3-large"
+#   }
 
-  variable {
-    name         = "AZURE_EMBEDDER_OPENAI_API_KEY"
-    secret_value = var.azure_openai_key
-    is_secret    = true
-  }
+#   variable {
+#     name         = "AZURE_EMBEDDER_OPENAI_API_KEY"
+#     secret_value = var.azure_openai_key
+#     is_secret    = true
+#   }
 
-}
+# }

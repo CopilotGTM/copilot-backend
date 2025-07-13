@@ -37,5 +37,5 @@ output "cert_manager_webhook_ca_secret" {
 
 output "cert_manager_ready" {
   description = "Indicates if cert-manager is ready (based on null_resource completion)"
-  value       = null_resource.wait_for_cert_manager.id != null
+  value       = helm_release.cert_manager.status == "deployed"
 }

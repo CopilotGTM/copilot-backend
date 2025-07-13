@@ -7,7 +7,7 @@ resource "kubernetes_namespace" "copilotapps" {
 
 # Cert-Manager Helm Release and Certificate Management
 module "cert_manager" {
-  source = "../modules/cert-manager"
+  source = "../../modules/cert-manager"
 
   namespace         = "cert-manager"
   release_name      = "cert-manager"
@@ -47,7 +47,7 @@ module "cert_manager" {
 
 # NGINX Ingress Controller Helm Release
 module "ingress_controller" {
-  source              = "../modules/ingress-controller"
+  source              = "../../modules/ingress-controller"
   resource_group_name = var.resource_group_name
   location            = var.location
   namespace           = "nginx-ingress"
@@ -72,21 +72,21 @@ resource "null_resource" "module_dependency" {
   }
 }
 
-output "ingress_controller_public_ip" {
-  description = "The public IP address of the NGINX ingress controller"
+# resource "azurerm_dns_zone" "copilotgtm" {
+#   name                = "copilotgtm.com"
+#   resource_group_name = "master-resources"
+# }
+
+# resource "azurerm_dns_a_record" "devapi" {
+#   name                = "devapi"
+#   zone_name           = azurerm_dns_zone.copilotgtm.name
+#   resource_group_name = azurerm_dns_zone.copilotgtm.resource_group_name
+#   ttl                 = 300
+#   records             = [module.ingress_controller.nginx_ingress_public_ip]
+#   depends_on          = [module.ingress_controller]
+# }
+
+output "nginx_public_ip" {
+  description = "Public IP of the NGINX Ingress Controller"
   value       = module.ingress_controller.nginx_ingress_public_ip
-}
-
-resource "azurerm_dns_zone" "copilotgtm" {
-  name                = "copilotgtm.com"
-  resource_group_name = "master-resources"
-}
-
-resource "azurerm_dns_a_record" "devapi" {
-  name                = "devapi"
-  zone_name           = azurerm_dns_zone.copilotgtm.name
-  resource_group_name = azurerm_dns_zone.copilotgtm.resource_group_name
-  ttl                 = 300
-  records             = [module.ingress_controller.nginx_ingress_public_ip]
-  depends_on          = [module.ingress_controller]
 }
