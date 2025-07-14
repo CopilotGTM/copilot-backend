@@ -114,33 +114,33 @@ resource "azurerm_dns_a_record" "devapi" {
   ]
 }
 
-resource "kubernetes_ingress_v1" "technical_deck" {
+resource "kubernetes_ingress_v1" "devapi" {
   metadata {
-    name      = "technical-deck"
+    name      = "devapi-ingress"
     namespace = var.app_namespace
     annotations = {
-      "cert-manager.io/cluster-issuer" = "letsencrypt"
+      "cert-manager.io/cluster-issuer"     = "letsencrypt"
     }
   }
-  
+
   spec {
     ingress_class_name = "nginx"
     tls {
-      hosts       = ["devapi.copilotgtm.com"]
+      hosts      = ["devapi.copilotgtm.com"]
       secret_name = "devapi-tls"
     }
-    
+
     rule {
       host = "devapi.copilotgtm.com"
       http {
         path {
-          path      = "/"
+          path      = "/healthcheck"
           path_type = "Prefix"
           backend {
             service {
-              name = "technical-deck"  # Match actual service name
+              name = var.app_service_name
               port {
-                number = 80
+                number = var.app_service_port
               }
             }
           }
@@ -155,3 +155,4 @@ resource "kubernetes_ingress_v1" "technical_deck" {
     kubernetes_namespace.app_namespace,
   ]
 }
+
