@@ -118,55 +118,21 @@ resource "azurerm_role_assignment" "aks_kubelet_acr_pull" {
     module.aks
   ]
 }
-# -----------------------------------------------------------------
-# Ingress Controller: NGINX ingress controller for AKS
-# -----------------------------------------------------------------
-module "ingress_controller" {
-  source                = "../modules/ingress-controller"
-  resource_group_name   = module.resource_group.resource_group_name
-  location              = module.resource_group.resource_group_location
-  release_name          = "nginx-ingress"
-  values_file_path      = "../modules/ingress-controller/values.yaml"
 
-  depends_on = [
-    module.aks
-  ]
-}
+# # -----------------------------------------------------------------
+# # DNS CNAME Record: Map devapi to the Front Door endpoint
+# # -----------------------------------------------------------------
+# resource "azurerm_dns_cname_record" "devapi" {
+#   name                = "devapi"
+#   zone_name           = "copilotgtm.com"
+#   resource_group_name = "master-resources"
+#   ttl                 = 300
+#   record              = module.frontdoor.frontdoor_endpoint_hostname
 
-# -----------------------------------------------------------------
-# Front Door: Azure Front Door for load balancing and CDN
-# -----------------------------------------------------------------
-module "frontdoor" {
-  source                 = "../modules/frontdoor"
-  prefix                 = "${var.resource_group_name}-${var.env}"
-  resource_group_name    = module.resource_group.resource_group_name
-  frontend_endpoint_name = "copilotgtm-fd-endpoint-${var.env}"
-  backend_address        = module.ingress_controller.nginx_ingress_public_ip
-  backend_host_header    = module.ingress_controller.nginx_ingress_public_ip
-  tags = {
-    environment = var.env
-    project     = var.project_name
-  }
-
-  depends_on = [
-    module.ingress_controller
-  ]
-}
-
-# -----------------------------------------------------------------
-# DNS CNAME Record: Map devapi to the Front Door endpoint
-# -----------------------------------------------------------------
-resource "azurerm_dns_cname_record" "devapi" {
-  name                = "devapi"
-  zone_name           = "copilotgtm.com"
-  resource_group_name = "master-resources"
-  ttl                 = 300
-  record              = module.frontdoor.frontdoor_endpoint_hostname
-
-  depends_on = [
-    module.frontdoor
-  ]
-}
+#   depends_on = [
+#     module.frontdoor
+#   ]
+# }
 
 # # # -----------------------------------------------------------------
 # # # Azure Storage Account: General purpose blob/file storage

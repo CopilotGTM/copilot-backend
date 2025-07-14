@@ -205,3 +205,7 @@ This project uses a two-step, production-grade approach to automate cert-manager
 - This two-step process is required because cert-manager CRDs must be present before you can create ClusterIssuer or Certificate resources.
 - You only need to repeat Step 2 if you change certificate details or add new domains.
 - For more details, see `cert-manager-step1.tf` and `cert-manager-step2.tf` in the `terraform/azure/dev` directory.
+
+
+terraform apply -target="helm_release.cert_manager"
+terraform apply -auto-approve

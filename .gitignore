@@ -52,3 +52,4 @@ terraform/tfplan
 # Windows system file
 Thumbs.db
 tfplan
+charts

@@ -72,9 +72,36 @@ resource "azurerm_network_security_group" "aks_private" {
     destination_port_range     = "80"
     source_address_prefix      = "*"
     destination_address_prefix = "*"
-    description                = "Allow inbound HTTP traffic to AKS nodes"
+    description                = "Allow HTTP from Internet"
+  }
+
+  security_rule {
+    name                       = "Allow-HTTPS"
+    priority                   = 1002
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "443"
+    source_address_prefix      = "*"
+    destination_address_prefix = "*"
+    description                = "Allow HTTPS from Internet"
+  }
+
+  security_rule {
+    name                       = "Allow-NodePorts"
+    priority                   = 1003
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_ranges    = ["30000-32767"]
+    source_address_prefix      = "*"
+    destination_address_prefix = "*"
+    description                = "Allow AKS nodePort traffic"
   }
 }
+
 
 # Associate NSG with all private subnets
 resource "azurerm_subnet_network_security_group_association" "private" {
