@@ -51,25 +51,36 @@ resource "time_sleep" "wait_for_cert_manager_crd" {
 }
 
 resource "kubernetes_manifest" "letsencrypt_issuer" {
-  manifest = yamldecode(<<EOF
-apiVersion: cert-manager.io/v1
-kind: ClusterIssuer
-metadata:
-  name: letsencrypt
-spec:
-  acme:
-    email: nikhil@copilotgtm.com
-    server: https://acme-v02.api.letsencrypt.org/directory
-    privateKeySecretRef:
-      name: letsencrypt-account-key
-    solvers:
-    - http01:
-        ingress:
-          class: nginx
-EOF
-  )
+  manifest = {
+    "apiVersion" = "cert-manager.io/v1"
+    "kind"       = "ClusterIssuer"
+    "metadata" = {
+      "name" = "letsencrypt"
+    }
+    "spec" = {
+      "acme" = {
+        "email"  = "nikhil@copilotgtm.com"
+        "server" = "https://acme-v02.api.letsencrypt.org/directory"
+        "privateKeySecretRef" = {
+          "name" = "letsencrypt-account-key"
+        }
+        "solvers" = [
+          {
+            "http01" = {
+              "ingress" = {
+                "class" = "nginx"
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
 
   depends_on = [
+    # This dependency should point to a resource that ensures the
+    # cert-manager CRDs are ready. For example, a time_sleep
+    # or another resource that indicates cert-manager is fully installed.
     time_sleep.wait_for_cert_manager_crd
   ]
 }
