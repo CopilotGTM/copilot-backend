@@ -97,6 +97,13 @@ resource "kubernetes_manifest" "letsencrypt_issuer" {
         }
         "solvers" = [
           {
+            "http01" = {
+              "ingress" = {
+                "class" = "nginx"
+              }
+            }
+          },
+          {
             "dns01" = {
               "azureDNS" = {
                 "managedIdentity" = {
