@@ -58,7 +58,7 @@ resource "azapi_resource" "embedder_deployment" {
     }
     sku = {
       name     = "Standard"           # or "GlobalStandard" if you need cross-region
-      capacity = 10000                    # 1 = ~100 TPM / 1 RPM for embeddings
+      capacity = 200                    # 1 = ~100 TPM / 1 RPM for embeddings
     }
   }
 }
