@@ -205,38 +205,38 @@ resource "azurerm_role_assignment" "app_service_acr_pull" {
   ]
 }
 
-# # -----------------------------------------------------------------
-# # Generate a strong, random DB admin password
-# # -----------------------------------------------------------------
-# resource "random_password" "db_admin" {
-#   length           = 32                # total characters
-#   override_special = "!@#$%&*()-_=+[]" # allowed special chars
-#   special          = true
-#   upper            = true
-#   lower            = true
-#   numeric          = true
-# }
+# -----------------------------------------------------------------
+# Generate a strong, random DB admin password
+# -----------------------------------------------------------------
+resource "random_password" "db_admin" {
+  length           = 32                # total characters
+  override_special = "!@#$%&*()-_=+[]" # allowed special chars
+  special          = true
+  upper            = true
+  lower            = true
+  numeric          = true
+}
 
-# # -----------------------------------------------------------------
-# # PostgreSQL Flexible Server
-# # -----------------------------------------------------------------
-# module "postgresql" {
-#   source                   = "../modules/postgresql"
-#   env                      = var.env
-#   resource_group_name      = module.resource_group.resource_group_name
-#   location                 = "westus"
-#   db_admin_user            = "CopilotGTMAdmin"
-#   db_admin_password        = random_password.db_admin.result
-#   key_vault_id             = module.key_vault.key_vault_id
-#   tags                     = {
-#     environment = var.env
-#     project     = var.project_name
-#   }
-#   depends_on = [
-#     module.resource_group,
-#     module.key_vault
-#   ]
-# }
+# -----------------------------------------------------------------
+# PostgreSQL Flexible Server
+# -----------------------------------------------------------------
+module "application_database" {
+  source                   = "../modules/postgresql"
+  env                      = var.env
+  resource_group_name      = module.resource_group.resource_group_name
+  location                 = "westus"
+  db_admin_user            = "CopilotGTMAdmin"
+  db_admin_password        = random_password.db_admin.result
+  key_vault_id             = module.database_key_vault.key_vault_id
+  tags                     = {
+    environment = var.env
+    project     = var.project_name
+  }
+  depends_on = [
+    module.resource_group,
+    module.database_key_vault
+  ]
+}
 
 
 # resource "azuredevops_variable_group" "secrets" {
