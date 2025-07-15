@@ -30,7 +30,7 @@ resource "azapi_resource" "o4mini_deployment" {
   body = {
     sku = {
       name     = "GlobalStandard"
-      capacity = 50
+      capacity = 100
     }
     properties = {
       model = {
@@ -58,7 +58,7 @@ resource "azapi_resource" "embedder_deployment" {
     }
     sku = {
       name     = "Standard"           # or "GlobalStandard" if you need cross-region
-      capacity = 1                    # 1 = ~100 TPM / 1 RPM for embeddings
+      capacity = 10000                    # 1 = ~100 TPM / 1 RPM for embeddings
     }
   }
 }
