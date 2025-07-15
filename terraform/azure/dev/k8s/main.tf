@@ -9,14 +9,27 @@ resource "helm_release" "ingress_nginx" {
   version          = "4.9.0"
   create_namespace = true
 
-  values = [
-    <<EOF
-controller:
-  replicaCount: 2
-  ingressClassResource:
-    name: nginx
-    enabled: true
-EOF
+  set = [
+    {
+      name  = "controller.replicaCount"
+      value = "2"
+    },
+    {
+      name  = "controller.ingressClassResource.name"
+      value = "nginx"
+    },
+    {
+      name  = "controller.ingressClassResource.enabled"
+      value = "true"
+    },
+    {
+      name  = "controller.service.type"
+      value = "LoadBalancer"
+    },
+    {
+      name  = "controller.service.externalTrafficPolicy"
+      value = "Local"
+    }
   ]
 }
 
@@ -122,9 +135,6 @@ resource "kubernetes_manifest" "letsencrypt_issuer" {
   }
 
   depends_on = [
-    # This dependency should point to a resource that ensures the
-    # cert-manager CRDs are ready. For example, a time_sleep
-    # or another resource that indicates cert-manager is fully installed.
     time_sleep.wait_for_cert_manager_crd
   ]
 }
