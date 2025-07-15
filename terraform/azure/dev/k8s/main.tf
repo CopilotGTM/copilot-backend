@@ -29,6 +29,10 @@ resource "helm_release" "ingress_nginx" {
     {
       name  = "controller.service.externalTrafficPolicy"
       value = "Local"
+    },
+    {
+      name  = "controller.service.annotations.service\\.beta\\.kubernetes\\.io/azure-load-balancer-internal"
+      value = "false"
     }
   ]
 }

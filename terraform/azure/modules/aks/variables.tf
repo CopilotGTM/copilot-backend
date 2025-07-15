@@ -42,7 +42,7 @@ variable "os_disk_size_gb" {
 }
 
 variable "env" {
-  description = "Deployment environment (used for tagging)."
+  description = "The environment name (e.g., dev, uat, prod)."
   type        = string
 }
 
