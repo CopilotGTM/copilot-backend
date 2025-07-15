@@ -239,103 +239,102 @@ module "application_database" {
 }
 
 
-# resource "azuredevops_variable_group" "secrets" {
-#   project_id = data.azuredevops_project.project.id
-#   name       = "app-secrets-${var.env}"
-#   description = "Service-principal creds and other secrets for ${var.env}"
+resource "azuredevops_variable_group" "secrets" {
+  project_id = data.azuredevops_project.project.id
+  name       = "app-secrets-${var.env}"
+  description = "Service-principal creds and other secrets for ${var.env}"
 
-#   variable {
-#     name         = "ENV"
-#     value        = "dev"
-#   }
+  variable {
+    name         = "ENV"
+    value        = "dev"
+  }
 
-#   variable {
-#     name         = "CLOUD_PROVIDER"
-#     value        = "azure"
-#   }
+  variable {
+    name         = "CLOUD_PROVIDER"
+    value        = "azure"
+  }
 
-#   variable {
-#     name         = "APPLICATION_REGION"
-#     value        = "eastus2"
-#   }
+  variable {
+    name         = "APPLICATION_REGION"
+    value        = module.resource_group.resource_group_location
+  }
 
-#   variable {
-#     name         = "APPLICATION_STORAGE_NAME"
-#     value        = "dev-app"
-#   }
+  variable {
+    name         = "APPLICATION_STORAGE_NAME"
+    value        = module.storage_account.storage_account_name
+  }
 
-#   variable {
-#     name         = "DATABASE_HOST"
-#     value        = "dev-copilot-gtm.postgres.database.azure.com"
-#     # value        = module.postgresql.db_host
-#   }
+  variable {
+    name         = "DATABASE_HOST"
+    # value        = "dev-copilot-gtm.postgres.database.azure.com"
+    value        = module.application_database.db_host
+  }
 
-#   variable {
-#     name         = "DATABASE_USER"
-#     value        = "copilotdatabase"
-#     # value        = module.postgresql.db_user
-#   }
+  variable {
+    name         = "DATABASE_USER"
+    # value        = "copilotdatabase"
+    value        = module.application_database.db_user
+  }
 
-#   variable {
-#     name         = "DATABASE_PORT"
-#     value        = "5432"
-#     # value        = tostring(module.postgresql.db_port)
-#   }
+  variable {
+    name         = "DATABASE_PORT"
+    # value        = "5432"
+    value        = tostring(module.application_database.db_port)
+  }
 
-#   variable {
-#     name         = "DATABASE_NAME"
-#     value        = "postgres"
-#     # value        = module.postgresql.db_name
-#   }
+  variable {
+    name         = "DATABASE_NAME"
+    # value        = "postgres"
+    value        = module.application_database.db_name
+  }
 
-#   variable {
-#     name         = "DATABASE_PASSWORD"
-#     secret_value = var.db_password
-#     # secret_value = random_password.db_admin.result
-#     is_secret    = true
-#   }
+  variable {
+    name         = "DATABASE_PASSWORD"
+    # secret_value = var.db_password
+    secret_value = random_password.db_admin.result
+    is_secret    = true
+  }
 
-#   variable {
-#     name         = "REDIS_HOST"
-#     value        = module.redis.hostname
-#   }
+  variable {
+    name         = "REDIS_HOST"
+    value        = module.redis.hostname
+  }
 
-#   variable {
-#     name         = "REDIS_PORT"
-#     value        = tostring(module.redis.port)
-#   }
+  variable {
+    name         = "REDIS_PORT"
+    value        = tostring(module.redis.port)
+  }
 
-#   variable {
-#     name         = "REDIS_PASSWORD"
-#     secret_value = module.redis.primary_access_key
-#     is_secret    = true
-#   }
+  variable {
+    name         = "REDIS_PASSWORD"
+    secret_value = module.redis.primary_access_key
+    is_secret    = true
+  }
 
-#   variable {
-#     name         = "AZURE_OPENAI_ENDPOINT"
-#     value        = "https://nikhi-ma0k8gv3-eastus2.cognitiveservices.azure.com/"
-#   }
+  variable {
+    name         = "AZURE_OPENAI_ENDPOINT"
+    value        = module.foundry.openai_endpoint_url
+  }
 
-#   variable {
-#     name         = "AZURE_OPENAI_API_KEY"
-#     secret_value = var.azure_openai_key
-#     is_secret    = true
-#   }
+  variable {
+    name         = "AZURE_OPENAI_API_KEY"
+    secret_value = var.azure_openai_key
+    is_secret    = true
+  }
 
-#   variable {
-#     name         = "AZURE_EMBEDDER_OPENAI_ENDPOINT"
-#     value        = "https://nikhi-ma0k8gv3-eastus2.cognitiveservices.azure.com/"
-#   }
+  variable {
+    name         = "AZURE_EMBEDDER_OPENAI_ENDPOINT"
+    value        = module.foundry.openai_endpoint_url
+  }
   
-#   variable {
-#     name         = "AZURE_EMBEDDER_DEPLOYMENT"
-#     value        = "text-embedding-3-large"
-#   }
+  variable {
+    name         = "AZURE_EMBEDDER_DEPLOYMENT"
+    value        = module.foundry.embedder_deployment_name
+  }
 
-#   variable {
-#     name         = "AZURE_EMBEDDER_OPENAI_API_KEY"
-#     secret_value = var.azure_openai_key
-#     is_secret    = true
-#   }
-
-# }
+  variable {
+    name         = "AZURE_EMBEDDER_OPENAI_API_KEY"
+    secret_value = var.azure_openai_key
+    is_secret    = true
+  }
+}
