@@ -67,6 +67,22 @@ module "key_vault" {
 }
 
 # -----------------------------------------------------------------
+# Azure Storage Account: General purpose blob/file storage
+# -----------------------------------------------------------------
+module "storage_account" {
+  source                  = "../modules/storage_account"
+  storage_account_name    = "${var.storage_account_name}${var.env}"
+  resource_group_name     = module.resource_group.resource_group_name
+  location                = var.location
+  account_tier            = "Standard"
+  account_replication_type = "LRS"
+  tags = {
+    environment = var.env
+    project     = var.project_name
+  }
+}
+
+# -----------------------------------------------------------------
 # Azure Container Registry: Stores container images for AKS and DevOps pipelines
 # -----------------------------------------------------------------
 module "acr" {
@@ -121,36 +137,7 @@ resource "azurerm_role_assignment" "aks_kubelet_acr_pull" {
   ]
 }
 
-# # -----------------------------------------------------------------
-# # DNS CNAME Record: Map devapi to the Front Door endpoint
-# # -----------------------------------------------------------------
-# resource "azurerm_dns_cname_record" "devapi" {
-#   name                = "devapi"
-#   zone_name           = "copilotgtm.com"
-#   resource_group_name = "master-resources"
-#   ttl                 = 300
-#   record              = module.frontdoor.frontdoor_endpoint_hostname
 
-#   depends_on = [
-#     module.frontdoor
-#   ]
-# }
-
-# # # -----------------------------------------------------------------
-# # # Azure Storage Account: General purpose blob/file storage
-# # # -----------------------------------------------------------------
-# # module "storage_account" {
-# #   source                  = "../modules/storage_account"
-# #   storage_account_name    = "${var.storage_account_name}${var.env}"
-# #   resource_group_name     = module.resource_group.resource_group_name
-# #   location                = var.location
-# #   account_tier            = "Standard"
-# #   account_replication_type = "LRS"
-# #   tags = {
-# #     environment = var.env
-# #     project     = var.project_name
-# #   }
-# # }
 
 
 
