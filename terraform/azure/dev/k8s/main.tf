@@ -21,6 +21,37 @@ EOF
 }
 
 # -----------------------------------------------------------------
+# 7) Create a certificate for the devapi
+# -----------------------------------------------------------------
+resource "kubernetes_manifest" "devapi_certificate" {
+  manifest = {
+    "apiVersion" = "cert-manager.io/v1"
+    "kind"       = "Certificate"
+    "metadata" = {
+      "name"      = "devapi-tls"
+      "namespace" = var.app_namespace
+    }
+    "spec" = {
+      "secretName" = "devapi-tls"
+      "issuerRef" = {
+        "name" = "letsencrypt"
+        "kind" = "ClusterIssuer"
+      }
+      "commonName" = "devapi.${var.dns_zone_name}"
+      "dnsNames" = [
+        "devapi.${var.dns_zone_name}"
+      ]
+    }
+  }
+
+  depends_on = [
+    kubernetes_manifest.letsencrypt_issuer,
+    kubernetes_namespace.app_namespace
+  ]
+}
+
+
+# -----------------------------------------------------------------
 # 2) Helm chart: cert-manager
 # -----------------------------------------------------------------
 resource "helm_release" "cert_manager" {
@@ -28,7 +59,7 @@ resource "helm_release" "cert_manager" {
   repository       = "https://charts.jetstack.io"
   chart            = "cert-manager"
   namespace        = "cert-manager"
-  version          = "1.13.3"
+  version          = "1.18.2"
   create_namespace = true
 
   set = [
@@ -66,9 +97,15 @@ resource "kubernetes_manifest" "letsencrypt_issuer" {
         }
         "solvers" = [
           {
-            "http01" = {
-              "ingress" = {
-                "class" = "nginx"
+            "dns01" = {
+              "azureDNS" = {
+                "managedIdentity" = {
+                  "clientID" = "d999da04-d31f-43f5-b27d-2a6ddce80e13"
+                }
+                "subscriptionID" = "675df0ed-8e06-441b-a1e4-110d19521816"
+                "resourceGroupName" = "master-resources"
+                "hostedZoneName" = "copilotgtm.com"
+                "environment" = "AzurePublicCloud"
               }
             }
           }

@@ -63,33 +63,33 @@ resource "azurerm_network_security_group" "aks_private" {
   resource_group_name = var.resource_group_name
 
   security_rule {
-    name                       = "Allow-HTTP-Inbound"
+    name                       = "Allow-Azure-LB-Health-Probe"
+    priority                   = 1000
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "*"
+    source_address_prefix      = "AzureLoadBalancer"
+    destination_address_prefix = "*"
+    description                = "Allow Azure Load Balancer health probes"
+  }
+
+  security_rule {
+    name                       = "Allow-Public-Ingress"
     priority                   = 1001
     direction                  = "Inbound"
     access                     = "Allow"
     protocol                   = "Tcp"
     source_port_range          = "*"
-    destination_port_range     = "80"
-    source_address_prefix      = "*"
+    destination_port_ranges    = ["80", "443"]
+    source_address_prefix      = "Internet"
     destination_address_prefix = "*"
-    description                = "Allow HTTP from Internet"
+    description                = "Allow HTTP and HTTPS from the Internet to the Load Balancer"
   }
 
   security_rule {
-    name                       = "Allow-HTTPS"
-    priority                   = 1002
-    direction                  = "Inbound"
-    access                     = "Allow"
-    protocol                   = "Tcp"
-    source_port_range          = "*"
-    destination_port_range     = "443"
-    source_address_prefix      = "*"
-    destination_address_prefix = "*"
-    description                = "Allow HTTPS from Internet"
-  }
-
-  security_rule {
-    name                       = "Allow-NodePorts"
+    name                       = "Allow-NodePorts-Debug"
     priority                   = 1003
     direction                  = "Inbound"
     access                     = "Allow"
@@ -98,9 +98,10 @@ resource "azurerm_network_security_group" "aks_private" {
     destination_port_ranges    = ["30000-32767"]
     source_address_prefix      = "*"
     destination_address_prefix = "*"
-    description                = "Allow AKS nodePort traffic"
+    description                = "Allow direct access to AKS nodePort traffic for debugging"
   }
 }
+
 
 
 # Associate NSG with all private subnets
