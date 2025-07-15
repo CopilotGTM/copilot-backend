@@ -1,24 +1,44 @@
-{{- define "technical-deck.chart" -}}
-{{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" }}
-{{- end -}}
-
 {{/*
-Simple chart name.
+Expand the name of the chart.
 */}}
 {{- define "technical-deck.name" -}}
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" }}
-{{- end }}
+{{- end -}}
 
 {{/*
-Simple full name: uses fullnameOverride if set, else "<release>-<chart>" or "<release>-<nameOverride>".
+Create a default fully qualified app name.
+We truncate at 63 chars because some Kubernetes name fields are limited to this (by the DNS naming spec).
+If release name contains chart name it will be used as a full name.
 */}}
 {{- define "technical-deck.fullname" -}}
 {{- if .Values.fullnameOverride }}
 {{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" }}
 {{- else }}
-{{- printf "%s-%s" .Release.Name (default .Chart.Name .Values.nameOverride) | trunc 63 | trimSuffix "-" }}
+{{- $name := default .Chart.Name .Values.nameOverride }}
+{{- if contains $name .Release.Name }}
+{{- .Release.Name | trunc 63 | trimSuffix "-" }}
+{{- else }}
+{{- printf "%s-%s" .Release.Name $name | trunc 63 | trimSuffix "-" }}
 {{- end }}
 {{- end }}
+{{- end -}}
+
+{{/*
+Create chart name and version as used by the chart label.
+*/}}
+{{- define "technical-deck.chart" -}}
+{{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
+{{- end -}}
+
+{{/*
+Common labels
+*/}}
+{{- define "technical-deck.labels" -}}
+helm.sh/chart: {{ include "technical-deck.chart" . }}
+{{ include "technical-deck.selectorLabels" . }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end -}}
 
 {{/*
 Selector labels
@@ -26,26 +46,15 @@ Selector labels
 {{- define "technical-deck.selectorLabels" -}}
 app.kubernetes.io/name: {{ include "technical-deck.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
-{{- end }}
+{{- end -}}
 
 {{/*
-ServiceAccount name
+Create the name of the service account to use
 */}}
 {{- define "technical-deck.serviceAccountName" -}}
-{{- if .Values.serviceAccount.name }}
-{{ .Values.serviceAccount.name }}
+{{- if .Values.serviceAccount.create }}
+{{- default (include "technical-deck.fullname" .) .Values.serviceAccount.name }}
 {{- else }}
-{{ include "technical-deck.fullname" . }}
+{{- default "default" .Values.serviceAccount.name }}
 {{- end }}
-{{- end }}
-
-
-{{/*
-Common labels
-*/}}
-{{- define "technical-deck.labels" -}}
-app.kubernetes.io/name: {{ include "technical-deck.name" . }}
-app.kubernetes.io/instance: {{ .Release.Name }}
-app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
-app.kubernetes.io/managed-by: {{ .Release.Service }}
-{{- end }}
+{{- end -}}

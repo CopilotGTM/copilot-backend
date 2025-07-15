@@ -1,23 +1,40 @@
+# charts/technical-deck/templates/deployment.yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "technical-deck.fullname" . }}
+  name: technical-deck
+  namespace: copilotgtm
+  labels:
+    app.kubernetes.io/name: technical-deck
+    app.kubernetes.io/instance: technical-deck
 spec:
-  replicas: {{ .Values.replicaCount }}
+  replicas: 1
   selector:
     matchLabels:
-      app: {{ include "technical-deck.name" . }}
+      app.kubernetes.io/name: technical-deck
+      app.kubernetes.io/instance: technical-deck
   template:
     metadata:
       labels:
-        app: technical-deck
-        app.kubernetes.io/instance: technical-deck
         app.kubernetes.io/name: technical-deck
+        app.kubernetes.io/instance: technical-deck
     spec:
-       containers:
-         - name: {{ .Chart.Name }}
-           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
-           imagePullPolicy: IfNotPresent
-           ports:
-             - containerPort: {{ .Values.service.port }}
-           resources: {}
+      serviceAccountName: technical-deck
+      containers:
+        - name: technical-deck
+          image: "copilotgtmacrdev.azurecr.io/technical-deck-app:latest"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+          env:
+            - name: ENVIRONMENT
+              value: "development"
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "256m"
+            limits:
+              memory: "1024Mi"
+              cpu: "512m"

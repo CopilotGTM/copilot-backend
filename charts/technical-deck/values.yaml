@@ -3,47 +3,42 @@ replicaCount: 1
 image:
   repository: copilotgtmacrdev.azurecr.io/technical-deck-app
   tag: "latest"
+  pullPolicy: IfNotPresent
 
 service:
   port: 80
   type: ClusterIP
 
-# Non-sensitive env vars (from .env.development or Azure Pipeline var group - injected into ConfigMap)
-envNonSecret:
-  ENVIRONMENT: development
-  # EXAMPLE_VAR: some-value
-  # Add more non-secret variables here as needed. Values can be overridden via Azure Pipeline variable group.
-
-# Sensitive env vars (to be provided via Azure DevOps pipeline secrets - injected into Secret)
-envSecret:
-  # DATABASE_PASSWORD: ""
-  # API_KEY: ""
-  # Only set in pipeline (never commit actual secrets here)
+env:
+  - name: ENVIRONMENT
+    value: "development"
 
 serviceAccount:
   create: true
-  name: ""
+  name: technical-deck
   automount: true
+  annotations: {}
 
 ingress:
   enabled: true
-  className: nginx         # Use "nginx" for NGINX Ingress, "alb" for AWS ALB, etc.
+  className: nginx
   hosts:
-    - host: api.copilotgtm.com  # Replace with your public DNS or AWS ALB DNS
+    - host: devapi.copilotgtm.com
       paths:
         - path: /
           pathType: Prefix
   annotations:
-    kubernetes.io/ingress.class: "nginx"  # For NGINX. Use "alb" for AWS ALB, etc.
+    # kubernetes.io/ingress.class: "nginx"  # This is legacy, using spec.ingressClassName instead
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-body-size: "10m"
-    nginx.ingress.kubernetes.io/websocket-services: "{{ .Release.Name }}-{{ .Release.Name }}"
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    cert-manager.io/cluster-issuer: "letsencrypt" # Tells cert-manager to get a cert
     # alb.ingress.kubernetes.io/scheme: internet-facing  # Uncomment for AWS ALB, making it public
   tls:
     - hosts:
-        - api.copilotgtm.com
-      secretName: api-copilotgtm-com-tls  # This Secret must be created or managed by cert-manager
+        - devapi.copilotgtm.com
+      secretName: devapi-tls
 
 autoscaling:
   enabled: false
@@ -53,8 +48,8 @@ autoscaling:
 
 resources:
   requests:
-    memory: "1024Mi"
-    cpu: "500m"
+    memory: "512Mi"
+    cpu: "256m"
   limits:
-    memory: "2048Mi"
-    cpu: "2000m"
+    memory: "1024Mi"
+    cpu: "512m"

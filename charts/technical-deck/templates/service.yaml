@@ -1,15 +1,19 @@
+# charts/technical-deck/templates/service.yaml
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "technical-deck.fullname" . }}
+  name: technical-deck
+  namespace: copilotgtm
   labels:
-    {{- include "technical-deck.labels" . | nindent 4 }}
+    app.kubernetes.io/name: technical-deck
+    app.kubernetes.io/instance: technical-deck
 spec:
-  type: {{ .Values.service.type }}
+  type: ClusterIP
   ports:
-    - port: {{ .Values.service.port }}
-      targetPort: 80
+    - port: 80
+      targetPort: http
       protocol: TCP
       name: http
   selector:
-    {{- include "technical-deck.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/name: technical-deck
+    app.kubernetes.io/instance: technical-deck

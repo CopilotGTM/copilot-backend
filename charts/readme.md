@@ -9,26 +9,20 @@ Follow these steps to build your Docker image and push it to your Azure Containe
 az acr login --name copilotgtmacrdev
 
 # 2. Build your Docker image locally with the correct tag
-docker build -t copilotgtmacrdev.azurecr.io/technical-deck-app:2 .
+docker build -t copilotgtmacrdev.azurecr.io/technical-deck-app:latest .
 
 # 3. Push the image to your ACR
-docker push copilotgtmacrdev.azurecr.io/technical-deck-app:2
+docker push copilotgtmacrdev.azurecr.io/technical-deck-app:latest
 ```
 
-## Connect kubectl to your AKS Cluster
+## Deploy with Helm
 
-Before deploying, load AKS credentials locally (once per environment/machine):
-
-```sh
-az aks get-credentials --resource-group copilot-gtm-app-dev --name copilot-gtm-aks-dev
-```
-
-Once the image is pushed and kubeconfig is set, you can use these Helm commands to manage the deployment in Kubernetes.
+Once the image is pushed, you can use these Helm commands to manage the deployment in Kubernetes.
 
 ### Install or Upgrade the Chart
 
 ```sh
-helm upgrade --install technical-deck charts/technical-deck --values charts/technical-deck/values.yaml --namespace copilot --set image.tag=2
+helm upgrade --install technical-deck charts/technical-deck --values charts/technical-deck/values.yaml --namespace copilotgtm --set image.tag=latest
 ```
 
 ### Delete the Release
