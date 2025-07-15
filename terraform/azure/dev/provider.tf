@@ -2,7 +2,7 @@ terraform {
   required_providers {
     azurerm = {
       source  = "hashicorp/azurerm"
-      version = ">= 3.0"
+      version = ">= 3.85.0"
     }
     azuredevops = {
       source  = "microsoft/azuredevops"
@@ -20,6 +20,10 @@ terraform {
       source  = "hashicorp/random"
       version = ">= 3.1.0"
     }
+    azapi = {
+      source  = "azure/azapi"
+      version = "~> 1.12.0"
+    }
   }
   required_version = ">= 1.3.0"
 
@@ -29,6 +33,7 @@ terraform {
     container_name       = "tfstate"
     key                  = "azure/dev/terraform.tfstate"
   }
+  
 }
 
 provider "azurerm" {

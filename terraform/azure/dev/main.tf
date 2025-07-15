@@ -137,83 +137,87 @@ resource "azurerm_role_assignment" "aks_kubelet_acr_pull" {
   ]
 }
 
+# -----------------------------------------------------------------
+# Azure AI Foundry
+# -----------------------------------------------------------------
+module "foundry" {
+  source              = "../modules/foundry"
+  prefix              = "foundry"
+  resource_group_name = module.resource_group.resource_group_name
+  resource_group_id   = module.resource_group.resource_group_id
+  location            = var.location
+  use_openai          = true
+  depends_on = [
+    module.resource_group
+  ]
+}
+
+# App Service: Azure Web App for frontend hosting (Node.js)
+# -----------------------------------------------------------------
+module "frontend_app_service" {
+  source                  = "../modules/app_service"
+  app_service_plan_name   = "${var.frontend_app_service_plan_name}-${var.env}"
+  app_service_name        = "${var.frontend_app_service_name}-${var.env}"
+  resource_group_name     = module.resource_group.resource_group_name
+  location                = var.location
+  node_version            = var.frontend_node_version
+  app_settings            = {}
+  sku_name                = var.frontend_sku_name
+  os_type                 = var.frontend_os_type
+  https_only              = var.frontend_https_only
+  depends_on = [
+    module.resource_group
+  ]
+}
 
 
 
+# -----------------------------------------------------------------
+# Role Assignment: Allow App Service to pull images from ACR
+# -----------------------------------------------------------------
+resource "azurerm_role_assignment" "app_service_acr_pull" {
+  principal_id         = module.frontend_app_service.app_service_principal_id
+  role_definition_name = "AcrPull"
+  scope                = module.acr.acr_id
+  principal_type       = "ServicePrincipal"
+  depends_on           = [
+    module.acr,
+    module.frontend_app_service
+  ]
+}
 
+# -----------------------------------------------------------------
+# Generate a strong, random DB admin password
+# -----------------------------------------------------------------
+resource "random_password" "db_admin" {
+  length           = 32                # total characters
+  override_special = "!@#$%&*()-_=+[]" # allowed special chars
+  special          = true
+  upper            = true
+  lower            = true
+  numeric          = true
+}
 
-
-# # App Service: Azure Web App for frontend hosting (Node.js)
-# # -----------------------------------------------------------------
-# module "frontend_app_service" {
-#   source                  = "../modules/app_service"
-#   app_service_plan_name   = "${var.frontend_app_service_plan_name}-${var.env}"
-#   app_service_name        = "${var.frontend_app_service_name}-${var.env}"
-#   resource_group_name     = module.resource_group.resource_group_name
-#   location                = var.location
-#   node_version            = var.frontend_node_version
-#   app_settings            = {}
-#   sku_name                = var.frontend_sku_name
-#   os_type                 = var.frontend_os_type
-#   https_only              = var.frontend_https_only
-#   depends_on = [
-#     module.resource_group
-#   ]
-# }
-
-
-
-# # -----------------------------------------------------------------
-# # Role Assignment: Allow App Service to pull images from ACR
-# # -----------------------------------------------------------------
-# resource "azurerm_role_assignment" "app_service_acr_pull" {
-#   principal_id         = module.frontend_app_service.app_service_principal_id
-#   role_definition_name = "AcrPull"
-#   scope                = module.acr.acr_id
-#   principal_type       = "ServicePrincipal"
-#   depends_on           = [
-#     module.acr,
-#     module.frontend_app_service
-#   ]
-# }
-
-
-
-# data "azurerm_client_config" "current" {}
-
-
-# # -----------------------------------------------------------------
-# # Generate a strong, random DB admin password
-# # -----------------------------------------------------------------
-# resource "random_password" "db_admin" {
-#   length           = 32                # total characters
-#   override_special = "!@#$%&*()-_=+[]" # allowed special chars
-#   special          = true
-#   upper            = true
-#   lower            = true
-#   numeric          = true
-# }
-
-# # # -----------------------------------------------------------------
-# # # PostgreSQL Flexible Server
-# # # -----------------------------------------------------------------
-# # module "postgresql" {
-# #   source                   = "../modules/postgresql"
-# #   env                      = var.env
-# #   resource_group_name      = module.resource_group.resource_group_name
-# #   location                 = "westus"
-# #   db_admin_user            = "CopilotGTMAdmin"
-# #   db_admin_password        = random_password.db_admin.result
-# #   key_vault_id             = module.key_vault.key_vault_id
-# #   tags                     = {
-# #     environment = var.env
-# #     project     = var.project_name
-# #   }
-# #   depends_on = [
-# #     module.resource_group,
-# #     module.key_vault
-# #   ]
-# # }
+# -----------------------------------------------------------------
+# PostgreSQL Flexible Server
+# -----------------------------------------------------------------
+module "postgresql" {
+  source                   = "../modules/postgresql"
+  env                      = var.env
+  resource_group_name      = module.resource_group.resource_group_name
+  location                 = "westus"
+  db_admin_user            = "CopilotGTMAdmin"
+  db_admin_password        = random_password.db_admin.result
+  key_vault_id             = module.key_vault.key_vault_id
+  tags                     = {
+    environment = var.env
+    project     = var.project_name
+  }
+  depends_on = [
+    module.resource_group,
+    module.key_vault
+  ]
+}
 
 
 # resource "azuredevops_variable_group" "secrets" {
