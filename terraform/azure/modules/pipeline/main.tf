@@ -12,4 +12,6 @@ resource "azuredevops_build_definition" "pipeline" {
   ci_trigger {
     use_yaml = true
   }
+
+  variable_groups = var.variable_group_ids
 }

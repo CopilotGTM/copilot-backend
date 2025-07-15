@@ -22,3 +22,9 @@ variable "yml_path" {
   description = "Path to the azure-pipelines.yml definition in the repository."
   type        = string
 }
+
+variable "variable_group_ids" {
+  description = "A list of variable group IDs to associate with the pipeline."
+  type        = list(number)
+  default     = []
+}

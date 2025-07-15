@@ -33,13 +33,22 @@ data "azuredevops_git_repository" "repo" {
   name       = var.backend_repo_name
 }
 
+data "azuredevops_variable_group" "secrets" {
+  project_id = data.azuredevops_project.project.id
+  name       = "app-secrets-${var.env}"
+  depends_on = [
+    module.service_connection
+  ]
+}
+
 module "pipeline" {
-  source            = "../modules/pipeline"
-  devops_project_id = data.azuredevops_project.project.id
-  pipeline_name     = "${var.backend_pipeline_name}-${var.env}"
-  repo_id           = data.azuredevops_git_repository.repo.id
-  branch_name       = "main"
-  yml_path          = var.backend_yml_path
+  source             = "../modules/pipeline"
+  devops_project_id  = data.azuredevops_project.project.id
+  pipeline_name      = "${var.backend_pipeline_name}-${var.env}"
+  repo_id            = data.azuredevops_git_repository.repo.id
+  branch_name        = "main"
+  yml_path           = var.backend_yml_path
+  variable_group_ids = [data.azuredevops_variable_group.secrets.id]
 }
 
 # -----------------------------------------------------------------
