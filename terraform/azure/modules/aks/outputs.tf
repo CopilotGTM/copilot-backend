@@ -46,8 +46,3 @@ output "kubelet_identity_object_id" {
   description = "The object ID of the kubelet identity."
   value       = azurerm_kubernetes_cluster.this.kubelet_identity[0].object_id
 }
-
-output "node_pool_backend_pool_id" {
-  description = "The backend pool ID for the default node pool."
-  value       = azurerm_kubernetes_cluster.this.default_node_pool[0].backend_address_pool_id
-}
