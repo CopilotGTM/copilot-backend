@@ -5,35 +5,54 @@ trigger:
     include:
       - main
       - dev
+      - uat
 
 pr:
   branches:
     include:
       - main
       - dev
-
-parameters:
-  - name: deployEnvironment
-    displayName: "Select deployment environment"
-    type: string
-    default: 'dev'
-    values:
-      - dev
-      - production
+      - uat
 
 variables:
   - name: CHART_PATH
     value: charts/technical-deck
   - name: KUBECONFIG_FILE
     value: $(Pipeline.Workspace)/kubeconfig.yaml
-  - name: DEPLOY_ENVIRONMENT
-    value: ${{ parameters.deployEnvironment }}
-  - name: ACR_LOGIN_SERVER
-    value: copilotgtmacrdev.azurecr.io
-  - name: HELM_RELEASE_NAME
-    value: technical-deck
-  - name: ACR_SERVICE_CONNECTION
-    value: copilotgtm-acr-connection-dev
+
+  # Determine environment variables based on the source branch or pipeline name
+  - ${{ if or(eq(variables['Build.SourceBranchName'], 'refs/heads/main'), endsWith(variables['Build.DefinitionName'], '-prod')) }}:
+    - group: app-secrets-production
+    - name: DEPLOY_ENVIRONMENT
+      value: production
+    - name: ACR_LOGIN_SERVER
+      value: copilotgtmacrprod.azurecr.io
+    - name: HELM_RELEASE_NAME
+      value: technical-deck-prod
+    - name: ACR_SERVICE_CONNECTION
+      value: copilot-acr-prod-connection
+
+  - ${{ if or(eq(variables['Build.SourceBranchName'], 'refs/heads/uat'), endsWith(variables['Build.DefinitionName'], '-uat')) }}:
+    - group: app-secrets-uat
+    - name: DEPLOY_ENVIRONMENT
+      value: uat
+    - name: ACR_LOGIN_SERVER
+      value: copilotgtmacruat.azurecr.io
+    - name: HELM_RELEASE_NAME
+      value: technical-deck-uat
+    - name: ACR_SERVICE_CONNECTION
+      value: copilot-acr-uat-connection
+
+  - ${{ if or(eq(variables['Build.SourceBranchName'], 'refs/heads/dev'), endsWith(variables['Build.DefinitionName'], '-dev')) }}:
+    - group: app-secrets-dev
+    - name: DEPLOY_ENVIRONMENT
+      value: dev
+    - name: ACR_LOGIN_SERVER
+      value: copilotgtmacrdev.azurecr.io
+    - name: HELM_RELEASE_NAME
+      value: technical-deck
+    - name: ACR_SERVICE_CONNECTION
+      value: copilotgtm-acr-connection-dev
 
 stages:
   - stage: BuildAndPush
@@ -45,12 +64,6 @@ stages:
           vmImage: 'ubuntu-latest'
         steps:
           - checkout: self
-          - ${{ if eq(parameters.deployEnvironment, 'production') }}:
-            - script: |
-                echo "##vso[task.setvariable variable=ACR_LOGIN_SERVER]copilotgtmacrprod.azurecr.io"
-                echo "##vso[task.setvariable variable=HELM_RELEASE_NAME]technical-deck-prod"
-                echo "##vso[task.setvariable variable=ACR_SERVICE_CONNECTION]copilot-acr-prod-connection"
-              displayName: Set production image variables
 
           - task: Docker@2
             displayName: Build Docker Image
@@ -74,11 +87,6 @@ stages:
       - deployment: HelmDeploy
         displayName: Deploy to AKS / Rollback on Failure
         environment: '$(DEPLOY_ENVIRONMENT)'
-        variables:
-          - ${{ if eq(parameters.deployEnvironment, 'dev') }}:
-            - group: app-secrets-dev
-          - ${{ if eq(parameters.deployEnvironment, 'production') }}:
-            - group: app-secrets-production
         pool:
           vmImage: 'ubuntu-latest'
         strategy:

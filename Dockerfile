@@ -21,13 +21,6 @@ COPY . .
 COPY entrypoint.sh .
 RUN chmod +x entrypoint.sh
 
-# Allow passing ENVIRONMENT at build time (defaults to "development")
-ARG ENVIRONMENT=development
-
-# Copy the matching env file into .env (what most libraries look for)
-# e.g. .env.development → .env
-COPY .env.${ENVIRONMENT} .env
-
 # Set environment variables for better logging and connection handling
 ENV PYTHONUNBUFFERED=1
 ENV CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP=true
