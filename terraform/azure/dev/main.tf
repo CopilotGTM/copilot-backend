@@ -238,6 +238,17 @@ module "application_database" {
   ]
 }
 
+# -----------------------------------------------------------------
+# Create the DNS CNAME record pointing at the frontend app service
+# -----------------------------------------------------------------
+resource "azurerm_dns_cname_record" "frontend_app" {
+  name                = var.frontend_dns_a_record_name
+  zone_name           = var.dns_zone_name
+  resource_group_name = var.dns_zone_resource_group
+  ttl                 = 300
+  record              = module.frontend_app_service.app_service_default_hostname
+}
+
 
 resource "azuredevops_variable_group" "secrets" {
   project_id = data.azuredevops_project.project.id

@@ -17,3 +17,8 @@ output "app_service_principal_id" {
   description = "The ID of the managed identity principal"
   value       = azurerm_linux_web_app.this.identity[0].principal_id
 }
+
+output "app_service_outbound_ip_addresses" {
+  description = "The outbound IP addresses of the Linux Web App"
+  value       = azurerm_linux_web_app.this.outbound_ip_address_list
+}

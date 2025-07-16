@@ -173,6 +173,38 @@ variable "backend_yml_path" {
   default     = "azure-pipelines.yml"
 }
 
+variable "frontend_repo_name" {
+  description = "Azure DevOps repository name containing the YAML pipeline definition for the frontend."
+  type        = string
+}
+
+variable "frontend_pipeline_name" {
+  description = "Name of the Azure DevOps pipeline resource for the frontend. Cannot contain '/' or special characters."
+  type        = string
+}
+
+variable "frontend_yml_path" {
+  description = "Relative path (from repo root) to the Azure Pipelines YAML file for the frontend."
+  type        = string
+  default     = "azure-pipelines.yml"
+}
+
+variable "dns_zone_name" {
+  description = "The name of the DNS zone to use."
+  type        = string
+}
+
+variable "dns_zone_resource_group" {
+  description = "The name of the resource group where the DNS zone is located."
+  type        = string
+}
+
+variable "frontend_dns_a_record_name" {
+  description = "The name of the A record for the frontend app service."
+  type        = string
+  default     = "devapp"
+}
+
 # Display name of the Azure DevOps pipeline service principal (used for automatic lookup)
 variable "azuredevops_sp_display_name" {
   description = "Display name of the Azure AD service principal used by the Azure DevOps service connection for the pipeline. Find this in Azure AD > App registrations."
