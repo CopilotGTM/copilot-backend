@@ -103,10 +103,11 @@ stages:
             deploy:
               steps:
                 - task: Kubernetes@1
-                  displayName: 'Use Kubernetes service connection'
+                  displayName: 'Login to Kubernetes cluster'
                   inputs:
                     connectionType: 'Kubernetes Service Connection'
                     kubernetesServiceEndpoint: 'kubeconfig.yaml'
+                    command: 'login'
 
                 - script: |
                     helm upgrade --install "$HELM_RELEASE_NAME" "$CHART_PATH" \
@@ -131,7 +132,6 @@ stages:
                       --set secrets.APPLICATION_REGION="$APPLICATION_REGION"
                   displayName: Helm Upgrade/Install
                   env:
-                    KUBECONFIG: $(kubeconfig.secureFilePath)
                     HELM_RELEASE_NAME: $(HELM_RELEASE_NAME)
                     CHART_PATH: $(CHART_PATH)
                     ACR_LOGIN_SERVER: $(ACR_LOGIN_SERVER)
