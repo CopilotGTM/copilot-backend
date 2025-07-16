@@ -109,27 +109,26 @@ stages:
                     AKS_KUBECONFIG: $(AKS_KUBECONFIG)
 
                 - script: |
-                    export KUBECONFIG=$(KUBECONFIG_FILE)
-                    helm upgrade --install $(HELM_RELEASE_NAME) $(CHART_PATH) \
-                      --namespace default \
-                      --set image.repository=$(ACR_LOGIN_SERVER)/technical-deck \
-                      --set image.tag=$(Build.BuildId) \
-                      --set secrets.DATABASE_HOST=$(DATABASE_HOST) \
-                      --set secrets.DATABASE_USER=$(DATABASE_USER) \
-                      --set secrets.DATABASE_PORT=$(DATABASE_PORT) \
-                      --set secrets.DATABASE_NAME=$(DATABASE_NAME) \
-                      --set secrets.DATABASE_PASSWORD=$(DATABASE_PASSWORD) \
-                      --set secrets.REDIS_HOST=$(REDIS_HOST) \
-                      --set secrets.REDIS_PORT=$(REDIS_PORT) \
-                      --set secrets.REDIS_PASSWORD=$(REDIS_PASSWORD) \
-                      --set secrets.AZURE_OPENAI_API_KEY=$(AZURE_OPENAI_API_KEY) \
-                      --set secrets.AZURE_OPENAI_ENDPOINT=$(AZURE_OPENAI_ENDPOINT) \
-                      --set secrets.AZURE_EMBEDDER_OPENAI_API_KEY=$(AZURE_EMBEDDER_OPENAI_API_KEY) \
-                      --set secrets.AZURE_EMBEDDER_OPENAI_ENDPOINT=$(AZURE_EMBEDDER_OPENAI_ENDPOINT) \
-                      --set secrets.AZURE_EMBEDDER_DEPLOYMENT=$(AZURE_EMBEDDER_DEPLOYMENT) \
-                      --set secrets.CLOUD_PROVIDER=$(CLOUD_PROVIDER) \
-                      --set secrets.APPLICATION_STORAGE_NAME=$(APPLICATION_STORAGE_NAME) \
-                      --set secrets.APPLICATION_REGION=$(APPLICATION_REGION)
+                    helm upgrade --install '$(HELM_RELEASE_NAME)' '$(CHART_PATH)' \
+                      --namespace copilotgtm \
+                      --set image.repository='$(ACR_LOGIN_SERVER)/technical-deck' \
+                      --set image.tag='$(Build.BuildId)' \
+                      --set secrets.DATABASE_HOST='$(DATABASE_HOST)' \
+                      --set secrets.DATABASE_USER='$(DATABASE_USER)' \
+                      --set secrets.DATABASE_PORT='$(DATABASE_PORT)' \
+                      --set secrets.DATABASE_NAME='$(DATABASE_NAME)' \
+                      --set secrets.DATABASE_PASSWORD='$(DATABASE_PASSWORD)' \
+                      --set secrets.REDIS_HOST='$(REDIS_HOST)' \
+                      --set secrets.REDIS_PORT='$(REDIS_PORT)' \
+                      --set secrets.REDIS_PASSWORD='$(REDIS_PASSWORD)' \
+                      --set secrets.AZURE_OPENAI_API_KEY='$(AZURE_OPENAI_API_KEY)' \
+                      --set secrets.AZURE_OPENAI_ENDPOINT='$(AZURE_OPENAI_ENDPOINT)' \
+                      --set secrets.AZURE_EMBEDDER_OPENAI_API_KEY='$(AZURE_EMBEDDER_OPENAI_API_KEY)' \
+                      --set secrets.AZURE_EMBEDDER_OPENAI_ENDPOINT='$(AZURE_EMBEDDER_OPENAI_ENDPOINT)' \
+                      --set secrets.AZURE_EMBEDDER_DEPLOYMENT='$(AZURE_EMBEDDER_DEPLOYMENT)' \
+                      --set secrets.CLOUD_PROVIDER='$(CLOUD_PROVIDER)' \
+                      --set secrets.APPLICATION_STORAGE_NAME='$(APPLICATION_STORAGE_NAME)' \
+                      --set secrets.APPLICATION_REGION='$(APPLICATION_REGION)'
                   displayName: Helm Upgrade/Install
                   env:
                     KUBECONFIG: $(KUBECONFIG_FILE)
@@ -151,8 +150,8 @@ stages:
                     APPLICATION_REGION: $(APPLICATION_REGION)
 
                 - script: |
-                    kubectl get pods -n default
-                    kubectl get deployments -n default
+                    kubectl get pods -n copilotgtm
+                    kubectl get deployments -n copilotgtm
                   displayName: List AKS Deployments/Pods
 
                 - task: Bash@3
