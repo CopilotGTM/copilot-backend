@@ -179,13 +179,15 @@ module "frontend_app_service" {
   app_service_name        = "${var.frontend_app_service_name}-${var.env}"
   resource_group_name     = module.resource_group.resource_group_name
   location                = var.location
-  node_version            = var.frontend_node_version
+  docker_image_name       = var.frontend_docker_image_name
+  docker_registry_url     = "https://${module.acr.acr_login_server}"
   app_settings            = {}
   sku_name                = var.frontend_sku_name
   os_type                 = var.frontend_os_type
   https_only              = var.frontend_https_only
   depends_on = [
-    module.resource_group
+    module.resource_group,
+    module.acr
   ]
 }
 

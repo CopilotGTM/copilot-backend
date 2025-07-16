@@ -18,10 +18,14 @@ variable "location" {
   type        = string
 }
 
-variable "node_version" {
-  description = "Node.js version, e.g. '16-lts', used if deploying a Node app. Leave blank for static HTML."
+variable "docker_image_name" {
+  description = "The name of the Docker image to deploy."
   type        = string
-  default     = "16-lts"
+}
+
+variable "docker_registry_url" {
+  description = "The URL of the Docker registry."
+  type        = string
 }
 
 variable "app_settings" {

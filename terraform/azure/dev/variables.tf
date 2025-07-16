@@ -114,10 +114,10 @@ variable "frontend_app_service_name" {
   type        = string
 }
 
-variable "frontend_node_version" {
-  description = "Node.js version to use in the frontend App Service (e.g., '20-lts')."
+variable "frontend_docker_image_name" {
+  description = "The name of the Docker image for the frontend app."
   type        = string
-  default     = "20-lts"
+  default     = "copilotgtm-frontend-app"
 }
 
 variable "project_name" {

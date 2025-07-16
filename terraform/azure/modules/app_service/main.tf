@@ -18,8 +18,10 @@ resource "azurerm_linux_web_app" "this" {
   }
 
   site_config {
+    app_command_line = ""
     application_stack {
-      node_version = var.node_version
+      docker_image_name   = var.docker_image_name
+      docker_registry_url = var.docker_registry_url
     }
   }
 
