@@ -62,3 +62,18 @@ module "service_connection_acr" {
   acr_sp_app_id         = module.service_principal.client_id
   acr_sp_app_secret     = module.service_principal.client_secret
 }
+
+# -----------------------------------------------------------------
+# Azure DevOps Secure File for Kubeconfig
+# -----------------------------------------------------------------
+module "secure_file" {
+  source              = "../modules/secure_file"
+  devops_project_id   = data.azuredevops_project.project.id
+  secure_file_name    = "kubeconfig.yaml"
+  secure_file_content = module.aks.kube_config
+  apiserver_url       = module.aks.host
+  cluster_context     = module.aks.aks_name
+  depends_on = [
+    module.aks
+  ]
+}
