@@ -102,11 +102,11 @@ stages:
           runOnce:
             deploy:
               steps:
-                - task: DownloadSecureFile@1
-                  name: kubeconfig
-                  displayName: 'Download Kubeconfig from Secure Files'
+                - task: Kubernetes@1
+                  displayName: 'Use Kubernetes service connection'
                   inputs:
-                    secureFile: 'kubeconfig.yaml' # The name of your file in the Secure Files library
+                    connectionType: 'Kubernetes Service Connection'
+                    kubernetesServiceEndpoint: 'kubeconfig.yaml'
 
                 - script: |
                     helm upgrade --install "$HELM_RELEASE_NAME" "$CHART_PATH" \
