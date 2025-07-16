@@ -348,4 +348,58 @@ resource "azuredevops_variable_group" "secrets" {
     secret_value = var.azure_openai_key
     is_secret    = true
   }
+
+  variable {
+    name  = "AZURE_SUBSCRIPTION"
+    value = var.subscription_id
+  }
+
+  variable {
+    name  = "WEB_APP_NAME"
+    value = module.frontend_app_service.app_service_name
+  }
+
+  variable {
+    name  = "RESOURCE_GROUP"
+    value = module.resource_group.resource_group_name
+  }
+}
+
+# -----------------------------------------------------------------
+# Service Principal for Azure DevOps
+# -----------------------------------------------------------------
+module "service_principal" {
+  source          = "../modules/service_principal"
+  sp_name         = var.sp_name
+  subscription_id = var.subscription_id
+}
+
+# -----------------------------------------------------------------
+# Azure DevOps Service Connection (for ACR/AKS)
+# -----------------------------------------------------------------
+data "azuredevops_project" "project" {
+  name = var.devops_project_name
+}
+
+module "service_connection" {
+  source                  = "../modules/service_connection"
+  devops_project_id       = data.azuredevops_project.project.id
+  service_connection_name = "copilotgtm-arc-ci-cd-service--${var.env}"
+  subscription_id         = var.subscription_id
+  subscription_name       = "Copilot GTM Subscription"
+  tenant_id               = module.service_principal.tenant_id
+  client_id               = module.service_principal.client_id
+  client_secret           = module.service_principal.client_secret
+}
+
+# -----------------------------------------------------------------
+# Azure DevOps Service Connection for ACR (Docker Registry)
+# -----------------------------------------------------------------
+module "service_connection_acr" {
+  source                = "../modules/service_connection_acr"
+  devops_project_id     = data.azuredevops_project.project.id
+  service_endpoint_name = "copilotgtm-acr-connection-${var.env}"
+  acr_login_server      = module.acr.acr_login_server
+  acr_sp_app_id         = module.service_principal.client_id
+  acr_sp_app_secret     = module.service_principal.client_secret
 }
