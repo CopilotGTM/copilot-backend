@@ -53,3 +53,7 @@ resources:
   limits:
     memory: "1024Mi"
     cpu: "512m"
+
+# Default empty secrets object to satisfy the linter.
+# These values are overridden by the pipeline at runtime.
+secrets: {}
