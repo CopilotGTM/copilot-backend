@@ -16,7 +16,7 @@
 
 variables:
   - name: CHART_PATH
-    value: charts/technical-deck
+    value: ./charts/technical-deck
   - name: KUBECONFIG_FILE
     value: $(Pipeline.Workspace)/kubeconfig.yaml
 
@@ -108,6 +108,10 @@ stages:
                     connectionType: 'Kubernetes Service Connection'
                     kubernetesServiceEndpoint: 'kubeconfig.yaml'
                     command: 'login'
+
+                - script: |
+                    ls -R
+                  displayName: 'List files in workspace'
 
                 - script: |
                     helm upgrade --install "$HELM_RELEASE_NAME" "$CHART_PATH" \
