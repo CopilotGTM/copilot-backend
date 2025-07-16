@@ -102,14 +102,11 @@ stages:
           runOnce:
             deploy:
               steps:
-                - script: |
-                    echo "$(AKS_KUBECONFIG)" > $(KUBECONFIG_FILE)
-                    echo "---- KUBECONFIG FILE HEAD ----"
-                    head -20 $(KUBECONFIG_FILE) || cat $(KUBECONFIG_FILE)
-                    echo "-----------------------------"
-                  displayName: Write kubeconfig to disk and debug
-                  env:
-                    AKS_KUBECONFIG: $(AKS_KUBECONFIG)
+                - task: DownloadSecureFile@1
+                  name: kubeconfig
+                  displayName: 'Download Kubeconfig from Secure Files'
+                  inputs:
+                    secureFile: 'kubeconfig.yaml' # The name of your file in the Secure Files library
 
                 - script: |
                     helm upgrade --install "$HELM_RELEASE_NAME" "$CHART_PATH" \
@@ -134,7 +131,7 @@ stages:
                       --set secrets.APPLICATION_REGION="$APPLICATION_REGION"
                   displayName: Helm Upgrade/Install
                   env:
-                    KUBECONFIG: $(KUBECONFIG_FILE)
+                    KUBECONFIG: $(kubeconfig.secureFilePath)
                     HELM_RELEASE_NAME: $(HELM_RELEASE_NAME)
                     CHART_PATH: $(CHART_PATH)
                     ACR_LOGIN_SERVER: $(ACR_LOGIN_SERVER)
