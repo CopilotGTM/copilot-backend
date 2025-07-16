@@ -1,18 +1,18 @@
 # Azure DevOps YAML Pipeline – Multi-environment Deployment (Static variable group assignment)
 
-trigger:
-  branches:
-    include:
-      - main
-      - dev
-      - uat
+# trigger:
+#   branches:
+#     include:
+#       - main
+#       - dev
+#       - uat
 
-pr:
-  branches:
-    include:
-      - main
-      - dev
-      - uat
+# pr:
+#   branches:
+#     include:
+#       - main
+#       - dev
+#       - uat
 
 variables:
   - name: CHART_PATH
@@ -20,8 +20,8 @@ variables:
   - name: KUBECONFIG_FILE
     value: $(Pipeline.Workspace)/kubeconfig.yaml
 
-  # Determine environment variables based on the source branch or pipeline name
-  - ${{ if or(eq(variables['Build.SourceBranchName'], 'refs/heads/main'), endsWith(variables['Build.DefinitionName'], '-prod')) }}:
+  # Determine environment variables based on the pipeline name suffix
+  - ${{ if endsWith(variables['Build.DefinitionName'], '-prod') }}:
     - group: app-secrets-production
     - name: DEPLOY_ENVIRONMENT
       value: production
@@ -32,7 +32,7 @@ variables:
     - name: ACR_SERVICE_CONNECTION
       value: copilot-acr-prod-connection
 
-  - ${{ if or(eq(variables['Build.SourceBranchName'], 'refs/heads/uat'), endsWith(variables['Build.DefinitionName'], '-uat')) }}:
+  - ${{ elseif endsWith(variables['Build.DefinitionName'], '-uat') }}:
     - group: app-secrets-uat
     - name: DEPLOY_ENVIRONMENT
       value: uat
@@ -43,7 +43,7 @@ variables:
     - name: ACR_SERVICE_CONNECTION
       value: copilot-acr-uat-connection
 
-  - ${{ if or(eq(variables['Build.SourceBranchName'], 'refs/heads/dev'), endsWith(variables['Build.DefinitionName'], '-dev')) }}:
+  - ${{ else }}: # Default to dev
     - group: app-secrets-dev
     - name: DEPLOY_ENVIRONMENT
       value: dev
@@ -64,6 +64,15 @@ stages:
           vmImage: 'ubuntu-latest'
         steps:
           - checkout: self
+
+          - script: |
+              echo "##[group]Verifying Environment Configuration"
+              echo "Deployment Environment: $(DEPLOY_ENVIRONMENT)"
+              echo "ACR Login Server: $(ACR_LOGIN_SERVER)"
+              echo "Helm Release Name: $(HELM_RELEASE_NAME)"
+              echo "ACR Service Connection: $(ACR_SERVICE_CONNECTION)"
+              echo "##[endgroup]"
+            displayName: 'Echo Environment Variables'
 
           - task: Docker@2
             displayName: Build Docker Image
