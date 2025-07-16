@@ -104,7 +104,10 @@ stages:
               steps:
                 - script: |
                     echo "$(AKS_KUBECONFIG)" > $(KUBECONFIG_FILE)
-                  displayName: Write kubeconfig to disk
+                    echo "---- KUBECONFIG FILE HEAD ----"
+                    head -20 $(KUBECONFIG_FILE) || cat $(KUBECONFIG_FILE)
+                    echo "-----------------------------"
+                  displayName: Write kubeconfig to disk and debug
                   env:
                     AKS_KUBECONFIG: $(AKS_KUBECONFIG)
 
