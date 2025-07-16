@@ -12,9 +12,4 @@ resource "azuredevops_serviceendpoint_azurerm" "service_connection" {
     serviceprincipalkey = var.client_secret
   }
 
-  lifecycle {
-    ignore_changes = [
-      credentials[0].serviceprincipalkey
-    ]
-  }
 }
