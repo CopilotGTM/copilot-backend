@@ -351,7 +351,7 @@ resource "azuredevops_variable_group" "secrets" {
 
   variable {
     name  = "AZURE_SUBSCRIPTION"
-    value = var.subscription_id
+    value = module.service_connection.service_connection_name
   }
 
   variable {
