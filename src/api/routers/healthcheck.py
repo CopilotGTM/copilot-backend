@@ -13,4 +13,4 @@ async def healthcheck():
     :return:
     """
     # logger.info("Healthcheck")
-    return {"status": "Ok"}
+    return {"status": "Okz"}
