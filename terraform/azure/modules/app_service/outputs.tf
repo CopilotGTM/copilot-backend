@@ -27,3 +27,18 @@ output "app_service_name" {
   description = "The name of the Linux Web App"
   value       = azurerm_linux_web_app.this.name
 }
+
+output "app_service_custom_domain_verification_id" {
+  description = "The custom domain verification ID for the App Service"
+  value       = azurerm_linux_web_app.this.custom_domain_verification_id
+}
+
+output "custom_domain_url" {
+  description = "The custom domain URL if configured"
+  value       = var.custom_domain_name != null ? "https://${var.custom_domain_name}" : null
+}
+
+output "managed_certificate_id" {
+  description = "The ID of the managed certificate"
+  value       = var.custom_domain_name != null ? azurerm_app_service_managed_certificate.this[0].id : null
+}

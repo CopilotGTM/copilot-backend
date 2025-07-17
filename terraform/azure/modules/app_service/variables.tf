@@ -56,3 +56,27 @@ variable "https_only" {
   type        = bool
   default     = true
 }
+
+variable "custom_domain_name" {
+  description = "Custom domain name for the App Service (e.g., app.yourdomain.com)"
+  type        = string
+  default     = null
+}
+
+variable "dns_zone_name" {
+  description = "DNS zone name (e.g., yourdomain.com)"
+  type        = string
+  default     = null
+}
+
+variable "dns_zone_resource_group" {
+  description = "Resource group containing the DNS zone"
+  type        = string
+  default     = null
+}
+
+variable "create_dns_records" {
+  description = "Whether to create DNS records for custom domain"
+  type        = bool
+  default     = false
+}
