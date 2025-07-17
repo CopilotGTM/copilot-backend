@@ -120,6 +120,12 @@ variable "frontend_docker_image_name" {
   default     = "copilotgtm-frontend-app"
 }
 
+variable "frontend_branch" {
+  description = "Branch of Repo"
+  type        = string
+  default     = "dev"
+}
+
 variable "project_name" {
   description = "The project tag to apply across resources."
   type        = string
@@ -172,6 +178,14 @@ variable "backend_yml_path" {
   type        = string
   default     = "azure-pipelines.yml"
 }
+
+# YAML path for Azure DevOps pipeline definition file
+variable "backend_branch" {
+  description = "Branch for backend pipeline"
+  type        = string
+  default     = "dev"
+}
+
 
 variable "frontend_repo_name" {
   description = "Azure DevOps repository name containing the YAML pipeline definition for the frontend."
