@@ -78,7 +78,7 @@ stages:
             displayName: Build Docker Image
             inputs:
               containerRegistry: '$(ACR_SERVICE_CONNECTION)'
-              repository: '$(ACR_LOGIN_SERVER)/technical-deck'
+              repository: 'technical-deck'
               command: 'buildAndPush'
               Dockerfile: '**/Dockerfile'
               tags: |
