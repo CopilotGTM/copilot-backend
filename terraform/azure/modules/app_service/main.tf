@@ -1,3 +1,15 @@
+terraform {
+  required_providers {
+    azurerm = {
+      source  = "hashicorp/azurerm"
+      version = ">= 3.0"
+    }
+    azapi = {
+      source = "azure/azapi"
+    }
+  }
+}
+
 resource "azurerm_service_plan" "this" {
   name                = var.app_service_plan_name
   location            = var.location
@@ -21,11 +33,31 @@ resource "azurerm_linux_web_app" "this" {
     app_command_line = ""
     application_stack {
       docker_image_name   = var.docker_image_name
-      docker_registry_url = var.docker_registry_url
+      docker_registry_url = "https://${var.docker_registry_url}"
     }
+    container_registry_use_managed_identity = true
   }
 
   https_only = var.https_only
 
-  app_settings = var.app_settings
+  # Only include essential app settings - remove DOCKER_REGISTRY_SERVER_URL
+  app_settings = merge({
+    "WEBSITES_ENABLE_APP_SERVICE_STORAGE" = "false"
+  }, var.app_settings)
+
+  depends_on = [
+    azurerm_service_plan.this
+  ]
+}
+
+# Role Assignment: Allow App Service to pull images from ACR
+resource "azurerm_role_assignment" "app_service_acr_pull" {
+  principal_id         = azurerm_linux_web_app.this.identity[0].principal_id
+  role_definition_name = "AcrPull"
+  scope                = var.acr_id
+  principal_type       = "ServicePrincipal"
+  
+  depends_on = [
+    azurerm_linux_web_app.this
+  ]
 }

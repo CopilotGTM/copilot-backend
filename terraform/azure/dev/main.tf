@@ -171,6 +171,7 @@ module "foundry" {
   ]
 }
 
+# -----------------------------------------------------------------
 # App Service: Azure Web App for frontend hosting (Node.js)
 # -----------------------------------------------------------------
 module "frontend_app_service" {
@@ -180,32 +181,19 @@ module "frontend_app_service" {
   resource_group_name     = module.resource_group.resource_group_name
   location                = var.location
   docker_image_name       = var.frontend_docker_image_name
-  docker_registry_url     = "https://${module.acr.acr_login_server}"
+  docker_registry_url     = module.acr.acr_login_server  # Pass without https://
+  acr_id                  = module.acr.acr_id
   app_settings            = {}
   sku_name                = var.frontend_sku_name
   os_type                 = var.frontend_os_type
   https_only              = var.frontend_https_only
+  
   depends_on = [
     module.resource_group,
     module.acr
   ]
 }
 
-
-
-# -----------------------------------------------------------------
-# Role Assignment: Allow App Service to pull images from ACR
-# -----------------------------------------------------------------
-resource "azurerm_role_assignment" "app_service_acr_pull" {
-  principal_id         = module.frontend_app_service.app_service_principal_id
-  role_definition_name = "AcrPull"
-  scope                = module.acr.acr_id
-  principal_type       = "ServicePrincipal"
-  depends_on           = [
-    module.acr,
-    module.frontend_app_service
-  ]
-}
 
 # -----------------------------------------------------------------
 # Generate a strong, random DB admin password

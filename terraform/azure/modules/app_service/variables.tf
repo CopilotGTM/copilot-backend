@@ -24,7 +24,12 @@ variable "docker_image_name" {
 }
 
 variable "docker_registry_url" {
-  description = "The URL of the Docker registry."
+  description = "The URL of the Docker registry without protocol (e.g., myregistry.azurecr.io)"
+  type        = string
+}
+
+variable "acr_id" {
+  description = "The ID of the Azure Container Registry"
   type        = string
 }
 
