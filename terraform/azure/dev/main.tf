@@ -172,36 +172,6 @@ module "foundry" {
 }
 
 # -----------------------------------------------------------------
-# App Service: Azure Web App for frontend hosting (Node.js)
-# -----------------------------------------------------------------
-module "frontend_app_service" {
-  source                  = "../modules/app_service"
-  app_service_plan_name   = "${var.frontend_app_service_plan_name}-${var.env}"
-  app_service_name        = "${var.frontend_app_service_name}-${var.env}"
-  resource_group_name     = module.resource_group.resource_group_name
-  location                = var.location
-  docker_image_name       = var.frontend_docker_image_name
-  docker_registry_url     = module.acr.acr_login_server
-  acr_id                  = module.acr.acr_id
-  app_settings            = {}
-  sku_name                = var.frontend_sku_name
-  os_type                 = var.frontend_os_type
-  https_only              = var.frontend_https_only
-  
-  # Custom domain configuration
-  custom_domain_name      = "${var.frontend_dns_a_record_name}.${var.dns_zone_name}"
-  dns_zone_name           = var.dns_zone_name
-  dns_zone_resource_group = var.dns_zone_resource_group
-  create_dns_records      = true
-  
-  depends_on = [
-    module.resource_group,
-    module.acr
-  ]
-}
-
-
-# -----------------------------------------------------------------
 # Generate a strong, random DB admin password
 # -----------------------------------------------------------------
 resource "random_password" "db_admin" {
