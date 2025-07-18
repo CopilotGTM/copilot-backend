@@ -10,6 +10,10 @@ from sqlalchemy import Column
 from sqlalchemy.dialects.postgresql import JSONB
 
 
+def utcnow() -> datetime:
+    return datetime.utcnow()
+
+
 class AttachmentModel(BaseModel):
     """
     Predefined JSON schema for an attachment embedded in ChatMessage.attachments
@@ -83,7 +87,9 @@ class ChatMessage(SQLModel, table=True):
         default_factory=dict,
     )
 
-    timestamp: datetime = Field(default_factory=datetime.utcnow, index=True)
+    #timestamp: datetime = Field(default_factory=datetime.utcnow, index=True)
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
 
     technical_deck_details: Dict[str, Any] = Field(
         sa_column=Column("technical_deck_details", JSONB),

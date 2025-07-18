@@ -8,7 +8,7 @@ from sqlmodel import select
 from src.infra.utils.logger import get_logger
 from src.api.events.socket_app import sio
 from src.infra.utils.database import get_master_session
-from src.domain.models.db_models import UserCredential
+from src.domain.models.db_models import User
 from src.domain.models.authentication import Authentication
 from src.infra.messaging.redis_client import store_socket_connection, remove_socket_connection, get_socket_connection
 
@@ -51,10 +51,10 @@ async def connect(sid, environ, auth):
     organisation_id = UUID(org_id_str)
     logger.info(f"Parsed UUIDs: user_id={user_id}, organisation_id={organisation_id}")
 
-    # Verify user exists in DB
-    stmt = select(UserCredential).where(
-        UserCredential.user_id == user_id,
-        UserCredential.organisation_id == organisation_id,
+    # Verify user exists in DB using new User model
+    stmt = select(User).where(
+        User.user_id == user_id,
+        User.organisation_id == organisation_id,
     )
     with MasterSession() as session:
         user = session.exec(stmt).one_or_none()
@@ -69,23 +69,13 @@ async def connect(sid, environ, auth):
 
     # Store connection in Redis
     await store_socket_connection(sid, environ)
+    logger.info(f"WebSocket connection established: sid={sid}, user_id={user_id}, organisation_id={organisation_id}")
 
 
 @sio.event(namespace=WEBSOCKET_NAMESPACE)
 async def disconnect(sid):
     """
-    Handle WebSocket disconnection for premium users:
-      - Remove the connection record from Redis
+    Handle WebSocket disconnection by removing the connection from Redis.
     """
-    logger.info(f"WebSocket disconnect: sid={sid}")
-    try:
-        count = await remove_socket_connection(sid)
-        if count:
-            logger.info(f"Removed Redis connection for sid={sid}")
-        else:
-            logger.warning(f"No Redis connection to remove for sid={sid}")
-    except Exception as e:
-        logger.error(
-            f"Error during disconnect cleanup for sid={sid}: {e}",
-            exc_info=True,
-        )
+    logger.info(f"WebSocket disconnection: sid={sid}")
+    await remove_socket_connection(sid)

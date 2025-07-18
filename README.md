@@ -17,10 +17,15 @@ A FastAPI-based service for user authentication, featuring local development and
 
 ## Features
 
-- User authentication APIs built with FastAPI
-- Asynchronous background processing with Celery
-- Easy local development with hot-reload
-- Production-ready configuration
+- **Super Admin System**: Secure admin authentication with email notifications
+- **Multi-Tenant Architecture**: Organization-based user management
+- **AI-Powered Chat**: Intelligent conversations with document search
+- **Technical Deck Generation**: Automated presentation creation
+- **RFP Processing**: Intelligent document analysis and response generation
+- **User authentication APIs** built with FastAPI
+- **Asynchronous background processing** with Celery
+- **Easy local development** with hot-reload
+- **Production-ready configuration**
 
 ---
 
@@ -45,6 +50,49 @@ A FastAPI-based service for user authentication, featuring local development and
 2. **Install dependencies:**
    ```bash
    pip install -r requirements.txt
+   ```
+
+3. **Configure environment variables:**
+   Create a `.env` file with the following variables:
+   ```bash
+   # Database Configuration
+   DATABASE_HOST=localhost
+   DATABASE_PORT=5432
+   DATABASE_USER=postgres
+   DATABASE_PASSWORD=your_password
+   DATABASE_NAME=postgres
+   
+   # Super Admin Configuration
+   SUPER_ADMIN_EMAIL=admin@yourcompany.com
+   
+   # Supabase Configuration
+   SUPABASE_URL=https://your-project.supabase.co
+   SUPABASE_ANON_KEY=your-anon-key
+   SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+   SUPABASE_JWT_SECRET=your-jwt-secret
+   
+   # Email Configuration (Resend)
+   RESEND_API_KEY=your-resend-api-key
+   FROM_EMAIL=noreply@yourdomain.com
+   
+   # Application Configuration
+   APP_NAME=CopilotGTM
+   APP_URL=https://your-app-domain.com
+   ```
+
+4. **Initialize super admin (first deployment):**
+   ```bash
+   python scripts/admin/deploy_with_super_admin.py
+   ```
+
+5. **Frontend Integration:**
+   Use Supabase authentication client in your frontend for admin login:
+   ```javascript
+   // Example with Supabase client
+   const { data, error } = await supabase.auth.signInWithPassword({
+     email: 'admin@yourcompany.com',
+     password: 'temporary_password'
+   })
    ```
 
 ---

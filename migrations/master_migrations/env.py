@@ -2,7 +2,7 @@ from logging.config import fileConfig
 import os
 import urllib.parse
 
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import engine_from_config, pool, text
 from alembic import context
 from sqlmodel import SQLModel
 from dotenv import load_dotenv
@@ -14,6 +14,7 @@ load_dotenv()
 from src.domain.models.db_models import Organisation, User, UserCredential
 from src.domain.models.chat_db_models import ChatSession, ChatMessage
 from src.domain.models.embeddings_db_models import OrganisationDocument
+# (and import any new model modules here)
 
 # this is the Alembic Config object
 config = context.config
@@ -25,7 +26,10 @@ DATABASE_NAME = os.getenv("DATABASE_NAME", "postgres")
 DATABASE_USER = os.getenv("DATABASE_USER", "postgres")
 DATABASE_PASSWORD = os.getenv("DATABASE_PASSWORD", "")
 encoded_password = urllib.parse.quote_plus(DATABASE_PASSWORD)
-db_url = f"postgresql://{DATABASE_USER}:{encoded_password}" f"@{DATABASE_HOST}:{DATABASE_PORT}/{DATABASE_NAME}"
+db_url = (
+    f"postgresql://{DATABASE_USER}:{encoded_password}"
+    f"@{DATABASE_HOST}:{DATABASE_PORT}/{DATABASE_NAME}"
+)
 # Alembic requires % to be escaped as %%
 config.set_main_option("sqlalchemy.url", db_url.replace("%", "%%"))
 
@@ -36,6 +40,9 @@ if config.config_file_name is not None:
 # point Alembic at your SQLModel metadata
 target_metadata = SQLModel.metadata
 
+# grab the --x schema=org_id argument (if any)
+x_args = context.get_x_argument(as_dictionary=True)
+target_schema = x_args.get("schema")  # e.g. "org_123"
 
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode (no DB connection)."""
@@ -45,8 +52,14 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
-        compare_type=True,  # detect column type changes
+        compare_type=True,
+        include_schemas=True,
+        version_table_schema=target_schema,
     )
+
+    # emit a CREATE SCHEMA if it doesn’t exist
+    if target_schema:
+        context.execute(f"CREATE SCHEMA IF NOT EXISTS {target_schema}")
 
     with context.begin_transaction():
         context.run_migrations()
@@ -61,11 +74,16 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
+        if target_schema:
+            # ensure unqualified DDL goes into the right schema
+            connection.execute(text(f"SET search_path TO {target_schema}, public"))
+
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
             compare_type=True,
-            # render_as_batch=True    # enable if you ever need SQLite batch mode
+            include_schemas=True,
+            version_table_schema=target_schema,
         )
 
         with context.begin_transaction():

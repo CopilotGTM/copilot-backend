@@ -27,6 +27,8 @@ class Organisation(SQLModel, table=True):
         nullable=False,
         unique=True,
     )
+    schema_name: Optional[str] = Field(default=None, unique=True, index=True)
+    role_name: Optional[str] = Field(default=None, unique=True, index=True)
     sales_team_size: Optional[int] = Field(default=None)
     country: Optional[str] = Field(default=None)
     company_address: Optional[str] = Field(default=None)
@@ -51,6 +53,8 @@ class User(SQLModel, table=True):
         default_factory=uuid4,
         primary_key=True,
     )
+    # Supabase auth user ID (from auth.users table)
+    supabase_user_id: Optional[str] = Field(default=None, unique=True, index=True)
     organisation_id: UUID = Field(
         foreign_key="organisations.organisation_id",
         nullable=False,
@@ -73,26 +77,3 @@ class User(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utcnow)
 
     organisation: Organisation = Relationship(back_populates="users")
-    credentials: List["UserCredential"] = Relationship(back_populates="user")
-
-
-class UserCredential(SQLModel, table=True):
-    __tablename__ = "user_credentials"
-
-    user_id: UUID = Field(
-        foreign_key="users.user_id",
-        primary_key=True,
-    )
-    email: str = Field(
-        ...,
-        primary_key=True,
-    )
-    organisation_id: UUID = Field(
-        foreign_key="organisations.organisation_id",
-        primary_key=True,
-    )
-    hashed_password: str = Field(...)
-    last_password_change: datetime = Field(default_factory=utcnow)
-    password_reset_token: Optional[str] = Field(default=None)
-
-    user: User = Relationship(back_populates="credentials")

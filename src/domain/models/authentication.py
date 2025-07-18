@@ -1,47 +1,21 @@
 from typing import Dict, Any, Optional
 from fastapi import Depends, HTTPException, status, Cookie, Request
 from sqlmodel import Session, select
-import jwt
 import json
 from urllib.parse import unquote
 from uuid import UUID
 from socketio.exceptions import ConnectionRefusedError
-from src.domain.models.db_models import UserCredential
+from src.domain.models.db_models import User
 from src.infra.utils.app_state import fastapp
 from src.infra.utils.logger import get_logger
 from src.infra.utils.database import get_master_session
+from src.infra.utils.supabase_auth import supabase_auth
 
 logger = get_logger()
 
 
 class Authentication:
     cookie_name: str = "auth-storage"
-    secret_key: str = "your_secret_key"
-    algorithm: str = "HS256"
-
-    def decode_token(self, token: str) -> Dict[str, Any]:
-        """
-        Decode and validate JWT for HTTP routes, raising HTTPException on error.
-        """
-        logger.debug("Decoding token (HTTP)...")
-        try:
-            payload = jwt.decode(token, self.secret_key, algorithms=[self.algorithm])
-            logger.debug("Token decoded successfully: %s", payload)
-            return payload
-        except jwt.PyJWTError as e:
-            logger.error("Failed to decode token: %s", str(e))
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid or expired authentication token")
-
-    def decode_for_ws(self, token: str) -> Dict[str, Any]:
-        """
-        Decode and validate JWT for WebSocket, raising ConnectionRefusedError on error.
-        """
-        logger.debug("Decoding token (WebSocket)...")
-        try:
-            return jwt.decode(token, self.secret_key, algorithms=[self.algorithm])
-        except jwt.PyJWTError as e:
-            logger.error("WebSocket auth token decode failed: %s", str(e))
-            raise ConnectionRefusedError("Unauthorized")
 
     async def verify_session(
         self,
@@ -51,6 +25,7 @@ class Authentication:
     ) -> Dict[str, Any]:
         """
         FastAPI dependency: verifies the auth_token cookie for HTTP routes.
+        For Supabase, we'll verify the session token and extract user info.
         """
         logger.debug("Starting session verification...")
 
@@ -69,42 +44,59 @@ class Authentication:
                 logger.error("Failed to parse auth-storage JSON: %s", str(e))
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid auth-storage format")
 
-            # Extract auth token
-            auth_token = storage_data.get("state", {}).get("auth_token")
-            if not auth_token:
-                logger.warning("No auth_token found in auth-storage")
+            # Extract Supabase session token
+            access_token = storage_data.get("state", {}).get("access_token")
+            if not access_token:
+                logger.warning("No access_token found in auth-storage")
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Authentication token missing")
 
-            # Decode and validate token
-            payload = self.decode_token(auth_token)
-            user_id = payload.get("user_id")
-            org_id = payload.get("organisation_id")
+            # Get user from Supabase token
+            user = supabase_auth.get_user_from_token(access_token, master_session)
+            
+            if not user:
+                logger.warning("User not found or token invalid")
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User not found or token invalid")
 
-            if not user_id or not org_id:
-                logger.warning("Invalid token payload: user_id or organisation_id missing")
-                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid token payload")
+            logger.info("HTTP session verified successfully for user_id=%s", user.user_id)
+            return {
+                "user_id": str(user.user_id), 
+                "organisation_id": str(user.organisation_id),
+                "user": user
+            }
 
-            # Verify user exists
-            try:
-                stmt = select(UserCredential).where(
-                    UserCredential.user_id == UUID(user_id),
-                    UserCredential.organisation_id == UUID(org_id),
-                )
-                user = master_session.exec(stmt).one_or_none()
-
-                if not user:
-                    logger.warning("User not found in the database: user_id=%s, org_id=%s", user_id, org_id)
-                    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User not found")
-
-                logger.info("HTTP session verified successfully for user_id=%s", user_id)
-                return {"user_id": user_id, "organisation_id": org_id}
-
-            except ValueError as e:
-                logger.error("Invalid UUID format: %s", str(e))
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid user or organisation ID format"
-                )
-
+        except HTTPException:
+            # Re-raise HTTP exceptions
+            raise
         except Exception as e:
             logger.error("Unexpected error during session verification: %s", str(e))
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Authentication error")
+
+    def decode_for_ws(self, token: str) -> Dict[str, Any]:
+        """
+        Decode and validate token for WebSocket, raising ConnectionRefusedError on error.
+        """
+        logger.debug("Decoding token (WebSocket)...")
+        try:
+            # Verify the token with Supabase
+            payload = supabase_auth.verify_token(token)
+            
+            # Extract user information
+            supabase_user_id = payload.get("sub")
+            if not supabase_user_id:
+                logger.warning("No user ID found in WebSocket token")
+                raise ConnectionRefusedError("Invalid token payload")
+            
+            # For WebSocket, we'll return the basic user info
+            # You might want to add a database session here to get full user details
+            return {
+                "supabase_user_id": supabase_user_id,
+                "user_id": payload.get("user_id"),  # If you store this in token
+                "organisation_id": payload.get("organisation_id")  # If you store this in token
+            }
+            
+        except HTTPException as e:
+            logger.error("WebSocket auth failed: %s", str(e))
+            raise ConnectionRefusedError("Unauthorized")
+        except Exception as e:
+            logger.error("WebSocket auth token decode failed: %s", str(e))
+            raise ConnectionRefusedError("Unauthorized")
