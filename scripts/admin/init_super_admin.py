@@ -20,6 +20,7 @@ project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from dotenv import load_dotenv
+load_dotenv()
 from sqlmodel import Session, select
 from src.infra.utils.database import init_master_db, get_session_dependency
 from src.infra.utils.admin_auth import admin_auth
@@ -110,7 +111,7 @@ def create_super_admin(session: Session) -> bool:
         return False
 
 
-def main():
+def execute_create_super_admin():
     """
     Main function to initialize super admin
     """
@@ -123,7 +124,7 @@ def main():
         # Initialize database
         logger.info("Initializing database connection...")
         master_engine = init_master_db(create_if_missing=True)
-        session = get_session_dependency(master_engine)
+        session = next(get_session_dependency(master_engine)())
         
         # Check if super admin already exists
         if check_super_admin_exists(session):
@@ -145,5 +146,5 @@ def main():
         sys.exit(1)
 
 
-if __name__ == "__main__":
-    main() 
+# if __name__ == "__main__":
+#     main()

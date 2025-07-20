@@ -11,9 +11,8 @@ load_dotenv()
 
 # ---- import every module that declares SQLModel models ----
 # (so that SQLModel.metadata is populated)
-from src.domain.models.db_models import Organisation, User, UserCredential
-from src.domain.models.chat_db_models import ChatSession, ChatMessage
-from src.domain.models.embeddings_db_models import OrganisationDocument
+from src.domain.models.db_models import Organisation, User
+from src.domain.models.admin_models import SuperAdmin
 # (and import any new model modules here)
 
 # this is the Alembic Config object

@@ -1,6 +1,6 @@
 import os
 from typing import Optional
-from resend import Resend
+import resend
 from src.infra.utils.logger import get_logger
 
 logger = get_logger()
@@ -14,10 +14,10 @@ class EmailService:
         self.from_email = os.getenv("FROM_EMAIL", "noreply@yourdomain.com")
         self.app_name = os.getenv("APP_NAME", "CopilotGTM")
         self.app_url = os.getenv("APP_URL", "http://localhost:3000")
-        
+        resend.api_key = self.resend_api_key
+
         # Initialize Resend client
         if self.resend_api_key:
-            self.resend = Resend(api_key=self.resend_api_key)
             self.is_configured = True
         else:
             self.resend = None
@@ -61,7 +61,7 @@ class EmailService:
                 email_data["text"] = text_content
             
             # Send email via Resend
-            response = self.resend.emails.send(email_data)
+            response = resend.Emails.send(email_data)
             
             logger.info(f"Email sent successfully to {to_email} via Resend")
             return True

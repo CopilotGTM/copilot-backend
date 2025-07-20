@@ -21,7 +21,10 @@ project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from dotenv import load_dotenv
+load_dotenv()
+
 from src.infra.utils.logger import get_logger
+from scripts.admin.init_super_admin import execute_create_super_admin
 
 logger = get_logger()
 
@@ -99,17 +102,17 @@ def run_master_migrations() -> bool:
     )
 
 
-def initialize_super_admin() -> bool:
-    """
-    Initialize super admin account
+# def initialize_super_admin() -> bool:
+#     """
+#     Initialize super admin account
     
-    Returns:
-        True if successful, False otherwise
-    """
-    return run_command(
-        "python scripts/admin/init_super_admin.py",
-        "Super admin initialization"
-    )
+#     Returns:
+#         True if successful, False otherwise
+#     """
+#     return run_command(
+#         "python scripts/admin/init_super_admin.py",
+#         "Super admin initialization"
+#     )
 
 
 def main():
@@ -132,14 +135,9 @@ def main():
         sys.exit(1)
     
     # Step 2: Initialize super admin
-    if not initialize_super_admin():
-        logger.error("❌ Super admin initialization failed")
-        sys.exit(1)
+    execute_create_super_admin()
     
     logger.info("🎉 Deployment completed successfully!")
-    logger.info("📧 Check the email sent to SUPER_ADMIN_EMAIL for login credentials")
-    logger.info("🔐 The super admin will need to reset their password on first login")
-
 
 if __name__ == "__main__":
     main() 

@@ -11,7 +11,7 @@ import argparse
 import urllib.parse
 
 from dotenv import load_dotenv
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from alembic.config import Config
 from alembic import command
 
@@ -51,19 +51,20 @@ def run_master_migrations(revision="head", downgrade=False):
     """Run master migrations using the master_migrations directory."""
     cfg = Config("migrations/master_migrations/alembic.ini")
     
-    print(f"→ Running master migrations to revision '{revision}'...")
+    print(f"-> Running master migrations to revision '{revision}'...")
     
     if downgrade:
         command.downgrade(cfg, revision)
-        print(f"✅ Master migrations downgraded to '{revision}'")
+        print(f"[OK] Master migrations downgraded to '{revision}'")
     else:
         command.upgrade(cfg, revision)
-        print(f"✅ Master migrations upgraded to '{revision}'")
+        print(f"[OK] Master migrations upgraded to '{revision}'")
 
 
 def main():
     load_env()
     args = parse_args()
+    print(f"================{args}================")
     
     # Verify database connection
     db_url = get_database_url()
@@ -71,17 +72,17 @@ def main():
     
     try:
         with engine.connect() as conn:
-            conn.execute("SELECT 1")
-        print("✅ Database connection successful")
+            conn.execute(text("SELECT 1"))
+        print("[OK] Database connection successful")
     except Exception as e:
-        print(f"❌ Database connection failed: {e}")
+        print(f"[ERROR] Database connection failed: {e}")
         sys.exit(1)
     
     # Run master migrations
     run_master_migrations(args.revision, args.downgrade)
     
-    print("🎉 Master migrations completed successfully!")
+    print("[DONE] Master migrations completed successfully!")
 
 
 if __name__ == "__main__":
-    main() 
+    main()

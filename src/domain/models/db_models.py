@@ -32,7 +32,6 @@ class Organisation(SQLModel, table=True):
     sales_team_size: Optional[int] = Field(default=None)
     country: Optional[str] = Field(default=None)
     company_address: Optional[str] = Field(default=None)
-    billing_address: Optional[str] = Field(default=None)
     linked_urls: Optional[str] = Field(default=None)
     website_urls: Optional[str] = Field(default=None)
     summary: Optional[str] = Field(default=None)

@@ -7,13 +7,10 @@ from alembic import context
 from sqlmodel import SQLModel
 from dotenv import load_dotenv
 
-load_dotenv()
-
-# ---- import every module that declares SQLModel models ----
-# (so that SQLModel.metadata is populated)
 from src.domain.models.chat_db_models import ChatSession, ChatMessage
 from src.domain.models.embeddings_db_models import OrganisationDocument
-# (and import any new model modules here)
+
+load_dotenv()
 
 # this is the Alembic Config object
 config = context.config

@@ -57,3 +57,4 @@ python-pptx~=1.0.2
 celery~=5.5.3
 lxml
 pydantic>=2.0.0,<3.0.0
+pydantic[email]~=2.2.0
