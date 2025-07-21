@@ -15,9 +15,9 @@ from src.domain.models.admin_models import (
     SuperAdmin,
 )
 from src.infra.utils.database import get_master_session
-from src.infra.utils.admin_auth import admin_auth
-from src.infra.utils.email_service import email_service
-from src.infra.utils.supabase_auth import supabase_auth
+from src.infra.auth.admin_auth import admin_auth
+from src.infra.auth.email_service import email_service
+from src.infra.auth.supabase_auth import supabase_auth
 from src.infra.utils.logger import get_logger
 from src.api.utils.http_response import Response
 
@@ -49,7 +49,10 @@ async def admin_login(
         statement = select(SuperAdmin).where(SuperAdmin.email == login_request.email)
         result = master_session.exec(statement)
         super_admin = result.first()
-        logger.info("User found in database: %s",super_admin.email if super_admin else "None",)
+        logger.info(
+            "User found in database: %s",
+            super_admin.email if super_admin else "None",
+        )
 
         if not super_admin:
             logger.warning(f"Super admin not found for email: {login_request.email}")
@@ -57,8 +60,7 @@ async def admin_login(
 
         # Verify password using Supabase Auth
         supabase_response = supabase_auth.verify_email_password(
-            email=login_request.email, 
-            password=login_request.password
+            email=login_request.email, password=login_request.password
         )
 
         logger.info("Supabase response keys: %s", supabase_response)
@@ -68,7 +70,7 @@ async def admin_login(
         if not access_token:
             logger.warning(f"Invalid credentials for super admin: {login_request.email}")
             return Response.bad_request_error_response("Invalid credentials")
-        
+
         requires_password_change = supabase_response["user"]["user_metadata"]["requires_password_change"]
         email_verified = supabase_response["user"]["user_metadata"]["email_verified"]
         if requires_password_change:
@@ -83,7 +85,7 @@ async def admin_login(
                 "tokens": {
                     "access_token": access_token,
                     "refresh_token": refresh_token,
-                }
+                },
             }
             return response_data
         else:
@@ -104,7 +106,7 @@ async def admin_login(
                 "tokens": {
                     "access_token": access_token,
                     "refresh_token": refresh_token,
-                }
+                },
             }
             return response_data
 
@@ -152,7 +154,7 @@ async def first_time_password_change(
             logger.warning(f"Password change not required for user: {current_admin.email}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Password change is not required for this user. Use regular password change if needed."
+                detail="Password change is not required for this user. Use regular password change if needed.",
             )
 
         # Validate new_password and confirm_password if provided
@@ -163,8 +165,7 @@ async def first_time_password_change(
         # Update password in Supabase
         logger.info(f"Updating password in Supabase for user: {current_admin.email}")
         password_updated = supabase_auth.update_user_password(
-            user_id=current_admin.supabase_user_id,
-            new_password=password_request.new_password
+            user_id=current_admin.supabase_user_id, new_password=password_request.new_password
         )
 
         if not password_updated:
@@ -181,8 +182,7 @@ async def first_time_password_change(
         }
         logger.info(f"Updating user metadata in Supabase for user: {current_admin.email}")
         metadata_updated = admin_auth.update_supabase_user_metadata(
-            supabase_user_id=current_admin.supabase_user_id,
-            metadata=updated_metadata
+            supabase_user_id=current_admin.supabase_user_id, metadata=updated_metadata
         )
 
         if not metadata_updated:

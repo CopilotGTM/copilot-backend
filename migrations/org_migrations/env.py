@@ -22,10 +22,7 @@ DATABASE_NAME = os.getenv("DATABASE_NAME", "postgres")
 DATABASE_USER = os.getenv("DATABASE_USER", "postgres")
 DATABASE_PASSWORD = os.getenv("DATABASE_PASSWORD", "")
 encoded_password = urllib.parse.quote_plus(DATABASE_PASSWORD)
-db_url = (
-    f"postgresql://{DATABASE_USER}:{encoded_password}"
-    f"@{DATABASE_HOST}:{DATABASE_PORT}/{DATABASE_NAME}"
-)
+db_url = f"postgresql://{DATABASE_USER}:{encoded_password}" f"@{DATABASE_HOST}:{DATABASE_PORT}/{DATABASE_NAME}"
 # Alembic requires % to be escaped as %%
 config.set_main_option("sqlalchemy.url", db_url.replace("%", "%%"))
 
@@ -39,6 +36,7 @@ target_metadata = SQLModel.metadata
 # grab the --x schema=org_id argument (if any)
 x_args = context.get_x_argument(as_dictionary=True)
 target_schema = x_args.get("schema")  # e.g. "org_123"
+
 
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode (no DB connection)."""
@@ -89,4 +87,4 @@ def run_migrations_online() -> None:
 if context.is_offline_mode():
     run_migrations_offline()
 else:
-    run_migrations_online() 
+    run_migrations_online()

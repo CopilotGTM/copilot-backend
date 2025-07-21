@@ -8,7 +8,7 @@ logger = get_logger()
 
 class EmailService:
     """Email service using Resend for sending notifications to admins"""
-    
+
     def __init__(self):
         self.resend_api_key = os.getenv("RESEND_API_KEY")
         self.from_email = os.getenv("FROM_EMAIL", "noreply@yourdomain.com")
@@ -23,72 +23,56 @@ class EmailService:
             self.resend = None
             self.is_configured = False
             logger.warning("Resend API key not configured. Email functionality will be disabled.")
-    
-    def send_email(
-        self,
-        to_email: str,
-        subject: str,
-        html_content: str,
-        text_content: Optional[str] = None
-    ) -> bool:
+
+    def send_email(self, to_email: str, subject: str, html_content: str, text_content: Optional[str] = None) -> bool:
         """
         Send an email using Resend
-        
+
         Args:
             to_email: Recipient email address
             subject: Email subject
             html_content: HTML content of the email
             text_content: Plain text content (optional)
-            
+
         Returns:
             True if email sent successfully, False otherwise
         """
         if not self.is_configured:
             logger.error("Email service not configured. Cannot send email.")
             return False
-        
+
         try:
             # Prepare email data
-            email_data = {
-                "from": self.from_email,
-                "to": [to_email],
-                "subject": subject,
-                "html": html_content
-            }
-            
+            email_data = {"from": self.from_email, "to": [to_email], "subject": subject, "html": html_content}
+
             # Add text content if provided
             if text_content:
                 email_data["text"] = text_content
-            
+
             # Send email via Resend
             response = resend.Emails.send(email_data)
-            
+
             logger.info(f"Email sent successfully to {to_email} via Resend")
             return True
-            
+
         except Exception as e:
             logger.error(f"Failed to send email to {to_email}: {str(e)}")
             return False
-    
-    def send_super_admin_creation_email(
-        self,
-        to_email: str,
-        first_name: str,
-        temp_password: str
-    ) -> bool:
+
+    def send_super_admin_creation_email(self, to_email: str, first_name: str, temp_password: str) -> bool:
         """
         Send email to newly created super admin with temporary password
-        
+
         Args:
             to_email: Admin email address
             first_name: Admin's first name
             temp_password: Temporary password
-            
+
         Returns:
             True if email sent successfully, False otherwise
         """
         subject = f"Welcome to {self.app_name} - Super Admin Account Created"
-        
+
         html_content = f"""
         <html>
         <body>
@@ -121,7 +105,7 @@ class EmailService:
         </body>
         </html>
         """
-        
+
         text_content = f"""
         Welcome to {self.app_name}!
         
@@ -150,28 +134,23 @@ class EmailService:
         Best regards,
         The {self.app_name} Team
         """
-        
+
         return self.send_email(to_email, subject, html_content, text_content)
-    
-    def send_password_reset_email(
-        self,
-        to_email: str,
-        first_name: str,
-        reset_url: str
-    ) -> bool:
+
+    def send_password_reset_email(self, to_email: str, first_name: str, reset_url: str) -> bool:
         """
         Send password reset email to admin
-        
+
         Args:
             to_email: Admin email address
             first_name: Admin's first name
             reset_url: Password reset URL
-            
+
         Returns:
             True if email sent successfully, False otherwise
         """
         subject = f"{self.app_name} - Password Reset Request"
-        
+
         html_content = f"""
         <html>
         <body>
@@ -191,7 +170,7 @@ class EmailService:
         </body>
         </html>
         """
-        
+
         text_content = f"""
         Password Reset Request
         
@@ -209,9 +188,9 @@ class EmailService:
         Best regards,
         The {self.app_name} Team
         """
-        
+
         return self.send_email(to_email, subject, html_content, text_content)
 
 
 # Create global instance
-email_service = EmailService() 
+email_service = EmailService()

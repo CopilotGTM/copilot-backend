@@ -40,7 +40,7 @@ async def create_organization(
         current_user = auth_data.get("user")
         if not current_user or not current_user.is_admin:
             return Response.forbidden_error_response("Super admin access required")
-        
+
         # Prepare organization details
         org_details = {}
         if country:
@@ -59,7 +59,7 @@ async def create_organization(
             org_details["summary"] = summary
         if logo_url:
             org_details["logo_url"] = logo_url
-        
+
         # Create organization
         result = organization_management_service.create_organization(
             organisation_name=organisation_name,
@@ -67,14 +67,14 @@ async def create_organization(
             admin_first_name=admin_first_name,
             admin_last_name=admin_last_name,
             session=master_session,
-            **org_details
+            **org_details,
         )
-        
+
         organization = result["organization"]
         admin_user = result["admin_user"]
-        
+
         logger.info(f"Created organization: {organization.organisation_id} by admin: {current_user.user_id}")
-        
+
         return Response.success_response(
             "Organization created successfully",
             {
@@ -84,18 +84,18 @@ async def create_organization(
                     "schema_name": organization.schema_name,
                     "role_name": organization.role_name,
                     "is_active": organization.is_active,
-                    "created_at": organization.created_at.isoformat()
+                    "created_at": organization.created_at.isoformat(),
                 },
                 "admin_user": {
                     "user_id": str(admin_user.user_id),
                     "email": admin_user.email,
                     "first_name": admin_user.first_name,
                     "last_name": admin_user.last_name,
-                    "organisation_role": admin_user.organisation_role
-                }
-            }
+                    "organisation_role": admin_user.organisation_role,
+                },
+            },
         )
-        
+
     except Exception as e:
         logger.error(f"Error creating organization: {str(e)}")
         return Response.internal_server_error_response("Failed to create organization")
@@ -115,28 +115,27 @@ async def list_organizations(
         current_user = auth_data.get("user")
         if not current_user or not current_user.is_admin:
             return Response.forbidden_error_response("Admin access required")
-        
+
         organizations = organization_management_service.list_organizations(master_session)
-        
+
         org_list = []
         for org in organizations:
-            org_list.append({
-                "organisation_id": str(org.organisation_id),
-                "organisation_name": org.organisation_name,
-                "schema_name": org.schema_name,
-                "role_name": org.role_name,
-                "is_active": org.is_active,
-                "country": org.country,
-                "sales_team_size": org.sales_team_size,
-                "created_at": org.created_at.isoformat(),
-                "updated_at": org.updated_at.isoformat()
-            })
-        
-        return Response.success_response(
-            "Organizations retrieved successfully",
-            {"organizations": org_list}
-        )
-        
+            org_list.append(
+                {
+                    "organisation_id": str(org.organisation_id),
+                    "organisation_name": org.organisation_name,
+                    "schema_name": org.schema_name,
+                    "role_name": org.role_name,
+                    "is_active": org.is_active,
+                    "country": org.country,
+                    "sales_team_size": org.sales_team_size,
+                    "created_at": org.created_at.isoformat(),
+                    "updated_at": org.updated_at.isoformat(),
+                }
+            )
+
+        return Response.success_response("Organizations retrieved successfully", {"organizations": org_list})
+
     except Exception as e:
         logger.error(f"Error listing organizations: {str(e)}")
         return Response.internal_server_error_response("Failed to list organizations")
@@ -157,14 +156,12 @@ async def get_organization(
         current_user = auth_data.get("user")
         if not current_user or not current_user.is_admin:
             return Response.forbidden_error_response("Admin access required")
-        
-        organization = organization_management_service.get_organization_by_id(
-            organisation_id, master_session
-        )
-        
+
+        organization = organization_management_service.get_organization_by_id(organisation_id, master_session)
+
         if not organization:
             return Response.not_found_error_response("Organization not found")
-        
+
         return Response.success_response(
             "Organization retrieved successfully",
             {
@@ -182,10 +179,10 @@ async def get_organization(
                 "summary": organization.summary,
                 "logo_url": organization.logo_url,
                 "created_at": organization.created_at.isoformat(),
-                "updated_at": organization.updated_at.isoformat()
-            }
+                "updated_at": organization.updated_at.isoformat(),
+            },
         )
-        
+
     except Exception as e:
         logger.error(f"Error getting organization: {str(e)}")
         return Response.internal_server_error_response("Failed to get organization")
@@ -216,7 +213,7 @@ async def update_organization(
         current_user = auth_data.get("user")
         if not current_user or not current_user.is_admin:
             return Response.forbidden_error_response("Admin access required")
-        
+
         # Prepare updates
         updates = {}
         if organisation_name is not None:
@@ -239,20 +236,18 @@ async def update_organization(
             updates["logo_url"] = logo_url
         if is_active is not None:
             updates["is_active"] = is_active
-        
+
         if not updates:
             return Response.bad_request_error_response("No updates provided")
-        
+
         # Update organization
-        organization = organization_management_service.update_organization(
-            organisation_id, master_session, **updates
-        )
-        
+        organization = organization_management_service.update_organization(organisation_id, master_session, **updates)
+
         if not organization:
             return Response.not_found_error_response("Organization not found")
-        
+
         logger.info(f"Updated organization: {organisation_id} by admin: {current_user.user_id}")
-        
+
         return Response.success_response(
             "Organization updated successfully",
             {
@@ -261,10 +256,10 @@ async def update_organization(
                 "schema_name": organization.schema_name,
                 "role_name": organization.role_name,
                 "is_active": organization.is_active,
-                "updated_at": organization.updated_at.isoformat()
-            }
+                "updated_at": organization.updated_at.isoformat(),
+            },
         )
-        
+
     except Exception as e:
         logger.error(f"Error updating organization: {str(e)}")
         return Response.internal_server_error_response("Failed to update organization")
@@ -285,34 +280,30 @@ async def delete_organization(
         current_user = auth_data.get("user")
         if not current_user or not current_user.is_admin:
             return Response.forbidden_error_response("Super admin access required")
-        
+
         # Get organization details for confirmation
-        organization = organization_management_service.get_organization_by_id(
-            organisation_id, master_session
-        )
-        
+        organization = organization_management_service.get_organization_by_id(organisation_id, master_session)
+
         if not organization:
             return Response.not_found_error_response("Organization not found")
-        
+
         # Delete organization
-        success = organization_management_service.delete_organization(
-            organisation_id, master_session
-        )
-        
+        success = organization_management_service.delete_organization(organisation_id, master_session)
+
         if not success:
             return Response.internal_server_error_response("Failed to delete organization")
-        
+
         logger.info(f"Deleted organization: {organisation_id} by admin: {current_user.user_id}")
-        
+
         return Response.success_response(
             "Organization deleted successfully",
             {
                 "organisation_id": str(organisation_id),
                 "organisation_name": organization.organisation_name,
-                "schema_name": organization.schema_name
-            }
+                "schema_name": organization.schema_name,
+            },
         )
-        
+
     except Exception as e:
         logger.error(f"Error deleting organization: {str(e)}")
         return Response.internal_server_error_response("Failed to delete organization")
@@ -334,34 +325,30 @@ async def run_organization_migrations(
         current_user = auth_data.get("user")
         if not current_user or not current_user.is_admin:
             return Response.forbidden_error_response("Admin access required")
-        
+
         # Get organization
-        organization = organization_management_service.get_organization_by_id(
-            organisation_id, master_session
-        )
-        
+        organization = organization_management_service.get_organization_by_id(organisation_id, master_session)
+
         if not organization:
             return Response.not_found_error_response("Organization not found")
-        
+
         if not organization.schema_name:
             return Response.bad_request_error_response("Organization has no schema")
-        
+
         # Run migrations
-        organization_management_service.run_organization_migrations(
-            organization.schema_name, target_version
-        )
-        
+        organization_management_service.run_organization_migrations(organization.schema_name, target_version)
+
         logger.info(f"Ran migrations for organization: {organisation_id} by admin: {current_user.user_id}")
-        
+
         return Response.success_response(
             "Migrations completed successfully",
             {
                 "organisation_id": str(organisation_id),
                 "schema_name": organization.schema_name,
-                "target_version": target_version
-            }
+                "target_version": target_version,
+            },
         )
-        
+
     except Exception as e:
         logger.error(f"Error running migrations: {str(e)}")
         return Response.internal_server_error_response("Failed to run migrations")
@@ -382,20 +369,17 @@ async def run_master_migrations(
         current_user = auth_data.get("user")
         if not current_user or not current_user.is_admin:
             return Response.forbidden_error_response("Super admin access required")
-        
+
         # Run master migrations
         organization_management_service.run_master_migrations(target_version)
-        
+
         logger.info(f"Ran master migrations by admin: {current_user.user_id}")
-        
+
         return Response.success_response(
             "Master migrations completed successfully",
-            {
-                "target_version": target_version,
-                "admin_user_id": str(current_user.user_id)
-            }
+            {"target_version": target_version, "admin_user_id": str(current_user.user_id)},
         )
-        
+
     except Exception as e:
         logger.error(f"Error running master migrations: {str(e)}")
-        return Response.internal_server_error_response("Failed to run master migrations") 
+        return Response.internal_server_error_response("Failed to run master migrations")

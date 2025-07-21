@@ -1,5 +1,6 @@
 import logging
 
+
 def get_logger():
     logger = logging.getLogger("auth_logger")
     if not logger.hasHandlers():  # Prevent adding handlers multiple times in FastAPI reloads

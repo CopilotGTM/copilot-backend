@@ -90,7 +90,7 @@ def create_fastapi_app():
     fastapp.include_router(technical_deck, prefix="/chats/technical_deck", tags=["technical_deck"])
     fastapp.include_router(select_template, prefix="/chats/technical_deck", tags=["technical_deck", "select_template"])
     fastapp.include_router(rfp__sheet_router, prefix="/chats/rfp_sheet", tags=["rfp sheet", "sheet identification"])
-    
+
     # Admin routers
     fastapp.include_router(admin_auth_router, prefix="/admin/auth", tags=["admin", "authentication"])
     fastapp.include_router(admin_org_router, prefix="/admin/organizations", tags=["admin", "organizations"])

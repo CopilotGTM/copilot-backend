@@ -14,6 +14,7 @@ WEBSOCKET_NAMESPACE = "/websocket/v1"
 RESPONSE_EVENT = "recieve_slide_content"  # Keep as is for compatibility (matches event in websocket handler)
 REDIS_CHANNEL = "websocket_messages"
 
+
 def publish_websocket_message(sid, event, data):
     """Publish websocket message to Redis channel"""
     try:
@@ -24,6 +25,7 @@ def publish_websocket_message(sid, event, data):
     except Exception as e:
         logger.error(f"Error publishing websocket message: {e}")
 
+
 @celery.task(bind=True)
 def generate_slide_outline_task(self, sid, data_json):
     data = json.loads(data_json)
@@ -31,14 +33,14 @@ def generate_slide_outline_task(self, sid, data_json):
     message_id = data.get("message_id")
     user_id = data.get("user_id")
     organisation_id = data.get("organisation_id")
-    logger.info(f"Celery task generate_slide_outline_task started: sid={sid}, session_id={session_id}, message_id={message_id}")
+    logger.info(
+        f"Celery task generate_slide_outline_task started: sid={sid}, session_id={session_id}, message_id={message_id}"
+    )
 
     master_session = next(get_master_session())
     try:
         chat_message = master_session.exec(
-            select(ChatMessage).where(
-                (ChatMessage.session_id == session_id) & (ChatMessage.message_id == message_id)
-            )
+            select(ChatMessage).where((ChatMessage.session_id == session_id) & (ChatMessage.message_id == message_id))
         ).first()
         if not chat_message:
             raise RuntimeError("Chat message not found")

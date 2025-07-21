@@ -8,6 +8,7 @@ from sqlmodel import SQLModel, Field
 from pydantic import EmailStr
 from pydantic import BaseModel
 
+
 def utcnow() -> datetime:
     return datetime.utcnow()
 
@@ -16,9 +17,11 @@ class AdminLoginRequest(SQLModel):
     email: EmailStr
     password: str
 
+
 class AdminPasswordChangeRequest(BaseModel):
     new_password: str
     confirm_password: Optional[str] = None
+
 
 class AdminRole(str, Enum):
     SUPER_ADMIN = "super_admin"
@@ -53,16 +56,16 @@ class SuperAdmin(SQLModel, table=True):
     )
     first_name: str = Field(..., max_length=100)
     last_name: str = Field(..., max_length=100)
-    
+
     # Status and role
     role: AdminRole = Field(default=AdminRole.SUPER_ADMIN)
     status: AdminStatus = Field(default=AdminStatus.PENDING_SETUP)
-    
+
     # Timestamps
     last_login_at: Optional[datetime] = Field(default=None, nullable=True)
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
-    
+
     # Email verification
     email_verified: bool = Field(default=False)
 
@@ -80,8 +83,6 @@ class AdminUpdateRequest(SQLModel):
     status: Optional[AdminStatus] = None
 
 
-
-
 class AdminResponse(SQLModel):
     admin_id: UUID
     supabase_user_id: str
@@ -92,4 +93,4 @@ class AdminResponse(SQLModel):
     status: AdminStatus
     last_login_at: Optional[datetime]
     created_at: datetime
-    email_verified: bool 
+    email_verified: bool

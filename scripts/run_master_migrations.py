@@ -3,7 +3,7 @@ import os
 import sys
 
 # ── so we can import your app code under `src/` ──
-SCRIPT_DIR   = os.path.dirname(os.path.realpath(__file__))
+SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
 sys.path.insert(0, PROJECT_ROOT)
 
@@ -25,34 +25,24 @@ def get_database_url():
     port = os.getenv("DATABASE_PORT", "5432")
     name = os.getenv("DATABASE_NAME", "postgres")
     user = os.getenv("DATABASE_USER", "postgres")
-    pwd  = os.getenv("DATABASE_PASSWORD", "")
-    enc  = urllib.parse.quote_plus(pwd)
+    pwd = os.getenv("DATABASE_PASSWORD", "")
+    enc = urllib.parse.quote_plus(pwd)
     return os.getenv("DATABASE_URL") or f"postgresql://{user}:{enc}@{host}:{port}/{name}"
 
 
 def parse_args():
-    p = argparse.ArgumentParser(
-        description="Run master migrations (organizations, users, etc.)"
-    )
-    p.add_argument(
-        "--revision",
-        default="head",
-        help="Revision to upgrade to (default: head)"
-    )
-    p.add_argument(
-        "--downgrade",
-        action="store_true",
-        help="Downgrade instead of upgrade"
-    )
+    p = argparse.ArgumentParser(description="Run master migrations (organizations, users, etc.)")
+    p.add_argument("--revision", default="head", help="Revision to upgrade to (default: head)")
+    p.add_argument("--downgrade", action="store_true", help="Downgrade instead of upgrade")
     return p.parse_args()
 
 
 def run_master_migrations(revision="head", downgrade=False):
     """Run master migrations using the master_migrations directory."""
     cfg = Config("migrations/master_migrations/alembic.ini")
-    
+
     print(f"-> Running master migrations to revision '{revision}'...")
-    
+
     if downgrade:
         command.downgrade(cfg, revision)
         print(f"[OK] Master migrations downgraded to '{revision}'")
@@ -65,11 +55,11 @@ def main():
     load_env()
     args = parse_args()
     print(f"================{args}================")
-    
+
     # Verify database connection
     db_url = get_database_url()
     engine = create_engine(db_url, future=True)
-    
+
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
@@ -77,10 +67,10 @@ def main():
     except Exception as e:
         print(f"[ERROR] Database connection failed: {e}")
         sys.exit(1)
-    
+
     # Run master migrations
     run_master_migrations(args.revision, args.downgrade)
-    
+
     print("[DONE] Master migrations completed successfully!")
 
 

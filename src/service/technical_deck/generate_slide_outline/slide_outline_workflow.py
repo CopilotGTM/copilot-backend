@@ -65,11 +65,7 @@ class SlideContentGenerator(Workflow):
         story_narration_outline = story_narration.content
         logger.info(f"{story_narration_outline}")
 
-        yield RunResponse(
-            content=story_narration_outline,
-            status="RUNNING",
-            content_type="SOLUTION_NARRATION"
-        )
+        yield RunResponse(content=story_narration_outline, status="RUNNING", content_type="SOLUTION_NARRATION")
 
         # 2) Slide Outline Generation
         logger.info("Generating Slide Outline")
@@ -86,11 +82,7 @@ class SlideContentGenerator(Workflow):
                 "slide_title": i.slide_title,
                 "slide_content": i.description,
             }
-            yield RunResponse(
-                content=output_format,
-                status="RUNNING",
-                content_type="SOLUTION_OUTLINE"
-            )
+            yield RunResponse(content=output_format, status="RUNNING", content_type="SOLUTION_OUTLINE")
 
 
 # async def main():

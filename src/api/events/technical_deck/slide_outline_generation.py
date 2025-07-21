@@ -57,7 +57,7 @@ async def generate_slide_content(
         # Extract identifiers from request payload
         chat_id = data.get("session_id")
         system_message_id = data.get("message_id")
-        
+
         # Prepare the task payload for Celery
         task_data = {
             "session_id": chat_id,

@@ -30,10 +30,11 @@ def get_redis_client() -> redis.Redis:
         retry_on_timeout=True,
         health_check_interval=30,
         ssl=ssl_enabled,
-        socket_keepalive=True
+        socket_keepalive=True,
     )
     redis_client.ping()
     return redis_client
+
 
 async def store_socket_connection(sid, environ):
     """

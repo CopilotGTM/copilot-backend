@@ -9,7 +9,7 @@ from src.domain.models.db_models import User
 from src.infra.utils.app_state import fastapp
 from src.infra.utils.logger import get_logger
 from src.infra.utils.database import get_master_session
-from src.infra.utils.supabase_auth import supabase_auth
+from src.infra.auth.supabase_auth import supabase_auth
 
 logger = get_logger()
 
@@ -52,17 +52,13 @@ class Authentication:
 
             # Get user from Supabase token
             user = supabase_auth.get_user_from_token(access_token, master_session)
-            
+
             if not user:
                 logger.warning("User not found or token invalid")
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User not found or token invalid")
 
             logger.info("HTTP session verified successfully for user_id=%s", user.user_id)
-            return {
-                "user_id": str(user.user_id), 
-                "organisation_id": str(user.organisation_id),
-                "user": user
-            }
+            return {"user_id": str(user.user_id), "organisation_id": str(user.organisation_id), "user": user}
 
         except HTTPException:
             # Re-raise HTTP exceptions
@@ -79,21 +75,21 @@ class Authentication:
         try:
             # Verify the token with Supabase
             payload = supabase_auth.verify_token(token)
-            
+
             # Extract user information
             supabase_user_id = payload.get("sub")
             if not supabase_user_id:
                 logger.warning("No user ID found in WebSocket token")
                 raise ConnectionRefusedError("Invalid token payload")
-            
+
             # For WebSocket, we'll return the basic user info
             # You might want to add a database session here to get full user details
             return {
                 "supabase_user_id": supabase_user_id,
                 "user_id": payload.get("user_id"),  # If you store this in token
-                "organisation_id": payload.get("organisation_id")  # If you store this in token
+                "organisation_id": payload.get("organisation_id"),  # If you store this in token
             }
-            
+
         except HTTPException as e:
             logger.error("WebSocket auth failed: %s", str(e))
             raise ConnectionRefusedError("Unauthorized")

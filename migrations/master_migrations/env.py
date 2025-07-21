@@ -13,6 +13,7 @@ load_dotenv()
 # (so that SQLModel.metadata is populated)
 from src.domain.models.db_models import Organisation, User
 from src.domain.models.admin_models import SuperAdmin
+
 # (and import any new model modules here)
 
 # this is the Alembic Config object
@@ -25,10 +26,7 @@ DATABASE_NAME = os.getenv("DATABASE_NAME", "postgres")
 DATABASE_USER = os.getenv("DATABASE_USER", "postgres")
 DATABASE_PASSWORD = os.getenv("DATABASE_PASSWORD", "")
 encoded_password = urllib.parse.quote_plus(DATABASE_PASSWORD)
-db_url = (
-    f"postgresql://{DATABASE_USER}:{encoded_password}"
-    f"@{DATABASE_HOST}:{DATABASE_PORT}/{DATABASE_NAME}"
-)
+db_url = f"postgresql://{DATABASE_USER}:{encoded_password}" f"@{DATABASE_HOST}:{DATABASE_PORT}/{DATABASE_NAME}"
 # Alembic requires % to be escaped as %%
 config.set_main_option("sqlalchemy.url", db_url.replace("%", "%%"))
 
@@ -42,6 +40,7 @@ target_metadata = SQLModel.metadata
 # grab the --x schema=org_id argument (if any)
 x_args = context.get_x_argument(as_dictionary=True)
 target_schema = x_args.get("schema")  # e.g. "org_123"
+
 
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode (no DB connection)."""

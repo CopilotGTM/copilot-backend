@@ -87,7 +87,7 @@ class ChatMessage(SQLModel, table=True):
         default_factory=dict,
     )
 
-    #timestamp: datetime = Field(default_factory=datetime.utcnow, index=True)
+    # timestamp: datetime = Field(default_factory=datetime.utcnow, index=True)
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
 
