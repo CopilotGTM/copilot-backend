@@ -27,8 +27,8 @@ from src.api.routers.technical_deck.get_technical_deck import technical_deck
 from src.api.routers.technical_deck.select_template import select_template
 from src.api.routers.rfp_sheet.sheet_identification import rfp__sheet_router
 from src.api.routers.auth_handler import auth_router
-from src.api.routers.admin.organizations import admin_org_router
-from src.api.routers.admin.migrations import migration_router
+from src.api.routers.admin.organizations_handler import admin_org_router
+from src.api.routers.admin.migrations_handler import migration_router
 from src.api.routers.admin.admin_auth_handler import router as admin_auth_router
 
 from src.api.events import chat_message_handler

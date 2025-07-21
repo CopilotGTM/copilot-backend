@@ -113,7 +113,7 @@ class MigrationSystemTester:
 
         try:
             # Test migration router import
-            import src.api.routers.admin.migrations
+            import src.api.routers.admin.migrations_handler
 
             migration_import = True
         except Exception as e:
