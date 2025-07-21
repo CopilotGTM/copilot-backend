@@ -14,13 +14,39 @@ logger = get_logger()
 
 class SupabaseAuth:
     """Supabase authentication utility"""
-    
+
     def __init__(self):
         self.supabase_url = supabase_config.SUPABASE_URL
         self.supabase_anon_key = supabase_config.SUPABASE_ANON_KEY
         self.supabase_service_role_key = supabase_config.SUPABASE_SERVICE_ROLE_KEY
         self.jwt_secret = supabase_config.SUPABASE_JWT_SECRET
-    
+
+    def verify_email_password(self, email: str, password: str) -> Dict[str, Any]:
+        """
+        Verify email and password with Supabase Auth (Password Grant).
+        Returns the Supabase response (should contain access_token on success).
+        """
+        try:
+            url = f"{self.supabase_url}/auth/v1/token?grant_type=password"
+            headers = {
+                "apikey": self.supabase_anon_key,
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "email": email,
+                "password": password
+            }
+            response = requests.post(url, headers=headers, json=payload)
+            if response.status_code == 200:
+                logger.info("Supabase password verification succeeded for %s", email)
+                return response.json()
+            else:
+                logger.warning("Supabase password verification failed for %s: %s", email, response.text)
+                return {}
+        except Exception as e:
+            logger.error("Error verifying password with Supabase: %s", str(e))
+            return {}
+
     def verify_token(self, token: str) -> Dict[str, Any]:
         """
         Verify a Supabase JWT token and return the payload.
@@ -183,9 +209,78 @@ class SupabaseAuth:
                 return None
                 
         except Exception as e:
-            logger.error("Error getting user info from Supabase: %s", str(e))
+            logger.error(f"Error getting user info from Supabase: {str(e)}")
             return None
+
+    def get_user_by_id(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get user information from Supabase by user ID using the service role.
+        
+        Args:
+            user_id: Supabase user ID
+            
+        Returns:
+            User information from Supabase or None if failed
+        """
+        try:
+            headers = {
+                "Authorization": f"Bearer {self.supabase_service_role_key}",
+                "apikey": self.supabase_service_role_key
+            }
+            
+            response = requests.get(
+                f"{self.supabase_url}/auth/v1/admin/users/{user_id}",
+                headers=headers
+            )
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logger.error(f"Failed to get user info from Supabase for user_id {user_id}: {response.text}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error getting user info from Supabase for user_id {user_id}: {str(e)}")
+            return None
+
+    def update_user_password(self, user_id: str, new_password: str) -> bool:
+        """
+        Update a user's password in Supabase using the service role.
+        
+        Args:
+            user_id: Supabase user ID
+            new_password: The new password
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            headers = {
+                "Authorization": f"Bearer {self.supabase_service_role_key}",
+                "apikey": self.supabase_service_role_key
+            }
+            
+            payload = {
+                "password": new_password
+            }
+            
+            response = requests.put(
+                f"{self.supabase_url}/auth/v1/admin/users/{user_id}",
+                headers=headers,
+                json=payload
+            )
+            
+            if response.status_code == 200:
+                logger.info(f"Successfully updated password for user_id {user_id}")
+                return True
+            else:
+                logger.error(f"Failed to update password for user_id {user_id}: {response.text}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error updating password for user_id {user_id}: {str(e)}")
+            return False
 
 
 # Create a global instance
-supabase_auth = SupabaseAuth() 
+supabase_auth = SupabaseAuth()

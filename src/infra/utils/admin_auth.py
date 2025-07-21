@@ -4,7 +4,7 @@ import string
 from datetime import datetime
 from typing import Optional, Dict, Any
 from uuid import UUID
-from fastapi import HTTPException, status, Depends
+from fastapi import HTTPException, status, Depends, Request
 from sqlmodel import Session, select
 import requests
 
@@ -25,6 +25,71 @@ class AdminAuth:
         self.app_url = os.getenv("APP_URL", "http://localhost:3000")
         self.supabase_url = supabase_config.SUPABASE_URL
         self.supabase_service_role_key = supabase_config.SUPABASE_SERVICE_ROLE_KEY
+
+    async def __call__(
+        self,
+        request: Request,
+        session: Session = Depends(get_master_session)
+    ) -> SuperAdmin:
+        """
+        FastAPI dependency to get current authenticated admin from Supabase token
+        
+        Args:
+            request: The request object
+            session: Database session
+            
+        Returns:
+            SuperAdmin object
+            
+        Raises:
+            HTTPException: If not authenticated
+        """
+        logger.info("Authenticating admin user")
+        authorization: str = request.headers.get("Authorization")
+        if not authorization:
+            logger.warning("Authorization header missing")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authorization header missing"
+            )
+
+        token_type, _, token = authorization.partition(" ")
+        if token_type.lower() != "bearer" or not token:
+            logger.warning("Invalid token format")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token format"
+            )
+
+        try:
+            logger.info("Getting user info from Supabase")
+            user_response = supabase_auth.get_supabase_user_info(token)
+            if not user_response:
+                logger.warning("Invalid or expired token from Supabase")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid or expired token"
+                )
+            
+            supabase_user_id = user_response.get("id")
+            logger.info(f"Getting admin by supabase_user_id: {supabase_user_id}")
+            admin = self.get_admin_by_supabase_id(supabase_user_id, session)
+            
+            if not admin:
+                logger.warning(f"Admin not found for supabase_user_id: {supabase_user_id}")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Admin not found for the given token"
+                )
+            
+            logger.info(f"Admin authenticated successfully: {admin.email}")
+            return admin
+        except Exception as e:
+            logger.error(f"Authentication error: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Could not validate credentials"
+            )
     
     def generate_temp_password(self, length: int = 12) -> str:
         """
@@ -36,9 +101,12 @@ class AdminAuth:
         Returns:
             Generated temporary password
         """
+        logger.info(f"Generating temporary password of length {length}")
         # Use a mix of letters, digits, and symbols
         characters = string.ascii_letters + string.digits + "!@#$%^&*"
-        return ''.join(secrets.choice(characters) for _ in range(length))
+        password = ''.join(secrets.choice(characters) for _ in range(length))
+        logger.info("Temporary password generated")
+        return password
     
     def create_supabase_user(
         self,
@@ -59,6 +127,7 @@ class AdminAuth:
         Returns:
             Supabase user ID if successful, None otherwise
         """
+        logger.info(f"Creating Supabase user for email: {email}")
         try:
             headers = {
                 "apikey": self.supabase_service_role_key,
@@ -78,6 +147,7 @@ class AdminAuth:
                 }
             }
             
+            logger.info("Sending request to create Supabase user")
             response = requests.post(
                 f"{self.supabase_url}/auth/v1/admin/users",
                 headers=headers,
@@ -111,6 +181,7 @@ class AdminAuth:
         Returns:
             True if successful, False otherwise
         """
+        logger.info(f"Updating Supabase user metadata for user: {supabase_user_id}")
         try:
             headers = {
                 "apikey": self.supabase_service_role_key,
@@ -118,6 +189,7 @@ class AdminAuth:
                 "Content-Type": "application/json"
             }
             
+            logger.info("Sending request to update Supabase user metadata")
             response = requests.put(
                 f"{self.supabase_url}/auth/v1/admin/users/{supabase_user_id}",
                 headers=headers,
@@ -157,21 +229,26 @@ class AdminAuth:
         Raises:
             HTTPException: If admin already exists
         """
+        logger.info(f"Creating super admin for email: {email}")
         # Check if admin already exists
+        logger.info(f"Checking for existing admin with email: {email}")
         existing_admin = session.exec(
             select(SuperAdmin).where(SuperAdmin.email == email)
         ).one_or_none()
         
         if existing_admin:
+            logger.warning(f"Admin with email {email} already exists")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Admin with this email already exists"
             )
         
         # Generate temporary password
+        logger.info("Generating temporary password for new admin")
         temp_password = self.generate_temp_password()
         
         # Create user in Supabase auth
+        logger.info("Creating user in Supabase for new admin")
         supabase_user_id = self.create_supabase_user(
             email,
             temp_password,
@@ -180,12 +257,14 @@ class AdminAuth:
         )
         
         if not supabase_user_id:
+            logger.error("Failed to create user in Supabase")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to create user in authentication system"
             )
         
         # Create admin in database
+        logger.info(f"Creating admin record in database for supabase_user_id: {supabase_user_id}")
         admin = SuperAdmin(
             supabase_user_id=supabase_user_id,
             email=email,
@@ -217,9 +296,15 @@ class AdminAuth:
         Returns:
             SuperAdmin object if found, None otherwise
         """
-        return session.exec(
+        logger.info(f"Getting admin by Supabase ID: {supabase_user_id}")
+        admin = session.exec(
             select(SuperAdmin).where(SuperAdmin.supabase_user_id == supabase_user_id)
         ).one_or_none()
+        if admin:
+            logger.info(f"Found admin: {admin.admin_id}")
+        else:
+            logger.info("Admin not found")
+        return admin
     
     def get_admin_by_email(
         self,
@@ -236,9 +321,15 @@ class AdminAuth:
         Returns:
             SuperAdmin object if found, None otherwise
         """
-        return session.exec(
+        logger.info(f"Getting admin by email: {email}")
+        admin = session.exec(
             select(SuperAdmin).where(SuperAdmin.email == email)
         ).one_or_none()
+        if admin:
+            logger.info(f"Found admin: {admin.admin_id}")
+        else:
+            logger.info("Admin not found")
+        return admin
     
     def update_admin_login_time(
         self,
@@ -255,6 +346,7 @@ class AdminAuth:
         Returns:
             True if successful, False otherwise
         """
+        logger.info(f"Updating last login time for admin: {admin_id}")
         try:
             admin = session.exec(
                 select(SuperAdmin).where(SuperAdmin.admin_id == admin_id)
@@ -263,8 +355,10 @@ class AdminAuth:
             if admin:
                 admin.last_login_at = datetime.utcnow()
                 session.commit()
+                logger.info(f"Updated last login time for admin: {admin_id}")
                 return True
             
+            logger.warning(f"Admin not found for login time update: {admin_id}")
             return False
         except Exception as e:
             logger.error(f"Error updating admin login time: {str(e)}")
@@ -287,6 +381,7 @@ class AdminAuth:
         Returns:
             True if successful, False otherwise
         """
+        logger.info(f"Updating status for admin: {admin_id} to {status.value}")
         try:
             admin = session.exec(
                 select(SuperAdmin).where(SuperAdmin.admin_id == admin_id)
@@ -295,8 +390,10 @@ class AdminAuth:
             if admin:
                 admin.status = status
                 session.commit()
+                logger.info(f"Updated status for admin: {admin_id}")
                 return True
             
+            logger.warning(f"Admin not found for status update: {admin_id}")
             return False
         except Exception as e:
             logger.error(f"Error updating admin status: {str(e)}")
@@ -317,8 +414,10 @@ class AdminAuth:
         Returns:
             True if successful, False otherwise
         """
+        logger.info(f"Marking password changed for supabase_user_id: {supabase_user_id}")
         try:
             # Update Supabase user metadata
+            logger.info("Updating Supabase user metadata for password change")
             metadata_update = {
                 "requires_password_change": False,
                 "password_changed_at": datetime.utcnow().isoformat()
@@ -333,6 +432,7 @@ class AdminAuth:
                 logger.warning("Failed to update Supabase user metadata")
             
             # Update admin status in database
+            logger.info("Updating admin status to ACTIVE")
             admin = self.get_admin_by_supabase_id(supabase_user_id, session)
             if admin:
                 admin.status = AdminStatus.ACTIVE
@@ -340,6 +440,7 @@ class AdminAuth:
                 logger.info(f"Marked password changed for admin: {admin.admin_id}")
                 return True
             
+            logger.warning(f"Admin not found for password change marking: {supabase_user_id}")
             return False
         except Exception as e:
             logger.error(f"Error marking password changed: {str(e)}")
@@ -358,12 +459,14 @@ class AdminAuth:
         Returns:
             True if password change required, False otherwise
         """
+        logger.info(f"Checking if password change is required for supabase_user_id: {supabase_user_id}")
         try:
             headers = {
                 "apikey": self.supabase_service_role_key,
                 "Authorization": f"Bearer {self.supabase_service_role_key}"
             }
             
+            logger.info("Getting user info from Supabase for password change check")
             response = requests.get(
                 f"{self.supabase_url}/auth/v1/admin/users/{supabase_user_id}",
                 headers=headers
@@ -372,7 +475,9 @@ class AdminAuth:
             if response.status_code == 200:
                 user_info = response.json()
                 user_metadata = user_info.get("user_metadata", {})
-                return user_metadata.get("requires_password_change", False)
+                requires_change = user_metadata.get("requires_password_change", False)
+                logger.info(f"Password change required: {requires_change}")
+                return requires_change
             else:
                 logger.error(f"Failed to get user info: {response.text}")
                 return False
@@ -384,27 +489,3 @@ class AdminAuth:
 
 # Create global instance
 admin_auth = AdminAuth()
-
-
-# FastAPI dependency for admin authentication
-async def get_current_admin(
-    session: Session = Depends(get_master_session)
-) -> SuperAdmin:
-    """
-    FastAPI dependency to get current authenticated admin from Supabase token
-    
-    Args:
-        session: Database session
-        
-    Returns:
-        SuperAdmin object
-        
-    Raises:
-        HTTPException: If not authenticated
-    """
-    # This would typically get the token from the request
-    # For now, we'll implement this in the router
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Not implemented yet"
-    ) 

@@ -6,11 +6,19 @@ from enum import Enum
 
 from sqlmodel import SQLModel, Field
 from pydantic import EmailStr
-
+from pydantic import BaseModel
 
 def utcnow() -> datetime:
     return datetime.utcnow()
 
+
+class AdminLoginRequest(SQLModel):
+    email: EmailStr
+    password: str
+
+class AdminPasswordChangeRequest(BaseModel):
+    new_password: str
+    confirm_password: Optional[str] = None
 
 class AdminRole(str, Enum):
     SUPER_ADMIN = "super_admin"
@@ -72,9 +80,6 @@ class AdminUpdateRequest(SQLModel):
     status: Optional[AdminStatus] = None
 
 
-class AdminLoginRequest(SQLModel):
-    email: EmailStr
-    password: str
 
 
 class AdminResponse(SQLModel):
