@@ -1,7 +1,7 @@
 from typing import Optional
 from datetime import datetime
 from uuid import UUID
-
+import logging
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlmodel import Session, select
 
@@ -22,7 +22,7 @@ from src.infra.utils.logger import get_logger
 from src.api.utils.http_response import Response
 
 
-logger = get_logger()
+logger = get_logger("admin_auth_handler")
 router = APIRouter()
 
 
@@ -49,10 +49,7 @@ async def admin_login(
         statement = select(SuperAdmin).where(SuperAdmin.email == login_request.email)
         result = master_session.exec(statement)
         super_admin = result.first()
-        logger.info(
-            "User found in database: %s",
-            super_admin.email if super_admin else "None",
-        )
+        logger.info(f"User found in database: {super_admin.email if super_admin else 'None'}")
 
         if not super_admin:
             logger.warning(f"Super admin not found for email: {login_request.email}")
@@ -63,7 +60,7 @@ async def admin_login(
             email=login_request.email, password=login_request.password
         )
 
-        logger.info("Supabase response keys: %s", supabase_response)
+        logger.info(f"Supabase response: {supabase_response}")
         access_token = supabase_response.get("access_token")
         refresh_token = supabase_response.get("refresh_token")
 
