@@ -1,34 +1,5 @@
 # User Authentication Service
 
-A FastAPI-based service for user authentication, featuring local development and production-ready configurations, as well as Celery integration for background tasks.
-
----
-
-## Table of Contents
-
-- [Features](#features)
-- [Prerequisites](#prerequisites)
-- [Setup & Installation](#setup--installation)
-- [Development](#development)
-- [Production](#production)
-- [Code Formatting](#code-formatting)
-
----
-
-## Features
-
-- **Super Admin System**: Secure admin authentication with email notifications
-- **Multi-Tenant Architecture**: Organization-based user management
-- **AI-Powered Chat**: Intelligent conversations with document search
-- **Technical Deck Generation**: Automated presentation creation
-- **RFP Processing**: Intelligent document analysis and response generation
-- **User authentication APIs** built with FastAPI
-- **Asynchronous background processing** with Celery
-- **Easy local development** with hot-reload
-- **Production-ready configuration**
-
----
-
 ## Prerequisites
 
 - Python 3.8+
@@ -93,40 +64,3 @@ A FastAPI-based service for user authentication, featuring local development and
      email: 'admin@yourcompany.com',
      password: 'temporary_password'
    })
-   ```
-
----
-
-## Development
-
-To run the FastAPI app and Celery worker locally with hot-reload and debug logging:
-
-```bash
-# Start FastAPI server (with reload and debug logging)
-uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload --log-level debug
-
-# In a separate terminal, start Celery worker
-celery -A celery_app worker --loglevel=info -P solo
-```
-
----
-
-## Production
-
-To run the application in production mode (with multiple workers):
-
-```bash
-uvicorn main:app --host 0.0.0.0 --port 8000 --workers $(nproc) --reload
-```
-
----
-
-## Code Formatting
-
-Before pushing code, format it using [Black](https://black.readthedocs.io/en/stable/):
-
-```bash
-black . -l 120
-```
-
----

@@ -25,7 +25,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from src.infra.utils.logger import get_logger
-from scripts.admin.init_super_admin import execute_create_super_admin
 
 logger = get_logger()
 
@@ -45,14 +44,14 @@ def run_command(command: str, description: str) -> bool:
     logger.debug(f"Command: {command}")
 
     try:
-        result = subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
+        # By not capturing output, the subprocess's logs will be streamed to the console.
+        subprocess.run(command, shell=True, check=True)
         logger.info(f"✅ {description} completed successfully")
-        if result.stdout:
-            logger.debug(f"Output: {result.stdout}")
         return True
     except subprocess.CalledProcessError as e:
         logger.error(f"❌ {description} failed")
-        logger.error(f"Error: {e.stderr}")
+        # Stderr is not captured, it's printed directly to the console.
+        logger.debug(f"Subprocess failed with exit code {e.returncode}")
         return False
 
 
@@ -88,17 +87,17 @@ def run_master_migrations() -> bool:
     return run_command("python scripts/run_master_migrations.py", "Master database migrations")
 
 
-# def initialize_super_admin() -> bool:
-#     """
-#     Initialize super admin account
+def initialize_super_admin() -> bool:
+    """
+    Initialize super admin account
 
-#     Returns:
-#         True if successful, False otherwise
-#     """
-#     return run_command(
-#         "python scripts/admin/init_super_admin.py",
-#         "Super admin initialization"
-#     )
+    Returns:
+        True if successful, False otherwise
+    """
+    return run_command(
+        "python scripts/admin/init_super_admin.py",
+        "Super admin initialization"
+    )
 
 
 def main():
@@ -121,7 +120,10 @@ def main():
         sys.exit(1)
 
     # Step 2: Initialize super admin
-    execute_create_super_admin()
+    if not initialize_super_admin():
+        logger.error("❌ Super admin initialization failed")
+        sys.exit(1)
+    
 
     logger.info("🎉 Deployment completed successfully!")
 
