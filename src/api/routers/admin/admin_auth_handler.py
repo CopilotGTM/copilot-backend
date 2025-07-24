@@ -17,6 +17,8 @@ from src.domain.models.admin_models import (
     SuperAdmin,
     AdminRefreshTokenRequest,
     AdminRefreshTokenResponse,
+    AdminForgotPasswordRequest,
+    AdminResetPasswordRequest,
 )
 from src.infra.utils.database import get_master_session
 from src.infra.auth.admin_auth import admin_auth
@@ -267,3 +269,87 @@ async def refresh_token(refresh_request: AdminRefreshTokenRequest):
             exc_info=True,
         )
         return Response.internal_server_error_response("Token refresh failed")
+
+@router.post("/forgot-password", tags=["admin_auth"])
+async def forgot_password(
+    forgot_password_request: AdminForgotPasswordRequest,
+    master_session: Session = Depends(get_master_session),
+):
+    """
+    Forgot password endpoint for Super Admin.
+    Accepts an email address, verifies if the user exists, and if so,
+    triggers Supabase to send a password reset email.
+    """
+    try:
+        # Fetch super admin by email to verify existence
+        statement = select(SuperAdmin).where(SuperAdmin.email == forgot_password_request.email)
+        result = master_session.exec(statement)
+        super_admin = result.first()
+
+        if not super_admin:
+            logger.warning(f"Password reset requested for non-existent user: {forgot_password_request.email}")
+            # Return a generic success response to avoid user enumeration
+            return {"message": "If an account with this email exists, a password reset link has been sent."}
+
+        # Generate a password reset link
+        reset_link = supabase_auth.generate_password_reset_link(
+            user_id=super_admin.supabase_user_id,
+            email=super_admin.email,
+            redirect_to=forgot_password_request.redirect_to,
+        )
+        logger.info(f"Generated password reset link for: {forgot_password_request.email}")
+        if not reset_link:
+            logger.error(f"Failed to generate password reset link for: {forgot_password_request.email}")
+            return Response.internal_server_error_response(
+                message="Failed to generate password reset link", data=None
+            )
+        logger.info(f"Password reset link generated for user: {super_admin.email}")
+
+        # Send the password reset email using the email service
+        email_sent = email_service.send_password_reset_email(
+            to_email=super_admin.email,
+            first_name=super_admin.first_name,
+            reset_url=reset_link,
+        )
+
+        if not email_sent:
+            logger.error(f"Failed to send password reset email for: {forgot_password_request.email}")
+            return Response.internal_server_error_response(message="Failed to send password reset email", data=None)
+
+        return {"message": "If an account with this email exists, a password reset link has been sent."}
+
+    except Exception as e:
+        logger.error(
+            "Error during forgot password request for email %s: %s",
+            forgot_password_request.email,
+            str(e),
+            exc_info=True,
+        )
+        return Response.internal_server_error_response(message="Forgot password request failed", data=None)
+
+@router.post("/reset-password", tags=["admin_auth"])
+async def reset_password(
+    reset_password_request: AdminResetPasswordRequest,
+):
+    """
+    Reset password endpoint for Super Admin.
+    Accepts a recovery token and a new password, and updates the user's password in Supabase.
+    """
+    try:
+        password_reset = supabase_auth.reset_password_with_token(
+            token=reset_password_request.token,
+            new_password=reset_password_request.new_password,
+        )
+
+        if not password_reset:
+            return Response.bad_request_error_response("Invalid or expired token.")
+
+        return {"message": "Password has been reset successfully."}
+
+    except Exception as e:
+        logger.error(
+            "Error during password reset: %s",
+            str(e),
+            exc_info=True,
+        )
+        return Response.internal_server_error_response(message="Password reset failed", data=None)

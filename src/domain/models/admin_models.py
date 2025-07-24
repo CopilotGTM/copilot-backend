@@ -28,9 +28,22 @@ class AdminFirstTimePasswordChangeRequest(BaseModel):
     confirm_password: Optional[str] = None
     session_token: Optional[str] = None
 
+class AdminForgotPasswordRequest(BaseModel):
+    email: EmailStr
+    redirect_to: Optional[str] = None
 
 class AdminRefreshTokenRequest(BaseModel):
     refresh_token: str
+
+
+class AdminResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+
+
+class AdminResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
 
 
 class AdminRole(str, Enum):

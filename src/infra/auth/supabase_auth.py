@@ -293,6 +293,115 @@ class SupabaseAuth:
             logger.error(f"Error signing out user_id {user_id}: {str(e)}")
             return False
 
+    def reset_password_with_token(self, token: str, new_password: str) -> bool:
+        """
+        Reset a user's password using a recovery token.
+
+        Args:
+            token: The recovery token from the password reset email.
+            new_password: The new password.
+
+        Returns:
+            True if successful, False otherwise.
+        """
+        try:
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "apikey": self.supabase_anon_key,
+            }
+
+            payload = {"password": new_password}
+
+            response = requests.put(f"{self.supabase_url}/auth/v1/user", headers=headers, json=payload)
+
+            if response.status_code == 200:
+                logger.info(f"Successfully reset password for user associated with the token.")
+                return True
+            else:
+                logger.error(f"Failed to reset password: {response.text}")
+                return False
+
+        except Exception as e:
+            logger.error(f"Error resetting password: {str(e)}")
+            return False
+
+    def send_password_reset_email(self, email: str, redirect_to: str = None) -> bool:
+        """
+        Send a password reset email to the user.
+
+        Args:
+            email: The user's email address
+            redirect_to: The URL to redirect to after the user clicks the link in the email.
+
+        Returns:
+            True if the email was sent successfully, False otherwise
+        """
+        try:
+            headers = {
+                "apikey": self.supabase_anon_key,
+                "Content-Type": "application/json",
+            }
+            payload = {"email": email}
+            if redirect_to:
+                payload["options"] = {"redirect_to": redirect_to}
+                
+            response = requests.post(
+                f"{self.supabase_url}/auth/v1/recover", headers=headers, json=payload
+            )
+
+            if response.status_code == 200:
+                logger.info(f"Successfully sent password reset email to {email}")
+                return True
+            else:
+                logger.error(
+                    f"Failed to send password reset email to {email}: {response.text}"
+                )
+                return False
+
+        except Exception as e:
+            logger.error(f"Error sending password reset email to {email}: {str(e)}")
+            return False
+
+    def generate_password_reset_link(self, user_id: str, email: str, redirect_to: Optional[str] = None) -> Optional[str]:
+        """
+        Generate a password reset link for a user without sending an email.
+
+        Args:
+            user_id: The Supabase user ID.
+            email: The user's email address.
+            redirect_to: The optional URL to redirect to after password reset.
+
+        Returns:
+            The password reset URL if successful, None otherwise.
+        """
+        try:
+            headers = {
+                "Authorization": f"Bearer {self.supabase_service_role_key}",
+                "apikey": self.supabase_service_role_key,
+            }
+            payload = {"type": "recovery", "email": email, "user_id": user_id}
+            if redirect_to:
+                payload["redirect_to"] = redirect_to
+
+            response = requests.post(
+                f"{self.supabase_url}/auth/v1/admin/generate_link",
+                headers=headers,
+                json=payload,
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+                logger.info(f"Successfully generated password reset link for user {user_id}")
+                return data.get("action_link")
+            else:
+                logger.error(f"Failed to generate password reset link for user {user_id}: {response.text}")
+                return None
+
+        except Exception as e:
+            logger.error(f"Error generating password reset link for user {user_id}: {str(e)}")
+            return None
+
 
 # Create a global instance
 supabase_auth = SupabaseAuth()
+
