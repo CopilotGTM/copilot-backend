@@ -25,3 +25,4 @@ CONFIG_MAP = {
 }
 
 GRAPH_API_URL = "https://graph.microsoft.com/v1.0"
+APP_NAME = "CopilotGTM"
