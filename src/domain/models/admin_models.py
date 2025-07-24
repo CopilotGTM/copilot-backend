@@ -25,8 +25,15 @@ class AdminPasswordChangeRequest(BaseModel):
 
 class AdminFirstTimePasswordChangeRequest(BaseModel):
     new_password: str
-    confirm_password: Optional[str] = None
-    session_token: Optional[str] = None
+    confirm_password: str
+    session_token: str
+
+class AdminChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+class AdminGlobalLogoutRequest(BaseModel):
+    email: EmailStr
 
 class AdminForgotPasswordRequest(BaseModel):
     email: EmailStr

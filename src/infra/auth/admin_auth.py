@@ -20,12 +20,13 @@ logger = get_logger()
 
 class AdminAuth:
     """Admin authentication and management service using Supabase"""
-
-    def __init__(self):
+ 
+    def __init__(self, allow_pending_setup: bool = False):
+        self.allow_pending_setup = allow_pending_setup
         self.app_url = os.getenv("APP_URL", "http://localhost:3000")
         self.supabase_url = supabase_config.SUPABASE_URL
         self.supabase_service_role_key = supabase_config.SUPABASE_SERVICE_ROLE_KEY
-
+ 
     async def __call__(self, request: Request, session: Session = Depends(get_master_session)) -> SuperAdmin:
         """
         FastAPI dependency to get current authenticated admin from Supabase token
@@ -67,7 +68,14 @@ class AdminAuth:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED, detail="Admin not found for the given token"
                 )
-
+ 
+            if not self.allow_pending_setup and admin.status == AdminStatus.PENDING_SETUP:
+                logger.warning(f"Admin {admin.email} attempted to access a protected route with PENDING_SETUP status")
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="User is pending setup. Password change is required before accessing this resource.",
+                )
+ 
             logger.info(f"Admin authenticated successfully: {admin.email}")
             return admin
         except Exception as e:
@@ -403,3 +411,4 @@ class AdminAuth:
 
 # Create global instance
 admin_auth = AdminAuth()
+admin_auth_allow_pending = AdminAuth(allow_pending_setup=True)
