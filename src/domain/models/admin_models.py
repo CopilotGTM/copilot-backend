@@ -21,7 +21,12 @@ class AdminLoginRequest(SQLModel):
 class AdminPasswordChangeRequest(BaseModel):
     new_password: str
     confirm_password: Optional[str] = None
+    session_token: Optional[str] = None
 
+class AdminFirstTimePasswordChangeRequest(BaseModel):
+    new_password: str
+    confirm_password: Optional[str] = None
+    session_token: Optional[str] = None
 
 class AdminRole(str, Enum):
     SUPER_ADMIN = "super_admin"
@@ -82,15 +87,23 @@ class AdminUpdateRequest(SQLModel):
     last_name: Optional[str] = None
     status: Optional[AdminStatus] = None
 
+class Tokens(SQLModel):
+    access_token: str
+    refresh_token: str
 
-class AdminResponse(SQLModel):
-    admin_id: UUID
-    supabase_user_id: str
+class AdminLoginState(str, Enum):
+    ACTIVE = "ACTIVE"
+    INACTIVE = "INACTIVE"
+    PENDING_SETUP = "PASSWORD_CHANGE_REQUIRED"
+
+class AdminLoginResponse(SQLModel):
     email: EmailStr
     first_name: str
     last_name: str
     role: AdminRole
-    status: AdminStatus
-    last_login_at: Optional[datetime]
+    state: str
+    last_login_at: Optional[datetime] = None
     created_at: datetime
     email_verified: bool
+    tokens: Tokens
+    session_token: Optional[str] = None

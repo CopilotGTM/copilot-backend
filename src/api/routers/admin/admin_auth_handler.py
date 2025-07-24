@@ -1,14 +1,16 @@
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import UUID
 import logging
+import jwt
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlmodel import Session, select
 
 from src.domain.models.admin_models import (
     AdminLoginRequest,
-    AdminPasswordChangeRequest,
-    AdminResponse,
+    AdminFirstTimePasswordChangeRequest,
+    AdminLoginState,
+    AdminLoginResponse,
     AdminCreateRequest,
     AdminUpdateRequest,
     AdminStatus,
@@ -18,6 +20,7 @@ from src.infra.utils.database import get_master_session
 from src.infra.auth.admin_auth import admin_auth
 from src.infra.auth.email_service import email_service
 from src.infra.auth.supabase_auth import supabase_auth
+from src.infra.config.configs import supabase_config
 from src.infra.utils.logger import get_logger
 from src.api.utils.http_response import Response
 
@@ -26,7 +29,7 @@ logger = get_logger("admin_auth_handler")
 router = APIRouter()
 
 
-@router.post("/login")
+@router.post("/login", response_model=AdminLoginResponse, tags=["admin_auth"])
 async def admin_login(
     login_request: AdminLoginRequest,
     master_session: Session = Depends(get_master_session),
@@ -53,7 +56,7 @@ async def admin_login(
 
         if not super_admin:
             logger.warning(f"Super admin not found for email: {login_request.email}")
-            return Response.bad_request_error_response("User not found")
+            return Response.unauthorized_error_response("User not found")
 
         # Verify password using Supabase Auth
         supabase_response = supabase_auth.verify_email_password(
@@ -66,23 +69,32 @@ async def admin_login(
 
         if not access_token:
             logger.warning(f"Invalid credentials for super admin: {login_request.email}")
-            return Response.bad_request_error_response("Invalid credentials")
+            return Response.unauthorized_error_response("Invalid credentials")
 
         requires_password_change = supabase_response["user"]["user_metadata"]["requires_password_change"]
         email_verified = supabase_response["user"]["user_metadata"]["email_verified"]
         if requires_password_change:
+            # session token only for first time users
+            payload = {
+                "sub": supabase_response["user"]["id"],
+                "exp": datetime.utcnow() + timedelta(minutes=10),
+                "iat": datetime.utcnow(),
+                "scope": "password_change",
+            }
+            session_token = jwt.encode(payload, supabase_config.SUPABASE_JWT_SECRET, algorithm="HS256")
             response_data = {
                 "email": super_admin.email,
                 "first_name": super_admin.first_name,
                 "last_name": super_admin.last_name,
                 "role": super_admin.role,
-                "state": "PASSWORD_CHNAGE_REQUIRED",
+                "state": AdminLoginState.PENDING_SETUP,
                 "created_at": super_admin.created_at,
                 "email_verified": email_verified,
                 "tokens": {
                     "access_token": access_token,
                     "refresh_token": refresh_token,
                 },
+                "session_token": session_token,
             }
             return response_data
         else:
@@ -97,9 +109,10 @@ async def admin_login(
                 "first_name": super_admin.first_name,
                 "last_name": super_admin.last_name,
                 "role": super_admin.role,
-                "state": "APPROVED",
+                "state": AdminLoginState.ACTIVE,
                 "created_at": super_admin.created_at,
                 "email_verified": email_verified,
+                "last_login_at": super_admin.last_login_at,
                 "tokens": {
                     "access_token": access_token,
                     "refresh_token": refresh_token,
@@ -114,12 +127,12 @@ async def admin_login(
             str(e),
             exc_info=True,
         )
-        return Response.internal_server_error_response("Super admin login failed")
+        return Response.internal_server_error_response(message="login failed", data=None)
 
 
 @router.post("/force-change-password")
 async def first_time_password_change(
-    password_request: AdminPasswordChangeRequest,
+    password_request: AdminFirstTimePasswordChangeRequest,
     current_admin: SuperAdmin = Depends(admin_auth),
     master_session: Session = Depends(get_master_session),
 ):
@@ -138,20 +151,19 @@ async def first_time_password_change(
     try:
         if not current_admin:
             logger.warning("Unauthorized access attempt to change-password endpoint")
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
+            return Response.unauthorized_error_response("Unauthorized")
 
         # Fetch the user from Supabase to check current metadata
         supabase_user = supabase_auth.get_user_by_id(current_admin.supabase_user_id)
         if not supabase_user:
             logger.warning(f"Supabase user not found for ID: {current_admin.supabase_user_id}")
-            return Response.bad_request_error_response(data={"message": "User not found in Supabase"})
+            return Response.not_found_error_response("User not found")
 
         requires_password_change = supabase_user.get("user_metadata", {}).get("requires_password_change", False)
         if not requires_password_change:
             logger.warning(f"Password change not required for user: {current_admin.email}")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Password change is not required for this user. Use regular password change if needed.",
+            return Response.bad_request_error_response(
+                "Password change is not required for this user. Use regular password change if needed."
             )
 
         # Validate new_password and confirm_password if provided
@@ -167,7 +179,7 @@ async def first_time_password_change(
 
         if not password_updated:
             logger.error(f"Failed to update password in Supabase for user: {current_admin.email}")
-            return Response.internal_server_error_response(data={"message": "Failed to update password"})
+            return Response.internal_server_error_response("Failed to update password")
 
         # Update user metadata in Supabase to set requires_password_change to False
         updated_metadata = {
@@ -186,7 +198,7 @@ async def first_time_password_change(
             logger.error(f"Failed to update user metadata in Supabase for user: {current_admin.email}")
             # Note: Password was already changed. This could leave the user in an inconsistent state.
             # Consider how to handle this scenario, e.g., by logging a critical error for manual intervention.
-            return Response.internal_server_error_response(data={"message": "Failed to update user metadata"})
+            return Response.internal_server_error_response("Failed to update user metadata")
 
         # Update local database
         logger.info(f"Updating local DB for user: {current_admin.email}")
@@ -201,8 +213,6 @@ async def first_time_password_change(
         # Return success response
         return {"message": "Password changed successfully. You can now log in with your new password."}
 
-    except HTTPException as http_exc:
-        raise http_exc
     except Exception as e:
         logger.error(
             "Error during first-time password change for email %s: %s",
@@ -210,4 +220,4 @@ async def first_time_password_change(
             str(e),
             exc_info=True,
         )
-        return Response.internal_server_error_response(data={"message": "First-time password change failed"})
+        return Response.internal_server_error_response("Password change failed")
