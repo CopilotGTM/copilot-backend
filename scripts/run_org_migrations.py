@@ -9,23 +9,34 @@ PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
 sys.path.insert(0, PROJECT_ROOT)
 
 from dotenv import load_dotenv
+import urllib.parse
 from sqlmodel import Session, select
+from sqlalchemy import create_engine
 from src.domain.models.db_models import Organisation
 from src.service.organization_management import organization_management_service
-from src.infra.utils.database import get_master_engine
 
+load_dotenv()
 
-def load_env():
-    load_dotenv()
-
+def get_database_url():
+    host = os.getenv("DATABASE_HOST", "localhost")
+    port = os.getenv("DATABASE_PORT", "5432")
+    name = os.getenv("DATABASE_NAME", "postgres")
+    user = os.getenv("DATABASE_USER", "postgres")
+    pwd = os.getenv("DATABASE_PASSWORD", "")
+    enc = urllib.parse.quote_plus(pwd)
+    return os.getenv("DATABASE_URL") or f"postgresql://{user}:{enc}@{host}:{port}/{name}"
 
 def parse_args():
+
+    print("Running organization migrations script...")
+    print("This script migrates organization schemas to the latest version.")
     p = argparse.ArgumentParser(description="Run organization-level migrations for specific organizations")
     p.add_argument(
         "org_ids",
         metavar="ORG_ID",
-        nargs="+",
-        help="One or more organization IDs to migrate",
+        nargs="*",
+        default=[],
+        help="One or more organization IDs to migrate. If none are provided, no migrations will run unless --list-orgs is used.",
     )
     p.add_argument("--target-version", default="head", help="Target migration version (default: head)")
     p.add_argument("--list-orgs", action="store_true", help="List all organizations and exit")
@@ -35,7 +46,9 @@ def parse_args():
 
 def list_organizations():
     """List all organizations"""
-    engine = get_master_engine()
+    print("Listing all organizations...")
+    db_url = get_database_url()
+    engine = create_engine(db_url, future=True)
     session = Session(engine)
 
     try:
@@ -53,10 +66,12 @@ def list_organizations():
         for org in organizations:
             status = "Active" if org.is_active else "Inactive"
             schema = org.schema_name or "Not set"
-            print(f"{org.organisation_id:<36} {org.organisation_name:<30} {schema:<20} {status:<10}")
+            print(f"{str(org.organisation_id):<36} {org.organisation_name:<30} {schema:<20} {status:<10}")
+
+        print("\nTotal organizations:", len(organizations))
 
         print("-" * 80)
-
+        return organizations
     except Exception as e:
         print(f"❌ Failed to list organizations: {str(e)}")
     finally:
@@ -65,7 +80,8 @@ def list_organizations():
 
 def run_migrations_for_orgs(org_ids, target_version):
     """Run migrations for specific organizations"""
-    engine = get_master_engine()
+    db_url = get_database_url()
+    engine = create_engine(db_url, future=True)
     session = Session(engine)
 
     try:
@@ -104,11 +120,15 @@ def run_migrations_for_orgs(org_ids, target_version):
 
 
 def main():
-    load_env()
+    print("Starting organization migrations script...")
     args = parse_args()
 
     if args.list_orgs:
         list_organizations()
+        return
+
+    if not args.org_ids:
+        print("No organization IDs provided. Use --list-orgs to see available organizations.")
         return
 
     print(f"🚀 Running organization migrations for {len(args.org_ids)} organization(s)")

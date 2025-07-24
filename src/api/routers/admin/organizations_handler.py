@@ -1,99 +1,69 @@
-from typing import Dict, Any, List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from typing import Dict, Any, List
+from fastapi import APIRouter, Depends
 from sqlmodel import Session
 from uuid import UUID
 
-from src.domain.models.authentication import Authentication
+from src.domain.models.admin_models import SuperAdmin
+from src.domain.models.admin_org_models import (
+    CreateOrganizationRequest,
+    CreateOrganizationResponse,
+    ListOrganizationsResponse,
+    OrganizationResponse,
+    UpdateOrganizationRequest,
+    DeleteOrganizationResponse,
+    RunMigrationsRequest,
+    RunMigrationsResponse,
+    RunMasterMigrationsResponse,
+)
 from src.infra.utils.database import get_master_session
 from src.infra.utils.logger import get_logger
 from src.service.organization_management import organization_management_service
 from src.api.utils.http_response import Response
+from src.infra.auth.admin_auth import admin_auth
 
-auth = Authentication()
-logger = get_logger()
+logger = get_logger("admin_organizations_handler")
 admin_org_router = APIRouter()
 
 
-@admin_org_router.post("/create")
+@admin_org_router.post("/create_organisation", response_model=CreateOrganizationResponse)
 async def create_organization(
-    organisation_name: str,
-    admin_email: str,
-    admin_first_name: str,
-    admin_last_name: str,
-    auth_data: Dict[str, Any] = Depends(auth.verify_session),
+    request: CreateOrganizationRequest,
+    auth_data: SuperAdmin = Depends(admin_auth),
     master_session: Session = Depends(get_master_session),
-    country: Optional[str] = None,
-    sales_team_size: Optional[int] = None,
-    company_address: Optional[str] = None,
-    billing_address: Optional[str] = None,
-    linked_urls: Optional[str] = None,
-    website_urls: Optional[str] = None,
-    summary: Optional[str] = None,
-    logo_url: Optional[str] = None,
-) -> Dict[str, Any]:
+) -> CreateOrganizationResponse:
     """
     Create a new organization with schema, role, and admin user.
     Only super admins can create organizations.
     """
     try:
         # Check if current user is super admin
-        current_user = auth_data.get("user")
-        if not current_user or not current_user.is_admin:
+        logger.info(f"Creating organization: {request.organisation_name} by admin: {auth_data.admin_id}")
+        current_user = auth_data.admin_id
+
+        # Ensure the user has super admin role
+        if not current_user or not auth_data.role or auth_data.role != "super_admin":
+            logger.warning(f"Unauthorized attempt to create organization by user: {auth_data.admin_id}. Super admin access required.")
             return Response.forbidden_error_response("Super admin access required")
 
-        # Prepare organization details
-        org_details = {}
-        if country:
-            org_details["country"] = country
-        if sales_team_size:
-            org_details["sales_team_size"] = sales_team_size
-        if company_address:
-            org_details["company_address"] = company_address
-        if billing_address:
-            org_details["billing_address"] = billing_address
-        if linked_urls:
-            org_details["linked_urls"] = linked_urls
-        if website_urls:
-            org_details["website_urls"] = website_urls
-        if summary:
-            org_details["summary"] = summary
-        if logo_url:
-            org_details["logo_url"] = logo_url
-
-        # Create organization
+        # Validate request data
+        logger.info(f"Preparing to create organization: {request.organisation_name}")
         result = organization_management_service.create_organization(
-            organisation_name=organisation_name,
-            admin_email=admin_email,
-            admin_first_name=admin_first_name,
-            admin_last_name=admin_last_name,
+            organisation_name=request.organisation_name,
+            admin_email=request.admin_email,
+            admin_first_name=request.admin_first_name,
+            admin_last_name=request.admin_last_name,
             session=master_session,
-            **org_details,
+            **request.dict(exclude_unset=True, exclude={"organisation_name", "admin_email", "admin_first_name", "admin_last_name"}),
         )
 
         organization = result["organization"]
         admin_user = result["admin_user"]
 
-        logger.info(f"Created organization: {organization.organisation_id} by admin: {current_user.user_id}")
+        logger.info(f"Successfully created organization: {organization.organisation_id} with admin user: {admin_user.user_id}")
 
-        return Response.success_response(
-            "Organization created successfully",
-            {
-                "organization": {
-                    "organisation_id": str(organization.organisation_id),
-                    "organisation_name": organization.organisation_name,
-                    "schema_name": organization.schema_name,
-                    "role_name": organization.role_name,
-                    "is_active": organization.is_active,
-                    "created_at": organization.created_at.isoformat(),
-                },
-                "admin_user": {
-                    "user_id": str(admin_user.user_id),
-                    "email": admin_user.email,
-                    "first_name": admin_user.first_name,
-                    "last_name": admin_user.last_name,
-                    "organisation_role": admin_user.organisation_role,
-                },
-            },
+        return CreateOrganizationResponse(
+            organization=organization,
+            admin_user=admin_user
         )
 
     except Exception as e:

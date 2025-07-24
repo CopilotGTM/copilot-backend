@@ -37,7 +37,6 @@ class ChatSession(SQLModel, table=True):
     user_id: UUID = Field(nullable=False, index=True)
     # must match organisations.organisation_id (assumed UUID)
     organisation_id: UUID = Field(
-        foreign_key="organisations.organisation_id",
         nullable=False,
         index=True,
     )
