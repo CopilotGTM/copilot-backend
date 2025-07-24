@@ -15,6 +15,8 @@ from src.domain.models.admin_models import (
     AdminUpdateRequest,
     AdminStatus,
     SuperAdmin,
+    AdminRefreshTokenRequest,
+    AdminRefreshTokenResponse,
 )
 from src.infra.utils.database import get_master_session
 from src.infra.auth.admin_auth import admin_auth
@@ -220,4 +222,48 @@ async def first_time_password_change(
             str(e),
             exc_info=True,
         )
-        return Response.internal_server_error_response("Password change failed")
+        return Response.internal_server_error_response("First-time password change failed")
+
+
+@router.post("/refresh-token", response_model=AdminRefreshTokenResponse, tags=["admin_auth"])
+async def refresh_token(refresh_request: AdminRefreshTokenRequest):
+    """
+    Refresh the access token using a refresh token.
+    """
+    try:
+        session_data = supabase_auth.refresh_access_token(refresh_request.refresh_token)
+
+        if session_data.get("access_token"):
+            # Token refresh was successful, return new tokens
+            return AdminRefreshTokenResponse(
+                access_token=session_data["access_token"],
+                refresh_token=session_data["refresh_token"],
+            )
+        else:
+            # Token refresh failed, indicating a potentially compromised refresh token.
+            # As a security measure, we will attempt to sign the user out globally.
+            logger.warning(
+                "Refresh token is invalid or expired. Attempting to sign out user globally as a security precaution."
+            )
+            try:
+                # Decode the invalid token to get the user ID (sub) without verifying the signature
+                payload = jwt.decode(refresh_request.refresh_token, options={"verify_signature": False})
+                user_id = payload.get("sub")
+                if user_id:
+                    supabase_auth.sign_out_user_globally(user_id)
+                    logger.info(f"Successfully triggered global sign-out for user {user_id}")
+            except jwt.PyJWTError as jwt_error:
+                logger.error(f"Could not decode the invalid refresh token: {jwt_error}")
+
+            # Return a 401 Unauthorized error to force the user to re-authenticate
+            return Response.unauthorized_error_response(
+                "Invalid or expired refresh token. Please log in again."
+            )
+
+    except Exception as e:
+        logger.error(
+            "Error during token refresh: %s",
+            str(e),
+            exc_info=True,
+        )
+        return Response.internal_server_error_response("Token refresh failed")

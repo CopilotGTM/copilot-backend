@@ -41,6 +41,26 @@ class SupabaseAuth:
             logger.error("Error verifying password with Supabase: %s", str(e))
             return {}
 
+    def refresh_access_token(self, refresh_token: str) -> Dict[str, Any]:
+        """
+        Refresh the access token using a refresh token.
+        Returns the new session data (including new access_token and refresh_token).
+        """
+        try:
+            url = f"{self.supabase_url}/auth/v1/token?grant_type=refresh_token"
+            headers = {"apikey": self.supabase_anon_key, "Content-Type": "application/json"}
+            payload = {"refresh_token": refresh_token}
+            response = requests.post(url, headers=headers, json=payload)
+            if response.status_code == 200:
+                logger.info("Supabase token refresh succeeded.")
+                return response.json()
+            else:
+                logger.warning("Supabase token refresh failed: %s", response.text)
+                return {}
+        except Exception as e:
+            logger.error("Error refreshing token with Supabase: %s", str(e))
+            return {}
+
     def verify_token(self, token: str) -> Dict[str, Any]:
         """
         Verify a Supabase JWT token and return the payload.
@@ -242,6 +262,35 @@ class SupabaseAuth:
 
         except Exception as e:
             logger.error(f"Error updating password for user_id {user_id}: {str(e)}")
+            return False
+
+    def sign_out_user_globally(self, user_id: str) -> bool:
+        """
+        Sign out a user from all active sessions using the service role.
+
+        Args:
+            user_id: Supabase user ID
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            headers = {
+                "Authorization": f"Bearer {self.supabase_service_role_key}",
+                "apikey": self.supabase_service_role_key,
+            }
+
+            response = requests.post(f"{self.supabase_url}/auth/v1/admin/users/{user_id}/logout", headers=headers)
+
+            if response.status_code == 200:
+                logger.info(f"Successfully signed out user_id {user_id} from all sessions.")
+                return True
+            else:
+                logger.error(f"Failed to sign out user_id {user_id}: {response.text}")
+                return False
+
+        except Exception as e:
+            logger.error(f"Error signing out user_id {user_id}: {str(e)}")
             return False
 
 

@@ -28,6 +28,11 @@ class AdminFirstTimePasswordChangeRequest(BaseModel):
     confirm_password: Optional[str] = None
     session_token: Optional[str] = None
 
+
+class AdminRefreshTokenRequest(BaseModel):
+    refresh_token: str
+
+
 class AdminRole(str, Enum):
     SUPER_ADMIN = "super_admin"
     ADMIN = "admin"
@@ -107,3 +112,8 @@ class AdminLoginResponse(SQLModel):
     email_verified: bool
     tokens: Tokens
     session_token: Optional[str] = None
+
+
+class AdminRefreshTokenResponse(BaseModel):
+    access_token: str
+    refresh_token: str
