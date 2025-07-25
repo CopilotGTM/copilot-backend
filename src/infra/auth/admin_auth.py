@@ -69,7 +69,7 @@ class AdminAuth:
                     status_code=status.HTTP_401_UNAUTHORIZED, detail="Admin not found for the given token"
                 )
  
-            if not self.allow_pending_setup and admin.status == AdminStatus.PENDING_SETUP:
+            if admin.status == AdminStatus.PENDING_SETUP:
                 logger.warning(f"Admin {admin.email} attempted to access a protected route with PENDING_SETUP status")
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,

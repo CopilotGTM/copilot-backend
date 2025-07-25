@@ -13,8 +13,6 @@ from src.domain.models.admin_models import (
     AdminGlobalLogoutRequest,
     AdminLoginState,
     AdminLoginResponse,
-    AdminCreateRequest,
-    AdminUpdateRequest,
     AdminStatus,
     SuperAdmin,
     AdminRefreshTokenRequest,
@@ -98,8 +96,8 @@ async def admin_login(
                 "created_at": super_admin.created_at,
                 "email_verified": email_verified,
                 "tokens": {
-                    "access_token": access_token,
-                    "refresh_token": refresh_token,
+                    "access_token": "",
+                    "refresh_token": "",
                 },
                 "session_token": session_token,
             }
@@ -140,13 +138,12 @@ async def admin_login(
 @router.post("/force-change-password")
 async def first_time_password_change(
     password_request: AdminFirstTimePasswordChangeRequest,
-    current_admin: SuperAdmin = Depends(admin_auth_allow_pending),
     master_session: Session = Depends(get_master_session),
 ):
     """
     First-time password change endpoint for Super Admin.
     This endpoint is used after logging in with a temporary password to set a new permanent password.
-    It requires authentication via the access_token obtained from the login endpoint.
+    It requires authentication via a short-lived session_token.
     Updates the password in Supabase, sets requires_password_change to False in user metadata,
     updates the local database status to active, marks email as verified if not already,
     and updates the last_login_at timestamp.
@@ -156,9 +153,6 @@ async def first_time_password_change(
     - This endpoint is intended only for first-time changes; regular password changes should use a separate endpoint if needed.
     """
     try:
-        if not current_admin:
-            logger.warning("Unauthorized access attempt to change-password endpoint")
-            return Response.unauthorized_error_response("Unauthorized")
         if not password_request.session_token:
             return Response.bad_request_error_response("Session token is required.")
         try:
@@ -168,16 +162,25 @@ async def first_time_password_change(
                 algorithms=["HS256"],
             )
             token_scope = payload.get("scope")
-            token_sub = payload.get("sub")
+            supabase_user_id = payload.get("sub")
             if token_scope != "password_change":
                 return Response.unauthorized_error_response("Invalid token scope.")
-            if token_sub != current_admin.supabase_user_id:
-                return Response.unauthorized_error_response("Token does not match the authenticated user.")
+            if not supabase_user_id:
+                return Response.unauthorized_error_response("Invalid token: missing user identifier.")
         except jwt.ExpiredSignatureError:
             return Response.unauthorized_error_response("Session token has expired.")
         except jwt.PyJWTError as e:
             logger.error(f"Invalid session token: {e}")
             return Response.unauthorized_error_response("Invalid session token.")
+
+        # Fetch the admin from the local database using the supabase_user_id from the token
+        statement = select(SuperAdmin).where(SuperAdmin.supabase_user_id == supabase_user_id)
+        result = master_session.exec(statement)
+        current_admin = result.first()
+
+        if not current_admin:
+            logger.warning(f"Admin not found for supabase_user_id: {supabase_user_id}")
+            return Response.unauthorized_error_response("Unauthorized")
 
         # Fetch the user from Supabase to check current metadata
         supabase_user = supabase_auth.get_user_by_id(current_admin.supabase_user_id)
@@ -244,7 +247,7 @@ async def first_time_password_change(
     except Exception as e:
         logger.error(
             "Error during first-time password change for email %s: %s",
-            current_admin.email if current_admin else "unknown",
+            current_admin.email if "current_admin" in locals() and current_admin else "unknown",
             str(e),
             exc_info=True,
         )
