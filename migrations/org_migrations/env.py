@@ -2,7 +2,7 @@ from logging.config import fileConfig
 import os
 import urllib.parse
 
-from sqlalchemy import engine_from_config, pool, text
+from sqlalchemy import engine_from_config, pool, text, MetaData
 from alembic import context
 from sqlmodel import SQLModel
 from dotenv import load_dotenv
@@ -30,8 +30,25 @@ config.set_main_option("sqlalchemy.url", db_url.replace("%", "%%"))
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# point Alembic at your SQLModel metadata
-target_metadata = SQLModel.metadata
+# Create org-specific metadata by importing only org models
+# This ensures we only track org-specific tables
+from sqlalchemy import MetaData
+
+# Create a fresh metadata instance
+org_metadata = MetaData()
+
+
+# Manually register only the org-specific tables
+ChatSession.metadata = org_metadata
+ChatMessage.metadata = org_metadata  
+OrganisationDocument.metadata = org_metadata
+
+# Recreate the tables in the new metadata
+ChatSession.__table__.tometadata(org_metadata)
+ChatMessage.__table__.tometadata(org_metadata)
+OrganisationDocument.__table__.tometadata(org_metadata)
+
+target_metadata = org_metadata
 
 # grab the --x schema=org_id argument (if any)
 x_args = context.get_x_argument(as_dictionary=True)
@@ -47,8 +64,13 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
-        include_schemas=True,
+        include_schemas=False,  # Only focus on target schema
         version_table_schema=target_schema,
+        # Only compare tables that exist in our target metadata
+        include_object=lambda obj, name, type_, reflected, compare_to: (
+            type_ != "table" or name in target_metadata.tables
+        ),
+        transactional_ddl=False,  # Disable transactions for extension creation
     )
 
     # emit a CREATE SCHEMA if it doesn't exist
@@ -68,19 +90,24 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
-        if target_schema:
-            # ensure unqualified DDL goes into the right schema
-            connection.execute(text(f"SET search_path TO {target_schema}, public"))
+        # Use the connection's transaction context manager.
+        # This will automatically commit on success or rollback on error.
+        with connection.begin():
+            if target_schema:
+                # Set search_path inside the transaction.
+                connection.execute(text(f"SET search_path TO {target_schema}, public"))
 
-        context.configure(
-            connection=connection,
-            target_metadata=target_metadata,
-            compare_type=True,
-            include_schemas=True,
-            version_table_schema=target_schema,
-        )
-
-        with context.begin_transaction():
+            # Configure context within the transaction block.
+            context.configure(
+                connection=connection,
+                target_metadata=target_metadata,
+                compare_type=True,
+                include_schemas=False,
+                version_table_schema=target_schema,
+                include_object=lambda obj, name, type_, reflected, compare_to: (
+                    type_ != "table" or name in target_metadata.tables
+                ),
+            )
             context.run_migrations()
 
 
