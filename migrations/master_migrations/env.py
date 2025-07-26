@@ -11,8 +11,7 @@ load_dotenv()
 
 # ---- import every module that declares SQLModel models ----
 # (so that SQLModel.metadata is populated)
-from src.domain.models.db_models import Organisation, User
-from src.domain.models.admin_models import SuperAdmin
+from src.domain.models.master_db_models import Organisation, User, SuperAdmin
 
 # (and import any new model modules here)
 
@@ -34,12 +33,48 @@ config.set_main_option("sqlalchemy.url", db_url.replace("%", "%%"))
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# point Alembic at your SQLModel metadata
-target_metadata = SQLModel.metadata
+# Create master-specific metadata by importing only master models
+# This ensures we only track master-specific tables
+from sqlalchemy import MetaData
+
+# Create a fresh metadata instance
+master_metadata = MetaData()
+
+# Manually register only the master-specific tables
+Organisation.metadata = master_metadata
+User.metadata = master_metadata
+SuperAdmin.metadata = master_metadata
+
+# Recreate the tables in the new metadata
+Organisation.__table__.tometadata(master_metadata)
+User.__table__.tometadata(master_metadata)
+SuperAdmin.__table__.tometadata(master_metadata)
+
+target_metadata = master_metadata
 
 # grab the --x schema=org_id argument (if any)
 x_args = context.get_x_argument(as_dictionary=True)
 target_schema = x_args.get("schema")  # e.g. "org_123"
+
+
+def include_object(object, name, type_, reflected, compare_to):
+    """
+    Filter objects for autogenerate.
+    For master migrations (target_schema is None), only include tables
+    from the 'public' schema that are part of SQLModel.metadata.
+    """
+    if type_ == "table":
+        # 'compare_to' is the schema name when type_ is 'table'
+        schema = compare_to
+        if target_schema:
+            # If a target_schema is specified, only include tables from that schema
+            return schema == target_schema
+        else:
+            # If no target_schema (master migration), only include tables
+            # that are defined in our target_metadata (master_db_models).
+            # The schema check is implicitly handled by target_metadata containing only public tables.
+            return name in target_metadata.tables
+    return True # Include other object types (e.g., sequences, indexes)
 
 
 def run_migrations_offline() -> None:
@@ -51,7 +86,8 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
-        include_schemas=True,
+        include_schemas=False, # Explicitly set to False
+        include_object=include_object, # Use the custom include_object function
         version_table_schema=target_schema,
     )
 
@@ -80,7 +116,8 @@ def run_migrations_online() -> None:
             connection=connection,
             target_metadata=target_metadata,
             compare_type=True,
-            include_schemas=True,
+            include_schemas=False, # Explicitly set to False
+            include_object=include_object, # Use the custom include_object function
             version_table_schema=target_schema,
         )
 

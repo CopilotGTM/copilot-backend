@@ -14,12 +14,12 @@ from src.domain.models.admin_models import (
     AdminLoginState,
     AdminLoginResponse,
     AdminStatus,
-    SuperAdmin,
     AdminRefreshTokenRequest,
     AdminRefreshTokenResponse,
     AdminForgotPasswordRequest,
     AdminResetPasswordRequest,
 )
+from src.domain.models.master_db_models import SuperAdmin
 from src.infra.utils.database import get_master_session
 from src.infra.auth.admin_auth import admin_auth, admin_auth_allow_pending
 from src.infra.auth.email_service import email_service

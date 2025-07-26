@@ -8,7 +8,7 @@ from fastapi import HTTPException, status, Depends, Request
 from sqlmodel import Session, select
 import requests
 
-from src.domain.models.admin_models import SuperAdmin, AdminStatus, AdminRole
+from src.domain.models.master_db_models import SuperAdmin, AdminStatus, AdminRole
 from src.infra.utils.database import get_master_session
 from src.infra.utils.logger import get_logger
 from src.infra.auth.email_service import email_service

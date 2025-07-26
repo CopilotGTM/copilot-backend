@@ -8,7 +8,7 @@ from sqlmodel import select
 from src.infra.utils.logger import get_logger
 from src.api.events.socket_app import sio
 from src.infra.utils.database import get_master_session
-from src.domain.models.db_models import User
+from src.domain.models.master_db_models import User
 from src.domain.models.authentication import Authentication
 from src.infra.messaging.redis_client import store_socket_connection, remove_socket_connection, get_socket_connection
 

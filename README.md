@@ -2,21 +2,16 @@
 
 ## Prerequisites
 
-- Python 3.8+
+- Python 3.11
 - [pip](https://pip.pypa.io/en/stable/)
 - [Uvicorn](https://www.uvicorn.org/)
 - [Celery](https://docs.celeryq.dev/en/stable/)
-- (Optional) Redis or RabbitMQ for Celery broker
+- Redis
+- PostgreSQL
 
 ---
 
 ## Setup & Installation
-
-1. **Clone the repository:**
-   ```bash
-   git clone <your-repo-url>
-   cd <repo-directory>
-   ```
 
 2. **Install dependencies:**
    ```bash
@@ -51,16 +46,25 @@
    APP_URL=https://your-app-domain.com
    ```
 
-4. **Initialize super admin (first deployment):**
+4. **Run Master Migrations:**
    ```bash
-   python scripts/admin/deploy_with_super_admin.py
+   python -m scripts.run_master_migrations
    ```
 
-5. **Frontend Integration:**
-   Use Supabase authentication client in your frontend for admin login:
-   ```javascript
-   // Example with Supabase client
-   const { data, error } = await supabase.auth.signInWithPassword({
-     email: 'admin@yourcompany.com',
-     password: 'temporary_password'
-   })
+5. **Deploy with Super Admin:**
+   ```bash
+   python -m scripts.admin.deploy_with_super_admin
+   ```
+
+6. **Initialize Master Schema Migrations:**
+   ```bash
+   python -m alembic -c migrations/master_migrations/alembic.ini revision --autogenerate -m "initial setup";
+   python -m scripts.run_master_migrations
+   ```
+
+7. **Initialize Organization Schema Migrations:**
+   "test_org_schema" this schema is for testing purpose. Need to be created manully
+   ```bash
+   python -m alembic -c migrations/org_migrations/alembic.ini -x schema=test_org_schema revision --autogenerate -m "initial setup";
+   python -m alembic -c migrations/org_migrations/alembic.ini -x schema=test_org_schema upgrade head ;
+   ```

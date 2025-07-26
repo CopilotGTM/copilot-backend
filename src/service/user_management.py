@@ -2,7 +2,7 @@ from typing import Optional, Dict, Any
 from sqlmodel import Session, select
 from uuid import UUID, uuid4
 
-from src.domain.models.db_models import User, Organisation
+from src.domain.models.master_db_models import User, Organisation
 from src.infra.auth.supabase_auth import supabase_auth
 from src.infra.utils.logger import get_logger
 

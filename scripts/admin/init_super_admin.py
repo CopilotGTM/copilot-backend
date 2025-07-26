@@ -23,7 +23,7 @@ sys.path.insert(0, str(project_root))
 from dotenv import load_dotenv
 from sqlmodel import Session, select
 
-from src.domain.models.admin_models import SuperAdmin
+from src.domain.models.master_db_models import SuperAdmin
 from src.infra.auth.admin_auth import admin_auth
 from src.infra.auth.email_service import email_service
 from src.infra.utils.database import get_session_dependency, init_master_db

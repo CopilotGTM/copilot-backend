@@ -46,8 +46,11 @@ class AdminUserResponse(BaseModel):
 
 
 class CreateOrganizationResponse(BaseModel):
-    organization: OrganizationResponse
-    admin_user: AdminUserResponse
+    organisation_id: UUID
+    organisation_name: str
+    schema_name: str
+    created_at: datetime
+    updated_at: datetime
 
 
 class ListOrganizationsResponse(BaseModel):

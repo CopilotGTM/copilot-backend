@@ -5,7 +5,7 @@ import json
 from urllib.parse import unquote
 from uuid import UUID
 from socketio.exceptions import ConnectionRefusedError
-from src.domain.models.db_models import User
+from src.domain.models.master_db_models import User
 from src.infra.utils.app_state import fastapp
 from src.infra.utils.logger import get_logger
 from src.infra.utils.database import get_master_session
