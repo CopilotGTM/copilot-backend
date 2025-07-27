@@ -35,6 +35,10 @@ class Response:
         return cls._response(fastapi.status.HTTP_202_ACCEPTED, "SUCCESS", message, data)
 
     @classmethod
+    def no_content_response(cls):
+        return fastapi.Response(status_code=fastapi.status.HTTP_204_NO_CONTENT)
+
+    @classmethod
     def internal_server_error_response(cls, message: Any, data: Any):
         return cls._response(fastapi.status.HTTP_500_INTERNAL_SERVER_ERROR, "ERROR", message, data)
 
@@ -43,8 +47,8 @@ class Response:
         return cls._response(fastapi.status.HTTP_400_BAD_REQUEST, "ERROR", message, data)
 
     @classmethod
-    def invalid_authentication_request_error_response(cls, message: Any, data: Any = None):
-        return cls._response(fastapi.status.HTTP_400_BAD_REQUEST, "ERROR", message, data)
+    def unauthorized_error_response(cls, message: Any, data: Any = None):
+        return cls._response(fastapi.status.HTTP_401_UNAUTHORIZED, "ERROR", message, data)
 
     @classmethod
     def forbidden_error_response(cls, message: Any, data: Any = None):
@@ -57,3 +61,7 @@ class Response:
     @classmethod
     def conflict_error_response(cls, message: Any):
         return cls._response(fastapi.status.HTTP_409_CONFLICT, "ERROR", message)
+
+    @classmethod
+    def unprocessable_entity_error_response(cls, message: Any, data: Any = None):
+        return cls._response(fastapi.status.HTTP_422_UNPROCESSABLE_ENTITY, "ERROR", message, data)

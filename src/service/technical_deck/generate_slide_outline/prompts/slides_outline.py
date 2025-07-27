@@ -47,4 +47,3 @@ SLIDE_OUTLINE_PROMPT = dedent(
 
     """
 )
-

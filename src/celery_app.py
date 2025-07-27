@@ -36,7 +36,7 @@ celery = Celery(
     "technical_deck_worker",
     broker=broker_url,
     backend=backend_url,
-    include=["src.tasks.technical_deck", "src.tasks.slide_outline"]
+    include=["src.tasks.technical_deck", "src.tasks.slide_outline"],
 )
 
 # Apply SSL options if set

@@ -26,6 +26,10 @@ from src.api.routers.technical_deck.transcript_format import transcript_router
 from src.api.routers.technical_deck.get_technical_deck import technical_deck
 from src.api.routers.technical_deck.select_template import select_template
 from src.api.routers.rfp_sheet.sheet_identification import rfp__sheet_router
+from src.api.routers.auth_handler import auth_router
+from src.api.routers.admin.organizations_handler import router as admin_org_router
+from src.api.routers.admin.migrations_handler import migration_router
+from src.api.routers.admin.admin_auth_handler import router as admin_auth_router
 
 from src.api.events import chat_message_handler
 from src.api.events import connect_handler
@@ -79,12 +83,18 @@ def create_fastapi_app():
 
     # Include routers here
     fastapp.include_router(healthcheck_router, tags=["healthcheck"])
+    fastapp.include_router(auth_router, prefix="/auth", tags=["authentication"])
     fastapp.include_router(chat_router, prefix="/chats", tags=["chats"])
     fastapp.include_router(upload_router, prefix="/chats/upload", tags=["uploads"])
     fastapp.include_router(transcript_router, prefix="/chats/transcript", tags=["transcript"])
     fastapp.include_router(technical_deck, prefix="/chats/technical_deck", tags=["technical_deck"])
     fastapp.include_router(select_template, prefix="/chats/technical_deck", tags=["technical_deck", "select_template"])
     fastapp.include_router(rfp__sheet_router, prefix="/chats/rfp_sheet", tags=["rfp sheet", "sheet identification"])
+
+    # Admin routers
+    fastapp.include_router(admin_auth_router, prefix="/admin/auth", tags=["admin", "authentication"])
+    fastapp.include_router(admin_org_router, prefix="/admin/organizations", tags=["admin", "organizations"])
+    fastapp.include_router(migration_router, prefix="/admin/migrations", tags=["admin", "migrations"])
 
     # Wrap in Socket.IO
     return ASGIApp(sio, other_asgi_app=fastapp)
