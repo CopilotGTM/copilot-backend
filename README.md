@@ -15,7 +15,10 @@
 
 2. **Install dependencies:**
    ```bash
+   # Install python Libraries
    pip install -r requirements.txt
+   # Run Database Docker
+   docker run -d --name postgres-pgvector -e POSTGRES_DB=postgres -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -p 5432:5432 pgvector/pgvector:pg16 
    ```
 
 3. **Configure environment variables:**
