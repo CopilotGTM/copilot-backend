@@ -37,6 +37,10 @@ class DatabaseConfig:
     DATABASE_SSL_MODE: str = os.getenv("DATABASE_SSL_MODE", "require")
     DATABASE_SSL_ROOT_CERT: Optional[str] = os.getenv("DATABASE_SSL_ROOT_CERT")
     POOL_RECYCLE_SEC: int = int(os.getenv("POOL_RECYCLE_SEC", "1800"))
+    DATABASE_POOL_SIZE: int = int(os.getenv("DATABASE_POOL_SIZE", "10"))
+    DATABASE_MAX_OVERFLOW: int = int(os.getenv("DATABASE_MAX_OVERFLOW", "20"))
+    DB_ADMIN_USER: Optional[str] = os.getenv("DB_ADMIN_USER")
+    DB_ADMIN_PASSWORD_SECRET: Optional[str] = os.getenv("DB_ADMIN_PASSWORD_SECRET")
 
 
 class AppConfig:
@@ -98,6 +102,11 @@ class SuperAdminConfig:
 
     SUPER_ADMIN_EMAIL: Optional[str] = os.getenv("SUPER_ADMIN_EMAIL")
 
+class KeyVaultConfig:
+    """Configuration for Azure Key Vault"""
+
+    AZURE_KEY_VAULT_URL: Optional[str] = os.getenv("AZURE_KEY_VAULT_URL")
+
 
 # Create config instances
 supabase_config = SupabaseConfig()
@@ -108,6 +117,7 @@ azure_embedder_config = AzureEmbedderConfig()
 cloud_storage_config = CloudStorageConfig()
 resend_config = ResendConfig()
 super_admin_config = SuperAdminConfig()
+key_vault_config = KeyVaultConfig()
 
 
 class Config:

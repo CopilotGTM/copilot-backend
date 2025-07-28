@@ -66,8 +66,13 @@
    ```
 
 7. **Initialize Organization Schema Migrations:**
-   "test_org_schema" this schema is for testing purpose. Need to be created manully
+   "test_org_schema" this schema is for testing purpose. Need to be created manually
    ```bash
    python -m alembic -c migrations/org_migrations/alembic.ini -x schema=test_org_schema revision --autogenerate -m "initial setup";
    python -m alembic -c migrations/org_migrations/alembic.ini -x schema=test_org_schema upgrade head ;
+   ```
+
+8. **Run the application:**
+   ```bash
+   uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
    ```

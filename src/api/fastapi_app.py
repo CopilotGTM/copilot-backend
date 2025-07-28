@@ -71,8 +71,8 @@ def create_fastapi_app():
     # Initialize Redis client in app state
     fastapp.state.redis_client = get_redis_client()
 
-    # Initialize master database engine and session
-    master_engine = init_master_db(create_if_missing=False)
+    # Initialize master database engine and session at FastAPI app level
+    master_engine = init_master_db()
     fastapp.state.master_db_engine = master_engine
     fastapp.state.master_session = get_session_dependency(master_engine)
 

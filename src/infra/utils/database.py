@@ -2,104 +2,116 @@ import os
 import urllib.parse
 from sqlmodel import SQLModel, create_engine, Session
 from sqlalchemy import text
+from sqlalchemy.engine import Engine
+
+from azure.identity import DefaultAzureCredential
+from azure.keyvault.secrets import SecretClient
+
+from src.infra.config.configs import database_config, key_vault_config
+
+
+# Single engine for all connections (master login)
+_ENGINE: Engine | None = None
+
+
+def _get_secret_from_key_vault(secret_name: str) -> str | None:
+    """Fetches a secret from Azure Key Vault."""
+    key_vault_url = key_vault_config.AZURE_KEY_VAULT_URL
+    if not key_vault_url:
+        print(f"AZURE_KEY_VAULT_URL not set. Cannot fetch secret '{secret_name}'.")
+        return None
+    
+    try:
+        credential = DefaultAzureCredential()
+        client = SecretClient(vault_url=key_vault_url, credential=credential)
+        secret = client.get_secret(secret_name)
+        return secret.value
+    except Exception as e:
+        print(f"Failed to fetch secret '{secret_name}' from Key Vault: {e}")
+        return None
 
 
 def _get_env_host_port():
-    host = os.getenv("DATABASE_HOST", "localhost")
-    port = os.getenv("DATABASE_PORT", "5432")
+    host = database_config.DATABASE_HOST
+    port = database_config.DATABASE_PORT
     return host, port
 
 
 def _make_connect_args():
     # allow override via env, but default to requiring SSL
-    sslmode = os.getenv("DATABASE_SSL_MODE", "require")
+    sslmode = database_config.DATABASE_SSL_MODE
     args = {"sslmode": sslmode}
     # if you have a CA bundle, point to it:
-    if ca := os.getenv("DATABASE_SSL_ROOT_CERT"):
+    if ca := database_config.DATABASE_SSL_ROOT_CERT:
         args["sslrootcert"] = ca
     return args
 
 
-def _create_database_if_missing(host: str, port: str, user: str, password: str, db_name: str):
-    pw = urllib.parse.quote_plus(password or "")
-    url = f"postgresql://{user}:{pw}@{host}:{port}/postgres"
-    engine = create_engine(
-        url,
-        isolation_level="AUTOCOMMIT",
-        echo=False,
-        # even our “bootstrap” connection should speak SSL
-        connect_args=_make_connect_args(),
-        pool_pre_ping=True,
-    )
-    with engine.connect() as conn:
-        try:
-            conn.execute(text(f"CREATE DATABASE {db_name}"))
-        except Exception:
-            pass
-    engine.dispose()
+def get_master_engine(echo: bool = True) -> Engine:
+    """
+    Returns the singleton SQLAlchemy engine connected as the master login.
+    """
+    global _ENGINE
+    if _ENGINE is not None:
+        return _ENGINE
 
-
-def get_master_engine(echo: bool = True, create_if_missing: bool = False):
     host, port = _get_env_host_port()
-    user = os.getenv("DATABASE_USER", "postgres")
-    password = os.getenv("DATABASE_PASSWORD", "")
-    db_name = os.getenv("DATABASE_NAME", "postgres")
+    db_name = database_config.DATABASE_NAME
+    user = "master_copilot_role"
+    password = _get_secret_from_key_vault("master-copilot-role-password")
 
-    if create_if_missing:
-        _create_database_if_missing(host, port, user, password, db_name)
+    if not password:
+        raise ValueError("Master role password not found in Key Vault.")
 
-    pw = urllib.parse.quote_plus(password or "")
+    pw = urllib.parse.quote_plus(password)
     url = f"postgresql://{user}:{pw}@{host}:{port}/{db_name}"
 
-    return create_engine(
+    _ENGINE = create_engine(
         url,
         echo=echo,
-        # test each connection’s liveness before using it:
         pool_pre_ping=True,
-        # optionally recycle connections < max idle time:
-        pool_recycle=int(os.getenv("POOL_RECYCLE_SEC", 1800)),
+        pool_recycle=database_config.POOL_RECYCLE_SEC,
+        pool_size=database_config.DATABASE_POOL_SIZE,
+        max_overflow=database_config.DATABASE_MAX_OVERFLOW,
         connect_args=_make_connect_args(),
     )
+    return _ENGINE
 
 
-def init_master_db(create_if_missing: bool = False):
-    engine = get_master_engine(echo=False, create_if_missing=create_if_missing)
+def get_org_session(org_id: str):
+    """
+    Yields a Session with SET ROLE <org_id> applied for the duration.
+    Uses the singleton master engine and switches role per session.
+    """
+    if not org_id.isidentifier():
+        raise ValueError(f"Invalid org identifier: {org_id}")
+
+    engine = get_master_engine(echo=False)
+    session = Session(engine)
+    session.execute(text(f"SET ROLE {org_id}"))
+    try:
+        yield session
+    finally:
+        session.execute(text("RESET ROLE"))
+        session.close()
+
+
+def init_master_db():
+    """Initializes the master schema (creates all tables in master schema)."""
+    engine = get_master_engine(echo=False)
     SQLModel.metadata.create_all(engine)
     return engine
 
-
-def get_org_engine(
-    db_name: str,
-    user: str,
-    password: str,
-    echo: bool = False,
-    create_if_missing: bool = False,
-):
-    host, port = _get_env_host_port()
-    if create_if_missing:
-        _create_database_if_missing(host, port, user, password, db_name)
-
-    pw = urllib.parse.quote_plus(password or "")
-    url = f"postgresql://{user}:{pw}@{host}:{port}/{db_name}"
-
-    return create_engine(
-        url,
-        echo=echo,
-        pool_pre_ping=True,
-        pool_recycle=int(os.getenv("POOL_RECYCLE_SEC", 1800)),
-        connect_args=_make_connect_args(),
-    )
-
-
-def init_org_db(db_name: str, user: str, password: str, create_if_missing: bool = False):
-    engine = get_org_engine(
-        db_name=db_name,
-        user=user,
-        password=password,
-        echo=False,
-        create_if_missing=create_if_missing,
-    )
-    SQLModel.metadata.create_all(engine)
+def init_organization_db(org_id: str):
+    """
+    Initializes the org schema (creates all tables in org's schema).
+    Uses SET ROLE to switch to org_id before creating tables.
+    """
+    engine = get_master_engine(echo=False)
+    with Session(engine) as session:
+        session.execute(text(f"SET ROLE {org_id}"))
+        SQLModel.metadata.create_all(session.connection())
+        session.execute(text("RESET ROLE"))
     return engine
 
 
@@ -110,7 +122,5 @@ def get_session_dependency(engine):
 
     return _get_session
 
-
-# Module‑level init
-MASTER_ENGINE = init_master_db(create_if_missing=False)
-get_master_session = get_session_dependency(MASTER_ENGINE)
+def get_master_session():
+    return None
