@@ -4,8 +4,8 @@ from uuid import UUID
 from sqlmodel import Session, select
 from sqlalchemy import or_, and_, func
 
-from src.domain.models.master_db_models import User, Organisation, UserAppRole, SupabaseUserStatus, AdminUserStatus, UserActionHistory, UserEventType
-from src.domain.models.admin_user_models import CreateUserRequest
+from src.domain.models.master_db_models import User, Organisation, UserAppRole, SupabaseUserStatus, AdminUserStatus, UserActionHistory, UserEventType, OrganisationStatus
+from src.domain.models.admin_user_models import CreateUserRequest, UpdateUserRequest
 from src.infra.utils.logger import get_logger
 from src.infra.utils.cursor import decode_cursor, encode_cursor
 from src.infra.auth.supabase_auth import supabase_auth
@@ -30,6 +30,9 @@ class UserManagementService:
         organisation = session.get(Organisation, user_data.organisation_id)
         if not organisation:
             raise ValueError(f"Organisation with ID {user_data.organisation_id} not found.")
+
+        if organisation.status != OrganisationStatus.APPROVED:
+            raise ValueError(f"Organisation with ID {user_data.organisation_id} is not approved.")
 
         # Check if user with email already exists
         existing_user = session.exec(select(User).where(User.email == user_data.email)).first()
@@ -255,6 +258,44 @@ class UserManagementService:
         session.commit()
         session.refresh(user)
         logger.info(f"Successfully updated user {user_id} admin status to '{new_admin_status}'")
+        return user
+
+    def update_user(
+        self,
+        session: Session,
+        user_id: UUID,
+        admin_id: UUID,
+        user_data: UpdateUserRequest,
+    ) -> User:
+        """
+        Updates a user's details.
+        """
+        logger.info(f"Updating user {user_id} by admin {admin_id}")
+
+        user = session.get(User, user_id)
+        if not user:
+            raise ValueError(f"User with ID {user_id} not found.")
+
+        updated_fields = []
+        for field, value in user_data.dict(exclude_unset=True).items():
+            if getattr(user, field) != value:
+                setattr(user, field, value)
+                updated_fields.append(field)
+
+        if updated_fields:
+            history_entry = UserActionHistory(
+                user_id=user_id,
+                action=UserEventType.UPDATED,
+                actor_admin_id=admin_id,
+                details={"updated_fields": updated_fields},
+            )
+            session.add(history_entry)
+            session.commit()
+            session.refresh(user)
+            logger.info(f"Successfully updated user {user_id}. Fields changed: {', '.join(updated_fields)}")
+        else:
+            logger.info(f"No changes detected for user {user_id}.")
+
         return user
 
 user_management_service = UserManagementService()

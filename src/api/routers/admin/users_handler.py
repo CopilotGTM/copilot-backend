@@ -12,6 +12,7 @@ from src.domain.models.admin_user_models import (
     UpdateUserStatusRequest,
     UpdateUserStatusResponse,
     UserActionHistoryResponse,
+    UpdateUserRequest,
 )
 from src.infra.utils.app_state import fastapp
 from src.infra.utils.logger import get_logger
@@ -281,3 +282,47 @@ async def list_user_action_history(
             exc_info=True,
         )
         return Response.internal_server_error_response(message=f"Failed to list user action history - {e}", data={})
+
+
+@router.put(
+    "/{user_id}/update",
+    response_model=GenericResponse[UserResponse],
+    tags=["admin_users"],
+)
+async def update_user(
+    user_id: UUID,
+    request: UpdateUserRequest,
+    current_admin: SuperAdmin = Depends(admin_auth),
+    master_session: Session = Depends(lambda: next(fastapp.state.master_session())),
+):
+    """
+    Update a user's details.
+    """
+    try:
+        logger.info(f"Request to update user '{user_id}' by admin: {current_admin.email}")
+
+        if current_admin.role not in [AdminRole.SUPER_ADMIN, AdminRole.ADMIN]:
+            logger.warning(f"Unauthorized attempt to update user by: {current_admin.email}.")
+            return Response.forbidden_error_response("Admin access required")
+
+        updated_user = user_management_service.update_user(
+            session=master_session,
+            user_id=user_id,
+            admin_id=current_admin.admin_id,
+            user_data=request,
+        )
+
+        response_data = UserResponse.from_orm(updated_user)
+        
+        logger.info(f"Successfully updated user: {updated_user.email} with ID: {updated_user.user_id}")
+        return Response.success_response(message="User updated successfully", data=response_data)
+
+    except ValueError as ve:
+        logger.warning(f"Value error while updating user: {ve}")
+        return Response.bad_request_error_response(message=str(ve))
+    except Exception as e:
+        logger.error(
+            f"Error updating user '{user_id}': {e}",
+            exc_info=True,
+        )
+        return Response.internal_server_error_response(message=f"Failed to update user - {e}", data={})

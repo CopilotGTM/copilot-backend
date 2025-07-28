@@ -19,6 +19,17 @@ class CreateUserRequest(BaseModel):
     organisation_role: Optional[str] = None
 
 
+class UpdateUserRequest(BaseModel):
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    job_title: Optional[str] = None
+    organisation_role: Optional[str] = None
+    user_role: Optional[UserAppRole] = None
+
+    class Config:
+        extra = "forbid"
+
+
 class UserResponse(BaseModel):
     user_id: UUID
     first_name: str
@@ -45,7 +56,6 @@ class UserResponse(BaseModel):
             organisation_id=user.organisation_id,
             organisation_role=user.organisation_role,
             job_title=user.job_title,
-            is_active=user.is_active,
             status=user.status,
             admin_status=user.admin_status,
             created_at=user.created_at,
