@@ -96,6 +96,8 @@ class OrganizationManagementService:
                 details={"message": "Organization created and pending approval."},
             )
             session.add(history_entry)
+            session.commit()
+            session.refresh(history_entry)
 
             self._create_database_role_and_schema(schema_name, role_name, role_password)
             self._run_organization_migrations(schema_name)
@@ -244,13 +246,57 @@ class OrganizationManagementService:
             details={"message": f"Organization approved by admin {admin_id}."},
         )
         session.add(history_entry)
-        logger.info(
-            f"Logged action '{OrganisationEventType.APPROVED}' for organization {organisation_id} by admin {admin_id}"
-        )
-
         session.commit()
         session.refresh(organisation)
+        session.commit()
         logger.info(f"Successfully approved organization {organisation_id}")
         return organisation
+
+    def update_organization(
+            self,
+            session: Session,
+            admin_id: UUID,
+            organisation_id: UUID,
+            update_data: Dict[str, Any],
+        ) -> Organisation:
+            """
+            Updates an existing organization's details.
+            """
+            logger.info(f"Updating organization {organisation_id} by admin {admin_id}")
+
+            organisation = session.get(Organisation, organisation_id)
+            if not organisation:
+                raise ValueError(f"Organization with ID {organisation_id} not found.")
+
+            updated_fields = []
+            for key, value in update_data.items():
+                if hasattr(organisation, key) and value is not None:
+                    old_value = getattr(organisation, key)
+                    if old_value != value:
+                        setattr(organisation, key, value)
+                        updated_fields.append(
+                            {
+                                "field": key,
+                                "old_value": str(old_value),
+                                "new_value": str(value),
+                            }
+                        )
+
+            if not updated_fields:
+                logger.warning(f"No fields to update for organization {organisation_id}")
+                return organisation
+
+            history_entry = OrganisationActionHistory(
+                organisation_id=organisation_id,
+                action=OrganisationEventType.FIELD_CHANGED,
+                actor_admin_id=admin_id,
+                details={"changes": updated_fields},
+            )
+            session.add(history_entry)
+            session.commit()
+            session.refresh(organisation)
+
+            logger.info(f"Successfully updated organization {organisation_id} with fields: {[f['field'] for f in updated_fields]}")
+            return organisation
 
 organization_management_service = OrganizationManagementService()
