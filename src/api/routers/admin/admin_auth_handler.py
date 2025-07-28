@@ -20,7 +20,7 @@ from src.domain.models.admin_models import (
     AdminResetPasswordRequest,
 )
 from src.domain.models.master_db_models import SuperAdmin
-from src.infra.utils.database import get_master_session
+from src.infra.utils.app_state import fastapp
 from src.infra.auth.admin_auth import admin_auth, admin_auth_allow_pending
 from src.infra.auth.email_service import email_service
 from src.infra.auth.supabase_auth import supabase_auth
@@ -37,7 +37,7 @@ router = APIRouter()
 @router.post("/login", response_model=GenericResponse[AdminLoginResponse], tags=["admin_auth"])
 async def admin_login(
     login_request: AdminLoginRequest,
-    master_session: Session = Depends(get_master_session),
+    master_session: Session = Depends(lambda: next(fastapp.state.master_session())),
 ):
     """
     Super Admin login endpoint.
@@ -138,7 +138,7 @@ async def admin_login(
 @router.post("/force-change-password")
 async def first_time_password_change(
     password_request: AdminFirstTimePasswordChangeRequest,
-    master_session: Session = Depends(get_master_session),
+    master_session: Session = Depends(lambda: next(fastapp.state.master_session())),
 ):
     """
     First-time password change endpoint for Super Admin.
@@ -303,7 +303,7 @@ async def refresh_token(refresh_request: AdminRefreshTokenRequest):
 @router.post("/forgot-password", tags=["admin_auth"])
 async def forgot_password(
     forgot_password_request: AdminForgotPasswordRequest,
-    master_session: Session = Depends(get_master_session),
+    master_session: Session = Depends(lambda: next(fastapp.state.master_session())),
 ):
     """
     Forgot password endpoint for Super Admin.
@@ -463,7 +463,7 @@ async def change_password(
 async def global_logout(
     logout_request: AdminGlobalLogoutRequest,
     current_admin: SuperAdmin = Depends(admin_auth),
-    master_session: Session = Depends(get_master_session),
+    master_session: Session = Depends(lambda: next(fastapp.state.master_session())),
 ):
     """
     Allows a super admin to globally log out any user by email.

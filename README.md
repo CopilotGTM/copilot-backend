@@ -15,7 +15,10 @@
 
 2. **Install dependencies:**
    ```bash
+   # Install python Libraries
    pip install -r requirements.txt
+   # Run Database Docker
+   docker run -d --name my-postgres-container -p 5432:5432 -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=postgres pgvector/pgvector:pg16
    ```
 
 3. **Configure environment variables:**
@@ -46,12 +49,14 @@
    APP_URL=https://your-app-domain.com
    ```
 
-4. **Run Master Migrations:**
+5. **Initialize Master Schema Migrations:**
    ```bash
+   # Run this command if masters versions is empty or you have made any change
+   python -m alembic -c migrations/master_migrations/alembic.ini revision --autogenerate -m "initial setup";
    python -m scripts.run_master_migrations
    ```
 
-5. **Deploy with Super Admin:**
+6. **Deploy with Super Admin:**
    ```bash
    python -m scripts.admin.deploy_with_super_admin
    ```
@@ -63,8 +68,14 @@
    ```
 
 7. **Initialize Organization Schema Migrations:**
-   "test_org_schema" this schema is for testing purpose. Need to be created manully
+   "test_org_schema" this schema is for testing purpose. Need to be created manually
    ```bash
+   # For development first create this schema "test_org_schema" manually if no version file exists in org or you are manking any change
    python -m alembic -c migrations/org_migrations/alembic.ini -x schema=test_org_schema revision --autogenerate -m "initial setup";
    python -m alembic -c migrations/org_migrations/alembic.ini -x schema=test_org_schema upgrade head ;
+   ```
+
+8. **Run the application:**
+   ```bash
+   uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
    ```

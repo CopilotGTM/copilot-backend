@@ -9,7 +9,7 @@ from sqlmodel import Session, select
 import requests
 
 from src.domain.models.master_db_models import SuperAdmin, AdminStatus, AdminRole
-from src.infra.utils.database import get_master_session
+from src.infra.utils.app_state import fastapp
 from src.infra.utils.logger import get_logger
 from src.infra.auth.email_service import email_service
 from src.infra.auth.supabase_auth import supabase_auth
@@ -27,7 +27,11 @@ class AdminAuth:
         self.supabase_url = supabase_config.SUPABASE_URL
         self.supabase_service_role_key = supabase_config.SUPABASE_SERVICE_ROLE_KEY
  
-    async def __call__(self, request: Request, session: Session = Depends(get_master_session)) -> SuperAdmin:
+    async def __call__(
+            self, 
+            request: Request, 
+            session: Session = Depends(lambda: next(fastapp.state.master_session()))
+        ) -> SuperAdmin:
         """
         FastAPI dependency to get current authenticated admin from Supabase token
 

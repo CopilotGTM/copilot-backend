@@ -11,7 +11,7 @@ load_dotenv()
 
 # ---- import every module that declares SQLModel models ----
 # (so that SQLModel.metadata is populated)
-from src.domain.models.master_db_models import Organisation, User, SuperAdmin
+from src.domain.models.master_db_models import Organisation, User, SuperAdmin, OrganisationActionHistory
 
 # (and import any new model modules here)
 
@@ -44,11 +44,13 @@ master_metadata = MetaData()
 Organisation.metadata = master_metadata
 User.metadata = master_metadata
 SuperAdmin.metadata = master_metadata
+OrganisationActionHistory.metadata = master_metadata
 
 # Recreate the tables in the new metadata
 Organisation.__table__.tometadata(master_metadata)
 User.__table__.tometadata(master_metadata)
 SuperAdmin.__table__.tometadata(master_metadata)
+OrganisationActionHistory.__table__.tometadata(master_metadata)
 
 target_metadata = master_metadata
 
