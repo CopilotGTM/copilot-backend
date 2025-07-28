@@ -8,11 +8,13 @@ from src.domain.models.master_db_models import SuperAdmin, AdminRole
 from src.domain.models.admin_org_models import (
     CreateOrganizationRequest,
     CreateOrganizationResponse,
+    DeleteOrganizationResponse,
     PaginationOrganizations,
     UpdateOrganizationRequest,
     ListOrganizationResponse,
     UpdateOrganisationStatusRequest,
     UpdateOrganisationStatusResponse,
+    PaginatedOrganisationActionHistoryResponse,
 )
 from src.domain.models.master_db_models import (
     Organisation,
@@ -28,14 +30,14 @@ from src.api.utils.http_response import Response
 from src.infra.auth.admin_auth import admin_auth
 from src.api.schemas.base_models import GenericResponse
 
-logger = get_logger("admin_organizations_handler")
+logger = get_logger("admin_organisations_handler")
 router = APIRouter()
 
 
 @router.post(
     "/create_organisation",
     # response_model=GenericResponse[CreateOrganizationResponse],
-    tags=["admin_organizations"],
+    tags=["admin_organisations"],
 )
 async def create_organization(
     request: CreateOrganizationRequest,
@@ -87,12 +89,10 @@ async def create_organization(
         return Response.internal_server_error_response(message=f"Failed to create organization - {e}", data={})
 
 
-
-
 @router.get(
     "/list_organisations",
     response_model=GenericResponse[PaginationOrganizations],
-    tags=["admin_organizations"],
+    tags=["admin_organisations"],
 )
 async def list_organizations(
     limit: int = Query(20, ge=1, le=100),
@@ -154,9 +154,9 @@ async def list_organizations(
         return Response.internal_server_error_response(message=f"Failed to list organizations - {e}", data={})
 
 @router.put(
-    "/update_organisation/{organisation_id}",
+    "/{organisation_id}/update",
     response_model=GenericResponse[ListOrganizationResponse],
-    tags=["admin_organizations"],
+    tags=["admin_organisations"],
 )
 async def update_organization(
     organisation_id: UUID,
@@ -202,9 +202,9 @@ async def update_organization(
 
 
 @router.put(
-    "/organisation_status/{organisation_id}",
+    "/{organisation_id}/status",
     response_model=GenericResponse[UpdateOrganisationStatusResponse],
-    tags=["admin_organizations"],
+    tags=["admin_organisations"],
 )
 async def update_organisation_status(
     organisation_id: UUID,
@@ -251,3 +251,125 @@ async def update_organisation_status(
             exc_info=True,
         )
         return Response.internal_server_error_response(message="Failed to update organization status", data={})
+
+
+@router.get(
+    "/{organisation_id}/history",
+    response_model=GenericResponse[PaginatedOrganisationActionHistoryResponse],
+    tags=["admin_organisations"],
+)
+async def get_organisation_history(
+    organisation_id: UUID,
+    limit: int = Query(20, ge=1, le=100),
+    cursor: Optional[str] = Query(None),
+    current_admin: SuperAdmin = Depends(admin_auth),
+    master_session: Session = Depends(lambda: next(fastapp.state.master_session())),
+):
+    """
+    Retrieve the action history for a specific organization.
+    """
+    try:
+        if current_admin.role not in [AdminRole.SUPER_ADMIN, AdminRole.ADMIN]:
+            return Response.forbidden_error_response("Admin access required")
+
+        history_items = organization_management_service.get_organization_history(
+            session=master_session,
+            organisation_id=organisation_id,
+            limit=limit,
+            cursor=cursor,
+        )
+
+        has_more = len(history_items) == limit + 1
+        items = history_items[:limit]
+        next_cursor = encode_cursor(items[-1].created_at, items[-1].id) if has_more else None
+
+        response_data = PaginatedOrganisationActionHistoryResponse(history=items, cursor=next_cursor)
+        return Response.success_response(message="Organization history retrieved successfully", data=response_data)
+
+    except Exception as e:
+        logger.error(f"Error retrieving history for organization '{organisation_id}': {e}", exc_info=True)
+        return Response.internal_server_error_response(message="Failed to retrieve organization history")
+
+
+@router.get(
+    "/all_organisations_history",
+    response_model=GenericResponse[PaginatedOrganisationActionHistoryResponse],
+    tags=["admin_organisations"],
+)
+async def get_all_organisation_history(
+    limit: int = Query(20, ge=1, le=100),
+    cursor: Optional[str] = Query(None),
+    current_admin: SuperAdmin = Depends(admin_auth),
+    master_session: Session = Depends(lambda: next(fastapp.state.master_session())),
+):
+    """
+    Retrieve the action history for all organizations.
+    """
+    try:
+        if current_admin.role not in [AdminRole.SUPER_ADMIN]:
+            return Response.forbidden_error_response("Super admin access required")
+
+        history_items = organization_management_service.get_all_organization_history(
+            session=master_session,
+            limit=limit,
+            cursor=cursor,
+        )
+
+        has_more = len(history_items) == limit + 1
+        items = history_items[:limit]
+        next_cursor = encode_cursor(items[-1].created_at, items[-1].id) if has_more else None
+
+        response_data = PaginatedOrganisationActionHistoryResponse(history=items, cursor=next_cursor)
+        return Response.success_response(message="All organization history retrieved successfully", data=response_data)
+
+    except Exception as e:
+        logger.error(f"Error retrieving all organization history: {e}", exc_info=True)
+        return Response.internal_server_error_response(message="Failed to retrieve all organization history")
+
+
+# @router.delete(
+#     "/{organisation_id}/delete",
+#     response_model=GenericResponse[DeleteOrganizationResponse],
+#     tags=["admin_organisations"],
+# )
+# async def delete_organization(
+#     organisation_id: UUID,
+#     current_admin: SuperAdmin = Depends(admin_auth),
+#     master_session: Session = Depends(lambda: next(fastapp.state.master_session())),
+# ):
+#     """
+#     Permanently delete an organization, its schema, role, and all associated data.
+#     This is a destructive operation and cannot be undone.
+#     This endpoint is restricted to super admins.
+#     """
+#     try:
+#         logger.warning(f"Deletion request for organization '{organisation_id}' by admin: {current_admin.email}. This is a destructive operation.")
+
+#         if current_admin.role not in [AdminRole.SUPER_ADMIN]:
+#             logger.warning(f"Unauthorized attempt to delete organization by user: {current_admin.admin_id}.")
+#             return Response.forbidden_error_response("Super admin access required")
+
+#         deleted_organization = organization_management_service.delete_organization(
+#             session=master_session,
+#             organisation_id=organisation_id,
+#             admin_id=current_admin.admin_id,
+#         )
+
+#         response_data = DeleteOrganizationResponse(
+#             organisation_id=deleted_organization.organisation_id,
+#             organisation_name=deleted_organization.organisation_name,
+#             schema_name=deleted_organization.schema_name,
+#         )
+
+#         logger.info(f"Successfully deleted organization: {deleted_organization.organisation_name}")
+#         return Response.success_response(message="Organization deleted successfully", data=response_data)
+
+#     except ValueError as ve:
+#         logger.warning(f"Value error while deleting organization: {ve}")
+#         return Response.not_found_error_response(message=str(ve))
+#     except Exception as e:
+#         logger.error(
+#             f"Error deleting organization '{organisation_id}': {e}",
+#             exc_info=True,
+#         )
+#         return Response.internal_server_error_response(message="Failed to delete organization", data={})

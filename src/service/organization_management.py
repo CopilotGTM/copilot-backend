@@ -1,9 +1,10 @@
 from os import link
 import secrets
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
 from uuid import uuid4
-from sqlmodel import Session, text
+from sqlmodel import Session, text, select
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import or_, and_
 
 from src.domain.models.master_db_models import (
     Organisation,
@@ -17,6 +18,7 @@ from src.infra.config.configs import database_config, key_vault_config
 from migrations.migration_manager import migration_manager
 from azure.identity import DefaultAzureCredential
 from azure.keyvault.secrets import SecretClient
+from src.infra.utils.cursor import decode_cursor
 
 from uuid import UUID
 
@@ -101,7 +103,7 @@ class OrganizationManagementService:
 
             self._create_database_role_and_schema(schema_name, role_name, role_password)
             self._run_organization_migrations(schema_name)
-            self._store_password_in_key_vault(schema_name, role_password)
+            self._store_password_in_key_vault(role_name, role_password)
             logger.info(f"Successfully created and initialized organization: {organisation_name}")
             
             return {
@@ -170,9 +172,9 @@ class OrganizationManagementService:
             logger.error(f"Migration execution failed for schema '{schema_name}': {e}", exc_info=True)
             raise
 
-    def _store_password_in_key_vault(self, schema_name: str, password: str):
+    def _store_password_in_key_vault(self, role_name: str, password: str):
         """Store password in Azure Key Vault"""
-        logger.info(f"Attempting to store password for schema '{schema_name}' in Azure Key Vault.")
+        logger.info(f"Attempting to store password for role '{role_name}' in Azure Key Vault.")
         try:
             key_vault_url = key_vault_config.AZURE_KEY_VAULT_URL
             if not key_vault_url:
@@ -180,8 +182,7 @@ class OrganizationManagementService:
                 return
             
             # Azure Key Vault secret names only allow alphanumeric characters and dashes.
-            key_vault_secret_name = f"hello-db-password"
-            secret_name = key_vault_secret_name
+            secret_name = role_name.replace("_", "-")
             logger.info(f"Key Vault secret name: {secret_name}")
             
             credential = DefaultAzureCredential()
@@ -189,9 +190,32 @@ class OrganizationManagementService:
             logger.info("Azure Key Vault client created.")
             
             client.set_secret(secret_name, password)
-            logger.info(f"Successfully stored password for schema '{schema_name}' in Azure Key Vault as '{secret_name}'.")
+            logger.info(f"Successfully stored password for role '{role_name}' in Azure Key Vault as '{secret_name}'.")
         except Exception as e:
-            logger.error(f"Failed to store password in Azure Key Vault for schema '{schema_name}': {e}", exc_info=True)
+            logger.error(f"Failed to store password in Azure Key Vault for role '{role_name}': {e}", exc_info=True)
+
+    def _delete_password_from_key_vault(self, role_name: str):
+        """Deletes a password from Azure Key Vault."""
+        logger.info(f"Attempting to delete password for role '{role_name}' from Azure Key Vault.")
+        try:
+            key_vault_url = key_vault_config.AZURE_KEY_VAULT_URL
+            if not key_vault_url:
+                logger.warning("AZURE_KEY_VAULT_URL not set. Skipping Azure Key Vault deletion.")
+                return
+
+            secret_name = role_name.replace("_", "-")
+            
+            credential = DefaultAzureCredential()
+            client = SecretClient(vault_url=key_vault_url, credential=credential)
+            
+            # The delete_secret operation returns a Poller. We can wait for it to complete.
+            poller = client.begin_delete_secret(secret_name)
+            deleted_secret = poller.result()
+            
+            logger.info(f"Successfully deleted secret '{deleted_secret.name}' from Azure Key Vault.")
+        except Exception as e:
+            # It's common for the secret to not be found if deletion is retried, so we log a warning.
+            logger.warning(f"Failed to delete secret for role '{role_name}' from Azure Key Vault: {e}", exc_info=True)
 
     def _ensure_vector_extension_available(self):
         """Ensures the vector extension is available in the database."""
@@ -317,6 +341,128 @@ class OrganizationManagementService:
 
             logger.info(f"Successfully updated organization {organisation_id} with fields: {[f['field'] for f in updated_fields]}")
             return organisation
+
+
+    def get_organization_history(
+        self,
+        session: Session,
+        organisation_id: UUID,
+        limit: int,
+        cursor: Optional[str] = None,
+    ) -> List[OrganisationActionHistory]:
+        """
+        Retrieves the action history for a specific organization with pagination.
+        """
+        logger.info(f"Fetching action history for organization {organisation_id}")
+
+        filters = [OrganisationActionHistory.organisation_id == organisation_id]
+        if cursor:
+            ts, history_id = decode_cursor(cursor)
+            filters.append(
+                or_(
+                    OrganisationActionHistory.created_at < ts,
+                    and_(
+                        OrganisationActionHistory.created_at == ts,
+                        OrganisationActionHistory.id < history_id,
+                    ),
+                )
+            )
+
+        stmt = (
+            select(OrganisationActionHistory)
+            .where(*filters)
+            .order_by(OrganisationActionHistory.created_at.desc(), OrganisationActionHistory.id.desc())
+            .limit(limit + 1)
+        )
+
+        history = session.exec(stmt).all()
+        return history
+
+    def get_all_organization_history(
+        self,
+        session: Session,
+        limit: int,
+        cursor: Optional[str] = None,
+    ) -> List[OrganisationActionHistory]:
+        """
+        Retrieves the action history for all organizations with pagination.
+        """
+        logger.info("Fetching action history for all organizations")
+
+        filters = []
+        if cursor:
+            ts, history_id = decode_cursor(cursor)
+            filters.append(
+                or_(
+                    OrganisationActionHistory.created_at < ts,
+                    and_(
+                        OrganisationActionHistory.created_at == ts,
+                        OrganisationActionHistory.id < history_id,
+                    ),
+                )
+            )
+
+        stmt = (
+            select(OrganisationActionHistory)
+            .where(*filters)
+            .order_by(OrganisationActionHistory.created_at.desc(), OrganisationActionHistory.id.desc())
+            .limit(limit + 1)
+        )
+
+        history = session.exec(stmt).all()
+        return history
+
+    def delete_organization(self, session: Session, organisation_id: UUID, admin_id: UUID) -> Organisation:
+        """
+        Deletes an organization, its schema, role, and associated data.
+        """
+        logger.info(f"Deleting organization {organisation_id} by admin {admin_id}")
+
+        organisation = session.get(Organisation, organisation_id)
+        if not organisation:
+            raise ValueError(f"Organization with ID {organisation_id} not found.")
+
+        if organisation.status != OrganisationStatus.SUSPENDED:
+            raise ValueError(f"Organization must be in 'suspended' state to be deleted, but is currently in '{organisation.status.value}' state.")
+
+        schema_name = organisation.schema_name
+        role_name = organisation.role_name
+
+        # Log the deletion event before starting the destructive operations
+        history_entry = OrganisationActionHistory(
+            organisation_id=organisation_id,
+            action=OrganisationEventType.SYSTEM_MIGRATION, # Using a generic event type for deletion
+            actor_admin_id=admin_id,
+            note=f"Organization '{organisation.organisation_name}' deleted.",
+            details={"schema_name": schema_name, "role_name": role_name},
+        )
+        session.add(history_entry)
+        session.commit()
+
+        # Delete the organization record from the master database.
+        # Users will be cascade deleted due to the relationship setting.
+        session.delete(organisation)
+        session.commit()
+        
+        logger.info(f"Deleted organization record for '{organisation.organisation_name}'")
+
+        # Use the privileged connection to drop schema and role
+        try:
+            with self.master_engine.begin() as conn:
+                logger.info(f"Dropping schema '{schema_name}' and role '{role_name}'.")
+                conn.execute(text(f"DROP SCHEMA IF EXISTS {schema_name} CASCADE"))
+                conn.execute(text(f"DROP ROLE IF EXISTS {role_name}"))
+                logger.info(f"Successfully dropped schema and role for organization {organisation_id}.")
+        except SQLAlchemyError as e:
+            logger.error(f"Failed to drop schema/role for organization {organisation_id}: {e}", exc_info=True)
+            # We raise an exception because the database is now in an inconsistent state.
+            raise Exception(f"Failed to clean up database resources for organization {organisation_id}.")
+
+        # Delete the password from Key Vault
+        self._delete_password_from_key_vault(role_name)
+
+        logger.info(f"Successfully deleted organization {organisation_id} and all associated resources.")
+        return organisation
 
 
 organization_management_service = OrganizationManagementService()

@@ -93,7 +93,7 @@ def create_fastapi_app():
 
     # Admin routers
     fastapp.include_router(admin_auth_router, prefix="/admin/auth", tags=["admin", "authentication"])
-    fastapp.include_router(admin_org_router, prefix="/admin/organizations", tags=["admin", "organizations"])
+    fastapp.include_router(admin_org_router, prefix="/admin/organisations", tags=["admin", "organizations"])
     fastapp.include_router(migration_router, prefix="/admin/migrations", tags=["admin", "migrations"])
 
     # Wrap in Socket.IO

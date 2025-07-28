@@ -108,3 +108,21 @@ class UpdateOrganisationStatusResponse(BaseModel):
     updated_at: datetime
     approved_at: Optional[datetime] = None
     approved_by: Optional[UUID] = None
+
+
+class OrganisationActionHistoryResponse(BaseModel):
+    id: UUID
+    organisation_id: UUID
+    action: str
+    note: Optional[str] = None
+    details: Optional[dict] = None
+    created_at: datetime
+    actor_admin_id: Optional[UUID] = None
+
+    class Config:
+        from_attributes = True
+
+
+class PaginatedOrganisationActionHistoryResponse(BaseModel):
+    history: List[OrganisationActionHistoryResponse]
+    cursor: Optional[str] = None
