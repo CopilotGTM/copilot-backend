@@ -214,42 +214,58 @@ class OrganizationManagementService:
             logger.warning(f"Could not check/create vector extension: {e}")
             logger.warning("Continuing without vector extension verification")
 
-    def approve_organization(
+    def update_organisation_status(
         self,
         session: Session,
         organisation_id: UUID,
         admin_id: UUID,
+        new_status: OrganisationStatus,
         note: str | None = None,
     ) -> Organisation:
         """
-        Approves an organization, updating its status and logging the action.
+        Updates the status of an organization and logs the action.
         """
-        logger.info(f"Approving organization {organisation_id} by admin {admin_id}")
+        logger.info(f"Updating status of organization {organisation_id} to '{new_status}' by admin {admin_id}")
 
         organisation = session.get(Organisation, organisation_id)
         if not organisation:
             raise ValueError(f"Organization with ID {organisation_id} not found.")
 
-        if organisation.status == OrganisationStatus.APPROVED:
-            logger.warning(f"Organization {organisation_id} is already approved.")
+        if organisation.status == new_status:
+            logger.warning(f"Organization {organisation_id} is already in state '{new_status}'.")
             return organisation
 
-        organisation.status = OrganisationStatus.APPROVED
-        organisation.approved_by = admin_id
-        organisation.approved_at = text("CURRENT_TIMESTAMP")
+        # State transition logic
+        if new_status == OrganisationStatus.APPROVED:
+            if organisation.status != OrganisationStatus.PENDING:
+                raise ValueError(f"Organization must be in PENDING state to be approved, but is in {organisation.status} state.")
+            organisation.approved_by = admin_id
+            organisation.approved_at = text("CURRENT_TIMESTAMP")
+            event_type = OrganisationEventType.APPROVED
+        elif new_status == OrganisationStatus.REJECTED:
+            if organisation.status != OrganisationStatus.PENDING:
+                raise ValueError(f"Organization must be in PENDING state to be rejected, but is in {organisation.status} state.")
+            event_type = OrganisationEventType.REJECTED
+        elif new_status == OrganisationStatus.SUSPENDED:
+            if organisation.status != OrganisationStatus.APPROVED:
+                raise ValueError(f"Organization must be in APPROVED state to be suspended, but is in {organisation.status} state.")
+            event_type = OrganisationEventType.SUSPENDED
+        else:
+            raise ValueError(f"Unsupported status transition to '{new_status}'.")
+
+        organisation.status = new_status
 
         history_entry = OrganisationActionHistory(
             organisation_id=organisation_id,
-            action=OrganisationEventType.APPROVED,
+            action=event_type,
             actor_admin_id=admin_id,
             note=note,
-            details={"message": f"Organization approved by admin {admin_id}."},
+            details={"message": f"Organization status changed to {new_status} by admin {admin_id}."},
         )
         session.add(history_entry)
         session.commit()
         session.refresh(organisation)
-        session.commit()
-        logger.info(f"Successfully approved organization {organisation_id}")
+        logger.info(f"Successfully updated organization {organisation_id} status to '{new_status}'")
         return organisation
 
     def update_organization(
@@ -267,6 +283,9 @@ class OrganizationManagementService:
             organisation = session.get(Organisation, organisation_id)
             if not organisation:
                 raise ValueError(f"Organization with ID {organisation_id} not found.")
+
+            if organisation.status not in [OrganisationStatus.APPROVED, OrganisationStatus.PENDING]:
+                raise ValueError(f"Organization with status '{organisation.status}' cannot be updated.")
 
             updated_fields = []
             for key, value in update_data.items():
@@ -298,5 +317,6 @@ class OrganizationManagementService:
 
             logger.info(f"Successfully updated organization {organisation_id} with fields: {[f['field'] for f in updated_fields]}")
             return organisation
+
 
 organization_management_service = OrganizationManagementService()

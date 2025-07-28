@@ -4,6 +4,8 @@ from datetime import datetime
 from pydantic import BaseModel, EmailStr
 from pydantic.generics import GenericModel as _Base
 
+from src.domain.models.master_db_models import OrganisationStatus
+
 T = TypeVar("T")
 
 
@@ -95,13 +97,14 @@ class RunMasterMigrationsResponse(BaseModel):
     admin_user_id: UUID
 
 
-class ApproveOrganizationRequest(BaseModel):
-    organisation_id: UUID
+class UpdateOrganisationStatusRequest(BaseModel):
+    status: OrganisationStatus
     note: Optional[str] = None
 
 
-class ApproveOrganizationResponse(BaseModel):
+class UpdateOrganisationStatusResponse(BaseModel):
     organisation_id: UUID
-    status: str
-    approved_at: datetime
-    approved_by: UUID
+    status: OrganisationStatus
+    updated_at: datetime
+    approved_at: Optional[datetime] = None
+    approved_by: Optional[UUID] = None

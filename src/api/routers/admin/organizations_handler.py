@@ -8,11 +8,11 @@ from src.domain.models.master_db_models import SuperAdmin, AdminRole
 from src.domain.models.admin_org_models import (
     CreateOrganizationRequest,
     CreateOrganizationResponse,
-    ApproveOrganizationRequest,
-    ApproveOrganizationResponse,
     PaginationOrganizations,
     UpdateOrganizationRequest,
     ListOrganizationResponse,
+    UpdateOrganisationStatusRequest,
+    UpdateOrganisationStatusResponse,
 )
 from src.domain.models.master_db_models import (
     Organisation,
@@ -87,54 +87,6 @@ async def create_organization(
         return Response.internal_server_error_response(message=f"Failed to create organization - {e}", data={})
 
 
-@router.post(
-    "/approve_organisation",
-    response_model=GenericResponse[ApproveOrganizationResponse],
-    tags=["admin_organizations"],
-)
-async def approve_organization(
-    request: ApproveOrganizationRequest,
-    current_admin: SuperAdmin = Depends(admin_auth),
-    master_session: Session = Depends(lambda: next(fastapp.state.master_session())),
-):
-    """
-    Approve a pending organization.
-    This endpoint is restricted to super admins.
-    """
-    try:
-        logger.info(f"Organization approval request for '{request.organisation_id}' by admin: {current_admin.email}")
-
-        # Ensure the user has super admin role
-        if current_admin.role not in [AdminRole.SUPER_ADMIN]:
-            logger.warning(f"Unauthorized attempt to approve organization by user: {current_admin.admin_id}.")
-            return Response.forbidden_error_response("Super admin access required")
-
-        organization = organization_management_service.approve_organization(
-            session=master_session,
-            organisation_id=request.organisation_id,
-            admin_id=current_admin.admin_id,
-            note=request.note,
-        )
-
-        response_data = ApproveOrganizationResponse(
-            organisation_id=organization.organisation_id,
-            status=organization.status,
-            approved_at=organization.approved_at,
-            approved_by=organization.approved_by,
-        )
-        
-        logger.info(f"Successfully approved organization: {organization.organisation_name} with ID: {organization.organisation_id}")
-        return Response.success_response(message="Organization approved successfully", data=response_data)
-
-    except ValueError as ve:
-        logger.warning(f"Value error while approving organization: {ve}")
-        return Response.not_found_error_response(message=str(ve))
-    except Exception as e:
-        logger.error(
-            f"Error approving organization '{request.organisation_id}': {e}",
-            exc_info=True,
-        )
-        return Response.internal_server_error_response(message="Failed to approve organization", data={})
 
 
 @router.get(
@@ -247,3 +199,55 @@ async def update_organization(
             exc_info=True,
         )
         return Response.internal_server_error_response(message="Failed to update organization", data={})
+
+
+@router.put(
+    "/organisation_status/{organisation_id}",
+    response_model=GenericResponse[UpdateOrganisationStatusResponse],
+    tags=["admin_organizations"],
+)
+async def update_organisation_status(
+    organisation_id: UUID,
+    request: UpdateOrganisationStatusRequest,
+    current_admin: SuperAdmin = Depends(admin_auth),
+    master_session: Session = Depends(lambda: next(fastapp.state.master_session())),
+):
+    """
+    Update the status of an organization (e.g., approve, reject, suspend).
+    This endpoint is restricted to super admins.
+    """
+    try:
+        logger.info(f"Status update request for organization '{organisation_id}' to '{request.status}' by admin: {current_admin.email}")
+
+        if current_admin.role not in [AdminRole.SUPER_ADMIN]:
+            logger.warning(f"Unauthorized attempt to update organization status by user: {current_admin.admin_id}.")
+            return Response.forbidden_error_response("Super admin access required")
+
+        organization = organization_management_service.update_organisation_status(
+            session=master_session,
+            organisation_id=organisation_id,
+            admin_id=current_admin.admin_id,
+            new_status=request.status,
+            note=request.note,
+        )
+
+        response_data = UpdateOrganisationStatusResponse(
+            organisation_id=organization.organisation_id,
+            status=organization.status,
+            updated_at=organization.updated_at,
+            approved_at=organization.approved_at,
+            approved_by=organization.approved_by,
+        )
+
+        logger.info(f"Successfully updated status for organization: {organization.organisation_name} to {organization.status}")
+        return Response.success_response(message=f"Organization status updated to '{organization.status.value}'", data=response_data)
+
+    except ValueError as ve:
+        logger.warning(f"Value error while updating organization status: {ve}")
+        return Response.bad_request_error_response(message=str(ve))
+    except Exception as e:
+        logger.error(
+            f"Error updating organization status for '{organisation_id}': {e}",
+            exc_info=True,
+        )
+        return Response.internal_server_error_response(message="Failed to update organization status", data={})
