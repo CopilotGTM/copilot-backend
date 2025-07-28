@@ -5,7 +5,12 @@ from uuid import uuid4
 from sqlmodel import Session, text
 from sqlalchemy.exc import SQLAlchemyError
 
-from src.domain.models.master_db_models import Organisation
+from src.domain.models.master_db_models import (
+    Organisation,
+    OrganisationActionHistory,
+    OrganisationEventType,
+    OrganisationStatus,
+)
 from src.infra.utils.logger import get_logger
 from src.infra.utils.database import database_previlage_connectin
 from src.infra.config.configs import database_config, key_vault_config
@@ -24,6 +29,7 @@ class OrganizationManagementService:
     def __init__(self):
         """Initializes the service."""
         self.master_engine = database_previlage_connectin()
+        self._ensure_vector_extension_available()
 
     def create_organization(
         self,
@@ -82,6 +88,15 @@ class OrganizationManagementService:
             session.refresh(organization)
             logger.info(f"Organization record created for '{organisation_name}' with ID: {organization.organisation_id}")
 
+            # Log the creation event
+            history_entry = OrganisationActionHistory(
+                organisation_id=organization.organisation_id,
+                action=OrganisationEventType.CREATED,
+                actor_admin_id=admin_id,
+                details={"message": "Organization created and pending approval."},
+            )
+            session.add(history_entry)
+
             self._create_database_role_and_schema(schema_name, role_name, role_password)
             self._run_organization_migrations(schema_name)
             self._store_password_in_key_vault(schema_name, role_password)
@@ -102,9 +117,28 @@ class OrganizationManagementService:
         logger.info(f"Creating database role '{role_name}' and schema '{schema_name}'.")
         try:
             with self.master_engine.begin() as conn:
+                # Create role
                 conn.execute(text(f"CREATE ROLE {role_name} LOGIN PASSWORD :pwd NOINHERIT"), {"pwd": password})
+                logger.info(f"Created database role '{role_name}'")
+                
+                # Create schema
                 conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema_name} AUTHORIZATION {role_name}"))
-                conn.execute(text(f"CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA {schema_name}"))
+                logger.info(f"Created schema '{schema_name}'")
+                
+                # Try to create vector extension - handle gracefully if it fails
+                try:
+                    # First ensure vector extension exists in the database
+                    conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+                    logger.info("Ensured vector extension exists in database")
+                    
+                    # Then create it in the specific schema
+                    conn.execute(text(f"CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA {schema_name}"))
+                    logger.info(f"Created vector extension in schema '{schema_name}'")
+                except SQLAlchemyError as vector_error:
+                    logger.warning(f"Failed to create vector extension in schema '{schema_name}': {vector_error}")
+                    logger.warning("Continuing without vector extension - this may affect vector operations")
+                
+                # Grant permissions
                 conn.execute(text(f"GRANT USAGE ON SCHEMA {schema_name} TO {role_name}"))
                 conn.execute(text(f"GRANT ALL PRIVILEGES ON SCHEMA {schema_name} TO {role_name}"))
                 
@@ -156,5 +190,67 @@ class OrganizationManagementService:
             logger.info(f"Successfully stored password for schema '{schema_name}' in Azure Key Vault as '{secret_name}'.")
         except Exception as e:
             logger.error(f"Failed to store password in Azure Key Vault for schema '{schema_name}': {e}", exc_info=True)
+
+    def _ensure_vector_extension_available(self):
+        """Ensures the vector extension is available in the database."""
+        try:
+            with self.master_engine.begin() as conn:
+                # Check if vector extension is available
+                result = conn.execute(text(
+                    "SELECT 1 FROM pg_available_extensions WHERE name = 'vector'"
+                )).fetchone()
+                
+                if result:
+                    # Extension is available, try to create it if not exists
+                    conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+                    logger.info("Vector extension is available and enabled")
+                else:
+                    logger.warning("Vector extension is not available in this PostgreSQL instance")
+                    logger.warning("Vector operations may not work. Consider using pgvector/pgvector Docker image")
+                    
+        except SQLAlchemyError as e:
+            logger.warning(f"Could not check/create vector extension: {e}")
+            logger.warning("Continuing without vector extension verification")
+
+    def approve_organization(
+        self,
+        session: Session,
+        organisation_id: UUID,
+        admin_id: UUID,
+        note: str | None = None,
+    ) -> Organisation:
+        """
+        Approves an organization, updating its status and logging the action.
+        """
+        logger.info(f"Approving organization {organisation_id} by admin {admin_id}")
+
+        organisation = session.get(Organisation, organisation_id)
+        if not organisation:
+            raise ValueError(f"Organization with ID {organisation_id} not found.")
+
+        if organisation.status == OrganisationStatus.APPROVED:
+            logger.warning(f"Organization {organisation_id} is already approved.")
+            return organisation
+
+        organisation.status = OrganisationStatus.APPROVED
+        organisation.approved_by = admin_id
+        organisation.approved_at = text("CURRENT_TIMESTAMP")
+
+        history_entry = OrganisationActionHistory(
+            organisation_id=organisation_id,
+            action=OrganisationEventType.APPROVED,
+            actor_admin_id=admin_id,
+            note=note,
+            details={"message": f"Organization approved by admin {admin_id}."},
+        )
+        session.add(history_entry)
+        logger.info(
+            f"Logged action '{OrganisationEventType.APPROVED}' for organization {organisation_id} by admin {admin_id}"
+        )
+
+        session.commit()
+        session.refresh(organisation)
+        logger.info(f"Successfully approved organization {organisation_id}")
+        return organisation
 
 organization_management_service = OrganizationManagementService()

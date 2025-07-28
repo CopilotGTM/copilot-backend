@@ -86,3 +86,15 @@ class RunMigrationsResponse(BaseModel):
 class RunMasterMigrationsResponse(BaseModel):
     target_version: str
     admin_user_id: UUID
+
+
+class ApproveOrganizationRequest(BaseModel):
+    organisation_id: UUID
+    note: Optional[str] = None
+
+
+class ApproveOrganizationResponse(BaseModel):
+    organisation_id: UUID
+    status: str
+    approved_at: datetime
+    approved_by: UUID

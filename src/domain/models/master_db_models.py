@@ -129,6 +129,7 @@ class SuperAdmin(TimestampMixin, table=True):
 
 
 class OrganisationEventType(str, Enum):
+    CREATED = "created"
     APPROVED = "approved"
     REJECTED = "rejected"
     SUSPENDED = "suspended"
