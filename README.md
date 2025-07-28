@@ -49,25 +49,19 @@
    APP_URL=https://your-app-domain.com
    ```
 
-5. **Initialize Master Schema Migrations:**
+4. **Initialize Master Schema Migrations:**
    ```bash
    # Run this command if masters versions is empty or you have made any change
    python -m alembic -c migrations/master_migrations/alembic.ini revision --autogenerate -m "initial setup";
    python -m scripts.run_master_migrations
    ```
 
-6. **Deploy with Super Admin:**
+5. **Deploy with Super Admin:**
    ```bash
    python -m scripts.admin.deploy_with_super_admin
    ```
 
-6. **Initialize Master Schema Migrations:**
-   ```bash
-   python -m alembic -c migrations/master_migrations/alembic.ini revision --autogenerate -m "initial setup";
-   python -m scripts.run_master_migrations
-   ```
-
-7. **Initialize Organization Schema Migrations:**
+6. **Initialize Organization Schema Migrations:**
    "test_org_schema" this schema is for testing purpose. Need to be created manually
    ```bash
    # For development first create this schema "test_org_schema" manually if no version file exists in org or you are manking any change
@@ -75,7 +69,7 @@
    python -m alembic -c migrations/org_migrations/alembic.ini -x schema=test_org_schema upgrade head ;
    ```
 
-8. **Run the application:**
+7. **Run the application:**
    ```bash
    uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
    ```

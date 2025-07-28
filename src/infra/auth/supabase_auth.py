@@ -15,6 +15,36 @@ logger = get_logger()
 class SupabaseAuth:
     """Supabase authentication utility"""
 
+    def create_user_with_service_role(self, email: str, password: str, user_metadata: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+        """
+        Create a new user in Supabase using the service role key.
+        This bypasses email confirmation and allows direct user creation.
+        """
+        try:
+            url = f"{self.supabase_url}/auth/v1/admin/users"
+            headers = {
+                "apikey": self.supabase_service_role_key,
+                "Authorization": f"Bearer {self.supabase_service_role_key}",
+                "Content-Type": "application/json",
+            }
+            payload = {
+                "email": email,
+                "password": password,
+                "email_confirm": True, # Automatically confirm email
+                "user_metadata": user_metadata or {},
+            }
+            response = requests.post(url, headers=headers, json=payload)
+
+            if response.status_code == 200:
+                logger.info(f"Successfully created user {email} in Supabase.")
+                return response.json()
+            else:
+                logger.error(f"Failed to create user {email} in Supabase: {response.text}")
+                return None
+        except Exception as e:
+            logger.error(f"Error creating user in Supabase: {str(e)}")
+            return None
+
     def __init__(self):
         self.supabase_url = supabase_config.SUPABASE_URL
         self.supabase_anon_key = supabase_config.SUPABASE_ANON_KEY
