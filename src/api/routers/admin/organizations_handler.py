@@ -6,7 +6,7 @@ from src.domain.models.admin_org_models import (
     CreateOrganizationRequest,
     CreateOrganizationResponse,
 )
-from src.infra.utils.database import get_master_session
+from src.infra.utils.app_state import fastapp
 from src.infra.utils.logger import get_logger
 from src.service.organization_management import organization_management_service
 from src.api.utils.http_response import Response
@@ -19,13 +19,13 @@ router = APIRouter()
 
 @router.post(
     "/create_organisation",
-    response_model=GenericResponse[CreateOrganizationResponse],
+    # response_model=GenericResponse[CreateOrganizationResponse],
     tags=["admin_organizations"],
 )
 async def create_organization(
     request: CreateOrganizationRequest,
     current_admin: SuperAdmin = Depends(admin_auth),
-    master_session: Session = Depends(get_master_session),
+    master_session: Session = Depends(lambda: next(fastapp.state.master_session())),
 ):
     """
     Create a new organization with a dedicated schema, role, and database user.
@@ -33,6 +33,7 @@ async def create_organization(
     """
     try:
         current_user = current_admin.admin_id
+        logger.info(f"Creating organization for admin: {current_user}")
         logger.info(f"Organization creation request for '{request.organisation_name}' by admin: {current_admin.email}")
 
         # Ensure the user has super admin role
@@ -42,8 +43,10 @@ async def create_organization(
 
         # details for the organization
         org_details = request.dict(exclude_unset=True, exclude={"organisation_name"})
+        logger.info(f"Organization details: {org_details}")
 
         result = organization_management_service.create_organization(
+            admin_id=current_user,
             organisation_name=request.organisation_name,
             session=master_session,
             **org_details,
@@ -66,4 +69,4 @@ async def create_organization(
             f"Error creating organization '{request.organisation_name}': {e}",
             exc_info=True,
         )
-        return Response.internal_server_error_response(message="Failed to create organization")
+        return Response.internal_server_error_response(message="Failed to create organization", data={})

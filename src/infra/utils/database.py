@@ -57,11 +57,11 @@ def get_master_engine(echo: bool = True) -> Engine:
 
     host, port = _get_env_host_port()
     db_name = database_config.DATABASE_NAME
-    user = "master_copilot_role"
-    password = _get_secret_from_key_vault("master-copilot-role-password")
+    user = database_config.DATABASE_USER
+    password = database_config.DATABASE_PASSWORD
 
-    if not password:
-        raise ValueError("Master role password not found in Key Vault.")
+    if not user or not password:
+        raise ValueError("DATABASE_USER and DATABASE_PASSWORD must be configured.")
 
     pw = urllib.parse.quote_plus(password)
     url = f"postgresql://{user}:{pw}@{host}:{port}/{db_name}"
@@ -124,3 +124,10 @@ def get_session_dependency(engine):
 
 def get_master_session():
     return None
+
+
+def database_previlage_connectin():
+    """
+    Returns the master engine.
+    """
+    return get_master_engine(echo=False)

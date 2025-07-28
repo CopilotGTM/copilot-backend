@@ -1,3 +1,4 @@
+from os import link
 import secrets
 from typing import Dict, Any
 from uuid import uuid4
@@ -6,9 +7,13 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from src.domain.models.master_db_models import Organisation
 from src.infra.utils.logger import get_logger
-from src.infra.utils.database import get_master_engine
-from src.infra.config.configs import database_config
+from src.infra.utils.database import database_previlage_connectin
+from src.infra.config.configs import database_config, key_vault_config
 from migrations.migration_manager import migration_manager
+from azure.identity import DefaultAzureCredential
+from azure.keyvault.secrets import SecretClient
+
+from uuid import UUID
 
 logger = get_logger("organization_management_service")
 
@@ -18,10 +23,11 @@ class OrganizationManagementService:
 
     def __init__(self):
         """Initializes the service."""
-        self.master_engine = get_master_engine(echo=False)
+        self.master_engine = database_previlage_connectin()
 
     def create_organization(
         self,
+        admin_id: UUID,
         organisation_name: str,
         session: Session,
         **org_details,
@@ -49,23 +55,36 @@ class OrganizationManagementService:
 
         try:
             # 1. Create the organization record in the master database
+            sales_team_size = org_details.get("sales_team_size", None)
+            country = org_details.get("country", None)
+            company_address = org_details.get("company_address", None)
+            linked_in_url = org_details.get("linked_in_url", [])
+            website_url = org_details.get("website_url", [])
+            summary = org_details.get("summary", None)
+            logo_url = org_details.get("logo_url", None)
+
             organization = Organisation(
                 organisation_name=organisation_name,
                 schema_name=schema_name,
                 role_name=role_name,
-                **org_details,
+                sales_team_size=sales_team_size,
+                country=country,    
+                company_address=company_address,
+                linked_in_url=linked_in_url,
+                website_url=website_url,
+                summary=summary,
+                logo_url=logo_url,
+                created_by_auth_user_id=str(admin_id),
+                approved_by=None
             )
             session.add(organization)
             session.commit()
             session.refresh(organization)
             logger.info(f"Organization record created for '{organisation_name}' with ID: {organization.organisation_id}")
 
-            # 2. Create the database role and schema
             self._create_database_role_and_schema(schema_name, role_name, role_password)
-
-            # 3. Run migrations for the new organization's schema
             self._run_organization_migrations(schema_name)
-
+            self._store_password_in_key_vault(schema_name, role_password)
             logger.info(f"Successfully created and initialized organization: {organisation_name}")
             
             return {
@@ -115,5 +134,27 @@ class OrganizationManagementService:
             logger.error(f"Migration execution failed for schema '{schema_name}': {e}", exc_info=True)
             raise
 
+    def _store_password_in_key_vault(self, schema_name: str, password: str):
+        """Store password in Azure Key Vault"""
+        logger.info(f"Attempting to store password for schema '{schema_name}' in Azure Key Vault.")
+        try:
+            key_vault_url = key_vault_config.AZURE_KEY_VAULT_URL
+            if not key_vault_url:
+                logger.warning("AZURE_KEY_VAULT_URL not set. Skipping Azure Key Vault storage.")
+                return
+            
+            # Azure Key Vault secret names only allow alphanumeric characters and dashes.
+            key_vault_secret_name = f"hello-db-password"
+            secret_name = key_vault_secret_name
+            logger.info(f"Key Vault secret name: {secret_name}")
+            
+            credential = DefaultAzureCredential()
+            client = SecretClient(vault_url=key_vault_url, credential=credential)
+            logger.info("Azure Key Vault client created.")
+            
+            client.set_secret(secret_name, password)
+            logger.info(f"Successfully stored password for schema '{schema_name}' in Azure Key Vault as '{secret_name}'.")
+        except Exception as e:
+            logger.error(f"Failed to store password in Azure Key Vault for schema '{schema_name}': {e}", exc_info=True)
 
 organization_management_service = OrganizationManagementService()

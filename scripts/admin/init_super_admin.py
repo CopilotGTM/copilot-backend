@@ -26,7 +26,8 @@ from sqlmodel import Session, select
 from src.domain.models.master_db_models import SuperAdmin
 from src.infra.auth.admin_auth import admin_auth
 from src.infra.auth.email_service import email_service
-from src.infra.utils.database import get_session_dependency, init_master_db
+import urllib.parse
+from sqlalchemy import create_engine
 from src.infra.utils.logger import get_logger
 
 # Load environment variables from .env file
@@ -111,30 +112,38 @@ def main():
     """
     logger.info("Starting super admin initialization script...")
 
-    master_engine = init_master_db(create_if_missing=True)
-    session_generator = get_session_dependency(master_engine)
-    session: Optional[Session] = None
+    # Database connection setup
+    DATABASE_HOST = os.getenv("DATABASE_HOST", "localhost")
+    DATABASE_PORT = os.getenv("DATABASE_PORT", "5432")
+    DATABASE_NAME = os.getenv("DATABASE_NAME", "postgres")
+    DATABASE_USER = os.getenv("DATABASE_USER", "postgres")
+    DATABASE_PASSWORD = os.getenv("DATABASE_PASSWORD", "")
+
+    if not DATABASE_USER or not DATABASE_PASSWORD:
+        logger.error("DATABASE_USER and DATABASE_PASSWORD must be set in environment variables.")
+        sys.exit(1)
+
+    encoded_password = urllib.parse.quote_plus(DATABASE_PASSWORD)
+    db_url = f"postgresql://{DATABASE_USER}:{encoded_password}@{DATABASE_HOST}:{DATABASE_PORT}/{DATABASE_NAME}"
+
+    engine = create_engine(db_url, echo=False)
 
     try:
-        session = next(session_generator())
+        with Session(engine) as session:
+            if check_super_admin_exists(session):
+                logger.info("Super admin already exists. Skipping creation.")
+                return
 
-        if check_super_admin_exists(session):
-            logger.info("Super admin already exists. Skipping creation.")
-            return
-
-        logger.info("Creating new super admin account...")
-        if create_super_admin(session):
-            logger.info("Super admin initialization completed successfully!")
-        else:
-            logger.error("Super admin initialization failed.")
-            sys.exit(1)
+            logger.info("Creating new super admin account...")
+            if create_super_admin(session):
+                logger.info("Super admin initialization completed successfully!")
+            else:
+                logger.error("Super admin initialization failed.")
+                sys.exit(1)
 
     except Exception as e:
         logger.error(f"A critical error occurred during super admin initialization: {e}")
         sys.exit(1)
-    finally:
-        if session:
-            session.close()
 
 
 if __name__ == "__main__":

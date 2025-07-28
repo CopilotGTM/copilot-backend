@@ -6,15 +6,12 @@ from pydantic import BaseModel, EmailStr
 
 class CreateOrganizationRequest(BaseModel):
     organisation_name: str
-    admin_email: EmailStr
-    admin_first_name: str
-    admin_last_name: str
     country: Optional[str] = None
     sales_team_size: Optional[int] = None
     company_address: Optional[str] = None
     billing_address: Optional[str] = None
-    linked_urls: Optional[str] = None
-    website_urls: Optional[str] = None
+    linked_urls: Optional[List[str]] = None
+    website_urls: Optional[List[str]] = None
     summary: Optional[str] = None
     logo_url: Optional[str] = None
 

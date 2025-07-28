@@ -66,7 +66,6 @@ class Organisation(TimestampMixin, table=True):
     summary: Optional[str] = Field(default=None, sa_column=Column(Text))
     is_active: bool = Field(default=True)
     logo_url: Optional[str] = Field(default=None, max_length=500)
-    joined_date: date = Field(default_factory=today)
 
     # Status + cached approval info
     status: OrganisationStatus = Field(default=OrganisationStatus.PENDING, index=True)
