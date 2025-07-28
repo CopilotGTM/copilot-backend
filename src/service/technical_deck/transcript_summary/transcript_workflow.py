@@ -55,7 +55,7 @@ class TranscriptSummaryAgent(Workflow):
                 complete_content += self.document_reader.read_document(file_url)
 
             summary_response = await self.summary_agent.arun(complete_content, stream=True)
-            
+
             async for chunk in summary_response:
                 if chunk.event == "RunResponseContent":
                     yield RunResponse(status="RUNNING", content=chunk.content)

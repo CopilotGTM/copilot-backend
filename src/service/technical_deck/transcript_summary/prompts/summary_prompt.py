@@ -1,8 +1,7 @@
-
 from textwrap import dedent
 
 TRANSCRIPT_SUMMARY_PROMPT = dedent(
-"""
+    """
 You are an AI assistant tasked with analyzing a presales meeting transcript. Thoroughly analyze the meeting transcript. 
 
 You work for Xeno Organization and must summarize the meeting solely from their perspective. The summary will be used for deck creation and business insights.

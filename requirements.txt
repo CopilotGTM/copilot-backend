@@ -15,6 +15,9 @@ redis==5.2.1
 python-dotenv==0.21.0
 PyJWT==2.8.0
 
+# HTTP client for Supabase API calls
+requests>=2.31.0
+
 # Database and ORM
 sqlmodel==0.0.24
 SQLAlchemy==2.0.40
@@ -26,6 +29,8 @@ azure-ai-inference==1.0.0b9
 openai==1.88.0
 azure-storage-blob==12.25.1
 azure-common==1.1.28
+azure-identity>=1.14.0
+azure-keyvault-secrets>=4.7.0
 
 # Google Cloud
 google-cloud-storage==3.1.0
@@ -39,6 +44,9 @@ wikipedia==1.4.0
 duckduckgo-search
 PyMuPDF==1.23.26  # For PDF handling
 
+# Admin authentication and email
+resend==0.6.0
+
 python-docx~=1.1.2
 pandas~=2.2.3
 fsspec~=2025.3.2
@@ -49,3 +57,4 @@ python-pptx~=1.0.2
 celery~=5.5.3
 lxml
 pydantic>=2.0.0,<3.0.0
+pydantic[email]~=2.2.0

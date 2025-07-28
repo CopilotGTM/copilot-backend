@@ -1,5 +1,6 @@
 from typing import Any, Optional, Dict, List
 from socketio import AsyncServer
+
 # from src.api.schemas.chat_socket_models import ChatMessageReceived
 from src.api.events.socket_app import sio as InputSio
 

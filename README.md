@@ -1,84 +1,75 @@
 # User Authentication Service
 
-A FastAPI-based service for user authentication, featuring local development and production-ready configurations, as well as Celery integration for background tasks.
-
----
-
-## Table of Contents
-
-- [Features](#features)
-- [Prerequisites](#prerequisites)
-- [Setup & Installation](#setup--installation)
-- [Development](#development)
-- [Production](#production)
-- [Code Formatting](#code-formatting)
-
----
-
-## Features
-
-- User authentication APIs built with FastAPI
-- Asynchronous background processing with Celery
-- Easy local development with hot-reload
-- Production-ready configuration
-
----
-
 ## Prerequisites
 
-- Python 3.8+
+- Python 3.11
 - [pip](https://pip.pypa.io/en/stable/)
 - [Uvicorn](https://www.uvicorn.org/)
 - [Celery](https://docs.celeryq.dev/en/stable/)
-- (Optional) Redis or RabbitMQ for Celery broker
+- Redis
+- PostgreSQL
 
 ---
 
 ## Setup & Installation
 
-1. **Clone the repository:**
-   ```bash
-   git clone <your-repo-url>
-   cd <repo-directory>
-   ```
-
 2. **Install dependencies:**
    ```bash
+   # Install python Libraries
    pip install -r requirements.txt
+   # Run Database Docker
+   docker run -d --name my-postgres-container -p 5432:5432 -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=postgres pgvector/pgvector:pg16
    ```
 
----
+3. **Configure environment variables:**
+   Create a `.env` file with the following variables:
+   ```bash
+   # Database Configuration
+   DATABASE_HOST=localhost
+   DATABASE_PORT=5432
+   DATABASE_USER=postgres
+   DATABASE_PASSWORD=your_password
+   DATABASE_NAME=postgres
+   
+   # Super Admin Configuration
+   SUPER_ADMIN_EMAIL=admin@yourcompany.com
+   
+   # Supabase Configuration
+   SUPABASE_URL=https://your-project.supabase.co
+   SUPABASE_ANON_KEY=your-anon-key
+   SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+   SUPABASE_JWT_SECRET=your-jwt-secret
+   
+   # Email Configuration (Resend)
+   RESEND_API_KEY=your-resend-api-key
+   FROM_EMAIL=noreply@yourdomain.com
+   
+   # Application Configuration
+   APP_NAME=CopilotGTM
+   APP_URL=https://your-app-domain.com
+   ```
 
-## Development
+4. **Initialize Master Schema Migrations:**
+   ```bash
+   # Run this command if masters versions is empty or you have made any change
+   python -m alembic -c migrations/master_migrations/alembic.ini revision --autogenerate -m "initial setup";
+   python -m scripts.run_master_migrations
+   ```
 
-To run the FastAPI app and Celery worker locally with hot-reload and debug logging:
+5. **Deploy with Super Admin:**
+   ```bash
+   python -m scripts.admin.deploy_with_super_admin
+   ```
 
-```bash
-# Start FastAPI server (with reload and debug logging)
-uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload --log-level debug
+6. **Initialize Organization Schema Migrations:**
+   "test_org_schema" this schema is for testing purpose. Need to be created manually
+   ```bash
+   # For development first create this schema "test_org_schema" manually if no version file exists in org or you are manking any change
+   python -m alembic -c migrations/org_migrations/alembic.ini -x schema=test_org_schema revision --autogenerate -m "initial setup";
+   python -m alembic -c migrations/org_migrations/alembic.ini -x schema=test_org_schema upgrade head ;
+   ```
 
-# In a separate terminal, start Celery worker
-celery -A celery_app worker --loglevel=info -P solo
-```
-
----
-
-## Production
-
-To run the application in production mode (with multiple workers):
-
-```bash
-uvicorn main:app --host 0.0.0.0 --port 8000 --workers $(nproc) --reload
-```
-
----
-
-## Code Formatting
-
-Before pushing code, format it using [Black](https://black.readthedocs.io/en/stable/):
-
-```bash
-black . -l 120
-```
-
----
+7. **Run the application:**
+   ```bash
+   uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
+   ```
