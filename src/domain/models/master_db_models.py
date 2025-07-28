@@ -81,6 +81,24 @@ class Organisation(TimestampMixin, table=True):
     action_history: List["OrganisationActionHistory"] = Relationship(back_populates="organisation")
 
 
+class UserAppRole(str, Enum):
+    MEMBER = "member"
+    ADMIN = "admin"
+
+class SupabaseUserStatus(str, Enum):
+    ACTIVE = "active"
+    INACTIVE = "inactive"
+    PENDING_VERIFICATION = "pending_verification"
+    DISABLED = "disabled"
+    NOTHING = "nothing"
+
+class AdminUserStatus(str, Enum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    SUSPENDED = "suspended"
+
+
 class User(TimestampMixin, table=True):
     __tablename__ = "users"
 
@@ -90,16 +108,60 @@ class User(TimestampMixin, table=True):
     first_name: str = Field(..., max_length=100)
     last_name: str = Field(..., max_length=100)
     email: EmailStr = Field(..., unique=True, max_length=255)
-    organisation_role: str = Field(..., nullable=False)
-    title: Optional[str] = Field(default=None, max_length=100)
-    is_active: bool = Field(default=True)
-    is_admin: bool = Field(default=False)
+    user_role: UserAppRole = Field(..., nullable=False)
+    organisation_role: str = Field(..., max_length=100)
+    job_title: Optional[str] = Field(default=None, max_length=100)
+    status: SupabaseUserStatus = Field(default=SupabaseUserStatus.NOTHING, index=True)
+    admin_status: AdminUserStatus = Field(default=AdminUserStatus.PENDING, index=True)
     last_login_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True))
     created_by_auth_user_id: Optional[str] = Field(default=None, nullable=True, index=True, description="Supabase auth.users.id of creator")
+    approved_by: Optional[UUID] = Field(
+        default=None,
+        sa_column=Column("approved_by", ForeignKey("super_admins.admin_id", ondelete="SET NULL"), nullable=True)
+    )
+    approved_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True))
 
     # Relationships
     organisation: Organisation = Relationship(back_populates="users")
+    action_history: List["UserActionHistory"] = Relationship(back_populates="user")
 
+class UserEventType(str, Enum):
+    CREATED = "created"
+    UPDATED = "updated"
+    STATUS_CHANGED = "status_changed"
+    ROLE_CHANGED = "role_changed"
+    DELETED = "deleted"
+    LOGIN = "login"
+    PASSWORD_RESET = "password_reset"
+    EMAIL_VERIFIED = "email_verified"
+    FIELD_CHANGED = "field_changed"
+
+
+class UserActionHistory(CreatedAtMixin, table=True):
+    __tablename__ = "user_action_history"
+    __table_args__ = (
+        Index("ix_uah_user_created_at", "user_id", "created_at"),
+        Index("ix_uah_action_created_at", "action", "created_at"),
+        Index("ix_uah_actor_created_at", "actor_admin_id", "created_at"),
+        UniqueConstraint("user_id", "request_id", name="uq_uah_user_request_id"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    user_id: UUID = Field(foreign_key="users.user_id", nullable=False, index=True)
+
+    actor_admin_id: Optional[UUID] = Field(
+        default=None,
+        sa_column=Column(ForeignKey("super_admins.admin_id", ondelete="SET NULL"), index=True),
+    )
+
+    request_id: Optional[str] = Field(default=None, sa_column=Column(String(64), index=True))
+
+    action: UserEventType = Field(..., index=True)
+    note: Optional[str] = Field(default=None, sa_column=Column(Text))
+    details: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column(JSON))
+
+    user: "User" = Relationship(back_populates="action_history")
+    actor_admin: "SuperAdmin" = Relationship(back_populates="user_action_history")
 
 class AdminRole(str, Enum):
     SUPER_ADMIN = "super_admin"
@@ -126,6 +188,7 @@ class SuperAdmin(TimestampMixin, table=True):
 
     # Relationships
     action_history: List["OrganisationActionHistory"] = Relationship(back_populates="actor_admin")
+    user_action_history: List["UserActionHistory"] = Relationship(back_populates="actor_admin")
 
 
 class OrganisationEventType(str, Enum):

@@ -30,6 +30,7 @@ from src.api.routers.auth_handler import auth_router
 from src.api.routers.admin.organizations_handler import router as admin_org_router
 from src.api.routers.admin.migrations_handler import migration_router
 from src.api.routers.admin.admin_auth_handler import router as admin_auth_router
+from src.api.routers.admin.users_handler import router as admin_user_router
 
 from src.api.events import chat_message_handler
 from src.api.events import connect_handler
@@ -95,6 +96,7 @@ def create_fastapi_app():
     fastapp.include_router(admin_auth_router, prefix="/admin/auth", tags=["admin", "authentication"])
     fastapp.include_router(admin_org_router, prefix="/admin/organisations", tags=["admin", "organizations"])
     fastapp.include_router(migration_router, prefix="/admin/migrations", tags=["admin", "migrations"])
+    fastapp.include_router(admin_user_router, prefix="/admin/users", tags=["admin", "users"])
 
     # Wrap in Socket.IO
     return ASGIApp(sio, other_asgi_app=fastapp)
