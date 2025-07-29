@@ -7,7 +7,6 @@ from src.domain.models.authentication import Authentication
 from src.infra.utils.database import get_master_session
 from src.infra.utils.logger import get_logger
 from src.service.user_management import user_management_service
-from src.infra.auth.supabase_auth import supabase_auth
 from src.api.utils.http_response import Response
 
 auth = Authentication()
