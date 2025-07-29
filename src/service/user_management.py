@@ -3,7 +3,7 @@ from sqlmodel import Session, select
 from uuid import UUID, uuid4
 
 from src.domain.models.master_db_models import User, Organisation
-from src.infra.auth.supabase_auth import supabase_auth
+from src.infra.auth.supabase_client import supabase_client
 from src.infra.utils.logger import get_logger
 
 logger = get_logger()
@@ -13,7 +13,7 @@ class UserManagementService:
     """Service for managing users with Supabase authentication"""
 
     def __init__(self):
-        self.supabase_auth = supabase_auth
+        self.supabase_client = supabase_client
 
     def create_user_from_supabase(
         self, supabase_user_data: Dict[str, Any], session: Session, organisation_id: Optional[UUID] = None

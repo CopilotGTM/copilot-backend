@@ -9,7 +9,7 @@ from src.domain.models.master_db_models import User
 from src.infra.utils.app_state import fastapp
 from src.infra.utils.logger import get_logger
 from src.infra.utils.database import get_master_session
-from src.infra.auth.supabase_auth import supabase_auth
+from src.infra.auth.supabase_client import supabase_client
 
 logger = get_logger()
 
@@ -51,7 +51,7 @@ class Authentication:
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Authentication token missing")
 
             # Get user from Supabase token
-            user = supabase_auth.get_user_from_token(access_token, master_session)
+            user = supabase_client.get_user_from_token(access_token, master_session)
 
             if not user:
                 logger.warning("User not found or token invalid")
@@ -74,10 +74,10 @@ class Authentication:
         logger.debug("Decoding token (WebSocket)...")
         try:
             # Verify the token with Supabase
-            payload = supabase_auth.verify_token(token)
+            payload = supabase_client.verify_token(token)
 
             # Extract user information
-            supabase_user_id = payload.get("sub")
+            supabase_user_id = payload.get("user", {}).get("id")
             if not supabase_user_id:
                 logger.warning("No user ID found in WebSocket token")
                 raise ConnectionRefusedError("Invalid token payload")

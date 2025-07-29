@@ -17,6 +17,7 @@ PyJWT==2.8.0
 
 # HTTP client for Supabase API calls
 requests>=2.31.0
+supabase>=2.0.0
 
 # Database and ORM
 sqlmodel==0.0.24
