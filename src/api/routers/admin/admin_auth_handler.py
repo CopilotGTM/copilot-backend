@@ -1,14 +1,11 @@
-from typing import Optional
-from datetime import datetime, timedelta
-from uuid import UUID
-import logging
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from datetime import datetime
+from fastapi import APIRouter, Depends
 from sqlmodel import Session, select
 
 from src.domain.models.admin_models import (
     AdminLoginRequest,
     AdminChangePasswordRequest,
-    AdminGlobalLogoutRequest,
+    AdminLogoutRequest,
     AdminLoginState,
     AdminLoginResponse,
     AdminStatus,
@@ -20,18 +17,15 @@ from src.domain.models.admin_models import (
 )
 from src.domain.models.master_db_models import SuperAdmin
 from src.infra.utils.app_state import fastapp
-from src.infra.auth.admin_auth import admin_auth, admin_auth_allow_pending
+from src.infra.auth.admin_auth import admin_auth
 from src.infra.auth.email_service import email_service
 from src.infra.auth.supabase_client import supabase_client
-from src.infra.config.configs import supabase_config
 from src.infra.utils.logger import get_logger
 from src.api.utils.http_response import Response
 from src.api.schemas.base_models import GenericResponse
 
-
 logger = get_logger("admin_auth_handler")
 router = APIRouter()
-
 
 @router.post(
     "/login", response_model=GenericResponse[AdminLoginResponse], tags=["admin_auth"]
@@ -300,16 +294,6 @@ async def refresh_token(refresh_request: AdminRefreshTokenRequest):
     Refresh the access token using a refresh token.
     If the refresh token is invalid, the user will be automatically logged out.
     """
-    # Extract user_id from refresh token for potential logout
-    user_id = None
-    try:
-        import jwt
-        # Decode the refresh token without verification to get user_id
-        token_data = jwt.decode(refresh_request.refresh_token, options={"verify_signature": False})
-        user_id = token_data.get("sub")  # sub field contains the user ID
-    except Exception as decode_error:
-        logger.warning(f"Could not decode refresh token to get user_id: {str(decode_error)}")
-    
     try:
         # Use Supabase client to refresh token
         session_data = supabase_client.refresh_access_token(
@@ -328,7 +312,6 @@ async def refresh_token(refresh_request: AdminRefreshTokenRequest):
         else:
             # Token refresh failed - automatically logout the user
             logger.warning("Refresh token is invalid or expired - logging out user")
-            _logout_user(user_id, "invalid refresh token")
             return Response.unauthorized_error_response(
                 "Invalid or expired refresh token. User has been logged out. Please log in again."
             )
@@ -340,30 +323,8 @@ async def refresh_token(refresh_request: AdminRefreshTokenRequest):
             exc_info=True,
         )
         
-        # If refresh failed, logout the user
-        _logout_user(user_id, "refresh token error")
-        return Response.internal_server_error_response("Token refresh failed. User has been logged out.")
-
-
-def _logout_user(user_id: str, reason: str):
-    """Helper function to logout user with proper error handling"""
-    try:
-        if user_id:
-            supabase_client.sign_out_user(
-                user_id=user_id,
-                global_signout=False  # Logout from current session only
-            )
-            logger.info(f"User {user_id} automatically logged out due to {reason}")
-        else:
-            # Fallback: try to logout without user_id
-            supabase_client.sign_out_user(
-                user_id=None,
-                global_signout=False
-            )
-            logger.info(f"User automatically logged out due to {reason} (no user_id)")
-    except Exception as logout_error:
-        logger.error(f"Failed to logout user {user_id or 'unknown'} after {reason}: {str(logout_error)}")
-
+        # If refresh failed, just return error (no logout since we don't have user_id)
+        return Response.internal_server_error_response("Token refresh failed. Please log in again.")
 
 @router.post("/forgot-password", tags=["admin_auth"])
 async def forgot_password(
@@ -439,33 +400,76 @@ async def forgot_password(
         )
 
 @router.post("/logout", tags=["admin_auth"])
-async def admin_logout(current_admin: SuperAdmin = Depends(admin_auth)):
+async def admin_logout(
+    logout_request: AdminLogoutRequest,
+    current_admin: SuperAdmin = Depends(admin_auth),
+    master_session: Session = Depends(lambda: next(fastapp.state.master_session())),
+):
     """
-    Logs out the currently authenticated super admin.
-    This will invalidate all sessions for the user.
+    Unified logout endpoint for super admin.
+    
+    - If global_logout=False: Logout current user from current session only
+    - If global_logout=True: Logout specified user from all sessions globally
     """
     try:
-        logger.info(f"Attempting to log out admin: {current_admin.email}")
+        if not current_admin:
+            return Response.unauthorized_error_response("Unauthorized")
 
-        # Invalidate all user sessions using Supabase
-        signed_out = supabase_client.sign_out_user(
-            user_id=current_admin.supabase_user_id,
-            global_signout=False  # Regular logout - current session only
-        )
+        if logout_request.global_logout:
+            # Global logout - logout specified user from all sessions
+            if not logout_request.email:
+                return Response.bad_request_error_response("Email is required for global logout")
 
-        if not signed_out:
-            logger.error(
-                f"Failed to sign out user {current_admin.email} from Supabase."
+            # Find the user to log out
+            statement = select(SuperAdmin).where(SuperAdmin.email == logout_request.email)
+            result = master_session.exec(statement)
+            user_to_logout = result.first()
+
+            if not user_to_logout:
+                logger.warning(
+                    f"Global logout requested for non-existent user: {logout_request.email}"
+                )
+                return Response.not_found_error_response("User not found")
+
+            # Perform global sign-out using Supabase
+            signed_out = supabase_client.sign_out_user(
+                user_id=user_to_logout.supabase_user_id,
+                global_signout=True  # Global logout - all sessions
             )
-            return Response.internal_server_error_response("Logout failed.")
 
-        logger.info(f"Successfully logged out admin: {current_admin.email}")
-        return Response.success_response(message="Successfully logged out.")
+            if not signed_out:
+                logger.error(
+                    f"Failed to globally sign out user {logout_request.email} from Supabase."
+                )
+                return Response.internal_server_error_response("Global logout failed.")
+
+            logger.info(
+                f"Successfully performed global logout for user: {logout_request.email}"
+            )
+            return Response.success_response(
+                message=f"Successfully logged out user {logout_request.email} from all sessions."
+            )
+        else:
+            # Regular logout - logout current user from current session only
+            logger.info(f"Attempting to log out admin: {current_admin.email}")
+
+            signed_out = supabase_client.sign_out_user(
+                user_id=current_admin.supabase_user_id,
+                global_signout=False  # Regular logout - current session only
+            )
+
+            if not signed_out:
+                logger.error(
+                    f"Failed to sign out user {current_admin.email} from Supabase."
+                )
+                return Response.internal_server_error_response("Logout failed.")
+
+            logger.info(f"Successfully logged out admin: {current_admin.email}")
+            return Response.success_response(message="Successfully logged out.")
 
     except Exception as e:
         logger.error(
-            "Error during admin logout for email %s: %s",
-            current_admin.email if current_admin else "unknown",
+            "Error during logout: %s",
             str(e),
             exc_info=True,
         )
@@ -521,59 +525,3 @@ async def change_password(
             exc_info=True,
         )
         return Response.internal_server_error_response("Password change failed")
-
-
-@router.post("/global-logout", tags=["admin_auth"])
-async def global_logout(
-    logout_request: AdminGlobalLogoutRequest,
-    current_admin: SuperAdmin = Depends(admin_auth),
-    master_session: Session = Depends(lambda: next(fastapp.state.master_session())),
-):
-    """
-    Allows a super admin to globally log out any user by email.
-    This invalidates all active sessions for the specified user.
-    """
-    try:
-        if not current_admin:
-            return Response.unauthorized_error_response("Unauthorized")
-
-        # Find the user to log out
-        statement = select(SuperAdmin).where(SuperAdmin.email == logout_request.email)
-        result = master_session.exec(statement)
-        user_to_logout = result.first()
-
-        if not user_to_logout:
-            logger.warning(
-                f"Global logout requested for non-existent user: {logout_request.email}"
-            )
-            return Response.not_found_error_response("User not found")
-
-        # Perform global sign-out using Supabase
-        signed_out = supabase_client.sign_out_user(
-            user_id=user_to_logout.supabase_user_id,
-            global_signout=True  # Global logout - all sessions
-        )
-
-        if not signed_out:
-            logger.error(
-                f"Failed to globally sign out user {logout_request.email} from Supabase."
-            )
-            return Response.internal_server_error_response("Global logout failed.")
-
-        logger.info(
-            f"Successfully performed global logout for user: {logout_request.email}"
-        )
-        return Response.success_response(
-            message=f"Successfully logged out user {logout_request.email} from all sessions."
-        )
-
-    except Exception as e:
-        logger.error(
-            "Error during global logout for email %s: %s",
-            logout_request.email,
-            str(e),
-            exc_info=True,
-        )
-        return Response.internal_server_error_response(
-            "An unexpected error occurred during global logout."
-        )

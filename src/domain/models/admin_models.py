@@ -27,8 +27,15 @@ class AdminChangePasswordRequest(BaseModel):
     current_password: str
     new_password: str
 
-class AdminGlobalLogoutRequest(BaseModel):
-    email: EmailStr
+class AdminLogoutRequest(BaseModel):
+    """
+    Unified logout request that handles both regular and global logout.
+    
+    - global: If True, logout from all sessions globally. If False, logout from current session only.
+    - email: Required only for global logout (to specify which user to logout)
+    """
+    global_logout: bool = False
+    email: Optional[EmailStr] = None
 
 class AdminForgotPasswordRequest(BaseModel):
     email: EmailStr
