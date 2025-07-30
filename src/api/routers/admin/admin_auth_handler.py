@@ -197,10 +197,9 @@ async def first_time_password_change(
             # We need to use the recovery token to reset the password
             try:
                 # Use the recovery token_hash to reset the password
-                supabase_client.reset_password_with_token(
+                user_id = supabase_client.reset_password_with_token(
                     token_hash=password_request.token_hash,
-                    new_password=password_request.new_password,
-                    email=password_request.email,
+                    new_password=password_request.new_password
                 )
             except Exception as e:
                 logger.error(f"Failed to reset password with recovery token: {str(e)}")
@@ -214,14 +213,14 @@ async def first_time_password_change(
                 # We'll need to get the user ID from the recovery token or use a different approach
                 # For now, let's use the email to find the user
                 statement = select(SuperAdmin).where(
-                    SuperAdmin.email == password_request.email
+                    SuperAdmin.supabase_user_id == user_id
                 )
                 result = master_session.exec(statement)
                 current_admin = result.first()
 
                 if not current_admin:
                     logger.warning(
-                        f"Admin not found for email: {password_request.email}"
+                        f"Admin not found for user_id: {user_id}"
                     )
                     return Response.unauthorized_error_response("Unauthorized")
 
@@ -248,7 +247,7 @@ async def first_time_password_change(
                     )
 
                 # Update local database
-                logger.info(f"Updating local DB for user: {current_admin.email}")
+                logger.info(f"Updating local DB for user_id: {user_id}")
                 current_admin.status = AdminStatus.ACTIVE
                 current_admin.email_verified = True
                 current_admin.last_login_at = (
@@ -257,11 +256,11 @@ async def first_time_password_change(
                 master_session.add(current_admin)
                 master_session.commit()
                 master_session.refresh(current_admin)
-                logger.info(f"Local DB updated for user: {current_admin.email}")
+                logger.info(f"Local DB updated for user_id: {user_id}")
             else:
                 # For "forgot" action, just log that password was reset without metadata update
                 logger.info(
-                    f"Password reset completed for user: {password_request.email} (forgot action - no metadata update)"
+                    f"Password reset completed for user: {user_id} (forgot action - no metadata update)"
                 )
 
         except Exception as e:
@@ -370,6 +369,7 @@ async def forgot_password(
         logger.info(f"Password reset link generated for user: {super_admin.email}")
 
         # Send the password reset email using the email service
+        logger.info(f"Attempting to send password reset email to: {super_admin.email}")
         email_sent = email_service.send_password_reset_email(
             to_email=super_admin.email,
             first_name=super_admin.first_name,
@@ -378,10 +378,10 @@ async def forgot_password(
 
         if not email_sent:
             logger.error(
-                f"Failed to send password reset email for: {forgot_password_request.email}"
+                f"Failed to send password reset email for: {forgot_password_request.email}. Email service returned False."
             )
             return Response.internal_server_error_response(
-                message="Failed to send password reset email", data=None
+                message="Failed to send password reset email. Please check email service configuration.", data=None
             )
 
         return Response.success_response(

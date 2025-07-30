@@ -121,10 +121,10 @@ class SupabaseClient:
 
     def _validate_token(self, token: str) -> bool:
         """
-        Validate token format.
+        Validate JWT token format.
         
         Args:
-            token: Token to validate
+            token: JWT token to validate
             
         Returns:
             True if token format is valid, False otherwise
@@ -134,6 +134,23 @@ class SupabaseClient:
         # Basic JWT token validation (3 parts separated by dots)
         parts = token.split('.')
         return len(parts) == 3
+    
+    def _validate_hashed_token(self, hashed_token: str) -> bool:
+        """
+        Validate hashed token format (for password reset).
+        
+        Args:
+            hashed_token: Hashed token to validate
+            
+        Returns:
+            True if hashed token format is valid, False otherwise
+        """
+        if not hashed_token or not isinstance(hashed_token, str):
+            return False
+        # Hashed tokens are typically base64 encoded strings
+        # They don't have the JWT structure (3 parts with dots)
+        # Just check if it's a non-empty string
+        return len(hashed_token.strip()) > 0
     
     def sign_in_with_password(self, email: str, password: str) -> Dict[str, Any]:
         """
@@ -194,6 +211,8 @@ class SupabaseClient:
             
             # The response should contain the recovery link
             response_data = response.model_dump()
+
+            # print(response_data)
 
             hashed_token = response_data.get("properties", {}).get("hashed_token")
             
@@ -399,14 +418,13 @@ class SupabaseClient:
             logger.error(f"Token refresh failed: {str(e)}")
             raise SupabaseAuthError(f"Token refresh failed: {str(e)}", status_code=401)
     
-    def reset_password_with_token(self, token_hash: str, new_password: str, email: str) -> bool:
+    def reset_password_with_token(self, token_hash: str, new_password: str) -> bool:
         """
         Reset password using a recovery token_hash.
         
         Args:
             token_hash: Recovery token hash from password reset link
             new_password: New password
-            email: User's email address
             
         Returns:
             True if password reset was successful
@@ -416,16 +434,13 @@ class SupabaseClient:
         """
         try:
             # Input validation
-            if not self._validate_token(token_hash):
-                raise SupabaseAuthError("Invalid token format", status_code=400)
+            if not self._validate_hashed_token(token_hash):
+                raise SupabaseAuthError("Invalid hashed token format", status_code=400)
             if not self._validate_password(new_password):
                 raise SupabaseAuthError("Invalid password format", status_code=400)
-            if not self._validate_email(email):
-                raise SupabaseAuthError("Invalid email format", status_code=400)
             
             # Use the recovery token_hash to verify and reset password
             response = self.client.auth.verify_otp({
-                "email": email,
                 "token_hash": token_hash,
                 "type": "recovery",
             })
@@ -438,13 +453,13 @@ class SupabaseClient:
                 
                 if user_id:
                     # Update password using admin client
-                    update_response = self.admin_client.auth.admin.update_user_by_id(
+                    self.admin_client.auth.admin.update_user_by_id(
                         user_id,
                         {"password": new_password}
                     )
                     
-                    logger.info(f"Password reset successful for user: {email}")
-                    return True
+                    logger.info(f"Password reset successful for user ID: {user_id}")
+                    return user_id
                 else:
                     raise SupabaseAuthError("Failed to get user ID from verification", status_code=500)
             else:

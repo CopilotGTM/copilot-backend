@@ -59,7 +59,7 @@ class AdminResetPasswordRequest(BaseModel):
     - 'forgot': Request password reset email (requires email)
     - 'force_change': First-time password change (requires session_token, new_password)
     """
-    action: PasswordResetAction
+    action: PasswordResetAction = PasswordResetAction.FORGOT
     
     # Common fields
     new_password: str  # For force_change action
