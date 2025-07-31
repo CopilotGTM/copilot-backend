@@ -526,7 +526,7 @@ class SupabaseAdminClient:
             
             # Find user in database by supabase_user_id
             from sqlmodel import select
-            from src.domain.models.master_db_models import User
+            from src.domain.models.master_tables import User
             
             statement = select(User).where(User.supabase_user_id == supabase_user_id)
             user = session.exec(statement).first()

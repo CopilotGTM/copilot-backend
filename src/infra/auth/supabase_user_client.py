@@ -1,0 +1,310 @@
+from typing import Dict, Any, Optional
+import re
+from supabase import create_client, Client
+from src.infra.config.configs import supabase_config
+from src.infra.utils.logger import get_logger
+
+logger = get_logger()
+
+
+class SupabaseAuthError(Exception):
+    """
+    Custom exception for Supabase authentication errors.
+    
+    Attributes:
+        message: Error message
+        status_code: HTTP status code
+        details: Additional error details
+    """
+    def __init__(self, message: str, status_code: int = 500, details: Optional[Dict[str, Any]] = None):
+        self.message = message
+        self.status_code = status_code
+        self.details = details or {}
+        super().__init__(self.message)
+
+
+class SupabaseUserClient:
+    """
+    Supabase client for user-facing authentication.
+    """
+    
+    def __init__(self):
+        """Initialize the Supabase client."""
+        self.supabase_url = supabase_config.SUPABASE_URL
+        self.supabase_anon_key = supabase_config.SUPABASE_ANON_KEY
+        
+        self._validate_config()
+        
+        self.client: Client = create_client(self.supabase_url, self.supabase_anon_key)
+        
+        logger.info("Supabase User client initialized")
+    
+    def _validate_config(self) -> None:
+        """
+        Validate that all required Supabase configuration is present.
+        """
+        missing_configs = []
+        
+        if not self.supabase_url:
+            missing_configs.append("SUPABASE_URL")
+        if not self.supabase_anon_key:
+            missing_configs.append("SUPABASE_ANON_KEY")
+            
+        if missing_configs:
+            raise SupabaseAuthError(
+                f"Missing required Supabase configuration: {', '.join(missing_configs)}",
+                status_code=500
+            )
+
+    def _validate_email(self, email: str) -> bool:
+        """
+        Validate email format using regex pattern.
+        
+        Args:
+            email: Email address to validate
+            
+        Returns:
+            True if email format is valid, False otherwise
+        """
+        if not email or not isinstance(email, str):
+            return False
+        email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+        return bool(re.match(email_pattern, email))
+
+    def _validate_password(self, password: str) -> bool:
+        """
+        Validate password strength requirements.
+        
+        Args:
+            password: Password to validate
+            
+        Returns:
+            True if password meets requirements, False otherwise
+        """
+        if not password or not isinstance(password, str):
+            return False
+        # Minimum 6 characters
+        if len(password) < 6:
+            return False
+        return True
+
+    def _validate_user_id(self, user_id: str) -> bool:
+        """
+        Validate user ID format (UUID).
+        
+        Args:
+            user_id: User ID to validate
+            
+        Returns:
+            True if user ID format is valid, False otherwise
+        """
+        if not user_id or not isinstance(user_id, str):
+            return False
+        # UUID pattern
+        uuid_pattern = r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        return bool(re.match(uuid_pattern, user_id.lower()))
+
+    def _validate_token(self, token: str) -> bool:
+        """
+        Validate JWT token format.
+        
+        Args:
+            token: JWT token to validate
+            
+        Returns:
+            True if token format is valid, False otherwise
+        """
+        if not token or not isinstance(token, str):
+            return False
+        # Basic JWT token validation (3 parts separated by dots)
+        parts = token.split('.')
+        return len(parts) == 3
+    
+    def _validate_hashed_token(self, hashed_token: str) -> bool:
+        """
+        Validate hashed token format (for password reset).
+        
+        Args:
+            hashed_token: Hashed token to validate
+            
+        Returns:
+            True if hashed token format is valid, False otherwise
+        """
+        if not hashed_token or not isinstance(hashed_token, str):
+            return False
+        # Hashed tokens are typically base64 encoded strings
+        # They don't have the JWT structure (3 parts with dots)
+        # Just check if it's a non-empty string
+        return len(hashed_token.strip()) > 0
+    
+    def sign_in_with_password(self, email: str, password: str) -> Dict[str, Any]:
+        """
+        Sign in user with email and password.
+        
+        Args:
+            email: User's email
+            password: User's password
+            
+        Returns:
+            Supabase response with user data and tokens
+        """
+        try:
+            # Input validation
+            if not self._validate_email(email):
+                raise SupabaseAuthError("Invalid email format", status_code=400)
+            if not self._validate_password(password):
+                raise SupabaseAuthError("Invalid password format", status_code=400)
+                
+            response = self.client.auth.sign_in_with_password({
+                "email": email,
+                "password": password
+            })
+            logger.info(f"User signed in successfully: {email}")
+            return response.model_dump()
+        except Exception as e:
+            logger.error(f"Sign in failed for {email}: {str(e)}")
+            raise SupabaseAuthError(f"Sign in failed: {str(e)}", status_code=401)
+    
+    
+    def sign_out_user(self, user_id: str, global_signout: bool = False) -> bool:
+        """
+        Sign out user from all sessions.
+        
+        Args:
+            user_id: Supabase user ID
+            global_signout: If True, sign out from all sessions globally. If False, sign out from current session only.
+            
+        Returns:
+            True if sign out was successful
+            
+        Raises:
+            SupabaseAuthError: If sign out fails
+        """
+        try:
+            # Input validation
+            if not self._validate_user_id(user_id):
+                raise SupabaseAuthError("Invalid user ID format", status_code=400)
+            
+            if global_signout:
+                # Sign out from all sessions globally
+                self.client.auth.sign_out({
+                    "scope": "global"
+                })
+                logger.info(f"User {user_id} signed out globally from all sessions")
+            else:
+                # Sign out from current session only
+                self.client.auth.sign_out({
+                    "scope": "local"
+                })
+                logger.info(f"User {user_id} signed out from current session")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Sign out failed for user {user_id}: {str(e)}")
+            raise SupabaseAuthError(f"Sign out failed: {str(e)}", status_code=500)
+    
+    def sign_up(self, email: str, password: str, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        Sign up a new user.
+        """
+        try:
+            if not self._validate_email(email):
+                raise SupabaseAuthError("Invalid email format", status_code=400)
+            if not self._validate_password(password):
+                raise SupabaseAuthError("Invalid password format", status_code=400)
+
+            options = {"data": metadata} if metadata else {}
+            
+            response = self.client.auth.sign_up({
+                "email": email,
+                "password": password,
+                "options": options
+            })
+            logger.info(f"User signed up successfully: {email}")
+            return response.model_dump()
+        except Exception as e:
+            logger.error(f"Sign up failed for {email}: {str(e)}")
+            raise SupabaseAuthError(f"Sign up failed: {str(e)}", status_code=400)
+
+    def verify_token(self, token: str) -> Dict[str, Any]:
+        """
+        Verify a JWT token and return user information.
+        
+        Args:
+            token: JWT token to verify
+            
+        Returns:
+            User information from token
+        """
+        try:
+            # Input validation
+            if not self._validate_token(token):
+                raise SupabaseAuthError("Invalid token format", status_code=400)
+                
+            response = self.client.auth.get_user(token)
+            logger.info("Token verified successfully")
+            return response.model_dump()
+        except Exception as e:
+            logger.error(f"Token verification failed: {str(e)}")
+            raise SupabaseAuthError(f"Token verification failed: {str(e)}", status_code=401)
+    
+    def refresh_access_token(self, refresh_token: str) -> Dict[str, Any]:
+        """
+        Refresh access token using refresh token.
+        
+        Args:
+            refresh_token: Refresh token
+            
+        Returns:
+            New session data with access and refresh tokens
+        """
+        try:
+            # Input validation
+            if not self._validate_token(refresh_token):
+                raise SupabaseAuthError("Invalid refresh token format", status_code=400)
+                
+            response = self.client.auth.refresh_session(refresh_token)
+            logger.info("Access token refreshed successfully")
+            return response.model_dump()
+        except Exception as e:
+            logger.error(f"Token refresh failed: {str(e)}")
+            raise SupabaseAuthError(f"Token refresh failed: {str(e)}", status_code=401)
+    
+
+    def get_user_from_token(self, token: str, session) -> Optional[Any]:
+        """
+        Get user from token and database session.
+        
+        Args:
+            token: JWT token
+            session: Database session
+            
+        Returns:
+            User object if found, None otherwise
+        """
+        try:
+            # Verify token with Supabase
+            user_data = self.verify_token(token)
+            
+            # Extract user ID from token
+            supabase_user_id = user_data.get("user", {}).get("id")
+            if not supabase_user_id:
+                return None
+            
+            # Find user in database by supabase_user_id
+            from sqlmodel import select
+            from src.domain.models.master_tables import User
+            
+            statement = select(User).where(User.supabase_user_id == supabase_user_id)
+            user = session.exec(statement).first()
+            
+            return user
+            
+        except Exception as e:
+            logger.error(f"Failed to get user from token: {str(e)}")
+            return None
+
+
+# Create global instance
+supabase_user_client = SupabaseUserClient()

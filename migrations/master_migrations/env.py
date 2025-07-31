@@ -11,7 +11,7 @@ load_dotenv()
 
 # ---- import every module that declares SQLModel models ----
 # (so that SQLModel.metadata is populated)
-from src.domain.models.master_db_models import Organisation, User, SuperAdmin, OrganisationActionHistory, UserActionHistory
+from src.domain.models.master_tables import Organisation, User, SuperAdmin, OrganisationActionHistory, UserActionHistory
 
 # (and import any new model modules here)
 

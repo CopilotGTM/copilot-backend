@@ -6,7 +6,7 @@ from uuid import UUID
 from fastapi import HTTPException, status, Depends, Request
 from sqlmodel import Session, select
 
-from src.domain.models.master_db_models import SuperAdmin, AdminStatus, AdminRole
+from src.domain.models.master_tables import SuperAdmin, AdminUserStatus, AdminRole, SupabaseAdminStatus
 from src.infra.utils.app_state import fastapp
 from src.infra.utils.logger import get_logger
 from src.infra.auth.supabase_admin_client import supabase_admin_client
@@ -88,7 +88,7 @@ class AdminAuth:
                 )
 
             # Check if admin is active (unless allow_pending_setup is True)
-            if not self.allow_pending_setup and admin.status != AdminStatus.ACTIVE:
+            if not self.allow_pending_setup and admin.status != AdminUserStatus.ACTIVE:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Admin account is not active"
@@ -229,7 +229,8 @@ class AdminAuth:
             first_name=first_name,
             last_name=last_name,
             role=AdminRole.SUPER_ADMIN,
-            status=AdminStatus.PENDING_SETUP,
+            status=SupabaseAdminStatus.PENDING_SETUP,
+            admin_status=AdminUserStatus.APPROVED,
         )
 
         session.add(admin)
