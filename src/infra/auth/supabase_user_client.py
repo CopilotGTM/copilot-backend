@@ -168,7 +168,50 @@ class SupabaseUserClient:
         except Exception as e:
             logger.error(f"Sign in failed for {email}: {str(e)}")
             raise SupabaseAuthError(f"Sign in failed: {str(e)}", status_code=401)
-    
+
+    def generate_password_reset_link(self, email: str) -> str:
+        """
+        Generate a password reset link and extract the token parameter.
+        
+        Args:
+            email: User's email address
+            
+        Returns:
+            The token parameter value from the reset link
+            
+        Raises:
+            SupabaseAuthError: If link generation fails
+        """
+        try:
+            # Input validation
+            if not self._validate_email(email):
+                raise SupabaseAuthError("Invalid email format", status_code=400)
+            
+            # Get APP_URL from environment
+            import os
+            app_url = os.getenv("APP_URL", "http://localhost:3000")
+            redirect_url = f"{app_url}/reset-password"
+            
+            # Generate recovery link using admin client (doesn't send email)
+            response = self.admin_client.auth.admin.generate_link({
+                "type": "recovery",
+                "email": email
+            })
+            
+            # The response should contain the recovery link
+            response_data = response.model_dump()
+
+            hashed_token = response_data.get("properties", {}).get("hashed_token")
+            
+            if not hashed_token:
+                raise SupabaseAuthError("Failed to generate hash token", status_code=500)
+                
+            logger.info(f"Password reset link generated for user: {email}")
+            return f'{redirect_url}?token_hash={hashed_token}'
+            
+        except Exception as e:
+            logger.error(f"Failed to generate password reset link for {email}: {str(e)}")
+            raise SupabaseAuthError(f"Failed to generate password reset link: {str(e)}", status_code=500)
     
     def create_user(self, email: str, password: str, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
@@ -285,7 +328,83 @@ class SupabaseUserClient:
         except Exception as e:
             logger.error(f"Token refresh failed: {str(e)}")
             raise SupabaseAuthError(f"Token refresh failed: {str(e)}", status_code=401)
-    
+
+    def reset_password_with_token(self, token_hash: str, new_password: str) -> bool:
+        """
+        Reset password using a recovery token_hash.
+        
+        Args:
+            token_hash: Recovery token hash from password reset link
+            new_password: New password
+            
+        Returns:
+            True if password reset was successful
+            
+        Raises:
+            SupabaseAuthError: If password reset fails
+        """
+        try:
+            # Input validation
+            if not self._validate_hashed_token(token_hash):
+                raise SupabaseAuthError("Invalid hashed token format", status_code=400)
+            if not self._validate_password(new_password):
+                raise SupabaseAuthError("Invalid password format", status_code=400)
+            
+            # Use the recovery token_hash to verify and reset password
+            response = self.client.auth.verify_otp({
+                "token_hash": token_hash,
+                "type": "recovery",
+            })
+            
+            # If verification is successful, update the password
+            if response:
+                # Get user from the response
+                user_data = response.model_dump()
+                user_id = user_data.get("user", {}).get("id")
+                
+                if user_id:
+                    # Update password using admin client
+                    self.admin_client.auth.admin.update_user_by_id(
+                        user_id,
+                        {"password": new_password}
+                    )
+                    
+                    logger.info(f"Password reset successful for user ID: {user_id}")
+                    return user_id
+                else:
+                    raise SupabaseAuthError("Failed to get user ID from verification", status_code=500)
+            else:
+                raise SupabaseAuthError("Token verification failed", status_code=400)
+            
+        except Exception as e:
+            logger.error(f"Password reset with token failed: {str(e)}")
+            raise SupabaseAuthError(f"Password reset failed: {str(e)}", status_code=500)
+
+    def update_user_metadata(self, user_id: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Update user metadata using admin client.
+        
+        Args:
+            user_id: Supabase user ID
+            metadata: User metadata to update
+            
+        Returns:
+            Updated user data
+        """
+        try:
+            # Input validation
+            if not self._validate_user_id(user_id):
+                raise SupabaseAuthError("Invalid user ID format", status_code=400)
+                
+            response = self.admin_client.auth.admin.update_user_by_id(
+                user_id,
+                {"user_metadata": metadata}
+            )
+            logger.info(f"Metadata updated for user: {user_id}")
+            return response.model_dump()
+        except Exception as e:
+            logger.error(f"Metadata update failed for user {user_id}: {str(e)}")
+            raise SupabaseAuthError(f"Metadata update failed: {str(e)}", status_code=500)
 
     def get_user_from_token(self, token: str, session) -> Optional[Any]:
         """

@@ -5,6 +5,12 @@ from pydantic import BaseModel, EmailStr, Field
 
 from src.domain.models.master_tables import UserAppRole
 from src.domain.models.admin_models import AdminLoginState
+from enum import Enum
+
+class UserLoginState(str, Enum):
+    """Enum for user login states."""
+    ACTIVE = "active"
+    PENDING_SETUP = "pending_setup"
 
 class UserLoginRequest(BaseModel):
     """Request model for user login."""
@@ -13,15 +19,17 @@ class UserLoginRequest(BaseModel):
 
 class UserLoginResponse(BaseModel):
     """Response model for successful user login."""
-    email: EmailStr
-    first_name: str
-    last_name: str
-    role: UserAppRole
-    state: AdminLoginState
-    created_at: datetime
-    email_verified: bool
-    last_login_at: Optional[datetime]
-    tokens: Dict[str, Any]
+
+    email: Optional[EmailStr] = None
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    role: Optional[UserAppRole] = None
+    state: UserLoginState
+    created_at: Optional[datetime] = None
+    email_verified: Optional[bool] = None
+    last_login_at: Optional[datetime] = None
+    tokens: Optional[Dict[str, Any]] = None
+    password_reset_link: Optional[str] = None
 
 class UserChangePasswordRequest(BaseModel):
     """Request model for changing a user's password."""

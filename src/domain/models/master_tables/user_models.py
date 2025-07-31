@@ -105,6 +105,11 @@ class User(TimestampMixin, table=True):
         index=True,
         description="Admin approval status (pending/approved/rejected/suspended). Indicates whether an admin has approved the user for access."
     )
+    email_verified: bool = Field(
+        default=False,
+        nullable=False,
+        description="Indicates if the user's email address has been verified."
+    )
     last_login_at: Optional[datetime] = Field(
         default=None,
         sa_column=Column(DateTime(timezone=True), nullable=True),
