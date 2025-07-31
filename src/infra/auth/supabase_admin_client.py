@@ -23,7 +23,7 @@ class SupabaseAuthError(Exception):
         super().__init__(self.message)
 
 
-class SupabaseClient:
+class SupabaseAdminClient:
     """
     Supabase client using the official Python library.
     Provides a clean interface for authentication and user management.
@@ -301,6 +301,41 @@ class SupabaseClient:
         except Exception as e:
             logger.error(f"Metadata update failed for user {user_id}: {str(e)}")
             raise SupabaseAuthError(f"Metadata update failed: {str(e)}", status_code=500)
+
+    def get_user_by_email(self, email: str) -> Optional[Dict[str, Any]]:
+        """
+        Get user by email using admin client.
+        
+        Args:
+            email: User's email
+            
+        Returns:
+            User data if found, None otherwise
+        """
+        try:
+            if not self._validate_email(email):
+                raise SupabaseAuthError("Invalid email format", status_code=400)
+            
+            # This is a workaround since supabase-py doesn't have a direct get_user_by_email
+            users_response = self.admin_client.auth.admin.list_users()
+            
+            # The list_users() method in the version of supabase-py being used
+            # appears to return a list of users directly, not a response object.
+            for user in users_response:
+                if user.email == email:
+                    logger.info(f"User found by email: {email}")
+                    return user.model_dump()
+            
+            logger.info(f"User not found by email: {email}")
+            return None
+        except Exception as e:
+            # If the user is not found, Supabase might raise an error.
+            # We'll log it and return None, as this is an expected case.
+            if "User not found" in str(e):
+                 logger.info(f"User not found by email: {email}")
+                 return None
+            logger.error(f"Failed to get user by email {email}: {str(e)}")
+            raise SupabaseAuthError(f"Failed to get user by email: {str(e)}", status_code=500)
     
     def sign_out_user(self, user_id: str, global_signout: bool = False) -> bool:
         """
@@ -504,4 +539,4 @@ class SupabaseClient:
 
 
 # Create global instance
-supabase_client = SupabaseClient() 
+supabase_admin_client = SupabaseAdminClient() 

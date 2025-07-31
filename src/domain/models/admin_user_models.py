@@ -16,7 +16,7 @@ class CreateUserRequest(BaseModel):
     organisation_id: UUID
     user_role: UserAppRole
     job_title: Optional[str] = None
-    organisation_role: Optional[str] = None
+    organisation_role: str
 
 
 class UpdateUserRequest(BaseModel):
