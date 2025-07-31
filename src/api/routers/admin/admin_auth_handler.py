@@ -15,11 +15,11 @@ from src.domain.models.admin_models import (
     AdminResetPasswordRequest,
     PasswordResetAction,
 )
-from src.domain.models.master_db_models import SuperAdmin
+from src.domain.models.master_tables import SuperAdmin
 from src.infra.utils.app_state import fastapp
 from src.infra.auth.admin_auth import admin_auth
 from src.infra.auth.email_service import email_service
-from src.infra.auth.supabase_client import supabase_client
+from src.infra.auth.supabase_admin_client import supabase_admin_client
 from src.infra.utils.logger import get_logger
 from src.api.utils.http_response import Response
 from src.api.schemas.base_models import GenericResponse
@@ -62,7 +62,7 @@ async def admin_login(
 
         # Sign in with Supabase
         try:
-            supabase_response = supabase_client.sign_in_with_password(
+            supabase_response = supabase_admin_client.sign_in_with_password(
                 email=login_request.email, password=login_request.password
             )
         except Exception as e:
@@ -92,7 +92,7 @@ async def admin_login(
             # For PENDING_SETUP users, we need to generate a proper recovery token
             try:
                 # Generate a password reset link and extract the "ht=" parameter
-                password_reset_link = supabase_client.generate_password_reset_link(
+                password_reset_link = supabase_admin_client.generate_password_reset_link(
                     email=login_request.email
                 )
 
@@ -197,7 +197,7 @@ async def first_time_password_change(
             # We need to use the recovery token to reset the password
             try:
                 # Use the recovery token_hash to reset the password
-                user_id = supabase_client.reset_password_with_token(
+                user_id = supabase_admin_client.reset_password_with_token(
                     token_hash=password_request.token_hash,
                     new_password=password_request.new_password
                 )
@@ -234,7 +234,7 @@ async def first_time_password_change(
                 }
 
                 try:
-                    supabase_client.update_user_metadata(
+                    supabase_admin_client.update_user_metadata(
                         user_id=current_admin.supabase_user_id,
                         metadata=updated_metadata,
                     )
@@ -295,7 +295,7 @@ async def refresh_token(refresh_request: AdminRefreshTokenRequest):
     """
     try:
         # Use Supabase client to refresh token
-        session_data = supabase_client.refresh_access_token(
+        session_data = supabase_admin_client.refresh_access_token(
             refresh_request.refresh_token
         )
 
@@ -353,7 +353,7 @@ async def forgot_password(
             )
 
         # Generate a password reset link and extract the "ht=" parameter
-        password_reset_link = supabase_client.generate_password_reset_link(
+        password_reset_link = supabase_admin_client.generate_password_reset_link(
             email=super_admin.email
         )
         logger.info(
@@ -432,7 +432,7 @@ async def admin_logout(
                 return Response.not_found_error_response("User not found")
 
             # Perform global sign-out using Supabase
-            signed_out = supabase_client.sign_out_user(
+            signed_out = supabase_admin_client.sign_out_user(
                 user_id=user_to_logout.supabase_user_id,
                 global_signout=True  # Global logout - all sessions
             )
@@ -453,7 +453,7 @@ async def admin_logout(
             # Regular logout - logout current user from current session only
             logger.info(f"Attempting to log out admin: {current_admin.email}")
 
-            signed_out = supabase_client.sign_out_user(
+            signed_out = supabase_admin_client.sign_out_user(
                 user_id=current_admin.supabase_user_id,
                 global_signout=False  # Regular logout - current session only
             )
@@ -493,7 +493,7 @@ async def change_password(
 
         # Verify the current password first
         try:
-            supabase_client.sign_in_with_password(
+            supabase_admin_client.sign_in_with_password(
                 email=current_admin.email, password=password_request.current_password
             )
         except Exception:
@@ -504,7 +504,7 @@ async def change_password(
 
         # If verification is successful, update the password
         try:
-            supabase_client.update_user_password(
+            supabase_admin_client.update_user_password(
                 user_id=current_admin.supabase_user_id,
                 new_password=password_request.new_password,
             )

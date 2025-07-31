@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 import urllib.parse
 from sqlmodel import Session, select
 from sqlalchemy import create_engine
-from src.domain.models.master_db_models import Organisation
+from src.domain.models.master_tables import Organisation
 from src.service.organization_management import organization_management_service
 
 load_dotenv()

@@ -1,196 +1,163 @@
-from typing import Optional, Dict, Any
+import secrets
+import string
+from typing import Optional, Dict, Any, List
 from sqlmodel import Session, select
-from uuid import UUID, uuid4
+from uuid import UUID
+from datetime import datetime
 
-from src.domain.models.master_db_models import User, Organisation
-from src.infra.auth.supabase_client import supabase_client
+from src.domain.models.master_tables import User, Organisation, UserActionHistory, UserEventType, AdminUserStatus
+from src.domain.models.admin_user_models import CreateUserRequest, UpdateUserRequest, UpdateUserStatusRequest
+from src.infra.auth.email_service import email_service
+from src.infra.auth.user_auth import user_auth
 from src.infra.utils.logger import get_logger
+from src.infra.utils.cursor import decode_cursor
 
-logger = get_logger()
+logger = get_logger("user_management_service")
 
 
 class UserManagementService:
     """Service for managing users with Supabase authentication"""
 
-    def __init__(self):
-        self.supabase_client = supabase_client
+    def create_user(self, session: Session, admin_id: UUID, user_data: CreateUserRequest) -> User:
+        logger.info(f"Attempting to create user: {user_data.email}")
 
-    def create_user_from_supabase(
-        self, supabase_user_data: Dict[str, Any], session: Session, organisation_id: Optional[UUID] = None
-    ) -> Optional[User]:
-        """
-        Create a new user in the database from Supabase user data.
+        # Check if organisation exists
+        organisation = session.get(Organisation, user_data.organisation_id)
+        if not organisation:
+            raise ValueError("Organisation not found")
 
-        Args:
-            supabase_user_data: User data from Supabase
-            session: Database session
-            organisation_id: Optional organisation ID to assign user to
+        # Check if user already exists in local DB
+        existing_user = session.exec(select(User).where(User.email == user_data.email)).first()
+        if existing_user:
+            raise ValueError("User with this email already exists")
 
-        Returns:
-            Created User object or None if creation failed
-        """
-        try:
-            # Extract user information from Supabase data
-            supabase_user_id = supabase_user_data.get("id")
-            email = supabase_user_data.get("email")
+        # Attempt to create user in Supabase
+        temp_password = user_auth.generate_temporary_password()
 
-            if not supabase_user_id or not email:
-                logger.error("Missing required user data from Supabase")
-                return None
+        supabase_user_id = user_auth.create_supabase_user(
+            email=user_data.email,
+            password=temp_password,
+            first_name=user_data.first_name,
+            last_name=user_data.last_name,
+            user_role=user_data.user_role.value,
+        )
 
-            # Check if user already exists
-            existing_user = session.exec(select(User).where(User.supabase_user_id == supabase_user_id)).one_or_none()
+        if not supabase_user_id:
+            raise Exception("Failed to create user in authentication system")
 
-            if existing_user:
-                logger.info("User already exists: %s", existing_user.user_id)
-                return existing_user
+        new_user = User(
+            **user_data.dict(exclude_none=True),
+            supabase_user_id=supabase_user_id,
+            created_by_auth_user_id=str(admin_id),
+        )
 
-            # If no organisation_id provided, create a default one or assign to existing
-            if not organisation_id:
-                organisation_id = self._get_or_create_default_organisation(session)
+        session.add(new_user)
+        
+        history_entry = UserActionHistory(
+            user_id=new_user.user_id,
+            action=UserEventType.CREATED,
+            actor_admin_id=admin_id,
+            note=f"User created by admin.",
+            details={"admin_id": str(admin_id)}
+        )
+        session.add(history_entry)
 
-            # Create new user
-            new_user = User(
-                supabase_user_id=supabase_user_id,
-                email=email,
-                first_name=supabase_user_data.get("user_metadata", {}).get("first_name", ""),
-                last_name=supabase_user_data.get("user_metadata", {}).get("last_name", ""),
-                organisation_role="user",  # Default role
-                organisation_id=organisation_id,
-                is_active=True,
+        session.commit()
+        session.refresh(new_user)
+
+        # Send the temporary password to the user
+        email_sent = email_service.send_user_creation_email(
+            to_email=new_user.email,
+            first_name=new_user.first_name,
+            temp_password=temp_password,
+        )
+
+        if email_sent:
+            logger.info(f"Successfully sent creation email to {new_user.email}")
+        else:
+            logger.warning(f"Failed to send creation email to {new_user.email}. Please send credentials manually.")
+
+        logger.info(f"Successfully created user {new_user.email} with ID {new_user.user_id}")
+        return new_user
+
+    def get_user(self, session: Session, user_id: UUID) -> Optional[User]:
+        return session.get(User, user_id)
+
+    def list_users(self, session: Session, limit: int, cursor: Optional[str], organisation_id: Optional[UUID]) -> List[User]:
+        statement = select(User)
+        if organisation_id:
+            statement = statement.where(User.organisation_id == organisation_id)
+
+        if cursor:
+            ts, user_id = decode_cursor(cursor)
+            statement = statement.where(
+                (User.created_at < ts) | ((User.created_at == ts) & (User.user_id < user_id))
             )
 
-            session.add(new_user)
-            session.commit()
-            session.refresh(new_user)
+        statement = statement.order_by(User.created_at.desc(), User.user_id.desc()).limit(limit + 1)
+        return session.exec(statement).all()
 
-            logger.info("Created new user: %s", new_user.user_id)
-            return new_user
+    def update_user(self, session: Session, user_id: UUID, admin_id: UUID, user_data: UpdateUserRequest) -> User:
+        user = session.get(User, user_id)
+        if not user:
+            raise ValueError("User not found")
 
-        except Exception as e:
-            logger.error("Failed to create user from Supabase data: %s", str(e))
-            session.rollback()
-            return None
+        update_data = user_data.dict(exclude_unset=True)
+        if not update_data:
+            raise ValueError("No update data provided")
 
-    def _get_or_create_default_organisation(self, session: Session) -> UUID:
-        """
-        Get or create a default organisation for new users.
-        This is a placeholder - implement your business logic here.
-        """
-        try:
-            # Try to find an existing default organisation
-            default_org = session.exec(
-                select(Organisation).where(Organisation.organisation_name == "Default Organisation")
-            ).one_or_none()
+        for key, value in update_data.items():
+            setattr(user, key, value)
 
-            if default_org:
-                return default_org.organisation_id
+        history_entry = UserActionHistory(
+            user_id=user.user_id,
+            action=UserEventType.UPDATED,
+            actor_admin_id=admin_id,
+            note=f"User details updated by admin.",
+            details={"updated_fields": list(update_data.keys())}
+        )
+        session.add(history_entry)
 
-            # Create a new default organisation
-            new_org = Organisation(organisation_name="Default Organisation", is_active=True)
+        session.add(user)
+        session.commit()
+        session.refresh(user)
+        return user
 
-            session.add(new_org)
-            session.commit()
-            session.refresh(new_org)
+    def update_user_admin_status(self, session: Session, user_id: UUID, admin_id: UUID, new_admin_status: AdminUserStatus, note: Optional[str]) -> User:
+        user = session.get(User, user_id)
+        if not user:
+            raise ValueError("User not found")
 
-            logger.info("Created default organisation: %s", new_org.organisation_id)
-            return new_org.organisation_id
+        user.admin_status = new_admin_status
+        if new_admin_status == AdminUserStatus.APPROVED:
+            user.approved_at = datetime.utcnow()
+            user.approved_by = admin_id
 
-        except Exception as e:
-            logger.error("Failed to create default organisation: %s", str(e))
-            session.rollback()
-            # Return a fallback UUID - you might want to handle this differently
-            return uuid4()
+        history_entry = UserActionHistory(
+            user_id=user.user_id,
+            action=UserEventType.STATUS_CHANGED,
+            actor_admin_id=admin_id,
+            note=note or f"Admin status changed to {new_admin_status.value}",
+            details={"new_status": new_admin_status.value}
+        )
+        session.add(history_entry)
 
-    def get_user_by_supabase_id(self, supabase_user_id: str, session: Session) -> Optional[User]:
-        """
-        Get user by Supabase user ID.
+        session.add(user)
+        session.commit()
+        session.refresh(user)
+        return user
 
-        Args:
-            supabase_user_id: Supabase user ID
-            session: Database session
-
-        Returns:
-            User object if found, None otherwise
-        """
-        try:
-            user = session.exec(select(User).where(User.supabase_user_id == supabase_user_id)).one_or_none()
-
-            return user
-
-        except Exception as e:
-            logger.error("Failed to get user by Supabase ID: %s", str(e))
-            return None
-
-    def update_user_last_login(self, user_id: UUID, session: Session) -> bool:
-        """
-        Update user's last login timestamp.
-
-        Args:
-            user_id: User ID
-            session: Database session
-
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            user = session.exec(select(User).where(User.user_id == user_id)).one_or_none()
-
-            if not user:
-                logger.warning("User not found for last login update: %s", user_id)
-                return False
-
-            from datetime import datetime
-
-            user.last_login_at = datetime.utcnow()
-            session.commit()
-
-            logger.info("Updated last login for user: %s", user_id)
-            return True
-
-        except Exception as e:
-            logger.error("Failed to update user last login: %s", str(e))
-            session.rollback()
-            return False
-
-    def assign_user_to_organisation(self, user_id: UUID, organisation_id: UUID, session: Session) -> bool:
-        """
-        Assign a user to an organisation.
-
-        Args:
-            user_id: User ID
-            organisation_id: Organisation ID
-            session: Database session
-
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            user = session.exec(select(User).where(User.user_id == user_id)).one_or_none()
-
-            if not user:
-                logger.warning("User not found: %s", user_id)
-                return False
-
-            # Verify organisation exists
-            org = session.exec(
-                select(Organisation).where(Organisation.organisation_id == organisation_id)
-            ).one_or_none()
-
-            if not org:
-                logger.warning("Organisation not found: %s", organisation_id)
-                return False
-
-            user.organisation_id = organisation_id
-            session.commit()
-
-            logger.info("Assigned user %s to organisation %s", user_id, organisation_id)
-            return True
-
-        except Exception as e:
-            logger.error("Failed to assign user to organisation: %s", str(e))
-            session.rollback()
-            return False
+    def list_user_action_history_for_organisation(self, session: Session, organisation_id: UUID, limit: int, cursor: Optional[str]) -> List[UserActionHistory]:
+        statement = select(UserActionHistory).join(User).where(User.organisation_id == organisation_id)
+        
+        if cursor:
+            ts, history_id = decode_cursor(cursor)
+            statement = statement.where(
+                (UserActionHistory.created_at < ts) | ((UserActionHistory.created_at == ts) & (UserActionHistory.id < history_id))
+            )
+            
+        statement = statement.order_by(UserActionHistory.created_at.desc(), UserActionHistory.id.desc()).limit(limit + 1)
+        return session.exec(statement).all()
 
 
 # Create a global instance

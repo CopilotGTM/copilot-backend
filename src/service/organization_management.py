@@ -6,7 +6,7 @@ from sqlmodel import Session, text, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy import or_, and_
 
-from src.domain.models.master_db_models import (
+from src.domain.models.master_tables import (
     Organisation,
     OrganisationActionHistory,
     OrganisationEventType,

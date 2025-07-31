@@ -6,10 +6,10 @@ from uuid import UUID
 from fastapi import HTTPException, status, Depends, Request
 from sqlmodel import Session, select
 
-from src.domain.models.master_db_models import SuperAdmin, AdminStatus, AdminRole
+from src.domain.models.master_tables import SuperAdmin, AdminUserStatus, AdminRole, SupabaseAdminStatus
 from src.infra.utils.app_state import fastapp
 from src.infra.utils.logger import get_logger
-from src.infra.auth.supabase_client import supabase_client
+from src.infra.auth.supabase_admin_client import supabase_admin_client
 
 logger = get_logger()
 
@@ -32,7 +32,7 @@ class AdminAuth:
         """
         try:
             # Use Supabase client to verify token
-            response = supabase_client.verify_token(token)
+            response = supabase_admin_client.verify_token(token)
             return response
         except Exception as e:
             logger.error(f"Token verification failed: {str(e)}")
@@ -88,7 +88,7 @@ class AdminAuth:
                 )
 
             # Check if admin is active (unless allow_pending_setup is True)
-            if not self.allow_pending_setup and admin.status != AdminStatus.ACTIVE:
+            if not self.allow_pending_setup and admin.status != SupabaseAdminStatus.ACTIVE:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Admin account is not active"
@@ -157,7 +157,7 @@ class AdminAuth:
                 "email_verified": True,
             }
 
-            response = supabase_client.create_user(
+            response = supabase_admin_client.create_user(
                 email=email,
                 password=password,
                 metadata=user_metadata
@@ -182,7 +182,7 @@ class AdminAuth:
             True if successful, False otherwise
         """
         try:
-            supabase_client.update_user_metadata(
+            supabase_admin_client.update_user_metadata(
                 user_id=supabase_user_id,
                 metadata=metadata
             )
@@ -229,7 +229,8 @@ class AdminAuth:
             first_name=first_name,
             last_name=last_name,
             role=AdminRole.SUPER_ADMIN,
-            status=AdminStatus.PENDING_SETUP,
+            status=SupabaseAdminStatus.PENDING_SETUP,
+            admin_status=AdminUserStatus.APPROVED,
         )
 
         session.add(admin)
@@ -277,7 +278,7 @@ class AdminAuth:
             True if password change required, False otherwise
         """
         try:
-            user_info = supabase_client.get_user_by_id(supabase_user_id)
+            user_info = supabase_admin_client.get_user_by_id(supabase_user_id)
             user_metadata = user_info.get("user", {}).get("user_metadata", {})
             return user_metadata.get("requires_password_change", False)
         except Exception as e:

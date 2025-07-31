@@ -3,7 +3,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query
 from sqlmodel import Session
 
-from src.domain.models.master_db_models import SuperAdmin, AdminRole, User, AdminUserStatus, SupabaseUserStatus, AdminUserStatus, UserAppRole
+from src.domain.models.master_tables import SuperAdmin, AdminRole, User, AdminUserStatus, SupabaseUserStatus, AdminUserStatus, UserAppRole
 from src.domain.models.admin_user_models import (
     CreateUserRequest,
     CreateUserResponse,
