@@ -7,7 +7,8 @@ from datetime import datetime
 
 from src.domain.models.master_tables import User, Organisation, UserActionHistory, UserEventType, AdminUserStatus
 from src.domain.models.admin_user_models import CreateUserRequest, UpdateUserRequest, UpdateUserStatusRequest
-from src.infra.auth.supabase_user_client import supabase_user_client
+from src.infra.auth.email_service import email_service
+from src.infra.auth.user_auth import user_auth
 from src.infra.utils.logger import get_logger
 from src.infra.utils.cursor import decode_cursor
 
@@ -16,14 +17,6 @@ logger = get_logger("user_management_service")
 
 class UserManagementService:
     """Service for managing users with Supabase authentication"""
-
-    def __init__(self):
-        self.supabase_user_client = supabase_user_client
-
-    def _generate_temporary_password(self, length=12):
-        alphabet = string.ascii_letters + string.digits + string.punctuation
-        password = "".join(secrets.choice(alphabet) for i in range(length))
-        return password
 
     def create_user(self, session: Session, admin_id: UUID, user_data: CreateUserRequest) -> User:
         logger.info(f"Attempting to create user: {user_data.email}")
@@ -38,30 +31,24 @@ class UserManagementService:
         if existing_user:
             raise ValueError("User with this email already exists")
 
-        # Attempt to create user in Supabase (will fail if user already exists)
-        temp_password = self._generate_temporary_password()
-        user_metadata = {
-            "first_name": user_data.first_name,
-            "last_name": user_data.last_name,
-            "role": user_data.user_role.value,
-            "requires_password_change": True,
-        }
+        # Attempt to create user in Supabase
+        temp_password = user_auth.generate_temporary_password()
 
-        try:
-            supabase_user = self.supabase_user_client.sign_up(
-                email=user_data.email,
-                password=temp_password,
-                metadata=user_metadata,
-            )
-            logger.info(f"Successfully created user in Supabase: {supabase_user['user']['id']}")
-        except Exception as e:
-            logger.error(f"Failed to create user in Supabase for email {user_data.email}: {e}")
-            raise
+        supabase_user_id = user_auth.create_supabase_user(
+            email=user_data.email,
+            password=temp_password,
+            first_name=user_data.first_name,
+            last_name=user_data.last_name,
+            user_role=user_data.user_role.value,
+        )
+
+        if not supabase_user_id:
+            raise Exception("Failed to create user in authentication system")
 
         new_user = User(
             **user_data.dict(exclude_none=True),
-            supabase_user_id=supabase_user["user"]["id"],
-            created_by_auth_user_id=str(admin_id)
+            supabase_user_id=supabase_user_id,
+            created_by_auth_user_id=str(admin_id),
         )
 
         session.add(new_user)
@@ -77,6 +64,18 @@ class UserManagementService:
 
         session.commit()
         session.refresh(new_user)
+
+        # Send the temporary password to the user
+        email_sent = email_service.send_user_creation_email(
+            to_email=new_user.email,
+            first_name=new_user.first_name,
+            temp_password=temp_password,
+        )
+
+        if email_sent:
+            logger.info(f"Successfully sent creation email to {new_user.email}")
+        else:
+            logger.warning(f"Failed to send creation email to {new_user.email}. Please send credentials manually.")
 
         logger.info(f"Successfully created user {new_user.email} with ID {new_user.user_id}")
         return new_user

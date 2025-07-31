@@ -32,10 +32,12 @@ class SupabaseUserClient:
         """Initialize the Supabase client."""
         self.supabase_url = supabase_config.SUPABASE_URL
         self.supabase_anon_key = supabase_config.SUPABASE_ANON_KEY
+        self.supabase_service_role_key = supabase_config.SUPABASE_SERVICE_ROLE_KEY
         
         self._validate_config()
         
         self.client: Client = create_client(self.supabase_url, self.supabase_anon_key)
+        self.admin_client: Client = create_client(self.supabase_url, self.supabase_service_role_key)
         
         logger.info("Supabase User client initialized")
     
@@ -49,6 +51,8 @@ class SupabaseUserClient:
             missing_configs.append("SUPABASE_URL")
         if not self.supabase_anon_key:
             missing_configs.append("SUPABASE_ANON_KEY")
+        if not self.supabase_service_role_key:
+            missing_configs.append("SUPABASE_SERVICE_ROLE_KEY")
             
         if missing_configs:
             raise SupabaseAuthError(
@@ -166,6 +170,40 @@ class SupabaseUserClient:
             raise SupabaseAuthError(f"Sign in failed: {str(e)}", status_code=401)
     
     
+    def create_user(self, email: str, password: str, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        Create a new user using admin client.
+        
+        Args:
+            email: User's email
+            password: User's password
+            metadata: Optional user metadata
+            
+        Returns:
+            Created user data
+        """
+        try:
+            # Input validation
+            if not self._validate_email(email):
+                raise SupabaseAuthError("Invalid email format", status_code=400)
+            if not self._validate_password(password):
+                raise SupabaseAuthError("Invalid password format", status_code=400)
+                
+            user_data = {
+                "email": email,
+                "password": password,
+                "email_confirm": True
+            }
+            if metadata:
+                user_data["user_metadata"] = metadata
+                
+            response = self.admin_client.auth.admin.create_user(user_data)
+            logger.info(f"User created: {email}")
+            return response.model_dump()
+        except Exception as e:
+            logger.error(f"User creation failed for {email}: {str(e)}")
+            raise SupabaseAuthError(f"User creation failed: {str(e)}", status_code=500)
+    
     def sign_out_user(self, user_id: str, global_signout: bool = False) -> bool:
         """
         Sign out user from all sessions.
@@ -204,29 +242,6 @@ class SupabaseUserClient:
             logger.error(f"Sign out failed for user {user_id}: {str(e)}")
             raise SupabaseAuthError(f"Sign out failed: {str(e)}", status_code=500)
     
-    def sign_up(self, email: str, password: str, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """
-        Sign up a new user.
-        """
-        try:
-            if not self._validate_email(email):
-                raise SupabaseAuthError("Invalid email format", status_code=400)
-            if not self._validate_password(password):
-                raise SupabaseAuthError("Invalid password format", status_code=400)
-
-            options = {"data": metadata} if metadata else {}
-            
-            response = self.client.auth.sign_up({
-                "email": email,
-                "password": password,
-                "options": options
-            })
-            logger.info(f"User signed up successfully: {email}")
-            return response.model_dump()
-        except Exception as e:
-            logger.error(f"Sign up failed for {email}: {str(e)}")
-            raise SupabaseAuthError(f"Sign up failed: {str(e)}", status_code=400)
-
     def verify_token(self, token: str) -> Dict[str, Any]:
         """
         Verify a JWT token and return user information.

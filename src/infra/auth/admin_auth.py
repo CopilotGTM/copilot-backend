@@ -88,7 +88,7 @@ class AdminAuth:
                 )
 
             # Check if admin is active (unless allow_pending_setup is True)
-            if not self.allow_pending_setup and admin.status != AdminUserStatus.ACTIVE:
+            if not self.allow_pending_setup and admin.status != SupabaseAdminStatus.ACTIVE:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Admin account is not active"
