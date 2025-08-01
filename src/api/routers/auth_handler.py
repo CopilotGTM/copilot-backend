@@ -7,7 +7,6 @@ from src.domain.models.authentication import Authentication
 from src.infra.utils.database import get_master_session
 from src.infra.utils.logger import get_logger
 from src.service.user_management import user_management_service
-from src.infra.auth.supabase_auth import supabase_auth
 from src.api.utils.http_response import Response
 
 auth = Authentication()
@@ -117,7 +116,6 @@ async def get_current_user(
                 "organisation_role": user.organisation_role,
                 "is_admin": user.is_admin,
                 "title": user.title,
-                "is_active": user.is_active,
                 "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
             },
         )

@@ -22,7 +22,7 @@ from src.service.chat.general_chat.prompts.execution import EXECUTION_PROMPT
 from src.infra.utils.get_master_db_url import get_master_db_url
 from src.infra.storage.document_reader import DocumentReader
 from src.infra.storage.cloud_file_reader import CloudConfig
-from src.domain.models.chat_db_models import ChatMessage, AttachmentModel
+from src.domain.models.organisation_tables import ChatMessage, AttachmentModel
 
 load_dotenv()
 logger = get_logger()

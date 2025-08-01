@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlmodel import Session, select
 from sqlalchemy import or_, and_
 
-from src.domain.models.master_db_models import SuperAdmin, AdminRole
+from src.domain.models.master_tables import SuperAdmin, AdminRole
 from src.domain.models.admin_org_models import (
     CreateOrganizationRequest,
     CreateOrganizationResponse,
@@ -16,7 +16,7 @@ from src.domain.models.admin_org_models import (
     UpdateOrganisationStatusResponse,
     PaginatedOrganisationActionHistoryResponse,
 )
-from src.domain.models.master_db_models import (
+from src.domain.models.master_tables import (
     Organisation,
     OrganisationActionHistory,
     OrganisationEventType,

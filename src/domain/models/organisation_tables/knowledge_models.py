@@ -1,14 +1,15 @@
-# app_layer/models/embeddings_db_models.py
 from typing import Any, Dict, Optional, List
 from datetime import datetime
 
 from sqlmodel import SQLModel, Field, Column
-from sqlalchemy import text, TIMESTAMP
+from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import JSONB
 from pgvector.sqlalchemy import Vector
 
+from .base_mixins import TimestampMixin
 
-class OrganisationDocument(SQLModel, table=True):
+
+class OrganisationDocument(TimestampMixin, table=True):
     __tablename__ = "knowledge_base"
 
     id: str = Field(primary_key=True, index=True)
@@ -29,16 +30,5 @@ class OrganisationDocument(SQLModel, table=True):
     usage: Optional[Dict[str, Any]] = Field(
         sa_column=Column(JSONB),
         default_factory=dict,
-    )
-    created_at: datetime = Field(
-        sa_column=Column(TIMESTAMP(timezone=True), server_default=text("now()")),
-        default_factory=datetime.utcnow,
-    )
-    updated_at: datetime = Field(
-        sa_column=Column(
-            TIMESTAMP(timezone=True),
-            server_default=text("now()"),
-            server_onupdate=text("now()"),
-        )
     )
     content_hash: Optional[str] = Field(default=None, index=True)

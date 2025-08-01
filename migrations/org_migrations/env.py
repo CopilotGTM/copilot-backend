@@ -7,8 +7,7 @@ from alembic import context
 from sqlmodel import SQLModel
 from dotenv import load_dotenv
 
-from src.domain.models.chat_db_models import ChatSession, ChatMessage
-from src.domain.models.embeddings_db_models import OrganisationDocument
+from src.domain.models.organisation_tables import ChatSession, ChatMessage, OrganisationDocument
 
 load_dotenv()
 

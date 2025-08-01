@@ -31,6 +31,7 @@ from src.api.routers.admin.organizations_handler import router as admin_org_rout
 from src.api.routers.admin.migrations_handler import migration_router
 from src.api.routers.admin.admin_auth_handler import router as admin_auth_router
 from src.api.routers.admin.users_handler import router as admin_user_router
+from src.api.routers.users.auth_handler import router as user_auth_router
 
 from src.api.events import chat_message_handler
 from src.api.events import connect_handler
@@ -91,6 +92,9 @@ def create_fastapi_app():
     fastapp.include_router(technical_deck, prefix="/chats/technical_deck", tags=["technical_deck"])
     fastapp.include_router(select_template, prefix="/chats/technical_deck", tags=["technical_deck", "select_template"])
     fastapp.include_router(rfp__sheet_router, prefix="/chats/rfp_sheet", tags=["rfp sheet", "sheet identification"])
+
+    # User routers
+    fastapp.include_router(user_auth_router, prefix="/users/auth", tags=["user", "authentication"])
 
     # Admin routers
     fastapp.include_router(admin_auth_router, prefix="/admin/auth", tags=["admin", "authentication"])

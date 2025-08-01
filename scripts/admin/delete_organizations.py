@@ -10,7 +10,7 @@ sys.path.insert(0, PROJECT_ROOT)
 
 from dotenv import load_dotenv
 from sqlmodel import Session, select
-from src.domain.models.master_db_models import Organisation
+from src.domain.models.master_tables import Organisation
 from src.service.organization_management import organization_management_service
 from src.infra.utils.database import get_master_engine
 

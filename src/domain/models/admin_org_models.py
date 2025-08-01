@@ -4,7 +4,7 @@ from datetime import datetime
 from pydantic import BaseModel, EmailStr
 from pydantic.generics import GenericModel as _Base
 
-from src.domain.models.master_db_models import OrganisationStatus
+from src.domain.models.master_tables import OrganisationStatus
 
 T = TypeVar("T")
 

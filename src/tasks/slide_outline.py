@@ -6,7 +6,7 @@ from src.infra.messaging.redis_client import get_redis_client
 from src.infra.utils.logger import get_logger
 from sqlmodel import select
 from src.infra.utils.database import get_master_session
-from src.domain.models.chat_db_models import ChatMessage
+from src.domain.models.organisation_tables import ChatMessage
 from src.service.technical_deck.generate_slide_outline.slide_outline_workflow import SlideContentGenerator
 
 logger = get_logger()

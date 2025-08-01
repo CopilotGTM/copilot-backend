@@ -1,6 +1,6 @@
 import uuid
 from uuid import UUID, uuid4
-from typing import Optional
+from typing import Optional, Literal
 from datetime import datetime
 from enum import Enum
 
@@ -23,35 +23,50 @@ class AdminPasswordChangeRequest(BaseModel):
     confirm_password: Optional[str] = None
     session_token: Optional[str] = None
 
-class AdminFirstTimePasswordChangeRequest(BaseModel):
-    new_password: str
-    confirm_password: str
-    session_token: str
-
 class AdminChangePasswordRequest(BaseModel):
     current_password: str
     new_password: str
 
-class AdminGlobalLogoutRequest(BaseModel):
-    email: EmailStr
+class AdminLogoutRequest(BaseModel):
+    """
+    Unified logout request that handles both regular and global logout.
+    
+    - global: If True, logout from all sessions globally. If False, logout from current session only.
+    - email: Required only for global logout (to specify which user to logout)
+    """
+    global_logout: bool = False
+    email: Optional[EmailStr] = None
 
 class AdminForgotPasswordRequest(BaseModel):
     email: EmailStr
-    redirect_to: Optional[str] = None
 
 class AdminRefreshTokenRequest(BaseModel):
     refresh_token: str
 
 
+class PasswordResetAction(str, Enum):
+    """Enum for password reset actions"""
+    FORGOT = "forgot"
+    FORCE_CHANGE = "force_change"
+
+
+# Unified Password Management Request
 class AdminResetPasswordRequest(BaseModel):
-    token: str
-    new_password: str
-
-
-class AdminResetPasswordRequest(BaseModel):
-    token: str
-    new_password: str
-
+    """
+    Unified password management request that handles password reset operations.
+    
+    The action field determines which password operation to perform:
+    - 'forgot': Request password reset email (requires email)
+    - 'force_change': First-time password change (requires session_token, new_password)
+    """
+    action: PasswordResetAction = PasswordResetAction.FORGOT
+    
+    # Common fields
+    new_password: str  # For force_change action
+    confirm_password: str  # For force_change action
+    
+    # Action-specific fields
+    token_hash: str  # For force_change action
 
 class AdminRole(str, Enum):
     SUPER_ADMIN = "super_admin"
@@ -85,16 +100,16 @@ class AdminLoginState(str, Enum):
     PENDING_SETUP = "PASSWORD_CHANGE_REQUIRED"
 
 class AdminLoginResponse(SQLModel):
-    email: EmailStr
-    first_name: str
-    last_name: str
-    role: AdminRole
+    email: Optional[EmailStr] = None
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    role: Optional[AdminRole] = None
     state: str
     last_login_at: Optional[datetime] = None
-    created_at: datetime
-    email_verified: bool
-    tokens: Tokens
-    session_token: Optional[str] = None
+    created_at: Optional[datetime] = None
+    email_verified: Optional[bool] = None
+    tokens: Optional[Tokens] = None
+    password_reset_link: Optional[str] = None  # For PENDING_SETUP state
 
 
 class AdminRefreshTokenResponse(BaseModel):

@@ -18,7 +18,7 @@ from alembic.runtime.migration import MigrationContext
 from sqlalchemy import create_engine, text, inspect
 from sqlmodel import Session, select
 
-from src.domain.models.master_db_models import Organisation
+from src.domain.models.master_tables import Organisation
 from src.infra.config.configs import database_config
 from src.infra.utils.logger import get_logger
 

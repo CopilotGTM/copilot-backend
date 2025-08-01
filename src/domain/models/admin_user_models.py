@@ -4,7 +4,7 @@ from datetime import datetime
 from pydantic import BaseModel, EmailStr
 from pydantic.generics import GenericModel as _Base
 
-from src.domain.models.master_db_models import AdminUserStatus, User, UserAppRole, SupabaseUserStatus
+from src.domain.models.master_tables import AdminUserStatus, User, UserAppRole, SupabaseUserStatus
 
 T = TypeVar("T")
 
@@ -16,7 +16,7 @@ class CreateUserRequest(BaseModel):
     organisation_id: UUID
     user_role: UserAppRole
     job_title: Optional[str] = None
-    organisation_role: Optional[str] = None
+    organisation_role: str
 
 
 class UpdateUserRequest(BaseModel):
