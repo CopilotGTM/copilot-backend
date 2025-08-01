@@ -7,7 +7,7 @@ from src.infra.utils.logger import get_logger
 from src.infra.utils.logger import get_logger as InputSio
 from sqlmodel import select
 from src.infra.utils.database import get_master_session
-from src.domain.models.chat_db_models import ChatSession as ChatSessionDB, ChatMessage as ChatMessageDB
+from src.domain.models.organisation_tables import ChatSession as ChatSessionDB, ChatMessage as ChatMessageDB
 from src.service.technical_deck.deck_generation.deck_generation_workflow import DeckGeneration
 
 

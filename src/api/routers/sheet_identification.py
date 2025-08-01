@@ -13,7 +13,7 @@ from src.api.schemas.chat_models import UploadFileURL
 from src.infra.utils.app_state import fastapp
 
 from src.api.schemas.chat_socket_models import ChatMessageReceived, AttachmentModel
-from src.domain.models.chat_db_models import ChatSession, ChatMessage
+from src.domain.models.organisation_tables import ChatSession, ChatMessage
 
 from io import BytesIO
 import pandas as pd

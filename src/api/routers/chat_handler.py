@@ -6,8 +6,8 @@ from sqlmodel import Session, select
 from sqlalchemy import or_, and_
 
 from src.api.schemas.chat_models import CreateChat, DeleteChat, ChatSessionResponse, Pagination, PaginationChatMessages
-from src.domain.models.chat_db_models import ChatSession as ChatSessionDB
-from src.domain.models.chat_db_models import ChatMessage as ChatMessageDB
+from src.domain.models.organisation_tables import ChatSession as ChatSessionDB
+from src.domain.models.organisation_tables import ChatMessage as ChatMessageDB
 from src.api.utils.http_response import Response
 from src.infra.utils.cursor import encode_cursor, decode_cursor
 from src.infra.utils.logger import get_logger

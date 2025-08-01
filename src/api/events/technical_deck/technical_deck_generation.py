@@ -7,8 +7,8 @@ from src.api.schemas.technical_deck_models import GenerateTechnicalDeckRequest
 import json
 
 from sqlmodel import select
-from src.domain.models.chat_db_models import ChatMessage as ChatMessageDB
-from src.domain.models.chat_db_models import ChatSession as ChatSessionDB
+from src.domain.models.organisation_tables import ChatMessage as ChatMessageDB
+from src.domain.models.organisation_tables import ChatSession as ChatSessionDB
 
 from src.infra.utils.database import get_master_session
 from src.infra.messaging.redis_client import get_socket_connection

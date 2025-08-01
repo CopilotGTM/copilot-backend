@@ -15,7 +15,7 @@ from src.infra.storage.get_cloud_uri import CloudURIConverter, CloudConfig
 from src.infra.storage.cloud_file_reader import get_cloud_reader
 
 from src.api.schemas.chat_socket_models import ChatMessageReceived, AttachmentModel
-from src.domain.models.chat_db_models import ChatMessage
+from src.domain.models.organisation_tables import ChatMessage
 from src.api.utils.http_response import Response
 
 from src.domain.workflows.rfp_sheet_utils.unmerge_data import get_unmerged_cell_data

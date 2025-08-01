@@ -24,7 +24,7 @@ import random
 # Local application imports
 from src.infra.utils.logger import get_logger
 from src.infra.utils.database import get_master_session
-from src.domain.models.chat_db_models import ChatMessage as ChatMessageDB
+from src.domain.models.organisation_tables import ChatMessage as ChatMessageDB
 from src.infra.utils.get_master_db_url import get_master_db_url
 from src.infra.utils.slide_utils.slide_basics import PptxBasicSlideManager
 from src.infra.utils.slide_utils.extract_ppt import PPTXExtractor
