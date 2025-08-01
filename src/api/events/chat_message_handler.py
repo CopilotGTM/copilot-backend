@@ -14,7 +14,7 @@ from src.api.events.socket_app import sio
 from src.infra.utils.logger import get_logger
 from src.infra.utils.database import get_master_session
 from src.infra.messaging.redis_client import get_socket_connection
-from src.domain.models.chat_db_models import ChatMessage
+from src.domain.models.organisation_tables import ChatMessage
 from src.api.schemas.chat_socket_models import ChatMessageReceived
 from src.api.utils.websocket_response import WebSocketResponse
 from src.service.chat.general_chat.chat_workflow import GeneralChatAgent

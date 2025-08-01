@@ -7,7 +7,7 @@ from typing import Dict, List
 from openpyxl import load_workbook
 
 from sqlmodel import select
-from src.domain.models.chat_db_models import ChatMessage
+from src.domain.models.organisation_tables import ChatMessage
 from src.infra.utils.database import get_master_session
 from src.infra.messaging.redis_client import get_socket_connection
 from src.api.schemas.chat_socket_models import AttachmentModel

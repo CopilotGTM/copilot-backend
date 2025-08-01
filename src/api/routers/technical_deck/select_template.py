@@ -7,8 +7,8 @@ from src.domain.models.authentication import Authentication
 from src.infra.utils.database import get_master_session
 from src.infra.utils.logger import get_logger
 
-from src.domain.models.chat_db_models import ChatSession as ChatSessionDB
-from src.domain.models.chat_db_models import ChatMessage as ChatMessageDB
+from src.domain.models.organisation_tables import ChatSession as ChatSessionDB
+from src.domain.models.organisation_tables import ChatMessage as ChatMessageDB
 from src.api.utils.http_response import Response
 from src.api.schemas.technical_deck_models import TemplateSelection
 
