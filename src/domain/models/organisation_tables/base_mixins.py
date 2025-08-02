@@ -15,7 +15,7 @@ def today() -> date:
 
 class CreatedAtMixin(SQLModel):
     created_at: datetime = Field(
-        default=None,
+        default_factory=utcnow,
         nullable=False,
         index=True,
         sa_column_kwargs={"server_default": func.now()},
@@ -27,7 +27,7 @@ class TimestampMixin(CreatedAtMixin):
     """For main entities where you want updated_at as well."""
 
     updated_at: datetime = Field(
-        default=None,
+        default_factory=utcnow,
         nullable=False,
         index=True,
         sa_column_kwargs={"server_default": func.now(), "onupdate": func.now()},
