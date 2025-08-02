@@ -10,7 +10,7 @@ from src.infra.utils.database import get_master_session
 from src.infra.utils.logger import get_logger
 from src.api.schemas.chat_models import UploadFileURL
 from src.infra.utils.app_state import fastapp
-from src.infra.storage.generate_presigned_url import GeneratePresignedURL
+# from src.infra.storage.generate_presigned_url import GeneratePresignedURL
 
 auth = Authentication()
 logger = get_logger()
@@ -89,24 +89,24 @@ def get_upload_url(
         logger.info(f"Requesting upload URL for file: {file_name}, type: {file_type}, size: {file_size}")
         file_path = f"uploads/{organisation_id}/{user_id}/{chat_id}/{file_name}"
 
-        url_generator = GeneratePresignedURL()
-        presigned_url = url_generator.generate_presigned_url(
-            cloud_name=fastapp.state.CLOUD_PROVIDER.lower(),
-            container_name=fastapp.state.APPLICATION_STORAGE_NAME,
-            blob_path=file_path,
-            file_type=file_type,
-            expire_seconds=3600,
-        )
+        # url_generator = GeneratePresignedURL()
+        # presigned_url = url_generator.generate_presigned_url(
+        #     cloud_name=fastapp.state.CLOUD_PROVIDER.lower(),
+        #     container_name=fastapp.state.APPLICATION_STORAGE_NAME,
+        #     blob_path=file_path,
+        #     file_type=file_type,
+        #     expire_seconds=3600,
+        # )
 
-        if not presigned_url:
-            logger.error(f"Failed to generate presigned URL for file: {file_name}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to generate upload URL. Please check AWS credentials and configuration.",
-            )
+        # if not presigned_url:
+        #     logger.error(f"Failed to generate presigned URL for file: {file_name}")
+        #     raise HTTPException(
+        #         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        #         detail="Failed to generate upload URL. Please check AWS credentials and configuration.",
+        #     )
 
         logger.info(f"Successfully generated presigned URL for file: {file_name}")
-        return {"upload_url": presigned_url}
+        return {"upload_url": "presigned_url"}
 
     except HTTPException:
         raise

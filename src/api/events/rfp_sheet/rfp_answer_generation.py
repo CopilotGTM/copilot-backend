@@ -10,7 +10,7 @@ from sqlmodel import select
 from src.domain.models.organisation_tables import ChatMessage
 from src.infra.utils.database import get_master_session
 from src.infra.messaging.redis_client import get_socket_connection
-from src.api.schemas.chat_socket_models import AttachmentModel
+# from src.api.schemas.chat_socket_models import AttachmentModel
 from src.infra.utils.app_state import fastapp
 from src.api.utils.websocket_response import WebSocketResponse
 
@@ -90,7 +90,7 @@ async def send_sheet_selections(
 
         # Processing to Generate Response
         cloud_config = CloudConfig(fastapp.state.CLOUD_PROVIDER, fastapp.state.APPLICATION_REGION)
-        input_file: List[AttachmentModel] = existing_rfp_details.attachments
+        input_file = existing_rfp_details.attachments
         file_url = str(input_file[0].get("url"))
         storage_uri = CloudURIConverter(cloud_config).convert_url(file_url)
         sheet_object = get_cloud_reader(cloud_config).read_file_to_memory(storage_uri)

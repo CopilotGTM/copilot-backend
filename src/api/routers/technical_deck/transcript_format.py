@@ -15,7 +15,7 @@ from src.infra.storage.cloud_file_reader import CloudConfig
 from src.domain.workflows.technical_deck.transcript_parser import build_transcript_json, TranscriptParser
 
 from sqlmodel import Session, select
-from src.domain.models.organisation_tables import ChatSession, ChatMessage, AttachmentModel
+from src.domain.models.organisation_tables import ChatSession, ChatMessage
 from src.infra.utils.database import get_master_session
 from src.api.utils.http_response import Response
 from src.infra.utils.app_state import fastapp

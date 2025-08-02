@@ -14,7 +14,7 @@ from src.infra.utils.app_state import fastapp
 from src.infra.storage.get_cloud_uri import CloudURIConverter, CloudConfig
 from src.infra.storage.cloud_file_reader import get_cloud_reader
 
-from src.api.schemas.chat_socket_models import ChatMessageReceived, AttachmentModel
+from src.api.schemas.chat_socket_models import ChatMessageReceived
 from src.domain.models.organisation_tables import ChatMessage
 from src.api.utils.http_response import Response
 
@@ -42,7 +42,7 @@ async def sheet_list(
         organisation_id = UUID(auth_data.get("organisation_id"))
 
         # Extract attachments from the request data and validate that a file was provided
-        input_file: List[AttachmentModel] = data.attachments
+        input_file: List = data.attachments
         if not input_file:
             logger.error("No file provided in the request")
             return Response.bad_request_error_response("Sheet attachment not found.")

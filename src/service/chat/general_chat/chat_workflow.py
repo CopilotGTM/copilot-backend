@@ -22,7 +22,7 @@ from src.service.chat.general_chat.prompts.execution import EXECUTION_PROMPT
 from src.infra.utils.get_master_db_url import get_master_db_url
 from src.infra.storage.document_reader import DocumentReader
 from src.infra.storage.cloud_file_reader import CloudConfig
-from src.domain.models.organisation_tables import ChatMessage, AttachmentModel
+from src.domain.models.organisation_tables import ChatMessage
 
 load_dotenv()
 logger = get_logger()
@@ -78,7 +78,7 @@ class GeneralChatAgent(Workflow):
         """
         content_acc = ""
         for att in attachments:
-            attachment = att if isinstance(att, AttachmentModel) else AttachmentModel(**att)
+            attachment = att #if isinstance(att, AttachmentModel) else AttachmentModel(**att)
             mimetype = (attachment.mimetype or "").lower()
             if mimetype in (
                 "application/pdf",
@@ -97,7 +97,7 @@ class GeneralChatAgent(Workflow):
         """
         images: List[Image] = []
         for att in attachments:
-            attachment = att if isinstance(att, AttachmentModel) else AttachmentModel(**att)
+            attachment = att #if #isinstance(att, AttachmentModel) else AttachmentModel(**att)
             mimetype = (attachment.mimetype or "").lower()
             if mimetype.startswith("image/"):
                 images.append(Image(url=str(attachment.url)))

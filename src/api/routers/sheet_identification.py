@@ -12,7 +12,7 @@ from src.infra.utils.logger import get_logger
 from src.api.schemas.chat_models import UploadFileURL
 from src.infra.utils.app_state import fastapp
 
-from src.api.schemas.chat_socket_models import ChatMessageReceived, AttachmentModel
+from src.api.schemas.chat_socket_models import ChatMessageReceived
 from src.domain.models.organisation_tables import ChatSession, ChatMessage
 
 from io import BytesIO
@@ -32,7 +32,7 @@ def sheet_list(
     """ """
 
     try:
-        input_file: List[AttachmentModel] = data.get("attachments")
+        input_file = data.get("attachments")
         if not input_file:
             logger.error("No file provided in the request")
             raise HTTPException(
