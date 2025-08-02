@@ -56,8 +56,7 @@ class ChatSession(TimestampMixin, table=True):
     )
     chat_type: ChatType = Field(
         default=ChatType.GENERAL_CHAT,
-        index=True,
-        sa_column=Column(String(50)),
+        sa_column=Column(String(50), index=True),
         description="The type of chat, used for categorization.",
     )
     chat_version: str = Field(

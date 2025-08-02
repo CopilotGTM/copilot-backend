@@ -14,11 +14,19 @@ from src.domain.models.master_tables import (
 )
 from src.infra.utils.logger import get_logger
 from src.infra.utils.database import database_previlage_connectin
-from src.infra.config.configs import database_config, key_vault_config
+from src.infra.config.configs import database_config, secret_manager_config, cloud_infra_config
 from migrations.migration_manager import migration_manager
 from azure.identity import DefaultAzureCredential
 from azure.keyvault.secrets import SecretClient
+from azure.mgmt.storage import StorageManagementClient
+from azure.mgmt.storage.models import StorageAccountCreateParameters, Sku, Kind
 from src.infra.utils.cursor import decode_cursor
+from src.infra.utils.resource_naming import (
+    get_key_vault_secret_name,
+    get_storage_account_name,
+    get_schema_name,
+    get_role_name,
+)
 
 from uuid import UUID
 
@@ -56,9 +64,9 @@ class OrganizationManagementService:
         """
         logger.info(f"Starting creation process for organization: {organisation_name}")
         
-        org_id = str(uuid4()).replace("-", "_")
-        schema_name = f"org_{org_id}"
-        role_name = f"org_{org_id}_role"
+        organisation_id = uuid4()
+        schema_name = get_schema_name(organisation_id)
+        role_name = get_role_name(organisation_id)
         role_password = secrets.token_urlsafe(16)
 
         try:
@@ -72,23 +80,24 @@ class OrganizationManagementService:
             logo_url = org_details.get("logo_url", None)
 
             organization = Organisation(
+                organisation_id=organisation_id,
                 organisation_name=organisation_name,
-                schema_name=schema_name,
-                role_name=role_name,
                 sales_team_size=sales_team_size,
-                country=country,    
+                country=country,
                 company_address=company_address,
                 linked_in_url=linked_in_url,
                 website_url=website_url,
                 summary=summary,
                 logo_url=logo_url,
                 created_by_auth_user_id=str(admin_id),
-                approved_by=None
+                approved_by=None,
             )
             session.add(organization)
             session.commit()
             session.refresh(organization)
             logger.info(f"Organization record created for '{organisation_name}' with ID: {organization.organisation_id}")
+
+            self._create_storage_account(organization.organisation_id)
 
             # Log the creation event
             history_entry = OrganisationActionHistory(
@@ -103,7 +112,7 @@ class OrganizationManagementService:
 
             self._create_database_role_and_schema(schema_name, role_name, role_password)
             self._run_organization_migrations(schema_name)
-            self._store_password_in_key_vault(role_name, role_password)
+            self._store_password_in_key_vault(organization.organisation_id, role_password)
             logger.info(f"Successfully created and initialized organization: {organisation_name}")
             
             return {
@@ -172,39 +181,40 @@ class OrganizationManagementService:
             logger.error(f"Migration execution failed for schema '{schema_name}': {e}", exc_info=True)
             raise
 
-    def _store_password_in_key_vault(self, role_name: str, password: str):
+    def _store_password_in_key_vault(self, organisation_id: UUID, password: str):
         """Store password in Azure Key Vault"""
+        role_name = get_role_name(organisation_id)
         logger.info(f"Attempting to store password for role '{role_name}' in Azure Key Vault.")
         try:
-            key_vault_url = key_vault_config.AZURE_KEY_VAULT_URL
+            key_vault_url = secret_manager_config.AZURE_KEY_VAULT_URL
             if not key_vault_url:
                 logger.warning("AZURE_KEY_VAULT_URL not set. Skipping Azure Key Vault storage.")
                 return
-            
-            # Azure Key Vault secret names only allow alphanumeric characters and dashes.
-            secret_name = role_name.replace("_", "-")
+
+            secret_name = get_key_vault_secret_name(organisation_id)
             logger.info(f"Key Vault secret name: {secret_name}")
-            
+
             credential = DefaultAzureCredential()
             client = SecretClient(vault_url=key_vault_url, credential=credential)
             logger.info("Azure Key Vault client created.")
-            
+
             client.set_secret(secret_name, password)
             logger.info(f"Successfully stored password for role '{role_name}' in Azure Key Vault as '{secret_name}'.")
         except Exception as e:
             logger.error(f"Failed to store password in Azure Key Vault for role '{role_name}': {e}", exc_info=True)
 
-    def _delete_password_from_key_vault(self, role_name: str):
+    def _delete_password_from_key_vault(self, organisation_id: UUID):
         """Deletes a password from Azure Key Vault."""
+        role_name = get_role_name(organisation_id)
         logger.info(f"Attempting to delete password for role '{role_name}' from Azure Key Vault.")
         try:
-            key_vault_url = key_vault_config.AZURE_KEY_VAULT_URL
+            key_vault_url = secret_manager_config.AZURE_KEY_VAULT_URL
             if not key_vault_url:
                 logger.warning("AZURE_KEY_VAULT_URL not set. Skipping Azure Key Vault deletion.")
                 return
 
-            secret_name = role_name.replace("_", "-")
-            
+            secret_name = get_key_vault_secret_name(organisation_id)
+
             credential = DefaultAzureCredential()
             client = SecretClient(vault_url=key_vault_url, credential=credential)
             
@@ -425,8 +435,8 @@ class OrganizationManagementService:
         if organisation.status != OrganisationStatus.SUSPENDED:
             raise ValueError(f"Organization must be in 'suspended' state to be deleted, but is currently in '{organisation.status.value}' state.")
 
-        schema_name = organisation.schema_name
-        role_name = organisation.role_name
+        schema_name = get_schema_name(organisation_id)
+        role_name = get_role_name(organisation_id)
 
         # Log the deletion event before starting the destructive operations
         history_entry = OrganisationActionHistory(
@@ -459,10 +469,63 @@ class OrganizationManagementService:
             raise Exception(f"Failed to clean up database resources for organization {organisation_id}.")
 
         # Delete the password from Key Vault
-        self._delete_password_from_key_vault(role_name)
+        self._delete_password_from_key_vault(organisation_id)
+        self._delete_storage_account(organisation_id)
 
         logger.info(f"Successfully deleted organization {organisation_id} and all associated resources.")
         return organisation
+
+    def _create_storage_account(self, organisation_id: UUID):
+        """Creates a new Azure Storage account for an organization."""
+        storage_account_name = get_storage_account_name(organisation_id)
+        logger.info(f"Creating Azure Storage account '{storage_account_name}' for organization {organisation_id}.")
+
+        try:
+
+            credential = DefaultAzureCredential()
+            subscription_id = cloud_infra_config.AZURE_SUBSCRIPTION_ID
+            resource_group_name = cloud_infra_config.AZURE_RESOURCE_GROUP
+
+            if not all([subscription_id, resource_group_name]):
+                logger.warning("Azure subscription ID or resource group name is not configured. Skipping storage account creation.")
+                return ""
+            
+            storage_client = StorageManagementClient(credential, subscription_id)
+
+            poller = storage_client.storage_accounts.begin_create(
+                resource_group_name,
+                storage_account_name,
+                StorageAccountCreateParameters(
+                    sku=Sku(name="Standard_LRS"),
+                    kind=Kind.STORAGE_V2,
+                    location="eastus",  # Or get from config
+                ),
+            )
+            storage_account = poller.result()
+            logger.info(f"Successfully created storage account: {storage_account.name}")
+        except Exception as e:
+            logger.error(f"Failed to create storage account '{storage_account_name}': {e}", exc_info=True)
+            raise
+
+    def _delete_storage_account(self, organisation_id: UUID):
+        """Deletes an Azure Storage account."""
+        storage_account_name = get_storage_account_name(organisation_id)
+        logger.info(f"Deleting Azure Storage account '{storage_account_name}'.")
+        try:
+
+            credential = DefaultAzureCredential()
+            subscription_id = cloud_infra_config.AZURE_SUBSCRIPTION_ID
+            resource_group_name = cloud_infra_config.AZURE_RESOURCE_GROUP
+
+            if not all([subscription_id, resource_group_name]):
+                logger.warning("Azure subscription ID or resource group name is not configured. Skipping storage account deletion.")
+                return
+
+            storage_client = StorageManagementClient(credential, subscription_id)
+            storage_client.storage_accounts.delete(resource_group_name, storage_account_name)
+            logger.info(f"Successfully deleted storage account '{storage_account_name}'.")
+        except Exception as e:
+            logger.warning(f"Failed to delete storage account '{storage_account_name}': {e}", exc_info=True)
 
 
 organization_management_service = OrganizationManagementService()

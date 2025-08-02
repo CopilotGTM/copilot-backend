@@ -1,8 +1,8 @@
 from abc import ABC, abstractmethod
 from typing import Optional, BinaryIO
 from io import BytesIO
-import boto3
-from botocore.exceptions import ClientError
+# import boto3
+# from botocore.exceptions import ClientError
 from dataclasses import dataclass
 import logging
 

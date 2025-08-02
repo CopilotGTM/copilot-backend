@@ -7,7 +7,17 @@ from alembic import context
 from sqlmodel import SQLModel
 from dotenv import load_dotenv
 
-from src.domain.models.organisation_tables import ChatSession, ChatMessage, OrganisationDocument
+from src.domain.models.organisation_tables import (
+    ChatSession,
+    ChatMessage,
+    OrganisationDocument,
+    Attachment,
+    OrganisationSource,
+    KnowledgeIntegration,
+    ChatMessageJob,
+    KnowledgeProcessingJob,
+    ChatMessageAttachmentLink
+)
 
 load_dotenv()
 
@@ -38,14 +48,26 @@ org_metadata = MetaData()
 
 
 # Manually register only the org-specific tables
-ChatSession.metadata = org_metadata
-ChatMessage.metadata = org_metadata  
-OrganisationDocument.metadata = org_metadata
+# Manually register all the org-specific tables
+all_org_models = [
+    ChatSession,
+    ChatMessage,
+    OrganisationDocument,
+    Attachment,
+    OrganisationSource,
+    KnowledgeIntegration,
+    ChatMessageJob,
+    KnowledgeProcessingJob,
+    ChatMessageAttachmentLink
+]
+
+for model in all_org_models:
+    model.metadata = org_metadata
 
 # Recreate the tables in the new metadata
-ChatSession.__table__.tometadata(org_metadata)
-ChatMessage.__table__.tometadata(org_metadata)
-OrganisationDocument.__table__.tometadata(org_metadata)
+# Recreate the tables in the new metadata
+for model in all_org_models:
+    model.__table__.tometadata(org_metadata)
 
 target_metadata = org_metadata
 

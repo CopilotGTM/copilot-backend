@@ -134,8 +134,7 @@ class ChatMessage(TimestampMixin, table=True):
     )
     message_type: ChatMessageType = Field(
         default=ChatMessageType.GENERAL_MESSAGE,
-        index=True,
-        sa_column=Column(String(50)),
+        sa_column=Column(String(50), index=True),
         description="The type of message, used for categorization.",
     )
     message_version: int = Field(

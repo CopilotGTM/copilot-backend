@@ -101,7 +101,7 @@ class OrganisationSource(TimestampMixin, table=True):
     user_id: UUID = Field(index=True, description="The user who uploaded the source.")
     
     source_type: SourceType = Field(
-        default=SourceType.FILE, sa_column=Column(String(50)), index=True
+        default=SourceType.FILE, sa_column=Column(String(50), index=True)
     )
 
     # --- Fields for FILE type ---
@@ -125,8 +125,7 @@ class OrganisationSource(TimestampMixin, table=True):
 
     status: OrganisationSourceStatus = Field(
         default=OrganisationSourceStatus.UPLOADED,
-        sa_column=Column(String(50)),
-        index=True,
+        sa_column=Column(String(50), index=True),
         description="The current processing status of the document.",
     )
     error_message: Optional[str] = Field(
@@ -142,6 +141,11 @@ class OrganisationSource(TimestampMixin, table=True):
 class OrganisationDocument(TimestampMixin, table=True):
     __tablename__ = "knowledge_base"
 
+    document_id: UUID = Field(
+        default_factory=uuid4,
+        primary_key=True,
+        description="Primary key for the knowledge base document/chunk.",
+    )
     source_id: Optional[UUID] = Field(
         default=None,
         foreign_key="organisation_sources.source_id",

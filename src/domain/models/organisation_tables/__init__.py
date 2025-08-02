@@ -17,7 +17,7 @@ Each model is a SQLModel class that also serves as a Pydantic model for API vali
 
 from .base_mixins import CreatedAtMixin, TimestampMixin
 from .chat_session_models import ChatSession
-from .chat_message_models import ChatMessage, Attachment
+from .chat_message_models import ChatMessage, Attachment, ChatMessageAttachmentLink
 from .knowledge_models import (
     OrganisationDocument,
     OrganisationSource,
