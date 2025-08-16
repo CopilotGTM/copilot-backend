@@ -14,8 +14,8 @@ metadata:
     "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
     # Removed unsupported helm.sh/hook-timeout (Helm ignores it); control timing with helm --timeout flag
 spec:
-  # Fail fast if the job errors; set to 0/1 based on retry preference
-  backoffLimit: 0
+  # Allow a single retry to handle transient DB readiness issues
+  backoffLimit: 1
   # Hard deadline for the job (seconds) – keep aligned with helm upgrade --timeout
   activeDeadlineSeconds: 900
   template:
