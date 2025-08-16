@@ -257,31 +257,26 @@ resource "azuredevops_variable_group" "secrets" {
   }
   variable {
     name         = "DATABASE_HOST"
-    # value        = "dev-copilot-gtm.postgres.database.azure.com"
     value        = module.application_database.db_host
   }
 
   variable {
     name         = "DATABASE_USER"
-    # value        = "copilotdatabase"
     value        = module.application_database.db_user
   }
 
   variable {
     name         = "DATABASE_PORT"
-    # value        = "5432"
     value        = tostring(module.application_database.db_port)
   }
 
   variable {
     name         = "DATABASE_NAME"
-    # value        = "postgres"
     value        = module.application_database.db_name
   }
 
   variable {
     name         = "DATABASE_PASSWORD"
-    # secret_value = var.db_password
     secret_value = random_password.db_admin.result
     is_secret    = true
   }
