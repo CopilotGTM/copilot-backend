@@ -32,7 +32,16 @@ def get_database_url():
     user = os.getenv("DATABASE_USER", "postgres")
     pwd = os.getenv("DATABASE_PASSWORD", "")
     enc = urllib.parse.quote_plus(pwd)
-    return os.getenv("DATABASE_URL") or f"postgresql://{user}:{enc}@{host}:{port}/{name}"
+    
+    base_url = os.getenv("DATABASE_URL") or f"postgresql://{user}:{enc}@{host}:{port}/{name}"
+    
+    ssl_mode = os.getenv("DATABASE_SSL_MODE")
+    if ssl_mode:
+        # If the base_url already has query parameters, append with '&', otherwise with '?'
+        separator = "&" if "?" in base_url else "?"
+        return f"{base_url}{separator}sslmode={ssl_mode}"
+    
+    return base_url
 
 
 def parse_args():
