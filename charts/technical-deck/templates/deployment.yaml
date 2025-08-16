@@ -30,6 +30,9 @@ spec:
           env:
             - name: ENVIRONMENT
               value: {{ .Values.environment | quote }}
+          envFrom:
+            - secretRef:
+                name: {{ include "technical-deck.fullname" . }}-secret
           resources:
             requests:
               memory: {{ .Values.resources.requests.memory | quote }}
