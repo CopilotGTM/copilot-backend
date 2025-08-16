@@ -435,3 +435,51 @@ variable "certificates" {
   }))
   default = {}
 }
+
+# -----------------------------------------------------------------
+# Supabase Variables
+# -----------------------------------------------------------------
+
+variable "super_admin_email" {
+  description = "Email address for the super admin user."
+  type        = string
+}
+
+variable "supabase_url" {
+  description = "URL for the Supabase instance."
+  type        = string
+}
+
+variable "supabase_anon_key" {
+  description = "API key for the Supabase instance."
+  type        = string
+  sensitive   = true
+}
+
+variable "supabase_service_role_key" {
+  description = "Service role key for the Supabase instance."
+  type        = string
+  sensitive   = true
+}
+
+variable "supabase_jwt_secret" {
+  description = "JWT secret for the Supabase instance."
+  type        = string
+  sensitive   = true
+}
+
+# -----------------------------------------------------------------
+# Resend API Key
+# -----------------------------------------------------------------
+
+variable "resend_api_key" {
+  description = "API key for the Resend service."
+  type        = string
+  sensitive   = true
+}
+
+variable "resend_email" {
+  description = "Email address for the Resend service."
+  type        = string
+  default     = "noreply@team.copilotgtm.com"
+}

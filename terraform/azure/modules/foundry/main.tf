@@ -7,8 +7,6 @@ terraform {
   }
 }
 
-provider "azapi" {}
-
 resource "azapi_resource" "openai" {
   type      = "Microsoft.CognitiveServices/accounts@2023-05-01"
   name      = "${var.prefix}-openai"

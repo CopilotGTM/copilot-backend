@@ -237,10 +237,24 @@ resource "azuredevops_variable_group" "secrets" {
   }
 
   variable {
+    name         = "AZURE_RESOURCE_GROUP"
+    value        = module.resource_group.resource_group_name
+  }
+
+  variable {
     name         = "APPLICATION_STORAGE_NAME"
     value        = module.storage_account.storage_account_name
   }
 
+  variable {
+    name        = "AZURE_KEY_VAULT_URL"
+    value        = module.database_key_vault.key_vault_uri
+  }
+
+  variable {
+    name         = "AZURE_SUBSCRIPTION_ID"
+    value        = var.subscription_id
+  }
   variable {
     name         = "DATABASE_HOST"
     # value        = "dev-copilot-gtm.postgres.database.azure.com"
@@ -270,6 +284,11 @@ resource "azuredevops_variable_group" "secrets" {
     # secret_value = var.db_password
     secret_value = random_password.db_admin.result
     is_secret    = true
+  }
+
+  variable {
+    name         = "DATABASE_SSL_MODE"
+    value = "prefer"
   }
 
   variable {
@@ -316,8 +335,57 @@ resource "azuredevops_variable_group" "secrets" {
   }
 
   variable {
+    name = "SUPER_ADMIN_EMAIL"
+    value = var.super_admin_email
+  }
+
+  variable {
+    name  = "SUPABASE_URL"
+    value = var.supabase_url
+  }
+
+  variable {
+    name  = "SUPABASE_ANON_KEY"
+    secret_value = var.supabase_anon_key
+    is_secret    = true
+  }
+
+  variable {
+    name  = "SUPABASE_SERVICE_ROLE_KEY"
+    secret_value = var.supabase_service_role_key
+    is_secret    = true
+  }
+
+  variable {
+    name  = "SUPABASE_JWT_SECRET"
+    secret_value = var.supabase_jwt_secret
+    is_secret    = true
+  }
+
+  variable {
     name  = "AZURE_SUBSCRIPTION"
     value = module.service_connection.service_connection_name
+  }
+
+  variable {
+    name  = "APP_NAME"
+    value = "CopilotGTM"
+  }
+
+  variable {
+    name  = "APP_URL"
+    value = "https://${var.frontend_dns_a_record_name}.copilotgtm.com"
+  }
+
+  variable {
+    name = "FROM_EMAIL"
+    value = var.resend_email
+  }
+
+  variable {
+    name  = "RESEND_API_KEY"
+    secret_value = var.resend_api_key
+    is_secret    = true
   }
 
   variable {
