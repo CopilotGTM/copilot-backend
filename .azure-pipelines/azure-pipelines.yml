@@ -136,6 +136,20 @@ stages:
                       --set secrets.CLOUD_PROVIDER="$CLOUD_PROVIDER" \
                       --set secrets.APPLICATION_STORAGE_NAME="$APPLICATION_STORAGE_NAME" \
                       --set secrets.APPLICATION_REGION="$APPLICATION_REGION"
+                      --set secrets.DATABASE_SSL_MODE="$DATABASE_SSL_MODE" \
+                      --set secrets.ENV="$ENV" \
+                      --set secrets.AZURE_KEY_VAULT_URL="$AZURE_KEY_VAULT_URL" \
+                      --set secrets.SUPER_ADMIN_EMAIL="$SUPER_ADMIN_EMAIL" \
+                      --set secrets.SUPABASE_URL="$SUPABASE_URL" \
+                      --set secrets.SUPABASE_ANON_KEY="$SUPABASE_ANON_KEY" \
+                      --set secrets.SUPABASE_SERVICE_ROLE_KEY="$SUPABASE_SERVICE_ROLE_KEY" \
+                      --set secrets.SUPABASE_JWT_SECRET="$SUPABASE_JWT_SECRET" \
+                      --set secrets.AZURE_RESOURCE_GROUP="$AZURE_RESOURCE_GROUP" \
+                      --set secrets.AZURE_SUBSCRIPTION_ID="$AZURE_SUBSCRIPTION_ID" \
+                      --set secrets.RESEND_API_KEY="$RESEND_API_KEY" \
+                      --set secrets.FROM_EMAIL="$FROM_EMAIL" \
+                      --set secrets.APP_NAME="$APP_NAME" \
+                      --set secrets.APP_URL="$APP_URL"
                   displayName: Helm Upgrade/Install
                   env:
                     HELM_RELEASE_NAME: $(HELM_RELEASE_NAME)
@@ -158,6 +172,20 @@ stages:
                     CLOUD_PROVIDER: $(CLOUD_PROVIDER)
                     APPLICATION_STORAGE_NAME: $(APPLICATION_STORAGE_NAME)
                     APPLICATION_REGION: $(APPLICATION_REGION)
+                    DATABASE_SSL_MODE: $(DATABASE_SSL_MODE)
+                    ENV: $(ENV)
+                    AZURE_KEY_VAULT_URL: $(AZURE_KEY_VAULT_URL)
+                    SUPER_ADMIN_EMAIL: $(SUPER_ADMIN_EMAIL)
+                    SUPABASE_URL: $(SUPABASE_URL)
+                    SUPABASE_ANON_KEY: $(SUPABASE_ANON_KEY)
+                    SUPABASE_SERVICE_ROLE_KEY: $(SUPABASE_SERVICE_ROLE_KEY)
+                    SUPABASE_JWT_SECRET: $(SUPABASE_JWT_SECRET)
+                    AZURE_RESOURCE_GROUP: $(AZURE_RESOURCE_GROUP)
+                    AZURE_SUBSCRIPTION_ID: $(AZURE_SUBSCRIPTION_ID)
+                    RESEND_API_KEY: $(RESEND_API_KEY)
+                    FROM_EMAIL: $(FROM_EMAIL)
+                    APP_NAME: $(APP_NAME)
+                    APP_URL: $(APP_URL)
 
                 - script: |
                     kubectl get pods -n copilotgtm
