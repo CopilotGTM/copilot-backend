@@ -9,9 +9,9 @@ metadata:
   annotations:
     # This is what defines this resource as a hook. Without this line, this
     # job would be created every time a helm upgrade is run.
-    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook": pre-install,pre-upgrade
     "helm.sh/hook-weight": "-5"
-    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+    "helm.sh/hook-delete-policy": hook-succeeded
     # Removed unsupported helm.sh/hook-timeout (Helm ignores it); control timing with helm --timeout flag
 spec:
   # Allow a single retry to handle transient DB readiness issues
