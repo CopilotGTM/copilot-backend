@@ -3,6 +3,9 @@ kind: Deployment
 metadata:
   name: {{ .Values.name }}
   namespace: {{ .Values.namespace }}
+  annotations:
+   "helm.sh/hook": post-install,post-upgrade
+   "helm.sh/hook-weight": "5"
   labels:
     app.kubernetes.io/name: {{ .Values.labels.name }}
     app.kubernetes.io/instance: {{ .Values.labels.instance }}
