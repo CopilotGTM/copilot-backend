@@ -20,6 +20,13 @@ resource "azurerm_postgresql_flexible_server" "db" {
   tags = var.tags
 }
 
+resource "azurerm_postgresql_flexible_server_firewall_rule" "allow_all" {
+  name                = "allow-all-ips"
+  server_id           = azurerm_postgresql_flexible_server.db.id
+  start_ip_address    = "0.0.0.0"
+  end_ip_address      = "255.255.255.255"
+}
+
 # resource "azurerm_postgresql_flexible_server_firewall_rule" "allow_pipeline" {
 #   count = var.ci_cd_agent_ip_start != "" ? 1 : 0
 
