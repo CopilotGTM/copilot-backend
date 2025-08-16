@@ -3,9 +3,7 @@ kind: Deployment
 metadata:
   name: {{ .Values.name }}
   namespace: {{ .Values.namespace }}
-  annotations:
-   "helm.sh/hook": post-install,post-upgrade
-   "helm.sh/hook-weight": "5"
+  # Removed Helm hook annotations so the Deployment is managed as a normal release resource
   labels:
     app.kubernetes.io/name: {{ .Values.labels.name }}
     app.kubernetes.io/instance: {{ .Values.labels.instance }}

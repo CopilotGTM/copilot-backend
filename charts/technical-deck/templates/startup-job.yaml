@@ -12,8 +12,12 @@ metadata:
     "helm.sh/hook": post-install,post-upgrade
     "helm.sh/hook-weight": "-5"
     "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
-    "helm.sh/hook-timeout": "900"
+    # Removed unsupported helm.sh/hook-timeout (Helm ignores it); control timing with helm --timeout flag
 spec:
+  # Fail fast if the job errors; set to 0/1 based on retry preference
+  backoffLimit: 0
+  # Hard deadline for the job (seconds) – keep aligned with helm upgrade --timeout
+  activeDeadlineSeconds: 900
   template:
     metadata:
       name: {{ .Release.Name }}-startup-job
@@ -27,11 +31,24 @@ spec:
         - name: startup-job
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["/bin/sh", "-c", "chmod +x scripts/startup.sh && sh scripts/startup.sh"]
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              echo "[startup-job] Starting migrations & seeding at $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+              if [ -f scripts/startup.sh ]; then
+                chmod +x scripts/startup.sh
+                ./scripts/startup.sh
+              else
+                echo "ERROR: scripts/startup.sh not found in working directory $(pwd)" >&2
+                ls -al
+                exit 1
+              fi
+              echo "[startup-job] Completed successfully at $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
           env:
             - name: ENVIRONMENT
               value: {{ .Values.environment | quote }}
           envFrom:
             - secretRef:
                 name: {{ include "technical-deck.fullname" . }}-secret
-  backoffLimit: 2
+  # Removed previous backoffLimit placement (moved above) and explicit hook-timeout annotation
