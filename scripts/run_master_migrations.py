@@ -27,15 +27,23 @@ def load_env():
 
 def get_database_url():
     host = os.getenv("DATABASE_HOST", "localhost")
+    print(f"host: {host}")
     port = os.getenv("DATABASE_PORT", "5432")
+    print(f"port: {port}")
     name = os.getenv("DATABASE_NAME", "postgres")
+    print(f"name: {name}")
     user = os.getenv("DATABASE_USER", "postgres")
+    print(f"user: {user}")
     pwd = os.getenv("DATABASE_PASSWORD", "")
+    print(f"pwd: {pwd}")
     enc = urllib.parse.quote_plus(pwd)
+    print(f"enc: {enc}")
     
     base_url = os.getenv("DATABASE_URL") or f"postgresql://{user}:{enc}@{host}:{port}/{name}"
+    print(f"base_url: {base_url}")
     
     ssl_mode = os.getenv("DATABASE_SSL_MODE")
+    print(f"ssl_mode: {ssl_mode}")
     if ssl_mode:
         # If the base_url already has query parameters, append with '&', otherwise with '?'
         separator = "&" if "?" in base_url else "?"
@@ -51,12 +59,17 @@ def parse_args():
     p.add_argument("--skip-role", action="store_true", help="Skip creation of master_copilot_role")
     p.add_argument("--skip-migrations", action="store_true", help="Skip running Alembic migrations")
     p.add_argument("--verbose", action="store_true", help="Enable verbose logging")
-    return p.parse_args()
+    args = p.parse_args()
+    print(f"args: {args}")
+    return args
 
 
 def run_master_migrations(revision="head", downgrade=False):
     """Run master migrations using the master_migrations directory."""
+    print(f"revision: {revision}")
+    print(f"downgrade: {downgrade}")
     cfg = Config("migrations/master_migrations/alembic.ini")
+    print(f"cfg: {cfg}")
 
     print(f"-> Running master migrations to revision '{revision}'...")
 
