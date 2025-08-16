@@ -1,33 +1,37 @@
-# charts/technical-deck/templates/ingress.yaml
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: technical-deck
-  namespace: copilotgtm
+  name: {{ .Values.name }}
+  namespace: {{ .Values.namespace }}
   labels:
-    app.kubernetes.io/name: technical-deck
-    app.kubernetes.io/instance: technical-deck
+    app.kubernetes.io/name: {{ .Values.labels.name }}
+    app.kubernetes.io/instance: {{ .Values.labels.instance }}
   annotations:
-    nginx.ingress.kubernetes.io/websocket-services: technical-deck
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
-    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
-    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
-    nginx.ingress.kubernetes.io/ssl-redirect: "true"
-    cert-manager.io/cluster-issuer: "letsencrypt"
+{{- range $key, $value := .Values.ingress.annotations }}
+    {{ $key }}: {{ $value | quote }}
+{{- end }}
 spec:
-  ingressClassName: nginx
+  ingressClassName: {{ .Values.ingress.className }}
   tls:
+{{- range .Values.ingress.tls }}
   - hosts:
-    - devapi.copilotgtm.com
-    secretName: devapi-tls
+{{- range .hosts }}
+    - {{ . | quote }}
+{{- end }}
+    secretName: {{ .secretName | quote }}
+{{- end }}
   rules:
-  - host: devapi.copilotgtm.com
+{{- range .Values.ingress.hosts }}
+  - host: {{ .host | quote }}
     http:
       paths:
-      - path: /
-        pathType: Prefix
+{{- range .paths }}
+      - path: {{ .path | quote }}
+        pathType: {{ .pathType | quote }}
         backend:
           service:
-            name: technical-deck
+            name: {{ $.Values.name }}
             port:
-              number: 80
+              number: {{ $.Values.service.port }}
+{{- end }}
+{{- end }}

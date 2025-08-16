@@ -1,59 +1,59 @@
+chartLabel: technical-deck-0.1.0
+name: technical-deck
+namespace: copilotgtm
+labels:
+  name: technical-deck
+  instance: technical-deck
+containerName: technical-deck
+environment: development
 replicaCount: 1
 
 image:
-  repository: copilotgtmacrdev.azurecr.io/technical-deck-app
+  repository: "copilotgtmacrdev.azurecr.io/technical-deck-app"
   tag: "latest"
   pullPolicy: IfNotPresent
 
 service:
-  port: 80
   type: ClusterIP
-
-env:
-  - name: ENVIRONMENT
-    value: "development"
-
-serviceAccount:
-  create: true
-  name: technical-deck
-  automount: true
-  annotations: {}
+  port: 80
 
 ingress:
   enabled: true
-  className: nginx
-  hosts:
-    - host: devapi.copilotgtm.com
-      paths:
-        - path: /
-          pathType: Prefix
+  className: "nginx"
   annotations:
-    # kubernetes.io/ingress.class: "nginx"  # This is legacy, using spec.ingressClassName instead
+    nginx.ingress.kubernetes.io/websocket-services: technical-deck
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-body-size: "10m"
-    nginx.ingress.kubernetes.io/ssl-redirect: "false"
-    cert-manager.io/cluster-issuer: "letsencrypt" # Tells cert-manager to get a cert
-    # alb.ingress.kubernetes.io/scheme: internet-facing  # Uncomment for AWS ALB, making it public
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    cert-manager.io/cluster-issuer: "letsencrypt"
+  hosts:
+    - host: "devapi.copilotgtm.com"
+      paths:
+        - path: /
+          pathType: Prefix
   tls:
     - hosts:
-        - devapi.copilotgtm.com
-      secretName: devapi-tls
+        - "devapi.copilotgtm.com"
+      secretName: "devapi-tls"
 
 autoscaling:
   enabled: false
   minReplicas: 1
   maxReplicas: 3
-  targetCPUUtilizationPercentage: 60
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 80
 
 resources:
-  requests:
-    memory: "512Mi"
-    cpu: "256m"
   limits:
-    memory: "1024Mi"
-    cpu: "512m"
+    cpu: 512m
+    memory: 1024Mi
+  requests:
+    cpu: 256m
+    memory: 512Mi
 
-# Default empty secrets object to satisfy the linter.
-# These values are overridden by the pipeline at runtime.
 secrets: {}
+
+serviceAccount:
+  create: true
+  name: "technical-deck"
