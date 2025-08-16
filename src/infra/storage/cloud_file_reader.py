@@ -1,8 +1,8 @@
 from abc import ABC, abstractmethod
 from typing import Optional, BinaryIO
 from io import BytesIO
-import boto3
-from botocore.exceptions import ClientError
+# import boto3
+# from botocore.exceptions import ClientError
 from dataclasses import dataclass
 import logging
 
@@ -36,7 +36,7 @@ class AWSFileReader(CloudFileReader):
         Args:
             region (Optional[str]): AWS region name. Defaults to None.
         """
-        self.s3_client = boto3.client("s3", region_name=region)
+        # self.s3_client = boto3.client("s3", region_name=region)
 
     def _parse_s3_url(self, s3_url: str) -> tuple[str, str]:
         """Parse S3 URL into bucket and key."""
@@ -84,9 +84,9 @@ class AWSFileReader(CloudFileReader):
 
             return file_obj
 
-        except ClientError as e:
-            logger.error(f"Failed to read file from S3: {str(e)}")
-            raise ValueError(f"Failed to read file from S3: {str(e)}")
+        # except ClientError as e:
+        #     logger.error(f"Failed to read file from S3: {str(e)}")
+        #     raise ValueError(f"Failed to read file from S3: {str(e)}")
         except Exception as e:
             logger.error(f"Unexpected error reading file: {str(e)}")
             raise

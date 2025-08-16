@@ -1,8 +1,8 @@
 from abc import ABC, abstractmethod
 from typing import Optional
 from urllib.parse import urlparse, ParseResult
-import boto3
-from botocore.exceptions import ClientError
+# import boto3
+# from botocore.exceptions import ClientError
 from dataclasses import dataclass
 from urllib.parse import unquote
 import logging
@@ -23,7 +23,7 @@ class AWSProvider:
 
     def __init__(self, config: CloudConfig):
         self.config = config
-        self.s3_client = boto3.client("s3", region_name=config.region)
+        # self.s3_client = boto3.client("s3", region_name=config.region)
 
     def convert_to_storage_url(self, https_url: str) -> str:
         """Convert HTTPS URL to S3 URL."""

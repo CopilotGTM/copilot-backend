@@ -1,8 +1,8 @@
-"""initial setup
+"""001-initial-setup
 
-Revision ID: 70d03631dc38
+Revision ID: e9411bdb638f
 Revises: 
-Create Date: 2025-07-31 18:12:47.381456
+Create Date: 2025-08-02 11:01:41.251372
 
 """
 from typing import Sequence, Union
@@ -13,7 +13,7 @@ import sqlmodel.sql.sqltypes
 
 
 # revision identifiers, used by Alembic.
-revision: str = '70d03631dc38'
+revision: str = 'e9411bdb638f'
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -47,8 +47,6 @@ def upgrade() -> None:
     sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.Column('organisation_id', sa.Uuid(), nullable=False),
     sa.Column('organisation_name', sa.String(length=255), nullable=False),
-    sa.Column('schema_name', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
-    sa.Column('role_name', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
     sa.Column('sales_team_size', sa.Integer(), nullable=True),
     sa.Column('country', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
     sa.Column('company_address', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
@@ -67,8 +65,6 @@ def upgrade() -> None:
     )
     op.create_index(op.f('ix_organisations_created_at'), 'organisations', ['created_at'], unique=False)
     op.create_index(op.f('ix_organisations_created_by_auth_user_id'), 'organisations', ['created_by_auth_user_id'], unique=False)
-    op.create_index(op.f('ix_organisations_role_name'), 'organisations', ['role_name'], unique=True)
-    op.create_index(op.f('ix_organisations_schema_name'), 'organisations', ['schema_name'], unique=True)
     op.create_index(op.f('ix_organisations_status'), 'organisations', ['status'], unique=False)
     op.create_index(op.f('ix_organisations_updated_at'), 'organisations', ['updated_at'], unique=False)
     op.create_table('organisation_action_history',
@@ -107,6 +103,7 @@ def upgrade() -> None:
     sa.Column('job_title', sqlmodel.sql.sqltypes.AutoString(length=100), nullable=True),
     sa.Column('status', sa.Enum('ACTIVE', 'INACTIVE', 'PENDING_SETUP', name='supabaseuserstatus'), nullable=False),
     sa.Column('admin_status', sa.Enum('PENDING', 'APPROVED', 'REJECTED', 'SUSPENDED', 'DEACTIVATED', name='adminuserstatus'), nullable=False),
+    sa.Column('email_verified', sa.Boolean(), nullable=False),
     sa.Column('last_login_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('created_by_auth_user_id', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
     sa.Column('approved_by', sa.Uuid(), nullable=True),
@@ -179,8 +176,6 @@ def downgrade() -> None:
     op.drop_table('organisation_action_history')
     op.drop_index(op.f('ix_organisations_updated_at'), table_name='organisations')
     op.drop_index(op.f('ix_organisations_status'), table_name='organisations')
-    op.drop_index(op.f('ix_organisations_schema_name'), table_name='organisations')
-    op.drop_index(op.f('ix_organisations_role_name'), table_name='organisations')
     op.drop_index(op.f('ix_organisations_created_by_auth_user_id'), table_name='organisations')
     op.drop_index(op.f('ix_organisations_created_at'), table_name='organisations')
     op.drop_table('organisations')

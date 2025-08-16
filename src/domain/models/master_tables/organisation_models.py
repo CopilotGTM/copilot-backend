@@ -56,18 +56,6 @@ class Organisation(TimestampMixin, table=True):
         unique=True,
         description="Organisation/company name. Unique."
     )
-    schema_name: Optional[str] = Field(
-        default=None,
-        unique=True,
-        index=True,
-        description="(PostgreSQL) Dedicated schema name for org or tenant. Optional."
-    )
-    role_name: Optional[str] = Field(
-        default=None,
-        unique=True,
-        index=True,
-        description="Unique org-wide role name or group identifier. Optional."
-    )
     sales_team_size: Optional[int] = Field(
         default=None,
         ge=0,

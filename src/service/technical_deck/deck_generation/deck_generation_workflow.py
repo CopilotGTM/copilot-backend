@@ -7,7 +7,7 @@ import os
 # Third-party imports
 from dotenv import load_dotenv
 from uuid import UUID, uuid4
-import boto3
+# import boto3
 
 # Agno framework imports
 from agno.workflow import Workflow, RunResponse
@@ -58,7 +58,7 @@ def upload_to_s3(file_path: str, bucket_name: str = "test-deepak-deepak") -> str
         s3_path = f"presentations/{unique_id}/{file_name}"
 
         # Initialize S3 client and upload the file
-        s3_client = boto3.client("s3")
+        s3_client = ""#boto3.client("s3")
         with open(file_path, "rb") as file:
             s3_client.upload_fileobj(
                 file,

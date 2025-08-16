@@ -7,7 +7,7 @@ from sqlalchemy.engine import Engine
 from azure.identity import DefaultAzureCredential
 from azure.keyvault.secrets import SecretClient
 
-from src.infra.config.configs import database_config, key_vault_config
+from src.infra.config.configs import database_config, secret_manager_config
 
 
 # Single engine for all connections (master login)
@@ -16,7 +16,7 @@ _ENGINE: Engine | None = None
 
 def _get_secret_from_key_vault(secret_name: str) -> str | None:
     """Fetches a secret from Azure Key Vault."""
-    key_vault_url = key_vault_config.AZURE_KEY_VAULT_URL
+    key_vault_url = secret_manager_config.AZURE_KEY_VAULT_URL
     if not key_vault_url:
         print(f"AZURE_KEY_VAULT_URL not set. Cannot fetch secret '{secret_name}'.")
         return None

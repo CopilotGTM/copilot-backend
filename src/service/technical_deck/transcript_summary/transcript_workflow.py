@@ -10,7 +10,7 @@ from agno.models.azure import AzureOpenAI
 from dotenv import load_dotenv
 from src.infra.utils.logger import get_logger
 from src.infra.utils.get_master_db_url import get_master_db_url
-from src.api.schemas.chat_socket_models import AttachmentModel
+# from src.api.schemas.chat_socket_models import AttachmentModel
 
 from src.infra.storage.document_reader import DocumentReader
 from src.infra.storage.cloud_file_reader import CloudConfig
@@ -40,7 +40,7 @@ class TranscriptSummaryAgent(Workflow):
         markdown=True,
     )
 
-    async def run_workflow(self, attached_models: List[AttachmentModel]) -> AsyncIterator[RunResponse]:
+    async def run_workflow(self, attached_models) -> AsyncIterator[RunResponse]:
         logger.info("Starting TranscriptSummaryAgent workflow")
 
         if not attached_models:

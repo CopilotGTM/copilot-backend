@@ -67,15 +67,15 @@ class AppConfig:
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 
 
-class AzureOpenAIConfig:
-    """Configuration for Azure OpenAI services"""
+class OpenAIConfig:
+    """Configuration for OpenAI services"""
 
     AZURE_OPENAI_API_KEY: Optional[str] = os.getenv("AZURE_OPENAI_API_KEY")
     AZURE_OPENAI_ENDPOINT: Optional[str] = os.getenv("AZURE_OPENAI_ENDPOINT")
 
 
-class AzureEmbedderConfig:
-    """Configuration for Azure Embedder service"""
+class EmbedderConfig:
+    """Configuration for Embedder service"""
 
     AZURE_EMBEDDER_OPENAI_API_KEY: Optional[str] = os.getenv("AZURE_EMBEDDER_OPENAI_API_KEY")
     AZURE_EMBEDDER_OPENAI_ENDPOINT: Optional[str] = os.getenv("AZURE_EMBEDDER_OPENAI_ENDPOINT")
@@ -102,22 +102,30 @@ class SuperAdminConfig:
 
     SUPER_ADMIN_EMAIL: Optional[str] = os.getenv("SUPER_ADMIN_EMAIL")
 
-class KeyVaultConfig:
-    """Configuration for Azure Key Vault"""
+class SecretManagerConfig:
+    """Configuration for Cloud Secret Manager"""
 
     AZURE_KEY_VAULT_URL: Optional[str] = os.getenv("AZURE_KEY_VAULT_URL")
+
+
+class CloudInfraConfig:
+    """Configuration for Cloud Infrastructure"""
+
+    AZURE_SUBSCRIPTION_ID: Optional[str] = os.getenv("AZURE_SUBSCRIPTION_ID")
+    AZURE_RESOURCE_GROUP: Optional[str] = os.getenv("AZURE_RESOURCE_GROUP")
 
 
 # Create config instances
 supabase_config = SupabaseConfig()
 database_config = DatabaseConfig()
 app_config = AppConfig()
-azure_openai_config = AzureOpenAIConfig()
-azure_embedder_config = AzureEmbedderConfig()
+openai_config = OpenAIConfig()
+embedder_config = EmbedderConfig()
 cloud_storage_config = CloudStorageConfig()
 resend_config = ResendConfig()
 super_admin_config = SuperAdminConfig()
-key_vault_config = KeyVaultConfig()
+secret_manager_config = SecretManagerConfig()
+cloud_infra_config = CloudInfraConfig()
 
 
 class Config:
