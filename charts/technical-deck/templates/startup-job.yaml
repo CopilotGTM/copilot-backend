@@ -26,11 +26,11 @@ spec:
         - name: startup-job
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["/bin/sh", "-c", "scripts/startup.sh"]
+          command: ["sh", "scripts/startup.sh"]
           env:
             - name: ENVIRONMENT
               value: {{ .Values.environment | quote }}
           envFrom:
             - secretRef:
                 name: {{ include "technical-deck.fullname" . }}-secret
-  backoffLimit: 1
+  backoffLimit: 2
