@@ -1,0 +1,65 @@
+# Scripts
+
+This directory contains various scripts for automating tasks related to database migrations, application startup, and administration.
+
+## Available Scripts
+
+### `startup.sh`
+
+This is the main startup script, likely used in a containerized environment (e.g., as a Helm hook). It orchestrates the initial setup process when the application starts.
+
+**Usage:**
+
+This script is typically run automatically during deployment.
+
+**What it does:**
+
+1.  **Runs Master Migrations:** Executes `run_master_migrations.py` to apply the latest migrations to the master database.
+2.  **Initializes Super Admin (Conditional):** If the `SUPER_ADMIN_EMAIL` environment variable is set, it runs `admin/deploy_with_super_admin.py` to create or update the super admin user.
+
+---
+
+### `run_master_migrations.py`
+
+This script manages the master database schema, which includes tables for organizations, users, and other shared resources. It uses Alembic for handling migrations.
+
+**Usage:**
+
+```bash
+python -m scripts.run_master_migrations [OPTIONS]
+```
+
+**Options:**
+
+-   `--revision <REVISION>`: Specify the migration revision to upgrade or downgrade to (default: `head`).
+-   `--downgrade`: Downgrade the database instead of upgrading.
+-   `--skip-role`: Skip the creation of the `master_copilot_role`.
+-   `--skip-migrations`: Skip running the Alembic migrations.
+-   `--verbose`: Enable verbose logging.
+
+---
+
+### `run_org_migrations.py`
+
+This script is used to run database migrations for specific organization schemas. Each organization has its own schema, and this script applies the necessary updates.
+
+**Usage:**
+
+```bash
+python -m scripts.run_org_migrations [ORG_ID...] [OPTIONS]
+```
+
+**Arguments:**
+
+-   `ORG_ID`: One or more organization IDs to migrate. If none are provided, no migrations will run.
+
+**Options:**
+
+-   `--target-version <VERSION>`: The target migration version (default: `head`).
+-   `--list-orgs`: List all available organizations and their details, then exit.
+
+---
+
+### `admin/`
+
+This subdirectory contains scripts related to administrative tasks, such as creating the initial super admin user. For more details, see the `README.md` file within the `admin/` directory.
