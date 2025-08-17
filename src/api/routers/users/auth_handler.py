@@ -13,7 +13,7 @@ from src.domain.models.user_models import (
 )
 from src.domain.models.admin_models import PasswordResetAction
 from src.domain.models.master_tables import User
-from src.infra.utils.app_state import fastapp
+from src.infra.utils.database import get_master_engine
 from src.infra.auth.supabase_user_client import supabase_user_client
 from src.infra.utils.logger import get_logger
 from src.api.utils.http_response import Response
@@ -29,7 +29,7 @@ router = APIRouter()
 )
 async def user_login(
     login_request: UserLoginRequest,
-    master_session: Session = Depends(lambda: next(fastapp.state.master_session())),
+    master_session: Session = Depends(lambda: Session(get_master_engine(echo=False))),
 ):
     """
     User login endpoint.
@@ -126,7 +126,7 @@ async def user_login(
 @router.post("/reset-password", tags=["user_auth"])
 async def reset_password(
     password_request: UserResetPasswordRequest,
-    master_session: Session = Depends(lambda: next(fastapp.state.master_session())),
+    master_session: Session = Depends(lambda: Session(get_master_engine(echo=False))),
 ):
     try:
         if not password_request.token_hash:
@@ -261,7 +261,7 @@ async def refresh_token(refresh_request: UserRefreshTokenRequest):
 @router.post("/forgot-password", tags=["user_auth"])
 async def forgot_password(
     forgot_password_request: UserForgotPasswordRequest,
-    master_session: Session = Depends(lambda: next(fastapp.state.master_session())),
+    master_session: Session = Depends(lambda: Session(get_master_engine(echo=False))),
 ):
     try:
         statement = select(User).where(
