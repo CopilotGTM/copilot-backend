@@ -8,40 +8,17 @@ PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
 sys.path.insert(0, PROJECT_ROOT)
 
 import argparse
-import urllib.parse
 import secrets
 
-from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from alembic.config import Config
 from alembic import command
 from azure.identity import DefaultAzureCredential
 from azure.keyvault.secrets import SecretClient
 from src.infra.utils.logger import get_logger
+from src.infra.utils.get_master_db_url import get_master_db_url
 
 logger = get_logger("run-master-migrations")
-
-def load_env():
-    load_dotenv()
-
-
-def get_database_url():
-    host = os.getenv("DATABASE_HOST", "localhost")
-    port = os.getenv("DATABASE_PORT", "5432")
-    name = os.getenv("DATABASE_NAME", "postgres")
-    user = os.getenv("DATABASE_USER", "postgres")
-    pwd = os.getenv("DATABASE_PASSWORD", "")
-    enc = urllib.parse.quote_plus(pwd)
-    
-    base_url = os.getenv("DATABASE_URL") or f"postgresql://{user}:{enc}@{host}:{port}/{name}"
-    
-    ssl_mode = os.getenv("DATABASE_SSL_MODE")
-    if ssl_mode:
-        # If the base_url already has query parameters, append with '&', otherwise with '?'
-        separator = "&" if "?" in base_url else "?"
-        return f"{base_url}{separator}sslmode={ssl_mode}"
-    
-    return base_url
 
 
 def parse_args():
@@ -126,11 +103,10 @@ def create_master_copilot_role(engine):
 
 
 def main():
-    load_env()
     args = parse_args()
 
     # Verify database connection
-    db_url = get_database_url()
+    db_url = get_master_db_url()
     engine = create_engine(db_url, future=True)
 
     try:

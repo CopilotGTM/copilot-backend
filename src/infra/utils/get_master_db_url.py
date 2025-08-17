@@ -15,5 +15,15 @@ DATABASE_PASSWORD = os.getenv("DATABASE_PASSWORD", "")
 def get_master_db_url():
     """Get the master database URL."""
     encoded_password = urllib.parse.quote_plus(DATABASE_PASSWORD)
-    db_url = f"postgresql://{DATABASE_USER}:{encoded_password}" f"@{DATABASE_HOST}:{DATABASE_PORT}/{DATABASE_NAME}"
-    return db_url
+    base_url = (
+        os.getenv("DATABASE_URL")
+        or f"postgresql://{DATABASE_USER}:{encoded_password}@{DATABASE_HOST}:{DATABASE_PORT}/{DATABASE_NAME}"
+    )
+
+    ssl_mode = os.getenv("DATABASE_SSL_MODE")
+    if ssl_mode:
+        # If the base_url already has query parameters, append with '&', otherwise with '?'
+        separator = "&" if "?" in base_url else "?"
+        return f"{base_url}{separator}sslmode={ssl_mode}"
+
+    return base_url
