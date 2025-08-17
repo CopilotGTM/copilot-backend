@@ -135,7 +135,7 @@ stages:
                       --set secrets.AZURE_EMBEDDER_DEPLOYMENT="$AZURE_EMBEDDER_DEPLOYMENT" \
                       --set secrets.CLOUD_PROVIDER="$CLOUD_PROVIDER" \
                       --set secrets.APPLICATION_STORAGE_NAME="$APPLICATION_STORAGE_NAME" \
-                      --set secrets.APPLICATION_REGION="$APPLICATION_REGION"
+                      --set secrets.APPLICATION_REGION="$APPLICATION_REGION" \
                       --set secrets.DATABASE_SSL_MODE="$DATABASE_SSL_MODE" \
                       --set secrets.ENV="$ENV" \
                       --set secrets.AZURE_KEY_VAULT_URL="$AZURE_KEY_VAULT_URL" \
