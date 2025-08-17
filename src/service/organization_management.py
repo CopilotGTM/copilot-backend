@@ -1,6 +1,6 @@
-from os import link
 import secrets
-from typing import Dict, Any, List, Optional
+import time
+from typing import Dict, Any, List, Optional, Tuple, Callable
 from uuid import uuid4
 from sqlmodel import Session, text, select
 from sqlalchemy.exc import SQLAlchemyError
@@ -14,13 +14,18 @@ from src.domain.models.master_tables import (
 )
 from src.infra.utils.logger import get_logger
 from src.infra.utils.database import database_previlage_connectin
-from src.infra.config.configs import database_config, secret_manager_config, cloud_infra_config
+from src.infra.config.configs import (
+    database_config,
+    secret_manager_config,
+    cloud_infra_config,
+    cloud_storage_config,
+)
 from migrations.migration_manager import migration_manager
-from azure.identity import DefaultAzureCredential
+from azure.identity import DefaultAzureCredential, ClientSecretCredential
 from azure.keyvault.secrets import SecretClient
 from azure.mgmt.storage import StorageManagementClient
 from azure.mgmt.storage.models import StorageAccountCreateParameters, Sku, Kind
-from src.infra.utils.cursor import decode_cursor
+from src.infra.utils.cursor import decode_cursor, encode_cursor
 from src.infra.utils.resource_naming import (
     get_key_vault_secret_name,
     get_storage_account_name,
@@ -31,6 +36,19 @@ from src.infra.utils.resource_naming import (
 from uuid import UUID
 
 logger = get_logger("organization_management_service")
+
+
+class ProvisioningError(Exception):
+    """Custom exception for failures during organization provisioning."""
+
+    def __init__(self, message: str, organisation_id: UUID | None = None):
+        self.organisation_id = organisation_id
+        super().__init__(f"Provisioning failed for org {organisation_id}: {message}")
+
+
+class DeletionError(Exception):
+    """Raised when destructive cleanup cannot complete fully."""
+    pass
 
 
 class OrganizationManagementService:
@@ -60,109 +78,155 @@ class OrganizationManagementService:
             A dictionary containing the created organization details.
         
         Raises:
-            Exception: If any step in the organization creation process fails.
+            ProvisioningError: If any step in the organization creation process fails.
+            ValueError: If the organization already exists and is not in a FAILED state.
         """
         logger.info(f"Starting creation process for organization: {organisation_name}")
+
+        # Check for an existing organization
+        existing_org = session.exec(
+            select(Organisation).where(Organisation.organisation_name == organisation_name)
+        ).first()
+
+        if existing_org:
+            if existing_org.status == OrganisationStatus.FAILED:
+                logger.info(f"Retrying provisioning for failed organization '{organisation_name}' (ID: {existing_org.organisation_id}).")
+                organization = existing_org
+                organization.status = OrganisationStatus.PROVISIONING
+                # Update details from the new request
+                for key, value in org_details.items():
+                    setattr(organization, key, value)
+            else:
+                raise ValueError(f"Organization '{organisation_name}' already exists with status '{existing_org.status.value}'.")
+        else:
+            # Create a new organization record
+            org_data = org_details.copy()
+            org_data["linked_urls"] = org_data.pop("linked_in_url", [])
+            org_data["website_urls"] = org_data.pop("website_url", [])
+
+            organization = Organisation(
+                organisation_id=uuid4(),
+                organisation_name=organisation_name,
+                status=OrganisationStatus.PROVISIONING,
+                created_by_auth_user_id=str(admin_id),
+                **org_data,
+            )
+            session.add(organization)
         
-        organisation_id = uuid4()
+        session.commit()
+        session.refresh(organization)
+        
+        organisation_id = organization.organisation_id
         schema_name = get_schema_name(organisation_id)
         role_name = get_role_name(organisation_id)
         role_password = secrets.token_urlsafe(16)
 
+        logger.info(f"Organization record is ready for provisioning with ID: {organisation_id}, status: PROVISIONING")
+
         try:
-            # 1. Create the organization record in the master database
-            sales_team_size = org_details.get("sales_team_size", None)
-            country = org_details.get("country", None)
-            company_address = org_details.get("company_address", None)
-            linked_in_url = org_details.get("linked_in_url", [])
-            website_url = org_details.get("website_url", [])
-            summary = org_details.get("summary", None)
-            logo_url = org_details.get("logo_url", None)
+            # 2. Provision all resources with timing metrics
+            provision_metrics: Dict[str, float] = {}
 
-            organization = Organisation(
-                organisation_id=organisation_id,
-                organisation_name=organisation_name,
-                sales_team_size=sales_team_size,
-                country=country,
-                company_address=company_address,
-                linked_in_url=linked_in_url,
-                website_url=website_url,
-                summary=summary,
-                logo_url=logo_url,
-                created_by_auth_user_id=str(admin_id),
-                approved_by=None,
-            )
-            session.add(organization)
-            session.commit()
-            session.refresh(organization)
-            logger.info(f"Organization record created for '{organisation_name}' with ID: {organization.organisation_id}")
+            def time_step(label: str, fn: Callable[[], None]):
+                start = time.perf_counter()
+                fn()
+                provision_metrics[label] = round(time.perf_counter() - start, 4)
 
-            self._create_storage_account(organization.organisation_id)
+            # Order: DB role+schema -> migrations -> storage -> key vault (DB first keeps core local, then slower cloud ops)
+            time_step("db_role_schema", lambda: self._create_database_role_and_schema(schema_name, role_name, role_password))
+            time_step("migrations", lambda: self._run_organization_migrations(schema_name))
+            time_step("storage_account", lambda: self._create_storage_account(organisation_id))
+            time_step("store_secret", lambda: self._store_password_in_key_vault(organisation_id, role_password))
 
-            # Log the creation event
+            # 3. If successful, update status to PENDING
+            organization.status = OrganisationStatus.PENDING
             history_entry = OrganisationActionHistory(
-                organisation_id=organization.organisation_id,
+                organisation_id=organisation_id,
                 action=OrganisationEventType.CREATED,
                 actor_admin_id=admin_id,
-                details={"message": "Organization created and pending approval."},
+                details={
+                    "message": "Organization provisioned and ready for approval.",
+                    "metrics": provision_metrics,
+                },
             )
             session.add(history_entry)
             session.commit()
-            session.refresh(history_entry)
+            session.refresh(organization)
+            logger.info(f"Successfully provisioned organization: {organisation_name} | metrics={provision_metrics}")
 
-            self._create_database_role_and_schema(schema_name, role_name, role_password)
-            self._run_organization_migrations(schema_name)
-            self._store_password_in_key_vault(organization.organisation_id, role_password)
-            logger.info(f"Successfully created and initialized organization: {organisation_name}")
-            
-            return {
-                "organization": organization,
-                "schema_name": schema_name,
-            }
-
-        except Exception as e:
-            logger.error(f"Failed to create organization '{organisation_name}': {e}", exc_info=True)
-            # Rollback is handled by the session context manager in the handler
+            return {"organization": organization, "schema_name": schema_name}
+        except ProvisioningError:
+            # already wrapped
+            session.rollback()
+            organization.status = OrganisationStatus.FAILED
+            session.add(OrganisationActionHistory(
+                organisation_id=organisation_id,
+                action=OrganisationEventType.SYSTEM_MIGRATION,
+                actor_admin_id=admin_id,
+                details={"error": "Provisioning failed (wrapped)."},
+            ))
+            session.commit()
             raise
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Provisioning failed for organization '{organisation_name}': {e}", exc_info=True)
+            organization.status = OrganisationStatus.FAILED
+            session.add(OrganisationActionHistory(
+                organisation_id=organisation_id,
+                action=OrganisationEventType.SYSTEM_MIGRATION,
+                actor_admin_id=admin_id,
+                details={"error": f"Provisioning failed: {e.__class__.__name__}"},
+            ))
+            session.commit()
+            raise ProvisioningError(str(e), organisation_id=organisation_id)
 
     def _create_database_role_and_schema(self, schema_name: str, role_name: str, password: str):
-        """Creates a new database role and schema for an organization."""
-        logger.info(f"Creating database role '{role_name}' and schema '{schema_name}'.")
+        """
+        Creates or updates the database role and schema for an organization idempotently.
+        This operation is transactional; it will roll back on any failure.
+        """
+        self._validate_identifier(schema_name, 'schema_name')
+        self._validate_identifier(role_name, 'role_name')
+        logger.info(f"Ensuring database role '{role_name}' and schema '{schema_name}' exist.")
         try:
             with self.master_engine.begin() as conn:
-                # Create role
-                conn.execute(text(f"CREATE ROLE {role_name} LOGIN PASSWORD :pwd NOINHERIT"), {"pwd": password})
-                logger.info(f"Created database role '{role_name}'")
-                
-                # Create schema
+                # Check if role exists
+                role_exists = conn.execute(
+                    text("SELECT 1 FROM pg_roles WHERE rolname = :role_name"),
+                    {"role_name": role_name}
+                ).scalar_one_or_none()
+
+                if role_exists:
+                    logger.warning(f"Role '{role_name}' already exists. Updating password.")
+                    conn.execute(text(f"ALTER ROLE {role_name} WITH PASSWORD :pwd"), {"pwd": password})
+                else:
+                    logger.info(f"Role '{role_name}' not found. Creating new role.")
+                    conn.execute(text(f"CREATE ROLE {role_name} LOGIN PASSWORD :pwd NOINHERIT"), {"pwd": password})
+
+                # Create schema if it doesn't exist and set authorization
                 conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema_name} AUTHORIZATION {role_name}"))
-                logger.info(f"Created schema '{schema_name}'")
                 
-                # Try to create vector extension - handle gracefully if it fails
-                try:
-                    # First ensure vector extension exists in the database
-                    conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-                    logger.info("Ensured vector extension exists in database")
-                    
-                    # Then create it in the specific schema
-                    conn.execute(text(f"CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA {schema_name}"))
-                    logger.info(f"Created vector extension in schema '{schema_name}'")
-                except SQLAlchemyError as vector_error:
-                    logger.warning(f"Failed to create vector extension in schema '{schema_name}': {vector_error}")
-                    logger.warning("Continuing without vector extension - this may affect vector operations")
-                
-                # Grant permissions
+                # Grant necessary permissions
                 conn.execute(text(f"GRANT USAGE ON SCHEMA {schema_name} TO {role_name}"))
                 conn.execute(text(f"GRANT ALL PRIVILEGES ON SCHEMA {schema_name} TO {role_name}"))
                 
+                # Grant role to admin user for maintenance
                 admin_user = database_config.DATABASE_USER
                 if admin_user:
                     conn.execute(text(f"GRANT {role_name} TO {admin_user}"))
-                
-            logger.info(f"Successfully created role '{role_name}' and schema '{schema_name}'.")
+
+                # Attempt to create vector extension within the schema, failing gracefully
+                try:
+                    conn.execute(text(f"CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA {schema_name}"))
+                    logger.info(f"Enabled 'vector' extension in schema '{schema_name}'.")
+                except SQLAlchemyError as vector_error:
+                    logger.warning(f"Could not create vector extension in schema '{schema_name}': {vector_error}. "
+                                   "Vector operations may be affected.")
+
+            logger.info(f"Successfully created and configured role '{role_name}' and schema '{schema_name}'.")
         except SQLAlchemyError as e:
             logger.error(f"Database role/schema creation failed for '{schema_name}': {e}", exc_info=True)
-            raise
+            raise ProvisioningError(f"Failed to create database role/schema: {e}")
 
     def _run_organization_migrations(self, schema_name: str, target_version: str = "head"):
         """Runs Alembic migrations for a specific organization's schema."""
@@ -174,58 +238,61 @@ class OrganizationManagementService:
                 validate_schema=True,
             )
             if not result.success:
-                raise Exception(f"Alembic migration failed for schema '{schema_name}': {result.error}")
+                raise ProvisioningError(f"Alembic migration failed for schema '{schema_name}': {result.error}")
             
             logger.info(f"Successfully applied migrations to schema '{schema_name}' in {result.duration:.2f}s.")
         except Exception as e:
             logger.error(f"Migration execution failed for schema '{schema_name}': {e}", exc_info=True)
-            raise
+            raise ProvisioningError(f"An unexpected error occurred during migration: {e}")
 
     def _store_password_in_key_vault(self, organisation_id: UUID, password: str):
-        """Store password in Azure Key Vault"""
+        """
+        Stores the database role password in Azure Key Vault.
+        This is a non-critical step; failures are logged as warnings.
+        """
         role_name = get_role_name(organisation_id)
-        logger.info(f"Attempting to store password for role '{role_name}' in Azure Key Vault.")
+        secret_name = get_key_vault_secret_name(organisation_id)
+        logger.info(f"Storing password for role '{role_name}' in Key Vault as secret '{secret_name}'.")
+
+        key_vault_url = secret_manager_config.AZURE_KEY_VAULT_URL
+        if not key_vault_url:
+            logger.warning("AZURE_KEY_VAULT_URL not configured. Skipping Key Vault operation.")
+            return
+
         try:
-            key_vault_url = secret_manager_config.AZURE_KEY_VAULT_URL
-            if not key_vault_url:
-                logger.warning("AZURE_KEY_VAULT_URL not set. Skipping Azure Key Vault storage.")
-                return
-
-            secret_name = get_key_vault_secret_name(organisation_id)
-            logger.info(f"Key Vault secret name: {secret_name}")
-
-            credential = DefaultAzureCredential()
+            credential = self._get_azure_credential()
             client = SecretClient(vault_url=key_vault_url, credential=credential)
-            logger.info("Azure Key Vault client created.")
-
             client.set_secret(secret_name, password)
-            logger.info(f"Successfully stored password for role '{role_name}' in Azure Key Vault as '{secret_name}'.")
+            logger.info(f"Successfully stored secret '{secret_name}' in Azure Key Vault.")
         except Exception as e:
-            logger.error(f"Failed to store password in Azure Key Vault for role '{role_name}': {e}", exc_info=True)
+            # Do not block provisioning if Key Vault fails. Log a strong warning.
+            logger.warning(f"CRITICAL: Failed to store password in Key Vault for org {organisation_id}. "
+                           f"The password will be lost. Error: {e}", exc_info=True)
 
     def _delete_password_from_key_vault(self, organisation_id: UUID):
-        """Deletes a password from Azure Key Vault."""
-        role_name = get_role_name(organisation_id)
-        logger.info(f"Attempting to delete password for role '{role_name}' from Azure Key Vault.")
+        """
+        Deletes a password secret from Azure Key Vault.
+        This operation is non-critical; failures are logged as warnings.
+        """
+        secret_name = get_key_vault_secret_name(organisation_id)
+        logger.info(f"Attempting to delete secret '{secret_name}' from Azure Key Vault.")
+
+        key_vault_url = secret_manager_config.AZURE_KEY_VAULT_URL
+        if not key_vault_url:
+            logger.warning("AZURE_KEY_VAULT_URL not configured. Skipping Key Vault deletion.")
+            return
+
         try:
-            key_vault_url = secret_manager_config.AZURE_KEY_VAULT_URL
-            if not key_vault_url:
-                logger.warning("AZURE_KEY_VAULT_URL not set. Skipping Azure Key Vault deletion.")
-                return
-
-            secret_name = get_key_vault_secret_name(organisation_id)
-
-            credential = DefaultAzureCredential()
+            credential = self._get_azure_credential()
             client = SecretClient(vault_url=key_vault_url, credential=credential)
             
-            # The delete_secret operation returns a Poller. We can wait for it to complete.
             poller = client.begin_delete_secret(secret_name)
             deleted_secret = poller.result()
             
             logger.info(f"Successfully deleted secret '{deleted_secret.name}' from Azure Key Vault.")
         except Exception as e:
-            # It's common for the secret to not be found if deletion is retried, so we log a warning.
-            logger.warning(f"Failed to delete secret for role '{role_name}' from Azure Key Vault: {e}", exc_info=True)
+            # This is often not a critical error (e.g., secret already deleted), so log as a warning.
+            logger.warning(f"Failed to delete secret '{secret_name}' from Key Vault: {e}", exc_info=True)
 
     def _ensure_vector_extension_available(self):
         """Ensures the vector extension is available in the database."""
@@ -441,9 +508,9 @@ class OrganizationManagementService:
         # Log the deletion event before starting the destructive operations
         history_entry = OrganisationActionHistory(
             organisation_id=organisation_id,
-            action=OrganisationEventType.SYSTEM_MIGRATION, # Using a generic event type for deletion
+            action=OrganisationEventType.DELETED,
             actor_admin_id=admin_id,
-            note=f"Organization '{organisation.organisation_name}' deleted.",
+            note=f"Organization '{organisation.organisation_name}' permanently deleted.",
             details={"schema_name": schema_name, "role_name": role_name},
         )
         session.add(history_entry)
@@ -465,8 +532,7 @@ class OrganizationManagementService:
                 logger.info(f"Successfully dropped schema and role for organization {organisation_id}.")
         except SQLAlchemyError as e:
             logger.error(f"Failed to drop schema/role for organization {organisation_id}: {e}", exc_info=True)
-            # We raise an exception because the database is now in an inconsistent state.
-            raise Exception(f"Failed to clean up database resources for organization {organisation_id}.")
+            raise DeletionError(f"Failed to clean up database resources for organization {organisation_id}.")
 
         # Delete the password from Key Vault
         self._delete_password_from_key_vault(organisation_id)
@@ -478,19 +544,27 @@ class OrganizationManagementService:
     def _create_storage_account(self, organisation_id: UUID):
         """Creates a new Azure Storage account for an organization."""
         storage_account_name = get_storage_account_name(organisation_id)
-        logger.info(f"Creating Azure Storage account '{storage_account_name}' for organization {organisation_id}.")
+        logger.info(f"Creating Azure Storage account '{storage_account_name}'.")
+
+        subscription_id = cloud_infra_config.AZURE_SUBSCRIPTION_ID
+        resource_group_name = cloud_infra_config.AZURE_RESOURCE_GROUP
+
+        if not all([subscription_id, resource_group_name]):
+            logger.warning("Azure subscription or resource group not configured. Skipping storage account creation.")
+            return
 
         try:
-
-            credential = DefaultAzureCredential()
-            subscription_id = cloud_infra_config.AZURE_SUBSCRIPTION_ID
-            resource_group_name = cloud_infra_config.AZURE_RESOURCE_GROUP
-
-            if not all([subscription_id, resource_group_name]):
-                logger.warning("Azure subscription ID or resource group name is not configured. Skipping storage account creation.")
-                return ""
-            
+            credential = self._get_azure_credential()
             storage_client = StorageManagementClient(credential, subscription_id)
+            # Idempotency: if exists, skip
+            try:
+                existing = storage_client.storage_accounts.get_properties(resource_group_name, storage_account_name)
+                if existing:
+                    logger.info(f"Storage account '{storage_account_name}' already exists; skipping creation.")
+                    return
+            except Exception:
+                # Not found => proceed
+                pass
 
             poller = storage_client.storage_accounts.begin_create(
                 resource_group_name,
@@ -498,34 +572,111 @@ class OrganizationManagementService:
                 StorageAccountCreateParameters(
                     sku=Sku(name="Standard_LRS"),
                     kind=Kind.STORAGE_V2,
-                    location="eastus",  # Or get from config
+                    location=cloud_storage_config.APPLICATION_REGION,
                 ),
             )
             storage_account = poller.result()
-            logger.info(f"Successfully created storage account: {storage_account.name}")
+            logger.info(f"Successfully created or ensured storage account: {storage_account.name}")
         except Exception as e:
-            logger.error(f"Failed to create storage account '{storage_account_name}': {e}", exc_info=True)
-            raise
+            logger.error(f"Failed to create storage account '{storage_account_name}': {e}")
+            raise ProvisioningError(f"Failed to create Azure Storage account: {e}")
 
     def _delete_storage_account(self, organisation_id: UUID):
-        """Deletes an Azure Storage account."""
+        """
+        Deletes an Azure Storage account.
+        This operation is non-critical; failures are logged as warnings.
+        """
         storage_account_name = get_storage_account_name(organisation_id)
         logger.info(f"Deleting Azure Storage account '{storage_account_name}'.")
+
+        subscription_id = cloud_infra_config.AZURE_SUBSCRIPTION_ID
+        resource_group_name = cloud_infra_config.AZURE_RESOURCE_GROUP
+
+        if not all([subscription_id, resource_group_name]):
+            logger.warning("Azure subscription or resource group not configured. Skipping storage account deletion.")
+            return
+
         try:
-
-            credential = DefaultAzureCredential()
-            subscription_id = cloud_infra_config.AZURE_SUBSCRIPTION_ID
-            resource_group_name = cloud_infra_config.AZURE_RESOURCE_GROUP
-
-            if not all([subscription_id, resource_group_name]):
-                logger.warning("Azure subscription ID or resource group name is not configured. Skipping storage account deletion.")
-                return
-
+            credential = self._get_azure_credential()
             storage_client = StorageManagementClient(credential, subscription_id)
             storage_client.storage_accounts.delete(resource_group_name, storage_account_name)
-            logger.info(f"Successfully deleted storage account '{storage_account_name}'.")
+            logger.info(f"Successfully initiated deletion of storage account '{storage_account_name}'.")
         except Exception as e:
-            logger.warning(f"Failed to delete storage account '{storage_account_name}': {e}", exc_info=True)
+            logger.warning(f"Failed to delete storage account '{storage_account_name}': {e}")
+
+    # ------------------ Helper / pagination utilities ------------------ #
+    def _get_azure_credential(self):
+        """Centralised Azure credential selection."""
+        if all([
+            cloud_infra_config.AZURE_TENANT_ID,
+            cloud_infra_config.AZURE_CLIENT_ID,
+            cloud_infra_config.AZURE_CLIENT_SECRET,
+        ]):
+            return ClientSecretCredential(
+                tenant_id=cloud_infra_config.AZURE_TENANT_ID,
+                client_id=cloud_infra_config.AZURE_CLIENT_ID,
+                client_secret=cloud_infra_config.AZURE_CLIENT_SECRET,
+            )
+        return DefaultAzureCredential()
+
+    def _validate_identifier(self, value: str, field: str):
+        """Basic safety validation for SQL identifiers comprised of lowercase letters, digits, and underscores.
+        Raises ValueError if invalid. This is defensive; names come from controlled generators.
+        """
+        import re
+        if not re.fullmatch(r"[a-z0-9_]+", value):
+            raise ValueError(f"Invalid {field} '{value}' – must match [a-z0-9_]+")
+
+    def rotate_organization_password(self, organisation_id: UUID, session: Session, admin_id: UUID) -> Dict[str, Any]:
+        """Rotates the database role password and updates Key Vault.
+        Returns metadata including new secret name.
+        """
+        role_name = get_role_name(organisation_id)
+        schema_name = get_schema_name(organisation_id)
+        new_password = secrets.token_urlsafe(16)
+        self._validate_identifier(role_name, 'role_name')
+        try:
+            with self.master_engine.begin() as conn:
+                conn.execute(text(f"ALTER ROLE {role_name} WITH PASSWORD :pwd"), {"pwd": new_password})
+            self._store_password_in_key_vault(organisation_id, new_password)
+            session.add(OrganisationActionHistory(
+                organisation_id=organisation_id,
+                action=OrganisationEventType.FIELD_CHANGED,
+                actor_admin_id=admin_id,
+                details={"message": "Database role password rotated", "schema": schema_name},
+            ))
+            session.commit()
+            return {"role_name": role_name, "schema_name": schema_name}
+        except Exception as e:
+            session.rollback()
+            logger.error(f"Failed to rotate password for organization {organisation_id}: {e}")
+            raise ProvisioningError(f"Failed to rotate password: {e}")
+
+    # Override history fetchers to return cursor metadata without breaking original callers
+    def get_organization_history_with_cursor(
+        self,
+        session: Session,
+        organisation_id: UUID,
+        limit: int,
+        cursor: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        items = self.get_organization_history(session, organisation_id, limit, cursor)
+        has_more = len(items) > limit
+        page_items = items[:limit]
+        next_cursor = encode_cursor(page_items[-1].created_at, page_items[-1].id) if has_more else None
+        return {"items": page_items, "next_cursor": next_cursor, "has_more": has_more}
+
+    def get_all_organization_history_with_cursor(
+        self,
+        session: Session,
+        limit: int,
+        cursor: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        items = self.get_all_organization_history(session, limit, cursor)
+        has_more = len(items) > limit
+        page_items = items[:limit]
+        next_cursor = encode_cursor(page_items[-1].created_at, page_items[-1].id) if has_more else None
+        return {"items": page_items, "next_cursor": next_cursor, "has_more": has_more}
 
 
 organization_management_service = OrganizationManagementService()
