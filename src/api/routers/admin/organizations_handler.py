@@ -153,6 +153,51 @@ async def list_organizations(
         )
         return Response.internal_server_error_response(message=f"Failed to list organizations - {e}", data={})
 
+
+@router.get(
+    "/{organisation_id}",
+    response_model=GenericResponse[ListOrganizationResponse],
+    tags=["admin_organisations"],
+)
+async def get_organization(
+    organisation_id: UUID,
+    current_admin: SuperAdmin = Depends(admin_auth),
+    master_session: Session = Depends(lambda: next(fastapp.state.master_session())),
+):
+    """
+    Retrieve a single organization by its ID.
+    This endpoint is restricted to super admins and admins.
+    """
+    try:
+        logger.info(f"Request to get organization '{organisation_id}' by admin: {current_admin.email}")
+
+        # Ensure the user has super admin or admin role
+        if current_admin.role not in [AdminRole.SUPER_ADMIN, AdminRole.ADMIN]:
+            logger.warning(f"Unauthorized attempt to get organization by user: {current_admin.admin_id}.")
+            return Response.forbidden_error_response("Admin access required")
+
+        # Fetch organization by ID
+        statement = select(Organisation).where(Organisation.organisation_id == organisation_id)
+        result = master_session.exec(statement)
+        organization = result.first()
+
+        if not organization:
+            logger.warning(f"Organization with ID '{organisation_id}' not found.")
+            return Response.not_found_error_response("Organization not found")
+
+        response_data = ListOrganizationResponse.from_orm(organization)
+        
+        logger.info(f"Successfully retrieved organization: {organization.organisation_name} with ID: {organization.organisation_id}")
+        return Response.success_response(message="Organization retrieved successfully", data=response_data)
+
+    except Exception as e:
+        logger.error(
+            f"Error retrieving organization '{organisation_id}': {e}",
+            exc_info=True,
+        )
+        return Response.internal_server_error_response(message=f"Failed to retrieve organization - {e}", data={})
+
+
 @router.put(
     "/{organisation_id}/update",
     response_model=GenericResponse[ListOrganizationResponse],
