@@ -39,7 +39,7 @@ module "frontend_admin_pipeline" {
   source             = "../modules/pipeline"
   devops_project_id  = data.azuredevops_project.project.id
   pipeline_name      = "${var.frontend_admin_pipeline_name}-${var.env}"
-  repo_id            = data.azuredevops_git_repository.frontend_repo.id
+  repo_id            = data.azuredevops_git_repository.frontend_admin_repo.id
   branch_name        = var.frontend_admin_branch
   yml_path           = var.frontend_admin_yml_path
   variable_group_ids = [azuredevops_variable_group.secrets.id]
