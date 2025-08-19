@@ -113,9 +113,26 @@ class CloudInfraConfig:
 
     AZURE_SUBSCRIPTION_ID: Optional[str] = os.getenv("AZURE_SUBSCRIPTION_ID")
     AZURE_RESOURCE_GROUP: Optional[str] = os.getenv("AZURE_RESOURCE_GROUP")
-    AZURE_TENANT_ID: Optional[str] = os.getenv("AZURE_TENANT_ID")
-    AZURE_CLIENT_ID: Optional[str] = os.getenv("AZURE_CLIENT_ID")
-    AZURE_CLIENT_SECRET: Optional[str] = os.getenv("AZURE_CLIENT_SECRET")
+
+
+class ChatFileUploadConfig:
+    """Configuration for file uploads."""
+
+    # Max file size in bytes (e.g., 50 * 1024 * 1024 for 50MB)
+    MAX_FILE_SIZE_BYTES: int = int(os.getenv("MAX_UPLOAD_FILE_SIZE_BYTES", "52428800"))
+
+    # Allowed MIME types for uploads
+    ALLOWED_MIMETYPES: list[str] = [
+        item.strip()
+        for item in os.getenv(
+            "ALLOWED_MIMETYPES",
+            "application/pdf, text/plain, text/csv, application/msword, "
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document, "
+            "application/vnd.ms-powerpoint, "
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        ).split(",")
+        if item.strip()
+    ]
 
 
 # Create config instances
@@ -129,6 +146,7 @@ resend_config = ResendConfig()
 super_admin_config = SuperAdminConfig()
 secret_manager_config = SecretManagerConfig()
 cloud_infra_config = CloudInfraConfig()
+chat_file_upload_config = ChatFileUploadConfig()
 
 
 class Config:

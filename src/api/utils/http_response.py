@@ -63,5 +63,13 @@ class Response:
         return cls._response(fastapi.status.HTTP_409_CONFLICT, "ERROR", message)
 
     @classmethod
+    def request_entity_too_large_error_response(cls, message: Any, data: Any = None):
+        return cls._response(fastapi.status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "ERROR", message, data)
+
+    @classmethod
+    def unsupported_media_type_error_response(cls, message: Any, data: Any = None):
+        return cls._response(fastapi.status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "ERROR", message, data)
+
+    @classmethod
     def unprocessable_entity_error_response(cls, message: Any, data: Any = None):
         return cls._response(fastapi.status.HTTP_422_UNPROCESSABLE_ENTITY, "ERROR", message, data)
