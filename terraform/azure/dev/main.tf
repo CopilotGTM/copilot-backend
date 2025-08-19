@@ -157,6 +157,111 @@ resource "azurerm_role_assignment" "aks_kubelet_acr_pull" {
 }
 
 # -----------------------------------------------------------------
+# Storage Access: Allow AKS kubelet identity to read/write blobs
+# (Adjust or add additional roles if queues/files are needed)
+# -----------------------------------------------------------------
+resource "azurerm_role_assignment" "aks_kubelet_storage_blob_contributor" {
+  principal_id                     = module.aks.kubelet_identity_object_id
+  role_definition_name             = "Storage Blob Data Contributor"
+  scope                            = module.storage_account.storage_account_id
+  skip_service_principal_aad_check = true
+  depends_on = [
+    module.aks,
+    module.storage_account
+  ]
+}
+
+# -----------------------------------------------------------------
+# Key Vault Access Policies: Grant AKS kubelet identity secret get/list
+# Needed for CSI driver or direct secret retrieval via managed identity
+# -----------------------------------------------------------------
+resource "azurerm_key_vault_access_policy" "aks_database_vault" {
+  key_vault_id = module.database_key_vault.key_vault_id
+  tenant_id    = data.azurerm_client_config.current.tenant_id
+  object_id    = module.aks.kubelet_identity_object_id
+  # Expanded permissions to allow create/update (Set) and delete/recover/purge
+  secret_permissions = ["Get", "List", "Set", "Delete", "Recover", "Backup", "Restore", "Purge"]
+  depends_on = [
+    module.aks,
+    module.database_key_vault
+  ]
+}
+
+resource "azurerm_key_vault_access_policy" "aks_master_vault" {
+  key_vault_id = module.master_key_vault.key_vault_id
+  tenant_id    = data.azurerm_client_config.current.tenant_id
+  object_id    = module.aks.kubelet_identity_object_id
+  secret_permissions = ["Get", "List", "Set", "Delete", "Recover", "Backup", "Restore", "Purge"]
+  depends_on = [
+    module.aks,
+    module.master_key_vault
+  ]
+}
+
+# -----------------------------------------------------------------
+# Storage Access (All Storage Accounts in RG): Assign at resource group scope
+# Provides broad data actions across any storage accounts created in RG.
+# NOTE: "Storage Blob Data Contributor" covers blob data plane only. If all
+# storage account types (blob/file/queue/table) are needed, we add multiple roles.
+# -----------------------------------------------------------------
+resource "azurerm_role_assignment" "aks_storage_blob_contributor_rg" {
+  principal_id                     = module.aks.kubelet_identity_object_id
+  role_definition_name             = "Storage Blob Data Contributor"
+  scope                            = module.resource_group.resource_group_id
+  skip_service_principal_aad_check = true
+  depends_on = [
+    module.aks,
+    module.resource_group
+  ]
+}
+
+resource "azurerm_role_assignment" "aks_storage_queue_contributor_rg" {
+  principal_id                     = module.aks.kubelet_identity_object_id
+  role_definition_name             = "Storage Queue Data Contributor"
+  scope                            = module.resource_group.resource_group_id
+  skip_service_principal_aad_check = true
+  depends_on = [
+    module.aks,
+    module.resource_group
+  ]
+}
+
+resource "azurerm_role_assignment" "aks_storage_file_contributor_rg" {
+  principal_id                     = module.aks.kubelet_identity_object_id
+  role_definition_name             = "Storage File Data SMB Share Contributor"
+  scope                            = module.resource_group.resource_group_id
+  skip_service_principal_aad_check = true
+  depends_on = [
+    module.aks,
+    module.resource_group
+  ]
+}
+
+resource "azurerm_role_assignment" "aks_storage_table_contributor_rg" {
+  principal_id                     = module.aks.kubelet_identity_object_id
+  role_definition_name             = "Storage Table Data Contributor"
+  scope                            = module.resource_group.resource_group_id
+  skip_service_principal_aad_check = true
+  depends_on = [
+    module.aks,
+    module.resource_group
+  ]
+}
+
+# Optional (commented): Grant control plane management over storage accounts.
+# Uncomment only if AKS-managed identity must create/delete storage accounts.
+# resource "azurerm_role_assignment" "aks_storage_account_contributor_rg" {
+#   principal_id                     = module.aks.kubelet_identity_object_id
+#   role_definition_name             = "Storage Account Contributor"
+#   scope                            = module.resource_group.resource_group_id
+#   skip_service_principal_aad_check = true
+#   depends_on = [
+#     module.aks,
+#     module.resource_group
+#   ]
+# }
+
+# -----------------------------------------------------------------
 # Azure AI Foundry
 # -----------------------------------------------------------------
 module "foundry" {

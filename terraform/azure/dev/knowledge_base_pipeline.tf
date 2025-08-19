@@ -14,6 +14,12 @@ module "knowledge_base_pipeline" {
   branch_name        = var.knowledge_base_branch
   yml_path           = var.knowledge_base_yml_path
   variable_group_ids = [azuredevops_variable_group.secrets.id]
+  pipeline_variables = {
+    DEPLOY_ENVIRONMENT     = var.env
+    ACR_LOGIN_SERVER       = module.acr.acr_login_server
+    HELM_RELEASE_NAME      = "knowledge-base-worker"
+    ACR_SERVICE_CONNECTION = module.service_connection_acr.acr_service_connection_name
+  }
 }
 
 # -----------------------------------------------------------------

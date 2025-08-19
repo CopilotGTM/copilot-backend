@@ -20,6 +20,12 @@ resource "azurerm_postgresql_flexible_server" "db" {
   tags = var.tags
 }
 
+resource "azurerm_postgresql_flexible_server_configuration" "vector_extension" {
+  name      = "azure.extensions"
+  server_id = azurerm_postgresql_flexible_server.db.id
+  value     = "VECTOR"
+}
+
 resource "azurerm_postgresql_flexible_server_firewall_rule" "allow_all" {
   name                = "allow-all-ips"
   server_id           = azurerm_postgresql_flexible_server.db.id
