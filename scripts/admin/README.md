@@ -1,59 +1,58 @@
 # Admin Scripts
 
-This directory contains administrative scripts for managing organizations, tenants, and related database operations.
+This directory contains administrative scripts for managing the initial setup and super admin account.
 
 ## Scripts
 
+### `deploy_with_super_admin.py`
+
+This script orchestrates the deployment process, including running database migrations and initializing the super admin account. It is designed to be run in automated deployment environments.
+
+**What it does:**
+
+1.  **Checks Environment Variables:** Verifies that all required environment variables are set.
+2.  **Runs Master Migrations:** Executes the main `run_master_migrations.py` script.
+3.  **Initializes Super Admin:** Calls `init_super_admin.py` to create the super admin account if it doesn't exist.
+
 ### `init_super_admin.py`
-Creates the initial super admin account on first deployment. This script:
-- Reads `SUPER_ADMIN_EMAIL` from environment variables
-- Creates a super admin account with a temporary password
-- Sends an email with login credentials
-- Only runs if no super admin exists
 
-### `create_organization.py`
-Creates a new organization with the specified configuration. This script sets up:
-- Organization record in the master database
-- Database schema for the organization
-- Initial database migrations
+This script creates the initial super admin account.
 
-### `delete_organizations.py`
-Deletes organizations and their associated data. This script:
-- Removes organization records from the master database
-- Drops organization-specific database schemas
-- Cleans up associated data
+**What it does:**
 
-### `delete_tenants.py`
-Deletes tenant data and schemas. This script:
-- Removes tenant-specific database schemas
-- Cleans up tenant data
-- Handles multi-tenant cleanup operations
+-   Reads `SUPER_ADMIN_EMAIL` from environment variables.
+-   Creates a super admin account with a temporary password if one does not already exist.
+-   Sends an email to the super admin with login credentials.
 
 ## Usage
 
-All scripts should be run from the project root directory:
+The `deploy_with_super_admin.py` script is the primary entry point for automated deployments.
 
 ```bash
-# Initialize super admin (first deployment)
+# Run the complete deployment and initialization process
+python scripts/admin/deploy_with_super_admin.py
+```
+
+To run the super admin initialization manually:
+
+```bash
+# Initialize super admin (if not done by the deployment script)
 python scripts/admin/init_super_admin.py
-
-# Create a new organization
-python scripts/admin/create_organization.py
-
-# Delete organizations
-python scripts/admin/delete_organizations.py
-
-# Delete tenants
-python scripts/admin/delete_tenants.py
 ```
 
 ## Environment Variables
 
-The following environment variables are required for admin functionality:
+The following environment variables are required for these scripts to function correctly:
 
 ```bash
 # Super Admin Configuration
 SUPER_ADMIN_EMAIL=admin@yourcompany.com
+
+# Database Configuration
+DATABASE_HOST=your-database-host
+DATABASE_USER=your-database-user
+DATABASE_PASSWORD=your-database-password
+DATABASE_NAME=your-database-name
 
 # Supabase Configuration
 SUPABASE_URL=https://your-project.supabase.co
@@ -72,8 +71,7 @@ APP_URL=https://your-app-domain.com
 
 ## Prerequisites
 
-- Database connection configured
-- Supabase project set up with authentication
-- Resend account configured for email delivery
-- Proper environment variables set
-- Admin privileges for database operations 
+-   Database connection must be configured and accessible.
+-   A Supabase project must be set up for authentication.
+-   A Resend account must be configured for sending emails.
+-   All required environment variables must be set.

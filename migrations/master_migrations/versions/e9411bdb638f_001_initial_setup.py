@@ -55,7 +55,7 @@ def upgrade() -> None:
     sa.Column('summary', sa.Text(), nullable=True),
     sa.Column('is_active', sa.Boolean(), nullable=False),
     sa.Column('logo_url', sqlmodel.sql.sqltypes.AutoString(length=500), nullable=True),
-    sa.Column('status', sa.Enum('PENDING', 'APPROVED', 'REJECTED', 'SUSPENDED', 'DEACTIVATED', name='organisationstatus'), nullable=False),
+    sa.Column('status', sa.Enum('PROVISIONING', 'PENDING', 'APPROVED', 'REJECTED', 'SUSPENDED', 'DEACTIVATED', 'FAILED', name='organisationstatus'), nullable=False),
     sa.Column('created_by_auth_user_id', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
     sa.Column('approved_by', sa.Uuid(), nullable=True),
     sa.Column('approved_at', sa.DateTime(timezone=True), nullable=True),

@@ -39,7 +39,7 @@ class Response:
         return fastapi.Response(status_code=fastapi.status.HTTP_204_NO_CONTENT)
 
     @classmethod
-    def internal_server_error_response(cls, message: Any, data: Any):
+    def internal_server_error_response(cls, message: Any, data: Any = None):
         return cls._response(fastapi.status.HTTP_500_INTERNAL_SERVER_ERROR, "ERROR", message, data)
 
     @classmethod
@@ -63,5 +63,18 @@ class Response:
         return cls._response(fastapi.status.HTTP_409_CONFLICT, "ERROR", message)
 
     @classmethod
+    def request_entity_too_large_error_response(cls, message: Any, data: Any = None):
+        return cls._response(fastapi.status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "ERROR", message, data)
+
+    @classmethod
+    def unsupported_media_type_error_response(cls, message: Any, data: Any = None):
+        return cls._response(fastapi.status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "ERROR", message, data)
+
+    @classmethod
     def unprocessable_entity_error_response(cls, message: Any, data: Any = None):
         return cls._response(fastapi.status.HTTP_422_UNPROCESSABLE_ENTITY, "ERROR", message, data)
+
+    # Convenience generic error helper used by some legacy handlers expecting a unified name.
+    @classmethod
+    def error_response(cls, status_code: int, message: Any, data: Any = None):
+        return cls._response(status_code, "ERROR", message, data)

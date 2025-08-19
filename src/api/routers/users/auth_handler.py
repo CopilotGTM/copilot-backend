@@ -12,8 +12,8 @@ from src.domain.models.user_models import (
     UserForgotPasswordRequest,
 )
 from src.domain.models.admin_models import PasswordResetAction
-from src.domain.models.master_tables import User
-from src.infra.utils.app_state import fastapp
+from src.domain.models.master_tables import SupabaseUserStatus, User
+from src.infra.utils.database import get_master_engine
 from src.infra.auth.supabase_user_client import supabase_user_client
 from src.infra.utils.logger import get_logger
 from src.api.utils.http_response import Response
@@ -29,7 +29,7 @@ router = APIRouter()
 )
 async def user_login(
     login_request: UserLoginRequest,
-    master_session: Session = Depends(lambda: next(fastapp.state.master_session())),
+    master_session: Session = Depends(lambda: Session(get_master_engine(echo=False))),
 ):
     """
     User login endpoint.
@@ -126,7 +126,7 @@ async def user_login(
 @router.post("/reset-password", tags=["user_auth"])
 async def reset_password(
     password_request: UserResetPasswordRequest,
-    master_session: Session = Depends(lambda: next(fastapp.state.master_session())),
+    master_session: Session = Depends(lambda: Session(get_master_engine(echo=False))),
 ):
     try:
         if not password_request.token_hash:
@@ -197,6 +197,7 @@ async def reset_password(
 
                 logger.info(f"Updating local DB for user_id: {user_id}")
                 current_user.email_verified = True
+                current_user.status = SupabaseUserStatus.ACTIVE
                 current_user.last_login_at = datetime.utcnow()
                 master_session.add(current_user)
                 master_session.commit()
@@ -261,7 +262,7 @@ async def refresh_token(refresh_request: UserRefreshTokenRequest):
 @router.post("/forgot-password", tags=["user_auth"])
 async def forgot_password(
     forgot_password_request: UserForgotPasswordRequest,
-    master_session: Session = Depends(lambda: next(fastapp.state.master_session())),
+    master_session: Session = Depends(lambda: Session(get_master_engine(echo=False))),
 ):
     try:
         statement = select(User).where(

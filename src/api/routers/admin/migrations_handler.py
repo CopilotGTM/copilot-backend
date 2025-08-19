@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 
 from src.domain.models.authentication import Authentication
-from src.infra.utils.database import get_master_session
+from src.infra.utils.database import get_master_engine
 from src.infra.utils.logger import get_logger
 from src.service.organization_management import organization_management_service
 from src.api.utils.http_response import Response
@@ -18,7 +18,7 @@ migration_router = APIRouter()
 @migration_router.get("/check")
 async def check_migration_status(
     auth_data: Dict[str, Any] = Depends(auth.verify_session),
-    master_session: Session = Depends(get_master_session),
+    master_session: Session = Depends(lambda: Session(get_master_engine(echo=False))),
 ) -> Dict[str, Any]:
     """
     Check if migrations need to be run.
@@ -103,7 +103,7 @@ async def check_migration_status(
 @migration_router.post("/run/master")
 async def run_master_migrations(
     auth_data: Dict[str, Any] = Depends(auth.verify_session),
-    master_session: Session = Depends(get_master_session),
+    master_session: Session = Depends(lambda: Session(get_master_engine(echo=False))),
 ) -> Dict[str, Any]:
     """
     Run master migrations.
@@ -134,7 +134,7 @@ async def run_master_migrations(
 async def run_organization_migrations(
     org_ids: List[str] = None,
     auth_data: Dict[str, Any] = Depends(auth.verify_session),
-    master_session: Session = Depends(get_master_session),
+    master_session: Session = Depends(lambda: Session(get_master_engine(echo=False))),
 ) -> Dict[str, Any]:
     """
     Run organization migrations.
@@ -178,7 +178,7 @@ async def run_organization_migrations(
 @migration_router.post("/run/all")
 async def run_all_migrations(
     auth_data: Dict[str, Any] = Depends(auth.verify_session),
-    master_session: Session = Depends(get_master_session),
+    master_session: Session = Depends(lambda: Session(get_master_engine(echo=False))),
 ) -> Dict[str, Any]:
     """
     Run all migrations (master + organization).

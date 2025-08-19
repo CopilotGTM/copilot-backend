@@ -18,11 +18,13 @@ if TYPE_CHECKING:
 class OrganisationStatus(str, Enum):
     """Status enum for lifecycle of organisation."""
 
+    PROVISIONING = "provisioning"
     PENDING = "pending"
     APPROVED = "approved"
     REJECTED = "rejected"
     SUSPENDED = "suspended"
     DEACTIVATED = "deactivated"
+    FAILED = "failed"
 
 
 class OrganisationEventType(str, Enum):
@@ -40,6 +42,7 @@ class OrganisationEventType(str, Enum):
     ROLE_CHANGED = "role_changed"
     NOTE_ADDED = "note_added"
     SYSTEM_MIGRATION = "system_migration"
+    DELETED = "deleted"
 
 
 class Organisation(TimestampMixin, table=True):
@@ -95,9 +98,9 @@ class Organisation(TimestampMixin, table=True):
         description="URL pointing to the organisation's logo (if set)."
     )
     status: OrganisationStatus = Field(
-        default=OrganisationStatus.PENDING,
+        default=OrganisationStatus.PROVISIONING,
         index=True,
-        description="Lifecycle status for the organisation (pending, approved, suspended, etc.)."
+        description="Lifecycle status for the organisation (provisioning, pending, approved, etc.)."
     )
     created_by_auth_user_id: Optional[str] = Field(
         default=None,

@@ -28,6 +28,7 @@ azure-common==1.1.28
 azure-identity>=1.14.0
 azure-keyvault-secrets>=4.7.0
 azure-mgmt-storage==21.1.0
+aiohttp==3.9.1
 
 # Additional utilities
 packaging==23.2
@@ -52,3 +53,4 @@ celery~=5.5.3
 lxml
 pydantic~=2.11.7
 pydantic[email]
+Pillow==10.4.0

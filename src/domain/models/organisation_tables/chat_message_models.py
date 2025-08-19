@@ -90,6 +90,19 @@ class Attachment(TimestampMixin, table=True):
     retention_policy: Optional[str] = Field(
         default=None, description="Data retention policy identifier"
     )
+    processing_status: str = Field(
+        default="pending",
+        description="Post-processing status: pending|processing|thumbnails_generated|failed",
+    )
+    thumbnail_small_path: Optional[str] = Field(
+        default=None, description="Blob path for a small thumbnail (e.g., 128px)"
+    )
+    thumbnail_medium_path: Optional[str] = Field(
+        default=None, description="Blob path for a medium thumbnail (e.g., 512px)"
+    )
+    processing_error: Optional[str] = Field(
+        default=None, description="Error details if processing failed"
+    )
     is_deleted: bool = Field(default=False, description="Soft delete flag")
     deleted_at: Optional[datetime] = Field(
         default=None, description="Soft delete timestamp"
