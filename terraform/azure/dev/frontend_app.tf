@@ -44,4 +44,11 @@ module "frontend_pipeline" {
   branch_name        = var.frontend_branch
   yml_path           = var.frontend_yml_path
   variable_group_ids = [azuredevops_variable_group.secrets.id]
+  pipeline_variables = {
+    DEPLOY_ENVIRONMENT     = var.env
+    ACR_LOGIN_SERVER       = module.acr.acr_login_server
+    ACR_SERVICE_CONNECTION = module.service_connection_acr.acr_service_connection_name
+    WEB_APP_NAME           = module.frontend_app_service.app_service_name
+    RESOURCE_GROUP         = module.resource_group.resource_group_name
+  }
 }

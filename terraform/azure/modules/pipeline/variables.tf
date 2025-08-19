@@ -28,3 +28,9 @@ variable "variable_group_ids" {
   type        = list(number)
   default     = []
 }
+
+variable "pipeline_variables" {
+  description = "Map of plain (non-secret) pipeline variables to inject into the build definition (e.g., DEPLOY_ENVIRONMENT, ACR_LOGIN_SERVER)."
+  type        = map(string)
+  default     = {}
+}

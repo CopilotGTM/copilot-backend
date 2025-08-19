@@ -14,4 +14,12 @@ resource "azuredevops_build_definition" "pipeline" {
   }
 
   variable_groups = var.variable_group_ids
+
+  dynamic "variable" {
+    for_each = var.pipeline_variables
+    content {
+      name  = variable.key
+      value = variable.value
+    }
+  }
 }
