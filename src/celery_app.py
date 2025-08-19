@@ -1,11 +1,20 @@
-from celery import Celery
-from src.infra.config.configs import Config
 from dotenv import load_dotenv
 import os
 import ssl
+import sys
+from pathlib import Path
 
-# Load .env variables
+# Add project root to Python path for imports
+project_root = Path(__file__).parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+    print(f"Added {project_root} to Python path")
+
+# Load .env variables before importing any other modules
 load_dotenv()
+
+from celery import Celery
+from src.infra.config.configs import Config
 
 # Load configuration and Redis connection details
 config = Config()
@@ -31,16 +40,11 @@ if config.env != "local":
     broker_use_ssl = {"ssl_cert_reqs": ssl_cert_reqs}
     backend_use_ssl = {"ssl_cert_reqs": ssl_cert_reqs}
 
-# Instantiate Celery, including the task modules so they're registered
+# Instantiate Celery
 celery = Celery(
     "technical_deck_worker",
     broker=broker_url,
     backend=backend_url,
-    include=[
-        "src.tasks.technical_deck",
-        "src.tasks.slide_outline",
-        "src.tasks.image_processing",
-    ],
 )
 
 # Apply SSL options if set
@@ -49,5 +53,9 @@ if broker_use_ssl:
 if backend_use_ssl:
     celery.conf.redis_backend_use_ssl = backend_use_ssl
 
-# Auto-discover any other tasks in src.tasks
+# Auto-discover tasks from all modules in the 'src.tasks' package.
+# This is the recommended way to avoid circular imports.
 celery.autodiscover_tasks(["src.tasks"])
+
+# Explicitly import task modules to ensure registration
+from src.tasks import organization, technical_deck, slide_outline, image_processing

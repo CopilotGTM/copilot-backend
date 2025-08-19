@@ -57,4 +57,15 @@ def get_logger(
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
 
+    # Reduce noisy third-party loggers once (idempotent)
+    for noisy in [
+        "sqlalchemy.engine",
+        "azure.core.pipeline.policies.http_logging_policy",
+        "azure.identity",
+        "urllib3.connectionpool",
+    ]:
+        nlog = logging.getLogger(noisy)
+        if nlog.level == logging.NOTSET or nlog.level < logging.WARNING:
+            nlog.setLevel(logging.WARNING)
+
     return logger

@@ -29,6 +29,7 @@ from src.service.organization_management import organization_management_service
 from src.api.utils.http_response import Response
 from src.infra.auth.admin_auth import admin_auth
 from src.api.schemas.base_models import GenericResponse
+from src.tasks.organization import create_organization_task
 
 logger = get_logger("admin_organisations_handler")
 router = APIRouter()
@@ -36,7 +37,7 @@ router = APIRouter()
 
 @router.post(
     "/create_organisation",
-    # response_model=GenericResponse[CreateOrganizationResponse],
+    response_model=GenericResponse[CreateOrganizationResponse],
     tags=["admin_organisations"],
 )
 async def create_organization(
@@ -62,23 +63,15 @@ async def create_organization(
         org_details = request.dict(exclude_unset=True, exclude={"organisation_name"})
         logger.info(f"Organization details: {org_details}")
 
-        result = organization_management_service.create_organization(
-            admin_id=current_user,
+        task_result = create_organization_task.delay(
+            admin_id=str(current_user),
             organisation_name=request.organisation_name,
-            session=master_session,
-            **org_details,
-        )
+            org_details=org_details,
+        ).get(timeout=300)  # 5-minute timeout for the synchronous task
 
-        organization = result["organization"]
-        response_data = CreateOrganizationResponse(
-            organisation_id=organization.organisation_id,
-            organisation_name=organization.organisation_name,
-            schema_name=result["schema_name"],
-            created_at=organization.created_at,
-            updated_at=organization.updated_at,
-        )
+        response_data = CreateOrganizationResponse(**task_result)
         
-        logger.info(f"Successfully created organization: {organization.organisation_name} with ID: {organization.organisation_id}")
+        logger.info(f"Successfully created organization: {response_data.organisation_name} with ID: {response_data.organisation_id}")
         return Response.success_response(message="Organization created successfully", data=response_data)
 
     except Exception as e:
@@ -162,7 +155,7 @@ async def list_organizations(
 async def get_organization(
     organisation_id: UUID,
     current_admin: SuperAdmin = Depends(admin_auth),
-    master_session: Session = Depends(lambda: next(fastapp.state.master_session())),
+    master_session: Session = Depends(lambda: Session(get_master_engine(echo=False))),
 ):
     """
     Retrieve a single organization by its ID.
