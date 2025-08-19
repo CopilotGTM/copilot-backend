@@ -1,18 +1,18 @@
 # Azure DevOps YAML Pipeline – Multi-environment Deployment (Static variable group assignment)
 
-# trigger:
-#   branches:
-#     include:
-#       - main
-#       - dev
-#       - uat
+trigger:
+  branches:
+    include:
+      - main
+      - dev
+      - uat
 
-# pr:
-#   branches:
-#     include:
-#       - main
-#       - dev
-#       - uat
+pr:
+  branches:
+    include:
+      - main
+      - dev
+      - uat
 
 variables:
   - name: CHART_PATH
