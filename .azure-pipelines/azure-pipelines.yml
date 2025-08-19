@@ -20,39 +20,6 @@ variables:
   - name: KUBECONFIG_FILE
     value: $(Pipeline.Workspace)/kubeconfig.yaml
 
-  # Determine environment variables based on the pipeline name suffix
-  - ${{ if endsWith(variables['Build.DefinitionName'], '-prod') }}:
-    - group: app-secrets-production
-    - name: DEPLOY_ENVIRONMENT
-      value: production
-    - name: ACR_LOGIN_SERVER
-      value: copilotgtmacrprod.azurecr.io
-    - name: HELM_RELEASE_NAME
-      value: technical-deck-prod
-    - name: ACR_SERVICE_CONNECTION
-      value: copilot-acr-prod-connection
-
-  - ${{ elseif endsWith(variables['Build.DefinitionName'], '-uat') }}:
-    - group: app-secrets-uat
-    - name: DEPLOY_ENVIRONMENT
-      value: uat
-    - name: ACR_LOGIN_SERVER
-      value: copilotgtmacruat.azurecr.io
-    - name: HELM_RELEASE_NAME
-      value: technical-deck-uat
-    - name: ACR_SERVICE_CONNECTION
-      value: copilot-acr-uat-connection
-
-  - ${{ else }}: # Default to dev
-    - group: app-secrets-dev
-    - name: DEPLOY_ENVIRONMENT
-      value: dev
-    - name: ACR_LOGIN_SERVER
-      value: copilotgtmacrdev.azurecr.io
-    - name: HELM_RELEASE_NAME
-      value: technical-deck
-    - name: ACR_SERVICE_CONNECTION
-      value: copilotgtm-acr-connection-dev
 
 stages:
   - stage: BuildAndPush
