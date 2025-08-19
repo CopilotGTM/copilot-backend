@@ -207,8 +207,13 @@ class OrganizationManagementService:
                 conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema_name} AUTHORIZATION {role_name}"))
                 
                 # Grant necessary permissions
-                conn.execute(text(f"GRANT USAGE ON SCHEMA {schema_name} TO {role_name}"))
+                conn.execute(text(f"GRANT USAGE, CREATE ON SCHEMA {schema_name} TO {role_name}"))
                 conn.execute(text(f"GRANT ALL PRIVILEGES ON SCHEMA {schema_name} TO {role_name}"))
+                
+                # Set default privileges for future objects created by the role
+                conn.execute(text(f"ALTER DEFAULT PRIVILEGES IN SCHEMA {schema_name} GRANT ALL ON TABLES TO {role_name}"))
+                conn.execute(text(f"ALTER DEFAULT PRIVILEGES IN SCHEMA {schema_name} GRANT ALL ON SEQUENCES TO {role_name}"))
+                conn.execute(text(f"ALTER DEFAULT PRIVILEGES IN SCHEMA {schema_name} GRANT ALL ON FUNCTIONS TO {role_name}"))
                 
                 # Grant role to admin user for maintenance
                 admin_user = database_config.DATABASE_USER
@@ -607,16 +612,6 @@ class OrganizationManagementService:
     # ------------------ Helper / pagination utilities ------------------ #
     def _get_azure_credential(self):
         """Centralised Azure credential selection."""
-        if all([
-            cloud_infra_config.AZURE_TENANT_ID,
-            cloud_infra_config.AZURE_CLIENT_ID,
-            cloud_infra_config.AZURE_CLIENT_SECRET,
-        ]):
-            return ClientSecretCredential(
-                tenant_id=cloud_infra_config.AZURE_TENANT_ID,
-                client_id=cloud_infra_config.AZURE_CLIENT_ID,
-                client_secret=cloud_infra_config.AZURE_CLIENT_SECRET,
-            )
         return DefaultAzureCredential()
 
     def _validate_identifier(self, value: str, field: str):

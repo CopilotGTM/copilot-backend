@@ -6,9 +6,12 @@ from typing import Dict, Any
 from fastapi import Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlmodel import Session
+from typing import Iterator
 
 from src.domain.models.authentication import Authentication
-from src.infra.utils.database import get_org_session
+from src.domain.models.master_tables import User
+from src.infra.auth.user_auth import user_auth
+from src.infra.utils.database import get_org_session as _get_org_session
 from src.infra.utils.logger import get_logger
 
 auth = Authentication()
@@ -21,29 +24,24 @@ class UserIDs(BaseModel):
     organisation_id: UUID
 
 
-def get_current_user_ids(auth_data: Dict[str, Any] = Depends(auth.verify_session)) -> UserIDs:
+def get_current_user(user: User = Depends(user_auth)) -> UserIDs:
     """
-    FastAPI dependency to extract and validate user_id and organisation_id from the authentication session.
-
-    This provides a consistent and reusable way for any endpoint to get the
-    context of the currently authenticated user and their organisation.
-
-    Raises:
-        HTTPException: If the authentication payload is missing required keys or they are invalid.
-
-    Returns:
-        UserIDs: A Pydantic model containing the validated user_id and organisation_id.
+    FastAPI dependency to extract user_id and organisation_id from the authenticated user.
     """
-    try:
-        user_id = UUID(auth_data["user_id"])
-        organisation_id = UUID(auth_data["organisation_id"])
-        return UserIDs(user_id=user_id, organisation_id=organisation_id)
-    except (KeyError, ValueError) as e:
-        logger.warning("Invalid authentication payload: %s", e)
+    if not user or not user.user_id or not user.organisation_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Invalid or missing authentication credentials.",
-        ) from e
+            detail="Invalid or missing user credentials.",
+        )
+    return UserIDs(user_id=user.user_id, organisation_id=user.organisation_id)
+
+
+def get_org_session(user_ids: UserIDs = Depends(get_current_user)) -> Iterator[Session]:
+    """
+    FastAPI dependency that provides an organisation-specific database session
+    by extracting the organisation_id from the current authenticated user.
+    """
+    yield from _get_org_session(str(user_ids.organisation_id))
 
 
 class OrgServiceDependencies:
@@ -55,7 +53,7 @@ class OrgServiceDependencies:
     def __init__(
         self,
         org_session: Session = Depends(get_org_session),
-        user_ids: UserIDs = Depends(get_current_user_ids),
+        user_ids: UserIDs = Depends(get_current_user),
     ):
         self.org_session = org_session
         self.user_id = user_ids.user_id

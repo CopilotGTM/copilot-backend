@@ -12,7 +12,7 @@ from src.domain.models.user_models import (
     UserForgotPasswordRequest,
 )
 from src.domain.models.admin_models import PasswordResetAction
-from src.domain.models.master_tables import User
+from src.domain.models.master_tables import SupabaseUserStatus, User
 from src.infra.utils.database import get_master_engine
 from src.infra.auth.supabase_user_client import supabase_user_client
 from src.infra.utils.logger import get_logger
@@ -197,6 +197,7 @@ async def reset_password(
 
                 logger.info(f"Updating local DB for user_id: {user_id}")
                 current_user.email_verified = True
+                current_user.status = SupabaseUserStatus.ACTIVE
                 current_user.last_login_at = datetime.utcnow()
                 master_session.add(current_user)
                 master_session.commit()

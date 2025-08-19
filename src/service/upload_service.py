@@ -4,12 +4,13 @@ from uuid import UUID, uuid4
 from datetime import datetime
 from typing import Dict, Any
 
-from sqlmodel import Session
+from sqlmodel import Session, text
 
 from src.infra.utils.logger import get_logger
-from src.domain.models.organisation_tables.chat_message_models import Attachment as AttachmentDB
+from src.domain.models.organisation_tables.chat_message_models import Attachment
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
 from src.api.schemas.upload_models import PresignRequest, FinalizeRequest
+from src.infra.utils.resource_naming import get_schema_name
 
 logger = get_logger(__name__)
 
@@ -28,12 +29,17 @@ class UploadService:
         self.org_session = org_session
         self.organisation_id = organisation_id
         self.storage = AzureOrganisationBlobStorage(self.organisation_id)
+        self.schema_name = get_schema_name(self.organisation_id)
 
-    async def presign_upload(self, payload: PresignRequest, user_id: UUID) -> tuple[AttachmentDB, str]:
+    def _set_schema(self):
+        self.org_session.execute(text(f"SET search_path TO {self.schema_name}"))
+
+    async def presign_upload(self, payload: PresignRequest, user_id: UUID) -> tuple[Attachment, str]:
         """
         Create a preliminary attachment record and generate a presigned URL for uploading.
         Static validation (size, mimetype) is handled by the Pydantic model at the API boundary.
         """
+        self._set_schema()
         # Pre-generate the attachment ID so it can be used in the blob path.
         attachment_id = uuid4()
         blob_path = self.storage.plan_blob_path(
@@ -46,7 +52,7 @@ class UploadService:
             logger.error("Failed generating write SAS for user %s: %s", user_id, e, exc_info=True)
             raise UploadServiceError("Failed to generate upload URL") from e
 
-        attachment = AttachmentDB(
+        attachment = Attachment(
             attachment_id=attachment_id,
             organisation_id=self.organisation_id,
             user_id=user_id,
@@ -72,9 +78,10 @@ class UploadService:
             )
             raise UploadServiceError("Failed to create attachment record") from e
 
-    async def finalize_upload(self, payload: FinalizeRequest, user_id: UUID) -> AttachmentDB:
+    async def finalize_upload(self, payload: FinalizeRequest, user_id: UUID) -> Attachment:
         """Finalize the upload by verifying blob properties and updating the attachment record. Checksum will be calculated asynchronously."""
-        attachment = self.org_session.get(AttachmentDB, payload.attachment_id)
+        self._set_schema()
+        attachment = self.org_session.get(Attachment, payload.attachment_id)
         if not attachment or attachment.organisation_id != self.organisation_id or attachment.user_id != user_id:
             raise UploadServiceError("Attachment not found or access denied", status_code=404)
 
@@ -118,9 +125,10 @@ class UploadService:
             )
             raise UploadServiceError("Failed to finalize attachment record") from e
 
-    async def get_attachment_details(self, attachment_id: UUID, user_id: UUID) -> AttachmentDB:
+    async def get_attachment_details(self, attachment_id: UUID, user_id: UUID) -> Attachment:
         """Retrieve attachment details by ID, ensuring user has access."""
-        attachment = self.org_session.get(AttachmentDB, attachment_id)
+        self._set_schema()
+        attachment = self.org_session.get(Attachment, attachment_id)
         if not attachment or attachment.organisation_id != self.organisation_id or attachment.user_id != user_id:
             raise UploadServiceError("Attachment not found or access denied", status_code=404)
         

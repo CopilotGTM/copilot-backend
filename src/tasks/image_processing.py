@@ -9,6 +9,7 @@ from PIL import Image, UnidentifiedImageError
 from src.celery_app import celery
 from src.infra.utils.logger import get_logger
 from src.infra.utils.database import get_org_session
+import os
 from src.domain.models.organisation_tables.chat_message_models import Attachment
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
 

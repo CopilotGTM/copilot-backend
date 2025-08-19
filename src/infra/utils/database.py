@@ -12,7 +12,7 @@ from sqlalchemy.engine import Engine
 from azure.identity import DefaultAzureCredential
 from azure.keyvault.secrets import SecretClient
 
-from src.infra.config.configs import database_config, secret_manager_config
+from src.infra.config.configs import Config, database_config, secret_manager_config
 from src.infra.utils.resource_naming import get_key_vault_secret_name, get_role_name
 
 # ---------------------------------------------------------------------------
@@ -94,17 +94,12 @@ def _resolve_master_credentials() -> Tuple[str, str]:
       2. Environment / config DATABASE_USER + DATABASE_PASSWORD
     Raises if neither available.
     """
-    # Attempt KV master role
-    kv_pw = _get_secret_from_key_vault(MASTER_ROLE_SECRET_NAME)
-    if kv_pw:
-        return MASTER_ROLE_NAME, kv_pw
-
-    # Fallback to config
+    # Use credentials directly from environment variables
     user = database_config.DATABASE_USER
     password = database_config.DATABASE_PASSWORD
     if user and password:
         return user, password
-    raise ValueError("No master DB credentials available (missing Key Vault secret and DATABASE_USER/PASSWORD).")
+    raise ValueError("No master DB credentials available (DATABASE_USER and/or DATABASE_PASSWORD not set).")
 
 
 def get_master_engine(echo: bool = True) -> Engine:
@@ -229,29 +224,39 @@ def invalidate_tenant_engine(organisation_id: str):
 def get_org_session(org_id: str, direct: bool = True) -> Iterator[Session]:
     """Yields a tenant session.
 
-    Two modes:
-      - direct=True (default): open session on per-org engine (direct role login)
-      - direct=False: fallback to legacy SET ROLE method on master engine
+    For local development, it uses the SET ROLE method to avoid Key Vault dependency.
+    In other environments, it attempts a direct connection using credentials from Key Vault.
     """
     if not org_id:
         raise ValueError("org_id required")
 
-    if direct:
-        engine = get_tenant_engine(org_id)
-        with Session(engine) as session:
-            yield session
-    else:
-        # Legacy mode
-        if not org_id.isidentifier():
-            raise ValueError(f"Invalid org identifier: {org_id}")
-        engine = get_master_engine(echo=False)
-        session = Session(engine)
-        session.execute(text(f"SET ROLE {org_id}"))
+    # In local env, always use SET ROLE. In prod, use direct connection by default.
+    is_local_env = Config().env == "local"
+    use_set_role = is_local_env or not direct
+
+    if not use_set_role:
         try:
-            yield session
-        finally:
-            session.execute(text("RESET ROLE"))
-            session.close()
+            engine = get_tenant_engine(org_id)
+            with Session(engine) as session:
+                yield session
+            return  # Successfully connected directly, so we're done.
+        except Exception as e:
+            print(f"Direct tenant connection failed for org {org_id}, falling back to SET ROLE. Error: {e}")
+            # Fall through to SET ROLE logic
+
+    # Use SET ROLE method
+    role_name = get_role_name(org_id)
+    if not role_name.isidentifier():
+        raise ValueError(f"Invalid derived role name: {role_name}")
+
+    engine = get_master_engine(echo=False)
+    session = Session(engine)
+    try:
+        session.execute(text(f'SET ROLE "{role_name}"'))
+        yield session
+    finally:
+        session.execute(text("RESET ROLE"))
+        session.close()
 
 
 def init_master_db():

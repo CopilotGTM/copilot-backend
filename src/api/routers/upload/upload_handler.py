@@ -11,7 +11,7 @@ from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorag
 from src.api.utils.http_response import Response
 from src.api.schemas.base_models import GenericResponse
 from src.service.upload_service import UploadService, UploadServiceError
-from src.api.dependencies.organisation_dependencies import get_current_user_ids, UserIDs
+from src.api.dependencies.organisation_dependencies import get_current_user, UserIDs, get_org_session
 from src.celery_app import celery
 
 logger = get_logger("upload_handler")
@@ -19,8 +19,8 @@ upload_router = APIRouter()
 
 
 def get_upload_service(
-    user_ids: UserIDs = Depends(get_current_user_ids),
-    org_session: Session = Depends(),
+    user_ids: UserIDs = Depends(get_current_user),
+    org_session: Session = Depends(get_org_session),
 ) -> UploadService:
     """Dependency to create an instance of UploadService, configured for the current organisation."""
     return UploadService(org_session, user_ids.organisation_id)
@@ -35,7 +35,7 @@ def get_upload_service(
 async def presign_upload(
     payload: PresignRequest = Body(...),
     service: UploadService = Depends(get_upload_service),
-    user_ids: UserIDs = Depends(get_current_user_ids),
+    user_ids: UserIDs = Depends(get_current_user),
 ):
     """
     Generate a presigned URL for direct client-side file upload.
@@ -71,7 +71,7 @@ async def presign_upload(
 async def finalize_upload(
     payload: FinalizeRequest = Body(...),
     service: UploadService = Depends(get_upload_service),
-    user_ids: UserIDs = Depends(get_current_user_ids),
+    user_ids: UserIDs = Depends(get_current_user),
 ):
     """
     Finalize a presigned upload by verifying checksum and updating metadata.
@@ -154,7 +154,7 @@ async def finalize_upload(
 async def get_attachment_status(
     attachment_id: UUID,
     service: UploadService = Depends(get_upload_service),
-    user_ids: UserIDs = Depends(get_current_user_ids),
+    user_ids: UserIDs = Depends(get_current_user),
 ):
     """
     Poll this endpoint to get the current status of an attachment.

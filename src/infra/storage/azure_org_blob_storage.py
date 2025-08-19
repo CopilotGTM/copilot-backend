@@ -41,20 +41,19 @@ class AzureOrganisationBlobStorage:
     def __init__(self, organisation_id: UUID):
         self.organisation_id = organisation_id
         self.account_name = get_storage_account_name(organisation_id)
-        self._credential_task = asyncio.create_task(_get_credential_async())
+        self._credential = None
         self._blob_service: Optional[BlobServiceClient] = None
-        self._blob_service_task: Optional[asyncio.Task] = None
+
+    async def _init_credential(self):
+        if self._credential is None:
+            self._credential = await _get_credential_async()
 
     async def _get_blob_service_client(self) -> BlobServiceClient:
         """Lazily initializes and returns the async BlobServiceClient."""
         if self._blob_service is None:
-            if self._blob_service_task is None:
-                async def _create_client():
-                    credential = await self._credential_task
-                    account_url = f"https://{self.account_name}.blob.core.windows.net"
-                    return BlobServiceClient(account_url=account_url, credential=credential)
-                self._blob_service_task = asyncio.create_task(_create_client())
-            self._blob_service = await self._blob_service_task
+            await self._init_credential()
+            account_url = f"https://{self.account_name}.blob.core.windows.net"
+            self._blob_service = BlobServiceClient(account_url=account_url, credential=self._credential)
         return self._blob_service
 
     _SAFE_FILENAME = re.compile(r"[^A-Za-z0-9._-]+")
@@ -158,9 +157,8 @@ class AzureOrganisationBlobStorage:
             await self._blob_service.close()
             self._blob_service = None
         
-        credential = await self._credential_task
-        if hasattr(credential, "close"):
-            credential.close()
+        if self._credential and hasattr(self._credential, "close"):
+            self._credential.close()
 
     async def __aenter__(self):
         """Enables use as an async context manager."""
