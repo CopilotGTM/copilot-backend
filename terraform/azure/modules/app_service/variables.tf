@@ -23,6 +23,12 @@ variable "docker_image_name" {
   type        = string
 }
 
+variable "docker_image_tag" {
+  description = "The tag of the Docker image to deploy."
+  type        = string
+  default     = "latest"
+}
+
 variable "docker_registry_url" {
   description = "The URL of the Docker registry without protocol (e.g., myregistry.azurecr.io)"
   type        = string

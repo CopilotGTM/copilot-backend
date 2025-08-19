@@ -8,6 +8,7 @@ module "frontend_admin_app_service" {
   resource_group_name     = module.resource_group.resource_group_name
   location                = var.location
   docker_image_name       = var.frontend_admin_docker_image_name
+  docker_image_tag        = var.frontend_admin_docker_image_tag
   docker_registry_url     = module.acr.acr_login_server
   acr_id                  = module.acr.acr_id
   app_settings            = {}

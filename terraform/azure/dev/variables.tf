@@ -171,6 +171,12 @@ variable "frontend_docker_image_name" {
   default     = "copilotgtm-frontend-app"
 }
 
+variable "frontend_docker_image_tag" {
+  description = "The tag of the Docker image for the frontend app."
+  type        = string
+  default     = "latest"
+}
+
 variable "frontend_sku_name" {
   description = "The SKU of the App Service Plan for the frontend."
   type        = string
@@ -207,6 +213,12 @@ variable "frontend_admin_docker_image_name" {
   description = "The name of the Docker image for the frontend admin app."
   type        = string
   default     = "copilotgtm-frontend-admin-app"
+}
+
+variable "frontend_admin_docker_image_tag" {
+  description = "The tag of the Docker image for the frontend admin app."
+  type        = string
+  default     = "latest"
 }
 
 variable "frontend_admin_sku_name" {

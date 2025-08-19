@@ -31,7 +31,10 @@ resource "azurerm_linux_web_app" "this" {
 
   site_config {
     app_command_line = ""
-    # Remove application_stack block entirely
+    application_stack {
+      docker_registry_url = "https://${var.docker_registry_url}"
+      docker_image_name   = "${var.docker_image_name}:${var.docker_image_tag}"
+    }
     container_registry_use_managed_identity = true
   }
 
