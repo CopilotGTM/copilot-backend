@@ -148,7 +148,7 @@ async def admin_login(
 
 
 @router.post("/reset-password")
-async def first_time_password_change(
+async def reset_password(
     password_request: AdminResetPasswordRequest,
     master_session: Session = Depends(lambda: Session(get_master_engine(echo=False))),
 ):
@@ -348,9 +348,7 @@ async def forgot_password(
                 f"Password reset requested for non-existent user: {forgot_password_request.email}"
             )
             # Return a generic success response to avoid user enumeration
-            return Response.success_response(
-                message="If an account with this email exists, a password reset link has been sent."
-            )
+            return Response.not_found_error_response("User not found")
 
         # Generate a password reset link and extract the "ht=" parameter
         password_reset_link = supabase_admin_client.generate_password_reset_link(
