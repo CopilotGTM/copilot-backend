@@ -1,3 +1,6 @@
 black==25.1.0
 pyperclip
 pymupdf
+pytest
+pytest-mock
+httpx
