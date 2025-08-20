@@ -5,7 +5,7 @@ resource "azurerm_key_vault_secret" "db_password" {
 }
 
 resource "azurerm_postgresql_flexible_server" "db" {
-  name                   = "copilotgtm-postgresdb-${var.env}"
+  name                   = var.db_name != "" ? "${var.db_name}-${var.env}" : "copilotgtm-postgresdb-${var.env}"
   resource_group_name    = var.resource_group_name
   location               = var.location
   version                = var.db_version

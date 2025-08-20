@@ -451,6 +451,18 @@ variable "db_password" {
   default     = ""
 }
 
+variable "db_location" {
+  description = "The Azure region for the Database."
+  type        = string
+  default     = "eastus"
+}
+
+variable "db_name" {
+  description = "The name of the Database."
+  type        = string
+  default     = "copilotgtm-postgresdb"
+}
+
 variable "azure_openai_key" {
   description = "Database password"
   type        = string

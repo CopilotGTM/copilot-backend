@@ -30,6 +30,12 @@ variable "db_admin_password" {
   sensitive   = true
 }
 
+variable "db_name" {
+  description = "The base name for the PostgreSQL server (without env suffix)."
+  type        = string
+  default     = ""
+}
+
 variable "key_vault_id" {
   description = "The ID of the Key Vault to store the database password."
   type        = string

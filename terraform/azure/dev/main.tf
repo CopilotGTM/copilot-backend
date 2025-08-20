@@ -295,7 +295,8 @@ module "application_database" {
   source                   = "../modules/postgresql"
   env                      = var.env
   resource_group_name      = module.resource_group.resource_group_name
-  location                 = "westus"
+  location                 = var.db_location
+  db_name                  = var.db_name
   db_admin_user            = "CopilotGTMAdmin"
   db_admin_password        = random_password.db_admin.result
   key_vault_id             = module.database_key_vault.key_vault_id
