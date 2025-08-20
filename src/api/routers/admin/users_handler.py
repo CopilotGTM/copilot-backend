@@ -28,7 +28,7 @@ router = APIRouter()
 
 @router.post(
     "/create_user",
-    # response_model=GenericResponse[CreateUserResponse],
+    response_model=GenericResponse[CreateUserResponse],
     tags=["admin_users"],
 )
 async def create_user(

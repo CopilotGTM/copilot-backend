@@ -5,20 +5,34 @@ from typing import Optional, Dict, Any
 from uuid import UUID
 from fastapi import HTTPException, status, Depends, Request
 from sqlmodel import Session, select
+from src.infra.utils.database import get_master_engine
 
 from src.domain.models.master_tables import SuperAdmin, AdminUserStatus, AdminRole, SupabaseAdminStatus
 from src.infra.utils.app_state import fastapp
 from src.infra.utils.logger import get_logger
 from src.infra.auth.supabase_admin_client import supabase_admin_client
 
-logger = get_logger()
+logger = get_logger("admin_auth")
 
 
 class AdminAuth:
     """Admin authentication and management service using Supabase"""
  
-    def __init__(self, allow_pending_setup: bool = False):
-        self.allow_pending_setup = allow_pending_setup
+    async def __call__(self, request: Request, session: Session = Depends(lambda: Session(get_master_engine(echo=False)))) -> SuperAdmin:
+        """
+        FastAPI dependency to get current authenticated admin from Supabase token
+
+        Args:
+            request: The request object
+            session: Database session
+
+        Returns:
+            SuperAdmin object
+
+        Raises:
+            HTTPException: If not authenticated
+        """
+        return self.get_current_admin(request, session)
 
     def verify_token(self, token: str) -> Dict[str, Any]:
         """
@@ -88,7 +102,7 @@ class AdminAuth:
                 )
 
             # Check if admin is active (unless allow_pending_setup is True)
-            if not self.allow_pending_setup and admin.status != SupabaseAdminStatus.ACTIVE:
+            if admin.status != SupabaseAdminStatus.ACTIVE:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Admin account is not active"
@@ -104,22 +118,6 @@ class AdminAuth:
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Authentication failed"
             )
-
-    async def __call__(self, request: Request, session: Session = Depends(lambda: next(fastapp.state.master_session()))) -> SuperAdmin:
-        """
-        FastAPI dependency to get current authenticated admin from Supabase token
-
-        Args:
-            request: The request object
-            session: Database session
-
-        Returns:
-            SuperAdmin object
-
-        Raises:
-            HTTPException: If not authenticated
-        """
-        return self.get_current_admin(request, session)
 
     def generate_temp_password(self, length: int = 12) -> str:
         """
@@ -287,5 +285,4 @@ class AdminAuth:
 
 
 # Create instances for different use cases
-admin_auth = AdminAuth(allow_pending_setup=False)
-admin_auth_allow_pending = AdminAuth(allow_pending_setup=True)
+admin_auth = AdminAuth()

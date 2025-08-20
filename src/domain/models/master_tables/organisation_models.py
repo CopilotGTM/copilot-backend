@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 
 from pydantic import EmailStr
-from sqlalchemy import JSON, Column, DateTime, ForeignKey, Index, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Column, DateTime, ForeignKey, Index, String, Text, UniqueConstraint, Enum as SAEnum
 from sqlmodel import Field, Relationship, SQLModel
 
 from .base_mixins import CreatedAtMixin, TimestampMixin
@@ -98,8 +98,7 @@ class Organisation(TimestampMixin, table=True):
         description="URL pointing to the organisation's logo (if set)."
     )
     status: OrganisationStatus = Field(
-        default=OrganisationStatus.PROVISIONING,
-        index=True,
+        sa_column=Column(SAEnum(OrganisationStatus), default=OrganisationStatus.PROVISIONING, index=True),
         description="Lifecycle status for the organisation (provisioning, pending, approved, etc.)."
     )
     created_by_auth_user_id: Optional[str] = Field(

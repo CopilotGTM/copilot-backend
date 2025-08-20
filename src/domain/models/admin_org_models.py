@@ -11,7 +11,7 @@ T = TypeVar("T")
 
 class CreateOrganizationRequest(BaseModel):
     organisation_name: str
-    country: Optional[str] = None
+    country: str = None
     sales_team_size: Optional[int] = None
     company_address: Optional[str] = None
     billing_address: Optional[str] = None

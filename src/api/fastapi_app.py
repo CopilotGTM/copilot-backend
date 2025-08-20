@@ -27,7 +27,6 @@ from src.api.routers.technical_deck.get_technical_deck import technical_deck
 from src.api.routers.technical_deck.select_template import select_template
 from src.api.routers.rfp_sheet.sheet_identification import rfp__sheet_router
 from src.api.routers.admin.organizations_handler import router as admin_org_router
-from src.api.routers.admin.migrations_handler import migration_router
 from src.api.routers.admin.admin_auth_handler import router as admin_auth_router
 from src.api.routers.admin.users_handler import router as admin_user_router
 from src.api.routers.users.auth_handler import router as user_auth_router
@@ -97,7 +96,6 @@ def create_fastapi_app():
     # Admin routers
     fastapp.include_router(admin_auth_router, prefix="/admin/auth", tags=["admin", "authentication"])
     fastapp.include_router(admin_org_router, prefix="/admin/organisations", tags=["admin", "organizations"])
-    fastapp.include_router(migration_router, prefix="/admin/migrations", tags=["admin", "migrations"])
     fastapp.include_router(admin_user_router, prefix="/admin/users", tags=["admin", "users"])
 
     # Wrap in Socket.IO
