@@ -9,10 +9,10 @@ Follow these steps to build your Docker image and push it to your Azure Containe
 az acr login --name copilotgtmacrdev
 
 # 2. Build your Docker image locally with the correct tag
-docker build -t copilotgtmacrdev.azurecr.io/technical-deck-app:latest .
+docker build -t copilotgtmacrdev.azurecr.io/technical-deck:latest .
 
 # 3. Push the image to your ACR
-docker push copilotgtmacrdev.azurecr.io/technical-deck-app:latest
+docker push copilotgtmacrdev.azurecr.io/technical-deck:latest
 ```
 
 ## Deploy with Helm
@@ -30,7 +30,7 @@ helm upgrade --install technical-deck charts/technical-deck --values charts/tech
 This removes all Kubernetes resources managed by this Helm release:
 
 ```sh
-helm uninstall technical-deck --namespace copilot
+helm uninstall technical-deck --namespace copilotgtm
 ```
 
 ### Describe the Helm Release
@@ -38,19 +38,19 @@ helm uninstall technical-deck --namespace copilot
 Get detailed status of the Helm release and its resources:
 
 ```sh
-helm status technical-deck --namespace copilot
+helm status technical-deck --namespace copilotgtm
 ```
 
 ### List Helm Releases
 
 ```sh
-helm list --namespace copilot
+helm list --namespace copilotgtm
 ```
 
 ### Get All Resources in the Namespace
 
 ```sh
-kubectl get all -n copilot
+kubectl get all -n copilotgtm
 ```
 ## Production HTTPS & Let's Encrypt (Cert-Manager) Setup
 
@@ -110,5 +110,5 @@ Replace `/ws-endpoint` with your actual FastAPI websocket route.
 - Make sure you set the correct namespaces and paths according to your environment.
 - For debugging failed pods, use:
   ```sh
-  kubectl describe pod <pod-name> -n copilot
-  kubectl logs <pod-name> -n copilot
+  kubectl describe pod <pod-name> -n copilotgtm
+  kubectl logs <pod-name> -n copilotgtm
