@@ -1,36 +1,26 @@
-{{- if .Values.startupJob.enabled }}
-{{- $baseName := printf "%s-startup-job-v2" .Release.Name -}}
-{{- if .Values.startupJob.addRevisionSuffix }}
-{{- $baseName = printf "%s-r%s" $baseName (.Release.Revision | toString) -}}
-{{- end }}
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ $baseName | quote }}
+  name: {{ .Release.Name }}-startup-job
   namespace: {{ .Values.namespace }}
   labels:
     app.kubernetes.io/name: {{ .Values.labels.name }}
     app.kubernetes.io/instance: {{ .Values.labels.instance }}
   annotations:
-  # Run AFTER install and AFTER upgrade so it always sees the latest Secret values (previously pre-upgrade saw old values)
-  "helm.sh/hook": post-install,post-upgrade
+    # This is what defines this resource as a hook. Without this line, this
+    # job would be created every time a helm upgrade is run.
+    "helm.sh/hook": pre-install,pre-upgrade
     "helm.sh/hook-weight": "-5"
-    {{- if not .Values.startupJob.debug }}
-    # Delete failed jobs so pipeline isn't blocked (debug mode off)
-    "helm.sh/hook-delete-policy": before-hook-creation,hook-failed
-    {{- else }}
-    # Keep failed job for inspection (debug mode on)
-    "helm.sh/hook-delete-policy": before-hook-creation
-    {{- end }}
+    "helm.sh/hook-delete-policy": hook-succeeded
+    # Removed unsupported helm.sh/hook-timeout (Helm ignores it); control timing with helm --timeout flag
 spec:
+  # Allow a single retry to handle transient DB readiness issues
   backoffLimit: 1
+  # Hard deadline for the job (seconds) – keep aligned with helm upgrade --timeout
   activeDeadlineSeconds: 900
-  {{- if and .Values.startupJob.debug (gt (.Values.startupJob.ttlSecondsAfterFinished | int) 0) }}
-  ttlSecondsAfterFinished: {{ .Values.startupJob.ttlSecondsAfterFinished }}
-  {{- end }}
   template:
     metadata:
-      name: {{ $baseName | quote }}
+      name: {{ .Release.Name }}-startup-job
       labels:
         app.kubernetes.io/name: {{ .Values.labels.name }}
         app.kubernetes.io/instance: {{ .Values.labels.instance }}
@@ -41,17 +31,11 @@ spec:
         - name: startup-job
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["/bin/bash", "-c"]
+          command: ["/bin/sh", "-c"]
           args:
             - |
               set -euo pipefail
               echo "[startup-job] Starting migrations & seeding at $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-              {{- if .Values.startupJob.debug }}
-              echo "[startup-job][debug] ENVIRONMENT=$ENVIRONMENT"
-              for v in DATABASE_HOST DATABASE_PORT DATABASE_NAME DATABASE_USER DATABASE_SSL_MODE; do
-                if [ -n "${!v:-}" ]; then echo "[startup-job][debug] $v set"; else echo "[startup-job][warn] $v not set"; fi
-              done
-              {{- end }}
               if [ -f scripts/startup.sh ]; then
                 chmod +x scripts/startup.sh
                 ./scripts/startup.sh
@@ -66,5 +50,5 @@ spec:
               value: {{ .Values.environment | quote }}
           envFrom:
             - secretRef:
-                name: {{ include "technical-deck.secretName" . }}
-{{- end }}
+                name: {{ include "technical-deck.fullname" . }}-secret
+  # Removed previous backoffLimit placement (moved above) and explicit hook-timeout annotation

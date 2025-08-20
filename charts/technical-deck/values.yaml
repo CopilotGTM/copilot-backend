@@ -57,14 +57,3 @@ secrets: {}
 serviceAccount:
   create: true
   name: "technical-deck"
-
-# Startup Job configuration (Helm hook)
-startupJob:
-  # Enable/disable the hook entirely
-  enabled: true
-  # When true, keep failed job/pod for inspection (omit hook-failed delete policy) and add extra debug logs
-  debug: false
-  # TTL in seconds after job finishes (only applied when debug=true and >0)
-  ttlSecondsAfterFinished: 1800
-  # Append Helm release revision to Job name to avoid name collisions (useful when keeping old jobs)
-  addRevisionSuffix: false
