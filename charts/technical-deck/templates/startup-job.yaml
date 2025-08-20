@@ -12,8 +12,8 @@ metadata:
     app.kubernetes.io/name: {{ .Values.labels.name }}
     app.kubernetes.io/instance: {{ .Values.labels.instance }}
   annotations:
-    # Run AFTER initial install resources (so the Secret & other manifests exist) and BEFORE upgrades.
-    "helm.sh/hook": post-install,pre-upgrade
+  # Run AFTER install and AFTER upgrade so it always sees the latest Secret values (previously pre-upgrade saw old values)
+  "helm.sh/hook": post-install,post-upgrade
     "helm.sh/hook-weight": "-5"
     {{- if not .Values.startupJob.debug }}
     # Delete failed jobs so pipeline isn't blocked (debug mode off)

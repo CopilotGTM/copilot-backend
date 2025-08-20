@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Robust startup script for Helm hook Job.
 set -euo pipefail
 
