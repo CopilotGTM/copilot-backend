@@ -27,9 +27,9 @@ class UserAppRole(str, Enum):
 class SupabaseUserStatus(str, Enum):
     """Supabase authentication status for user accounts."""
 
-    ACTIVE = "active"
-    INACTIVE = "inactive"
-    PENDING_SETUP = "pending_setup"
+    ACTIVE = "ACTIVE"
+    INACTIVE = "INACTIVE"
+    PENDING_SETUP = "PASSWORD_CHANGE_REQUIRED"
 
 
 class UserEventType(str, Enum):

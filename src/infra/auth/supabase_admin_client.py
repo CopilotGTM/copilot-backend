@@ -200,7 +200,7 @@ class SupabaseAdminClient:
             
             # Get APP_URL from environment
             import os
-            app_url = os.getenv("APP_URL", "http://localhost:3000")
+            app_url = os.getenv("ADMIN_APP_URL", "http://localhost:3000")
             redirect_url = f"{app_url}/reset-password"
             
             # Generate recovery link using admin client (doesn't send email)

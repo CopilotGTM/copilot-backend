@@ -9,8 +9,8 @@ from enum import Enum
 
 class UserLoginState(str, Enum):
     """Enum for user login states."""
-    ACTIVE = "active"
-    PENDING_SETUP = "pending_setup"
+    ACTIVE = "ACTIVE"
+    PENDING_SETUP = "PASSWORD_CHANGE_REQUIRED"
 
 class UserLoginRequest(BaseModel):
     """Request model for user login."""
