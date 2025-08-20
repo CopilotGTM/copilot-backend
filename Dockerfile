@@ -6,6 +6,7 @@ WORKDIR /app
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     gcc \
+    bash \
     && rm -rf /var/lib/apt/lists/*
 
 # Create log directory
