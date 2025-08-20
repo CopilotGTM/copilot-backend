@@ -18,7 +18,7 @@ module "pipeline" {
   pipeline_variables = {
     DEPLOY_ENVIRONMENT     = var.env
     ACR_LOGIN_SERVER       = module.acr.acr_login_server
-    HELM_RELEASE_NAME      = "technical-deck"
+    HELM_RELEASE_NAME      = "copilot-backend"
     ACR_SERVICE_CONNECTION = module.service_connection_acr.acr_service_connection_name
   }
 }

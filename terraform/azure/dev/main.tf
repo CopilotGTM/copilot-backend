@@ -250,16 +250,16 @@ resource "azurerm_role_assignment" "aks_storage_table_contributor_rg" {
 
 # Optional (commented): Grant control plane management over storage accounts.
 # Uncomment only if AKS-managed identity must create/delete storage accounts.
-# resource "azurerm_role_assignment" "aks_storage_account_contributor_rg" {
-#   principal_id                     = module.aks.kubelet_identity_object_id
-#   role_definition_name             = "Storage Account Contributor"
-#   scope                            = module.resource_group.resource_group_id
-#   skip_service_principal_aad_check = true
-#   depends_on = [
-#     module.aks,
-#     module.resource_group
-#   ]
-# }
+resource "azurerm_role_assignment" "aks_storage_account_contributor_rg" {
+  principal_id                     = module.aks.kubelet_identity_object_id
+  role_definition_name             = "Storage Account Contributor"
+  scope                            = module.resource_group.resource_group_id
+  skip_service_principal_aad_check = true
+  depends_on = [
+    module.aks,
+    module.resource_group
+  ]
+}
 
 # -----------------------------------------------------------------
 # Azure AI Foundry
