@@ -121,7 +121,7 @@ class OrganizationManagementService:
         role_name = get_role_name(organisation_id)
         role_password = secrets.token_urlsafe(16)
 
-        logger.info(f"Organization record is ready for provisioning with ID: {organisation_id}, status: PROVISIONING")
+        logger.info(f"Organization record is ready for provisioning with ID: {organisation_id}, status: {organization.status}")
 
         try:
             # 2. Provision all resources with timing metrics

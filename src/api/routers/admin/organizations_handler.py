@@ -373,7 +373,7 @@ async def get_all_organisation_history(
 # async def delete_organization(
 #     organisation_id: UUID,
 #     current_admin: SuperAdmin = Depends(admin_auth),
-#     master_session: Session = Depends(lambda: next(fastapp.state.master_session())),
+#     master_session: Session = Depends(lambda: next(lambda: Session(get_master_engine(echo=False)))),
 # ):
 #     """
 #     Permanently delete an organization, its schema, role, and all associated data.

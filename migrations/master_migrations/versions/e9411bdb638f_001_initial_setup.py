@@ -1,8 +1,8 @@
-"""001-initial-setup
+"""initial setup
 
-Revision ID: e9411bdb638f
+Revision ID: 44a2474265e0
 Revises: 
-Create Date: 2025-08-02 11:01:41.251372
+Create Date: 2025-08-20 07:03:01.180650
 
 """
 from typing import Sequence, Union
@@ -13,7 +13,7 @@ import sqlmodel.sql.sqltypes
 
 
 # revision identifiers, used by Alembic.
-revision: str = 'e9411bdb638f'
+revision: str = '44a2474265e0'
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -55,7 +55,7 @@ def upgrade() -> None:
     sa.Column('summary', sa.Text(), nullable=True),
     sa.Column('is_active', sa.Boolean(), nullable=False),
     sa.Column('logo_url', sqlmodel.sql.sqltypes.AutoString(length=500), nullable=True),
-    sa.Column('status', sa.Enum('PROVISIONING', 'PENDING', 'APPROVED', 'REJECTED', 'SUSPENDED', 'DEACTIVATED', 'FAILED', name='organisationstatus'), nullable=False),
+    sa.Column('status', sa.Enum('PROVISIONING', 'PENDING', 'APPROVED', 'REJECTED', 'SUSPENDED', 'DEACTIVATED', 'FAILED', name='organisationstatus'), nullable=True),
     sa.Column('created_by_auth_user_id', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
     sa.Column('approved_by', sa.Uuid(), nullable=True),
     sa.Column('approved_at', sa.DateTime(timezone=True), nullable=True),
@@ -73,7 +73,7 @@ def upgrade() -> None:
     sa.Column('organisation_id', sa.Uuid(), nullable=False),
     sa.Column('actor_admin_id', sa.Uuid(), nullable=True),
     sa.Column('request_id', sa.String(length=64), nullable=True),
-    sa.Column('action', sa.Enum('CREATED', 'APPROVED', 'REJECTED', 'SUSPENDED', 'REINSTATED', 'STATUS_CHANGED', 'FIELD_CHANGED', 'USER_ADDED', 'USER_REMOVED', 'ROLE_CHANGED', 'NOTE_ADDED', 'SYSTEM_MIGRATION', name='organisationeventtype'), nullable=False),
+    sa.Column('action', sa.Enum('CREATED', 'APPROVED', 'REJECTED', 'SUSPENDED', 'REINSTATED', 'STATUS_CHANGED', 'FIELD_CHANGED', 'USER_ADDED', 'USER_REMOVED', 'ROLE_CHANGED', 'NOTE_ADDED', 'SYSTEM_MIGRATION', 'DELETED', name='organisationeventtype'), nullable=False),
     sa.Column('note', sa.Text(), nullable=True),
     sa.Column('details', sa.JSON(), nullable=True),
     sa.ForeignKeyConstraint(['actor_admin_id'], ['super_admins.admin_id'], ondelete='SET NULL'),
