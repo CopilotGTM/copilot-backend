@@ -474,7 +474,12 @@ resource "azuredevops_variable_group" "secrets" {
 
   variable {
     name  = "APP_URL"
-    value = "https://${var.frontend_dns_a_record_name}.copilotgtm.com"
+    value = "https://${var.frontend_admin_dns_a_record_name}.copilotgtm.com"
+  }
+
+  variable {
+    name  = "ADMIN_APP_URL"
+    value = "https://${var.frontend_admin_dns_a_record_name}.copilotgtm.com"
   }
 
   variable {
