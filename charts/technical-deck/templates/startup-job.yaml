@@ -18,7 +18,7 @@ spec:
   backoffLimit: 1
   # Hard deadline for the job (seconds) – keep aligned with helm upgrade --timeout
   activeDeadlineSeconds: 900
-template:
+  template:
     metadata:
       name: {{ printf "%s-startup-job-v2" .Release.Name | quote }}
       labels:
