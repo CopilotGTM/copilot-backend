@@ -14,11 +14,13 @@ class CreateOrganizationRequest(BaseModel):
     country: str = None
     sales_team_size: Optional[int] = None
     company_address: Optional[str] = None
-    billing_address: Optional[str] = None
     linked_urls: Optional[List[str]] = None
     website_urls: Optional[List[str]] = None
     summary: Optional[str] = None
     logo_url: Optional[str] = None
+
+    class Config:
+        extra = "ignore"
 
 
 class ListOrganizationResponse(BaseModel):
@@ -68,12 +70,14 @@ class UpdateOrganizationRequest(BaseModel):
     country: Optional[str] = None
     sales_team_size: Optional[int] = None
     company_address: Optional[str] = None
-    billing_address: Optional[str] = None
     linked_urls: Optional[str] = None
     website_urls: Optional[str] = None
     summary: Optional[str] = None
     logo_url: Optional[str] = None
     is_active: Optional[bool] = None
+
+    class Config:
+        extra = "ignore"
 
 
 class DeleteOrganizationResponse(BaseModel):
