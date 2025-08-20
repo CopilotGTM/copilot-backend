@@ -58,3 +58,10 @@ Create the name of the service account to use
 {{- default "default" .Values.serviceAccount.name }}
 {{- end }}
 {{- end -}}
+
+{{/*
+Create the name of the secret to use
+*/}}
+{{- define "technical-deck.secretName" -}}
+{{- printf "%s-secret" (include "technical-deck.fullname" .) }}
+{{- end -}}

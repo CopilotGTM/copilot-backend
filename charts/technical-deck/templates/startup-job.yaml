@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ .Release.Name }}-startup-job
+  name: {{ printf "%s-startup-job-v2" .Release.Name | quote }}
   namespace: {{ .Values.namespace }}
   labels:
     app.kubernetes.io/name: {{ .Values.labels.name }}
@@ -11,16 +11,16 @@ metadata:
     # job would be created every time a helm upgrade is run.
     "helm.sh/hook": pre-install,pre-upgrade
     "helm.sh/hook-weight": "-5"
-    "helm.sh/hook-delete-policy": before-hook-creation
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-failed
     # Removed unsupported helm.sh/hook-timeout (Helm ignores it); control timing with helm --timeout flag
 spec:
   # Allow a single retry to handle transient DB readiness issues
   backoffLimit: 1
   # Hard deadline for the job (seconds) – keep aligned with helm upgrade --timeout
   activeDeadlineSeconds: 900
-  template:
+template:
     metadata:
-      name: {{ .Release.Name }}-startup-job
+      name: {{ printf "%s-startup-job-v2" .Release.Name | quote }}
       labels:
         app.kubernetes.io/name: {{ .Values.labels.name }}
         app.kubernetes.io/instance: {{ .Values.labels.instance }}
@@ -50,5 +50,5 @@ spec:
               value: {{ .Values.environment | quote }}
           envFrom:
             - secretRef:
-                name: {{ include "technical-deck.fullname" . }}-secret
+                name: {{ include "technical-deck.secretName" . }}
   # Removed previous backoffLimit placement (moved above) and explicit hook-timeout annotation

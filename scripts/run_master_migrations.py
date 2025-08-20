@@ -22,11 +22,21 @@ logger = get_logger("run-master-migrations")
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Run master migrations (organizations, users, etc.)")
-    p.add_argument("--revision", default="head", help="Revision to upgrade to (default: head)")
-    p.add_argument("--downgrade", action="store_true", help="Downgrade instead of upgrade")
-    p.add_argument("--skip-role", action="store_true", help="Skip creation of master_copilot_role")
-    p.add_argument("--skip-migrations", action="store_true", help="Skip running Alembic migrations")
+    p = argparse.ArgumentParser(
+        description="Run master migrations (organizations, users, etc.)"
+    )
+    p.add_argument(
+        "--revision", default="head", help="Revision to upgrade to (default: head)"
+    )
+    p.add_argument(
+        "--downgrade", action="store_true", help="Downgrade instead of upgrade"
+    )
+    p.add_argument(
+        "--skip-role", action="store_true", help="Skip creation of master_copilot_role"
+    )
+    p.add_argument(
+        "--skip-migrations", action="store_true", help="Skip running Alembic migrations"
+    )
     p.add_argument("--verbose", action="store_true", help="Enable verbose logging")
     return p.parse_args()
 
@@ -59,7 +69,7 @@ def _store_password_in_key_vault(secret_name: str, password: str):
 
         credential = DefaultAzureCredential()
         client = SecretClient(vault_url=key_vault_url, credential=credential)
-        
+
         client.set_secret(secret_name, password)
         print(f"Successfully stored password in Azure Key Vault as '{secret_name}'.")
     except Exception as e:
@@ -78,14 +88,14 @@ def create_master_copilot_role(engine):
             # Check if the role already exists
             role_exists = conn.execute(
                 text("SELECT 1 FROM pg_roles WHERE rolname = :role_name"),
-                {"role_name": role_name}
+                {"role_name": role_name},
             ).scalar_one_or_none()
 
             if not role_exists:
                 print(f"-> Creating role '{role_name}'...")
                 conn.execute(
                     text(f"CREATE ROLE {role_name} LOGIN PASSWORD :password"),
-                    {"password": password}
+                    {"password": password},
                 )
                 print(f"[OK] Role '{role_name}' created.")
                 # Store the password in Key Vault
@@ -96,9 +106,17 @@ def create_master_copilot_role(engine):
 
             # Grant full access to the public schema
             print(f"-> Granting full access on public schema to '{role_name}'...")
-            conn.execute(text(f'GRANT ALL PRIVILEGES ON SCHEMA public TO {role_name}'))
-            conn.execute(text(f'GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO {role_name}'))
-            conn.execute(text(f'GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO {role_name}'))
+            conn.execute(text(f"GRANT ALL PRIVILEGES ON SCHEMA public TO {role_name}"))
+            conn.execute(
+                text(
+                    f"GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO {role_name}"
+                )
+            )
+            conn.execute(
+                text(
+                    f"GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO {role_name}"
+                )
+            )
             print("[OK] Privileges granted.")
 
 
