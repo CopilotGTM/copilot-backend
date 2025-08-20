@@ -1,15 +1,15 @@
-chartLabel: technical-deck-0.1.0
-name: technical-deck
+chartLabel: copilot-backend-0.1.0
+name: copilot-backend
 namespace: copilotgtm
 labels:
-  name: technical-deck
-  instance: technical-deck
-containerName: technical-deck
+  name: copilot-backend
+  instance: copilot-backend
+containerName: copilot-backend
 environment: development
 replicaCount: 1
 
 image:
-  repository: "copilotgtmacrdev.azurecr.io/technical-deck"
+  repository: "copilotgtmacrdev.azurecr.io/copilot-backend"
   tag: "latest"
   pullPolicy: IfNotPresent
 
@@ -21,7 +21,7 @@ ingress:
   enabled: true
   className: "nginx"
   annotations:
-    nginx.ingress.kubernetes.io/websocket-services: technical-deck
+    nginx.ingress.kubernetes.io/websocket-services: copilot-backend
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-body-size: "10m"
@@ -56,4 +56,4 @@ secrets: {}
 
 serviceAccount:
   create: true
-  name: "technical-deck"
+  name: "copilot-backend"

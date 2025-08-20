@@ -50,5 +50,5 @@ spec:
               value: {{ .Values.environment | quote }}
           envFrom:
             - secretRef:
-                name: {{ include "technical-deck.fullname" . }}-secret
+                name: {{ include "copilot-backend.fullname" . }}-secret
   # Removed previous backoffLimit placement (moved above) and explicit hook-timeout annotation

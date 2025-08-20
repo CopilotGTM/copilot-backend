@@ -9,10 +9,10 @@ Follow these steps to build your Docker image and push it to your Azure Containe
 az acr login --name copilotgtmacrdev
 
 # 2. Build your Docker image locally with the correct tag
-docker build -t copilotgtmacrdev.azurecr.io/technical-deck:latest .
+docker build -t copilotgtmacrdev.azurecr.io/copilot-backend:latest .
 
 # 3. Push the image to your ACR
-docker push copilotgtmacrdev.azurecr.io/technical-deck:latest
+docker push copilotgtmacrdev.azurecr.io/copilot-backend:latest
 ```
 
 ## Deploy with Helm
@@ -22,7 +22,7 @@ Once the image is pushed, you can use these Helm commands to manage the deployme
 ### Install or Upgrade the Chart
 
 ```sh
-helm upgrade --install technical-deck charts/technical-deck --values charts/technical-deck/values.yaml --namespace copilotgtm --set image.tag=latest
+helm upgrade --install copilot-backend charts/copilot-backend --values charts/copilot-backend/values.yaml --namespace copilotgtm --set image.tag=latest
 ```
 
 ### Delete the Release
@@ -30,7 +30,7 @@ helm upgrade --install technical-deck charts/technical-deck --values charts/tech
 This removes all Kubernetes resources managed by this Helm release:
 
 ```sh
-helm uninstall technical-deck --namespace copilotgtm
+helm uninstall copilot-backend --namespace copilotgtm
 ```
 
 ### Describe the Helm Release
@@ -38,7 +38,7 @@ helm uninstall technical-deck --namespace copilotgtm
 Get detailed status of the Helm release and its resources:
 
 ```sh
-helm status technical-deck --namespace copilotgtm
+helm status copilot-backend --namespace copilotgtm
 ```
 
 ### List Helm Releases
@@ -64,10 +64,10 @@ kubectl apply -f https://github.com/cert-manager/cert-manager/releases/latest/do
 
 ### Create ClusterIssuer & Certificate
 
-**Edit `charts/technical-deck/cert-manager-prod.yaml` and update the email under `spec.acme.email`.**
+**Edit `charts/copilot-backend/cert-manager-prod.yaml` and update the email under `spec.acme.email`.**
 
 ```sh
-kubectl apply -f charts/technical-deck/cert-manager-prod.yaml
+kubectl apply -f charts/copilot-backend/cert-manager-prod.yaml
 ```
 
 This will:
@@ -90,7 +90,7 @@ Certificates renew automatically before expiry.
 This deployment is configured to support WebSocket upgrades via the NGINX ingress controller.  
 If your FastAPI app exposes WebSocket paths, they will tunnel correctly through the public HTTPS endpoint.
 
-**Key ingress annotations (see `charts/technical-deck/values.yaml`):**
+**Key ingress annotations (see `charts/copilot-backend/values.yaml`):**
 - `nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"`
 - `nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"`
 - `nginx.ingress.kubernetes.io/proxy-body-size: "10m"`

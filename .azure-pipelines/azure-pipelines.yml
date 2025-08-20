@@ -16,7 +16,7 @@ pr:
 
 variables:
   - name: CHART_PATH
-    value: ./charts/technical-deck
+    value: ./charts/copilot-backend
   - name: KUBECONFIG_FILE
     value: $(Pipeline.Workspace)/kubeconfig.yaml
 
@@ -45,7 +45,7 @@ stages:
             displayName: Build Docker Image
             inputs:
               containerRegistry: '$(ACR_SERVICE_CONNECTION)'
-              repository: 'technical-deck'
+              repository: 'copilot-backend'
               command: 'buildAndPush'
               Dockerfile: '**/Dockerfile'
               tags: |
@@ -53,7 +53,7 @@ stages:
                 latest
 
           - script: |
-              echo "Pushed image: $(ACR_LOGIN_SERVER)/technical-deck:$(Build.BuildId)"
+              echo "Pushed image: $(ACR_LOGIN_SERVER)/copilot-backend:$(Build.BuildId)"
             displayName: Print image info
 
   - stage: Deploy
@@ -85,7 +85,7 @@ stages:
                 - script: |
                     helm upgrade --install "$HELM_RELEASE_NAME" "$CHART_PATH" \
                       --namespace copilotgtm \
-                      --set image.repository="$ACR_LOGIN_SERVER/technical-deck" \
+                      --set image.repository="$ACR_LOGIN_SERVER/copilot-backend" \
                       --set image.tag="$BUILD_BUILDID" \
                       --set secrets.DATABASE_HOST="$(DATABASE_HOST)" \
                       --set secrets.DATABASE_USER="$(DATABASE_USER)" \
