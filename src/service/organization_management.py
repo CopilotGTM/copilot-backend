@@ -218,7 +218,7 @@ class OrganizationManagementService:
                 # Grant role to admin user for maintenance
                 admin_user = database_config.DATABASE_USER
                 if admin_user:
-                    conn.execute(text(f"GRANT {role_name} TO {admin_user}"))
+                    conn.execute(text(f'GRANT {role_name} TO "{admin_user}"'))
 
                 # Attempt to create vector extension within the schema, failing gracefully
                 try:
