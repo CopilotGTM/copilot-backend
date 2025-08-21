@@ -23,15 +23,14 @@ from src.infra.config.configs import (
 from migrations.migration_manager import migration_manager
 from azure.identity import DefaultAzureCredential, ClientSecretCredential
 from azure.keyvault.secrets import SecretClient
-from azure.mgmt.storage import StorageManagementClient
-from azure.mgmt.storage.models import StorageAccountCreateParameters, Sku, Kind
 from src.infra.utils.cursor import decode_cursor, encode_cursor
 from src.infra.utils.resource_naming import (
     get_key_vault_secret_name,
-    get_storage_account_name,
     get_schema_name,
     get_role_name,
+    get_org_container_name,
 )
+from azure.storage.blob import BlobServiceClient
 
 from uuid import UUID
 
@@ -135,7 +134,7 @@ class OrganizationManagementService:
             # Order: DB role+schema -> migrations -> storage -> key vault (DB first keeps core local, then slower cloud ops)
             time_step("db_role_schema", lambda: self._create_database_role_and_schema(schema_name, role_name, role_password))
             time_step("migrations", lambda: self._run_organization_migrations(schema_name))
-            time_step("storage_account", lambda: self._create_storage_account(organisation_id))
+            time_step("storage_container", lambda: self._provision_org_storage_container(organisation_id))
             time_step("store_secret", lambda: self._store_password_in_key_vault(organisation_id, role_password))
 
             # 3. If successful, update status to PENDING
@@ -169,13 +168,12 @@ class OrganizationManagementService:
             raise
         except Exception as e:
             session.rollback()
-            logger.error(f"Provisioning failed for organization '{organisation_name}': {e}", exc_info=True)
             organization.status = OrganisationStatus.FAILED
             session.add(OrganisationActionHistory(
                 organisation_id=organisation_id,
                 action=OrganisationEventType.SYSTEM_MIGRATION,
                 actor_admin_id=admin_id,
-                details={"error": f"Provisioning failed: {e.__class__.__name__}"},
+                details={"error": f"Provisioning failed: {e.__class__.__name__}", "message": str(e)},
             ))
             session.commit()
             raise ProvisioningError(str(e), organisation_id=organisation_id)
@@ -249,6 +247,26 @@ class OrganizationManagementService:
         except Exception as e:
             logger.error(f"Migration execution failed for schema '{schema_name}': {e}", exc_info=True)
             raise ProvisioningError(f"An unexpected error occurred during migration: {e}")
+
+    def _provision_org_storage_container(self, organisation_id: UUID):
+        """Ensure the per-organisation container exists in the shared storage account (idempotent)."""
+        account = cloud_storage_config.ORGANISATION_STORAGE_NAME or cloud_storage_config.APPLICATION_STORAGE_NAME
+        if not account:
+            logger.warning("No shared storage account name configured (ORGANISATION_STORAGE_NAME / APPLICATION_STORAGE_NAME). Skipping container creation.")
+            return
+        container = get_org_container_name(organisation_id)
+        try:
+            credential = self._get_azure_credential()
+            service = BlobServiceClient(f"https://{account}.blob.core.windows.net", credential=credential)
+            client = service.get_container_client(container)
+            client.create_container()
+            logger.info(f"Created container '{container}' in account '{account}'.")
+        except Exception as e:
+            if "ContainerAlreadyExists" in str(e):
+                logger.info(f"Container '{container}' already exists (idempotent).")
+            else:
+                logger.error(f"Failed to create container '{container}' in '{account}': {e}")
+                raise ProvisioningError(f"Container provisioning failed: {e}")
 
     def _store_password_in_key_vault(self, organisation_id: UUID, password: str):
         """
@@ -541,73 +559,10 @@ class OrganizationManagementService:
 
         # Delete the password from Key Vault
         self._delete_password_from_key_vault(organisation_id)
-        self._delete_storage_account(organisation_id)
 
         logger.info(f"Successfully deleted organization {organisation_id} and all associated resources.")
         return organisation
 
-    def _create_storage_account(self, organisation_id: UUID):
-        """Creates a new Azure Storage account for an organization."""
-        storage_account_name = get_storage_account_name(organisation_id)
-        logger.info(f"Creating Azure Storage account '{storage_account_name}'.")
-
-        subscription_id = cloud_infra_config.AZURE_SUBSCRIPTION_ID
-        resource_group_name = cloud_infra_config.AZURE_RESOURCE_GROUP
-
-        if not all([subscription_id, resource_group_name]):
-            logger.warning("Azure subscription or resource group not configured. Skipping storage account creation.")
-            return
-
-        try:
-            credential = self._get_azure_credential()
-            storage_client = StorageManagementClient(credential, subscription_id)
-            # Idempotency: if exists, skip
-            try:
-                existing = storage_client.storage_accounts.get_properties(resource_group_name, storage_account_name)
-                if existing:
-                    logger.info(f"Storage account '{storage_account_name}' already exists; skipping creation.")
-                    return
-            except Exception:
-                # Not found => proceed
-                pass
-
-            poller = storage_client.storage_accounts.begin_create(
-                resource_group_name,
-                storage_account_name,
-                StorageAccountCreateParameters(
-                    sku=Sku(name="Standard_LRS"),
-                    kind=Kind.STORAGE_V2,
-                    location=cloud_storage_config.APPLICATION_REGION,
-                ),
-            )
-            storage_account = poller.result()
-            logger.info(f"Successfully created or ensured storage account: {storage_account.name}")
-        except Exception as e:
-            logger.error(f"Failed to create storage account '{storage_account_name}': {e}")
-            raise ProvisioningError(f"Failed to create Azure Storage account: {e}")
-
-    def _delete_storage_account(self, organisation_id: UUID):
-        """
-        Deletes an Azure Storage account.
-        This operation is non-critical; failures are logged as warnings.
-        """
-        storage_account_name = get_storage_account_name(organisation_id)
-        logger.info(f"Deleting Azure Storage account '{storage_account_name}'.")
-
-        subscription_id = cloud_infra_config.AZURE_SUBSCRIPTION_ID
-        resource_group_name = cloud_infra_config.AZURE_RESOURCE_GROUP
-
-        if not all([subscription_id, resource_group_name]):
-            logger.warning("Azure subscription or resource group not configured. Skipping storage account deletion.")
-            return
-
-        try:
-            credential = self._get_azure_credential()
-            storage_client = StorageManagementClient(credential, subscription_id)
-            storage_client.storage_accounts.delete(resource_group_name, storage_account_name)
-            logger.info(f"Successfully initiated deletion of storage account '{storage_account_name}'.")
-        except Exception as e:
-            logger.warning(f"Failed to delete storage account '{storage_account_name}': {e}")
 
     # ------------------ Helper / pagination utilities ------------------ #
     def _get_azure_credential(self):

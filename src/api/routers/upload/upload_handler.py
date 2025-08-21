@@ -84,7 +84,7 @@ async def finalize_upload(
         attachment = await service.finalize_upload(payload, user_ids.user_id)
         storage = AzureOrganisationBlobStorage(user_ids.organisation_id)
         read_url = await storage.generate_read_sas(
-            "attachments", attachment.storage_path, minutes=120, download_filename=attachment.filename
+            attachment.storage_path, minutes=120, download_filename=attachment.filename
         )
 
         # Enqueue async image processing (checksum + thumbnails if applicable)
@@ -106,14 +106,14 @@ async def finalize_upload(
         if getattr(attachment, "thumbnail_small_path", None):
             try:
                 thumb_small_url = await storage.generate_read_sas(
-                    "attachments", attachment.thumbnail_small_path, minutes=120
+                    attachment.thumbnail_small_path, minutes=120
                 )
             except Exception:
                 pass
         if getattr(attachment, "thumbnail_medium_path", None):
             try:
                 thumb_medium_url = await storage.generate_read_sas(
-                    "attachments", attachment.thumbnail_medium_path, minutes=120
+                    attachment.thumbnail_medium_path, minutes=120
                 )
             except Exception:
                 pass
@@ -166,18 +166,18 @@ async def get_attachment_status(
         storage = AzureOrganisationBlobStorage(user_ids.organisation_id)
         
         read_url = await storage.generate_read_sas(
-            "attachments", attachment.storage_path, minutes=120, download_filename=attachment.filename
+            attachment.storage_path, minutes=120, download_filename=attachment.filename
         )
 
         thumb_small_url = None
         thumb_medium_url = None
         if getattr(attachment, "thumbnail_small_path", None):
             thumb_small_url = await storage.generate_read_sas(
-                "attachments", attachment.thumbnail_small_path, minutes=120
+                attachment.thumbnail_small_path, minutes=120
             )
         if getattr(attachment, "thumbnail_medium_path", None):
             thumb_medium_url = await storage.generate_read_sas(
-                "attachments", attachment.thumbnail_medium_path, minutes=120
+                attachment.thumbnail_medium_path, minutes=120
             )
 
         resp = UploadedAttachmentResponse(

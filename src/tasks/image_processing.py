@@ -5,6 +5,7 @@ from io import BytesIO
 from typing import Tuple, Optional
 import hashlib
 from PIL import Image, UnidentifiedImageError
+import asyncio
 
 from src.celery_app import celery
 from src.infra.utils.logger import get_logger
@@ -20,14 +21,14 @@ THUMB_SIZES: list[Tuple[int, int]] = [(128, 128), (512, 512)]
 
 async def _download_blob(storage: AzureOrganisationBlobStorage, path: str) -> bytes:
     blob_service = await storage._get_blob_service_client()  # accessing internal method intentionally
-    blob_client = blob_service.get_blob_client("attachments", path)
+    blob_client = blob_service.get_blob_client(storage.container, path)
     stream = await blob_client.download_blob()
     return await stream.readall()
 
 
 async def _upload_blob(storage: AzureOrganisationBlobStorage, path: str, data: bytes, content_type: str):
     blob_service = await storage._get_blob_service_client()
-    blob_client = blob_service.get_blob_client("attachments", path)
+    blob_client = blob_service.get_blob_client(storage.container, path)
     await blob_client.upload_blob(data, overwrite=True, content_settings=None)
 
 
@@ -39,11 +40,9 @@ def _derive_thumb_path(original_path: str, suffix: str) -> str:
 
 
 def _stream_checksum_and_optionally_buffer_image(storage: AzureOrganisationBlobStorage, attachment) -> tuple[str, Optional[bytes]]:
-    import asyncio
-
     async def _runner() -> tuple[str, Optional[bytes]]:
         blob_service = await storage._get_blob_service_client()  # internal access
-        blob_client = blob_service.get_blob_client("attachments", attachment.storage_path)
+        blob_client = blob_service.get_blob_client(storage.container, attachment.storage_path)
         downloader = await blob_client.download_blob()
         hasher = hashlib.sha256()
         image_bytes: Optional[BytesIO] = BytesIO() if (attachment.mimetype or "").startswith("image/") else None
@@ -60,7 +59,6 @@ def _stream_checksum_and_optionally_buffer_image(storage: AzureOrganisationBlobS
 
 
 def _generate_thumbnails_from_bytes(storage: AzureOrganisationBlobStorage, attachment, data: bytes):
-    import asyncio
     try:
         with Image.open(BytesIO(data)) as img:
             img = img.convert("RGB")
