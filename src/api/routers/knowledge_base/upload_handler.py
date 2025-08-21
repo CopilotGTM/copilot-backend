@@ -49,7 +49,9 @@ async def presign_batch(
         created, errors = await service.presign_batch(payload, user_ids.user_id)
         def _status_val(s):
             return s.value if hasattr(s, "value") else str(s)
-        resp_files = [
+        
+        # Create response for successful files
+        success_files = [
             KnowledgePresignFileResponse(
                 source_id=src.source_id,
                 filename=src.filename or "",
@@ -59,17 +61,45 @@ async def presign_batch(
                 blob_path=src.storage_path or "",
                 expires_in_seconds=15 * 60,
                 status=_status_val(src.status),
+                success=True,
             )
             for src, upload_url in created
         ]
-        resp = KnowledgeBatchPresignResponse(files=resp_files, errors=errors)
+        
+        # Create response for failed files with error details
+        failed_files = []
+        for error in errors:
+            # Generate a placeholder source_id for failed files if not provided
+            source_id = error.get("source_id", "00000000-0000-0000-0000-000000000000")
+            failed_files.append(
+                KnowledgePresignFileResponse(
+                    source_id=source_id,
+                    filename=error.get("filename", ""),
+                    mimetype="",
+                    size_bytes=0,
+                    upload_url=None,
+                    blob_path="",
+                    expires_in_seconds=0,
+                    status="failed",
+                    error_message=error.get("error_message", error.get("reason", "Unknown error")),
+                    success=False,
+                )
+            )
+        
+        # Combine successful and failed files
+        all_files = success_files + failed_files
+        resp = KnowledgeBatchPresignResponse(files=all_files, errors=errors)
+        
         message = "Batch presign completed"
-        if errors and not resp_files:
+        if failed_files and not success_files:
             return Response.error_response(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 message="All presign operations failed",
                 data=resp,
             )
+        elif failed_files:
+            message = f"Batch presign completed with {len(failed_files)} errors"
+            
         return Response.success_response(message=message, data=resp)
     except ValueError as e:
         return Response.error_response(status_code=status.HTTP_400_BAD_REQUEST, message=str(e))

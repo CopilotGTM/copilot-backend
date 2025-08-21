@@ -56,7 +56,13 @@ class KnowledgeUploadService:
                 upload_url = await self.storage.generate_write_sas("attachments", blob_path, minutes=15)
             except Exception as e:
                 logger.error("Failed generating write SAS for source %s: %s", source_id, e, exc_info=True)
-                errors.append({"index": idx, "filename": file.filename, "reason": "signing_failed"})
+                errors.append({
+                    "index": idx, 
+                    "filename": file.filename, 
+                    "source_id": str(source_id),
+                    "reason": "signing_failed",
+                    "error_message": f"Failed to generate upload URL: {str(e)}"
+                })
                 continue
 
             source = OrganisationSource(
@@ -78,7 +84,13 @@ class KnowledgeUploadService:
             except Exception as e:
                 self.org_session.rollback()
                 logger.error("Failed to create organisation source %s: %s", source_id, e, exc_info=True)
-                errors.append({"index": idx, "filename": file.filename, "reason": "db_error"})
+                errors.append({
+                    "index": idx, 
+                    "filename": file.filename, 
+                    "source_id": str(source_id),
+                    "reason": "db_error",
+                    "error_message": f"Failed to save source to database: {str(e)}"
+                })
 
         return successes, errors
 

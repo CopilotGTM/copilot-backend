@@ -56,10 +56,12 @@ class KnowledgePresignFileResponse(BaseModel):
     filename: str
     mimetype: str
     size_bytes: int
-    upload_url: HttpUrl
-    blob_path: str
-    expires_in_seconds: int
+    upload_url: Optional[HttpUrl] = None
+    blob_path: str = ""
+    expires_in_seconds: int = 0
     status: str
+    error_message: Optional[str] = None
+    success: bool = True
 
 
 class KnowledgeBatchPresignResponse(BaseModel):
