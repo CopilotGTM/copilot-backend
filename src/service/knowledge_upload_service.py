@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re, os
 from typing import List, Tuple, Dict, Any
 from uuid import UUID, uuid4
 from datetime import datetime
@@ -39,7 +40,10 @@ class KnowledgeUploadService:
         self.org_session.execute(text(f"SET search_path TO {self.schema_name}"))
 
     def _plan_blob_path(self, user_id: UUID, source_id: UUID, filename: str) -> str:
-        return f"knowledge_sources/{user_id}/{source_id}/{filename}"
+        # Mirror attachment naming pattern but under knowledgebase/ root. Basic sanitization.
+        base = os.path.basename(filename).strip().replace(" ", "_")
+        base = re.sub(r"[^A-Za-z0-9._-]+", "_", base) or "file"
+        return f"knowledgebase/{user_id}/{source_id}/{base}"
 
     async def presign_batch(
         self, payload: KnowledgeBatchPresignRequest, user_id: UUID
@@ -53,7 +57,7 @@ class KnowledgeUploadService:
             source_id = uuid4()
             blob_path = self._plan_blob_path(user_id, source_id, file.filename)
             try:
-                upload_url = await self.storage.generate_write_sas("attachments", blob_path, minutes=15)
+                upload_url = await self.storage.generate_write_sas(blob_path, minutes=15)
             except Exception as e:
                 logger.error("Failed generating write SAS for source %s: %s", source_id, e, exc_info=True)
                 errors.append({
@@ -115,7 +119,7 @@ class KnowledgeUploadService:
             return source
 
         try:
-            props = await self.storage.get_blob_properties("attachments", source.storage_path)
+            props = await self.storage.get_blob_properties(source.storage_path)
             if not props:
                 raise KnowledgeUploadServiceError(
                     "Uploaded file not yet available. Retry later.", status_code=404

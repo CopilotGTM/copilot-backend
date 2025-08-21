@@ -23,27 +23,12 @@ def get_key_vault_secret_name(organisation_id: uuid.UUID) -> str:
     secret_name = f"{RESOURCE_PREFIX}-{str(organisation_id)}-db-password"
     return secret_name
 
-def get_storage_account_name(organisation_id: uuid.UUID) -> str:
-    """
-    Generates a production-ready, globally unique, and valid Azure Storage account name.
-    Format: <prefix>org<sha1_hash_of_org_id>
-    - Storage account names must be 3-24 characters, lowercase letters and numbers only.
-    - They must be globally unique.
-    """
-    # Use a hash of the organization ID for the unique part.
-    org_id_str = str(organisation_id)
-    hasher = hashlib.sha1(org_id_str.encode('utf-8'))
-    unique_part = hasher.hexdigest()
+def get_org_container_name(organisation_id: uuid.UUID) -> str:
+    """Return deterministic, storage‑compliant container name for an organisation.
 
-    # The prefix for storage accounts to identify them.
-    # e.g., 'gtmorg'
-    prefix = f"{RESOURCE_PREFIX}org"
-
-    # Calculate how many characters of the hash we can use.
-    # Max length is 24.
-    hash_len = 24 - len(prefix)
-    
-    # Combine prefix and the truncated hash.
-    storage_name = f"{prefix}{unique_part[:hash_len]}"
-    
-    return storage_name.lower() # Ensure lowercase
+    Constraints: lowercase, numbers, dash, 3-63 chars. We use prefix + short hash.
+    Format: <prefix>-org-<8chars>
+    """
+    h = hashlib.sha1(str(organisation_id).encode("utf-8")).hexdigest()
+    base = f"{RESOURCE_PREFIX}-org-{h}"
+    return base.lower()

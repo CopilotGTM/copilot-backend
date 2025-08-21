@@ -16,8 +16,8 @@ from azure.storage.blob import (
 )
 
 from src.infra.utils.logger import get_logger
-from src.infra.config.configs import cloud_infra_config
-from src.infra.utils.resource_naming import get_storage_account_name
+from src.infra.config.configs import cloud_infra_config, cloud_storage_config
+from src.infra.utils.resource_naming import get_org_container_name
 
 logger = get_logger("azure_org_blob_storage")
 
@@ -36,11 +36,18 @@ async def _get_credential_async():
 
 
 class AzureOrganisationBlobStorage:
-    """Blob ops constrained to an organisation's storage account."""
+    """Blob ops constrained to an organisation's container inside a shared storage account.
+
+    Previously we created one storage account per organisation. This was simplified to
+    a single (or environment) storage account with one container per organisation to
+    reduce Azure resource sprawl and stay within SOC2 isolation via logical scoping.
+    """
 
     def __init__(self, organisation_id: UUID):
         self.organisation_id = organisation_id
-        self.account_name = get_storage_account_name(organisation_id)
+        # Shared account name via env var; fallback to deprecated generator for legacy envs.
+        self.account_name = cloud_storage_config.ORGANISATION_STORAGE_NAME
+        self.container = get_org_container_name(organisation_id)
         self._credential = None
         self._blob_service: Optional[BlobServiceClient] = None
 
@@ -64,8 +71,20 @@ class AzureOrganisationBlobStorage:
         base = self._SAFE_FILENAME.sub("_", base)
         return base or "file"
 
+    async def _ensure_container(self):
+        """Create the organisation container if it doesn't already exist (idempotent)."""
+        bs = await self._get_blob_service_client()
+        container_client = bs.get_container_client(self.container)
+        try:
+            await container_client.create_container()
+            logger.info("Created container %s in account %s", self.container, self.account_name)
+        except Exception as e:
+            # Ignore if already exists; Azure error code check kept simple.
+            if "ContainerAlreadyExists" not in str(e):
+                logger.debug("Container create skipped/failed: %s", e)
+
     async def generate_read_sas(
-        self, container: str, blob_path: str, minutes: int = 120, download_filename: str | None = None
+        self, blob_path: str, minutes: int = 120, download_filename: str | None = None
     ) -> str:
         """
         Generates a read-access SAS URL.
@@ -73,7 +92,9 @@ class AzureOrganisationBlobStorage:
         If `download_filename` is provided, it sets the Content-Disposition header
         to ensure the user's browser downloads the file with the original, friendly name.
         """
+        await self._ensure_container()
         blob_service = await self._get_blob_service_client()
+        container = self.container
         start = datetime.utcnow() - timedelta(minutes=5)
         expiry = datetime.utcnow() + timedelta(minutes=minutes)
         delegation_key = await blob_service.get_user_delegation_key(start, expiry)
@@ -96,9 +117,11 @@ class AzureOrganisationBlobStorage:
         )
         return f"https://{self.account_name}.blob.core.windows.net/{container}/{blob_path}?{sas}"
 
-    async def generate_write_sas(self, container: str, blob_path: str, minutes: int = 15) -> str:
+    async def generate_write_sas(self, blob_path: str, minutes: int = 15) -> str:
         """Generate a short‑lived SAS URL for client direct upload."""
+        await self._ensure_container()
         blob_service = await self._get_blob_service_client()
+        container = self.container
         start = datetime.utcnow() - timedelta(minutes=5)
         expiry = datetime.utcnow() + timedelta(minutes=minutes)
         delegation_key = await blob_service.get_user_delegation_key(start, expiry)
@@ -125,9 +148,11 @@ class AzureOrganisationBlobStorage:
         return f"chat_uploads/{user_id}/{attachment_id}/{safe_name}"
 
 
-    async def get_blob_properties(self, container: str, blob_path: str):
+    async def get_blob_properties(self, blob_path: str):
         """Return blob properties (exists check, size, content type) or None if missing."""
+        await self._ensure_container()
         blob_service = await self._get_blob_service_client()
+        container = self.container
         blob_client = blob_service.get_blob_client(container=container, blob=blob_path)
         try:
             props = await blob_client.get_blob_properties()
@@ -140,10 +165,12 @@ class AzureOrganisationBlobStorage:
             # Azure SDK raises ResourceNotFoundError, but a broad catch is fine to confirm non-existence.
             return None
 
-    async def delete_blob(self, container: str, blob_path: str):
+    async def delete_blob(self, blob_path: str):
         """Deletes a blob if it exists."""
         try:
+            await self._ensure_container()
             blob_service = await self._get_blob_service_client()
+            container = self.container
             blob_client = blob_service.get_blob_client(container=container, blob=blob_path)
             await blob_client.delete_blob(delete_snapshots="include")
             logger.info("Deleted blob: %s/%s", container, blob_path)

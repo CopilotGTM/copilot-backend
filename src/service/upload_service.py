@@ -47,7 +47,8 @@ class UploadService:
         )
 
         try:
-            upload_url = await self.storage.generate_write_sas("attachments", blob_path, minutes=15)
+            # Container now per‑org; path retains logical grouping
+            upload_url = await self.storage.generate_write_sas(blob_path, minutes=15)
         except Exception as e:
             logger.error("Failed generating write SAS for user %s: %s", user_id, e, exc_info=True)
             raise UploadServiceError("Failed to generate upload URL") from e
@@ -86,7 +87,7 @@ class UploadService:
             raise UploadServiceError("Attachment not found or access denied", status_code=404)
 
         try:
-            props = await self.storage.get_blob_properties("attachments", attachment.storage_path)
+            props = await self.storage.get_blob_properties(attachment.storage_path)
             if not props:
                 raise UploadServiceError("Uploaded file not found in storage.", status_code=404)
 
@@ -102,7 +103,7 @@ class UploadService:
                     attachment.size_bytes,
                     actual_size,
                 )
-                await self.storage.delete_blob("attachments", attachment.storage_path)
+                await self.storage.delete_blob(attachment.storage_path)
                 self.org_session.delete(attachment)
                 self.org_session.commit()
                 raise UploadServiceError(

@@ -87,6 +87,7 @@ class CloudStorageConfig:
 
     CLOUD_PROVIDER: str = os.getenv("CLOUD_PROVIDER", "aws")
     APPLICATION_STORAGE_NAME: Optional[str] = os.getenv("APPLICATION_STORAGE_NAME")
+    ORGANISATION_STORAGE_NAME: Optional[str] = os.getenv("ORGANISATION_STORAGE_NAME")
     APPLICATION_REGION: Optional[str] = os.getenv("APPLICATION_REGION")
 
 
