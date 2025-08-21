@@ -135,6 +135,29 @@ class ChatFileUploadConfig:
     ]
 
 
+class KnowledgeFileUploadConfig:
+    """Configuration for knowledge base file uploads.
+
+    Uses distinct environment variable names to allow independent tuning
+    from chat attachment uploads.
+    """
+
+    MAX_FILE_SIZE_BYTES: int = int(
+        os.getenv("KNOWLEDGE_MAX_UPLOAD_FILE_SIZE_BYTES", os.getenv("MAX_UPLOAD_FILE_SIZE_BYTES", "104857600"))
+    )  # default 100MB if not set
+
+    ALLOWED_MIMETYPES: list[str] = [
+        item.strip()
+        for item in os.getenv(
+            "KNOWLEDGE_ALLOWED_MIMETYPES",
+            # Broader default set including spreadsheets and markdown
+            "application/pdf, text/plain, text/markdown, text/csv, application/msword, "
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document, "
+        ).split(",")
+        if item.strip()
+    ]
+
+
 # Create config instances
 supabase_config = SupabaseConfig()
 database_config = DatabaseConfig()
@@ -147,6 +170,7 @@ super_admin_config = SuperAdminConfig()
 secret_manager_config = SecretManagerConfig()
 cloud_infra_config = CloudInfraConfig()
 chat_file_upload_config = ChatFileUploadConfig()
+knowledge_file_upload_config = KnowledgeFileUploadConfig()
 
 
 class Config:

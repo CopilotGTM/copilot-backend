@@ -47,6 +47,7 @@ class OrganisationEventType(str, Enum):
 
 class Organisation(TimestampMixin, table=True):
     __tablename__ = "organisations"
+    __table_args__ = {"schema": "public"}
 
     organisation_id: UUID = Field(
         default_factory=uuid4,
@@ -109,7 +110,7 @@ class Organisation(TimestampMixin, table=True):
     )
     approved_by: Optional[UUID] = Field(
         default=None,
-        sa_column=Column("approved_by", ForeignKey("super_admins.admin_id", ondelete="SET NULL"), nullable=True),
+        sa_column=Column("approved_by", ForeignKey("public.super_admins.admin_id", ondelete="SET NULL"), nullable=True),
         description="UUID of the admin who approved the organisation."
     )
     approved_at: Optional[datetime] = Field(
@@ -129,6 +130,7 @@ class OrganisationActionHistory(CreatedAtMixin, table=True):
         Index("ix_oah_action_created_at", "action", "created_at"),
         Index("ix_oah_actor_created_at", "actor_admin_id", "created_at"),
         UniqueConstraint("organisation_id", "request_id", name="uq_oah_org_request_id"),
+        {"schema": "public"},
     )
 
     id: UUID = Field(
@@ -137,14 +139,14 @@ class OrganisationActionHistory(CreatedAtMixin, table=True):
         description="Unique UUID for this organisation action history record."
     )
     organisation_id: UUID = Field(
-        foreign_key="organisations.organisation_id",
+        foreign_key="public.organisations.organisation_id",
         nullable=False,
         index=True,
         description="UUID of the organisation this action references."
     )
     actor_admin_id: Optional[UUID] = Field(
         default=None,
-        sa_column=Column(ForeignKey("super_admins.admin_id", ondelete="SET NULL"), index=True),
+        sa_column=Column(ForeignKey("public.super_admins.admin_id", ondelete="SET NULL"), index=True),
         description="UUID of admin who performed this organisation action."
     )
     request_id: Optional[str] = Field(

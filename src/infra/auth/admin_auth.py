@@ -5,7 +5,7 @@ from typing import Optional, Dict, Any
 from uuid import UUID
 from fastapi import HTTPException, status, Depends, Request
 from sqlmodel import Session, select
-from src.infra.utils.database import get_master_engine
+from src.infra.utils.database import get_master_session
 
 from src.domain.models.master_tables import SuperAdmin, AdminUserStatus, AdminRole, SupabaseAdminStatus
 from src.infra.utils.app_state import fastapp
@@ -18,7 +18,7 @@ logger = get_logger("admin_auth")
 class AdminAuth:
     """Admin authentication and management service using Supabase"""
  
-    async def __call__(self, request: Request, session: Session = Depends(lambda: Session(get_master_engine(echo=False)))) -> SuperAdmin:
+    async def __call__(self, request: Request, session: Session = Depends(get_master_session)) -> SuperAdmin:
         """
         FastAPI dependency to get current authenticated admin from Supabase token
 

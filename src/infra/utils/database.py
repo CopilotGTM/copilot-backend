@@ -13,7 +13,7 @@ from azure.identity import DefaultAzureCredential
 from azure.keyvault.secrets import SecretClient
 
 from src.infra.config.configs import Config, database_config, secret_manager_config
-from src.infra.utils.resource_naming import get_key_vault_secret_name, get_role_name
+from src.infra.utils.resource_naming import get_key_vault_secret_name, get_role_name, get_schema_name
 
 # ---------------------------------------------------------------------------
 # Master & Tenant Engine Pooling
@@ -222,40 +222,58 @@ def invalidate_tenant_engine(organisation_id: str):
 
 
 def get_org_session(org_id: str, direct: bool = True) -> Iterator[Session]:
-    """Yields a tenant session.
+    """Yields a tenant session with a controlled search_path.
 
-    For local development, it uses the SET ROLE method to avoid Key Vault dependency.
-    In other environments, it attempts a direct connection using credentials from Key Vault.
+    Strategy:
+      * Always ensure search_path includes the tenant schema THEN public (shared/master tables).
+      * Prefer direct per-tenant engine (role user) if available unless overridden.
+      * Fallback to SET ROLE on master connection when direct fails or in local env.
+
+    This avoids errors like relation "users" does not exist when auth code (shared table) executes
+    inside a tenant context, because the shared tables live in public (or master) schema.
     """
     if not org_id:
         raise ValueError("org_id required")
 
-    # In local env, always use SET ROLE. In prod, use direct connection by default.
+    tenant_schema = get_schema_name(org_id)
     is_local_env = Config().env == "local"
     use_set_role = is_local_env or not direct
+
+    # Helper to apply & reset search_path safely
+    def _with_search_path(sess: Session):
+        # Prepend tenant schema then public. If tenant schema missing, creation will surface elsewhere.
+        sess.execute(text(f'SET search_path TO "{tenant_schema}", public'))
+        try:
+            yield sess
+        finally:
+            # Reset to default (public). DISCARD ALL is expensive; explicit set is fine.
+            try:
+                sess.execute(text('SET search_path TO public'))
+            except Exception:
+                pass
 
     if not use_set_role:
         try:
             engine = get_tenant_engine(org_id)
             with Session(engine) as session:
-                yield session
-            return  # Successfully connected directly, so we're done.
+                yield from _with_search_path(session)
+            return
         except Exception as e:
             print(f"Direct tenant connection failed for org {org_id}, falling back to SET ROLE. Error: {e}")
-            # Fall through to SET ROLE logic
 
-    # Use SET ROLE method
     role_name = get_role_name(org_id)
     if not role_name.isidentifier():
         raise ValueError(f"Invalid derived role name: {role_name}")
-
     engine = get_master_engine(echo=False)
     session = Session(engine)
     try:
         session.execute(text(f'SET ROLE "{role_name}"'))
-        yield session
+        yield from _with_search_path(session)
     finally:
-        session.execute(text("RESET ROLE"))
+        try:
+            session.execute(text("RESET ROLE"))
+        except Exception:
+            pass
         session.close()
 
 
@@ -286,7 +304,28 @@ def get_session_dependency(engine):
     return _get_session
 
 def get_master_session():
-    return None
+    """FastAPI dependency-friendly generator that yields a master session.
+
+    Ensures we always operate on the public (shared) schema and do **not** retain
+    stateful ROLE / search_path changes between requests.
+    """
+    engine = get_master_engine(echo=False)
+    with Session(engine) as session:
+        try:
+            # Defensive: reset any inherited role just in case connection object was reused
+            session.execute(text('RESET ROLE'))
+        except Exception:
+            pass
+        try:
+            # Be explicit so downstream auth queries reliably find shared tables.
+            session.execute(text('SET search_path TO public'))
+        except Exception:
+            pass
+        yield session
+
+# Backwards compatible alias for dependency injection
+def master_session_dep():
+    return get_master_session()
 
 
 def database_previlage_connectin():

@@ -4,7 +4,7 @@ from typing import Dict, Any, Optional
 
 from fastapi import Depends, HTTPException, status, Request
 from sqlmodel import Session, select
-from src.infra.utils.database import get_master_engine
+from src.infra.utils.database import get_master_session
 
 from src.domain.models.master_tables import AdminUserStatus, SupabaseUserStatus, User
 from src.infra.auth.supabase_user_client import supabase_user_client
@@ -144,7 +144,7 @@ class UserAuth:
                 detail="Authentication failed"
             )
 
-    async def __call__(self, request: Request, session: Session = Depends(lambda: Session(get_master_engine(echo=False)))) -> User:
+    async def __call__(self, request: Request, session: Session = Depends(get_master_session)) -> User:
         """
         FastAPI dependency to get current authenticated user from Supabase token
 
