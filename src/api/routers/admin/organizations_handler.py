@@ -22,7 +22,7 @@ from src.domain.models.master_tables import (
     OrganisationEventType,
     OrganisationStatus,
 )
-from src.infra.utils.database import get_master_engine
+from src.infra.utils.database import get_master_session
 from src.infra.utils.logger import get_logger
 from src.infra.utils.cursor import encode_cursor, decode_cursor
 from src.service.organization_management import organization_management_service
@@ -43,7 +43,7 @@ router = APIRouter()
 async def create_organization(
     request: CreateOrganizationRequest,
     current_admin: SuperAdmin = Depends(admin_auth),
-    master_session: Session = Depends(lambda: Session(get_master_engine(echo=False))),
+    master_session: Session = Depends(get_master_session),
 ):
     """
     Create a new organization with a dedicated schema, role, and database user.
@@ -94,7 +94,7 @@ async def list_organizations(
         description="Opaque cursor returned by the previous call (omit for first page)",
     ),
     current_admin: SuperAdmin = Depends(admin_auth),
-    master_session: Session = Depends(lambda: Session(get_master_engine(echo=False))),
+    master_session: Session = Depends(get_master_session),
 ):
     """
     Retrieve a list of all organizations with pagination.
@@ -155,7 +155,7 @@ async def list_organizations(
 async def get_organization(
     organisation_id: UUID,
     current_admin: SuperAdmin = Depends(admin_auth),
-    master_session: Session = Depends(lambda: Session(get_master_engine(echo=False))),
+    master_session: Session = Depends(get_master_session),
 ):
     """
     Retrieve a single organization by its ID.
@@ -200,7 +200,7 @@ async def update_organization(
     organisation_id: UUID,
     request: UpdateOrganizationRequest,
     current_admin: SuperAdmin = Depends(admin_auth),
-    master_session: Session = Depends(lambda: Session(get_master_engine(echo=False))),
+    master_session: Session = Depends(get_master_session),
 ):
     """
     Update an organization's details.
@@ -248,7 +248,7 @@ async def update_organisation_status(
     organisation_id: UUID,
     request: UpdateOrganisationStatusRequest,
     current_admin: SuperAdmin = Depends(admin_auth),
-    master_session: Session = Depends(lambda: Session(get_master_engine(echo=False))),
+    master_session: Session = Depends(get_master_session),
 ):
     """
     Update the status of an organization (e.g., approve, reject, suspend).
@@ -301,7 +301,7 @@ async def get_organisation_history(
     limit: int = Query(20, ge=1, le=100),
     cursor: Optional[str] = Query(None),
     current_admin: SuperAdmin = Depends(admin_auth),
-    master_session: Session = Depends(lambda: Session(get_master_engine(echo=False))),
+    master_session: Session = Depends(get_master_session),
 ):
     """
     Retrieve the action history for a specific organization.
@@ -338,7 +338,7 @@ async def get_all_organisation_history(
     limit: int = Query(20, ge=1, le=100),
     cursor: Optional[str] = Query(None),
     current_admin: SuperAdmin = Depends(admin_auth),
-    master_session: Session = Depends(lambda: Session(get_master_engine(echo=False))),
+    master_session: Session = Depends(get_master_session),
 ):
     """
     Retrieve the action history for all organizations.

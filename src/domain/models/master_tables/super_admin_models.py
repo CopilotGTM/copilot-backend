@@ -36,6 +36,7 @@ class AdminUserStatus(str, Enum):
 
 class SuperAdmin(TimestampMixin, table=True):
     __tablename__ = "super_admins"
+    __table_args__ = {"schema": "public"}
 
     admin_id: UUID = Field(
         default_factory=uuid4,

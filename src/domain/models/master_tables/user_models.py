@@ -46,6 +46,7 @@ class UserEventType(str, Enum):
 
 class User(TimestampMixin, table=True):
     __tablename__ = "users"
+    __table_args__ = {"schema": "public"}
 
     user_id: UUID = Field(
         default_factory=uuid4,
@@ -59,7 +60,7 @@ class User(TimestampMixin, table=True):
         description="Unique user ID from Supabase authentication provider."
     )
     organisation_id: UUID = Field(
-        foreign_key="organisations.organisation_id",
+        foreign_key="public.organisations.organisation_id",
         nullable=False,
         index=True,
         description="UUID of the organisation this user belongs to."
@@ -123,7 +124,7 @@ class User(TimestampMixin, table=True):
     )
     approved_by: Optional[UUID] = Field(
         default=None,
-        sa_column=Column("approved_by", ForeignKey("super_admins.admin_id", ondelete="SET NULL"), nullable=True),
+        sa_column=Column("approved_by", ForeignKey("public.super_admins.admin_id", ondelete="SET NULL"), nullable=True),
         description="UUID of the admin who approved the user, if applicable."
     )
     approved_at: Optional[datetime] = Field(
@@ -143,6 +144,7 @@ class UserActionHistory(CreatedAtMixin, table=True):
         Index("ix_uah_action_created_at", "action", "created_at"),
         Index("ix_uah_actor_created_at", "actor_admin_id", "created_at"),
         UniqueConstraint("user_id", "request_id", name="uq_uah_user_request_id"),
+        {"schema": "public"},
     )
 
     id: UUID = Field(
@@ -151,14 +153,14 @@ class UserActionHistory(CreatedAtMixin, table=True):
         description="Unique UUID for this action history record."
     )
     user_id: UUID = Field(
-        foreign_key="users.user_id",
+        foreign_key="public.users.user_id",
         nullable=False,
         index=True,
         description="User UUID this action is associated with."
     )
     actor_admin_id: Optional[UUID] = Field(
         default=None,
-        sa_column=Column(ForeignKey("super_admins.admin_id", ondelete="SET NULL"), index=True),
+        sa_column=Column(ForeignKey("public.super_admins.admin_id", ondelete="SET NULL"), index=True),
         description="UUID of the admin who performed (or initiated) the action."
     )
     request_id: Optional[str] = Field(

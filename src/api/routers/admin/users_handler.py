@@ -14,7 +14,7 @@ from src.domain.models.admin_user_models import (
     UserActionHistoryResponse,
     UpdateUserRequest,
 )
-from src.infra.utils.database import get_master_engine
+from src.infra.utils.database import get_master_session
 from src.infra.utils.logger import get_logger
 from src.infra.utils.cursor import encode_cursor
 from src.service.user_management import user_management_service
@@ -34,7 +34,7 @@ router = APIRouter()
 async def create_user(
     request: CreateUserRequest,
     current_admin: SuperAdmin = Depends(admin_auth),
-    master_session: Session = Depends(lambda: Session(get_master_engine(echo=False))),
+    master_session: Session = Depends(get_master_session),
 ):
     """
     Create a new user within an organization.
@@ -91,7 +91,7 @@ async def create_user(
 async def get_user(
     user_id: UUID,
     current_admin: SuperAdmin = Depends(admin_auth),
-    master_session: Session = Depends(lambda: Session(get_master_engine(echo=False))),
+    master_session: Session = Depends(get_master_session),
 ):
     """
     Retrieve a single user by their ID.
@@ -138,7 +138,7 @@ async def list_users(
     cursor: Optional[str] = Query(None),
     organisation_id: Optional[UUID] = Query(None, description="Filter users by organization ID"),
     current_admin: SuperAdmin = Depends(admin_auth),
-    master_session: Session = Depends(lambda: Session(get_master_engine(echo=False))),
+    master_session: Session = Depends(get_master_session),
 ):
     """
     Retrieve a list of users with pagination.
@@ -188,7 +188,7 @@ async def update_user_admin_status(
     user_id: UUID,
     request: UpdateUserStatusRequest,
     current_admin: SuperAdmin = Depends(admin_auth),
-    master_session: Session = Depends(lambda: Session(get_master_engine(echo=False))),
+    master_session: Session = Depends(get_master_session),
 ):
     """
     Update the application-side status of a user (e.g., approve, reject, suspend).
@@ -242,7 +242,7 @@ async def list_user_action_history(
     limit: int = Query(20, ge=1, le=100),
     cursor: Optional[str] = Query(None),
     current_admin: SuperAdmin = Depends(admin_auth),
-    master_session: Session = Depends(lambda: Session(get_master_engine(echo=False))),
+    master_session: Session = Depends(get_master_session),
 ):
     """
     Retrieve the action history for all users in an organisation.
@@ -293,7 +293,7 @@ async def update_user(
     user_id: UUID,
     request: UpdateUserRequest,
     current_admin: SuperAdmin = Depends(admin_auth),
-    master_session: Session = Depends(lambda: Session(get_master_engine(echo=False))),
+    master_session: Session = Depends(get_master_session),
 ):
     """
     Update a user's details.

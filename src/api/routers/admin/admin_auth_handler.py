@@ -16,7 +16,7 @@ from src.domain.models.admin_models import (
     PasswordResetAction,
 )
 from src.domain.models.master_tables import SuperAdmin
-from src.infra.utils.database import get_master_engine
+from src.infra.utils.database import get_master_session
 from src.infra.auth.admin_auth import admin_auth
 from src.infra.auth.email_service import email_service
 from src.infra.auth.supabase_admin_client import supabase_admin_client
@@ -32,7 +32,7 @@ router = APIRouter()
 )
 async def admin_login(
     login_request: AdminLoginRequest,
-    master_session: Session = Depends(lambda: Session(get_master_engine(echo=False))),
+    master_session: Session = Depends(get_master_session),
 ):
     """
     Super Admin login endpoint.
@@ -150,7 +150,7 @@ async def admin_login(
 @router.post("/reset-password")
 async def reset_password(
     password_request: AdminResetPasswordRequest,
-    master_session: Session = Depends(lambda: Session(get_master_engine(echo=False))),
+    master_session: Session = Depends(get_master_session),
 ):
     """
     First-time password change endpoint for Super Admin.
@@ -328,7 +328,7 @@ async def refresh_token(refresh_request: AdminRefreshTokenRequest):
 @router.post("/forgot-password", tags=["admin_auth"])
 async def forgot_password(
     forgot_password_request: AdminForgotPasswordRequest,
-    master_session: Session = Depends(lambda: Session(get_master_engine(echo=False))),
+    master_session: Session = Depends(get_master_session),
 ):
     """
     Forgot password endpoint for Super Admin.
@@ -401,7 +401,7 @@ async def forgot_password(
 async def admin_logout(
     logout_request: AdminLogoutRequest,
     current_admin: SuperAdmin = Depends(admin_auth),
-    master_session: Session = Depends(lambda: Session(get_master_engine(echo=False))),
+    master_session: Session = Depends(get_master_session),
 ):
     """
     Unified logout endpoint for super admin.
