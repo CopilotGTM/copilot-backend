@@ -27,9 +27,11 @@ async def _download_blob(storage: AzureOrganisationBlobStorage, path: str) -> by
 
 
 async def _upload_blob(storage: AzureOrganisationBlobStorage, path: str, data: bytes, content_type: str):
+    from azure.storage.blob import ContentSettings
+
     blob_service = await storage._get_blob_service_client()
     blob_client = blob_service.get_blob_client(storage.container, path)
-    await blob_client.upload_blob(data, overwrite=True, content_settings=None)
+    await blob_client.upload_blob(data, overwrite=True, content_settings=ContentSettings(content_type=content_type))
 
 
 def _derive_thumb_path(original_path: str, suffix: str) -> str:
@@ -69,7 +71,10 @@ def _generate_thumbnails_from_bytes(storage: AzureOrganisationBlobStorage, attac
                 thumb.save(out, format="JPEG", quality=85, optimize=True)
                 out.seek(0)
                 suffix = f"thumb_{w}x{h}"
-                thumb_path = _derive_thumb_path(attachment.storage_path, suffix)
+                thumb_path = storage.thumbnail_blob_path(attachment.storage_path, suffix)
+                # Use explicit content settings for JPEG
+                from azure.storage.blob import ContentSettings
+
                 asyncio.run(_upload_blob(storage, thumb_path, out.read(), "image/jpeg"))
                 if w <= 128:
                     attachment.thumbnail_small_path = thumb_path

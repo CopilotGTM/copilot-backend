@@ -95,21 +95,6 @@ class UploadService:
             if actual_size is None:
                 raise UploadServiceError("Could not determine file size from storage.", status_code=500)
 
-            # Service-level validation: compare client-reported size with actual size
-            if actual_size != attachment.size_bytes:
-                logger.error(
-                    "CRITICAL: Size mismatch for attachment %s. Client reported %s, storage has %s. Rejecting.",
-                    attachment.attachment_id,
-                    attachment.size_bytes,
-                    actual_size,
-                )
-                await self.storage.delete_blob(attachment.storage_path)
-                self.org_session.delete(attachment)
-                self.org_session.commit()
-                raise UploadServiceError(
-                    "File integrity check failed: reported file size does not match actual file size.", status_code=400
-                )
-
             # Mark as finalized, checksum will be set by async task
             attachment.attachment_metadata["finalized"] = True
             attachment.attachment_metadata["finalized_at"] = datetime.utcnow().isoformat()

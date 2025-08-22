@@ -148,6 +148,31 @@ class AzureOrganisationBlobStorage:
         return f"chat_uploads/{user_id}/{attachment_id}/{safe_name}"
 
 
+    def thumbnail_blob_path(self, original_blob_path: str, variant: str) -> str:
+        """Return a deterministic thumbnail blob path derived from an original blob path.
+
+        Examples:
+          - original: knowledgebase/<user>/<source>/file.pdf, variant 'thumb_small' -> knowledgebase/<user>/<source>/file_thumb_small.jpg
+          - original: chat_uploads/<user>/<att>/image.png, variant 'thumb_small' -> chat_uploads/<user>/<att>/image_thumb_small.jpg
+
+        This makes reconstructing thumbnail paths trivial from DB-stored `storage_path` values.
+        """
+        base = original_blob_path or ""
+        # If filename has an extension, strip it and append _{variant}.jpg
+        if "." in base.rsplit("/", 1)[-1]:
+            b, _ext = base.rsplit(".", 1)
+            return f"{b}_{variant}.jpg"
+        return f"{base}_{variant}.jpg"
+
+    def plan_thumbnail_path_for_source(self, *, user_id: UUID, source_id: UUID, original_filename: str, variant: str) -> str:
+        """Convenience to plan a thumbnail path for knowledge sources from components.
+
+        Mirrors the path shape used by `KnowledgeUploadService._plan_blob_path` but appends the variant suffix.
+        """
+        safe_name = self._sanitize_filename(original_filename)
+        return f"knowledgebase/{user_id}/{source_id}/{safe_name}_{variant}.jpg"
+
+
     async def get_blob_properties(self, blob_path: str):
         """Return blob properties (exists check, size, content type) or None if missing."""
         await self._ensure_container()
@@ -184,8 +209,14 @@ class AzureOrganisationBlobStorage:
             await self._blob_service.close()
             self._blob_service = None
         
+        # Some DefaultAzureCredential implementations expose an async close; support both.
         if self._credential and hasattr(self._credential, "close"):
-            self._credential.close()
+            try:
+                maybe = self._credential.close()
+                if asyncio.iscoroutine(maybe):  # type: ignore[arg-type]
+                    await maybe
+            except Exception as e:  # pragma: no cover - defensive
+                logger.debug("Error closing credential: %s", e)
 
     async def __aenter__(self):
         """Enables use as an async context manager."""

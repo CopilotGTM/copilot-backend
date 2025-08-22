@@ -15,6 +15,7 @@ load_dotenv()
 
 from celery import Celery
 from src.infra.config.configs import Config
+from kombu import Queue
 
 # Load configuration and Redis connection details
 config = Config()
@@ -57,5 +58,12 @@ if backend_use_ssl:
 # This is the recommended way to avoid circular imports.
 celery.autodiscover_tasks(["src.tasks"])
 
+# Ensure custom queues (e.g. knowledge_extract) are declared so workers without -Q still bind them.
+celery.conf.task_queues = (
+    Queue("celery"),
+    Queue("knowledge_extract"),
+)
+celery.conf.task_default_queue = "celery"
+
 # Explicitly import task modules to ensure registration
-from src.tasks import organization, technical_deck, slide_outline, image_processing
+from src.tasks import organization, technical_deck, slide_outline, image_processing, knowledge_post_upload, knowledge_document_extraction
