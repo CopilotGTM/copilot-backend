@@ -1,5 +1,5 @@
 from src.celery_app import celery
-from src.service.organization_management import organization_management_service
+from src.service.orgnisation.organization_management import organization_management_service
 from src.infra.utils.database import get_master_engine
 from sqlalchemy import text
 from sqlmodel import Session
