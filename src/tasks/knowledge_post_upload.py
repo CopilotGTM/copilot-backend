@@ -9,6 +9,8 @@ from uuid import UUID
 import asyncio
 
 from PIL import Image, UnidentifiedImageError
+import fitz
+
 
 from src.celery_app import celery
 from src.infra.utils.logger import get_logger
@@ -52,7 +54,7 @@ async def _download_blob(storage: AzureOrganisationBlobStorage, path: str) -> by
 #     return asyncio.run(_runner())
 
 
-def _generate_thumbnail_from_bytes(storage: AzureOrganisationBlobStorage, source: OrganisationSource, data: bytes):
+def _generate_thumbnail_from_bytes(storage: AzureOrganisationBlobStorage, source: OrganisationSource, data: bytes, loop: asyncio.AbstractEventLoop):
     """Create small and medium JPEG thumbnails and upload them.
 
     Small: 128px max dimension
@@ -83,7 +85,7 @@ def _generate_thumbnail_from_bytes(storage: AzureOrganisationBlobStorage, source
                         content_settings=ContentSettings(content_type="image/jpeg"),
                     )
 
-                asyncio.run(_upload())
+                loop.run_until_complete(_upload())
                 return thumb_path
 
             try:
@@ -99,12 +101,62 @@ def _generate_thumbnail_from_bytes(storage: AzureOrganisationBlobStorage, source
         logger.warning("Thumbnail generation failed for source %s: %s", source.source_id, e)
 
 
+def _placeholder_bytes(label: str) -> bytes:
+    from PIL import Image as _Image, ImageDraw, ImageFont
+    img = _Image.new("RGB", (512, 512), (240, 240, 240))
+    d = ImageDraw.Draw(img)
+    text = label.upper()
+    try:
+        font = ImageFont.load_default()  # type: ignore
+    except Exception:  # pragma: no cover
+        font = None
+    tw, th = d.textlength(text, font=font), 12
+    d.text(((512 - tw)/2, (512 - th)/2), text, fill=(60,60,60), font=font)
+    out = BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue()
+
+
+def _pdf_preview_bytes(self, pdf_bytes: bytes, source_id: str) -> bytes:
+    """Return representative PNG bytes for first page of a PDF.
+
+    Strategy:
+      1. If file very small (< 800 bytes), log a warning.
+      2. Try rendering first page at 2x scale via PyMuPDF.
+      3. On any render failures, return a placeholder image.
+    """
+    size = len(pdf_bytes or b"")
+    logger.debug("PDF diagnostics source=%s size_bytes=%s", source_id, size)
+    # Guard for incomplete upload (sometimes blob not fully committed yet)
+    if size < 800:
+        logger.warning("PDF size %s bytes likely incomplete.", size)
+    if fitz is None:  # type: ignore
+        logger.info("PyMuPDF not available; using placeholder for PDF %s", source_id)
+        return _placeholder_bytes("pdf")
+    try:
+        with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:  # type: ignore[attr-defined]
+            if doc.page_count == 0:
+                logger.info("PDF has 0 pages; using placeholder for %s", source_id)
+                return _placeholder_bytes("pdf")
+            page = doc.load_page(0)
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # type: ignore[attr-defined]
+            png_bytes = pix.tobytes("png")
+            if len(png_bytes) < 200:
+                logger.warning("PDF render produced very small image source=%s", source_id)
+            return png_bytes
+    except Exception as e:
+        logger.warning("PDF render failed source=%s error=%s; using placeholder", source_id, e)
+        return _placeholder_bytes("pdf")
+
+
 @celery.task(name="knowledge.post_upload_process", bind=True, acks_late=True, max_retries=3)
 def post_upload_process(self, organisation_id: str, source_id: str):
     logger.info("post_upload_process started org=%s source=%s", organisation_id, source_id)
     session_gen = get_org_session(organisation_id)
     session = next(session_gen)
     storage = AzureOrganisationBlobStorage(organisation_id=organisation_id)
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
 
     try:
         source: OrganisationSource | None = session.get(OrganisationSource, source_id)
@@ -112,9 +164,14 @@ def post_upload_process(self, organisation_id: str, source_id: str):
             logger.warning("Source %s not found", source_id)
             return
 
+        # For retries: check if this specific task (thumbnails) needs to run even if source completed
+        needs_thumbnails = not (source.thumbnail_small_path and source.thumbnail_medium_path)
+        
         if source.status in {OrganisationSourceStatus.COMPLETED, OrganisationSourceStatus.FAILED}:
-            logger.info("Source %s already in terminal state %s", source_id, source.status)
-            return
+            if not needs_thumbnails:
+                logger.info("Source %s already in terminal state %s", source_id, source.status)
+                return
+            # Continue for retry thumbnail generation even if source marked completed
 
         if source.status == OrganisationSourceStatus.PENDING_UPLOAD:
             logger.warning("Source %s still pending upload; skipping processing run", source_id)
@@ -128,8 +185,10 @@ def post_upload_process(self, organisation_id: str, source_id: str):
         if not job:
             return
 
-        job.status = JobStatus.IN_PROGRESS
-        session.add(job)
+        # Only update job status if not already completed (avoid conflicts)
+        if job.status != JobStatus.COMPLETED:
+            job.status = JobStatus.IN_PROGRESS
+            session.add(job)
 
         # Download + checksum (+ inline buffer if image)
         # try:
@@ -146,15 +205,23 @@ def post_upload_process(self, organisation_id: str, source_id: str):
         #     session.commit()
         #     return
 
-        # Thumbnail if image
-        maybe_image_bytes = None
-        if (source.mimetype or "").startswith("image/"):
-            try:
-                maybe_image_bytes = asyncio.run(_download_blob(storage, source.storage_path or ""))
-                if maybe_image_bytes:
-                    _generate_thumbnail_from_bytes(storage, source, maybe_image_bytes)
-            except Exception as e:
-                logger.warning("Thumbnail generation failed for source %s: %s", source_id, e)
+    # Thumbnail if image (folder-based thumbnails/<variant>.jpg)
+        mimetype = (source.mimetype or "").lower()
+        maybe_image_bytes: Optional[bytes] = None
+
+        try:
+            if mimetype.startswith("image/"):
+                maybe_image_bytes = loop.run_until_complete(_download_blob(storage, source.storage_path or ""))
+            elif mimetype == "application/pdf":
+                pdf_bytes = loop.run_until_complete(_download_blob(storage, source.storage_path or ""))
+                maybe_image_bytes = _pdf_preview_bytes(self, pdf_bytes, str(source.source_id))
+            # TODO: future office/ppt/doc/xls conversions
+            if maybe_image_bytes:
+                _generate_thumbnail_from_bytes(storage, source, maybe_image_bytes, loop)
+        except self.MaxRetriesExceededError:  # type: ignore[attr_defined]
+            logger.warning("Max retries exceeded for thumbnail generation source=%s", source_id)
+        except Exception as e:
+            logger.warning("Thumbnail generation failed for source %s: %s", source_id, e)
 
         # Persist computed checksum into explicit column
         # try:
@@ -162,21 +229,26 @@ def post_upload_process(self, organisation_id: str, source_id: str):
         # except Exception:
         #     logger.exception("Failed to persist checksum onto source %s", source_id)
 
-        # Mark job completed
-        if job:
+        # Mark job completed (unless this was a retry-only for thumbnails)
+        if job and job.status != JobStatus.COMPLETED:
             job.status = JobStatus.COMPLETED
             session.add(job)
-        session.add(source)
+
+        # Only update main source status if not already completed
+        if source.status != OrganisationSourceStatus.COMPLETED:
+            session.add(source)
         session.commit()
-        # Enqueue extract phase
-        try:
-            celery.send_task(
-                "knowledge.document_extraction",
-                args=[organisation_id, source_id],
-                queue="knowledge_extract",
-            )
-        except Exception as e:
-            logger.error("Failed to enqueue extract for %s: %s", source_id, e)
+
+        # Enqueue extract phase (only if not already completed to avoid duplicate)
+        if source.status != OrganisationSourceStatus.COMPLETED:
+            try:
+                celery.send_task(
+                    "knowledge.document_extraction",
+                    args=[organisation_id, source_id],
+                    queue="knowledge_extract",
+                )
+            except Exception as e:
+                logger.error("Failed to enqueue extract for %s: %s", source_id, e)
         logger.info("post_upload_process finished source=%s", source_id)
     finally:
         try:
@@ -185,6 +257,8 @@ def post_upload_process(self, organisation_id: str, source_id: str):
             pass
         # Close async Azure clients (run in event loop)
         try:
-            asyncio.run(storage.close())
+            loop.run_until_complete(storage.close())
         except Exception:
             pass
+        finally:
+            loop.close()

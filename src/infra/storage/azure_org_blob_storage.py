@@ -149,28 +149,40 @@ class AzureOrganisationBlobStorage:
 
 
     def thumbnail_blob_path(self, original_blob_path: str, variant: str) -> str:
-        """Return a deterministic thumbnail blob path derived from an original blob path.
+                """Return a deterministic thumbnail path inside a dedicated thumbnails/ folder.
 
-        Examples:
-          - original: knowledgebase/<user>/<source>/file.pdf, variant 'thumb_small' -> knowledgebase/<user>/<source>/file_thumb_small.jpg
-          - original: chat_uploads/<user>/<att>/image.png, variant 'thumb_small' -> chat_uploads/<user>/<att>/image_thumb_small.jpg
+                New structure (v2):
+                    original: knowledgebase/<user>/<source>/file.pdf -> knowledgebase/<user>/<source>/thumbnails/<variant>.jpg
+                    original: chat_uploads/<user>/<att>/image.png   -> chat_uploads/<user>/<att>/thumbnails/<variant>.jpg
 
-        This makes reconstructing thumbnail paths trivial from DB-stored `storage_path` values.
-        """
-        base = original_blob_path or ""
-        # If filename has an extension, strip it and append _{variant}.jpg
-        if "." in base.rsplit("/", 1)[-1]:
-            b, _ext = base.rsplit(".", 1)
-            return f"{b}_{variant}.jpg"
-        return f"{base}_{variant}.jpg"
+                Rationale:
+                    * Keeps derivatives grouped & easy to list/purge.
+                    * Avoids cluttering directory with many size suffixes.
+                    * Future-proofs for additional variants without renaming originals.
+
+                Backwards compatibility: If the original already looks like an old-style
+                thumbnail path (contains '_thumb_' and endswith .jpg) we just return it.
+                """
+                if not original_blob_path:
+                        return f"thumbnails/{variant}.jpg"
+                if "_thumb_" in original_blob_path and original_blob_path.endswith(".jpg"):
+                        return original_blob_path  # already a legacy thumbnail style
+                # Split directory and filename
+                if "/" in original_blob_path:
+                        dir_part, _filename = original_blob_path.rsplit("/", 1)
+                else:
+                        dir_part, _filename = "", original_blob_path
+                return f"{dir_part}/thumbnails/{variant}.jpg" if dir_part else f"thumbnails/{variant}.jpg"
 
     def plan_thumbnail_path_for_source(self, *, user_id: UUID, source_id: UUID, original_filename: str, variant: str) -> str:
-        """Convenience to plan a thumbnail path for knowledge sources from components.
+                """Plan a v2 thumbnail path for knowledge sources (thumbnails folder).
 
-        Mirrors the path shape used by `KnowledgeUploadService._plan_blob_path` but appends the variant suffix.
-        """
-        safe_name = self._sanitize_filename(original_filename)
-        return f"knowledgebase/{user_id}/{source_id}/{safe_name}_{variant}.jpg"
+                Example:
+                    original file planned at: knowledgebase/<user>/<source>/<file>
+                    thumbnail path:           knowledgebase/<user>/<source>/thumbnails/<variant>.jpg
+                """
+                # We ignore the original filename beyond ensuring directory structure consistency.
+                return f"knowledgebase/{user_id}/{source_id}/thumbnails/{variant}.jpg"
 
 
     async def get_blob_properties(self, blob_path: str):
