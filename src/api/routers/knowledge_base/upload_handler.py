@@ -1,37 +1,66 @@
+"""Knowledge base upload API router.
+
+This module exposes endpoints to presign and finalize knowledge source
+uploads. It delegates core business logic to
+`KnowledgeUploadService` and enqueues background Celery tasks for
+post‑upload processing (checksum + thumbnail etc.).
+
+All endpoints return a uniform `GenericResponse` envelope.
+"""
+
 from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, status, Body
+from fastapi import APIRouter, Body, Depends, status
 from sqlmodel import Session
+from sqlalchemy import text
 
-from src.infra.utils.logger import get_logger
-from src.api.utils.http_response import Response
+from src.api.dependencies.organisation_dependencies import (
+    UserIDs,
+    get_current_user,
+    get_org_session,
+)
 from src.api.schemas.base_models import GenericResponse
-from src.api.dependencies.organisation_dependencies import get_current_user, UserIDs, get_org_session
 from src.api.schemas.knowledge_upload_models import (
+    KnowledgeBatchFinalizeRequest,
     KnowledgeBatchPresignRequest,
     KnowledgeBatchPresignResponse,
-    KnowledgePresignFileResponse,
     KnowledgeFinalizeRequest,
-    KnowledgeBatchFinalizeRequest,
+    KnowledgePresignFileResponse,
     KnowledgeSourceResponse,
 )
+from src.api.utils.http_response import Response
+from src.celery_app import celery
+from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
+from src.infra.utils.logger import get_logger
 from src.service.knowledge_upload_service import (
     KnowledgeUploadService,
     KnowledgeUploadServiceError,
 )
-from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
+from src.domain.models.organisation_tables.job_models import KnowledgeProcessingJob, JobStatus
 
 logger = get_logger("knowledge_upload_handler")
 upload_router = APIRouter()
 
 
-def get_knowledge_upload_service(
+async def get_knowledge_upload_service(
     user_ids: UserIDs = Depends(get_current_user),
     org_session: Session = Depends(get_org_session),
-) -> KnowledgeUploadService:
-    return KnowledgeUploadService(org_session, user_ids.organisation_id)
+):
+    """FastAPI dependency returning a service bound to the caller's org.
+
+    Implemented as an async generator so we can guarantee cleanup of any
+    underlying async Azure clients (avoids 'Unclosed client session' warnings).
+    """
+    service = KnowledgeUploadService(org_session, user_ids.organisation_id)
+    try:
+        yield service
+    finally:
+        try:
+            await service.close()
+        except Exception:  # Swallow to not mask original response errors
+            logger.debug("Service close failed", exc_info=True)
 
 
 @upload_router.post(
@@ -45,31 +74,40 @@ async def presign_batch(
     service: KnowledgeUploadService = Depends(get_knowledge_upload_service),
     user_ids: UserIDs = Depends(get_current_user),
 ):
+    """Batch presign one or more files.
+
+    Returns signed upload URLs plus per‑file status. Partial success is
+    supported; failures are reported with an `errors` list while still
+    returning successful signatures.
+    """
     try:
-        created, errors = await service.presign_batch(payload, user_ids.user_id)
-        def _status_val(s):
-            return s.value if hasattr(s, "value") else str(s)
+        expiry_time = 10
+        created, errors = await service.presign_batch(payload, user_ids.user_id, expiry_time)
+
+        def _status_val(status_obj):
+            """Return enum `.value` if present else string representation."""
+            return status_obj.value if hasattr(status_obj, "value") else str(status_obj)
         
-        # Create response for successful files
+        # Build response entries for successfully presigned files
         success_files = [
             KnowledgePresignFileResponse(
                 source_id=src.source_id,
-                filename=src.filename or "",
-                mimetype=src.mimetype or "",
-                size_bytes=src.size_bytes or 0,
+                filename=src.filename,
+                mimetype=src.mimetype,
+                size_bytes=src.size_bytes,
                 upload_url=upload_url,
-                blob_path=src.storage_path or "",
-                expires_in_seconds=15 * 60,
+                blob_path=src.storage_path,
+                expires_in_seconds=expiry_time * 60,
                 status=_status_val(src.status),
                 success=True,
             )
             for src, upload_url in created
         ]
         
-        # Create response for failed files with error details
+        # Build response entries for failed presign attempts (carry error info)
         failed_files = []
         for error in errors:
-            # Generate a placeholder source_id for failed files if not provided
+            # Provide placeholder UUID if generation failed very early
             source_id = error.get("source_id", "00000000-0000-0000-0000-000000000000")
             failed_files.append(
                 KnowledgePresignFileResponse(
@@ -86,7 +124,7 @@ async def presign_batch(
                 )
             )
         
-        # Combine successful and failed files
+        # Combine successful and failed files for client convenience
         all_files = success_files + failed_files
         resp = KnowledgeBatchPresignResponse(files=all_files, errors=errors)
         
@@ -107,69 +145,6 @@ async def presign_batch(
         logger.error("Unexpected error in knowledge presign batch: %s", e, exc_info=True)
         return Response.internal_server_error_response("An unexpected error occurred")
 
-
-@upload_router.post(
-    "/presign",
-    response_model=GenericResponse[KnowledgeBatchPresignResponse],
-    tags=["knowledge_upload"],
-    summary="Single-file presign convenience endpoint",
-)
-async def presign_single(
-    payload: KnowledgeBatchPresignRequest,
-    service: KnowledgeUploadService = Depends(get_knowledge_upload_service),
-    user_ids: UserIDs = Depends(get_current_user),
-):
-    if len(payload.files) != 1:
-        return Response.error_response(
-            status_code=status.HTTP_400_BAD_REQUEST, message="Exactly one file expected for this endpoint."
-        )
-    return await presign_batch(payload, service, user_ids)
-
-
-@upload_router.post(
-    "/finalize",
-    response_model=GenericResponse[KnowledgeSourceResponse],
-    tags=["knowledge_upload"],
-    summary="Finalize a knowledge source upload",
-)
-async def finalize_source(
-    payload: KnowledgeFinalizeRequest = Body(...),
-    service: KnowledgeUploadService = Depends(get_knowledge_upload_service),
-    user_ids: UserIDs = Depends(get_current_user),
-):
-    try:
-        source = await service.finalize_source(payload, user_ids.user_id)
-        storage = AzureOrganisationBlobStorage(user_ids.organisation_id)
-        read_url = None
-        if source.storage_path:
-            try:
-                read_url = await storage.generate_read_sas(
-                    source.storage_path, minutes=120, download_filename=source.filename
-                )
-            except Exception:
-                pass
-        status_val = source.status.value if hasattr(source.status, "value") else str(source.status)
-        resp = KnowledgeSourceResponse(
-            source_id=source.source_id,
-            filename=source.filename,
-            mimetype=source.mimetype,
-            size_bytes=source.size_bytes,
-            status=status_val,
-            created_at=source.created_at,
-            updated_at=source.updated_at,
-            error_message=source.error_message,
-            storage_path=source.storage_path,
-            read_url=read_url,
-            filters=source.filters or {},
-        )
-        return Response.success_response(message="Source finalized", data=resp)
-    except KnowledgeUploadServiceError as e:
-        return Response.error_response(status_code=e.status_code, message=e.message)
-    except Exception as e:
-        logger.error("Unexpected error finalizing knowledge source %s", payload.source_id, exc_info=True)
-        return Response.internal_server_error_response("An unexpected error occurred")
-
-
 @upload_router.post(
     "/finalize/batch",
     response_model=GenericResponse[dict],
@@ -181,11 +156,35 @@ async def finalize_batch(
     service: KnowledgeUploadService = Depends(get_knowledge_upload_service),
     user_ids: UserIDs = Depends(get_current_user),
 ):
+    """Finalize multiple previously presigned & uploaded sources.
+
+    Each file is transitioned into PROCESSING (async task queued). The
+    endpoint returns per‑file success or error details; it never aborts
+    the whole batch on the first failure.
+    """
     results = []
     errors = []
     for item in payload.files:
         try:
             src = await service.finalize_source(item, user_ids.user_id)
+
+            # Create job rows if missing
+            session = service.session
+            if session:
+                session.add(KnowledgeProcessingJob(source_id=str(src.source_id), job_type="post_upload_process", status=JobStatus.PENDING))
+                session.commit()
+
+                session.add(KnowledgeProcessingJob(source_id=str(src.source_id), job_type="document_extraction", status=JobStatus.PENDING))
+                session.commit()
+            
+            # Enqueue first phase task
+            try:
+                celery.send_task(
+                    "knowledge.post_upload_process",
+                    args=[str(user_ids.organisation_id), str(src.source_id)],
+                )
+            except Exception as task_err:
+                logger.error("Failed to enqueue knowledge processing for source %s: %s", src.source_id, task_err)
         except KnowledgeUploadServiceError as e:
             errors.append({"source_id": str(item.source_id), "reason": e.message})
             continue
@@ -206,19 +205,54 @@ async def finalize_batch(
     return Response.error_response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, message="All finalize operations failed", data=data)
 
 
-@upload_router.get(
-    "/source/{source_id}",
-    response_model=GenericResponse[KnowledgeSourceResponse],
+
+@upload_router.post(
+    "/presign",
+    response_model=GenericResponse[KnowledgeBatchPresignResponse],
     tags=["knowledge_upload"],
-    summary="Get knowledge source status",
+    summary="Single-file presign convenience endpoint",
 )
-async def get_source(
-    source_id: UUID,
+async def presign_single(
+    payload: KnowledgeBatchPresignRequest,
     service: KnowledgeUploadService = Depends(get_knowledge_upload_service),
     user_ids: UserIDs = Depends(get_current_user),
 ):
+    """Convenience wrapper that enforces exactly one file in payload."""
+    if len(payload.files) != 1:
+        return Response.error_response(
+            status_code=status.HTTP_400_BAD_REQUEST, message="Exactly one file expected for this endpoint."
+        )
+    return await presign_batch(payload, service, user_ids)
+
+
+@upload_router.post(
+    "/finalize",
+    response_model=GenericResponse[KnowledgeSourceResponse],
+    tags=["knowledge_upload"],
+    summary="Finalize a knowledge source upload",
+)
+async def finalize_source(
+    payload: KnowledgeFinalizeRequest = Body(...),
+    service: KnowledgeUploadService = Depends(get_knowledge_upload_service),
+    user_ids: UserIDs = Depends(get_current_user),
+):
+    """Finalize a single source then enqueue background processing."""
     try:
-        source = await service.get_source(source_id, user_ids.user_id)
+        source = await service.finalize_source(payload, user_ids.user_id)
+        session = service.session
+        if session:
+            session.add(KnowledgeProcessingJob(source_id=str(source.source_id), job_type="post_upload_process", status=JobStatus.PENDING))
+            session.commit()
+
+            session.add(KnowledgeProcessingJob(source_id=str(source.source_id), job_type="document_extraction", status=JobStatus.PENDING))
+            session.commit()
+        try:
+            celery.send_task(
+                "knowledge.post_upload_process",
+                args=[str(user_ids.organisation_id), str(source.source_id)],
+            )
+        except Exception as task_err:
+            logger.error("Failed to enqueue knowledge processing for source %s: %s", source.source_id, task_err)
         storage = AzureOrganisationBlobStorage(user_ids.organisation_id)
         read_url = None
         if source.storage_path:
@@ -228,6 +262,12 @@ async def get_source(
                 )
             except Exception:
                 pass
+            finally:
+                # Explicit close to release aiohttp resources promptly
+                try:
+                    await storage.close()
+                except Exception:
+                    logger.debug("Temp storage close failed (finalize_source)")
         status_val = source.status.value if hasattr(source.status, "value") else str(source.status)
         resp = KnowledgeSourceResponse(
             source_id=source.source_id,
@@ -241,6 +281,64 @@ async def get_source(
             storage_path=source.storage_path,
             read_url=read_url,
             filters=source.filters or {},
+            checksum=getattr(source, "checksum", None),
+            thumbnail_small_path=getattr(source, "thumbnail_small_path", None),
+            thumbnail_medium_path=getattr(source, "thumbnail_medium_path", None),
+        )
+        return Response.success_response(message="Source finalized", data=resp)
+    except KnowledgeUploadServiceError as e:
+        return Response.error_response(status_code=e.status_code, message=e.message)
+    except Exception as e:
+        logger.error("Unexpected error finalizing knowledge source %s", payload.source_id, exc_info=True)
+        return Response.internal_server_error_response("An unexpected error occurred")
+
+
+
+
+@upload_router.get(
+    "/source/{source_id}",
+    response_model=GenericResponse[KnowledgeSourceResponse],
+    tags=["knowledge_upload"],
+    summary="Get knowledge source status",
+)
+async def get_source(
+    source_id: UUID,
+    service: KnowledgeUploadService = Depends(get_knowledge_upload_service),
+    user_ids: UserIDs = Depends(get_current_user),
+):
+    """Return current state + fresh read SAS (short‑lived) for a source."""
+    try:
+        source = await service.get_source(source_id, user_ids.user_id)
+        storage = AzureOrganisationBlobStorage(user_ids.organisation_id)
+        read_url = None
+        if source.storage_path:
+            try:
+                read_url = await storage.generate_read_sas(
+                    source.storage_path, minutes=120, download_filename=source.filename
+                )
+            except Exception:
+                pass
+            finally:
+                try:
+                    await storage.close()
+                except Exception:
+                    logger.debug("Temp storage close failed (get_source)")
+        status_val = source.status.value if hasattr(source.status, "value") else str(source.status)
+        resp = KnowledgeSourceResponse(
+            source_id=source.source_id,
+            filename=source.filename,
+            mimetype=source.mimetype,
+            size_bytes=source.size_bytes,
+            status=status_val,
+            created_at=source.created_at,
+            updated_at=source.updated_at,
+            error_message=source.error_message,
+            storage_path=source.storage_path,
+            read_url=read_url,
+            filters=source.filters or {},
+            checksum=getattr(source, "checksum", None),
+            thumbnail_small_path=getattr(source, "thumbnail_small_path", None),
+            thumbnail_medium_path=getattr(source, "thumbnail_medium_path", None),
         )
         return Response.success_response(message="Source status retrieved", data=resp)
     except KnowledgeUploadServiceError as e:

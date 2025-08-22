@@ -5,6 +5,10 @@ from io import BytesIO
 from typing import Tuple, Optional
 import hashlib
 from PIL import Image, UnidentifiedImageError
+try:
+    import fitz  # PyMuPDF
+except ImportError:  # pragma: no cover
+    fitz = None  # type: ignore
 import asyncio
 
 from src.celery_app import celery
@@ -27,16 +31,21 @@ async def _download_blob(storage: AzureOrganisationBlobStorage, path: str) -> by
 
 
 async def _upload_blob(storage: AzureOrganisationBlobStorage, path: str, data: bytes, content_type: str):
+    from azure.storage.blob import ContentSettings
+
     blob_service = await storage._get_blob_service_client()
     blob_client = blob_service.get_blob_client(storage.container, path)
-    await blob_client.upload_blob(data, overwrite=True, content_settings=None)
+    await blob_client.upload_blob(data, overwrite=True, content_settings=ContentSettings(content_type=content_type))
 
 
 def _derive_thumb_path(original_path: str, suffix: str) -> str:
-    if "." in original_path.rsplit("/", 1)[-1]:
-        base, ext = original_path.rsplit(".", 1)
-        return f"{base}_{suffix}.{ext.lower()}"
-    return f"{original_path}_{suffix}"
+    # New folder-based variant: <dir>/thumbnails/<suffix>.jpg
+    if "/" in original_path:
+        dir_part, _ = original_path.rsplit("/", 1)
+    else:
+        dir_part = ""
+    base_dir = f"{dir_part}/thumbnails" if dir_part else "thumbnails"
+    return f"{base_dir}/{suffix}.jpg"
 
 
 def _stream_checksum_and_optionally_buffer_image(storage: AzureOrganisationBlobStorage, attachment) -> tuple[str, Optional[bytes]]:
@@ -69,7 +78,11 @@ def _generate_thumbnails_from_bytes(storage: AzureOrganisationBlobStorage, attac
                 thumb.save(out, format="JPEG", quality=85, optimize=True)
                 out.seek(0)
                 suffix = f"thumb_{w}x{h}"
-                thumb_path = _derive_thumb_path(attachment.storage_path, suffix)
+                # Use updated helper (will place inside thumbnails/ folder)
+                thumb_path = storage.thumbnail_blob_path(attachment.storage_path, suffix)
+                # Use explicit content settings for JPEG
+                from azure.storage.blob import ContentSettings
+
                 asyncio.run(_upload_blob(storage, thumb_path, out.read(), "image/jpeg"))
                 if w <= 128:
                     attachment.thumbnail_small_path = thumb_path
@@ -113,21 +126,33 @@ def process_image(self, organisation_id: str, attachment_id: str):
                 session.commit()
                 raise
 
-            # For images, generate and commit thumbnails first for a faster UI response
-            if (attachment.mimetype or "").startswith("image/"):
+            # For images or PDFs, generate thumbnails first for faster UI update
+            mt = (attachment.mimetype or "").lower()
+            if mt.startswith("image/") or mt == "application/pdf":
                 try:
-                    if maybe_image_bytes is None: # Should not happen with current logic, but as a safeguard
+                    if maybe_image_bytes is None:
                         import asyncio as _asyncio
-                        maybe_image_bytes = _asyncio.run(_download_blob(storage, attachment.storage_path))
-                    _generate_thumbnails_from_bytes(storage, attachment, maybe_image_bytes)
-                    attachment.processing_status = "thumbnails_generated"
-                    session.add(attachment)
-                    session.commit()  # Early commit for faster UI update
+                        raw_bytes = _asyncio.run(_download_blob(storage, attachment.storage_path))
+                        if mt == "application/pdf" and fitz is not None:
+                            try:
+                                with fitz.open(stream=raw_bytes, filetype="pdf") as doc:  # type: ignore[attr-defined]
+                                    if doc.page_count > 0:
+                                        page = doc.load_page(0)
+                                        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # type: ignore[attr-defined]
+                                        maybe_image_bytes = pix.tobytes("png")
+                            except Exception as pe:  # pragma: no cover
+                                logger.warning("PDF render failed for attachment %s: %s", attachment_id, pe)
+                        else:
+                            maybe_image_bytes = raw_bytes
+                    if maybe_image_bytes:
+                        _generate_thumbnails_from_bytes(storage, attachment, maybe_image_bytes)
+                        attachment.processing_status = "thumbnails_generated"
+                        session.add(attachment)
+                        session.commit()
                 except Exception as e:
                     logger.exception("Thumbnail generation failed for attachment %s", attachment_id)
                     attachment.processing_status = "failed"
                     attachment.processing_error = f"thumbnail_failed: {e}"[:500]
-                    # The checksum will still be saved in the next step
 
             # Save the checksum and set the final status
             attachment.checksum = checksum

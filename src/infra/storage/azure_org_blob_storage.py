@@ -148,6 +148,43 @@ class AzureOrganisationBlobStorage:
         return f"chat_uploads/{user_id}/{attachment_id}/{safe_name}"
 
 
+    def thumbnail_blob_path(self, original_blob_path: str, variant: str) -> str:
+                """Return a deterministic thumbnail path inside a dedicated thumbnails/ folder.
+
+                New structure (v2):
+                    original: knowledgebase/<user>/<source>/file.pdf -> knowledgebase/<user>/<source>/thumbnails/<variant>.jpg
+                    original: chat_uploads/<user>/<att>/image.png   -> chat_uploads/<user>/<att>/thumbnails/<variant>.jpg
+
+                Rationale:
+                    * Keeps derivatives grouped & easy to list/purge.
+                    * Avoids cluttering directory with many size suffixes.
+                    * Future-proofs for additional variants without renaming originals.
+
+                Backwards compatibility: If the original already looks like an old-style
+                thumbnail path (contains '_thumb_' and endswith .jpg) we just return it.
+                """
+                if not original_blob_path:
+                        return f"thumbnails/{variant}.jpg"
+                if "_thumb_" in original_blob_path and original_blob_path.endswith(".jpg"):
+                        return original_blob_path  # already a legacy thumbnail style
+                # Split directory and filename
+                if "/" in original_blob_path:
+                        dir_part, _filename = original_blob_path.rsplit("/", 1)
+                else:
+                        dir_part, _filename = "", original_blob_path
+                return f"{dir_part}/thumbnails/{variant}.jpg" if dir_part else f"thumbnails/{variant}.jpg"
+
+    def plan_thumbnail_path_for_source(self, *, user_id: UUID, source_id: UUID, original_filename: str, variant: str) -> str:
+                """Plan a v2 thumbnail path for knowledge sources (thumbnails folder).
+
+                Example:
+                    original file planned at: knowledgebase/<user>/<source>/<file>
+                    thumbnail path:           knowledgebase/<user>/<source>/thumbnails/<variant>.jpg
+                """
+                # We ignore the original filename beyond ensuring directory structure consistency.
+                return f"knowledgebase/{user_id}/{source_id}/thumbnails/{variant}.jpg"
+
+
     async def get_blob_properties(self, blob_path: str):
         """Return blob properties (exists check, size, content type) or None if missing."""
         await self._ensure_container()
@@ -184,8 +221,14 @@ class AzureOrganisationBlobStorage:
             await self._blob_service.close()
             self._blob_service = None
         
+        # Some DefaultAzureCredential implementations expose an async close; support both.
         if self._credential and hasattr(self._credential, "close"):
-            self._credential.close()
+            try:
+                maybe = self._credential.close()
+                if asyncio.iscoroutine(maybe):  # type: ignore[arg-type]
+                    await maybe
+            except Exception as e:  # pragma: no cover - defensive
+                logger.debug("Error closing credential: %s", e)
 
     async def __aenter__(self):
         """Enables use as an async context manager."""

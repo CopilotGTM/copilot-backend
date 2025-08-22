@@ -125,9 +125,11 @@ def upgrade() -> None:
     sa.Column('source_type', sa.String(length=50), nullable=True),
     sa.Column('filename', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
     sa.Column('storage_path', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
-    sa.Column('thumbnail_storage_path', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+    sa.Column('thumbnail_small_path', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+    sa.Column('thumbnail_medium_path', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
     sa.Column('mimetype', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
     sa.Column('size_bytes', sa.Integer(), nullable=True),
+    sa.Column('checksum', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
     sa.Column('integration_id', sa.Uuid(), nullable=True),
     sa.Column('last_synced_at', sa.DateTime(), nullable=True),
     sa.Column('status', sa.String(length=50), nullable=True),
@@ -136,6 +138,7 @@ def upgrade() -> None:
     sa.PrimaryKeyConstraint('source_id'),
     sa.UniqueConstraint('storage_path')
     )
+    op.create_index(op.f('ix_organisation_sources_checksum'), 'organisation_sources', ['checksum'], unique=False)
     op.create_index(op.f('ix_organisation_sources_created_at'), 'organisation_sources', ['created_at'], unique=False)
     op.create_index(op.f('ix_organisation_sources_integration_id'), 'organisation_sources', ['integration_id'], unique=False)
     op.create_index(op.f('ix_organisation_sources_organisation_id'), 'organisation_sources', ['organisation_id'], unique=False)
@@ -172,6 +175,9 @@ def upgrade() -> None:
     sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.Column('document_id', sa.Uuid(), nullable=False),
     sa.Column('source_id', sa.Uuid(), nullable=True),
+    sa.Column('uploader_user_id', sa.Uuid(), nullable=True),
+    sa.Column('is_org_wide', sa.Boolean(), nullable=False),
+    sa.Column('deal_id', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
     sa.Column('name', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
     sa.Column('meta_data', postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'{}'::jsonb"), nullable=True),
     sa.Column('filters', postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'{}'::jsonb"), nullable=True),
@@ -179,14 +185,25 @@ def upgrade() -> None:
     sa.Column('embedding', pgvector.sqlalchemy.vector.VECTOR(), nullable=True),
     sa.Column('usage', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
     sa.Column('content_hash', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+    sa.Column('is_searchable', sa.Boolean(), nullable=False),
+    sa.Column('is_archived', sa.Boolean(), nullable=False),
+    sa.CheckConstraint('(is_org_wide OR uploader_user_id IS NOT NULL)', name='ck_kb_owner_required'),
     sa.ForeignKeyConstraint(['source_id'], ['organisation_sources.source_id'], ),
-    sa.PrimaryKeyConstraint('document_id')
+    sa.PrimaryKeyConstraint('document_id'),
+    sa.UniqueConstraint('content_hash', deferrable=True, initially='DEFERRED', name='uq_kb_org_content_hash')
     )
+    op.create_index('ix_kb_org_deal', 'knowledge_base', ['deal_id'], unique=False, postgresql_where=sa.text('deal_id IS NOT NULL'))
+    op.create_index('ix_kb_org_visibility', 'knowledge_base', ['is_org_wide', 'is_archived'], unique=False)
     op.create_index(op.f('ix_knowledge_base_content_hash'), 'knowledge_base', ['content_hash'], unique=False)
     op.create_index(op.f('ix_knowledge_base_created_at'), 'knowledge_base', ['created_at'], unique=False)
+    op.create_index(op.f('ix_knowledge_base_deal_id'), 'knowledge_base', ['deal_id'], unique=False)
+    op.create_index(op.f('ix_knowledge_base_is_archived'), 'knowledge_base', ['is_archived'], unique=False)
+    op.create_index(op.f('ix_knowledge_base_is_org_wide'), 'knowledge_base', ['is_org_wide'], unique=False)
+    op.create_index(op.f('ix_knowledge_base_is_searchable'), 'knowledge_base', ['is_searchable'], unique=False)
     op.create_index(op.f('ix_knowledge_base_name'), 'knowledge_base', ['name'], unique=False)
     op.create_index(op.f('ix_knowledge_base_source_id'), 'knowledge_base', ['source_id'], unique=False)
     op.create_index(op.f('ix_knowledge_base_updated_at'), 'knowledge_base', ['updated_at'], unique=False)
+    op.create_index(op.f('ix_knowledge_base_uploader_user_id'), 'knowledge_base', ['uploader_user_id'], unique=False)
     op.create_table('knowledge_processing_jobs',
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
@@ -213,11 +230,18 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_knowledge_processing_jobs_source_id'), table_name='knowledge_processing_jobs')
     op.drop_index(op.f('ix_knowledge_processing_jobs_created_at'), table_name='knowledge_processing_jobs')
     op.drop_table('knowledge_processing_jobs')
+    op.drop_index(op.f('ix_knowledge_base_uploader_user_id'), table_name='knowledge_base')
     op.drop_index(op.f('ix_knowledge_base_updated_at'), table_name='knowledge_base')
     op.drop_index(op.f('ix_knowledge_base_source_id'), table_name='knowledge_base')
     op.drop_index(op.f('ix_knowledge_base_name'), table_name='knowledge_base')
+    op.drop_index(op.f('ix_knowledge_base_is_searchable'), table_name='knowledge_base')
+    op.drop_index(op.f('ix_knowledge_base_is_org_wide'), table_name='knowledge_base')
+    op.drop_index(op.f('ix_knowledge_base_is_archived'), table_name='knowledge_base')
+    op.drop_index(op.f('ix_knowledge_base_deal_id'), table_name='knowledge_base')
     op.drop_index(op.f('ix_knowledge_base_created_at'), table_name='knowledge_base')
     op.drop_index(op.f('ix_knowledge_base_content_hash'), table_name='knowledge_base')
+    op.drop_index('ix_kb_org_visibility', table_name='knowledge_base')
+    op.drop_index('ix_kb_org_deal', table_name='knowledge_base', postgresql_where=sa.text('deal_id IS NOT NULL'))
     op.drop_table('knowledge_base')
     op.drop_index(op.f('ix_chat_message_jobs_updated_at'), table_name='chat_message_jobs')
     op.drop_index(op.f('ix_chat_message_jobs_message_id'), table_name='chat_message_jobs')
@@ -231,6 +255,7 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_organisation_sources_organisation_id'), table_name='organisation_sources')
     op.drop_index(op.f('ix_organisation_sources_integration_id'), table_name='organisation_sources')
     op.drop_index(op.f('ix_organisation_sources_created_at'), table_name='organisation_sources')
+    op.drop_index(op.f('ix_organisation_sources_checksum'), table_name='organisation_sources')
     op.drop_table('organisation_sources')
     op.drop_index(op.f('ix_chat_messages_updated_at'), table_name='chat_messages')
     op.drop_index(op.f('ix_chat_messages_session_id'), table_name='chat_messages')

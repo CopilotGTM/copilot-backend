@@ -4,7 +4,7 @@ from uuid import UUID, uuid4
 from datetime import datetime
 
 from sqlmodel import SQLModel, Field, Column, Relationship
-from sqlalchemy import text, String
+from sqlalchemy import text, String, CheckConstraint, Index, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from pgvector.sqlalchemy import Vector
 
@@ -72,12 +72,21 @@ class SourceType(str, Enum):
 
 
 class OrganisationSourceStatus(str, Enum):
-    """
-    Enum for the processing status of a knowledge source document.
+    """Lifecycle states for a knowledge source.
+
+    PENDING_UPLOAD   -> Record created; client has not (necessarily) uploaded blob yet.
+    UPLOADED         -> Blob is confirmed present (basic properties fetched) and ready for processing.
+    PROCESSING       -> Background tasks are performing checksum / extraction / chunking.
+    CHUNKING         -> (Reserved) Specifically performing chunk & embed (optional future granularity).
+    COMPLETED        -> All processing succeeded; source ready for retrieval / search.
+    FAILED           -> Terminal error state.
     """
 
+    PENDING_UPLOAD = "pending_upload"
     UPLOADED = "uploaded"
     PROCESSING = "processing"
+    CHUNKING = "chunking"
+    EXTRACTING = "extracting"
     COMPLETED = "completed"
     FAILED = "failed"
 
@@ -109,11 +118,17 @@ class OrganisationSource(TimestampMixin, table=True):
     storage_path: Optional[str] = Field(
         default=None, unique=True, description="The path to the file in the storage backend."
     )
-    thumbnail_storage_path: Optional[str] = Field(
-        default=None, description="Path to the generated thumbnail image in storage."
+    # Two thumbnail variants: small and medium
+    thumbnail_small_path: Optional[str] = Field(
+        default=None, description="Blob path for a small thumbnail (e.g., 128px)"
+    )
+    thumbnail_medium_path: Optional[str] = Field(
+        default=None, description="Blob path for a medium thumbnail (e.g., 512px)"
     )
     mimetype: Optional[str] = Field(default=None, description="The MIME type of the file.")
     size_bytes: Optional[int] = Field(default=None, description="The size of the file in bytes.")
+    # Checksum (single field for optional client or server checksum)
+    checksum: Optional[str] = Field(default=None, index=True, description="Optional checksum for the file (e.g. sha256)")
     
     # --- Fields for INTEGRATION type ---
     integration_id: Optional[UUID] = Field(
@@ -124,7 +139,7 @@ class OrganisationSource(TimestampMixin, table=True):
     last_synced_at: Optional[datetime] = Field(default=None)
 
     status: OrganisationSourceStatus = Field(
-        default=OrganisationSourceStatus.UPLOADED,
+        default=OrganisationSourceStatus.PENDING_UPLOAD,
         sa_column=Column(String(50), index=True),
         description="The current processing status of the document.",
     )
@@ -140,6 +155,28 @@ class OrganisationSource(TimestampMixin, table=True):
 
 class OrganisationDocument(TimestampMixin, table=True):
     __tablename__ = "knowledge_base"
+    __table_args__ = (
+        CheckConstraint(
+            "(is_org_wide OR uploader_user_id IS NOT NULL)",
+            name="ck_kb_owner_required",
+        ),
+        Index(
+            "ix_kb_org_visibility",
+            "is_org_wide",
+            "is_archived",
+        ),
+        Index(
+            "ix_kb_org_deal",
+            "deal_id",
+            postgresql_where=text("deal_id IS NOT NULL"),
+        ),
+        UniqueConstraint(
+            "content_hash",
+            name="uq_kb_org_content_hash",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+    )
 
     document_id: UUID = Field(
         default_factory=uuid4,
@@ -151,6 +188,21 @@ class OrganisationDocument(TimestampMixin, table=True):
         foreign_key="organisation_sources.source_id",
         index=True,
         description="Foreign key to the original source document.",
+    )
+    uploader_user_id: Optional[UUID] = Field(
+        default=None,
+        index=True,
+        description="User who uploaded the document (admin or end-user).",
+    )
+    is_org_wide: bool = Field(
+        default=True,
+        index=True,
+        description="True => visible to all users in organisation; False => personal to uploader_user_id.",
+    )
+    deal_id: Optional[str] = Field(
+        default=None,
+        index=True,
+        description="Optional deal identifier for grouping (can be null).",
     )
     name: Optional[str] = Field(default=None, index=True)
     meta_data: Dict[str, Any] = Field(
@@ -172,5 +224,14 @@ class OrganisationDocument(TimestampMixin, table=True):
     )
     content_hash: Optional[str] = Field(default=None, index=True)
 
-    # This links a chunk back to its parent source document.
+    is_searchable: bool = Field(
+        default=True,
+        index=True,
+        description="If False exclude from search results (draft or archived).",
+    )
+    is_archived: bool = Field(
+        default=False,
+        index=True,
+        description="Soft archive flag; archived docs hidden from normal queries.",
+    )
     source: Optional["OrganisationSource"] = Relationship(back_populates="documents")

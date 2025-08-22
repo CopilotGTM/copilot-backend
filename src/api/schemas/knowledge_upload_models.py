@@ -93,5 +93,8 @@ class KnowledgeSourceResponse(BaseModel):
     storage_path: Optional[str] = None
     read_url: Optional[HttpUrl] = None
     filters: Dict[str, Any] = Field(default_factory=dict)
+    checksum: Optional[str] = None
+    thumbnail_small_path: Optional[str] = None
+    thumbnail_medium_path: Optional[str] = None
 
     model_config = {"from_attributes": True}
