@@ -10,7 +10,7 @@ from src.api.schemas.upload_models import FinalizeRequest, PresignRequest, Presi
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
 from src.api.utils.http_response import Response
 from src.api.schemas.base_models import GenericResponse
-from src.service.upload_service import UploadService, UploadServiceError
+from src.service.chat.upload_service import UploadService, UploadServiceError
 from src.api.dependencies.organisation_dependencies import get_current_user, UserIDs, get_org_session
 from src.celery_app import celery
 

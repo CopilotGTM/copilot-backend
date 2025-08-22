@@ -17,7 +17,7 @@ from src.domain.models.admin_user_models import (
 from src.infra.utils.database import get_master_session
 from src.infra.utils.logger import get_logger
 from src.infra.utils.cursor import encode_cursor
-from src.service.user_management import user_management_service
+from src.service.orgnisation.user_management import user_management_service
 from src.api.utils.http_response import Response
 from src.infra.auth.admin_auth import admin_auth
 from src.api.schemas.base_models import GenericResponse

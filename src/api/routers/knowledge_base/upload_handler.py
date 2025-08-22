@@ -34,7 +34,7 @@ from src.api.utils.http_response import Response
 from src.celery_app import celery
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
 from src.infra.utils.logger import get_logger
-from src.service.knowledge_upload_service import (
+from src.service.knowledge_base.knowledge_upload_service import (
     KnowledgeUploadService,
     KnowledgeUploadServiceError,
 )

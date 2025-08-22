@@ -25,7 +25,7 @@ from src.domain.models.master_tables import (
 from src.infra.utils.database import get_master_session
 from src.infra.utils.logger import get_logger
 from src.infra.utils.cursor import encode_cursor, decode_cursor
-from src.service.organization_management import organization_management_service
+from src.service.orgnisation.organization_management import organization_management_service
 from src.api.utils.http_response import Response
 from src.infra.auth.admin_auth import admin_auth
 from src.api.schemas.base_models import GenericResponse

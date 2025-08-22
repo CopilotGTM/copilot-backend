@@ -13,7 +13,7 @@ import urllib.parse
 from sqlmodel import Session, select
 from sqlalchemy import create_engine
 from src.domain.models.master_tables import Organisation
-from src.service.organization_management import organization_management_service
+from src.service.orgnisation.organization_management import organization_management_service
 
 load_dotenv()
 
