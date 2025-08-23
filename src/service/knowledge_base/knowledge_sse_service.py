@@ -17,6 +17,7 @@ from src.domain.models.organisation_tables.knowledge_models import (
     OrganisationSourceStatus,
 )
 from src.infra.messaging.redis_pubsub import AsyncRedisPubSub, channel_for_knowledge_update_status
+from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
 from src.infra.utils.logger import get_logger
 # (Upload service imported previously for historical reasons; not required here.)
 
@@ -47,13 +48,24 @@ class KnowledgeSourceSSEService:
     # Cached list of terminal *values* (strings) for query / comparisons.
     TERMINAL_STATUS_VALUES = [s.value for s in TERMINAL_STATUSES]
     
-    def __init__(
-        self, org_session: Session, organisation_id: UUID, user_id: UUID
-    ):
-        self.org_session = org_session
-        self.organisation_id = organisation_id
-        self.user_id = user_id
+    def __init__(self, org_session: Session, organisation_id: UUID, user_id: UUID):
+        """Initialize SSE service.
+
+        Args:
+            org_session: Organisation-scoped SQLModel Session (search_path set)
+            organisation_id: Current organisation UUID
+            user_id: Current user UUID (used to scope sources)
+        """
+        # Store context
+        self.org_session: Session = org_session
+        self.organisation_id: UUID = organisation_id
+        self.user_id: UUID = user_id
+
+        # Redis pub/sub client
         self.redis_pubsub = AsyncRedisPubSub()
+
+        # Azure blob storage client used for generating read SAS URLs (download + thumbnails)
+        self.storage = AzureOrganisationBlobStorage(self.organisation_id)
 
     # Backwards compatibility with older code paths that expected `.session`
     @property
@@ -63,6 +75,11 @@ class KnowledgeSourceSSEService:
     async def close(self):  # parity with upload service dependency cleanup
         try:
             await self.redis_pubsub.close()
+            # Close storage client (aiohttp) to avoid resource warnings
+            try:
+                await self.storage.close()
+            except Exception:
+                logger.debug("Storage close failed (SSE)", exc_info=True)
         except Exception:  # swallow
             logger.debug("Redis pubsub close failed (SSE)", exc_info=True)
     
@@ -97,17 +114,17 @@ class KnowledgeSourceSSEService:
         logger.debug("Initial non-terminal sources count=%d", len(sources))
         return sources
     
-    def serialize_source(self, source: OrganisationSource) -> Dict:
-        """Convert OrganisationSource to dict for JSON serialization.
-        
-        Args:
-            source: OrganisationSource instance
-            
-        Returns:
-            Serialized source data
+    async def serialize_source(self, source: OrganisationSource) -> Dict:
+        """Convert OrganisationSource to dict including dynamic SAS URLs.
+
+        Adds:
+            download_url: SAS URL to download original file (if storage_path set)
+            thumbnail_small_url / thumbnail_medium_url: SAS URLs if thumbnails exist
+
+        SAS generation failures are swallowed (fields omitted) to avoid breaking stream.
         """
         status_val = source.status.value if hasattr(source.status, 'value') else str(source.status)
-        return {
+        data: Dict[str, Optional[str] | int] = {
             "source_id": str(source.source_id),
             "status": status_val,
             "filename": source.filename,
@@ -116,8 +133,23 @@ class KnowledgeSourceSSEService:
             "updated_at": source.updated_at.isoformat() if source.updated_at else None,
             "created_at": source.created_at.isoformat() if source.created_at else None,
             "error_message": source.error_message,
-            "storage_path": source.storage_path,
         }
+        # Generate SAS URLs conditionally (include for any status beyond pending upload)
+        try:
+            if getattr(source, "thumbnail_small_path", None):
+                data["thumbnail_small_url"] = await self.storage.generate_read_sas(
+                    source.thumbnail_small_path, minutes=120
+                )
+            if getattr(source, "thumbnail_medium_path", None):
+                data["thumbnail_medium_url"] = await self.storage.generate_read_sas(
+                    source.thumbnail_medium_path, minutes=120
+                )
+        except Exception:
+            # Log at debug to avoid noisy streams; missing URLs just omitted
+            logger.debug(
+                "Failed generating one or more SAS URLs for source %s", source.source_id, exc_info=True
+            )
+        return data
     
     async def stream_events(
         self,
@@ -143,24 +175,19 @@ class KnowledgeSourceSSEService:
             # 1. Get initial snapshot
             initial_sources = await self.get_initial_sources(explicit_ids)
             watched_status: Dict[str, str] = {}
-            
-            # Early completion if nothing to watch
+
             if not initial_sources:
-                yield {
-                    "event": "complete",
-                    "data": json.dumps({"message": "no_sources_to_watch"})
-                }
+                yield {"event": "complete", "data": json.dumps({"message": "no_sources_to_watch"})}
                 return
 
-            for source in initial_sources:
-                serialized = self.serialize_source(source)
+            # Serialize concurrently for efficiency when many sources
+            serialized_list = await asyncio.gather(
+                *[self.serialize_source(s) for s in initial_sources]
+            )
+            for serialized in serialized_list:
                 watched_status[serialized["source_id"]] = serialized["status"]
-            
-            # Emit initial snapshot
-            yield {
-                "event": "snapshot",
-                "data": json.dumps([self.serialize_source(s) for s in initial_sources])
-            }
+
+            yield {"event": "snapshot", "data": json.dumps(serialized_list)}
 
             # Check if all are already terminal
             if all(status in self.TERMINAL_STATUS_VALUES for status in watched_status.values()):
@@ -212,11 +239,17 @@ class KnowledgeSourceSSEService:
                     if old_status != new_status:
                         watched_status[source_id] = new_status
                         
-                        # Emit update event
-                        yield {
-                            "event": "update",
-                            "data": json.dumps([message])
-                        }
+                        # Fetch fresh source to include thumbnails / URLs once generated
+                        try:
+                            src_obj = self.org_session.get(OrganisationSource, UUID(source_id))
+                        except Exception:
+                            src_obj = None
+                        if src_obj:
+                            serialized_update = await self.serialize_source(src_obj)
+                            yield {"event": "update", "data": json.dumps([serialized_update])}
+                        else:
+                            # Fallback to original message
+                            yield {"event": "update", "data": json.dumps([message])}
                         
                         # Check if all sources are now terminal
                         if all(status in self.TERMINAL_STATUS_VALUES for status in watched_status.values()):
