@@ -66,4 +66,4 @@ celery.conf.task_queues = (
 celery.conf.task_default_queue = "celery"
 
 # Explicitly import task modules to ensure registration
-from src.tasks import organization, technical_deck, slide_outline, image_processing, knowledge_post_upload, knowledge_document_extraction
+from src.tasks import attachments_post_upload, organization, technical_deck, slide_outline, knowledge_post_upload, knowledge_document_extraction

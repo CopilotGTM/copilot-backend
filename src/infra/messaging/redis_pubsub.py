@@ -119,11 +119,17 @@ class AsyncRedisPubSub:
 
 
 CHANNEL_TEMPLATE = "kb:{org_id}:sources"
+ATTACHMENT_CHANNEL_TEMPLATE = "att:{org_id}:attachments"
 
 
 def channel_for_knowledge_update_status(organisation_id: UUID | str) -> str:
     """Generate Redis channel name for organisation knowledge sources."""
     return CHANNEL_TEMPLATE.format(org_id=organisation_id)
+
+
+def channel_for_attachment_update_status(organisation_id: UUID | str) -> str:
+    """Generate Redis channel name for organisation attachment updates."""
+    return ATTACHMENT_CHANNEL_TEMPLATE.format(org_id=organisation_id)
 
 
 # Backwards compatibility alias (older code imported channel_for_org)
@@ -162,5 +168,31 @@ async def publish_source_status_async(
         await pubsub.publish_message(channel, payload)
     except Exception as e:
         logger.warning(f"Failed to publish source status for {source_id}: {e}")
+    finally:
+        await pubsub.close()
+
+
+async def publish_attachment_status_async(
+    organisation_id: UUID | str,
+    attachment_id: UUID | str,
+    status: str,
+    updated_at: Any = None,
+    error_message: Optional[str] = None,
+    **extra_fields
+) -> None:
+    """Async publish helper for attachment processing status updates."""
+    pubsub = AsyncRedisPubSub()
+    try:
+        channel = channel_for_attachment_update_status(organisation_id)
+        payload = {
+            "attachment_id": str(attachment_id),
+            "status": status,
+            "updated_at": updated_at.isoformat() if hasattr(updated_at, "isoformat") else updated_at,
+            "error_message": error_message,
+            **extra_fields
+        }
+        await pubsub.publish_message(channel, payload)
+    except Exception as e:
+        logger.warning(f"Failed to publish attachment status for {attachment_id}: {e}")
     finally:
         await pubsub.close()

@@ -37,7 +37,7 @@ def upgrade() -> None:
     sa.Column('checksum', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
     sa.Column('virus_scan_status', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
     sa.Column('retention_policy', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
-    sa.Column('processing_status', sqlmodel.sql.sqltypes.AutoString(), nullable=False),
+    sa.Column('status', sa.String(length=50), nullable=True),
     sa.Column('thumbnail_small_path', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
     sa.Column('thumbnail_medium_path', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
     sa.Column('processing_error', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
@@ -48,6 +48,7 @@ def upgrade() -> None:
     )
     op.create_index(op.f('ix_attachments_created_at'), 'attachments', ['created_at'], unique=False)
     op.create_index(op.f('ix_attachments_organisation_id'), 'attachments', ['organisation_id'], unique=False)
+    op.create_index(op.f('ix_attachments_status'), 'attachments', ['status'], unique=False)
     op.create_index(op.f('ix_attachments_updated_at'), 'attachments', ['updated_at'], unique=False)
     op.create_index(op.f('ix_attachments_user_id'), 'attachments', ['user_id'], unique=False)
     op.create_table('chat_sessions',
@@ -278,6 +279,7 @@ def downgrade() -> None:
     op.drop_table('chat_sessions')
     op.drop_index(op.f('ix_attachments_user_id'), table_name='attachments')
     op.drop_index(op.f('ix_attachments_updated_at'), table_name='attachments')
+    op.drop_index(op.f('ix_attachments_status'), table_name='attachments')
     op.drop_index(op.f('ix_attachments_organisation_id'), table_name='attachments')
     op.drop_index(op.f('ix_attachments_created_at'), table_name='attachments')
     op.drop_table('attachments')

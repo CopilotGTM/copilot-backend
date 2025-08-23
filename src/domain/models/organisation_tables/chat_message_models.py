@@ -53,6 +53,21 @@ class ChatMessageAttachmentLink(SQLModel, table=True):
         default=0, description="Display order of attachment in message"
     )
 
+class AttachmentStatus(str, Enum):
+    """Lifecycle states for an attachment.
+
+    PENDING_UPLOAD   -> Record created; client has not (necessarily) uploaded blob yet.
+    UPLOADED         -> Blob is confirmed present (basic properties fetched) and ready for processing.
+    PROCESSING       -> Background tasks are performing checksum.
+    COMPLETED        -> All processing succeeded; source ready for retrieval / search.
+    FAILED           -> Terminal error state.
+    """
+
+    PENDING_UPLOAD = "pending_upload"
+    UPLOADED = "uploaded"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
 
 class Attachment(TimestampMixin, table=True):
     """
@@ -90,9 +105,10 @@ class Attachment(TimestampMixin, table=True):
     retention_policy: Optional[str] = Field(
         default=None, description="Data retention policy identifier"
     )
-    processing_status: str = Field(
-        default="pending",
-        description="Post-processing status: pending|processing|thumbnails_generated|failed",
+    status: AttachmentStatus = Field(
+        default=AttachmentStatus.PENDING_UPLOAD,
+        sa_column=Column(String(50), index=True),
+        description="The current processing status of the document.",
     )
     thumbnail_small_path: Optional[str] = Field(
         default=None, description="Blob path for a small thumbnail (e.g., 128px)"
