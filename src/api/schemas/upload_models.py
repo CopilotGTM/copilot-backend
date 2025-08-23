@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, HttpUrl, field_validator
 from datetime import datetime
 
 from src.infra.config.configs import chat_file_upload_config
+from src.domain.models.organisation_tables.chat_message_models import AttachmentStatus
 
 # Centralized constants for validation, sourced from the application config.
 # This makes the API schema the single source of truth for request validation.
@@ -34,43 +35,108 @@ class PresignRequest(BaseModel):
 
 
 class PresignResponse(BaseModel):
-    """Response containing the presigned URL and attachment details."""
+    """Minimal presign response for chat attachments.
 
-    attachment_id: UUID = Field(..., description="The unique ID for the attachment record.")
-    upload_url: HttpUrl = Field(..., description="The presigned URL to use for the PUT request.")
-    blob_path: str = Field(..., description="The storage path of the blob.")
-    expires_in_seconds: int = Field(..., description="The number of seconds the upload_url is valid for.")
+    Harmonised with batch variant so clients can treat single/batch uniformly.
+    (Added success & error_message fields for parity; error_message always None on success.)
+    """
+    attachment_id: UUID
+    filename: str
+    mimetype: str
+    upload_url: HttpUrl
+    size_bytes: int = Field(..., description="Client-reported size of the file in bytes")
+    expires_in_seconds: int = Field(..., description="Seconds until the upload URL expires")
+    status: AttachmentStatus = Field(..., description="Logical status for the attachment record (e.g. pending_upload)")
+    success: bool = Field(True, description="Indicates whether the presign operation succeeded (always true for this model)")
+    error_message: str | None = Field(None, description="Present only when success is false (kept for shape parity with batch)")
 
 
 class FinalizeRequest(BaseModel):
     """Request to finalize an upload after the file is in storage."""
 
     attachment_id: UUID = Field(..., description="The ID of the attachment to finalize.")
-    checksum: str = Field(..., description="The MD5 or SHA256 checksum of the uploaded file for integrity verification.")
-
+    checksum: Optional[str] = Field(
+        default=None,
+        description="The MD5 or SHA256 checksum of the uploaded file for integrity verification (optional)."
+    )
 
 class UploadedAttachmentResponse(BaseModel):
     """Response model representing a successfully uploaded and finalized attachment."""
-
+    # Minimal finalized attachment payload. Keep this small for chat clients.
     attachment_id: UUID
-    filename: str
-    url: HttpUrl
-    mimetype: str
-    size_bytes: int
     uploaded_at: datetime
-    checksum: Optional[str] = None
-    virus_scan_status: Optional[str] = "pending"
-    metadata: Dict[str, Any] = Field(default_factory=dict)
-    processing_status: Optional[str] = Field(
-        default="pending", description="Processing pipeline status"
-    )
-    thumbnail_small_url: Optional[HttpUrl] = Field(
-        default=None, description="Temporary SAS URL for the small thumbnail if generated"
-    )
-    thumbnail_medium_url: Optional[HttpUrl] = Field(
-        default=None, description="Temporary SAS URL for the medium thumbnail if generated"
-    )
+    status: AttachmentStatus = Field(..., description="Logical status for the attachment record (e.g. processed|failed)")
 
-    model_config = {
-        "from_attributes": True
-    }
+    # Keep model compatibility for object creation from DB models
+    model_config = {"from_attributes": True}
+
+
+class AttachmentDownloadResponse(BaseModel):
+    """Response model for generating a short‑lived download URL for an attachment."""
+    attachment_id: UUID
+    download_url: HttpUrl
+    expires_in_seconds: int = Field(default=120 * 60, description="Seconds until the URL expires")
+
+
+# ---------------------------- Batch Models ---------------------------- #
+
+class AttachmentBatchPresignRequest(BaseModel):
+    """Batch request to presign one or more attachments.
+
+    Accepts a list of individual PresignRequest objects. Validation for each
+    file (size/mimetype) is handled by PresignRequest's validators.
+    """
+    files: list[PresignRequest] = Field(..., min_length=1, description="List of files to presign (1..N)")
+
+
+class AttachmentPresignFileResponse(BaseModel):
+    """Per-file presign result (success or failure).
+
+    Status now uses AttachmentStatus enum for consistency with single presign.
+    """
+    attachment_id: UUID | None = Field(None, description="Attachment ID (None if creation failed early)")
+    filename: str
+    mimetype: str | None = None
+    upload_url: HttpUrl | None = None
+    size_bytes: int | None = Field(None, description="Client-reported size of the file in bytes (None if failed)")
+    success: bool = True
+    error_message: str | None = None
+    expires_in_seconds: int = Field(0, description="Seconds until the upload URL expires (0 if failed)")
+    status: AttachmentStatus | None = Field(None, description="Logical status for the attachment record (e.g. pending_upload|failed)")
+
+
+class AttachmentBatchPresignResponse(BaseModel):
+    """Envelope aggregating per-file responses plus raw error objects for diagnostics."""
+    files: list[AttachmentPresignFileResponse]
+    errors: list[dict] = Field(default_factory=list)
+
+
+class AttachmentBatchFinalizeRequest(BaseModel):
+    """Batch finalize request for one or more attachments."""
+    files: list[FinalizeRequest] = Field(..., min_length=1)
+
+
+class AttachmentBatchFinalizeResult(BaseModel):
+    attachment_id: UUID
+    status: str | None = None
+    error: str | None = None
+    updated_at: datetime | None
+
+
+class AttachmentBatchFinalizeResponse(BaseModel):
+    results: list[AttachmentBatchFinalizeResult]
+    errors: list[dict] = Field(default_factory=list)
+
+class AttachmentEventUpdate(BaseModel):
+    """Pydantic model matching the SSE source update payload.
+
+    Named exactly as requested: `sourceenvetupdate`.
+    """
+    attachment_id: str
+    status: str
+    updated_at: Optional[str] = None
+    error_message: Optional[str] = None
+    thumbnail_small_url: Optional[str] = None
+
+    class Config:
+        orm_mode = True

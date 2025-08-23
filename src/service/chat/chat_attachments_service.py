@@ -7,9 +7,14 @@ from typing import Dict, Any
 from sqlmodel import Session, text
 
 from src.infra.utils.logger import get_logger
-from src.domain.models.organisation_tables.chat_message_models import Attachment
+from src.domain.models.organisation_tables.chat_message_models import Attachment, AttachmentStatus
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
-from src.api.schemas.upload_models import PresignRequest, FinalizeRequest
+from src.api.schemas.upload_models import (
+    PresignRequest,
+    FinalizeRequest,
+    AttachmentBatchPresignRequest,
+    AttachmentBatchFinalizeRequest,
+)
 from src.infra.utils.resource_naming import get_schema_name
 
 logger = get_logger(__name__)
@@ -60,9 +65,9 @@ class UploadService:
             filename=payload.filename,
             storage_path=blob_path,
             mimetype=payload.mimetype,
-            size_bytes=payload.size_bytes,  # Store the client-reported size initially
+            size_bytes=payload.size_bytes,
             virus_scan_status="pending",
-            processing_status="pending",
+            status=AttachmentStatus.PENDING_UPLOAD,
             attachment_metadata={"client_reported_size": payload.size_bytes},
         )
 
@@ -82,12 +87,19 @@ class UploadService:
     async def finalize_upload(self, payload: FinalizeRequest, user_id: UUID) -> Attachment:
         """Finalize the upload by verifying blob properties and updating the attachment record. Checksum will be calculated asynchronously."""
         self._set_schema()
-        attachment = self.org_session.get(Attachment, payload.attachment_id)
+        attachment: Attachment = self.org_session.get(Attachment, payload.attachment_id)
+
+        # Check ownership
         if not attachment or attachment.organisation_id != self.organisation_id or attachment.user_id != user_id:
             raise UploadServiceError("Attachment not found or access denied", status_code=404)
 
+        # Check processing status
+        if attachment.status != AttachmentStatus.PENDING_UPLOAD:
+            raise UploadServiceError("Attachment is not in a valid state for finalization", status_code=400)
+
         try:
             props = await self.storage.get_blob_properties(attachment.storage_path)
+
             if not props:
                 raise UploadServiceError("Uploaded file not found in storage.", status_code=404)
 
@@ -98,6 +110,7 @@ class UploadService:
             # Mark as finalized, checksum will be set by async task
             attachment.attachment_metadata["finalized"] = True
             attachment.attachment_metadata["finalized_at"] = datetime.utcnow().isoformat()
+            attachment.status = AttachmentStatus.PROCESSING
 
             self.org_session.add(attachment)
             self.org_session.commit()
@@ -124,3 +137,83 @@ class UploadService:
         self.org_session.refresh(attachment)
         
         return attachment
+
+    async def generate_download_url(self, attachment_id: UUID, user_id: UUID, minutes: int = 120, download_filename: str | None = None) -> str:
+        """Generate a short‑lived read SAS URL for an attachment ensuring ownership."""
+        self._set_schema()
+        attachment: Attachment | None = self.org_session.get(Attachment, attachment_id)
+
+        # Check ownership and status
+        if not attachment or attachment.organisation_id != self.organisation_id or attachment.user_id != user_id:
+            raise UploadServiceError("Attachment not found or access denied", status_code=404)
+
+        # Check status
+        if attachment.status != AttachmentStatus.COMPLETED:
+            raise UploadServiceError("Attachment is not ready", status_code=400)
+
+        # Check storage path
+        if not attachment.storage_path:
+            raise UploadServiceError("Attachment has no storage path", status_code=400)
+
+        try:
+            return await self.storage.generate_read_sas(
+                attachment.storage_path,
+                minutes=minutes,
+                download_filename=download_filename or attachment.filename,
+            )
+        except Exception as e:  # pragma: no cover - network/azure path
+            logger.error("Failed generating read SAS for attachment %s: %s", attachment_id, e, exc_info=True)
+            raise UploadServiceError("Could not generate download URL") from e
+
+    # ---------------- Batch operations ---------------- #
+
+    async def presign_batch(self, payload: AttachmentBatchPresignRequest, user_id: UUID, expiry_minutes: int = 15):
+        """Batch variant of presign: returns ([(Attachment, url)], [error_dict])."""
+        successes: list[tuple[Attachment, str]] = []
+        errors: list[dict] = []
+        for idx, file in enumerate(payload.files):
+            try:
+                single_attachment, upload_url = await self.presign_upload(file, user_id)
+                successes.append((single_attachment, upload_url))
+            except UploadServiceError as e:
+                errors.append({
+                    "index": idx,
+                    "filename": file.filename,
+                    "reason": "upload_service_error",
+                    "error_message": e.message,
+                })
+            except Exception as exc:
+                errors.append({
+                    "index": idx,
+                    "filename": file.filename,
+                    "reason": "unexpected_error",
+                    "error_message": str(exc),
+                })
+        return successes, errors
+
+    async def finalize_batch(self, payload: AttachmentBatchFinalizeRequest, user_id: UUID):
+        """Batch finalize attachments; returns (results_list, errors_list)."""
+        results: list[Attachment] = []
+        errors: list[dict] = []
+        for item in payload.files:
+            try:
+                att = await self.finalize_upload(item, user_id)
+                results.append(att)
+            except UploadServiceError as e:
+                errors.append({
+                    "attachment_id": str(item.attachment_id),
+                    "reason": e.message,
+                })
+            except Exception:
+                errors.append({
+                    "attachment_id": str(item.attachment_id),
+                    "reason": "unexpected_error",
+                })
+        return results, errors
+
+    async def close(self):  # pragma: no cover - simple resource cleanup
+        """Release any async resources held by the service (e.g. Azure clients)."""
+        try:
+            await self.storage.close()
+        except Exception as exc:  # Swallow to avoid masking original response errors
+            logger.debug("UploadService.close swallow error: %s", exc)

@@ -124,7 +124,6 @@ async def presign_batch(
                 mimetype=src.mimetype,
                 size_bytes=src.size_bytes,
                 upload_url=upload_url,
-                blob_path=src.storage_path,
                 expires_in_seconds=expiry_time * 60,
                 status=_status_val(src.status),
                 success=True,
@@ -144,7 +143,6 @@ async def presign_batch(
                     mimetype="",
                     size_bytes=0,
                     upload_url=None,
-                    blob_path="",
                     expires_in_seconds=0,
                     status="failed",
                     error_message=error.get(
@@ -262,119 +260,6 @@ async def finalize_batch(
         message="All finalize operations failed",
         data=data,
     )
-
-
-@upload_router.post(
-    "/presign",
-    response_model=GenericResponse[KnowledgeBatchPresignResponse],
-    tags=["knowledge_upload"],
-    summary="Single-file presign convenience endpoint",
-)
-async def presign_single(
-    payload: KnowledgeBatchPresignRequest,
-    service: KnowledgeUploadService = Depends(get_knowledge_upload_service),
-    user_ids: UserIDs = Depends(get_current_user),
-):
-    """Convenience wrapper that enforces exactly one file in payload."""
-    if len(payload.files) != 1:
-        return Response.error_response(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            message="Exactly one file expected for this endpoint.",
-        )
-    return await presign_batch(payload, service, user_ids)
-
-
-@upload_router.post(
-    "/finalize",
-    response_model=GenericResponse[KnowledgeSourceResponse],
-    tags=["knowledge_upload"],
-    summary="Finalize a knowledge source upload",
-)
-async def finalize_source(
-    payload: KnowledgeFinalizeRequest = Body(...),
-    service: KnowledgeUploadService = Depends(get_knowledge_upload_service),
-    user_ids: UserIDs = Depends(get_current_user),
-):
-    """Finalize a single source then enqueue background processing."""
-    try:
-        source = await service.finalize_source(payload, user_ids.user_id)
-        session = service.session
-        if session:
-            session.add(
-                KnowledgeProcessingJob(
-                    source_id=str(source.source_id),
-                    job_type="post_upload_process",
-                    status=JobStatus.PENDING,
-                )
-            )
-            session.commit()
-
-            session.add(
-                KnowledgeProcessingJob(
-                    source_id=str(source.source_id),
-                    job_type="document_extraction",
-                    status=JobStatus.PENDING,
-                )
-            )
-            session.commit()
-        try:
-            celery.send_task(
-                "knowledge.post_upload_process",
-                args=[str(user_ids.organisation_id), str(source.source_id)],
-            )
-        except Exception as task_err:
-            logger.error(
-                "Failed to enqueue knowledge processing for source %s: %s",
-                source.source_id,
-                task_err,
-            )
-        storage = AzureOrganisationBlobStorage(user_ids.organisation_id)
-        read_url = None
-        if source.storage_path:
-            try:
-                read_url = await storage.generate_read_sas(
-                    source.storage_path, minutes=120, download_filename=source.filename
-                )
-            except Exception:
-                pass
-            finally:
-                # Explicit close to release aiohttp resources promptly
-                try:
-                    await storage.close()
-                except Exception:
-                    logger.debug("Temp storage close failed (finalize_source)")
-        status_val = (
-            source.status.value
-            if hasattr(source.status, "value")
-            else str(source.status)
-        )
-        resp = KnowledgeSourceResponse(
-            source_id=source.source_id,
-            filename=source.filename,
-            mimetype=source.mimetype,
-            size_bytes=source.size_bytes,
-            status=status_val,
-            created_at=source.created_at,
-            updated_at=source.updated_at,
-            error_message=source.error_message,
-            storage_path=source.storage_path,
-            read_url=read_url,
-            filters=source.filters or {},
-            checksum=getattr(source, "checksum", None),
-            thumbnail_small_path=getattr(source, "thumbnail_small_path", None),
-            thumbnail_medium_path=getattr(source, "thumbnail_medium_path", None),
-        )
-        return Response.success_response(message="Source finalized", data=resp)
-    except KnowledgeUploadServiceError as e:
-        return Response.error_response(status_code=e.status_code, message=e.message)
-    except Exception as e:
-        logger.error(
-            "Unexpected error finalizing knowledge source %s",
-            payload.source_id,
-            exc_info=True,
-        )
-        return Response.internal_server_error_response("An unexpected error occurred")
-
 
 @upload_router.get(
     "/source/{source_id}",

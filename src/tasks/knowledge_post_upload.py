@@ -25,7 +25,8 @@ from src.domain.models.organisation_tables.job_models import (
     JobStatus,
 )
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
-from src.infra.messaging.knowledge_publish import publish_source_status
+from src.infra.messaging.knowledge_source_status_publish import publish_source_status
+from src.api.schemas.knowledge_upload_models import KnowledgeSourceEventUpdate
 
 logger = get_logger("knowledge_post_upload_task")
 
@@ -256,12 +257,37 @@ def post_upload_process(self, organisation_id: str, source_id: str):
             session.add(job)
             source.status = OrganisationSourceStatus.EXTRACTING
             session.add(source)
+
+            # Generate SAS URLs for newly created thumbnails (if present)
+            thumbnail_small_url = None
+            thumbnail_medium_url = None
+            try:
+                if source.thumbnail_small_path:
+                    thumbnail_small_url = loop.run_until_complete(
+                        storage.generate_read_sas(source.thumbnail_small_path, minutes=120)
+                    )
+                if source.thumbnail_medium_path:
+                    thumbnail_medium_url = loop.run_until_complete(
+                        storage.generate_read_sas(source.thumbnail_medium_path, minutes=120)
+                    )
+            except Exception:
+                logger.debug(
+                    "Thumbnail SAS generation failed for source %s", source.source_id, exc_info=True
+                )
+
+            publish_event = KnowledgeSourceEventUpdate(
+                source_id=str(source.source_id),
+                status=source.status.value,
+                updated_at=source.updated_at.isoformat() if source.updated_at else None,
+                error_message=source.error_message,
+                progress=None,
+                thumbnail_medium_url=thumbnail_medium_url,
+                thumbnail_small_url=thumbnail_small_url,
+            )
+
             publish_source_status(
                 organisation_id,
-                source.source_id,
-                source.status.value,
-                updated_at=source.updated_at,
-                error_message=source.error_message,
+                publish_event
             )
 
             celery.send_task(

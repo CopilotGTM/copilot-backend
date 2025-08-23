@@ -5,7 +5,7 @@ from uuid import uuid4, UUID
 from unittest.mock import AsyncMock, MagicMock
 
 from src.api.dependencies.organisation_dependencies import get_current_user_ids, UserIDs
-from src.tasks.image_processing import process_image
+from src.tasks.attachments_post_upload import process_image
 from src.api.fastapi_app import app
 
 # A sample 1x1 transparent PNG for testing
@@ -97,7 +97,7 @@ def test_full_upload_and_processing_flow(
     assert response.status_code == 200
     status_data = response.json()["data"]
 
-    assert status_data["processing_status"] == "processed"
+    assert status_data["status"] == "processed"
     assert status_data["checksum"] == "fake_checksum"
     assert status_data["thumbnail_small_url"] is not None
     assert status_data["thumbnail_medium_url"] is not None
