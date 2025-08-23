@@ -23,6 +23,7 @@ from src.api.routers.healthcheck import healthcheck_router
 from src.api.routers.chat_handler import chat_router
 from src.api.routers.upload.upload_handler import upload_router
 from src.api.routers.knowledge_base.upload_handler import upload_router as knowledge_upload_router
+from src.api.routers.knowledge_base.access_handler import access_router as knowledge_access_router
 from src.api.routers.technical_deck.transcript_format import transcript_router
 from src.api.routers.technical_deck.get_technical_deck import technical_deck
 from src.api.routers.technical_deck.select_template import select_template
@@ -94,6 +95,7 @@ def create_fastapi_app():
     # User routers
     fastapp.include_router(user_auth_router, prefix="/users/auth", tags=["user", "authentication"])
     fastapp.include_router(knowledge_upload_router, prefix="/users/knowledge", tags=["knowledge_upload"])
+    fastapp.include_router(knowledge_access_router, prefix="/users/knowledge", tags=["knowledge_access"])
 
     # Admin routers
     fastapp.include_router(admin_auth_router, prefix="/admin/auth", tags=["admin", "authentication"])
