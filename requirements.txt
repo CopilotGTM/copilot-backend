@@ -54,3 +54,4 @@ lxml
 pydantic~=2.11.7
 pydantic[email]
 Pillow==10.4.0
+sse-starlette==3.0.2

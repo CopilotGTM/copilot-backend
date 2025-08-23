@@ -16,6 +16,7 @@ from src.domain.models.organisation_tables.job_models import (
     JobStatus,
 )
 from src.domain.models.organisation_tables.job_models import JobStatus
+from src.infra.messaging.knowledge_publish import publish_source_status
 # from src.tasks.pdf_extraction import extract_pdf
 # from src.tasks.doc_extraction import extract_doc
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
@@ -42,11 +43,19 @@ def document_extraction(self, organisation_id: str, source_id: str):  # pragma: 
         if job:
             job.status = JobStatus.IN_PROGRESS
             session.add(job)
+            try:
+                publish_source_status(organisation_id, source.source_id, source.status.value, updated_at=source.updated_at, error_message=source.error_message)
+            except Exception:
+                pass
         
         # Transition status
         source.status = OrganisationSourceStatus.EXTRACTING
         session.add(source)
         session.commit()
+        try:
+            publish_source_status(organisation_id, source.source_id, source.status.value, updated_at=source.updated_at, error_message=source.error_message)
+        except Exception:
+            pass
 
         # Download blob (could stream if large)
         try:
@@ -66,6 +75,10 @@ def document_extraction(self, organisation_id: str, source_id: str):  # pragma: 
                 session.add(job)
             session.add(source)
             session.commit()
+            try:
+                publish_source_status(organisation_id, source.source_id, source.status.value, updated_at=source.updated_at, error_message=source.error_message)
+            except Exception:
+                pass
             return
 
         # Simple mime routing
@@ -87,6 +100,10 @@ def document_extraction(self, organisation_id: str, source_id: str):  # pragma: 
         source.status = OrganisationSourceStatus.COMPLETED
         session.add(source)
         session.commit()
+        try:
+            publish_source_status(organisation_id, source.source_id, source.status.value, updated_at=source.updated_at, error_message=source.error_message)
+        except Exception:
+            pass
     finally:
         try:
             session.close()

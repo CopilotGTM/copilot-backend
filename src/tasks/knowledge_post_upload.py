@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """Post-upload processing tasks: checksum and thumbnail generation (fast, fan-out).
 """
 
@@ -24,6 +25,7 @@ from src.domain.models.organisation_tables.job_models import (
     JobStatus,
 )
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
+from src.infra.messaging.knowledge_publish import publish_source_status
 
 logger = get_logger("knowledge_post_upload_task")
 
@@ -54,7 +56,12 @@ async def _download_blob(storage: AzureOrganisationBlobStorage, path: str) -> by
 #     return asyncio.run(_runner())
 
 
-def _generate_thumbnail_from_bytes(storage: AzureOrganisationBlobStorage, source: OrganisationSource, data: bytes, loop: asyncio.AbstractEventLoop):
+def _generate_thumbnail_from_bytes(
+    storage: AzureOrganisationBlobStorage,
+    source: OrganisationSource,
+    data: bytes,
+    loop: asyncio.AbstractEventLoop,
+):
     """Create small and medium JPEG thumbnails and upload them.
 
     Small: 128px max dimension
@@ -78,7 +85,9 @@ def _generate_thumbnail_from_bytes(storage: AzureOrganisationBlobStorage, source
                     from azure.storage.blob import ContentSettings
 
                     blob_service = await storage._get_blob_service_client()
-                    blob_client = blob_service.get_blob_client(storage.container, thumb_path)
+                    blob_client = blob_service.get_blob_client(
+                        storage.container, thumb_path
+                    )
                     await blob_client.upload_blob(
                         out.read(),
                         overwrite=True,
@@ -94,15 +103,21 @@ def _generate_thumbnail_from_bytes(storage: AzureOrganisationBlobStorage, source
                 source.thumbnail_small_path = small_path
                 source.thumbnail_medium_path = medium_path
             except Exception:
-                logger.exception("Failed to upload thumbnail variants for source %s", source.source_id)
+                logger.exception(
+                    "Failed to upload thumbnail variants for source %s",
+                    source.source_id,
+                )
     except UnidentifiedImageError:
         logger.debug("Source %s is not an image; skipping thumbnail.", source.source_id)
     except Exception as e:
-        logger.warning("Thumbnail generation failed for source %s: %s", source.source_id, e)
+        logger.warning(
+            "Thumbnail generation failed for source %s: %s", source.source_id, e
+        )
 
 
 def _placeholder_bytes(label: str) -> bytes:
     from PIL import Image as _Image, ImageDraw, ImageFont
+
     img = _Image.new("RGB", (512, 512), (240, 240, 240))
     d = ImageDraw.Draw(img)
     text = label.upper()
@@ -111,7 +126,7 @@ def _placeholder_bytes(label: str) -> bytes:
     except Exception:  # pragma: no cover
         font = None
     tw, th = d.textlength(text, font=font), 12
-    d.text(((512 - tw)/2, (512 - th)/2), text, fill=(60,60,60), font=font)
+    d.text(((512 - tw) / 2, (512 - th) / 2), text, fill=(60, 60, 60), font=font)
     out = BytesIO()
     img.save(out, format="PNG")
     return out.getvalue()
@@ -142,16 +157,26 @@ def _pdf_preview_bytes(self, pdf_bytes: bytes, source_id: str) -> bytes:
             pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # type: ignore[attr-defined]
             png_bytes = pix.tobytes("png")
             if len(png_bytes) < 200:
-                logger.warning("PDF render produced very small image source=%s", source_id)
+                logger.warning(
+                    "PDF render produced very small image source=%s", source_id
+                )
             return png_bytes
     except Exception as e:
-        logger.warning("PDF render failed source=%s error=%s; using placeholder", source_id, e)
+        logger.warning(
+            "PDF render failed source=%s error=%s; using placeholder", source_id, e
+        )
         return _placeholder_bytes("pdf")
 
 
-@celery.task(name="knowledge.post_upload_process", bind=True, acks_late=True, max_retries=3)
+@celery.task(
+    name="knowledge.post_upload_process", bind=True, acks_late=True, max_retries=3
+)
 def post_upload_process(self, organisation_id: str, source_id: str):
-    logger.info("post_upload_process started org=%s source=%s", organisation_id, source_id)
+    """Post-upload processing: checksum and thumbnail generation."""
+    logger.info("post_upload_process started")
+    logger.info("org=%s source=%s", organisation_id, source_id)
+
+    # Getting session and storage
     session_gen = get_org_session(organisation_id)
     session = next(session_gen)
     storage = AzureOrganisationBlobStorage(organisation_id=organisation_id)
@@ -164,31 +189,24 @@ def post_upload_process(self, organisation_id: str, source_id: str):
             logger.warning("Source %s not found", source_id)
             return
 
-        # For retries: check if this specific task (thumbnails) needs to run even if source completed
-        needs_thumbnails = not (source.thumbnail_small_path and source.thumbnail_medium_path)
-        
-        if source.status in {OrganisationSourceStatus.COMPLETED, OrganisationSourceStatus.FAILED}:
-            if not needs_thumbnails:
-                logger.info("Source %s already in terminal state %s", source_id, source.status)
-                return
-            # Continue for retry thumbnail generation even if source marked completed
-
         if source.status == OrganisationSourceStatus.PENDING_UPLOAD:
-            logger.warning("Source %s still pending upload; skipping processing run", source_id)
+            logger.warning(
+                "Source %s still pending upload; skipping processing run", source_id
+            )
             return
 
-        job: KnowledgeProcessingJob | None = session.query(KnowledgeProcessingJob).filter_by(
-            source_id=source_id,
-            job_type='post_upload_process'
-        ).first()
+        job: KnowledgeProcessingJob | None = (
+            session.query(KnowledgeProcessingJob)
+            .filter_by(source_id=source_id, job_type="post_upload_process")
+            .first()
+        )
 
         if not job:
             return
 
-        # Only update job status if not already completed (avoid conflicts)
-        if job.status != JobStatus.COMPLETED:
-            job.status = JobStatus.IN_PROGRESS
-            session.add(job)
+        # Mark job as in progress
+        job.status = JobStatus.IN_PROGRESS
+        session.add(job)
 
         # Download + checksum (+ inline buffer if image)
         # try:
@@ -205,50 +223,60 @@ def post_upload_process(self, organisation_id: str, source_id: str):
         #     session.commit()
         #     return
 
-    # Thumbnail if image (folder-based thumbnails/<variant>.jpg)
-        mimetype = (source.mimetype or "").lower()
-        maybe_image_bytes: Optional[bytes] = None
-
-        try:
-            if mimetype.startswith("image/"):
-                maybe_image_bytes = loop.run_until_complete(_download_blob(storage, source.storage_path or ""))
-            elif mimetype == "application/pdf":
-                pdf_bytes = loop.run_until_complete(_download_blob(storage, source.storage_path or ""))
-                maybe_image_bytes = _pdf_preview_bytes(self, pdf_bytes, str(source.source_id))
-            # TODO: future office/ppt/doc/xls conversions
-            if maybe_image_bytes:
-                _generate_thumbnail_from_bytes(storage, source, maybe_image_bytes, loop)
-        except self.MaxRetriesExceededError:  # type: ignore[attr_defined]
-            logger.warning("Max retries exceeded for thumbnail generation source=%s", source_id)
-        except Exception as e:
-            logger.warning("Thumbnail generation failed for source %s: %s", source_id, e)
-
         # Persist computed checksum into explicit column
         # try:
         #     source.checksum = checksum
         # except Exception:
         #     logger.exception("Failed to persist checksum onto source %s", source_id)
 
-        # Mark job completed (unless this was a retry-only for thumbnails)
-        if job and job.status != JobStatus.COMPLETED:
+        # Thumbnail if image (folder-based thumbnails/<variant>.jpg)
+        mimetype = (source.mimetype or "").lower()
+        maybe_image_bytes: Optional[bytes] = None
+
+        try:
+            match mimetype:
+                case m if m.startswith("image/"):
+                    maybe_image_bytes = loop.run_until_complete(
+                        _download_blob(storage, source.storage_path or "")
+                    )
+                case "application/pdf":
+                    pdf_bytes = loop.run_until_complete(
+                        _download_blob(storage, source.storage_path or "")
+                    )
+                    maybe_image_bytes = _pdf_preview_bytes(
+                        self, pdf_bytes, str(source.source_id)
+                    )
+                case _:
+                    maybe_image_bytes = None
+
+            if maybe_image_bytes:
+                _generate_thumbnail_from_bytes(storage, source, maybe_image_bytes, loop)
+
             job.status = JobStatus.COMPLETED
             session.add(job)
-
-        # Only update main source status if not already completed
-        if source.status != OrganisationSourceStatus.COMPLETED:
+            source.status = OrganisationSourceStatus.EXTRACTING
             session.add(source)
-        session.commit()
+            publish_source_status(
+                organisation_id,
+                source.source_id,
+                source.status.value,
+                updated_at=source.updated_at,
+                error_message=source.error_message,
+            )
 
-        # Enqueue extract phase (only if not already completed to avoid duplicate)
-        if source.status != OrganisationSourceStatus.COMPLETED:
-            try:
-                celery.send_task(
-                    "knowledge.document_extraction",
-                    args=[organisation_id, source_id],
-                    queue="knowledge_extract",
-                )
-            except Exception as e:
-                logger.error("Failed to enqueue extract for %s: %s", source_id, e)
+            celery.send_task(
+                "knowledge.document_extraction",
+                args=[organisation_id, source_id],
+                queue="knowledge_extract",
+            )
+        except self.MaxRetriesExceededError:
+            logger.warning(
+                "Max retries exceeded for thumbnail generation source=%s", source_id
+            )
+        except Exception as e:
+            logger.warning(
+                "Thumbnail generation failed for source %s: %s", source_id, e
+            )
         logger.info("post_upload_process finished source=%s", source_id)
     finally:
         try:
