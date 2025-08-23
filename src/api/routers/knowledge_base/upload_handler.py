@@ -12,15 +12,15 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Body, Depends, status
+from fastapi import APIRouter, Body, Depends, status, Query
 from sqlmodel import Session
-from sqlalchemy import text
-
+from typing import Optional, Set
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
     get_current_user,
     get_org_session,
 )
+from src.infra.utils.database import get_org_session as raw_get_org_session
 from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.knowledge_upload_models import (
     KnowledgeBatchFinalizeRequest,
@@ -38,7 +38,15 @@ from src.service.knowledge_base.knowledge_upload_service import (
     KnowledgeUploadService,
     KnowledgeUploadServiceError,
 )
-from src.domain.models.organisation_tables.job_models import KnowledgeProcessingJob, JobStatus
+from src.service.knowledge_base.knowledge_sse_service import (
+    KnowledgeSSEError,
+    KnowledgeSourceSSEService
+)
+from src.domain.models.organisation_tables.job_models import (
+    KnowledgeProcessingJob,
+    JobStatus,
+)
+from sse_starlette.sse import EventSourceResponse
 
 logger = get_logger("knowledge_upload_handler")
 upload_router = APIRouter()
@@ -63,6 +71,24 @@ async def get_knowledge_upload_service(
             logger.debug("Service close failed", exc_info=True)
 
 
+async def get_knowledge_sse_service(
+    user_ids: UserIDs = Depends(get_current_user),
+    org_session: Session = Depends(get_org_session),
+):
+    """FastAPI dependency returning a service bound to the caller's org.
+
+    Implemented as an async generator so we can guarantee cleanup of any
+    underlying async Azure clients (avoids 'Unclosed client session' warnings).
+    """
+    service = KnowledgeSourceSSEService(org_session, user_ids.organisation_id, user_ids.user_id)
+    try:
+        yield service
+    finally:
+        try:
+            await service.close()
+        except Exception:  # Swallow to not mask original response errors
+            logger.debug("Service close failed", exc_info=True)
+
 @upload_router.post(
     "/presign/batch",
     response_model=GenericResponse[KnowledgeBatchPresignResponse],
@@ -82,12 +108,14 @@ async def presign_batch(
     """
     try:
         expiry_time = 10
-        created, errors = await service.presign_batch(payload, user_ids.user_id, expiry_time)
+        created, errors = await service.presign_batch(
+            payload, user_ids.user_id, expiry_time
+        )
 
         def _status_val(status_obj):
             """Return enum `.value` if present else string representation."""
             return status_obj.value if hasattr(status_obj, "value") else str(status_obj)
-        
+
         # Build response entries for successfully presigned files
         success_files = [
             KnowledgePresignFileResponse(
@@ -103,7 +131,7 @@ async def presign_batch(
             )
             for src, upload_url in created
         ]
-        
+
         # Build response entries for failed presign attempts (carry error info)
         failed_files = []
         for error in errors:
@@ -119,15 +147,17 @@ async def presign_batch(
                     blob_path="",
                     expires_in_seconds=0,
                     status="failed",
-                    error_message=error.get("error_message", error.get("reason", "Unknown error")),
+                    error_message=error.get(
+                        "error_message", error.get("reason", "Unknown error")
+                    ),
                     success=False,
                 )
             )
-        
+
         # Combine successful and failed files for client convenience
         all_files = success_files + failed_files
         resp = KnowledgeBatchPresignResponse(files=all_files, errors=errors)
-        
+
         message = "Batch presign completed"
         if failed_files and not success_files:
             return Response.error_response(
@@ -137,13 +167,18 @@ async def presign_batch(
             )
         elif failed_files:
             message = f"Batch presign completed with {len(failed_files)} errors"
-            
+
         return Response.success_response(message=message, data=resp)
     except ValueError as e:
-        return Response.error_response(status_code=status.HTTP_400_BAD_REQUEST, message=str(e))
+        return Response.error_response(
+            status_code=status.HTTP_400_BAD_REQUEST, message=str(e)
+        )
     except Exception as e:
-        logger.error("Unexpected error in knowledge presign batch: %s", e, exc_info=True)
+        logger.error(
+            "Unexpected error in knowledge presign batch: %s", e, exc_info=True
+        )
         return Response.internal_server_error_response("An unexpected error occurred")
+
 
 @upload_router.post(
     "/finalize/batch",
@@ -171,12 +206,24 @@ async def finalize_batch(
             # Create job rows if missing
             session = service.session
             if session:
-                session.add(KnowledgeProcessingJob(source_id=str(src.source_id), job_type="post_upload_process", status=JobStatus.PENDING))
+                session.add(
+                    KnowledgeProcessingJob(
+                        source_id=str(src.source_id),
+                        job_type="post_upload_process",
+                        status=JobStatus.PENDING,
+                    )
+                )
                 session.commit()
 
-                session.add(KnowledgeProcessingJob(source_id=str(src.source_id), job_type="document_extraction", status=JobStatus.PENDING))
+                session.add(
+                    KnowledgeProcessingJob(
+                        source_id=str(src.source_id),
+                        job_type="document_extraction",
+                        status=JobStatus.PENDING,
+                    )
+                )
                 session.commit()
-            
+
             # Enqueue first phase task
             try:
                 celery.send_task(
@@ -184,14 +231,22 @@ async def finalize_batch(
                     args=[str(user_ids.organisation_id), str(src.source_id)],
                 )
             except Exception as task_err:
-                logger.error("Failed to enqueue knowledge processing for source %s: %s", src.source_id, task_err)
+                logger.error(
+                    "Failed to enqueue knowledge processing for source %s: %s",
+                    src.source_id,
+                    task_err,
+                )
         except KnowledgeUploadServiceError as e:
             errors.append({"source_id": str(item.source_id), "reason": e.message})
             continue
         except Exception:
-            errors.append({"source_id": str(item.source_id), "reason": "unexpected_error"})
+            errors.append(
+                {"source_id": str(item.source_id), "reason": "unexpected_error"}
+            )
             continue
-        status_val = src.status.value if hasattr(src.status, "value") else str(src.status)
+        status_val = (
+            src.status.value if hasattr(src.status, "value") else str(src.status)
+        )
         results.append(
             {
                 "source_id": str(src.source_id),
@@ -202,8 +257,11 @@ async def finalize_batch(
     data = {"results": results, "errors": errors}
     if results:
         return Response.success_response(message="Batch finalize completed", data=data)
-    return Response.error_response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, message="All finalize operations failed", data=data)
-
+    return Response.error_response(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        message="All finalize operations failed",
+        data=data,
+    )
 
 
 @upload_router.post(
@@ -220,7 +278,8 @@ async def presign_single(
     """Convenience wrapper that enforces exactly one file in payload."""
     if len(payload.files) != 1:
         return Response.error_response(
-            status_code=status.HTTP_400_BAD_REQUEST, message="Exactly one file expected for this endpoint."
+            status_code=status.HTTP_400_BAD_REQUEST,
+            message="Exactly one file expected for this endpoint.",
         )
     return await presign_batch(payload, service, user_ids)
 
@@ -241,10 +300,22 @@ async def finalize_source(
         source = await service.finalize_source(payload, user_ids.user_id)
         session = service.session
         if session:
-            session.add(KnowledgeProcessingJob(source_id=str(source.source_id), job_type="post_upload_process", status=JobStatus.PENDING))
+            session.add(
+                KnowledgeProcessingJob(
+                    source_id=str(source.source_id),
+                    job_type="post_upload_process",
+                    status=JobStatus.PENDING,
+                )
+            )
             session.commit()
 
-            session.add(KnowledgeProcessingJob(source_id=str(source.source_id), job_type="document_extraction", status=JobStatus.PENDING))
+            session.add(
+                KnowledgeProcessingJob(
+                    source_id=str(source.source_id),
+                    job_type="document_extraction",
+                    status=JobStatus.PENDING,
+                )
+            )
             session.commit()
         try:
             celery.send_task(
@@ -252,7 +323,11 @@ async def finalize_source(
                 args=[str(user_ids.organisation_id), str(source.source_id)],
             )
         except Exception as task_err:
-            logger.error("Failed to enqueue knowledge processing for source %s: %s", source.source_id, task_err)
+            logger.error(
+                "Failed to enqueue knowledge processing for source %s: %s",
+                source.source_id,
+                task_err,
+            )
         storage = AzureOrganisationBlobStorage(user_ids.organisation_id)
         read_url = None
         if source.storage_path:
@@ -268,7 +343,11 @@ async def finalize_source(
                     await storage.close()
                 except Exception:
                     logger.debug("Temp storage close failed (finalize_source)")
-        status_val = source.status.value if hasattr(source.status, "value") else str(source.status)
+        status_val = (
+            source.status.value
+            if hasattr(source.status, "value")
+            else str(source.status)
+        )
         resp = KnowledgeSourceResponse(
             source_id=source.source_id,
             filename=source.filename,
@@ -289,10 +368,12 @@ async def finalize_source(
     except KnowledgeUploadServiceError as e:
         return Response.error_response(status_code=e.status_code, message=e.message)
     except Exception as e:
-        logger.error("Unexpected error finalizing knowledge source %s", payload.source_id, exc_info=True)
+        logger.error(
+            "Unexpected error finalizing knowledge source %s",
+            payload.source_id,
+            exc_info=True,
+        )
         return Response.internal_server_error_response("An unexpected error occurred")
-
-
 
 
 @upload_router.get(
@@ -323,7 +404,11 @@ async def get_source(
                     await storage.close()
                 except Exception:
                     logger.debug("Temp storage close failed (get_source)")
-        status_val = source.status.value if hasattr(source.status, "value") else str(source.status)
+        status_val = (
+            source.status.value
+            if hasattr(source.status, "value")
+            else str(source.status)
+        )
         resp = KnowledgeSourceResponse(
             source_id=source.source_id,
             filename=source.filename,
@@ -345,3 +430,61 @@ async def get_source(
         return Response.error_response(status_code=e.status_code, message=e.message)
     except Exception:
         return Response.internal_server_error_response("An unexpected error occurred")
+
+
+@upload_router.get(
+    "/sources/stream",
+    tags=["knowledge_upload"],
+    summary="Stream knowledge source status updates via SSE with Redis pub/sub",
+)
+async def stream_sources(
+    user_ids: UserIDs = Depends(get_current_user),
+    source_ids: list[UUID] | None = Query(
+        default=None,
+        description="Optional list of source UUIDs to monitor. If omitted, monitors all active sources.",
+    ),
+):
+    """Real-time SSE stream for knowledge source status using Redis pub/sub.
+
+    Important: We manually manage the organisation session so its search_path
+    remains set for the duration of the SSE stream (FastAPI would otherwise
+    finalize dependency scopes after returning EventSourceResponse, resetting
+    search_path to public and causing missing tenant table errors).
+    """
+    logger.info(
+        "Starting SSE stream for user %s with source_ids=%s", user_ids.user_id, source_ids
+    )
+
+    explicit_ids: Optional[Set[UUID]] = set(source_ids) if source_ids else None
+
+    async def event_generator():
+        # Acquire tenant session generator (keeps search_path active until we close)
+        sess_gen = raw_get_org_session(str(user_ids.organisation_id))
+        session = next(sess_gen)
+        service = KnowledgeSourceSSEService(
+            session, 
+            user_ids.organisation_id, 
+            user_ids.user_id
+        )
+        try:
+            async for evt in service.stream_events(
+                explicit_ids=explicit_ids,
+                timeout_seconds=1800,
+                heartbeat_interval=25.0,
+            ):
+                yield evt
+        finally:
+            # Ensure service & session cleanup
+            try:
+                await service.close()
+            except Exception:
+                logger.debug("SSE service close failed", exc_info=True)
+            # Advance generator to trigger its finally (search_path reset + close)
+            try:
+                next(sess_gen)
+            except StopIteration:
+                pass
+            except Exception:
+                logger.debug("SSE session generator finalization failed", exc_info=True)
+
+    return EventSourceResponse(event_generator())
