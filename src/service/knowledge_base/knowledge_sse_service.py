@@ -19,7 +19,7 @@ from src.domain.models.organisation_tables.knowledge_models import (
 from src.infra.messaging.redis_pubsub import AsyncRedisPubSub, channel_for_knowledge_update_status
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
 from src.infra.utils.logger import get_logger
-# (Upload service imported previously for historical reasons; not required here.)
+from src.api.schemas.knowledge_upload_models import KnowledgeSourceEventUpdate
 
 logger = get_logger("knowledge_sse_service")
 
@@ -123,31 +123,27 @@ class KnowledgeSourceSSEService:
 
         SAS generation failures are swallowed (fields omitted) to avoid breaking stream.
         """
-        status_val = source.status.value if hasattr(source.status, 'value') else str(source.status)
-        data: Dict[str, Optional[str] | int] = {
-            "source_id": str(source.source_id),
-            "status": status_val,
-            "filename": source.filename,
-            "mimetype": source.mimetype,
-            "size_bytes": source.size_bytes,
-            "updated_at": source.updated_at.isoformat() if source.updated_at else None,
-            "created_at": source.created_at.isoformat() if source.created_at else None,
-            "error_message": source.error_message,
-        }
-        # Generate SAS URLs conditionally (include for any status beyond pending upload)
-        try:
-            if getattr(source, "thumbnail_small_path", None):
-                data["thumbnail_small_url"] = await self.storage.generate_read_sas(
-                    source.thumbnail_small_path, minutes=120
-                )
-            if getattr(source, "thumbnail_medium_path", None):
-                data["thumbnail_medium_url"] = await self.storage.generate_read_sas(
-                    source.thumbnail_medium_path, minutes=120
-                )
-        except Exception:
-            # Log at debug to avoid noisy streams; missing URLs just omitted
-            logger.debug(
-                "Failed generating one or more SAS URLs for source %s", source.source_id, exc_info=True
+
+        # Build a validated model instance and then convert to dict so callers
+        # receive a predictable, typed payload.
+        model = KnowledgeSourceEventUpdate(
+            source_id=str(source.source_id),
+            status=source.status,
+            updated_at=source.updated_at.isoformat() if source.updated_at else None,
+            error_message=source.error_message,
+            progress=None,
+        )
+        data = model.dict()
+
+        if model.status in [OrganisationSourceStatus.EXTRACTING, OrganisationSourceStatus.COMPLETED]:
+            # Generate SAS URLs conditionally (include for any status beyond pending upload)
+            data["thumbnail_small_url"] = await self.storage.generate_read_sas(
+                source.thumbnail_small_path, 
+                minutes=120
+            )
+            data["thumbnail_medium_url"] = await self.storage.generate_read_sas(
+                source.thumbnail_medium_path, 
+                minutes=120
             )
         return data
     
@@ -170,7 +166,7 @@ class KnowledgeSourceSSEService:
         logger.info(f"Starting SSE stream for org {self.organisation_id}, user {self.user_id}")
         start_time = asyncio.get_event_loop().time()
         last_heartbeat = start_time
-        
+
         try:
             # 1. Get initial snapshot
             initial_sources = await self.get_initial_sources(explicit_ids)
@@ -187,10 +183,10 @@ class KnowledgeSourceSSEService:
             for serialized in serialized_list:
                 watched_status[serialized["source_id"]] = serialized["status"]
 
-            yield {"event": "snapshot", "data": json.dumps(serialized_list)}
+            yield {"event": "status", "data": json.dumps(serialized_list)}
 
             # Check if all are already terminal
-            if all(status in self.TERMINAL_STATUS_VALUES for status in watched_status.values()):
+            if all(attachment["status"] in self.TERMINAL_STATUS_VALUES for attachment in serialized_list):
                 yield {
                     "event": "complete", 
                     "data": json.dumps({"message": "all_sources_terminal"})
@@ -229,38 +225,20 @@ class KnowledgeSourceSSEService:
                     continue
                 
                 # Filter by explicit IDs if provided
-                if explicit_ids and source_id not in {str(sid) for sid in explicit_ids}:
+                if source_id not in {str(sid) for sid in explicit_ids}:
                     continue
-                
-                # Update tracked status
-                new_status = message.get("status")
-                if source_id in watched_status:
-                    old_status = watched_status[source_id]
-                    if old_status != new_status:
-                        watched_status[source_id] = new_status
-                        
-                        # Fetch fresh source to include thumbnails / URLs once generated
-                        try:
-                            src_obj = self.org_session.get(OrganisationSource, UUID(source_id))
-                        except Exception:
-                            src_obj = None
-                        if src_obj:
-                            serialized_update = await self.serialize_source(src_obj)
-                            yield {"event": "update", "data": json.dumps([serialized_update])}
-                        else:
-                            # Fallback to original message
-                            yield {"event": "update", "data": json.dumps([message])}
-                        
-                        # Check if all sources are now terminal
-                        if all(status in self.TERMINAL_STATUS_VALUES for status in watched_status.values()):
-                            yield {
-                                "event": "complete",
-                                "data": json.dumps({
-                                    "message": "all_sources_completed",
-                                    "final_statuses": watched_status
-                                })
-                            }
-                            return
+
+                watched_status[source_id] = message.get("status")
+                yield {"event": "status", "data": json.dumps([message])}
+
+                if all(status in self.TERMINAL_STATUS_VALUES for status in watched_status.values()):
+                    yield {
+                        "event": "complete",
+                        "data": json.dumps({
+                            "message": "all_sources_completed"
+                        })
+                    }
+                    return
                 
         except Exception as e:
             logger.error(f"SSE stream error for org {self.organisation_id}: {e}", exc_info=True)

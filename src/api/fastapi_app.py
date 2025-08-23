@@ -7,8 +7,6 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 load_dotenv(BASE_DIR / ".env", override=True)
 
-from fastapi import Depends
-
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 from socketio import ASGIApp
@@ -22,6 +20,7 @@ from ..infra.messaging.redis_client import get_redis_client
 from src.api.routers.healthcheck import healthcheck_router
 from src.api.routers.chat_handler import chat_router
 from src.api.routers.chat_attachments.upload_handler import upload_router
+from src.api.routers.chat_attachments.access_handler import download_router as attachment_access_router
 from src.api.routers.knowledge_base.upload_handler import upload_router as knowledge_upload_router
 from src.api.routers.knowledge_base.access_handler import access_router as knowledge_access_router
 from src.api.routers.technical_deck.transcript_format import transcript_router
@@ -85,17 +84,24 @@ def create_fastapi_app():
 
     # Include routers here
     fastapp.include_router(healthcheck_router, tags=["healthcheck"])
-    fastapp.include_router(chat_router, prefix="/chats", tags=["chats"])
+    # fastapp.include_router(chat_router, prefix="/chats", tags=["chats"])
     fastapp.include_router(upload_router, prefix="/chats/upload", tags=["uploads"])
-    fastapp.include_router(transcript_router, prefix="/chats/transcript", tags=["transcript"])
-    fastapp.include_router(technical_deck, prefix="/chats/technical_deck", tags=["technical_deck"])
-    fastapp.include_router(select_template, prefix="/chats/technical_deck", tags=["technical_deck", "select_template"])
-    fastapp.include_router(rfp__sheet_router, prefix="/chats/rfp_sheet", tags=["rfp sheet", "sheet identification"])
+    fastapp.include_router(attachment_access_router, prefix="/chats", tags=["downloads"])  # /chats/attachment/{id}/download
+    # fastapp.include_router(transcript_router, prefix="/chats/transcript", tags=["transcript"])
+    # fastapp.include_router(technical_deck, prefix="/chats/technical_deck", tags=["technical_deck"])
+    # fastapp.include_router(select_template, prefix="/chats/technical_deck", tags=["technical_deck", "select_template"])
+    # fastapp.include_router(rfp__sheet_router, prefix="/chats/rfp_sheet", tags=["rfp sheet", "sheet identification"])
 
-    # User routers
+    # User auth
     fastapp.include_router(user_auth_router, prefix="/users/auth", tags=["user", "authentication"])
+
+    # Knowledge base
     fastapp.include_router(knowledge_upload_router, prefix="/users/knowledge", tags=["knowledge_upload"])
     fastapp.include_router(knowledge_access_router, prefix="/users/knowledge", tags=["knowledge_access"])
+
+    # attachment
+    fastapp.include_router(upload_router, prefix="/users/chats/upload", tags=["uploads"])
+    fastapp.include_router(attachment_access_router, prefix="/users/chats/upload", tags=["downloads"])
 
     # Admin routers
     fastapp.include_router(admin_auth_router, prefix="/admin/auth", tags=["admin", "authentication"])

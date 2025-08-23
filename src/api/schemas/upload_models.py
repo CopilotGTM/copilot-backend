@@ -71,6 +71,13 @@ class UploadedAttachmentResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class AttachmentDownloadResponse(BaseModel):
+    """Response model for generating a short‑lived download URL for an attachment."""
+    attachment_id: UUID
+    download_url: HttpUrl
+    expires_in_seconds: int = Field(default=120 * 60, description="Seconds until the URL expires")
+
+
 # ---------------------------- Batch Models ---------------------------- #
 
 class AttachmentBatchPresignRequest(BaseModel):

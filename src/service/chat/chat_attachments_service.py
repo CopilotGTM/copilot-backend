@@ -138,6 +138,33 @@ class UploadService:
         
         return attachment
 
+    async def generate_download_url(self, attachment_id: UUID, user_id: UUID, minutes: int = 120, download_filename: str | None = None) -> str:
+        """Generate a short‑lived read SAS URL for an attachment ensuring ownership."""
+        self._set_schema()
+        attachment: Attachment | None = self.org_session.get(Attachment, attachment_id)
+
+        # Check ownership and status
+        if not attachment or attachment.organisation_id != self.organisation_id or attachment.user_id != user_id:
+            raise UploadServiceError("Attachment not found or access denied", status_code=404)
+
+        # Check status
+        if attachment.status != AttachmentStatus.COMPLETED:
+            raise UploadServiceError("Attachment is not ready", status_code=400)
+
+        # Check storage path
+        if not attachment.storage_path:
+            raise UploadServiceError("Attachment has no storage path", status_code=400)
+
+        try:
+            return await self.storage.generate_read_sas(
+                attachment.storage_path,
+                minutes=minutes,
+                download_filename=download_filename or attachment.filename,
+            )
+        except Exception as e:  # pragma: no cover - network/azure path
+            logger.error("Failed generating read SAS for attachment %s: %s", attachment_id, e, exc_info=True)
+            raise UploadServiceError("Could not generate download URL") from e
+
     # ---------------- Batch operations ---------------- #
 
     async def presign_batch(self, payload: AttachmentBatchPresignRequest, user_id: UUID, expiry_minutes: int = 15):

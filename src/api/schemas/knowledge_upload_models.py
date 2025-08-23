@@ -57,7 +57,6 @@ class KnowledgePresignFileResponse(BaseModel):
     mimetype: str
     size_bytes: int
     upload_url: Optional[HttpUrl] = None
-    blob_path: str = ""
     expires_in_seconds: int = 0
     status: str
     error_message: Optional[str] = None
@@ -98,3 +97,21 @@ class KnowledgeSourceResponse(BaseModel):
     thumbnail_medium_path: Optional[str] = None
 
     model_config = {"from_attributes": True}
+
+class KnowledgeSourceEventUpdate(BaseModel):
+    """Pydantic model matching the SSE source update payload.
+
+    Named exactly as requested: `sourceenvetupdate`.
+    """
+    source_id: str
+    status: str
+    updated_at: Optional[str] = None
+    error_message: Optional[str] = None
+    progress: Optional[int] = None
+    thumbnail_small_url: Optional[str] = None
+    thumbnail_medium_url: Optional[str] = None
+
+    class Config:
+        orm_mode = True
+        # Allow adding SAS URL fields (thumbnail_small_url, etc.) later
+        extra = "allow"
