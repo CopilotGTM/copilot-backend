@@ -99,10 +99,9 @@ class KnowledgeSourceSSEService:
             OrganisationSource.organisation_id == self.organisation_id,
             OrganisationSource.user_id == self.user_id,
         )
-        
+
+        # Apply explicit ID filter if provided
         if explicit_ids:
-            # Explicit mode: get requested IDs regardless of status
-            logger.info("Fetching initial sources for User sent IDs")
             stmt = stmt.where(OrganisationSource.source_id.in_(explicit_ids))
             sources = self.org_session.exec(stmt).all()
             return sources
@@ -133,7 +132,7 @@ class KnowledgeSourceSSEService:
             error_message=source.error_message,
             progress=None,
         )
-        data = model.dict()
+        data = model.model_dump()
 
         if model.status in [OrganisationSourceStatus.EXTRACTING, OrganisationSourceStatus.COMPLETED]:
             # Generate SAS URLs conditionally (include for any status beyond pending upload)

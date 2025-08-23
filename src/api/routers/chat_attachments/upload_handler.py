@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, status, Body
+from fastapi import APIRouter, Depends, Query, status, Body
 from sqlmodel import Session
 
 from src.infra.utils.logger import get_logger
@@ -167,11 +167,14 @@ async def finalize_batch(
 )
 async def stream_attachments(
     user_ids: UserIDs = Depends(get_current_user),
-    attachment_ids: list[UUID] | None = None,
+    attachment_ids: list[UUID] | None = Query(
+        default=None,
+        description="Optional list of attachment UUIDs to monitor. If omitted, monitors all active sources.",
+    ),
 ):
     logger.info("Starting attachment SSE stream for user %s ids=%s", user_ids.user_id, attachment_ids)
     explicit_ids: Optional[Set[UUID]] = set(attachment_ids) if attachment_ids else None
-
+    logger.info("Attachment SSE explicit IDs: %s", explicit_ids)
     async def event_generator():
         # Manual control of session lifetime (mirror knowledge base SSE pattern)
         from src.infra.utils.database import get_org_session as raw_get_org_session

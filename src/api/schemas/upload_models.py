@@ -126,3 +126,17 @@ class AttachmentBatchFinalizeResult(BaseModel):
 class AttachmentBatchFinalizeResponse(BaseModel):
     results: list[AttachmentBatchFinalizeResult]
     errors: list[dict] = Field(default_factory=list)
+
+class AttachmentEventUpdate(BaseModel):
+    """Pydantic model matching the SSE source update payload.
+
+    Named exactly as requested: `sourceenvetupdate`.
+    """
+    attachment_id: str
+    status: str
+    updated_at: Optional[str] = None
+    error_message: Optional[str] = None
+    thumbnail_small_url: Optional[str] = None
+
+    class Config:
+        orm_mode = True

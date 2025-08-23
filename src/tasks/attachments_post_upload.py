@@ -17,7 +17,8 @@ from src.infra.utils.database import get_org_session
 import os
 from src.domain.models.organisation_tables.chat_message_models import Attachment, AttachmentStatus
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
-from src.infra.messaging.redis_pubsub import publish_attachment_status_async
+from src.infra.messaging.attachment_status_publish import publish_attachment_status
+from src.api.schemas.upload_models import AttachmentEventUpdate
 
 logger = get_logger("attachments_post_upload_task")
 
@@ -103,7 +104,7 @@ def post_upload(self, organisation_id: str, attachment_id: str):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    async def _async_main():
+    try:
         attachment = session.get(Attachment, attachment_id)
         if not attachment:
             logger.warning("Attachment %s not found for processing", attachment_id)
@@ -112,14 +113,6 @@ def post_upload(self, organisation_id: str, attachment_id: str):
             logger.info("Attachment %s already processed", attachment_id)
             return
 
-        # Transition to processing
-        attachment.status = AttachmentStatus.PROCESSING
-        session.add(attachment)
-        session.commit()
-        try:
-            await publish_attachment_status_async(organisation_id, attachment_id, attachment.status.value, attachment.updated_at)
-        except Exception:
-            pass
         # Stream checksum (and maybe buffer image) -- DISABLED temporarily (checksum deferred)
         # checksum: str = ""
         maybe_image_bytes: Optional[bytes] | None = None
@@ -131,18 +124,15 @@ def post_upload(self, organisation_id: str, attachment_id: str):
         #     attachment.processing_error = f"download_failed: {e}"[:500]
         #     session.add(attachment)
         #     session.commit()
-        #     try:
-        #         await publish_attachment_status_async(organisation_id, attachment_id, attachment.status.value, attachment.updated_at, attachment.processing_error)
-        #     except Exception:
-        #         pass
-        #     return
+
 
         # Thumbnails for images / PDFs
         mt = (attachment.mimetype or "").lower()
         if mt.startswith("image/") or mt == "application/pdf":
             try:
                 if maybe_image_bytes is None:
-                    raw_bytes = await _download_blob(storage, attachment.storage_path)
+                    # Properly execute async download inside our dedicated loop
+                    raw_bytes = loop.run_until_complete(_download_blob(storage, attachment.storage_path))
                     if mt == "application/pdf" and fitz is not None:
                         try:
                             with fitz.open(stream=raw_bytes, filetype="pdf") as doc:  # type: ignore[attr-defined]
@@ -155,39 +145,44 @@ def post_upload(self, organisation_id: str, attachment_id: str):
                     else:
                         maybe_image_bytes = raw_bytes
                 if maybe_image_bytes:
-                    await _generate_thumbnails_from_bytes_async(storage, attachment, maybe_image_bytes)
+                    # Run thumbnail generation coroutine
+                    loop.run_until_complete(_generate_thumbnails_from_bytes_async(storage, attachment, maybe_image_bytes))
                     attachment.status = AttachmentStatus.UPLOADED
                     session.add(attachment)
                     session.commit()
-                    try:
-                        await publish_attachment_status_async(organisation_id, attachment_id, attachment.status.value, attachment.updated_at)
-                    except Exception:
-                        pass
+
             except Exception as e:
                 logger.exception("Thumbnail generation failed for attachment %s", attachment_id)
                 attachment.status = AttachmentStatus.FAILED
                 attachment.processing_error = f"thumbnail_failed: {e}"[:500]
                 session.add(attachment)
                 session.commit()
-                try:
-                    await publish_attachment_status_async(organisation_id, attachment_id, attachment.status.value, attachment.updated_at, attachment.processing_error)
-                except Exception:
-                    pass
 
         # Finalize status (checksum skipped)
         # attachment.checksum = checksum
-        if attachment.status in {AttachmentStatus.UPLOADED, AttachmentStatus.PROCESSING}:
-            attachment.status = AttachmentStatus.COMPLETED
+        attachment.status = AttachmentStatus.COMPLETED
         session.add(attachment)
         session.commit()
-        try:
-            await publish_attachment_status_async(organisation_id, attachment_id, attachment.status.value, attachment.updated_at)
-        except Exception:
-            pass
-        logger.info("Attachment post-upload task completed attachment=%s", attachment_id)
 
-    try:
-        loop.run_until_complete(_async_main())
+        thumbnail_small_url = None
+        try:
+            if attachment.thumbnail_small_path:
+                thumbnail_small_url = loop.run_until_complete(
+                    storage.generate_read_sas(attachment.thumbnail_small_path, minutes=120)
+                )
+        except Exception:
+            logger.debug(
+                "Thumbnail SAS generation failed for attachment %s", attachment.attachment_id, exc_info=True
+            )
+        event_to_publish = AttachmentEventUpdate(
+            attachment_id=str(attachment.attachment_id),
+            status=attachment.status.value if hasattr(attachment.status, "value") else str(attachment.status),
+            updated_at=attachment.updated_at.isoformat() if getattr(attachment, "updated_at", None) else None,
+            error_message=attachment.processing_error,
+            thumbnail_small_url=thumbnail_small_url,
+        )
+        publish_attachment_status(organisation_id, event_to_publish)
+        logger.info("Attachment post-upload task completed attachment=%s", attachment_id)
     finally:
         try:
             session.close()

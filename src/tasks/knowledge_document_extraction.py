@@ -14,7 +14,7 @@ from src.domain.models.organisation_tables.job_models import (
     KnowledgeProcessingJob,
     JobStatus,
 )
-from src.infra.messaging.knowledge_publish import publish_source_status
+from src.infra.messaging.knowledge_source_status_publish import publish_source_status
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
 from src.api.schemas.knowledge_upload_models import KnowledgeSourceEventUpdate
 

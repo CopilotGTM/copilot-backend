@@ -25,7 +25,7 @@ from src.domain.models.organisation_tables.job_models import (
     JobStatus,
 )
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
-from src.infra.messaging.knowledge_publish import publish_source_status
+from src.infra.messaging.knowledge_source_status_publish import publish_source_status
 from src.api.schemas.knowledge_upload_models import KnowledgeSourceEventUpdate
 
 logger = get_logger("knowledge_post_upload_task")
