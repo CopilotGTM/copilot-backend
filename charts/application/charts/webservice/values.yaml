@@ -1,0 +1,81 @@
+# ------------------------------------------------------------------
+# Default Values for the Generic Webservice Subchart
+# ------------------------------------------------------------------
+# These values serve as the defaults for any service deployed by this chart.
+# They are intended to be OVERRIDDEN from the parent `application` chart's
+# `values.yaml` file under a specific service key (e.g., `services.api`).
+# ------------------------------------------------------------------
+# Custom annotations to be added to all resources
+annotations: {}
+# Overrides for chart naming conventions.
+# It is recommended to use a fullnameOverride rather than overriding the name.
+nameOverride: ""
+fullnameOverride: ""
+chartLabel: copilot-backend-0.1.0
+name: copilot-backend
+namespace: copilotgtm
+labels:
+  name: copilot-backend
+  instance: copilot-backend
+containerName: copilot-backend
+environment: development
+replicaCount: 1
+
+image:
+  repository: "copilotgtmacrdev.azurecr.io/copilot-backend"
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    nginx.ingress.kubernetes.io/websocket-services: copilot-backend
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    cert-manager.io/cluster-issuer: "letsencrypt"
+  hosts:
+    - host: "devapi.copilotgtm.com"
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - hosts:
+        - "devapi.copilotgtm.com"
+      secretName: "devapi-tls"
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 80
+
+resources:
+  limits:
+    cpu: 512m
+    memory: 1024Mi
+  requests:
+    cpu: 256m
+    memory: 512Mi
+
+secrets: {}
+
+serviceAccount:
+  create: true
+  name: "copilot-backend"
+
+# A map of jobs to run as Helm hooks.
+# Each key represents a job that can be configured from the parent chart.
+# Example:
+# jobs:
+#   migrations:
+#     enabled: true
+#     command: ["./run-migrations.sh"]
+jobs: {}

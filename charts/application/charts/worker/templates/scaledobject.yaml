@@ -1,0 +1,23 @@
+{{- if and .Values.enabled .Values.autoscaling.enabled -}}
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "worker.fullname" . }}-scaler
+  labels:
+    {{- include "worker.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    name: {{ include "worker.fullname" . }} # This must match the name of the Deployment
+  minReplicaCount: {{ .Values.autoscaling.minReplicas }}
+  maxReplicaCount: {{ .Values.autoscaling.maxReplicas }}
+  triggers:
+  - type: redis
+    metadata:
+      # The address should point to the Redis service.
+      # It's derived from the global values to ensure consistency.
+      address: "{{ .Values.global.redis.host }}:{{ .Values.global.redis.port }}"
+      # The listName is the name of the Celery queue for this worker.
+      listName: {{ .Values.config.queueName | quote }}
+      # The target value for the list length. KEDA will scale up when the queue length exceeds this.
+      listLength: {{ .Values.autoscaling.queueLength | quote }}
+{{- end }}

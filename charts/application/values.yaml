@@ -1,0 +1,139 @@
+# Global values can be defined here
+global:
+  redis:
+    host: "redis-master.default.svc.cluster.local"
+    port: 6379
+  secretName: "application-secrets"
+
+# Configuration for the main API
+api:
+  enabled: true
+  fullnameOverride: copilot-backend
+  # Add any custom annotations for this specific service here
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/path: "/metrics"
+    prometheus.io/port: "80"
+
+  # Add any custom labels for this specific service here
+  labels:
+    tier: "backend"
+    owner: "api-team"
+
+  replicaCount: 1
+  environment: development
+
+  image:
+    repository: "copilotgtmacrdev.azurecr.io/copilot-backend"
+    tag: "latest"
+    pullPolicy: IfNotPresent
+
+  service:
+    type: ClusterIP
+    port: 80
+
+  ingress:
+    enabled: true
+    className: "nginx"
+    annotations:
+      nginx.ingress.kubernetes.io/websocket-services: copilot-backend
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+      nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+      nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+      nginx.ingress.kubernetes.io/ssl-redirect: "true"
+      cert-manager.io/cluster-issuer: "letsencrypt"
+    hosts:
+      - host: "devapi.copilotgtm.com"
+        paths:
+          - path: /
+            pathType: Prefix
+    tls:
+      - hosts:
+          - "devapi.copilotgtm.com"
+        secretName: "devapi-tls"
+
+  # HPA for the API (CPU/Memory based)
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 3
+    targetCPUUtilizationPercentage: 80
+    targetMemoryUtilizationPercentage: 80
+
+  resources:
+    limits:
+      cpu: 512m
+      memory: 1024Mi
+    requests:
+      cpu: 256m
+      memory: 512Mi
+
+  serviceAccount:
+    create: true
+    name: "copilot-backend"
+
+  # Define any Helm hook jobs for this specific service
+  jobs:
+    startup:
+      enabled: true
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          set -euo pipefail
+          echo "[startup-job] Starting migrations & seeding..."
+          sh ./scripts/startup.sh
+          echo "[startup-job] Completed successfully."
+
+  # Inline secrets (key: value) encoded automatically; override via --set-file for real secrets
+  secrets: {}
+
+# # Master switchboard for all workers
+# workers:
+#   image-processing:
+#     enabled: true
+#     replicaCount: 3
+#     image:
+#       repository: "my-acr.azurecr.io/image-worker"
+#       tag: "1.2.0"
+#     config:
+#       queueName: "image-processing"
+#     resources:
+#       requests:
+#         cpu: "500m"
+#         memory: "1Gi"
+#     autoscaling:
+#       enabled: true
+#       minReplicas: 2
+#       maxReplicas: 20
+#       queueLength: 10
+
+#   notification:
+#     enabled: true
+#     replicaCount: 2
+#     image:
+#       repository: "my-acr.azurecr.io/notification-worker"
+#       tag: "1.0.5"
+#     config:
+#       queueName: "notifications"
+#     resources:
+#       requests:
+#         cpu: "250m"
+#         memory: "512Mi"
+
+#   data-aggregation:
+#     enabled: true # Enable our new worker
+#     replicaCount: 2
+#     image:
+#       repository: "my-acr.azurecr.io/data-agg-worker"
+#       tag: "1.0.0"
+#     config:
+#       queueName: "data-aggregation"
+#     resources:
+#       requests:
+#         cpu: "1"
+#         memory: "2Gi"
+#     autoscaling:
+#       enabled: true
+#       minReplicas: 2
+#       maxReplicas: 10
+#       queueLength: 5

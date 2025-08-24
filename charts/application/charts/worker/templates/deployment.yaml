@@ -1,0 +1,36 @@
+{{- if .Values.enabled -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "worker.fullname" . }}
+  labels:
+    {{- include "worker.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "worker.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "worker.selectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - "celery"
+            - "-A"
+            - "src.celery_app"
+            - "worker"
+            - "-l"
+            - "info"
+            - "-Q"
+            - "{{ .Values.config.queueName }}" # Consumes from a specific queue
+          envFrom:
+            - secretRef:
+                name: {{ .Values.config.secretName | default .Values.global.secretName }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+{{- end }}
