@@ -1,8 +1,10 @@
 # Global values can be defined here
 global:
   redis:
-    host: "redis-master.default.svc.cluster.local"  # Overridden in pipeline with --set global.redis.host
+    host: "redis-master.default.svc.cluster.local"
     port: 6379                                       # Overridden in pipeline with --set global.redis.port
+    enableTLS: true                                  # Set true for Azure Redis (port 6380)
+    usePassword: true                                # Set true to create TriggerAuthentication for password
   # Must match the api chart secret name (<fullname>-secret) so workers & KEDA reference an existing secret
   secretName: "copilot-backend-secret"
 
@@ -134,7 +136,7 @@ knowledge-upload-worker:
       memory: "256Mi"
   autoscaling:
     enabled: true
-    minReplicas: 0     # Scale to zero when no tasks
+    minReplicas: 1     # Scale to zero when no tasks
     maxReplicas: 10    # More replicas for concurrent uploads
     queueLength: 2     # Scale when 2+ tasks queued
     scaleDownDelay: 180  # Faster scale down (3 min, seconds)

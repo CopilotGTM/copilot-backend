@@ -95,6 +95,8 @@ stages:
                       --namespace copilotgtm \
                       --set global.redis.host="$REDIS_HOST" \
                       --set global.redis.port="$REDIS_PORT" \
+                      --set global.redis.enableTLS=true \
+                      --set global.redis.usePassword=true \
                       --set api.image.repository="$ACR_LOGIN_SERVER/copilot-backend" \
                       --set api.image.tag="$BUILD_BUILDID" \
                       --set knowledge-extract-worker.image.repository="$ACR_LOGIN_SERVER/copilot-backend" \
