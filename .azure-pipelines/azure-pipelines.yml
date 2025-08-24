@@ -83,10 +83,10 @@ stages:
                   displayName: 'List files in workspace'
 
                 - script: |
-                    # Temporary safeguard: delete existing startup job to avoid immutable field patch errors
+                    # Delete existing startup job to avoid immutable field patch errors
                     kubectl delete job copilot-backend-startup -n copilotgtm --ignore-not-found
-                    # Also delete the secret to force recreation with new values
-                    kubectl delete secret copilot-backend-secret -n copilotgtm --ignore-not-found
+                    # Wait a moment for job deletion to complete
+                    sleep 5
                   displayName: 'Pre-delete startup Job (immutability workaround)'
 
                 - script: |
