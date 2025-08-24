@@ -13,7 +13,7 @@ from PIL import Image, UnidentifiedImageError
 import fitz
 
 
-from src.celery_app import celery
+from src.workers.knowledge_worker.celery_app import app
 from src.infra.utils.logger import get_logger
 from src.infra.utils.database import get_org_session
 from src.domain.models.organisation_tables.knowledge_models import (
@@ -169,7 +169,7 @@ def _pdf_preview_bytes(self, pdf_bytes: bytes, source_id: str) -> bytes:
         return _placeholder_bytes("pdf")
 
 
-@celery.task(
+@app.task(
     name="knowledge.post_upload_process", bind=True, acks_late=True, max_retries=3
 )
 def post_upload_process(self, organisation_id: str, source_id: str):
@@ -290,7 +290,7 @@ def post_upload_process(self, organisation_id: str, source_id: str):
                 publish_event
             )
 
-            celery.send_task(
+            app.send_task(
                 "knowledge.document_extraction",
                 args=[organisation_id, source_id],
                 queue="knowledge_extract",

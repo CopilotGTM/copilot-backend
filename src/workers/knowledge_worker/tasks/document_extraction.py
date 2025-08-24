@@ -3,7 +3,7 @@ from __future__ import annotations
 """
 import asyncio
 
-from src.celery_app import celery
+from src.workers.knowledge_worker.celery_app import app
 from src.infra.utils.logger import get_logger
 from src.infra.utils.database import get_org_session
 from src.domain.models.organisation_tables.knowledge_models import (
@@ -21,7 +21,7 @@ from src.api.schemas.knowledge_upload_models import KnowledgeSourceEventUpdate
 logger = get_logger("knowledge_document_extraction")
 
 
-@celery.task(name="knowledge.document_extraction", bind=True, acks_late=True, max_retries=3)
+@app.task(name="knowledge.document_extraction", bind=True, acks_late=True, max_retries=3)
 def document_extraction(self, organisation_id: str, source_id: str):  # pragma: no cover
     """Heavy extraction task (PDF/DOC etc.)."""
     session_gen = get_org_session(organisation_id)

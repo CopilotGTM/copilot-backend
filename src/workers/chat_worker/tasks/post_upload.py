@@ -11,7 +11,7 @@ except ImportError:  # pragma: no cover
     fitz = None  # type: ignore
 import asyncio
 
-from src.celery_app import celery
+from src.workers.chat_worker.celery_app import app
 from src.infra.utils.logger import get_logger
 from src.infra.utils.database import get_org_session
 import os
@@ -90,7 +90,7 @@ async def _generate_thumbnails_from_bytes_async(storage: AzureOrganisationBlobSt
         raise
 
 
-@celery.task(name="attachments.post_upload", bind=True, acks_late=True, max_retries=3)
+@app.task(name="attachments.post_upload", bind=True, acks_late=True, max_retries=3)
 def post_upload(self, organisation_id: str, attachment_id: str):
     """Post-upload processing: checksum + optional thumbnails.
 

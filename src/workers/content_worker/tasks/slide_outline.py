@@ -1,4 +1,4 @@
-from src.celery_app import celery
+from src.workers.content_worker.celery_app import app
 import json
 import asyncio
 from src.infra.messaging.redis_client import get_redis_client
@@ -26,7 +26,7 @@ def publish_websocket_message(sid, event, data):
         logger.error(f"Error publishing websocket message: {e}")
 
 
-@celery.task(bind=True)
+@app.task(bind=True)
 def generate_slide_outline_task(self, sid, data_json):
     data = json.loads(data_json)
     session_id = data.get("session_id")

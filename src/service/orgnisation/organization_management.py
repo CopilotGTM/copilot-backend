@@ -55,8 +55,18 @@ class OrganizationManagementService:
 
     def __init__(self):
         """Initializes the service."""
-        self.master_engine = database_previlage_connectin()
-        self._ensure_vector_extension_available()
+        self._master_engine = None
+        self._vector_extension_checked = False
+
+    @property
+    def master_engine(self):
+        """Lazy initialization of master engine."""
+        if self._master_engine is None:
+            self._master_engine = database_previlage_connectin()
+            if not self._vector_extension_checked:
+                self._ensure_vector_extension_available()
+                self._vector_extension_checked = True
+        return self._master_engine
 
     def create_organization(
         self,

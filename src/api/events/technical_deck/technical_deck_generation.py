@@ -13,7 +13,8 @@ from src.domain.models.organisation_tables import ChatSession as ChatSessionDB
 from src.infra.utils.database import get_master_session
 from src.infra.messaging.redis_client import get_socket_connection
 from src.api.utils.websocket_response import WebSocketResponse
-from src.tasks.technical_deck import generate_deck_task
+from src.workers.content_worker.tasks.technical_deck import generate_deck_task
+from src.workers.content_worker.celery_app import app as content_app
 
 logger = get_logger()
 
@@ -102,7 +103,11 @@ async def generate_deck(
         }
 
         # Start the Celery task
-        generate_deck_task.delay(sid, json.dumps(task_data))
+        content_app.send_task(
+            "generate_deck_task",
+            args=[sid, json.dumps(task_data)],
+            queue="deck_generation",
+        )
         logger.info("Technical deck generation task started")
 
     except Exception as e:

@@ -29,7 +29,7 @@ from src.service.orgnisation.organization_management import organization_managem
 from src.api.utils.http_response import Response
 from src.infra.auth.admin_auth import admin_auth
 from src.api.schemas.base_models import GenericResponse
-from src.tasks.organization import create_organization_task
+from src.workers.organization_worker.tasks.organization import create_organization_task
 
 logger = get_logger("admin_organisations_handler")
 router = APIRouter()
@@ -67,7 +67,7 @@ async def create_organization(
             admin_id=str(current_user),
             organisation_name=request.organisation_name,
             org_details=org_details,
-        ).get(timeout=300)  # 5-minute timeout for the synchronous task
+        ).get(timeout=60)  # 1-minute timeout for the synchronous task
 
         response_data = CreateOrganizationResponse(**task_result)
         
