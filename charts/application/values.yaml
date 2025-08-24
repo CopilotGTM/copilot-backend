@@ -1,9 +1,10 @@
 # Global values can be defined here
 global:
   redis:
-    host: "redis-master.default.svc.cluster.local"
-    port: 6379
-  secretName: "application-secrets"
+    host: "redis-master.default.svc.cluster.local"  # Overridden in pipeline with --set global.redis.host
+    port: 6379                                       # Overridden in pipeline with --set global.redis.port
+  # Must match the api chart secret name (<fullname>-secret) so workers & KEDA reference an existing secret
+  secretName: "copilot-backend-secret"
 
 # Configuration for the main API
 api:
