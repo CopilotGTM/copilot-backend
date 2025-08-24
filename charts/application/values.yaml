@@ -66,8 +66,8 @@ api:
       cpu: 512m
       memory: 1024Mi
     requests:
-      cpu: 256m
-      memory: 512Mi
+      cpu: 128m
+      memory: 256Mi
 
   serviceAccount:
     create: true
