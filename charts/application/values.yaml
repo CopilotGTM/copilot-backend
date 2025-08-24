@@ -76,6 +76,8 @@ api:
   jobs:
     startup:
       enabled: true
+      hook: "post-install,post-upgrade"
+      hookWeight: "1"
       command: ["/bin/sh", "-c"]
       args:
         - |

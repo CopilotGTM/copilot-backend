@@ -83,11 +83,12 @@ stages:
                   displayName: 'List files in workspace'
 
                 - script: |
-                    # Delete existing startup job to avoid immutable field patch errors
+                    # Delete existing startup job and pods to avoid immutable field patch errors
                     kubectl delete job copilot-backend-startup -n copilotgtm --ignore-not-found
-                    # Wait a moment for job deletion to complete
-                    sleep 5
-                  displayName: 'Pre-delete startup Job (immutability workaround)'
+                    kubectl delete pods -n copilotgtm -l job-name=copilot-backend-startup --ignore-not-found
+                    # Wait a moment for cleanup to complete
+                    sleep 10
+                  displayName: 'Clean up previous startup Job and Pods'
 
                 - script: |
                     helm upgrade --install "$HELM_RELEASE_NAME" "$CHART_PATH" \
