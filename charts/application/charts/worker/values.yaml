@@ -15,6 +15,9 @@ config:
   queueName: "default" # Should be overridden
   secretName: "" # Will be populated by global value
 
+global:
+  secretName: "" # Will be populated by parent chart
+
 resources:
   limits:
     cpu: 256m
@@ -30,3 +33,7 @@ autoscaling:
   maxReplicas: 10
   # Target length of the Redis list (Celery queue)
   queueLength: 5
+  # Scale down delay (time to wait before scaling down)
+  scaleDownDelay: "300s"
+  # Scale up delay (polling interval for checking metrics)
+  scaleUpDelay: "30s"

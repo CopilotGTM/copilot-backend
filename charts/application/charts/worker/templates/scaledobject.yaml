@@ -10,6 +10,12 @@ spec:
     name: {{ include "worker.fullname" . }} # This must match the name of the Deployment
   minReplicaCount: {{ .Values.autoscaling.minReplicas }}
   maxReplicaCount: {{ .Values.autoscaling.maxReplicas }}
+  {{- if .Values.autoscaling.scaleDownDelay }}
+  cooldownPeriod: {{ .Values.autoscaling.scaleDownDelay }}
+  {{- end }}
+  {{- if .Values.autoscaling.scaleUpDelay }}
+  pollingInterval: {{ .Values.autoscaling.scaleUpDelay }}
+  {{- end }}
   triggers:
   - type: redis
     metadata:

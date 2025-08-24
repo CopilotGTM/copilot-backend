@@ -87,6 +87,55 @@ api:
   # Inline secrets (key: value) encoded automatically; override via --set-file for real secrets
   secrets: {}
 
+# Master switchboard for all workers
+workers:
+  knowledge-extract:
+    enabled: true
+    replicaCount: 0  # Start with 0 replicas - scale from zero
+    image:
+      repository: "copilotgtmacrdev.azurecr.io/copilot-backend"
+      tag: "latest"
+    config:
+      queueName: "knowledge_extract"
+    resources:
+      # Lower requests for cost efficiency when idle
+      requests:
+        cpu: "100m"      # Low request, high limit for burst
+        memory: "256Mi"
+      limits:
+        cpu: "2000m"     # High limit for heavy processing
+        memory: "1Gi"
+    autoscaling:
+      enabled: true
+      minReplicas: 0     # Scale to zero when no tasks
+      maxReplicas: 5     # Burst up when needed
+      queueLength: 1     # Very responsive - scale on any task
+      scaleDownDelay: "300s"  # Wait 5 min before scaling down
+      scaleUpDelay: "30s"     # Quick scale up
+
+  knowledge-upload:
+    enabled: true
+    replicaCount: 0  # Start with 0 replicas - scale from zero
+    image:
+      repository: "copilotgtmacrdev.azurecr.io/copilot-backend"
+      tag: "latest"
+    config:
+      queueName: "knowledge_upload"
+    resources:
+      requests:
+        cpu: "50m"       # Very low request
+        memory: "128Mi"
+      limits:
+        cpu: "100m"      # Moderate limit for I/O tasks
+        memory: "256Mi"
+    autoscaling:
+      enabled: true
+      minReplicas: 0     # Scale to zero when no tasks
+      maxReplicas: 10    # More replicas for concurrent uploads
+      queueLength: 2     # Scale when 2+ tasks queued
+      scaleDownDelay: "180s"  # Faster scale down (3 min)
+      scaleUpDelay: "15s"     # Very quick scale up
+
 # # Master switchboard for all workers
 # workers:
 #   image-processing:
