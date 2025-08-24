@@ -85,6 +85,8 @@ stages:
                 - script: |
                     # Temporary safeguard: delete existing startup job to avoid immutable field patch errors
                     kubectl delete job copilot-backend-startup -n copilotgtm --ignore-not-found
+                    # Also delete the secret to force recreation with new values
+                    kubectl delete secret copilot-backend-secret -n copilotgtm --ignore-not-found
                   displayName: 'Pre-delete startup Job (immutability workaround)'
 
                 - script: |
@@ -94,8 +96,10 @@ stages:
                       --set api.image.tag="$BUILD_BUILDID" \
                       --set knowledge-extract-worker.image.repository="$ACR_LOGIN_SERVER/copilot-backend" \
                       --set knowledge-extract-worker.image.tag="$BUILD_BUILDID" \
+                      --set knowledge-extract-worker.autoscaling.enabled=true \
                       --set knowledge-upload-worker.image.repository="$ACR_LOGIN_SERVER/copilot-backend" \
                       --set knowledge-upload-worker.image.tag="$BUILD_BUILDID" \
+                      --set knowledge-upload-worker.autoscaling.enabled=true \
                       --set api.secrets.DATABASE_HOST="$(DATABASE_HOST)" \
                       --set api.secrets.DATABASE_USER="$(DATABASE_USER)" \
                       --set api.secrets.DATABASE_PORT="$(DATABASE_PORT)" \
