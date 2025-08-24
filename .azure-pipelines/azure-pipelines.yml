@@ -83,6 +83,11 @@ stages:
                   displayName: 'List files in workspace'
 
                 - script: |
+                    # Temporary safeguard: delete existing startup job to avoid immutable field patch errors
+                    kubectl delete job copilot-backend-startup -n copilotgtm --ignore-not-found
+                  displayName: 'Pre-delete startup Job (immutability workaround)'
+
+                - script: |
                     helm upgrade --install "$HELM_RELEASE_NAME" "$CHART_PATH" \
                       --namespace copilotgtm \
                       --set api.image.repository="$ACR_LOGIN_SERVER/copilot-backend" \

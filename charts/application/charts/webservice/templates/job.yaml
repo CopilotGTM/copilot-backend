@@ -8,9 +8,9 @@ metadata:
   labels:
     {{- include "webservice.labels" $ | nindent 4 }}
   annotations:
-  helm.sh/hook: {{ $jobConfig.hook | default "pre-install,pre-upgrade" | quote }}
-  helm.sh/hook-weight: {{ $jobConfig.hookWeight | default "-5" | quote }}
-  helm.sh/hook-delete-policy: {{ $jobConfig.hookDeletePolicy | default "before-hook-creation" | quote }}
+    "helm.sh/hook": {{ $jobConfig.hook | default "pre-install,pre-upgrade" | quote }}
+    "helm.sh/hook-weight": {{ $jobConfig.hookWeight | default "-5" | quote }}
+    "helm.sh/hook-delete-policy": {{ $jobConfig.hookDeletePolicy | default "before-hook-creation" | quote }}
 spec:
   backoffLimit: {{ $jobConfig.backoffLimit | default 1 }}
   activeDeadlineSeconds: {{ $jobConfig.activeDeadlineSeconds | default 900 }}
