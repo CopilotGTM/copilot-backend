@@ -248,6 +248,13 @@ variable "storage_account_name" {
   type        = string
 }
 
+# Additional organisation data storage account (separate logical store)
+variable "org_storage_account_name" {
+  description = "Base name for the organisation data Storage Account (without env suffix)."
+  type        = string
+  default     = "organisationstorage"
+}
+
 # -----------------------------------------------------------------
 # Azure DevOps & Pipelines
 # -----------------------------------------------------------------

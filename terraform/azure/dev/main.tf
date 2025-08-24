@@ -88,7 +88,7 @@ module "master_key_vault" {
 # -----------------------------------------------------------------
 # Azure Storage Account: General purpose blob/file storage
 # -----------------------------------------------------------------
-module "storage_account" {
+module "master_storage_account" {
   source                  = "../modules/storage_account"
   storage_account_name    = "${var.storage_account_name}${var.env}"
   resource_group_name     = module.resource_group.resource_group_name
@@ -98,6 +98,23 @@ module "storage_account" {
   tags = {
     environment = var.env
     project     = var.project_name
+  }
+}
+
+# -----------------------------------------------------------------
+# Organisation Data Storage Account: dedicated per-organisation data store
+# -----------------------------------------------------------------
+module "org_storage_account" {
+  source                   = "../modules/storage_account"
+  storage_account_name     = "${var.org_storage_account_name}${var.env}"
+  resource_group_name      = module.resource_group.resource_group_name
+  location                 = var.location
+  account_tier             = "Standard"
+  account_replication_type = "LRS"
+  tags = {
+    environment = var.env
+    project     = var.project_name
+    purpose     = "organisation-data"
   }
 }
 
@@ -163,11 +180,11 @@ resource "azurerm_role_assignment" "aks_kubelet_acr_pull" {
 resource "azurerm_role_assignment" "aks_kubelet_storage_blob_contributor" {
   principal_id                     = module.aks.kubelet_identity_object_id
   role_definition_name             = "Storage Blob Data Contributor"
-  scope                            = module.storage_account.storage_account_id
+  scope                            = module.master_storage_account.storage_account_id
   skip_service_principal_aad_check = true
   depends_on = [
     module.aks,
-    module.storage_account
+    module.master_storage_account
   ]
 }
 
@@ -245,6 +262,47 @@ resource "azurerm_role_assignment" "aks_storage_table_contributor_rg" {
   depends_on = [
     module.aks,
     module.resource_group
+  ]
+}
+
+# -----------------------------------------------------------------
+# Add Storage Blob Delegator: Needed to generate user delegation SAS
+# tokens (Get User Delegation Key) in addition to data plane actions.
+# Without this, SAS-based uploads using a user delegation key can fail
+# with AuthorizationPermissionMismatch.
+# -----------------------------------------------------------------
+resource "azurerm_role_assignment" "aks_storage_blob_delegator" {
+  principal_id                     = module.aks.kubelet_identity_object_id
+  role_definition_name             = "Storage Blob Delegator"
+  # Limit scope to primary application storage account
+  scope                            = module.master_storage_account.storage_account_id
+  skip_service_principal_aad_check = true
+  depends_on = [
+    module.aks,
+    module.master_storage_account
+  ]
+}
+
+# Storage permissions for organisation storage account (full blob data + delegator)
+resource "azurerm_role_assignment" "aks_org_storage_blob_contributor" {
+  principal_id                     = module.aks.kubelet_identity_object_id
+  role_definition_name             = "Storage Blob Data Contributor"
+  scope                            = module.org_storage_account.storage_account_id
+  skip_service_principal_aad_check = true
+  depends_on = [
+    module.aks,
+    module.org_storage_account
+  ]
+}
+
+resource "azurerm_role_assignment" "aks_org_storage_blob_delegator" {
+  principal_id                     = module.aks.kubelet_identity_object_id
+  role_definition_name             = "Storage Blob Delegator"
+  scope                            = module.org_storage_account.storage_account_id
+  skip_service_principal_aad_check = true
+  depends_on = [
+    module.aks,
+    module.org_storage_account
   ]
 }
 
@@ -349,7 +407,12 @@ resource "azuredevops_variable_group" "secrets" {
 
   variable {
     name         = "APPLICATION_STORAGE_NAME"
-    value        = module.storage_account.storage_account_name
+    value        = module.master_storage_account.storage_account_name
+  }
+
+  variable {
+    name         = "ORGANISATION_STORAGE_NAME"
+    value        = module.org_storage_account.storage_account_name
   }
 
   variable {
