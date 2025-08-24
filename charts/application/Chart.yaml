@@ -10,30 +10,14 @@ dependencies:
   version: "0.1.0"
   repository: "file://./charts/webservice"
   alias: api
-  # Condition path adjusted to reflect actual values structure (see values.yaml)
   condition: api.enabled
 - name: worker
   version: "0.1.0"
   repository: "file://./charts/worker"
   alias: knowledge-extract-worker
-  condition: workers.knowledge-extract.enabled
+  condition: knowledge-extract-worker.enabled
 - name: worker
   version: "0.1.0"
   repository: "file://./charts/worker"
   alias: knowledge-upload-worker
-  condition: workers.knowledge-upload.enabled
-# - name: worker
-#   version: "0.1.0"
-#   repository: "file://./charts/worker"
-#   alias: image-processing-worker
-#   condition: workers.image-processing.enabled
-# - name: worker
-#   version: "0.1.0"
-#   repository: "file://./charts/worker"
-#   alias: notification-worker
-#   condition: workers.notification.enabled
-# - name: worker
-#   version: "0.1.0"
-#   repository: "file://./charts/worker"
-#   alias: data-aggregation-worker
-#   condition: workers.data-aggregation.enabled
+  condition: knowledge-upload-worker.enabled

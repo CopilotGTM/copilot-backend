@@ -92,10 +92,10 @@ stages:
                       --namespace copilotgtm \
                       --set api.image.repository="$ACR_LOGIN_SERVER/copilot-backend" \
                       --set api.image.tag="$BUILD_BUILDID" \
-                      --set workers.knowledge-extract.image.repository="$ACR_LOGIN_SERVER/copilot-backend" \
-                      --set workers.knowledge-extract.image.tag="$BUILD_BUILDID" \
-                      --set workers.knowledge-upload.image.repository="$ACR_LOGIN_SERVER/copilot-backend" \
-                      --set workers.knowledge-upload.image.tag="$BUILD_BUILDID" \
+                      --set knowledge-extract-worker.image.repository="$ACR_LOGIN_SERVER/copilot-backend" \
+                      --set knowledge-extract-worker.image.tag="$BUILD_BUILDID" \
+                      --set knowledge-upload-worker.image.repository="$ACR_LOGIN_SERVER/copilot-backend" \
+                      --set knowledge-upload-worker.image.tag="$BUILD_BUILDID" \
                       --set api.secrets.DATABASE_HOST="$(DATABASE_HOST)" \
                       --set api.secrets.DATABASE_USER="$(DATABASE_USER)" \
                       --set api.secrets.DATABASE_PORT="$(DATABASE_PORT)" \

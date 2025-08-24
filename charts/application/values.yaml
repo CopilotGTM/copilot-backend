@@ -87,102 +87,50 @@ api:
   # Inline secrets (key: value) encoded automatically; override via --set-file for real secrets
   secrets: {}
 
-# Master switchboard for all workers
-workers:
-  knowledge-extract:
+# Knowledge Workers Configuration
+knowledge-extract-worker:
+  enabled: true
+  replicaCount: 0  # Start with 0 replicas - scale from zero
+  image:
+    repository: "copilotgtmacrdev.azurecr.io/copilot-backend"
+    tag: "latest"
+  config:
+    queueName: "knowledge_extract"
+  resources:
+    # Lower requests for cost efficiency when idle
+    requests:
+      cpu: "100m"      # Low request, high limit for burst
+      memory: "256Mi"
+    limits:
+      cpu: "2000m"     # High limit for heavy processing
+      memory: "1Gi"
+  autoscaling:
     enabled: true
-    replicaCount: 0  # Start with 0 replicas - scale from zero
-    image:
-      repository: "copilotgtmacrdev.azurecr.io/copilot-backend"
-      tag: "latest"
-    config:
-      queueName: "knowledge_extract"
-    resources:
-      # Lower requests for cost efficiency when idle
-      requests:
-        cpu: "100m"      # Low request, high limit for burst
-        memory: "256Mi"
-      limits:
-        cpu: "2000m"     # High limit for heavy processing
-        memory: "1Gi"
-    autoscaling:
-      enabled: true
-      minReplicas: 0     # Scale to zero when no tasks
-      maxReplicas: 5     # Burst up when needed
-      queueLength: 1     # Very responsive - scale on any task
-      scaleDownDelay: "300s"  # Wait 5 min before scaling down
-      scaleUpDelay: "30s"     # Quick scale up
+    minReplicas: 0     # Scale to zero when no tasks
+    maxReplicas: 5     # Burst up when needed
+    queueLength: 1     # Very responsive - scale on any task
+    scaleDownDelay: 300  # Wait 5 min before scaling down (seconds)
+    scaleUpDelay: 30     # Quick scale up (seconds)
 
-  knowledge-upload:
+knowledge-upload-worker:
+  enabled: true
+  replicaCount: 0  # Start with 0 replicas - scale from zero
+  image:
+    repository: "copilotgtmacrdev.azurecr.io/copilot-backend"
+    tag: "latest"
+  config:
+    queueName: "knowledge_upload"
+  resources:
+    requests:
+      cpu: "50m"       # Very low request
+      memory: "128Mi"
+    limits:
+      cpu: "100m"      # Moderate limit for I/O tasks
+      memory: "256Mi"
+  autoscaling:
     enabled: true
-    replicaCount: 0  # Start with 0 replicas - scale from zero
-    image:
-      repository: "copilotgtmacrdev.azurecr.io/copilot-backend"
-      tag: "latest"
-    config:
-      queueName: "knowledge_upload"
-    resources:
-      requests:
-        cpu: "50m"       # Very low request
-        memory: "128Mi"
-      limits:
-        cpu: "100m"      # Moderate limit for I/O tasks
-        memory: "256Mi"
-    autoscaling:
-      enabled: true
-      minReplicas: 0     # Scale to zero when no tasks
-      maxReplicas: 10    # More replicas for concurrent uploads
-      queueLength: 2     # Scale when 2+ tasks queued
-      scaleDownDelay: "180s"  # Faster scale down (3 min)
-      scaleUpDelay: "15s"     # Very quick scale up
-
-# # Master switchboard for all workers
-# workers:
-#   image-processing:
-#     enabled: true
-#     replicaCount: 3
-#     image:
-#       repository: "my-acr.azurecr.io/image-worker"
-#       tag: "1.2.0"
-#     config:
-#       queueName: "image-processing"
-#     resources:
-#       requests:
-#         cpu: "500m"
-#         memory: "1Gi"
-#     autoscaling:
-#       enabled: true
-#       minReplicas: 2
-#       maxReplicas: 20
-#       queueLength: 10
-
-#   notification:
-#     enabled: true
-#     replicaCount: 2
-#     image:
-#       repository: "my-acr.azurecr.io/notification-worker"
-#       tag: "1.0.5"
-#     config:
-#       queueName: "notifications"
-#     resources:
-#       requests:
-#         cpu: "250m"
-#         memory: "512Mi"
-
-#   data-aggregation:
-#     enabled: true # Enable our new worker
-#     replicaCount: 2
-#     image:
-#       repository: "my-acr.azurecr.io/data-agg-worker"
-#       tag: "1.0.0"
-#     config:
-#       queueName: "data-aggregation"
-#     resources:
-#       requests:
-#         cpu: "1"
-#         memory: "2Gi"
-#     autoscaling:
-#       enabled: true
-#       minReplicas: 2
-#       maxReplicas: 10
-#       queueLength: 5
+    minReplicas: 0     # Scale to zero when no tasks
+    maxReplicas: 10    # More replicas for concurrent uploads
+    queueLength: 2     # Scale when 2+ tasks queued
+    scaleDownDelay: 180  # Faster scale down (3 min, seconds)
+    scaleUpDelay: 15     # Very quick scale up (seconds)

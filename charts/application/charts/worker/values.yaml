@@ -33,7 +33,7 @@ autoscaling:
   maxReplicas: 10
   # Target length of the Redis list (Celery queue)
   queueLength: 5
-  # Scale down delay (time to wait before scaling down)
-  scaleDownDelay: "300s"
-  # Scale up delay (polling interval for checking metrics)
-  scaleUpDelay: "30s"
+  # Scale down delay (time to wait before scaling down in seconds)
+  scaleDownDelay: 300
+  # Scale up delay (polling interval for checking metrics in seconds)
+  scaleUpDelay: 30
