@@ -317,34 +317,6 @@ variable "backend_branch" {
 }
 
 # -----------------------------------------------------------------
-# Knowledge Base Pipeline
-# -----------------------------------------------------------------
-
-variable "knowledge_base_repo_name" {
-  description = "Azure DevOps repository name containing the YAML pipeline definition for the knowledge base."
-  type        = string
-  default     = "knowledge-base"
-}
-
-variable "knowledge_base_pipeline_name" {
-  description = "Name of the Azure DevOps pipeline resource for the knowledge base. Cannot contain '/' or special characters."
-  type        = string
-  default     = "knowledge-base-pipeline"
-}
-
-variable "knowledge_base_yml_path" {
-  description = "Relative path (from repo root) to the Azure Pipelines YAML file for the knowledge base."
-  type        = string
-  default     = "azure-pipelines.yml"
-}
-
-variable "knowledge_base_branch" {
-  description = "Branch of Repo for knowledge base"
-  type        = string
-  default     = "dev"
-}
-
-# -----------------------------------------------------------------
 # Frontend Pipeline
 # -----------------------------------------------------------------
 
