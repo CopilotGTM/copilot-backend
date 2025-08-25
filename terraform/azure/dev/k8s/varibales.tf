@@ -44,3 +44,16 @@ variable "app_service_port" {
   type    = number
   default = 80
 }
+
+# KEDA Configuration
+variable "enable_keda_autoscaling" {
+  type        = bool
+  description = "Enable KEDA-based autoscaling for applications"
+  default     = false
+}
+
+variable "keda_namespace" {
+  type        = string
+  description = "Namespace for KEDA system components"
+  default     = "keda-system"
+}

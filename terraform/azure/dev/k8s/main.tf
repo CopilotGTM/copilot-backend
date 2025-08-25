@@ -88,6 +88,53 @@ resource "helm_release" "cert_manager" {
 }
 
 # -----------------------------------------------------------------
+# 2.1) Helm chart: KEDA (Kubernetes Event-driven Autoscaling)
+# -----------------------------------------------------------------
+resource "helm_release" "keda" {
+  name             = "keda"
+  repository       = "https://kedacore.github.io/charts"
+  chart            = "keda"
+  namespace        = "keda-system"
+  version          = "2.15.1"  # Latest stable version as of 2024
+  create_namespace = true
+
+  set = [
+    {
+      name  = "resources.operator.requests.cpu"
+      value = "100m"
+    },
+    {
+      name  = "resources.operator.requests.memory"
+      value = "128Mi"
+    },
+    {
+      name  = "resources.operator.limits.cpu"
+      value = "1000m"
+    },
+    {
+      name  = "resources.operator.limits.memory"
+      value = "1000Mi"
+    },
+    {
+      name  = "resources.metricServer.requests.cpu"
+      value = "100m"
+    },
+    {
+      name  = "resources.metricServer.requests.memory"
+      value = "128Mi"
+    },
+    {
+      name  = "resources.metricServer.limits.cpu"
+      value = "1000m"
+    },
+    {
+      name  = "resources.metricServer.limits.memory"
+      value = "1000Mi"
+    }
+  ]
+}
+
+# -----------------------------------------------------------------
 # 3) cert-manager ClusterIssuer (Let’s Encrypt)
 # -----------------------------------------------------------------
 resource "time_sleep" "wait_for_cert_manager_crd" {

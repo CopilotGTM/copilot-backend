@@ -542,3 +542,25 @@ variable "resend_email" {
   type        = string
   default     = "noreply@team.copilotgtm.com"
 }
+
+# -----------------------------------------------------------------
+# KEDA Configuration
+# -----------------------------------------------------------------
+
+variable "enable_keda_autoscaling" {
+  description = "Enable KEDA-based autoscaling for applications"
+  type        = bool
+  default     = false
+}
+
+variable "keda_polling_interval" {
+  description = "KEDA polling interval in seconds"
+  type        = number
+  default     = 30
+}
+
+variable "keda_cooldown_period" {
+  description = "KEDA cooldown period in seconds"
+  type        = number
+  default     = 300
+}
