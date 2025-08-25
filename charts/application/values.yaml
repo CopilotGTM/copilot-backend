@@ -141,3 +141,53 @@ knowledge-upload-worker:
     queueLength: 2     # Scale when 2+ tasks queued
     scaleDownDelay: 180  # Faster scale down (3 min, seconds)
     scaleUpDelay: 15     # Very quick scale up (seconds)
+
+# Organization Worker
+organization-worker:
+  enabled: true
+  replicaCount: 0
+  image:
+    repository: "copilotgtmacrdev.azurecr.io/copilot-backend"
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  config:
+    queueName: "organization"
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+  autoscaling:
+    enabled: true
+    minReplicas: 0
+    maxReplicas: 5
+    queueLength: 1
+    scaleDownDelay: 300
+    scaleUpDelay: 30
+
+# Chat Worker
+chat-worker:
+  enabled: true
+  replicaCount: 0
+  image:
+    repository: "copilotgtmacrdev.azurecr.io/copilot-backend"
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  config:
+    queueName: "chat"
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+  autoscaling:
+    enabled: true
+    minReplicas: 0
+    maxReplicas: 5
+    queueLength: 1
+    scaleDownDelay: 300
+    scaleUpDelay: 30
