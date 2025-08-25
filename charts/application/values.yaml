@@ -1,0 +1,193 @@
+# Global values can be defined here
+global:
+  redis:
+    host: "redis-master.default.svc.cluster.local"
+    port: 6379                                       # Overridden in pipeline with --set global.redis.port
+    enableTLS: true                                  # Set true for Azure Redis (port 6380)
+    usePassword: true                                # Set true to create TriggerAuthentication for password
+  # Must match the api chart secret name (<fullname>-secret) so workers & KEDA reference an existing secret
+  secretName: "copilot-backend-secret"
+
+# Configuration for the main API
+api:
+  enabled: true
+  fullnameOverride: copilot-backend
+  # Add any custom annotations for this specific service here
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/path: "/metrics"
+    prometheus.io/port: "80"
+
+  # Add any custom labels for this specific service here
+  labels:
+    tier: "backend"
+    owner: "api-team"
+
+  replicaCount: 1
+  environment: development
+
+  image:
+    repository: "copilotgtmacrdev.azurecr.io/copilot-backend"
+    tag: "latest"
+    pullPolicy: IfNotPresent
+
+  service:
+    type: ClusterIP
+    port: 80
+
+  ingress:
+    enabled: true
+    className: "nginx"
+    annotations:
+      nginx.ingress.kubernetes.io/websocket-services: copilot-backend
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+      nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+      nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+      nginx.ingress.kubernetes.io/ssl-redirect: "true"
+      cert-manager.io/cluster-issuer: "letsencrypt"
+    hosts:
+      - host: "devapi.copilotgtm.com"
+        paths:
+          - path: /
+            pathType: Prefix
+    tls:
+      - hosts:
+          - "devapi.copilotgtm.com"
+        secretName: "devapi-tls"
+
+  # HPA for the API (CPU/Memory based)
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 3
+    targetCPUUtilizationPercentage: 80
+    targetMemoryUtilizationPercentage: 80
+
+  resources:
+    limits:
+      cpu: 512m
+      memory: 1024Mi
+    requests:
+      cpu: 128m
+      memory: 256Mi
+
+  serviceAccount:
+    create: true
+    name: "copilot-backend"
+
+  # Define any Helm hook jobs for this specific service
+  jobs:
+    startup:
+      enabled: true
+      hook: "post-install,post-upgrade"
+      hookWeight: "1"
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          set -euo pipefail
+          echo "[startup-job] Starting migrations & seeding..."
+          sh ./scripts/startup.sh
+          echo "[startup-job] Completed successfully."
+
+  # Inline secrets (key: value) encoded automatically; override via --set-file for real secrets
+  secrets: {}
+
+# Knowledge Workers Configuration
+knowledge-extract-worker:
+  enabled: true
+  replicaCount: 0  # Start with 0 replicas - scale from zero
+  image:
+    repository: "copilotgtmacrdev.azurecr.io/copilot-backend"
+    tag: "latest"
+  pullPolicy: IfNotPresent
+  config:
+    queueName: "knowledge_extract"
+  resources:
+    # Lower requests for cost efficiency when idle
+    requests:
+      cpu: "100m"      # Low request, high limit for burst
+      memory: "256Mi"
+    limits:
+      cpu: "2000m"     # High limit for heavy processing
+      memory: "1Gi"
+  autoscaling:
+    enabled: true
+    minReplicas: 0     # Scale to zero when no tasks
+    maxReplicas: 5     # Burst up when needed
+    queueLength: 1     # Very responsive - scale on any task
+    scaleDownDelay: 300  # Wait 5 min before scaling down (seconds)
+    scaleUpDelay: 30     # Quick scale up (seconds)
+
+knowledge-upload-worker:
+  enabled: true
+  replicaCount: 0  # Start with 0 replicas - scale from zero
+  image:
+    repository: "copilotgtmacrdev.azurecr.io/copilot-backend"
+    tag: "latest"
+  pullPolicy: IfNotPresent
+  config:
+    queueName: "knowledge_upload"
+  resources:
+    requests:
+      cpu: "50m"       # Very low request
+      memory: "128Mi"
+    limits:
+      cpu: "100m"      # Moderate limit for I/O tasks
+      memory: "256Mi"
+  autoscaling:
+    enabled: true
+    minReplicas: 1     # Scale to zero when no tasks
+    maxReplicas: 10    # More replicas for concurrent uploads
+    queueLength: 2     # Scale when 2+ tasks queued
+    scaleDownDelay: 180  # Faster scale down (3 min, seconds)
+    scaleUpDelay: 15     # Very quick scale up (seconds)
+
+# Organization Worker
+organization-worker:
+  enabled: true
+  replicaCount: 0
+  image:
+    repository: "copilotgtmacrdev.azurecr.io/copilot-backend"
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  config:
+    queueName: "organization"
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+  autoscaling:
+    enabled: true
+    minReplicas: 0
+    maxReplicas: 5
+    queueLength: 1
+    scaleDownDelay: 300
+    scaleUpDelay: 30
+
+# Chat Worker
+chat-worker:
+  enabled: true
+  replicaCount: 0
+  image:
+    repository: "copilotgtmacrdev.azurecr.io/copilot-backend"
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  config:
+    queueName: "chat"
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+  autoscaling:
+    enabled: true
+    minReplicas: 0
+    maxReplicas: 5
+    queueLength: 1
+    scaleDownDelay: 300
+    scaleUpDelay: 30

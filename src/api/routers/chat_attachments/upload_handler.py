@@ -27,7 +27,7 @@ from uuid import UUID
 from typing import Optional, Set
 from src.service.chat.chat_attachments_sse_service import AttachmentSSEService, AttachmentSSEError  # to be created
 from src.api.dependencies.organisation_dependencies import get_current_user, UserIDs, get_org_session
-from src.celery_app import celery
+from src.workers.chat_worker.celery_app import app as chat_app
 from src.domain.models.organisation_tables.chat_message_models import AttachmentStatus
 
 logger = get_logger("upload_handler")
@@ -135,9 +135,11 @@ async def finalize_batch(
         # Enqueue processing task per successfully finalized attachment
         for att in finalized:
             try:
-                celery.send_task(
+                chat_app.send_task(
                     "attachments.post_upload",
                     args=[str(user_ids.organisation_id), str(att.attachment_id)],
+                    queue="attachments",
+                    routing_key="attachments",
                 )
             except Exception as task_err:
                 logger.error("Failed to enqueue processing for attachment %s: %s", att.attachment_id, task_err)
@@ -269,9 +271,11 @@ async def finalize_upload(
         attachment = await service.finalize_upload(payload, user_ids.user_id)
 
         # Schedule single post‑upload processing task (checksum + thumbnails)
-        celery.send_task(
+        chat_app.send_task(
             "attachments.post_upload",
             args=[str(user_ids.organisation_id), str(attachment.attachment_id)],
+            queue="attachments",
+            routing_key="attachments",
         )
 
         # Only return the minimal finalized attachment payload for chat clients.

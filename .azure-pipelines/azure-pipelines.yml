@@ -16,7 +16,7 @@ pr:
 
 variables:
   - name: CHART_PATH
-    value: ./charts/copilot-backend
+    value: ./charts/application
   - name: KUBECONFIG_FILE
     value: $(Pipeline.Workspace)/kubeconfig.yaml
 
@@ -83,40 +83,60 @@ stages:
                   displayName: 'List files in workspace'
 
                 - script: |
+                    # Delete existing startup job and pods to avoid immutable field patch errors
+                    kubectl delete job copilot-backend-startup -n copilotgtm --ignore-not-found
+                    kubectl delete pods -n copilotgtm -l job-name=copilot-backend-startup --ignore-not-found
+                    # Wait a moment for cleanup to complete
+                    sleep 10
+                  displayName: 'Clean up previous startup Job and Pods'
+
+                - script: |
                     helm upgrade --install "$HELM_RELEASE_NAME" "$CHART_PATH" \
                       --namespace copilotgtm \
-                      --set image.repository="$ACR_LOGIN_SERVER/copilot-backend" \
-                      --set image.tag="$BUILD_BUILDID" \
-                      --set secrets.DATABASE_HOST="$(DATABASE_HOST)" \
-                      --set secrets.DATABASE_USER="$(DATABASE_USER)" \
-                      --set secrets.DATABASE_PORT="$(DATABASE_PORT)" \
-                      --set secrets.DATABASE_NAME="$(DATABASE_NAME)" \
-                      --set secrets.DATABASE_PASSWORD="$(DATABASE_PASSWORD)" \
-                      --set secrets.REDIS_HOST="$(REDIS_HOST)" \
-                      --set secrets.REDIS_PORT="$(REDIS_PORT)" \
-                      --set secrets.REDIS_PASSWORD="$(REDIS_PASSWORD)" \
-                      --set secrets.AZURE_OPENAI_API_KEY="$(AZURE_OPENAI_API_KEY)" \
-                      --set secrets.AZURE_OPENAI_ENDPOINT="$(AZURE_OPENAI_ENDPOINT)" \
-                      --set secrets.AZURE_EMBEDDER_OPENAI_API_KEY="$(AZURE_EMBEDDER_OPENAI_API_KEY)" \
-                      --set secrets.AZURE_EMBEDDER_OPENAI_ENDPOINT="$(AZURE_EMBEDDER_OPENAI_ENDPOINT)" \
-                      --set secrets.AZURE_EMBEDDER_DEPLOYMENT="$(AZURE_EMBEDDER_DEPLOYMENT)" \
-                      --set secrets.CLOUD_PROVIDER="$(CLOUD_PROVIDER)" \
-                      --set secrets.APPLICATION_STORAGE_NAME="$(APPLICATION_STORAGE_NAME)" \
-                      --set secrets.APPLICATION_REGION="$(APPLICATION_REGION)" \
-                      --set secrets.DATABASE_SSL_MODE="$(DATABASE_SSL_MODE)" \
-                      --set secrets.ENV="$(ENV)" \
-                      --set secrets.AZURE_KEY_VAULT_URL="$(AZURE_KEY_VAULT_URL)" \
-                      --set secrets.SUPER_ADMIN_EMAIL="$(SUPER_ADMIN_EMAIL)" \
-                      --set secrets.SUPABASE_URL="$(SUPABASE_URL)" \
-                      --set secrets.SUPABASE_ANON_KEY="$(SUPABASE_ANON_KEY)" \
-                      --set secrets.SUPABASE_SERVICE_ROLE_KEY="$(SUPABASE_SERVICE_ROLE_KEY)" \
-                      --set secrets.SUPABASE_JWT_SECRET="$(SUPABASE_JWT_SECRET)" \
-                      --set secrets.AZURE_RESOURCE_GROUP="$(AZURE_RESOURCE_GROUP)" \
-                      --set secrets.AZURE_SUBSCRIPTION_ID="$(AZURE_SUBSCRIPTION_ID)" \
-                      --set secrets.RESEND_API_KEY="$(RESEND_API_KEY)" \
-                      --set secrets.FROM_EMAIL="$(FROM_EMAIL)" \
-                      --set secrets.APP_NAME="$(APP_NAME)" \
-                      --set secrets.APP_URL="$(APP_URL)"
+                      --set global.redis.host="$REDIS_HOST" \
+                      --set global.redis.port="$REDIS_PORT" \
+                      --set global.redis.enableTLS=true \
+                      --set global.redis.usePassword=true \
+                      --set api.image.repository="$ACR_LOGIN_SERVER/copilot-backend" \
+                      --set api.image.tag="$BUILD_BUILDID" \
+                      --set knowledge-extract-worker.image.repository="$ACR_LOGIN_SERVER/copilot-backend" \
+                      --set knowledge-extract-worker.image.tag="$BUILD_BUILDID" \
+                      --set knowledge-extract-worker.autoscaling.enabled=true \
+                      --set knowledge-upload-worker.image.repository="$ACR_LOGIN_SERVER/copilot-backend" \
+                      --set knowledge-upload-worker.image.tag="$BUILD_BUILDID" \
+                      --set knowledge-upload-worker.autoscaling.enabled=true \
+                      --set api.secrets.DATABASE_HOST="$(DATABASE_HOST)" \
+                      --set api.secrets.DATABASE_USER="$(DATABASE_USER)" \
+                      --set api.secrets.DATABASE_PORT="$(DATABASE_PORT)" \
+                      --set api.secrets.DATABASE_NAME="$(DATABASE_NAME)" \
+                      --set api.secrets.DATABASE_PASSWORD="$(DATABASE_PASSWORD)" \
+                      --set api.secrets.REDIS_HOST="$(REDIS_HOST)" \
+                      --set api.secrets.REDIS_PORT="$(REDIS_PORT)" \
+                      --set api.secrets.REDIS_PASSWORD="$(REDIS_PASSWORD)" \
+                      --set api.secrets.AZURE_OPENAI_API_KEY="$(AZURE_OPENAI_API_KEY)" \
+                      --set api.secrets.AZURE_OPENAI_ENDPOINT="$(AZURE_OPENAI_ENDPOINT)" \
+                      --set api.secrets.AZURE_EMBEDDER_OPENAI_API_KEY="$(AZURE_EMBEDDER_OPENAI_API_KEY)" \
+                      --set api.secrets.AZURE_EMBEDDER_OPENAI_ENDPOINT="$(AZURE_EMBEDDER_OPENAI_ENDPOINT)" \
+                      --set api.secrets.AZURE_EMBEDDER_DEPLOYMENT="$(AZURE_EMBEDDER_DEPLOYMENT)" \
+                      --set api.secrets.CLOUD_PROVIDER="$(CLOUD_PROVIDER)" \
+                      --set api.secrets.APPLICATION_STORAGE_NAME="$(APPLICATION_STORAGE_NAME)" \
+                      --set api.secrets.APPLICATION_REGION="$(APPLICATION_REGION)" \
+                      --set api.secrets.DATABASE_SSL_MODE="$(DATABASE_SSL_MODE)" \
+                      --set api.secrets.ENV="$(ENV)" \
+                      --set api.secrets.AZURE_KEY_VAULT_URL="$(AZURE_KEY_VAULT_URL)" \
+                      --set api.secrets.SUPER_ADMIN_EMAIL="$(SUPER_ADMIN_EMAIL)" \
+                      --set api.secrets.SUPABASE_URL="$(SUPABASE_URL)" \
+                      --set api.secrets.SUPABASE_ANON_KEY="$(SUPABASE_ANON_KEY)" \
+                      --set api.secrets.SUPABASE_SERVICE_ROLE_KEY="$(SUPABASE_SERVICE_ROLE_KEY)" \
+                      --set api.secrets.SUPABASE_JWT_SECRET="$(SUPABASE_JWT_SECRET)" \
+                      --set api.secrets.AZURE_RESOURCE_GROUP="$(AZURE_RESOURCE_GROUP)" \
+                      --set api.secrets.AZURE_SUBSCRIPTION_ID="$(AZURE_SUBSCRIPTION_ID)" \
+                      --set api.secrets.RESEND_API_KEY="$(RESEND_API_KEY)" \
+                      --set api.secrets.FROM_EMAIL="$(FROM_EMAIL)" \
+                      --set api.secrets.APP_NAME="$(APP_NAME)" \
+                      --set api.secrets.APP_URL="$(APP_URL)" \
+                      --set api.secrets.ADMIN_APP_URL="$(ADMIN_APP_URL)"
+
                   displayName: Helm Upgrade/Install
                   env:
                     HELM_RELEASE_NAME: $(HELM_RELEASE_NAME)
@@ -153,11 +173,15 @@ stages:
                     FROM_EMAIL: $(FROM_EMAIL)
                     APP_NAME: $(APP_NAME)
                     APP_URL: $(APP_URL)
+                    ADMIN_APP_URL: $(ADMIN_APP_URL)
 
                 - script: |
                     kubectl get pods -n copilotgtm
                     kubectl get deployments -n copilotgtm
-                  displayName: List AKS Deployments/Pods
+                    kubectl get scaledobjects -n copilotgtm
+                    echo "Checking worker deployments..."
+                    kubectl get deployments -n copilotgtm | grep knowledge || echo "No knowledge workers deployed yet"
+                  displayName: List AKS Deployments/Pods and Workers
 
                 - task: Bash@3
                   displayName: Rollback on Helm Deploy Failure

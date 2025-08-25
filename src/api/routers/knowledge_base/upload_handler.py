@@ -31,7 +31,7 @@ from src.api.schemas.knowledge_upload_models import (
     KnowledgeSourceResponse,
 )
 from src.api.utils.http_response import Response
-from src.celery_app import celery
+from src.workers.knowledge_worker.celery_app import app as knowledge_app
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
 from src.infra.utils.logger import get_logger
 from src.service.knowledge_base.knowledge_upload_service import (
@@ -224,9 +224,11 @@ async def finalize_batch(
 
             # Enqueue first phase task
             try:
-                celery.send_task(
+                knowledge_app.send_task(
                     "knowledge.post_upload_process",
                     args=[str(user_ids.organisation_id), str(src.source_id)],
+                    queue="knowledge_upload",
+                    routing_key="knowledge_upload",
                 )
             except Exception as task_err:
                 logger.error(

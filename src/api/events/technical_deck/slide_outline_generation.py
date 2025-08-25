@@ -12,7 +12,8 @@ from src.infra.messaging.redis_client import get_socket_connection
 from src.api.utils.websocket_response import WebSocketResponse
 
 from src.service.technical_deck.generate_slide_outline.slide_outline_workflow import SlideContentGenerator
-from src.tasks.slide_outline import generate_slide_outline_task
+from src.workers.content_worker.tasks.slide_outline import generate_slide_outline_task
+from src.workers.content_worker.celery_app import app as content_app
 import json
 
 logger = get_logger()
@@ -67,7 +68,11 @@ async def generate_slide_content(
         }
 
         # Kick off celery worker for slide outline generation
-        generate_slide_outline_task.delay(sid, json.dumps(task_data))
+        content_app.send_task(
+            "generate_slide_outline_task",
+            args=[sid, json.dumps(task_data)],
+            queue="slides",
+        )
         logger.info("Slide outline generation task started")
 
         # Emit ack/first message immediately

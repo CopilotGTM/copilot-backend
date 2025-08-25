@@ -1,0 +1,33 @@
+apiVersion: v2
+name: application
+description: A Helm chart for the entire application stack, including API and workers.
+type: application
+version: 0.1.0
+appVersion: "1.16.0"
+
+dependencies:
+- name: webservice
+  version: "0.1.0"
+  repository: "file://./charts/webservice"
+  alias: api
+  condition: api.enabled
+- name: worker
+  version: "0.1.0"
+  repository: "file://./charts/worker"
+  alias: knowledge-extract-worker
+  condition: knowledge-extract-worker.enabled
+- name: worker
+  version: "0.1.0"
+  repository: "file://./charts/worker"
+  alias: knowledge-upload-worker
+  condition: knowledge-upload-worker.enabled
+- name: worker
+  version: "0.1.0"
+  repository: "file://./charts/worker"
+  alias: organization-worker
+  condition: organization-worker.enabled
+- name: worker
+  version: "0.1.0"
+  repository: "file://./charts/worker"
+  alias: chat-worker
+  condition: chat-worker.enabled

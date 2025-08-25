@@ -1,0 +1,39 @@
+# Default values for a generic worker.
+# These values will be overridden by the parent chart.
+
+enabled: false
+
+replicaCount: 1
+
+image:
+  repository: "" # Must be overridden
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+# Configuration specific to the worker
+config:
+  queueName: "default" # Should be overridden
+  secretName: "" # Will be populated by global value
+
+global:
+  secretName: "" # Will be populated by parent chart
+
+resources:
+  limits:
+    cpu: 256m
+    memory: 512Mi
+  requests:
+    cpu: 128m
+    memory: 256Mi
+
+# KEDA-based autoscaling configuration
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 10
+  # Target length of the Redis list (Celery queue)
+  queueLength: 5
+  # Scale down delay (time to wait before scaling down in seconds)
+  scaleDownDelay: 300
+  # Scale up delay (polling interval for checking metrics in seconds)
+  scaleUpDelay: 30

@@ -1,0 +1,37 @@
+{{- range $jobName, $jobConfig := .Values.jobs }}
+{{- if $jobConfig.enabled }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "webservice.fullname" $ }}-{{ $jobName }}
+  labels:
+    {{- include "webservice.labels" $ | nindent 4 }}
+  annotations:
+    "helm.sh/hook": {{ $jobConfig.hook | default "pre-install,pre-upgrade" | quote }}
+    "helm.sh/hook-weight": {{ $jobConfig.hookWeight | default "-5" | quote }}
+    "helm.sh/hook-delete-policy": {{ $jobConfig.hookDeletePolicy | default "before-hook-creation" | quote }}
+spec:
+  backoffLimit: {{ $jobConfig.backoffLimit | default 1 }}
+  activeDeadlineSeconds: {{ $jobConfig.activeDeadlineSeconds | default 900 }}
+  template:
+    metadata:
+      name: {{ include "webservice.fullname" $ }}-{{ $jobName }}
+      labels:
+        {{- include "webservice.selectorLabels" $ | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ $.Values.serviceAccount.name | default (include "webservice.fullname" $) }}
+      containers:
+        - name: {{ $jobName }}-container
+          image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          command:
+            {{- toYaml $jobConfig.command | nindent 12 }}
+          args:
+            {{- toYaml $jobConfig.args | nindent 12 }}
+          envFrom:
+            - secretRef:
+                name: {{ include "webservice.fullname" $ }}-secret
+{{- end }}
+{{- end }}

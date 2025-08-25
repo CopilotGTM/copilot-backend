@@ -1,5 +1,9 @@
 import os
 from typing import Optional
+from dotenv import load_dotenv
+
+# Load environment variables at the beginning of config module
+load_dotenv(override=True)
 
 from .constant import CONFIG_MAP
 from ..utils.logger import get_logger
