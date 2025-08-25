@@ -22,10 +22,16 @@ spec:
           command:
             - "celery"
             - "-A"
-            {{- if or (contains "knowledge" .Values.config.queueName) }}
+            {{- if contains "knowledge" .Values.config.queueName }}
             - "src.workers.knowledge_worker.celery_app"
+            {{- else if contains "organization" .Values.config.queueName }}
+            - "src.workers.organization_worker.celery_app"
+            {{- else if contains "chat" .Values.config.queueName }}
+            - "src.workers.chat_worker.celery_app"
+            {{- else if contains "content" .Values.config.queueName }}
+            - "src.workers.content_worker.celery_app"
             {{- else }}
-            - "src.celery_app"
+            - "src.workers.knowledge_worker.celery_app"
             {{- end }}
             - "worker"
             - "-l"
