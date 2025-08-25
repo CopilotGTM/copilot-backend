@@ -134,7 +134,9 @@ stages:
                       --set api.secrets.RESEND_API_KEY="$(RESEND_API_KEY)" \
                       --set api.secrets.FROM_EMAIL="$(FROM_EMAIL)" \
                       --set api.secrets.APP_NAME="$(APP_NAME)" \
-                      --set api.secrets.APP_URL="$(APP_URL)"
+                      --set api.secrets.APP_URL="$(APP_URL)" \
+                      --set api.secrets.ADMIN_APP_URL="$(ADMIN_APP_URL)"
+
                   displayName: Helm Upgrade/Install
                   env:
                     HELM_RELEASE_NAME: $(HELM_RELEASE_NAME)
@@ -171,6 +173,7 @@ stages:
                     FROM_EMAIL: $(FROM_EMAIL)
                     APP_NAME: $(APP_NAME)
                     APP_URL: $(APP_URL)
+                    ADMIN_APP_URL: $(ADMIN_APP_URL)
 
                 - script: |
                     kubectl get pods -n copilotgtm
