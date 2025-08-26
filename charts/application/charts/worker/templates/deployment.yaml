@@ -51,6 +51,8 @@ spec:
           env:
             - name: AZURE_CLIENT_ID
               value: {{ .Values.workloadIdentity.clientId | quote }}
+            - name: AZURE_ADDITIONALLY_ALLOWED_TENANTS
+              value: ""
           {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
