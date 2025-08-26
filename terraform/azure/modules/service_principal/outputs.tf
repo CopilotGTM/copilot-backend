@@ -16,5 +16,5 @@ output "tenant_id" {
 
 output "object_id" {
   description = "The Object ID of the service principal."
-  value       = azuread_service_principal.sp.id
+  value       = azuread_service_principal.sp.object_id
 }

@@ -335,77 +335,11 @@ module "foundry" {
 }
 
 # -----------------------------------------------------------------
-# (DEV ONLY) Backend identity elevated access
-# Grants broad secret permissions (including set/delete) and storage roles
-# to accelerate development. DO NOT enable in production; instead tighten to
-# Get/List only and/or move to RBAC + workload identity.
-# Controlled by var.backend_identity_object_id; if blank we fall back to the
-# Azure DevOps service principal (module.service_principal.object_id).
+# Backend DEVELOPMENT Identity - Permissions provided via AKS kubelet identity  
+# The aks_* resources provide the necessary permissions for pods to access
+# Key Vault secrets and storage accounts via the kubelet identity.
+# No additional backend_* resources needed as they would be duplicates.
 # -----------------------------------------------------------------
-locals {
-  # Backend principal object id (defaults to service_principal for dev convenience)
-  backend_principal_object_id = module.service_principal.object_id
-}
-
-resource "azurerm_key_vault_access_policy" "backend_database_vault" {
-  key_vault_id = module.database_key_vault.key_vault_id
-  tenant_id    = data.azurerm_client_config.current.tenant_id
-  object_id    = local.backend_principal_object_id
-  secret_permissions = ["Get", "List", "Set", "Delete", "Recover", "Backup", "Restore", "Purge"]
-  depends_on = [
-    module.database_key_vault
-  ]
-}
-
-resource "azurerm_key_vault_access_policy" "backend_master_vault" {
-  key_vault_id = module.master_key_vault.key_vault_id
-  tenant_id    = data.azurerm_client_config.current.tenant_id
-  object_id    = local.backend_principal_object_id
-  secret_permissions = ["Get", "List", "Set", "Delete", "Recover", "Backup", "Restore", "Purge"]
-  depends_on = [
-    module.master_key_vault
-  ]
-}
-
-resource "azurerm_role_assignment" "backend_master_storage_blob_contributor" {
-  principal_id         = local.backend_principal_object_id
-  role_definition_name = "Storage Blob Data Contributor"
-  scope                = module.master_storage_account.storage_account_id
-  skip_service_principal_aad_check = true
-  depends_on = [
-    module.master_storage_account
-  ]
-}
-
-resource "azurerm_role_assignment" "backend_master_storage_blob_delegator" {
-  principal_id         = local.backend_principal_object_id
-  role_definition_name = "Storage Blob Delegator"
-  scope                = module.master_storage_account.storage_account_id
-  skip_service_principal_aad_check = true
-  depends_on = [
-    module.master_storage_account
-  ]
-}
-
-resource "azurerm_role_assignment" "backend_org_storage_blob_contributor" {
-  principal_id         = local.backend_principal_object_id
-  role_definition_name = "Storage Blob Data Contributor"
-  scope                = module.org_storage_account.storage_account_id
-  skip_service_principal_aad_check = true
-  depends_on = [
-    module.org_storage_account
-  ]
-}
-
-resource "azurerm_role_assignment" "backend_org_storage_blob_delegator" {
-  principal_id         = local.backend_principal_object_id
-  role_definition_name = "Storage Blob Delegator"
-  scope                = module.org_storage_account.storage_account_id
-  skip_service_principal_aad_check = true
-  depends_on = [
-    module.org_storage_account
-  ]
-}
 
 # -----------------------------------------------------------------
 # Generate a strong, random DB admin password
