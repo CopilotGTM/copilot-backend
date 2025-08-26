@@ -28,6 +28,11 @@ resource "azurerm_kubernetes_cluster" "this" {
   oidc_issuer_enabled = var.oidc_issuer_enabled
   workload_identity_enabled = var.workload_identity_enabled
 
+  key_vault_secrets_provider {
+    secret_rotation_enabled  = true
+    secret_rotation_interval = "2m"
+  }
+
   tags = {
     env = var.env
   }

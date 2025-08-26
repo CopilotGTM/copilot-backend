@@ -163,3 +163,26 @@ output "redis_port" {
 #   description = "Azure Subscription ID associated with service connection."
 #   value       = module.service_connection.subscription_id
 # }
+
+# -----------------------------------------------------------------
+# Workload Identity Outputs
+# -----------------------------------------------------------------
+output "workload_identity_backend_client_id" {
+  description = "Client ID for backend workload identity (use for azure.workload.identity/client-id annotation)."
+  value       = module.workload_identity_backend.client_id
+}
+
+output "workload_identity_backend_object_id" {
+  description = "Service principal object ID for backend workload identity (used in role assignments)."
+  value       = module.workload_identity_backend.object_id
+}
+
+output "workload_identity_workers_client_id" {
+  description = "Client ID for workers workload identity (use for azure.workload.identity/client-id annotation)."
+  value       = module.workload_identity_workers.client_id
+}
+
+output "workload_identity_workers_object_id" {
+  description = "Service principal object ID for workers workload identity (used in role assignments)."
+  value       = module.workload_identity_workers.object_id
+}

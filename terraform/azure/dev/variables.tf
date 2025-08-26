@@ -109,6 +109,29 @@ variable "aks_dns_service_ip" {
   default     = "10.1.0.10"
 }
 
+variable "aks_main_app_namespace" {
+  description = "The main Kubernetes namespace for deploying applications in AKS."
+  type        = string
+  default     = "default"
+}
+
+variable "aks_main_app_service_account" {
+  description = "The main Kubernetes service account for deploying applications in AKS."
+  type        = string
+  default     = "default"
+}
+
+variable "aks_workers_namespace" {
+  description = "Namespace where worker workloads run."
+  type        = string
+  default     = "default"
+}
+
+variable "aks_workers_service_account" {
+  description = "Service account name shared by all workers."
+  type        = string
+  default     = "copilot-workers"
+}
 # -----------------------------------------------------------------
 # Azure Container Registry (ACR)
 # -----------------------------------------------------------------

@@ -4,6 +4,10 @@ terraform {
       source  = "hashicorp/azurerm"
       version = ">= 3.85.0"
     }
+    azuread = {
+      source  = "hashicorp/azuread"
+      version = ">= 2.48.0"
+    }
     azuredevops = {
       source  = "microsoft/azuredevops"
       version = ">= 0.2.0"
@@ -44,6 +48,9 @@ provider "azurerm" {
   }
   subscription_id = var.subscription_id
 }
+
+# AzureAD provider required for workload identity (AAD app + federated credential)
+provider "azuread" {}
 
 # Azure DevOps provider for pipeline/resource automation
 provider "azuredevops" {

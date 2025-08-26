@@ -174,171 +174,106 @@ resource "azurerm_role_assignment" "aks_kubelet_acr_pull" {
 }
 
 # -----------------------------------------------------------------
-# Storage Access: Allow AKS kubelet identity to read/write blobs
-# (Adjust or add additional roles if queues/files are needed)
+# Workload Identity (AAD application + federated identity for ServiceAccount)
+# Replaces UAMI + federated identity credential resources
 # -----------------------------------------------------------------
-resource "azurerm_role_assignment" "aks_kubelet_storage_blob_contributor" {
-  principal_id                     = module.aks.kubelet_identity_object_id
-  role_definition_name             = "Storage Blob Data Contributor"
-  scope                            = module.master_storage_account.storage_account_id
-  skip_service_principal_aad_check = true
+module "workload_identity_backend" {
+  source                    = "../modules/workload_identity"
+  name                      = "copilot-backend-wi-${var.env}"
+  oidc_issuer_url           = module.aks.oidc_issuer_url
+  service_account_namespace = var.aks_main_app_namespace
+  service_account_name      = var.aks_main_app_service_account
+  create_password           = false
   depends_on = [
-    module.aks,
-    module.master_storage_account
+    module.aks
   ]
 }
 
-# -----------------------------------------------------------------
-# Key Vault Access Policies: Grant AKS kubelet identity secret get/list
-# Needed for CSI driver or direct secret retrieval via managed identity
-# -----------------------------------------------------------------
-resource "azurerm_key_vault_access_policy" "aks_database_vault" {
-  key_vault_id = module.database_key_vault.key_vault_id
-  tenant_id    = data.azurerm_client_config.current.tenant_id
-  object_id    = module.aks.kubelet_identity_object_id
-  # Expanded permissions to allow create/update (Set) and delete/recover/purge
-  secret_permissions = ["Get", "List", "Set", "Delete", "Recover", "Backup", "Restore", "Purge"]
+# Separate workload identity for workers (shared ServiceAccount for all workers)
+module "workload_identity_workers" {
+  source                    = "../modules/workload_identity"
+  name                      = "copilot-workers-wi-${var.env}"
+  oidc_issuer_url           = module.aks.oidc_issuer_url
+  service_account_namespace = var.aks_main_app_namespace
+  service_account_name      = var.aks_workers_service_account
+  create_password           = false
   depends_on = [
-    module.aks,
-    module.database_key_vault
+    module.aks
   ]
 }
 
-resource "azurerm_key_vault_access_policy" "aks_master_vault" {
-  key_vault_id = module.master_key_vault.key_vault_id
-  tenant_id    = data.azurerm_client_config.current.tenant_id
-  object_id    = module.aks.kubelet_identity_object_id
-  secret_permissions = ["Get", "List", "Set", "Delete", "Recover", "Backup", "Restore", "Purge"]
-  depends_on = [
-    module.aks,
-    module.master_key_vault
-  ]
-}
-
-# -----------------------------------------------------------------
-# Storage Access (All Storage Accounts in RG): Assign at resource group scope
-# Provides broad data actions across any storage accounts created in RG.
-# NOTE: "Storage Blob Data Contributor" covers blob data plane only. If all
-# storage account types (blob/file/queue/table) are needed, we add multiple roles.
-# -----------------------------------------------------------------
-resource "azurerm_role_assignment" "aks_storage_blob_contributor_rg" {
-  principal_id                     = module.aks.kubelet_identity_object_id
-  role_definition_name             = "Storage Blob Data Contributor"
-  scope                            = module.resource_group.resource_group_id
-  skip_service_principal_aad_check = true
-  depends_on = [
-    module.aks,
-    module.resource_group
-  ]
-}
-
-resource "azurerm_role_assignment" "aks_storage_queue_contributor_rg" {
-  principal_id                     = module.aks.kubelet_identity_object_id
-  role_definition_name             = "Storage Queue Data Contributor"
-  scope                            = module.resource_group.resource_group_id
-  skip_service_principal_aad_check = true
-  depends_on = [
-    module.aks,
-    module.resource_group
-  ]
-}
-
-resource "azurerm_role_assignment" "aks_storage_file_contributor_rg" {
-  principal_id                     = module.aks.kubelet_identity_object_id
-  role_definition_name             = "Storage File Data SMB Share Contributor"
-  scope                            = module.resource_group.resource_group_id
-  skip_service_principal_aad_check = true
-  depends_on = [
-    module.aks,
-    module.resource_group
-  ]
-}
-
-resource "azurerm_role_assignment" "aks_storage_table_contributor_rg" {
-  principal_id                     = module.aks.kubelet_identity_object_id
-  role_definition_name             = "Storage Table Data Contributor"
-  scope                            = module.resource_group.resource_group_id
-  skip_service_principal_aad_check = true
-  depends_on = [
-    module.aks,
-    module.resource_group
-  ]
-}
-
-# -----------------------------------------------------------------
-# Add Storage Blob Delegator: Needed to generate user delegation SAS
-# tokens (Get User Delegation Key) in addition to data plane actions.
-# Without this, SAS-based uploads using a user delegation key can fail
-# with AuthorizationPermissionMismatch.
-# -----------------------------------------------------------------
-resource "azurerm_role_assignment" "aks_storage_blob_delegator" {
-  principal_id                     = module.aks.kubelet_identity_object_id
-  role_definition_name             = "Storage Blob Delegator"
-  # Limit scope to primary application storage account
-  scope                            = module.master_storage_account.storage_account_id
-  skip_service_principal_aad_check = true
-  depends_on = [
-    module.aks,
-    module.master_storage_account
-  ]
-}
-
-# Storage permissions for organisation storage account (full blob data + delegator)
-resource "azurerm_role_assignment" "aks_org_storage_blob_contributor" {
-  principal_id                     = module.aks.kubelet_identity_object_id
-  role_definition_name             = "Storage Blob Data Contributor"
-  scope                            = module.org_storage_account.storage_account_id
-  skip_service_principal_aad_check = true
-  depends_on = [
-    module.aks,
-    module.org_storage_account
-  ]
-}
-
-resource "azurerm_role_assignment" "aks_org_storage_blob_delegator" {
-  principal_id                     = module.aks.kubelet_identity_object_id
-  role_definition_name             = "Storage Blob Delegator"
-  scope                            = module.org_storage_account.storage_account_id
-  skip_service_principal_aad_check = true
-  depends_on = [
-    module.aks,
-    module.org_storage_account
-  ]
-}
-
-# Optional (commented): Grant control plane management over storage accounts.
-# Uncomment only if AKS-managed identity must create/delete storage accounts.
-resource "azurerm_role_assignment" "aks_storage_account_contributor_rg" {
-  principal_id                     = module.aks.kubelet_identity_object_id
-  role_definition_name             = "Storage Account Contributor"
-  scope                            = module.resource_group.resource_group_id
-  skip_service_principal_aad_check = true
-  depends_on = [
-    module.aks,
-    module.resource_group
-  ]
-}
-
-# -----------------------------------------------------------------
-# User-Assigned Managed Identity
-# -----------------------------------------------------------------
-module "uami" {
-  source              = "../modules/uami"
-  name                = "kv-wi-uami-${var.env}"
-  location            = var.location
-  resource_group_name = module.resource_group.resource_group_name
-}
-
-resource "azurerm_role_assignment" "uami_database_kv_secrets_user" {
+# Role assignments for workload identity SP (least privilege scopes similar to prior UAMI)
+resource "azurerm_role_assignment" "wi_kv_database_secrets_user" {
   scope                = module.database_key_vault.key_vault_id
-  role_definition_name = "Key Vault Secrets User"
-  principal_id         = module.uami.principal_id
+  role_definition_name = "Key Vault Secrets Officer" # upgraded from Secrets User for create/update/delete
+  principal_id         = module.workload_identity_backend.object_id
 }
 
-resource "azurerm_role_assignment" "uami_master_kv_secrets_user" {
+resource "azurerm_role_assignment" "wi_kv_master_secrets_user" {
   scope                = module.master_key_vault.key_vault_id
-  role_definition_name = "Key Vault Secrets User"
-  principal_id         = module.uami.principal_id
+  role_definition_name = "Key Vault Secrets Officer" # upgraded from Secrets User for create/update/delete
+  principal_id         = module.workload_identity_backend.object_id
+}
+
+resource "azurerm_role_assignment" "wi_master_storage_blob_contributor" {
+  scope                = module.master_storage_account.storage_account_id
+  role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = module.workload_identity_backend.object_id
+}
+
+resource "azurerm_role_assignment" "wi_master_storage_blob_delegator" {
+  scope                = module.master_storage_account.storage_account_id
+  role_definition_name = "Storage Blob Delegator"
+  principal_id         = module.workload_identity_backend.object_id
+}
+
+resource "azurerm_role_assignment" "wi_org_storage_blob_contributor" {
+  scope                = module.org_storage_account.storage_account_id
+  role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = module.workload_identity_backend.object_id
+}
+
+resource "azurerm_role_assignment" "wi_org_storage_blob_delegator" {
+  scope                = module.org_storage_account.storage_account_id
+  role_definition_name = "Storage Blob Delegator"
+  principal_id         = module.workload_identity_backend.object_id
+}
+
+# Workers identity role assignments (mirror backend access for now)
+resource "azurerm_role_assignment" "wi_workers_kv_database_secrets_user" {
+  scope                = module.database_key_vault.key_vault_id
+  role_definition_name = "Key Vault Secrets Officer" # upgraded for write/delete
+  principal_id         = module.workload_identity_workers.object_id
+}
+
+resource "azurerm_role_assignment" "wi_workers_kv_master_secrets_user" {
+  scope                = module.master_key_vault.key_vault_id
+  role_definition_name = "Key Vault Secrets Officer" # upgraded for write/delete
+  principal_id         = module.workload_identity_workers.object_id
+}
+
+resource "azurerm_role_assignment" "wi_workers_master_storage_blob_contributor" {
+  scope                = module.master_storage_account.storage_account_id
+  role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = module.workload_identity_workers.object_id
+}
+
+resource "azurerm_role_assignment" "wi_workers_master_storage_blob_delegator" {
+  scope                = module.master_storage_account.storage_account_id
+  role_definition_name = "Storage Blob Delegator"
+  principal_id         = module.workload_identity_workers.object_id
+}
+
+resource "azurerm_role_assignment" "wi_workers_org_storage_blob_contributor" {
+  scope                = module.org_storage_account.storage_account_id
+  role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = module.workload_identity_workers.object_id
+}
+
+resource "azurerm_role_assignment" "wi_workers_org_storage_blob_delegator" {
+  scope                = module.org_storage_account.storage_account_id
+  role_definition_name = "Storage Blob Delegator"
+  principal_id         = module.workload_identity_workers.object_id
 }
 
 # -----------------------------------------------------------------
@@ -595,6 +530,17 @@ resource "azuredevops_variable_group" "secrets" {
     name  = "RESOURCE_GROUP"
     value = module.resource_group.resource_group_name
   }
+
+  # Workload Identity client IDs (for Helm ServiceAccount annotations)
+  variable {
+    name  = "WORKLOAD_IDENTITY_BACKEND_CLIENT_ID"
+    value = module.workload_identity_backend.client_id
+  }
+
+  variable {
+    name  = "WORKLOAD_IDENTITY_WORKERS_CLIENT_ID"
+    value = module.workload_identity_workers.client_id
+  }
 }
 
 # -----------------------------------------------------------------
@@ -636,16 +582,14 @@ module "service_connection_acr" {
   acr_sp_app_secret     = module.service_principal.client_secret
 }
 
-resource "azuredevops_resource_authorization" "service_connection_authorization" {
+resource "azuredevops_pipeline_authorization" "service_connection_authorization" {
   project_id  = data.azuredevops_project.project.id
   resource_id = module.service_connection.service_connection_id
-  authorized  = true
   type        = "endpoint"
 }
 
-resource "azuredevops_resource_authorization" "service_connection_acr_authorization" {
+resource "azuredevops_pipeline_authorization" "service_connection_acr_authorization" {
   project_id  = data.azuredevops_project.project.id
   resource_id = module.service_connection_acr.acr_service_connection_id
-  authorized  = true
   type        = "endpoint"
 }
