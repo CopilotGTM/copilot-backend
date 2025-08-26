@@ -57,3 +57,15 @@ variable "dns_service_ip" {
   type        = string
   default     = "10.1.0.10"
 }
+
+variable "workload_identity_enabled" {
+  description = "Enable workload identity"
+  type        = bool
+  default     = true
+}
+
+variable "oidc_issuer_enabled" {
+  description = "Enable OIDC issuer"
+  type        = bool
+  default     = true
+}

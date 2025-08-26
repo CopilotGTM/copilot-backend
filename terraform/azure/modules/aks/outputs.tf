@@ -46,3 +46,13 @@ output "kubelet_identity_object_id" {
   description = "The object ID of the kubelet identity."
   value       = azurerm_kubernetes_cluster.this.kubelet_identity[0].object_id
 }
+
+output "oidc_issuer_url" {
+  description = "The OIDC issuer URL for the AKS cluster."
+  value       = azurerm_kubernetes_cluster.this.oidc_issuer_url
+}
+
+output "workload_identity_enabled" {
+  description = "Whether workload identity is enabled for the AKS cluster."
+  value       = azurerm_kubernetes_cluster.this.workload_identity_enabled
+}

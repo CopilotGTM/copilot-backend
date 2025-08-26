@@ -24,6 +24,9 @@ resource "azurerm_kubernetes_cluster" "this" {
   identity {
     type = "SystemAssigned"
   }
+  
+  oidc_issuer_enabled = var.oidc_issuer_enabled
+  workload_identity_enabled = var.workload_identity_enabled
 
   tags = {
     env = var.env
