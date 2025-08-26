@@ -75,6 +75,10 @@ api:
     create: true
     name: "copilot-backend"
 
+  # Workload Identity settings (populated by Terraform output/pipeline)
+  workloadIdentity:
+    clientId: ""  # override with the federated workload identity application client id
+
   # Define any Helm hook jobs for this specific service
   jobs:
     startup:
