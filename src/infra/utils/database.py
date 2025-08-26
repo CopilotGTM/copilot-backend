@@ -60,7 +60,7 @@ def _get_secret_from_key_vault(secret_name: str) -> str | None:
         return None
 
     try:
-        credential = DefaultAzureCredential()
+        credential = DefaultAzureCredential(additionally_allowed_tenants=["*"])
         client = SecretClient(vault_url=key_vault_url, credential=credential)
         secret = client.get_secret(secret_name)
         _SECRET_CACHE[secret_name] = (secret.value, _now())

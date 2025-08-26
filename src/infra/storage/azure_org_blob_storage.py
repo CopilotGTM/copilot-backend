@@ -30,9 +30,12 @@ async def _get_credential_async():
     applications. It automatically handles Managed Identity in production environments
     (e.g., App Service, VMs) and local developer authentication (Azure CLI, VS Code)
     without needing to manage secrets in the code.
+    
+    Additionally allows cross-tenant access for scenarios where workload identity
+    and storage resources exist in different Azure AD tenants.
     """
-    logger.info("Authenticating with Azure using DefaultAzureCredential (Managed Identity or local developer).")
-    return DefaultAzureCredential()
+    logger.info("Authenticating with Azure using DefaultAzureCredential (Managed Identity or local developer) with cross-tenant access.")
+    return DefaultAzureCredential(additionally_allowed_tenants=["*"])
 
 
 class AzureOrganisationBlobStorage:

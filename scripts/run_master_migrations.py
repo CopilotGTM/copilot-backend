@@ -67,7 +67,7 @@ def _store_password_in_key_vault(secret_name: str, password: str):
             print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
             return
 
-        credential = DefaultAzureCredential()
+        credential = DefaultAzureCredential(additionally_allowed_tenants=["*"])
         client = SecretClient(vault_url=key_vault_url, credential=credential)
 
         client.set_secret(secret_name, password)

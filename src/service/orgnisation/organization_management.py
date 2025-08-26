@@ -577,7 +577,7 @@ class OrganizationManagementService:
     # ------------------ Helper / pagination utilities ------------------ #
     def _get_azure_credential(self):
         """Centralised Azure credential selection."""
-        return DefaultAzureCredential()
+        return DefaultAzureCredential(additionally_allowed_tenants=["*"])
 
     def _validate_identifier(self, value: str, field: str):
         """Basic safety validation for SQL identifiers comprised of lowercase letters, digits, and underscores.
