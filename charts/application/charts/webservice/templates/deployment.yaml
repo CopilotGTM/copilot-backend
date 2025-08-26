@@ -33,11 +33,12 @@ spec:
             - name: ENVIRONMENT
               value: {{ .Values.environment | quote }}
             - name: AZURE_ADDITIONALLY_ALLOWED_TENANTS
-              value: "*"
-            {{- if .Values.workloadIdentity.clientId }}
-            - name: AZURE_CLIENT_ID
-              value: {{ .Values.workloadIdentity.clientId | quote }}
-            {{- end }}
+              value: ""
+            - name: AZURE_AUTHORITY_HOST
+              value: "https://login.microsoftonline.com/17996422-3fda-4441-945f-2c920a1ebb41"
+            # Set the client assertion type for workload identity
+            - name: AZURE_CLIENT_ASSERTION_TYPE
+              value: "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
           envFrom:
             - secretRef:
                 name: {{ include "webservice.fullname" . }}-secret

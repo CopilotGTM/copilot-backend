@@ -49,11 +49,14 @@ spec:
                 name: {{ .Values.config.secretName | default .Values.global.secretName }}
           {{- if .Values.workloadIdentity.clientId }}
           env:
-            - name: AZURE_CLIENT_ID
-              value: {{ .Values.workloadIdentity.clientId | quote }}
             - name: AZURE_ADDITIONALLY_ALLOWED_TENANTS
-              value: "*"
- 
+              value: ""
+            # Force Azure SDK to use specific tenant authority
+            - name: AZURE_AUTHORITY_HOST
+              value: "https://login.microsoftonline.com/17996422-3fda-4441-945f-2c920a1ebb41"
+            # Set the client assertion type for workload identity
+            - name: AZURE_CLIENT_ASSERTION_TYPE
+              value: "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
           {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
