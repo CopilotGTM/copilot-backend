@@ -1,47 +1,15 @@
-{{- /*
-This NOTES.txt file provides helpful information to the user after a successful deployment.
-*/}}
-Your '{{ .Chart.Name }}' application stack has been deployed.
+Your '{{ .Chart.Name }}' stack is deployed (release: {{ .Release.Name }}).
 
-It includes the following components:
+Workload Identity checklist:
+1. ServiceAccount annotation: azure.workload.identity/client-id: <client id>
+2. ServiceAccount label: azure.workload.identity/use: "true"
+3. Helm sets: --set api.workloadIdentity.clientId=<backend_client_id> --set worker.workloadIdentity.clientId=<workers_client_id>
+4. Roles (already via IaC): Blob Data Contributor + Blob Delegator (storage), Key Vault Secrets Officer (key vaults)
 
-- Main API Server:
-  - Release Name: {{ .Release.Name }}-api
-  - Service URL: http://{{ .Values.api.ingress.hosts | default "api-service" }}.{{ .Release.Namespace }}.svc.cluster.local
+Troubleshooting auth failures:
+- kubectl get sa -n {{ .Release.Namespace }} | grep {{ .Values.api.serviceAccount.name | default "copilot-backend" }}
+- kubectl describe sa {{ .Values.api.serviceAccount.name | default "copilot-backend" }} -n {{ .Release.Namespace }}
+- kubectl exec -n {{ .Release.Namespace }} deploy/{{ .Values.api.fullnameOverride | default (printf "%s-api" .Release.Name) }} -- ls /var/run/secrets/azure/tokens || echo "token missing"
+- Echo env: kubectl exec ... -- printenv | grep AZURE_CLIENT_ID
 
-- Enabled Worker Pools:
-  {{- /*
-  The chart currently defines individual worker configurations as top-level keys
-  (e.g. knowledge-extract-worker, knowledge-upload-worker, organization-worker, chat-worker)
-  rather than under a consolidated .Values.workers map. We iterate over .Values and pick
-  keys that end with "-worker" (or contain "worker" with enabled=true) to display.
-  */}}
-  {{- $ctx := . -}}
-  {{- $found := false -}}
-  {{- range $k, $v := .Values }}
-    {{- if and (kindIs "map" $v) (hasKey $v "enabled") ($v.enabled) (or (hasSuffix "-worker" $k) (contains $k "worker")) }}
-    {{- $found = true -}}
-  - {{ replace $k "-" " " | title }}:
-      Deployment: {{ $ctx.Release.Name }}-{{ $k }}
-      Queue: {{ default "n/a" (default dict $v.config).queueName }}
-      Replicas: {{ default 0 $v.replicaCount }}
-    {{- end }}
-  {{- end }}
-  {{- if not $found }}
-  (None enabled)
-  {{- end }}
-
-CONFIGURATION NOTES:
-- To enable or disable a worker pool, edit the 'enabled' flag in your values.yaml file under the 'workers' section.
-  For example:
-  # Example enabling a new worker (pattern matches *-worker):
-  my-new-worker:
-    enabled: true
-    replicaCount: 1
-    config:
-      queueName: my_new_queue
-
-- To set workload identity client IDs via pipeline, pass --set api.workloadIdentity.clientId=<id> and
-  --set worker.workloadIdentity.clientId=<id> (or inject per worker if you split identities).
-
-- You can configure the image, replica count, resources, and queue for each worker independently from the top-level values.yaml.
+If token missing: verify OIDC issuer enabled on AKS and webhook installed.

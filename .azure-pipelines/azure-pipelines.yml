@@ -93,7 +93,7 @@ stages:
                 - script: |
                     helm upgrade --install "$HELM_RELEASE_NAME" "$CHART_PATH" \
                       --namespace copilotgtm \
-                      --set workloadIdentity.clientId="$(WORKLOAD_IDENTITY_BACKEND_CLIENT_ID)" \
+                      --set api.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_BACKEND_CLIENT_ID)" \
                       --set global.redis.host="$REDIS_HOST" \
                       --set global.redis.port="$REDIS_PORT" \
                       --set global.redis.enableTLS=true \
@@ -137,11 +137,10 @@ stages:
                       --set api.secrets.APP_NAME="$(APP_NAME)" \
                       --set api.secrets.APP_URL="$(APP_URL)" \
                       --set api.secrets.ADMIN_APP_URL="$(ADMIN_APP_URL)" \
-                      # Workers workload identity client ID annotations (all worker subcharts)
                       --set knowledge-extract-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
                       --set knowledge-upload-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
                       --set organization-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
-                      --set chat-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
+                      --set chat-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)"
 
 
                   displayName: Helm Upgrade/Install
