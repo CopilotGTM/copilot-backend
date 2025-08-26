@@ -53,6 +53,9 @@ spec:
               value: {{ .Values.workloadIdentity.clientId | quote }}
             - name: AZURE_ADDITIONALLY_ALLOWED_TENANTS
               value: ""
+            - name: AZURE_AUTHORITY_HOST
+              value: "https://login.microsoftonline.com/17996422-3fda-4441-945f-2c920a1ebb41"
+ 
           {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
