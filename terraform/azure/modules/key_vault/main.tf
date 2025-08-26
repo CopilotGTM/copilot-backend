@@ -7,11 +7,12 @@ resource "azurerm_key_vault" "this" {
   purge_protection_enabled    = true
   soft_delete_retention_days  = 7
 
-  access_policy {
-    tenant_id = var.tenant_id
-    object_id = var.admin_object_id
-    secret_permissions = ["Get", "List", "Set", "Delete", "Recover", "Backup", "Restore", "Purge"]
-  }
-
+  enable_rbac_authorization = var.enable_rbac_authorization
   tags = var.tags
+}
+
+resource "azurerm_role_assignment" "admin" {
+  scope                = azurerm_key_vault.this.id
+  role_definition_name = "Key Vault Administrator"
+  principal_id         = var.admin_object_id
 }

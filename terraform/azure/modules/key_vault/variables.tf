@@ -28,3 +28,9 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "enable_rbac_authorization" {
+  description = "Enable RBAC authorization for the Key Vault."
+  type        = bool
+  default     = true
+}
