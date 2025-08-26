@@ -320,6 +320,28 @@ resource "azurerm_role_assignment" "aks_storage_account_contributor_rg" {
 }
 
 # -----------------------------------------------------------------
+# User-Assigned Managed Identity
+# -----------------------------------------------------------------
+module "uami" {
+  source              = "../modules/uami"
+  name                = "kv-wi-uami-${var.env}"
+  location            = var.location
+  resource_group_name = module.resource_group.resource_group_name
+}
+
+resource "azurerm_role_assignment" "uami_database_kv_secrets_user" {
+  scope                = module.database_key_vault.key_vault_id
+  role_definition_name = "Key Vault Secrets User"
+  principal_id         = module.uami.principal_id
+}
+
+resource "azurerm_role_assignment" "uami_master_kv_secrets_user" {
+  scope                = module.master_key_vault.key_vault_id
+  role_definition_name = "Key Vault Secrets User"
+  principal_id         = module.uami.principal_id
+}
+
+# -----------------------------------------------------------------
 # Azure AI Foundry
 # -----------------------------------------------------------------
 module "foundry" {
