@@ -10,20 +10,38 @@ It includes the following components:
   - Service URL: http://{{ .Values.api.ingress.hosts | default "api-service" }}.{{ .Release.Namespace }}.svc.cluster.local
 
 - Enabled Worker Pools:
-  {{- range $workerName, $workerConfig := .Values.workers }}
-  {{- if $workerConfig.enabled }}
-  - {{ $workerName | title }} Worker:
-    - Deployment Name: {{ $.Release.Name }}-{{ $workerName }}-worker
-    - Consuming Queue: '{{ $workerConfig.config.queueName }}'
-    - Replicas: {{ $workerConfig.replicaCount }}
+  {{- /*
+  The chart currently defines individual worker configurations as top-level keys
+  (e.g. knowledge-extract-worker, knowledge-upload-worker, organization-worker, chat-worker)
+  rather than under a consolidated .Values.workers map. We iterate over .Values and pick
+  keys that end with "-worker" (or contain "worker" with enabled=true) to display.
+  */}}
+  {{- $ctx := . -}}
+  {{- $found := false -}}
+  {{- range $k, $v := .Values }}
+    {{- if and (kindIs "map" $v) (hasKey $v "enabled") ($v.enabled) (or (hasSuffix "-worker" $k) (contains $k "worker")) }}
+    {{- $found = true -}}
+  - {{ replace $k "-" " " | title }}:
+      Deployment: {{ $ctx.Release.Name }}-{{ $k }}
+      Queue: {{ default "n/a" (default dict $v.config).queueName }}
+      Replicas: {{ default 0 $v.replicaCount }}
+    {{- end }}
   {{- end }}
+  {{- if not $found }}
+  (None enabled)
   {{- end }}
 
 CONFIGURATION NOTES:
 - To enable or disable a worker pool, edit the 'enabled' flag in your values.yaml file under the 'workers' section.
   For example:
-  workers:
-    image-processing:
-      enabled: true # or false
+  # Example enabling a new worker (pattern matches *-worker):
+  my-new-worker:
+    enabled: true
+    replicaCount: 1
+    config:
+      queueName: my_new_queue
+
+- To set workload identity client IDs via pipeline, pass --set api.workloadIdentity.clientId=<id> and
+  --set worker.workloadIdentity.clientId=<id> (or inject per worker if you split identities).
 
 - You can configure the image, replica count, resources, and queue for each worker independently from the top-level values.yaml.
