@@ -19,7 +19,10 @@ spec:
   triggers:
     - type: redis
       metadata:
-        address: "{{ .Values.global.redis.host }}:{{ .Values.global.redis.port }}"
+        address: {{ .Values.global.redis.host }}
+        {{- if .Values.global.redis.port }}
+        port: {{ .Values.global.redis.port | quote }}
+        {{- end }}
         listName: {{ .Values.config.queueName | quote }}
         listLength: {{ .Values.autoscaling.queueLength | quote }}
         {{- if .Values.global.redis.enableTLS }}
