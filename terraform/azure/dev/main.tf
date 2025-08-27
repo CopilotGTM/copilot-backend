@@ -47,6 +47,9 @@ module "redis" {
 
 data "azurerm_client_config" "current" {}
 
+# AzureAD client config (for tenant diagnostic of workload identity)
+data "azuread_client_config" "current" {}
+
 # -----------------------------------------------------------------
 # Azure Key Vault
 # -----------------------------------------------------------------
@@ -540,6 +543,17 @@ resource "azuredevops_variable_group" "secrets" {
   variable {
     name  = "WORKLOAD_IDENTITY_WORKERS_CLIENT_ID"
     value = module.workload_identity_workers.client_id
+  }
+
+  # Workload Identity tenant IDs (for Azure SDK authentication)
+  variable {
+    name  = "WORKLOAD_IDENTITY_API_TENANT_ID"
+    value = data.azuread_client_config.current.tenant_id
+  }
+
+  variable {
+    name  = "WORKLOAD_IDENTITY_WORKERS_TENANT_ID"
+    value = data.azuread_client_config.current.tenant_id
   }
 }
 

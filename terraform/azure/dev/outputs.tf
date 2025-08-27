@@ -186,3 +186,29 @@ output "workload_identity_workers_object_id" {
   description = "Service principal object ID for workers workload identity (used in role assignments)."
   value       = module.workload_identity_workers.object_id
 }
+
+# -----------------------------------------------------------------
+# Workload Identity / Tenant Diagnostics
+# -----------------------------------------------------------------
+output "aks_oidc_issuer_url" {
+  description = "OIDC issuer URL for the AKS cluster (contains tenant ID)."
+  value       = module.aks.oidc_issuer_url
+}
+
+output "azuread_provider_tenant_id" {
+  description = "Tenant ID used by the AzureAD provider (validate matches AKS OIDC issuer tenant)."
+  value       = data.azuread_client_config.current.tenant_id
+}
+
+# -----------------------------------------------------------------
+# Key Vault Validation Outputs (to confirm correct tenant vaults)
+# -----------------------------------------------------------------
+output "database_key_vault_uri" {
+  description = "URI of the database Key Vault (should belong to active tenant)."
+  value       = module.database_key_vault.key_vault_uri
+}
+
+output "master_key_vault_uri" {
+  description = "URI of the master Key Vault (should belong to active tenant)."
+  value       = module.master_key_vault.key_vault_uri
+}
