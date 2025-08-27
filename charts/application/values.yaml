@@ -171,28 +171,3 @@ organization-worker:
     queueLength: 1
     scaleDownDelay: 300
     scaleUpDelay: 30
-
-# Chat Worker
-chat-worker:
-  enabled: true
-  replicaCount: 0
-  image:
-    repository: "copilotgtmacrdev.azurecr.io/copilot-backend"
-    tag: "latest"
-    pullPolicy: IfNotPresent
-  config:
-    queueName: "chat"
-  resources:
-    requests:
-      cpu: "100m"
-      memory: "256Mi"
-    limits:
-      cpu: "500m"
-      memory: "1Gi"
-  autoscaling:
-    enabled: true
-    minReplicas: 0
-    maxReplicas: 5
-    queueLength: 1
-    scaleDownDelay: 300
-    scaleUpDelay: 30
