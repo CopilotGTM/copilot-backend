@@ -13,7 +13,11 @@ import secrets
 from sqlalchemy import create_engine, text
 from alembic.config import Config
 from alembic import command
-from azure.identity import DefaultAzureCredential
+from azure.identity import (
+    ClientSecretCredential,
+    WorkloadIdentityCredential,
+    ManagedIdentityCredential,
+)
 from azure.keyvault.secrets import SecretClient
 from src.infra.utils.logger import get_logger
 from src.infra.utils.get_master_db_url import get_master_db_url
@@ -67,7 +71,26 @@ def _store_password_in_key_vault(secret_name: str, password: str):
             print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
             return
 
-        credential = DefaultAzureCredential()
+        # Check if service principal credentials are configured (all three must be present)
+        tenant_id = os.getenv("AZURE_TENANT_ID")
+        client_id = os.getenv("AZURE_CLIENT_ID")
+        client_secret = os.getenv("AZURE_CLIENT_SECRET")
+
+        if tenant_id and client_id and client_secret:
+            credential = ClientSecretCredential(
+                tenant_id=tenant_id,
+                client_id=client_id,
+                client_secret=client_secret,
+            )
+        elif tenant_id and client_id:
+            credential = WorkloadIdentityCredential(
+                tenant_id=tenant_id,
+                client_id=client_id,
+            )
+        elif client_id and not tenant_id:
+            print("[migrations] WARNING: Workload identity client id present but AZURE_TENANT_ID missing; using Managed Identity fallback.")
+        else:
+            credential = ManagedIdentityCredential()
         client = SecretClient(vault_url=key_vault_url, credential=credential)
 
         client.set_secret(secret_name, password)

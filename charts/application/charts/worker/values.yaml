@@ -26,6 +26,20 @@ resources:
     cpu: 128m
     memory: 256Mi
 
+# ServiceAccount configuration (for workload identity / RBAC)
+serviceAccount:
+  create: true
+  name: "copilot-workers"
+  annotations: {}
+
+# Workload Identity (optional) - set clientId to inject azure.workload.identity/client-id annotation
+workloadIdentity:
+  clientId: ""
+  # Optional explicit tenant for workload identity tokens; populated via --set <worker>.workloadIdentity.tenantId=<GUID>
+  tenantId: ""
+  # Optionally control additional tenants allowed for token acquisition ("*" permits any). Currently not consumed in template.
+  additionalAllowedTenants: ""
+
 # KEDA-based autoscaling configuration
 autoscaling:
   enabled: false

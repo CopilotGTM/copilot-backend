@@ -9,10 +9,14 @@ from sqlmodel import SQLModel, create_engine, Session
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-from azure.identity import DefaultAzureCredential
+from azure.identity import (
+    ClientSecretCredential,
+    WorkloadIdentityCredential,
+    ManagedIdentityCredential,
+)
 from azure.keyvault.secrets import SecretClient
 
-from src.infra.config.configs import Config, database_config, secret_manager_config
+from src.infra.config.configs import Config, database_config, secret_manager_config, cloud_infra_config
 from src.infra.utils.resource_naming import get_key_vault_secret_name, get_role_name, get_schema_name
 
 # ---------------------------------------------------------------------------
@@ -60,7 +64,28 @@ def _get_secret_from_key_vault(secret_name: str) -> str | None:
         return None
 
     try:
-        credential = DefaultAzureCredential()
+        # Check if service principal credentials are configured (all three must be present)
+        tenant_id = cloud_infra_config.AZURE_TENANT_ID
+        client_id = cloud_infra_config.AZURE_CLIENT_ID
+        client_secret = cloud_infra_config.AZURE_CLIENT_SECRET
+
+        if tenant_id and client_id and client_secret:
+            credential = ClientSecretCredential(
+                tenant_id=tenant_id,
+                client_id=client_id,
+                client_secret=client_secret,
+            )
+        elif tenant_id and client_id:
+            allowed_tenants = [t.strip() for t in (cloud_infra_config.AZURE_ADDITIONALLY_ALLOWED_TENANTS or "").split(",") if t.strip()] or None
+            credential = WorkloadIdentityCredential(
+                tenant_id=tenant_id,
+                client_id=client_id,
+                additionally_allowed_tenants=allowed_tenants or ["*"]
+            )
+        elif client_id and not tenant_id:
+            print("[database] WARNING: Workload identity client id present but AZURE_TENANT_ID missing; using Managed Identity fallback.")
+        else:
+            credential = ManagedIdentityCredential()
         client = SecretClient(vault_url=key_vault_url, credential=credential)
         secret = client.get_secret(secret_name)
         _SECRET_CACHE[secret_name] = (secret.value, _now())

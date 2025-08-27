@@ -16,6 +16,9 @@ spec:
         {{- include "webservice.annotations" . | nindent 8 }}
       labels:
         {{- include "webservice.selectorLabels" . | nindent 8 }}
+        {{- if .Values.workloadIdentity.clientId }}
+        azure.workload.identity/use: "true"
+        {{- end }}
     spec:
       serviceAccountName: {{ .Values.serviceAccount.name }}
       containers:
@@ -29,6 +32,18 @@ spec:
           env:
             - name: ENVIRONMENT
               value: {{ .Values.environment | quote }}
+            - name: AZURE_ADDITIONALLY_ALLOWED_TENANTS
+              value: "*"
+            - name: AZURE_LOG_LEVEL
+              value: "info"
+            {{- if .Values.workloadIdentity.clientId }}
+            - name: AZURE_CLIENT_ID
+              value: {{ .Values.workloadIdentity.clientId | quote }}
+            {{- if .Values.workloadIdentity.tenantId }}
+            - name: AZURE_TENANT_ID
+              value: {{ .Values.workloadIdentity.tenantId | quote }}
+            {{- end }}
+            {{- end }}
           envFrom:
             - secretRef:
                 name: {{ include "webservice.fullname" . }}-secret

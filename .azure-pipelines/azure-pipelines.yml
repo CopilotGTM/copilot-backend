@@ -20,7 +20,6 @@ variables:
   - name: KUBECONFIG_FILE
     value: $(Pipeline.Workspace)/kubeconfig.yaml
 
-
 stages:
   - stage: BuildAndPush
     displayName: Build & Push Docker Image to ACR
@@ -93,6 +92,8 @@ stages:
                 - script: |
                     helm upgrade --install "$HELM_RELEASE_NAME" "$CHART_PATH" \
                       --namespace copilotgtm \
+                      --set api.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_BACKEND_CLIENT_ID)" \
+                      --set api.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_API_TENANT_ID)" \
                       --set global.redis.host="$REDIS_HOST" \
                       --set global.redis.port="$REDIS_PORT" \
                       --set global.redis.enableTLS=true \
@@ -120,6 +121,7 @@ stages:
                       --set api.secrets.AZURE_EMBEDDER_DEPLOYMENT="$(AZURE_EMBEDDER_DEPLOYMENT)" \
                       --set api.secrets.CLOUD_PROVIDER="$(CLOUD_PROVIDER)" \
                       --set api.secrets.APPLICATION_STORAGE_NAME="$(APPLICATION_STORAGE_NAME)" \
+                      --set api.secrets.ORGANISATION_STORAGE_NAME="$(ORGANISATION_STORAGE_NAME)" \
                       --set api.secrets.APPLICATION_REGION="$(APPLICATION_REGION)" \
                       --set api.secrets.DATABASE_SSL_MODE="$(DATABASE_SSL_MODE)" \
                       --set api.secrets.ENV="$(ENV)" \
@@ -135,12 +137,23 @@ stages:
                       --set api.secrets.FROM_EMAIL="$(FROM_EMAIL)" \
                       --set api.secrets.APP_NAME="$(APP_NAME)" \
                       --set api.secrets.APP_URL="$(APP_URL)" \
-                      --set api.secrets.ADMIN_APP_URL="$(ADMIN_APP_URL)"
+                      --set api.secrets.ADMIN_APP_URL="$(ADMIN_APP_URL)" \
+                      --set knowledge-extract-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
+                      --set knowledge-upload-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
+                      --set organization-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
+                      --set chat-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
+                      --set knowledge-extract-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
+                      --set knowledge-upload-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
+                      --set organization-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
+                      --set chat-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)"
+
 
                   displayName: Helm Upgrade/Install
                   env:
                     HELM_RELEASE_NAME: $(HELM_RELEASE_NAME)
                     CHART_PATH: $(CHART_PATH)
+                    WORKLOAD_IDENTITY_BACKEND_CLIENT_ID: $(WORKLOAD_IDENTITY_BACKEND_CLIENT_ID)
+                    WORKLOAD_IDENTITY_WORKERS_CLIENT_ID: $(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)
                     ACR_LOGIN_SERVER: $(ACR_LOGIN_SERVER)
                     BUILD_BUILDID: $(Build.BuildId)
                     DATABASE_HOST: $(DATABASE_HOST)
@@ -158,6 +171,7 @@ stages:
                     AZURE_EMBEDDER_DEPLOYMENT: $(AZURE_EMBEDDER_DEPLOYMENT)
                     CLOUD_PROVIDER: $(CLOUD_PROVIDER)
                     APPLICATION_STORAGE_NAME: $(APPLICATION_STORAGE_NAME)
+                    ORGANISATION_STORAGE_NAME: $(ORGANISATION_STORAGE_NAME)
                     APPLICATION_REGION: $(APPLICATION_REGION)
                     DATABASE_SSL_MODE: $(DATABASE_SSL_MODE)
                     ENV: $(ENV)
@@ -174,6 +188,8 @@ stages:
                     APP_NAME: $(APP_NAME)
                     APP_URL: $(APP_URL)
                     ADMIN_APP_URL: $(ADMIN_APP_URL)
+                    WORKLOAD_IDENTITY_API_TENANT_ID: $(WORKLOAD_IDENTITY_API_TENANT_ID)
+                    WORKLOAD_IDENTITY_WORKERS_TENANT_ID: $(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)
 
                 - script: |
                     kubectl get pods -n copilotgtm

@@ -14,7 +14,13 @@ spec:
     metadata:
       labels:
         {{- include "worker.selectorLabels" . | nindent 8 }}
+        {{- if .Values.workloadIdentity.clientId }}
+        azure.workload.identity/use: "true"
+        {{- end }}
     spec:
+      {{- if or .Values.serviceAccount.create .Values.serviceAccount.name }}
+      serviceAccountName: {{ .Values.serviceAccount.name | default (include "worker.fullname" .) }}
+      {{- end }}
       containers:
         - name: {{ .Chart.Name }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -41,6 +47,19 @@ spec:
           envFrom:
             - secretRef:
                 name: {{ .Values.config.secretName | default .Values.global.secretName }}
+          {{- if .Values.workloadIdentity.clientId }}
+          env:
+            - name: AZURE_ADDITIONALLY_ALLOWED_TENANTS
+              value: "*"
+            - name: AZURE_LOG_LEVEL
+              value: "info"
+            - name: AZURE_CLIENT_ID
+              value: {{ .Values.workloadIdentity.clientId | quote }}
+            {{- if .Values.workloadIdentity.tenantId }}
+            - name: AZURE_TENANT_ID
+              value: {{ .Values.workloadIdentity.tenantId | quote }}
+            {{- end }}
+          {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
 {{- end }}
