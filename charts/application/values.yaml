@@ -113,7 +113,7 @@ knowledge-extract-worker:
       cpu: "100m"      # Low request, high limit for burst
       memory: "256Mi"
     limits:
-      cpu: "2000m"     # High limit for heavy processing
+      cpu: "1000m"     # Reduced from 2000m to 1000m for better resource sharing
       memory: "1Gi"
   autoscaling:
     enabled: true
@@ -188,7 +188,7 @@ chat-worker:
       memory: "256Mi"
     limits:
       cpu: "500m"
-      memory: "512Mi"
+      memory: "1Gi"
   autoscaling:
     enabled: true
     minReplicas: 0
