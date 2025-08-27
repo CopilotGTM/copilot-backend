@@ -30,3 +30,11 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+# Optional list of allowed origins for a single blob service CORS rule.
+# If empty, no CORS rule will be created.
+variable "allowed_blob_cors_origins" {
+  description = "List of allowed origins for blob service CORS. Leave empty to disable CORS configuration."
+  type        = list(string)
+  default     = []
+}

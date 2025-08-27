@@ -98,6 +98,11 @@ module "master_storage_account" {
   location                = var.location
   account_tier            = "Standard"
   account_replication_type = "LRS"
+  allowed_blob_cors_origins = [
+    "https://${var.frontend_dns_a_record_name}.copilotgtm.com",
+    "https://${var.frontend_admin_dns_a_record_name}.copilotgtm.com",
+    "http://localhost:3000"
+  ]
   tags = {
     environment = var.env
     project     = var.project_name
@@ -114,6 +119,11 @@ module "org_storage_account" {
   location                 = var.location
   account_tier             = "Standard"
   account_replication_type = "LRS"
+  allowed_blob_cors_origins = [
+    "https://${var.frontend_dns_a_record_name}.copilotgtm.com",
+    "https://${var.frontend_admin_dns_a_record_name}.copilotgtm.com",
+    "http://localhost:3000"
+  ]
   tags = {
     environment = var.env
     project     = var.project_name
