@@ -21,7 +21,11 @@ from src.infra.config.configs import (
     cloud_storage_config,
 )
 from migrations.migration_manager import migration_manager
-from azure.identity import DefaultAzureCredential, ClientSecretCredential
+from azure.identity import (
+    ClientSecretCredential,
+    ManagedIdentityCredential,
+    WorkloadIdentityCredential,
+)
 from azure.keyvault.secrets import SecretClient
 from src.infra.utils.cursor import decode_cursor, encode_cursor
 from src.infra.utils.resource_naming import (
@@ -576,8 +580,41 @@ class OrganizationManagementService:
 
     # ------------------ Helper / pagination utilities ------------------ #
     def _get_azure_credential(self):
-        """Centralised Azure credential selection."""
-        return DefaultAzureCredential(additionally_allowed_tenants=["*"])
+        """Resolve Azure credential with explicit, deterministic ordering.
+
+        Order:
+          1. Service Principal (client secret) when all 3 vars present
+          2. Workload Identity (federated token) when client id + tenant id present
+          3. Managed Identity (fallback) when running on Azure host with IMDS
+        Raises if none can be constructed (developer must log in differently).
+        """
+        tenant_id = cloud_infra_config.AZURE_TENANT_ID
+        client_id = cloud_infra_config.AZURE_CLIENT_ID
+        client_secret = cloud_infra_config.AZURE_CLIENT_SECRET
+
+        # 1. Service Principal via client secret
+        if tenant_id and client_id and client_secret:
+            logger.info("Auth strategy: Service Principal (client secret)")
+            return ClientSecretCredential(
+                tenant_id=tenant_id,
+                client_id=client_id,
+                client_secret=client_secret,
+            )
+
+        # 2. Workload Identity (Kubernetes federated token). Requires tenant & client id.
+        #    WorkloadIdentityCredential automatically uses the mounted FEDERATED_TOKEN file.
+        if tenant_id and client_id:
+            logger.info("Auth strategy: Workload Identity (federated token)")
+            return WorkloadIdentityCredential(
+                tenant_id=tenant_id,
+                client_id=client_id,
+            )
+        if client_id and not tenant_id:
+            logger.warning("Workload identity client id present but AZURE_TENANT_ID missing; using Managed Identity fallback (may cause cross-tenant issues).")
+
+        # 3. Managed Identity (e.g., VM / AzureService / no explicit client id)
+        logger.info("Auth strategy: Managed Identity (no client id provided)")
+        return ManagedIdentityCredential()
 
     def _validate_identifier(self, value: str, field: str):
         """Basic safety validation for SQL identifiers comprised of lowercase letters, digits, and underscores.

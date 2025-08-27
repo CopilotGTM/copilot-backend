@@ -78,6 +78,7 @@ api:
   # Workload Identity settings (populated by Terraform output/pipeline)
   workloadIdentity:
     clientId: ""  # override with the federated workload identity application client id
+  tenantId: ""  # optional; set to ensure tokens are requested from correct tenant
 
   # Define any Helm hook jobs for this specific service
   jobs:

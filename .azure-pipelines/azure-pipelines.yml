@@ -20,7 +20,6 @@ variables:
   - name: KUBECONFIG_FILE
     value: $(Pipeline.Workspace)/kubeconfig.yaml
 
-
 stages:
   - stage: BuildAndPush
     displayName: Build & Push Docker Image to ACR
@@ -94,6 +93,7 @@ stages:
                     helm upgrade --install "$HELM_RELEASE_NAME" "$CHART_PATH" \
                       --namespace copilotgtm \
                       --set api.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_BACKEND_CLIENT_ID)" \
+                      --set api.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_API_TENANT_ID)" \
                       --set global.redis.host="$REDIS_HOST" \
                       --set global.redis.port="$REDIS_PORT" \
                       --set global.redis.enableTLS=true \
@@ -140,7 +140,11 @@ stages:
                       --set knowledge-extract-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
                       --set knowledge-upload-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
                       --set organization-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
-                      --set chat-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)"
+                      --set chat-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
+                      --set knowledge-extract-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
+                      --set knowledge-upload-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
+                      --set organization-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
+                      --set chat-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)"
 
 
                   displayName: Helm Upgrade/Install
@@ -182,6 +186,8 @@ stages:
                     APP_NAME: $(APP_NAME)
                     APP_URL: $(APP_URL)
                     ADMIN_APP_URL: $(ADMIN_APP_URL)
+                    WORKLOAD_IDENTITY_API_TENANT_ID: $(WORKLOAD_IDENTITY_API_TENANT_ID)
+                    WORKLOAD_IDENTITY_WORKERS_TENANT_ID: $(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)
 
                 - script: |
                     kubectl get pods -n copilotgtm

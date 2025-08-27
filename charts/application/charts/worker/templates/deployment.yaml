@@ -55,6 +55,10 @@ spec:
               value: "info"
             - name: AZURE_CLIENT_ID
               value: {{ .Values.workloadIdentity.clientId | quote }}
+            {{- if .Values.workloadIdentity.tenantId }}
+            - name: AZURE_TENANT_ID
+              value: {{ .Values.workloadIdentity.tenantId | quote }}
+            {{- end }}
           {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}

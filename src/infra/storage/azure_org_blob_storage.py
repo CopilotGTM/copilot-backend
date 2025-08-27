@@ -7,7 +7,11 @@ import re
 import os
 import asyncio
 
-from azure.identity.aio import DefaultAzureCredential, ClientSecretCredential
+from azure.identity.aio import (
+    ClientSecretCredential,
+    WorkloadIdentityCredential,
+    ManagedIdentityCredential,
+)
 from azure.storage.blob.aio import BlobServiceClient
 from azure.storage.blob import (
     ContentSettings,
@@ -23,19 +27,34 @@ logger = get_logger("azure_org_blob_storage")
 
 
 async def _get_credential_async():
-    """
-    Returns the default Azure credential.
+    """Return Azure credential with explicit ordering to avoid unintended fallbacks.
 
-    This relies on `DefaultAzureCredential`, which is the standard for modern Azure
-    applications. It automatically handles Managed Identity in production environments
-    (e.g., App Service, VMs) and local developer authentication (Azure CLI, VS Code)
-    without needing to manage secrets in the code.
-    
-    Additionally allows cross-tenant access for scenarios where workload identity
-    and storage resources exist in different Azure AD tenants.
+    Order:
+      1. Service Principal (client secret) when tenant, client, secret present
+      2. Workload Identity (federated token) when tenant & client present
+      3. Managed Identity (no explicit ids) as final fallback
     """
-    logger.info("Authenticating with Azure using DefaultAzureCredential (Managed Identity or local developer) with cross-tenant access.")
-    return DefaultAzureCredential(additionally_allowed_tenants=["*"])
+    tenant_id = cloud_infra_config.AZURE_TENANT_ID
+    client_id = cloud_infra_config.AZURE_CLIENT_ID
+    client_secret = cloud_infra_config.AZURE_CLIENT_SECRET
+
+    if tenant_id and client_id and client_secret:
+        logger.info("Auth strategy (blob): Service Principal (client secret)")
+        return ClientSecretCredential(
+            tenant_id=tenant_id,
+            client_id=client_id,
+            client_secret=client_secret,
+        )
+    if tenant_id and client_id:
+        logger.info("Auth strategy (blob): Workload Identity (federated token)")
+        return WorkloadIdentityCredential(
+            tenant_id=tenant_id,
+            client_id=client_id,
+        )
+    if client_id and not tenant_id:
+        logger.warning("(blob) Workload identity client id present but AZURE_TENANT_ID missing; using Managed Identity fallback (possible wrong tenant).")
+    logger.info("Auth strategy (blob): Managed Identity fallback")
+    return ManagedIdentityCredential()
 
 
 class AzureOrganisationBlobStorage:

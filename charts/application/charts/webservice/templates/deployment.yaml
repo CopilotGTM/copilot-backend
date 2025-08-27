@@ -41,6 +41,10 @@ spec:
             {{- if .Values.workloadIdentity.clientId }}
             - name: AZURE_CLIENT_ID
               value: {{ .Values.workloadIdentity.clientId | quote }}
+            {{- if .Values.workloadIdentity.tenantId }}
+            - name: AZURE_TENANT_ID
+              value: {{ .Values.workloadIdentity.tenantId | quote }}
+            {{- end }}
             {{- end }}
           envFrom:
             - secretRef:
