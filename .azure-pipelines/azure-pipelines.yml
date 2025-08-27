@@ -121,6 +121,7 @@ stages:
                       --set api.secrets.AZURE_EMBEDDER_DEPLOYMENT="$(AZURE_EMBEDDER_DEPLOYMENT)" \
                       --set api.secrets.CLOUD_PROVIDER="$(CLOUD_PROVIDER)" \
                       --set api.secrets.APPLICATION_STORAGE_NAME="$(APPLICATION_STORAGE_NAME)" \
+                      --set api.secrets.ORGANISATION_STORAGE_NAME="$(ORGANISATION_STORAGE_NAME)" \
                       --set api.secrets.APPLICATION_REGION="$(APPLICATION_REGION)" \
                       --set api.secrets.DATABASE_SSL_MODE="$(DATABASE_SSL_MODE)" \
                       --set api.secrets.ENV="$(ENV)" \
@@ -170,6 +171,7 @@ stages:
                     AZURE_EMBEDDER_DEPLOYMENT: $(AZURE_EMBEDDER_DEPLOYMENT)
                     CLOUD_PROVIDER: $(CLOUD_PROVIDER)
                     APPLICATION_STORAGE_NAME: $(APPLICATION_STORAGE_NAME)
+                    ORGANISATION_STORAGE_NAME: $(ORGANISATION_STORAGE_NAME)
                     APPLICATION_REGION: $(APPLICATION_REGION)
                     DATABASE_SSL_MODE: $(DATABASE_SSL_MODE)
                     ENV: $(ENV)
