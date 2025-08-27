@@ -122,6 +122,7 @@ class CloudInfraConfig:
     AZURE_TENANT_ID: Optional[str] = os.getenv("AZURE_TENANT_ID")
     AZURE_CLIENT_ID: Optional[str] = os.getenv("AZURE_CLIENT_ID")
     AZURE_CLIENT_SECRET: Optional[str] = os.getenv("AZURE_CLIENT_SECRET")
+    AZURE_ADDITIONALLY_ALLOWED_TENANTS: Optional[str] = os.getenv("AZURE_ADDITIONALLY_ALLOWED_TENANTS")
 
 
 class ChatFileUploadConfig:

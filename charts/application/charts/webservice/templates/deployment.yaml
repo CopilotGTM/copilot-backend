@@ -33,7 +33,7 @@ spec:
             - name: ENVIRONMENT
               value: {{ .Values.environment | quote }}
             - name: AZURE_ADDITIONALLY_ALLOWED_TENANTS
-              value: {{ .Values.workloadIdentity.additionalAllowedTenants | quote }}
+              value: "*"
             - name: AZURE_LOG_LEVEL
               value: "info"
             {{- if .Values.workloadIdentity.clientId }}

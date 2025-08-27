@@ -76,9 +76,11 @@ def _get_secret_from_key_vault(secret_name: str) -> str | None:
                 client_secret=client_secret,
             )
         elif tenant_id and client_id:
+            allowed_tenants = [t.strip() for t in (cloud_infra_config.AZURE_ADDITIONALLY_ALLOWED_TENANTS or "").split(",") if t.strip()] or None
             credential = WorkloadIdentityCredential(
                 tenant_id=tenant_id,
                 client_id=client_id,
+                additionally_allowed_tenants=allowed_tenants or ["*"]
             )
         elif client_id and not tenant_id:
             print("[database] WARNING: Workload identity client id present but AZURE_TENANT_ID missing; using Managed Identity fallback.")

@@ -47,9 +47,11 @@ async def _get_credential_async():
         )
     if tenant_id and client_id:
         logger.info("Auth strategy (blob): Workload Identity (federated token)")
+        allowed_tenants = [t.strip() for t in (cloud_infra_config.AZURE_ADDITIONALLY_ALLOWED_TENANTS or "").split(",") if t.strip()] or None
         return WorkloadIdentityCredential(
             tenant_id=tenant_id,
             client_id=client_id,
+            additionally_allowed_tenants=allowed_tenants or ["*"]
         )
     if client_id and not tenant_id:
         logger.warning("(blob) Workload identity client id present but AZURE_TENANT_ID missing; using Managed Identity fallback (possible wrong tenant).")
