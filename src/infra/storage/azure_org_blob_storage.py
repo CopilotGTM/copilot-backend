@@ -11,6 +11,7 @@ from azure.identity.aio import (
     ClientSecretCredential,
     WorkloadIdentityCredential,
     ManagedIdentityCredential,
+    DefaultAzureCredential,
 )
 from azure.storage.blob.aio import BlobServiceClient
 from azure.storage.blob import (
@@ -29,22 +30,18 @@ logger = get_logger("azure_org_blob_storage")
 async def _get_credential_async():
     """Return Azure credential with explicit ordering to avoid unintended fallbacks.
 
-    Order:
-      1. Service Principal (client secret) when tenant, client, secret present
-      2. Workload Identity (federated token) when tenant & client present
-      3. Managed Identity (no explicit ids) as final fallback
+    For local development (when ENV=local), it uses DefaultAzureCredential.
+    Otherwise, it follows a specific production order.
     """
+    # Use DefaultAzureCredential for local development for convenience
+    if os.getenv("ENV") == "local":
+        logger.info("Auth strategy (blob): DefaultAzureCredential (local development).")
+        return DefaultAzureCredential()
+
+    # Production credential order
     tenant_id = cloud_infra_config.AZURE_TENANT_ID
     client_id = cloud_infra_config.AZURE_CLIENT_ID
-    client_secret = cloud_infra_config.AZURE_CLIENT_SECRET
 
-    if tenant_id and client_id and client_secret:
-        logger.info("Auth strategy (blob): Service Principal (client secret)")
-        return ClientSecretCredential(
-            tenant_id=tenant_id,
-            client_id=client_id,
-            client_secret=client_secret,
-        )
     if tenant_id and client_id:
         logger.info("Auth strategy (blob): Workload Identity (federated token)")
         allowed_tenants = [t.strip() for t in (cloud_infra_config.AZURE_ADDITIONALLY_ALLOWED_TENANTS or "").split(",") if t.strip()] or None
@@ -225,6 +222,21 @@ class AzureOrganisationBlobStorage:
         except Exception:
             # Azure SDK raises ResourceNotFoundError, but a broad catch is fine to confirm non-existence.
             return None
+
+    async def get_blob_content(self, blob_path: str) -> bytes:
+        """Download blob content as bytes."""
+        await self._ensure_container()
+        blob_service = await self._get_blob_service_client()
+        container = self.container
+        blob_client = blob_service.get_blob_client(container=container, blob=blob_path)
+        try:
+            download_stream = await blob_client.download_blob()
+            content = await download_stream.readall()
+            logger.debug(f"Downloaded blob {blob_path} ({len(content)} bytes)")
+            return content
+        except Exception as e:
+            logger.error(f"Failed to download blob {blob_path}: {str(e)}")
+            raise
 
     async def delete_blob(self, blob_path: str):
         """Deletes a blob if it exists."""

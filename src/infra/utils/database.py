@@ -13,6 +13,7 @@ from azure.identity import (
     ClientSecretCredential,
     WorkloadIdentityCredential,
     ManagedIdentityCredential,
+    DefaultAzureCredential,
 )
 from azure.keyvault.secrets import SecretClient
 
@@ -64,28 +65,31 @@ def _get_secret_from_key_vault(secret_name: str) -> str | None:
         return None
 
     try:
-        # Check if service principal credentials are configured (all three must be present)
-        tenant_id = cloud_infra_config.AZURE_TENANT_ID
-        client_id = cloud_infra_config.AZURE_CLIENT_ID
-        client_secret = cloud_infra_config.AZURE_CLIENT_SECRET
-
-        if tenant_id and client_id and client_secret:
-            credential = ClientSecretCredential(
-                tenant_id=tenant_id,
-                client_id=client_id,
-                client_secret=client_secret,
-            )
-        elif tenant_id and client_id:
-            allowed_tenants = [t.strip() for t in (cloud_infra_config.AZURE_ADDITIONALLY_ALLOWED_TENANTS or "").split(",") if t.strip()] or None
-            credential = WorkloadIdentityCredential(
-                tenant_id=tenant_id,
-                client_id=client_id,
-                additionally_allowed_tenants=allowed_tenants or ["*"]
-            )
-        elif client_id and not tenant_id:
-            print("[database] WARNING: Workload identity client id present but AZURE_TENANT_ID missing; using Managed Identity fallback.")
+        credential = None
+        # Use DefaultAzureCredential for local development for convenience
+        if os.getenv("ENV") == "local":
+            print("Auth strategy (database): DefaultAzureCredential (local development).")
+            credential = DefaultAzureCredential()
         else:
-            credential = ManagedIdentityCredential()
+            # Production credential order
+            tenant_id = cloud_infra_config.AZURE_TENANT_ID
+            client_id = cloud_infra_config.AZURE_CLIENT_ID
+
+            if tenant_id and client_id:
+                print("Auth strategy (database): Workload Identity (federated token)")
+                allowed_tenants = [t.strip() for t in (cloud_infra_config.AZURE_ADDITIONALLY_ALLOWED_TENANTS or "").split(",") if t.strip()] or None
+                credential = WorkloadIdentityCredential(
+                    tenant_id=tenant_id,
+                    client_id=client_id,
+                    additionally_allowed_tenants=allowed_tenants or ["*"]
+                )
+            elif client_id and not tenant_id:
+                print("[database] WARNING: Workload identity client id present but AZURE_TENANT_ID missing; using Managed Identity fallback.")
+            
+            if not credential:
+                print("Auth strategy (database): Managed Identity fallback")
+                credential = ManagedIdentityCredential()
+
         client = SecretClient(vault_url=key_vault_url, credential=credential)
         secret = client.get_secret(secret_name)
         _SECRET_CACHE[secret_name] = (secret.value, _now())
@@ -361,4 +365,3 @@ def database_previlage_connectin():
 
 # Backwards compatibility alias (typo retained in existing imports)
 database_privilege_connection = database_previlage_connectin
-
