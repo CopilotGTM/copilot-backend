@@ -14,9 +14,9 @@ from sqlalchemy import create_engine, text
 from alembic.config import Config
 from alembic import command
 from azure.identity import (
-    ClientSecretCredential,
     WorkloadIdentityCredential,
     ManagedIdentityCredential,
+    DefaultAzureCredential,
 )
 from azure.keyvault.secrets import SecretClient
 from src.infra.utils.logger import get_logger
@@ -71,28 +71,30 @@ def _store_password_in_key_vault(secret_name: str, password: str):
             print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
             return
 
-        # Check if service principal credentials are configured (all three must be present)
-        tenant_id = os.getenv("AZURE_TENANT_ID")
-        client_id = os.getenv("AZURE_CLIENT_ID")
-        client_secret = os.getenv("AZURE_CLIENT_SECRET")
-
-        if tenant_id and client_id and client_secret:
-            credential = ClientSecretCredential(
-                tenant_id=tenant_id,
-                client_id=client_id,
-                client_secret=client_secret,
-            )
-        elif tenant_id and client_id:
-            credential = WorkloadIdentityCredential(
-                tenant_id=tenant_id,
-                client_id=client_id,
-            )
-        elif client_id and not tenant_id:
-            print("[migrations] WARNING: Workload identity client id present but AZURE_TENANT_ID missing; using Managed Identity fallback.")
+        credential = None
+        # Use DefaultAzureCredential for local development for convenience
+        if os.getenv("ENV") == "local":
+            print("Auth strategy (migrations): DefaultAzureCredential (local development).")
+            credential = DefaultAzureCredential()
         else:
-            credential = ManagedIdentityCredential()
-        client = SecretClient(vault_url=key_vault_url, credential=credential)
+            # Production credential order
+            tenant_id = os.getenv("AZURE_TENANT_ID")
+            client_id = os.getenv("AZURE_CLIENT_ID")
 
+            if tenant_id and client_id:
+                print("Auth strategy (migrations): Workload Identity (federated token)")
+                credential = WorkloadIdentityCredential(
+                    tenant_id=tenant_id,
+                    client_id=client_id,
+                )
+            elif client_id and not tenant_id:
+                print("[migrations] WARNING: Workload identity client id present but AZURE_TENANT_ID missing; using Managed Identity fallback.")
+            
+            if not credential:
+                print("Auth strategy (migrations): Managed Identity fallback")
+                credential = ManagedIdentityCredential()
+
+        client = SecretClient(vault_url=key_vault_url, credential=credential)
         client.set_secret(secret_name, password)
         print(f"Successfully stored password in Azure Key Vault as '{secret_name}'.")
     except Exception as e:

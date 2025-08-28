@@ -43,15 +43,17 @@ class AsyncRedisPubSub:
             redis_host, redis_port, redis_password = self.config.get_redis_client_details
             ssl_enabled = False if self.config.env == "local" else True
 
+            # For long‑lived Pub/Sub, avoid read timeouts and client‑side health checks that
+            # inject PING (which can conflict with pubsub protocol). OS TCP keepalive is enabled.
             self._redis = redis.Redis(  # type: ignore[attr-defined]
                 host=redis_host,
                 port=redis_port,
                 password=redis_password,
                 decode_responses=True,
-                socket_timeout=30,
+                socket_timeout=None,           # no read timeout for blocking pubsub
                 socket_connect_timeout=30,
                 retry_on_timeout=True,
-                health_check_interval=30,
+                health_check_interval=0,       # disable client PING health check
                 ssl=ssl_enabled,
                 socket_keepalive=True,
             )

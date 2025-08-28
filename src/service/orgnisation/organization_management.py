@@ -21,10 +21,12 @@ from src.infra.config.configs import (
     cloud_storage_config,
 )
 from migrations.migration_manager import migration_manager
+import os
 from azure.identity import (
     ClientSecretCredential,
     ManagedIdentityCredential,
     WorkloadIdentityCredential,
+    DefaultAzureCredential,
 )
 from azure.keyvault.secrets import SecretClient
 from src.infra.utils.cursor import decode_cursor, encode_cursor
@@ -582,26 +584,19 @@ class OrganizationManagementService:
     def _get_azure_credential(self):
         """Resolve Azure credential with explicit, deterministic ordering.
 
-        Order:
-          1. Service Principal (client secret) when all 3 vars present
-          2. Workload Identity (federated token) when client id + tenant id present
-          3. Managed Identity (fallback) when running on Azure host with IMDS
-        Raises if none can be constructed (developer must log in differently).
+        For local development (when ENV=local), it uses DefaultAzureCredential.
+        Otherwise, it follows a specific production order.
         """
+        # Use DefaultAzureCredential for local development for convenience
+        if os.getenv("ENV") == "local":
+            logger.info("Auth strategy: DefaultAzureCredential (local development).")
+            return DefaultAzureCredential()
+
+        # Production credential order
         tenant_id = cloud_infra_config.AZURE_TENANT_ID
         client_id = cloud_infra_config.AZURE_CLIENT_ID
-        client_secret = cloud_infra_config.AZURE_CLIENT_SECRET
 
-        # 1. Service Principal via client secret
-        if tenant_id and client_id and client_secret:
-            logger.info("Auth strategy: Service Principal (client secret)")
-            return ClientSecretCredential(
-                tenant_id=tenant_id,
-                client_id=client_id,
-                client_secret=client_secret,
-            )
-
-        # 2. Workload Identity (Kubernetes federated token). Requires tenant & client id.
+        # Workload Identity (Kubernetes federated token). Requires tenant & client id.
         #    WorkloadIdentityCredential automatically uses the mounted FEDERATED_TOKEN file.
         if tenant_id and client_id:
             logger.info("Auth strategy: Workload Identity (federated token)")

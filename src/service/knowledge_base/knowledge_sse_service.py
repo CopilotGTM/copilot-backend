@@ -170,6 +170,7 @@ class KnowledgeSourceSSEService:
             # 1. Get initial snapshot
             initial_sources = await self.get_initial_sources(explicit_ids)
             watched_status: Dict[str, str] = {}
+            allowed_ids_set = {str(sid) for sid in explicit_ids} if explicit_ids else None
 
             if not initial_sources:
                 yield {"event": "complete", "data": json.dumps({"message": "no_sources_to_watch"})}
@@ -224,7 +225,7 @@ class KnowledgeSourceSSEService:
                     continue
                 
                 # Filter by explicit IDs if provided
-                if source_id not in {str(sid) for sid in explicit_ids}:
+                if allowed_ids_set is not None and source_id not in allowed_ids_set:
                     continue
 
                 watched_status[source_id] = message.get("status")
