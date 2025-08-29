@@ -19,10 +19,16 @@ tasks_module = "src.workers.knowledge_worker.tasks"
 # Create the Celery app for the Knowledge Worker
 app = create_celery_app("knowledge_worker", config, tasks_module)
 
-# Add debug configuration
+# Add debug configuration and knowledge-worker specific settings
 app.conf.update(
     worker_log_format='[%(asctime)s: %(levelname)s/%(processName)s] %(message)s',
     worker_task_log_format='[%(asctime)s: %(levelname)s/%(processName)s][%(task_name)s(%(task_id)s)] %(message)s',
+    # Additional configuration for handling long-running tasks
+    worker_pool_restarts=True,  # Allow worker pool to be restarted if needed
+    worker_max_tasks_per_child=50,  # Restart worker process after 50 tasks to prevent memory leaks
+    # Result backend settings for long-running tasks
+    result_expires=7200,  # Results expire after 2 hours
+    result_persistent=True,  # Persist results to backend
 )
 
 # Add signal handlers for debugging

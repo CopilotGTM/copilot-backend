@@ -6,6 +6,12 @@ class KnowledgeWorkerConfig(BaseWorkerConfig):
 
     def __init__(self):
         super().__init__()
+        
+        # Set extended time limits for knowledge processing tasks
+        # 30 minutes for hard limit, 28 minutes for soft limit
+        self.task_time_limit = 1800  # 30 minutes (30 * 60 seconds)
+        self.task_soft_time_limit = 1680  # 28 minutes (28 * 60 seconds)
+        
         # IMPORTANT:
         # Previously queues were declared without explicit routing keys, so Celery bound
         # every queue to the default direct exchange using the *same* routing key

@@ -6,6 +6,9 @@ import os
 import tempfile
 from pathlib import Path
 
+from celery.exceptions import SoftTimeLimitExceeded
+from billiard.exceptions import TimeLimitExceeded
+
 from src.workers.knowledge_worker.celery_app import app
 from src.infra.utils.logger import get_logger
 from src.infra.utils.database import get_org_session
@@ -26,7 +29,14 @@ from src.workers.knowledge_worker.utils import DocumentStore
 logger = get_logger("knowledge_document_extraction")
 
 
-@app.task(name="knowledge.document_extraction", bind=True, acks_late=True, max_retries=3)
+@app.task(
+    name="knowledge.document_extraction", 
+    bind=True, 
+    acks_late=True, 
+    max_retries=3,
+    time_limit=1800,  # 30 minutes hard limit
+    soft_time_limit=1680  # 28 minutes soft limit
+)
 def document_extraction(self, organisation_id: str, source_id: str):  # pragma: no cover
     """Heavy extraction task (PDF/DOC etc.)."""
     logger.info(f"Starting document extraction for source {source_id} in org {organisation_id}")
@@ -182,6 +192,41 @@ def document_extraction(self, organisation_id: str, source_id: str):  # pragma: 
         publish_source_status(organisation_id, publish_event)
         logger.info("Published source status update", extra={"event": publish_event})
 
+    except (SoftTimeLimitExceeded, TimeLimitExceeded) as e:
+        logger.error(f"Document extraction timed out for source {source_id}: {str(e)}")
+        
+        # Update status to failed with timeout-specific message
+        try:
+            if session and source:
+                source.status = OrganisationSourceStatus.FAILED
+                source.error_message = f"Document extraction timed out after 30 minutes. The file may be too large or complex to process."
+                session.add(source)
+                
+                if job:
+                    job.status = JobStatus.FAILED
+                    session.add(job)
+                
+                session.commit()
+
+                # Publish failure status
+                final_status_val = source.status.value if hasattr(source.status, "value") else str(source.status)
+                publish_event = KnowledgeSourceEventUpdate(
+                    source_id=str(source.source_id),
+                    status=final_status_val,
+                    updated_at=source.updated_at.isoformat() if source.updated_at else None,
+                    error_message=source.error_message,
+                    progress=None,
+                    thumbnail_medium_url=None,
+                    thumbnail_small_url=None,
+                )
+                publish_source_status(organisation_id, publish_event)
+        except Exception as publish_error:
+            logger.error(f"Error publishing timeout failure status: {str(publish_error)}")
+        
+        # Don't retry timeout exceptions
+        logger.warning(f"Task timed out for source {source_id}, not retrying")
+        return
+        
     except Exception as e:
         logger.error(f"Error during document extraction for source {source_id}: {str(e)}")
         

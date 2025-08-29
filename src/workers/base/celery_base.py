@@ -36,6 +36,16 @@ def create_celery_app(worker_name, config, tasks_module):
     if hasattr(config, 'task_routes'):
         celery_app.conf.task_routes = config.task_routes
 
+    # Default time limits (can be overridden by worker-specific config)
+    default_time_limit = 300  # 5 minutes
+    default_soft_time_limit = 240  # 4 minutes
+    
+    # Allow worker-specific time limits
+    if hasattr(config, 'task_time_limit'):
+        default_time_limit = config.task_time_limit
+    if hasattr(config, 'task_soft_time_limit'):
+        default_soft_time_limit = config.task_soft_time_limit
+
     # Add essential Celery configuration for task consumption
     celery_app.conf.update(
         task_serializer='json',
@@ -52,8 +62,8 @@ def create_celery_app(worker_name, config, tasks_module):
         broker_connection_max_retries=10,
         # Task execution settings
         task_track_started=True,
-        task_time_limit=300,  # 5 minutes
-        task_soft_time_limit=240,  # 4 minutes
+        task_time_limit=default_time_limit,
+        task_soft_time_limit=default_soft_time_limit,
         # Worker settings
         worker_hijack_root_logger=False,
         worker_log_color=False,
