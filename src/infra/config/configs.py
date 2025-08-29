@@ -160,12 +160,21 @@ class KnowledgeFileUploadConfig:
         item.strip()
         for item in os.getenv(
             "KNOWLEDGE_ALLOWED_MIMETYPES",
-            # Broader default set including spreadsheets and markdown
-            "application/pdf, text/plain, text/markdown, text/csv, application/msword, "
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document, "
+            "application/pdf, text/plain",
         ).split(",")
         if item.strip()
     ]
+
+
+class ThumbnailConfig:
+    """Configuration for thumbnail generation behavior."""
+
+    # If true, generate placeholder thumbnails for text files (text/plain)
+    ENABLE_TEXT_PLACEHOLDERS: bool = os.getenv("ENABLE_TEXT_PLACEHOLDERS", "true").lower() == "true"
+
+    # If true, when PDF renderer is unavailable or fails, do NOT fall back to placeholder automatically.
+    # Keep default conservative (false) unless explicitly enabled.
+    ENABLE_PDF_PLACEHOLDER_FALLBACK: bool = os.getenv("ENABLE_PDF_PLACEHOLDER_FALLBACK", "false").lower() == "true"
 
 
 # Create config instances
@@ -181,6 +190,7 @@ secret_manager_config = SecretManagerConfig()
 cloud_infra_config = CloudInfraConfig()
 chat_file_upload_config = ChatFileUploadConfig()
 knowledge_file_upload_config = KnowledgeFileUploadConfig()
+thumbnail_config = ThumbnailConfig()
 
 
 class Config:

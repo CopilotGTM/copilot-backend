@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 import re
 import os
 import asyncio
+import hashlib
 
 from azure.identity.aio import (
     ClientSecretCredential,
@@ -238,6 +239,23 @@ class AzureOrganisationBlobStorage:
             logger.error(f"Failed to download blob {blob_path}: {str(e)}")
             raise
 
+    async def upload_bytes(self, blob_path: str, data: bytes, content_type: str = "application/octet-stream") -> None:
+        """Upload bytes to the given blob path with content-type.
+
+        Centralizes Azure SDK calls for uploads so higher layers don't touch SDK directly.
+        """
+        from azure.storage.blob import ContentSettings
+
+        await self._ensure_container()
+        blob_service = await self._get_blob_service_client()
+        container = self.container
+        blob_client = blob_service.get_blob_client(container=container, blob=blob_path)
+        await blob_client.upload_blob(
+            data,
+            overwrite=True,
+            content_settings=ContentSettings(content_type=content_type),
+        )
+
     async def delete_blob(self, blob_path: str):
         """Deletes a blob if it exists."""
         try:
@@ -250,6 +268,19 @@ class AzureOrganisationBlobStorage:
         except Exception as e:
             # This is not a critical error if the blob is already gone.
             logger.warning("Failed to delete blob %s/%s: %s", container, blob_path, e)
+
+    async def compute_checksum(self, blob_path: str, algorithm: str = "sha256") -> str:
+        """Stream and compute checksum for a blob without loading it fully into memory."""
+
+        await self._ensure_container()
+        blob_service = await self._get_blob_service_client()
+        container = self.container
+        blob_client = blob_service.get_blob_client(container=container, blob=blob_path)
+        hasher = hashlib.new(algorithm)
+        downloader = await blob_client.download_blob()
+        async for chunk in downloader.chunks():  # type: ignore[attr-defined]
+            hasher.update(chunk)
+        return hasher.hexdigest()
 
     async def close(self):
         """Closes the underlying BlobServiceClient and credential."""
