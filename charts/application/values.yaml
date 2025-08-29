@@ -65,11 +65,11 @@ api:
 
   resources:
     limits:
-      cpu: 512m
-      memory: 1024Mi
+      cpu: 2000m
+      memory: 4Gi
     requests:
-      cpu: 128m
-      memory: 256Mi
+      cpu: 1000m
+      memory: 2Gi
 
   serviceAccount:
     create: true
@@ -107,45 +107,46 @@ knowledge-extract-worker:
   pullPolicy: IfNotPresent
   config:
     queueName: "knowledge_extract"
+    concurrency: 1
   resources:
-    # Lower requests for cost efficiency when idle
     requests:
-      cpu: "1000m"      # Low request, high limit for burst
-      memory: "1Gi"
+      cpu: "2000m"
+      memory: "2Gi"
     limits:
-      cpu: "2000m"     # Reduced from 2000m to 1000m for better resource sharing
-      memory: "4Gi"
+      cpu: "4000m"
+      memory: "6Gi"
   autoscaling:
     enabled: true
-    minReplicas: 1     # Scale to zero when no tasks
-    maxReplicas: 5     # Burst up when needed
-    queueLength: 1     # Very responsive - scale on any task
-    scaleDownDelay: 300  # Wait 5 min before scaling down (seconds)
-    scaleUpDelay: 10     # Quick scale up (seconds)
+    minReplicas: 1
+    maxReplicas: 5
+    queueLength: 5
+    scaleDownDelay: 300
+    scaleUpDelay: 10
 
 knowledge-upload-worker:
   enabled: true
-  replicaCount: 0  # Start with 0 replicas - scale from zero
+  replicaCount: 0
   image:
     repository: "copilotgtmacrdev.azurecr.io/copilot-backend"
     tag: "latest"
   pullPolicy: IfNotPresent
   config:
     queueName: "knowledge_upload"
+    concurrency: 2
   resources:
     requests:
-      cpu: "250m"       # Very low request
-      memory: "250Mi"
+      cpu: "250m"
+      memory: "1Gi"
     limits:
-      cpu: "500m"      # Moderate limit for I/O tasks
-      memory: "500Mi"
+      cpu: "750m"
+      memory: "2Gi"
   autoscaling:
     enabled: true
-    minReplicas: 1     # Scale to zero when no tasks
-    maxReplicas: 10    # More replicas for concurrent uploads
-    queueLength: 2     # Scale when 2+ tasks queued
-    scaleDownDelay: 180  # Faster scale down (3 min, seconds)
-    scaleUpDelay: 4     # Very quick scale up (seconds)
+    minReplicas: 1
+    maxReplicas: 10
+    queueLength: 50
+    scaleDownDelay: 180
+    scaleUpDelay: 4
 
 # Organization Worker
 organization-worker:
@@ -157,6 +158,7 @@ organization-worker:
     pullPolicy: IfNotPresent
   config:
     queueName: "organization"
+    concurrency: 5
   resources:
     requests:
       cpu: "100m"
@@ -170,4 +172,30 @@ organization-worker:
     maxReplicas: 5
     queueLength: 1
     scaleDownDelay: 300
+    scaleUpDelay: 5
+
+# Chat Worker (Attachments Queue)
+chat-worker:
+  enabled: true
+  replicaCount: 0
+  image:
+    repository: "copilotgtmacrdev.azurecr.io/copilot-backend"
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  config:
+    queueName: "attachments"
+    concurrency: 3
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+  autoscaling:
+    enabled: true
+    minReplicas: 0
+    maxReplicas: 8
+    queueLength: 2
+    scaleDownDelay: 240
     scaleUpDelay: 5
