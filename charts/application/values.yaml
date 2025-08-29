@@ -132,14 +132,14 @@ knowledge-upload-worker:
   pullPolicy: IfNotPresent
   config:
     queueName: "knowledge_upload"
-    concurrency: 10
+    concurrency: 2
   resources:
     requests:
       cpu: "250m"
-      memory: "512Mi"
+      memory: "1Gi"
     limits:
       cpu: "750m"
-      memory: "1Gi"
+      memory: "2Gi"
   autoscaling:
     enabled: true
     minReplicas: 1
@@ -172,4 +172,30 @@ organization-worker:
     maxReplicas: 5
     queueLength: 1
     scaleDownDelay: 300
+    scaleUpDelay: 5
+
+# Chat Worker (Attachments Queue)
+chat-worker:
+  enabled: true
+  replicaCount: 0
+  image:
+    repository: "copilotgtmacrdev.azurecr.io/copilot-backend"
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  config:
+    queueName: "attachments"
+    concurrency: 3
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+  autoscaling:
+    enabled: true
+    minReplicas: 0
+    maxReplicas: 8
+    queueLength: 2
+    scaleDownDelay: 240
     scaleUpDelay: 5
