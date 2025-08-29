@@ -14,6 +14,9 @@ image:
 config:
   queueName: "default" # Should be overridden
   secretName: "" # Will be populated by global value
+  # Optional Celery execution tuning
+  concurrency: null
+  pool: null
 
 global:
   secretName: "" # Will be populated by parent chart

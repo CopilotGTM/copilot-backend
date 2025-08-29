@@ -42,6 +42,12 @@ spec:
             - "worker"
             - "-l"
             - "info"
+            {{- if .Values.config.concurrency }}
+            - "--concurrency={{ .Values.config.concurrency }}"
+            {{- end }}
+            {{- if .Values.config.pool }}
+            - "--pool={{ .Values.config.pool }}"
+            {{- end }}
             - "-Q"
             - "{{ .Values.config.queueName }}" # Consumes from a specific queue
           envFrom:
