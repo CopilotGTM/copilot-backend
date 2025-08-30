@@ -3,7 +3,7 @@ from uuid import UUID, uuid4
 from typing import List, Dict, Any, TYPE_CHECKING
 from sqlmodel import SQLModel, Field, Relationship
 from datetime import datetime
-from sqlalchemy import Column, String, Index
+from sqlalchemy import Column, String, Index, Boolean, text
 from sqlalchemy.dialects.postgresql import JSONB
 
 from .base_mixins import TimestampMixin
@@ -51,34 +51,33 @@ class ChatSession(TimestampMixin, table=True):
 
     title: str = Field(
         default="Untitled Chat",
-        max_length=255,
+        sa_column=Column(String(255), server_default=text("'Untitled Chat'"), nullable=False),
         description="The title of the chat session.",
     )
     chat_type: ChatType = Field(
         default=ChatType.GENERAL_CHAT,
-        sa_column=Column(String(50), index=True),
+        sa_column=Column(String(50), index=True, server_default=text("'GENERAL_CHAT'"), nullable=False),
         description="The type of chat, used for categorization.",
     )
     chat_version: str = Field(
         default="v1",
-        index=True,
-        max_length=50,
+        sa_column=Column(String(50), index=True, server_default=text("'v1'"), nullable=False),
         description="Version of the chat schema.",
     )
 
     properties: Dict[str, Any] = Field(
-        sa_column=Column(JSONB),
+        sa_column=Column(JSONB, server_default=text("'{}'::jsonb")),
         default_factory=dict,
         description="A flexible JSONB column for storing additional session properties.",
     )
     tags: List[str] = Field(
-        sa_column=Column(JSONB),
+        sa_column=Column(JSONB, server_default=text("'[]'::jsonb")),
         default_factory=list,
         description="A list of tags for categorizing the chat session.",
     )
     is_deleted: bool = Field(
         default=False,
-        index=True,
+        sa_column=Column(Boolean, server_default=text("false"), nullable=False, index=True),
         description=(
             "Flag to mark the session as deleted without permanent removal. "
             "All data-access queries should filter on this flag by default."

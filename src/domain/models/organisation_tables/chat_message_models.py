@@ -5,7 +5,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, HttpUrl, Field as PydanticField
 from sqlmodel import SQLModel, Field, Relationship
-from sqlalchemy import Column, String, Text, CheckConstraint
+from sqlalchemy import Column, String, Text, CheckConstraint, Boolean, text
 from sqlalchemy.dialects.postgresql import JSONB
 
 from .base_mixins import TimestampMixin
@@ -107,7 +107,7 @@ class Attachment(TimestampMixin, table=True):
     )
     status: AttachmentStatus = Field(
         default=AttachmentStatus.PENDING_UPLOAD,
-        sa_column=Column(String(50), index=True),
+        sa_column=Column(String(50), index=True, server_default=text("'pending_upload'"), nullable=False),
         description="The current processing status of the document.",
     )
     thumbnail_small_path: Optional[str] = Field(
@@ -119,7 +119,11 @@ class Attachment(TimestampMixin, table=True):
     processing_error: Optional[str] = Field(
         default=None, description="Error details if processing failed"
     )
-    is_deleted: bool = Field(default=False, description="Soft delete flag")
+    is_deleted: bool = Field(
+        default=False,
+        sa_column=Column(Boolean, server_default=text("false"), nullable=False),
+        description="Soft delete flag",
+    )
     deleted_at: Optional[datetime] = Field(
         default=None, description="Soft delete timestamp"
     )
@@ -158,12 +162,12 @@ class ChatMessage(TimestampMixin, table=True):
 
     role: ChatMessageRole = Field(
         default=ChatMessageRole.USER,
-        sa_column=Column(String(50)),
+        sa_column=Column(String(50), server_default=text("'user'"), nullable=False),
         description="The role of the message sender (e.g., user, assistant).",
     )
     message_type: ChatMessageType = Field(
         default=ChatMessageType.GENERAL_MESSAGE,
-        sa_column=Column(String(50), index=True),
+        sa_column=Column(String(50), index=True, server_default=text("'GENERAL_MESSAGE'"), nullable=False),
         description="The type of message, used for categorization.",
     )
     message_version: int = Field(
@@ -175,7 +179,9 @@ class ChatMessage(TimestampMixin, table=True):
         description="The JSON content of the message.",
     )
     is_edited: bool = Field(
-        default=False, description="Flag to indicate if the message has been edited."
+        default=False,
+        sa_column=Column(Boolean, server_default=text("false"), nullable=False),
+        description="Flag to indicate if the message has been edited.",
     )
     feedback_score: Optional[int] = Field(
         default=None,
@@ -201,15 +207,10 @@ class ChatMessage(TimestampMixin, table=True):
         description="Extra metadata for the message.",
     )
 
-    technical_deck_details: Dict[str, Any] = Field(
-        sa_column=Column("technical_deck_details", JSONB),
+    agent_data: Dict[str, Any] = Field(
+        sa_column=Column("agent_data", JSONB),
         default_factory=dict,
-        description="Details specific to technical deck generation.",
-    )
-    rfp_details: Dict[str, Any] = Field(
-        sa_column=Column("rfp_details", JSONB),
-        default_factory=dict,
-        description="Details specific to RFP sheet processing.",
+        description="Stores agent-specific data, structure depends on message_type.",
     )
 
     # back‑ref to session
