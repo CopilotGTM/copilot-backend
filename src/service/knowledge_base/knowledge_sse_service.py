@@ -23,6 +23,14 @@ from src.api.schemas.knowledge_upload_models import KnowledgeSourceEventUpdate
 
 logger = get_logger("knowledge_sse_service")
 
+
+def _get_status_str(status_enum):
+    """Safely get the string value of a status enum."""
+    if status_enum is None:
+        return None
+    return getattr(status_enum, "value", str(status_enum))
+
+
 class KnowledgeSSEError(Exception):
     """Domain exception carrying an HTTP status code for API translation."""
 
@@ -127,7 +135,7 @@ class KnowledgeSourceSSEService:
         # receive a predictable, typed payload.
         model = KnowledgeSourceEventUpdate(
             source_id=str(source.source_id),
-            status=source.status,
+            status=_get_status_str(source.status),
             updated_at=source.updated_at.isoformat() if source.updated_at else None,
             error_message=source.error_message,
             progress=None,

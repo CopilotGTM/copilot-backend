@@ -4,7 +4,7 @@ from typing import Optional, Dict, Any, TYPE_CHECKING
 from datetime import datetime
 
 from sqlmodel import SQLModel, Field, Relationship
-from sqlalchemy import Column, String
+from sqlalchemy import Column, String, text
 from sqlalchemy.dialects.postgresql import JSONB
 
 from .base_mixins import TimestampMixin
@@ -48,11 +48,11 @@ class ChatMessageJob(TimestampMixin, table=True):
     )
     status: JobStatus = Field(
         default=JobStatus.PENDING,
-        sa_column=Column(String(50)),
+        sa_column=Column(String(50), server_default=text("'pending'"), nullable=False),
         description="The current status of the job.",
     )
     job_metadata: Dict[str, Any] = Field(
-        sa_column=Column(JSONB),
+        sa_column=Column(JSONB, server_default=text("'{}'::jsonb")),
         default_factory=dict,
         description="Additional metadata for the job.",
     )
@@ -96,11 +96,11 @@ class KnowledgeProcessingJob(TimestampMixin, table=True):
     )
     status: JobStatus = Field(
         default=JobStatus.PENDING,
-        sa_column=Column(String(50)),
+        sa_column=Column(String(50), server_default=text("'pending'"), nullable=False),
         description="The current status of the job.",
     )
     job_metadata: Dict[str, Any] = Field(
-        sa_column=Column(JSONB),
+        sa_column=Column(JSONB, server_default=text("'{}'::jsonb")),
         default_factory=dict,
         description="Additional metadata for the job.",
     )

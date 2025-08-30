@@ -27,6 +27,13 @@ from src.infra.media.thumbnail_generator import (
 logger = get_logger("knowledge_post_upload_task")
 
 
+def _get_status_str(status_enum):
+    """Safely get the string value of a status enum."""
+    if status_enum is None:
+        return None
+    return getattr(status_enum, "value", str(status_enum))
+
+
 def _assign_generated_thumbnails(source: OrganisationSource, created: dict[str, str]):
     if not created:
         return
@@ -115,7 +122,7 @@ def post_upload_process(self, organisation_id: str, source_id: str):
 
             publish_event = KnowledgeSourceEventUpdate(
                 source_id=str(source.source_id),
-                status=OrganisationSourceStatus.EXTRACTING,
+                status=_get_status_str(OrganisationSourceStatus.EXTRACTING),
                 updated_at=source.updated_at.isoformat() if source.updated_at else None,
                 error_message=source.error_message,
                 progress=None,

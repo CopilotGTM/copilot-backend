@@ -52,6 +52,13 @@ logger = get_logger("knowledge_upload_handler")
 upload_router = APIRouter()
 
 
+def _get_status_str(status_enum):
+    """Safely get the string value of a status enum."""
+    if status_enum is None:
+        return None
+    return getattr(status_enum, "value", str(status_enum))
+
+
 async def get_knowledge_upload_service(
     user_ids: UserIDs = Depends(get_current_user),
     org_session: Session = Depends(get_org_session),
@@ -112,10 +119,6 @@ async def presign_batch(
             payload, user_ids.user_id, expiry_time
         )
 
-        def _status_val(status_obj):
-            """Return enum `.value` if present else string representation."""
-            return status_obj.value if hasattr(status_obj, "value") else str(status_obj)
-
         # Build response entries for successfully presigned files
         success_files = [
             KnowledgePresignFileResponse(
@@ -125,7 +128,7 @@ async def presign_batch(
                 size_bytes=src.size_bytes,
                 upload_url=upload_url,
                 expires_in_seconds=expiry_time * 60,
-                status=_status_val(src.status),
+                status=_get_status_str(src.status),
                 success=True,
             )
             for src, upload_url in created
@@ -204,22 +207,19 @@ async def finalize_batch(
             # Create job rows if missing
             session = service.session
             if session:
-                session.add(
+                # TODO: Check if jobs already exist to make this idempotent
+                session.add_all([
                     KnowledgeProcessingJob(
                         source_id=str(src.source_id),
                         job_type="post_upload_process",
                         status=JobStatus.PENDING,
-                    )
-                )
-                session.commit()
-
-                session.add(
+                    ),
                     KnowledgeProcessingJob(
                         source_id=str(src.source_id),
                         job_type="document_extraction",
                         status=JobStatus.PENDING,
-                    )
-                )
+                    ),
+                ])
                 session.commit()
 
             # Enqueue first phase task
@@ -244,13 +244,10 @@ async def finalize_batch(
                 {"source_id": str(item.source_id), "reason": "unexpected_error"}
             )
             continue
-        status_val = (
-            src.status.value if hasattr(src.status, "value") else str(src.status)
-        )
         results.append(
             {
                 "source_id": str(src.source_id),
-                "status": status_val,
+                "status": _get_status_str(src.status),
                 "error": src.error_message,
             }
         )
@@ -291,17 +288,12 @@ async def get_source(
                     await storage.close()
                 except Exception:
                     logger.debug("Temp storage close failed (get_source)")
-        status_val = (
-            source.status.value
-            if hasattr(source.status, "value")
-            else str(source.status)
-        )
         resp = KnowledgeSourceResponse(
             source_id=source.source_id,
             filename=source.filename,
             mimetype=source.mimetype,
             size_bytes=source.size_bytes,
-            status=status_val,
+            status=_get_status_str(source.status),
             created_at=source.created_at,
             updated_at=source.updated_at,
             error_message=source.error_message,

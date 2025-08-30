@@ -32,6 +32,14 @@ ATTACHMENT_CHANNEL_TEMPLATE = "att:{org_id}:attachments"
 def channel_for_attachment_updates(organisation_id: UUID | str) -> str:
     return ATTACHMENT_CHANNEL_TEMPLATE.format(org_id=organisation_id)
 
+
+def _get_status_str(status_enum):
+    """Safely get the string value of a status enum."""
+    if status_enum is None:
+        return None
+    return getattr(status_enum, "value", str(status_enum))
+
+
 class AttachmentSSEError(Exception):
     def __init__(self, message: str, status_code: int = 500):
         self.message = message
@@ -102,7 +110,7 @@ class AttachmentSSEService:
         """
         model = AttachmentEventUpdate(
             attachment_id=str(attachment.attachment_id),
-            status=attachment.status.value if hasattr(attachment.status, "value") else str(attachment.status),
+            status=_get_status_str(attachment.status),
             updated_at=attachment.updated_at.isoformat() if attachment.updated_at else None,
             error_message=attachment.processing_error,
             thumbnail_small_url=None,

@@ -35,6 +35,13 @@ from src.infra.utils.logger import get_logger
 logger = get_logger("knowledge_access_service")
 
 
+def _get_status_str(status_enum):
+    """Safely get the string value of a status enum."""
+    if status_enum is None:
+        return None
+    return getattr(status_enum, "value", str(status_enum))
+
+
 class KnowledgeAccessServiceError(Exception):
     def __init__(self, message: str, status_code: int = 500):
         self.message = message
@@ -75,6 +82,7 @@ class KnowledgeAccessService:
         stmt = select(OrganisationSource).where(
             OrganisationSource.organisation_id == self.organisation_id,
             OrganisationSource.user_id == self.user_id,
+            getattr(OrganisationSource, 'is_deleted', False) == False,  # exclude soft-deleted
         )
 
         if statuses:
@@ -143,13 +151,12 @@ class KnowledgeAccessService:
             raise KnowledgeAccessServiceError("Could not generate download URL") from e
 
     async def build_item_dict(self, src: OrganisationSource, include_urls: bool) -> dict:
-        status_val = src.status.value if hasattr(src.status, "value") else str(src.status)
         data = {
             "source_id": str(src.source_id),
             "filename": src.filename,
             "mimetype": src.mimetype,
             "size_bytes": src.size_bytes,
-            "status": status_val,
+            "status": _get_status_str(src.status),
             "created_at": src.created_at,
             "updated_at": src.updated_at,
             "error_message": src.error_message,
@@ -192,6 +199,7 @@ class KnowledgeAccessService:
         base_filters = [
             OrganisationSource.organisation_id == self.organisation_id,
             OrganisationSource.user_id == self.user_id,
+            getattr(OrganisationSource, 'is_deleted', False) == False,
         ]
 
         status_stmt = (
@@ -203,9 +211,10 @@ class KnowledgeAccessService:
         by_status: dict[str, int] = {}
         total = 0
         for status_val, count in status_rows:
-            key = status_val.value if hasattr(status_val, "value") else str(status_val)
-            by_status[key] = int(count)
-            total += int(count)
+            key = _get_status_str(status_val)
+            if key:
+                by_status[key] = int(count)
+                total += int(count)
 
         type_stmt = (
             select(OrganisationSource.source_type, func.count())
@@ -215,7 +224,8 @@ class KnowledgeAccessService:
         type_rows = self.org_session.exec(type_stmt).all()
         by_type: dict[str, int] = {}
         for stype, count in type_rows:
-            key = stype.value if hasattr(stype, "value") else str(stype)
-            by_type[key] = int(count)
+            key = _get_status_str(stype)
+            if key:
+                by_type[key] = int(count)
 
         return {"total": total, "by_status": by_status, "by_type": by_type}

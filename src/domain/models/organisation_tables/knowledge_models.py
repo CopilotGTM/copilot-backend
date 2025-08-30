@@ -4,7 +4,7 @@ from uuid import UUID, uuid4
 from datetime import datetime
 
 from sqlmodel import SQLModel, Field, Column, Relationship
-from sqlalchemy import text, String, CheckConstraint, Index, UniqueConstraint
+from sqlalchemy import text, String, CheckConstraint, Index, UniqueConstraint, Boolean
 from sqlalchemy.dialects.postgresql import JSONB
 from pgvector.sqlalchemy import Vector
 
@@ -62,7 +62,11 @@ class KnowledgeIntegration(TimestampMixin, table=True):
     integration_type: IntegrationType = Field(sa_column=Column(String(50)))
     name: str = Field(description="User-defined name for the integration (e.g., 'Engineering Slack')")
     credentials: Dict[str, Any] = Field(sa_column=Column(JSONB), description="Encrypted credentials for the integration")
-    is_active: bool = Field(default=True, index=True)
+    is_active: bool = Field(
+        default=True,
+        sa_column=Column(Boolean, server_default=text("true"), nullable=False, index=True),
+        description="Whether the integration is currently active.",
+    )
     last_synced_at: Optional[datetime] = Field(default=None)
 
 
@@ -110,7 +114,8 @@ class OrganisationSource(TimestampMixin, table=True):
     user_id: UUID = Field(index=True, description="The user who uploaded the source.")
     
     source_type: SourceType = Field(
-        default=SourceType.FILE, sa_column=Column(String(50), index=True)
+        default=SourceType.FILE,
+        sa_column=Column(String(50), index=True, server_default=text("'file'"), nullable=False),
     )
 
     # --- Fields for FILE type ---
@@ -140,13 +145,18 @@ class OrganisationSource(TimestampMixin, table=True):
 
     status: OrganisationSourceStatus = Field(
         default=OrganisationSourceStatus.PENDING_UPLOAD,
-        sa_column=Column(String(50), index=True),
+        sa_column=Column(String(50), index=True, server_default=text("'pending_upload'"), nullable=False),
         description="The current processing status of the document.",
     )
     error_message: Optional[str] = Field(
         default=None, description="Stores any error message if processing failed."
     )
-
+    is_deleted: bool = Field(
+        default=False,
+        sa_column=Column(Boolean, server_default=text("false"), nullable=False, index=True),
+        description="Soft delete flag; deleted sources hidden from normal queries.",
+    )
+ 
     # This links a source document to all the chunks that were derived from it.
     documents: List["OrganisationDocument"] = Relationship(back_populates="source")
     integration: Optional["KnowledgeIntegration"] = Relationship()
@@ -196,7 +206,7 @@ class OrganisationDocument(TimestampMixin, table=True):
     )
     is_org_wide: bool = Field(
         default=True,
-        index=True,
+        sa_column=Column(Boolean, server_default=text("true"), nullable=False, index=True),
         description="True => visible to all users in organisation; False => personal to uploader_user_id.",
     )
     deal_id: Optional[str] = Field(
@@ -219,19 +229,19 @@ class OrganisationDocument(TimestampMixin, table=True):
         default=None,
     )
     usage: Optional[Dict[str, Any]] = Field(
-        sa_column=Column(JSONB),
+        sa_column=Column(JSONB, server_default=text("'{}'::jsonb")),
         default_factory=dict,
     )
     content_hash: Optional[str] = Field(default=None, index=True)
 
     is_searchable: bool = Field(
         default=True,
-        index=True,
+        sa_column=Column(Boolean, server_default=text("true"), nullable=False, index=True),
         description="If False exclude from search results (draft or archived).",
     )
     is_archived: bool = Field(
         default=False,
-        index=True,
+        sa_column=Column(Boolean, server_default=text("false"), nullable=False, index=True),
         description="Soft archive flag; archived docs hidden from normal queries.",
     )
     source: Optional["OrganisationSource"] = Relationship(back_populates="documents")
