@@ -4,3 +4,4 @@ pymupdf
 pytest
 pytest-mock
 httpx
+fakeredis

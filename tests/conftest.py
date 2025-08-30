@@ -6,18 +6,18 @@ from sqlalchemy import inspect
 from sqlalchemy.schema import CreateTable
 from uuid import uuid4
 import os
+from dotenv import load_dotenv
 
-# Set environment variables to indicate test mode and provide dummy values for external services
-os.environ["APP_ENV"] = "test"
-os.environ.setdefault("SUPABASE_URL", "http://localhost/test")
-os.environ.setdefault("SUPABASE_ANON_KEY", "test-anon-key")
-os.environ.setdefault("SUPABASE_SERVICE_ROLE_KEY", "test-service-role-key")
-os.environ.setdefault("SUPABASE_JWT_SECRET", "test-jwt-secret")
-os.environ.setdefault("CLOUD_PROVIDER", "azure")
-os.environ.setdefault("APPLICATION_STORAGE_NAME", "teststorage")
+# Respect existing .env values; only set test ENV if not provided.
+# This avoids overriding your configured credentials during tests.
+load_dotenv(override=False)
+os.environ.setdefault("ENV", "local")
 
-from src.api.fastapi_app import app  # Import your FastAPI app
-from src.infra.utils.database import get_org_session # Import the dependency we want to override
+from fastapi import FastAPI
+import fakeredis
+from src.api.fastapi_app import create_fastapi_app
+from src.infra.utils.database import get_org_session
+from src.infra.messaging.redis_client import get_redis_client
 from src.api.dependencies.organisation_dependencies import auth as auth_dependency
 
 # Use an in-memory SQLite database for testing
@@ -29,14 +29,12 @@ engine = create_engine(
 )
 
 
+
 def override_get_org_session():
     """Override the get_org_session dependency to use the test database."""
     with Session(engine) as session:
         yield session
 
-
-# Apply the override to the FastAPI app
-app.dependency_overrides[get_org_session] = override_get_org_session
 
 def _fake_verify_session():
     # Return dict shaped like real auth.verify_session output
@@ -45,33 +43,40 @@ def _fake_verify_session():
         "organisation_id": str(uuid4()),
     }
 
-app.dependency_overrides[auth_dependency.verify_session] = _fake_verify_session
+
+# Note: We intentionally skip creating DB tables here because upload tests
+# override the UploadService to avoid database usage. If a test needs DB,
+# add a dedicated fixture in that test module.
+
+
+def override_get_redis_client():
+    """Override the get_redis_client dependency to use a fake redis client."""
+    return fakeredis.FakeRedis()
 
 
 @pytest.fixture(scope="function")
-def db_session():
-    """
-    Pytest fixture to create a new database session for each test function.
-    It creates all tables, yields the session, and then drops all tables.
-    """
-    # Create only tables needed for upload tests to avoid JSONB incompat (SQLite).
-    # Attachment model is sufficient. Filter metadata.
-    from src.domain.models.organisation_tables.chat_message_models import Attachment
-    Attachment.metadata.create_all(engine, tables=[Attachment.__table__])
-    with Session(engine) as session:
-        yield session
-    Attachment.__table__.drop(engine)
+def client(mocker):
+    """Create a TestClient against the standard application factory.
 
-
-@pytest.fixture(scope="module")
-def client():
-    """Pytest fixture to create a TestClient for making requests to the app.
-    Ensures the attachments table exists once for the module (upload tests rely on it).
+    We cannot pass a custom FastAPI instance because `create_fastapi_app` does not
+    accept an override parameter. Instead, we patch dependencies directly before
+    creating the ASGI app. This keeps changes test‑local and avoids touching src/.
     """
-    from src.domain.models.organisation_tables.chat_message_models import Attachment
-    # Create table if not already present (idempotent in SQLite memory engine while alive)
-    Attachment.metadata.create_all(engine, tables=[Attachment.__table__])
-    with TestClient(app) as c:
+    # Patch Redis client used during app creation
+    mocker.patch("src.api.fastapi_app.get_redis_client", return_value=fakeredis.FakeRedis())
+
+    # Patch auth verification dependency (module path to the function used in router dependencies)
+    mocker.patch("src.api.dependencies.organisation_dependencies.auth.verify_session", side_effect=_fake_verify_session)
+
+    # Build ASGI app (Socket.IO wrapped)
+    asgi_app = create_fastapi_app()
+
+    # Apply dependency overrides on the underlying fastapp (import inside to avoid circulars)
+    from src.infra.utils.app_state import fastapp as _fastapp
+    _fastapp.dependency_overrides[get_org_session] = override_get_org_session
+    _fastapp.dependency_overrides[auth_dependency.verify_session] = _fake_verify_session
+
+    with TestClient(asgi_app) as c:
         yield c
 
 

@@ -1,1 +1,0 @@
-# This file makes the 'tests/api/routers/upload' directory a Python package.
