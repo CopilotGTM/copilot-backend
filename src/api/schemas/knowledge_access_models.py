@@ -38,3 +38,10 @@ class KnowledgeSourcesStats(BaseModel):
     total: int
     by_status: Dict[str, int]
     by_type: Dict[str, int]
+
+
+class KnowledgeDeleteResponse(BaseModel):
+    source_id: UUID
+    status: str
+
+    model_config = {"from_attributes": True}

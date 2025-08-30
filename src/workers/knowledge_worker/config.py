@@ -41,4 +41,5 @@ class KnowledgeWorkerConfig(BaseWorkerConfig):
             "knowledge.post_upload_process": {"queue": "knowledge_upload", "routing_key": "knowledge_upload"},
             "knowledge.test_task": {"queue": "knowledge_upload", "routing_key": "knowledge_upload"},
             "knowledge.ping": {"queue": "knowledge_upload", "routing_key": "knowledge_upload"},
+            "knowledge.delete_source": {"queue": "knowledge_upload", "routing_key": "knowledge_upload"},
         }
