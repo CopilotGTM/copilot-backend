@@ -312,13 +312,15 @@ async def get_attachment_status(
     """
     try:
         attachment = await service.get_attachment_details(attachment_id, user_ids.user_id)
-        storage = AzureOrganisationBlobStorage(user_ids.organisation_id)
+        # Ensure Azure storage client is cleaned up to avoid unclosed aiohttp sessions in tests/production
         read_url = None
         try:
-            read_url = await storage.generate_read_sas(
-                attachment.storage_path, minutes=120, download_filename=attachment.filename
-            )
+            async with AzureOrganisationBlobStorage(user_ids.organisation_id) as storage:
+                read_url = await storage.generate_read_sas(
+                    attachment.storage_path, minutes=120, download_filename=attachment.filename
+                )
         except Exception:
+            # Generating a read SAS is best-effort; swallow errors and proceed
             pass
 
         # Keep get endpoint minimal — only return id, timestamp and logical status.
