@@ -26,9 +26,11 @@ from src.api.schemas.knowledge_access_models import (
     KnowledgeSourcesPage,
     KnowledgeDownloadResponse,
     KnowledgeSourcesStats,
+    KnowledgeDeleteResponse,
 )
 from src.api.utils.http_response import Response
 from src.domain.models.organisation_tables.knowledge_models import (
+    OrganisationSource,
     OrganisationSourceStatus,
     SourceType,
 )
@@ -37,6 +39,7 @@ from src.service.knowledge_base.knowledge_access_service import (
     KnowledgeAccessServiceError,
 )
 from src.infra.utils.logger import get_logger
+from src.workers.knowledge_worker.celery_app import app as knowledge_app
 
 logger = get_logger("knowledge_access_handler")
 
@@ -167,4 +170,70 @@ async def sources_stats(
         return Response.error_response(status_code=e.status_code, message=e.message)
     except Exception as e:  # pragma: no cover
         logger.error("Unexpected error getting source stats: %s", e, exc_info=True)
+        return Response.internal_server_error_response("An unexpected error occurred")
+
+
+@access_router.delete(
+    "/source/{source_id}",
+    response_model=GenericResponse[KnowledgeDeleteResponse],
+    tags=["knowledge_access"],
+    summary="Request deletion of a knowledge source and its derived records",
+)
+async def delete_source(
+    source_id: UUID,
+    service: KnowledgeAccessService = Depends(get_knowledge_access_service),
+):
+    """Enqueue deletion of a source and all related records.
+
+    Behaviour:
+    - Validates access to the source (org + ownership).
+    - Enqueues background task to delete DB records and blobs (idempotent checks included).
+    - Returns 202 Accepted on successful enqueue.
+    """
+    try:
+        # Permission check: source must exist and belong to caller
+        src = service.session.get(OrganisationSource, source_id)
+        if (
+            not src
+            or src.organisation_id != service.organisation_id
+            or src.user_id != service.user_id
+        ):
+            return Response.not_found_error_response("Source not found or access denied")
+
+        # Optional: probe blob existence for user feedback (non-blocking for enqueue)
+        blob_exists = None
+        try:
+            if getattr(src, "storage_path", None):
+                props = await service.storage.get_blob_properties(src.storage_path)
+                blob_exists = bool(props)
+        except Exception:
+            # Swallow storage probe errors; worker will handle eventual consistency
+            logger.debug("Blob existence probe failed for %s", source_id, exc_info=True)
+
+        # Enqueue deletion task in knowledge worker (fast lane queue)
+        try:
+            knowledge_app.send_task(
+                "knowledge.delete_source",
+                args=[str(service.organisation_id), str(source_id)],
+                queue="knowledge_upload",
+                routing_key="knowledge_upload",
+            )
+        except Exception as task_err:
+            logger.error(
+                "Failed to enqueue deletion for source %s: %s", source_id, task_err
+            )
+            return Response.internal_server_error_response(
+                "Failed to enqueue delete request"
+            )
+
+        msg = "Deletion enqueued"
+        delete_resp = KnowledgeDeleteResponse(
+            source_id=source_id,
+            status='deleting',
+        )
+        if blob_exists is False:
+            msg = "Blob not found; purge enqueued for related records"
+        return Response.accepted_response(msg, delete_resp)
+    except Exception as e:  # pragma: no cover
+        logger.error("Unexpected error enqueuing deletion: %s", e, exc_info=True)
         return Response.internal_server_error_response("An unexpected error occurred")
