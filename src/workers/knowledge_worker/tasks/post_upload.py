@@ -115,7 +115,7 @@ def post_upload_process(self, organisation_id: str, source_id: str):
 
             publish_event = KnowledgeSourceEventUpdate(
                 source_id=str(source.source_id),
-                status=source.status.value,
+                status=OrganisationSourceStatus.EXTRACTING,
                 updated_at=source.updated_at.isoformat() if source.updated_at else None,
                 error_message=source.error_message,
                 progress=None,
