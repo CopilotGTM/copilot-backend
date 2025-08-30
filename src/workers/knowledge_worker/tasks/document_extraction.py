@@ -29,6 +29,13 @@ from src.workers.knowledge_worker.utils import DocumentStore
 logger = get_logger("knowledge_document_extraction")
 
 
+def _get_status_str(status_enum):
+    """Safely get the string value of a status enum."""
+    if status_enum is None:
+        return None
+    return getattr(status_enum, "value", str(status_enum))
+
+
 @app.task(
     name="knowledge.document_extraction", 
     bind=True, 
@@ -44,6 +51,8 @@ def document_extraction(self, organisation_id: str, source_id: str):  # pragma: 
     session = next(session_gen)
     storage = AzureOrganisationBlobStorage(organisation_id=organisation_id)
     temp_file_path = None
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     
     try:
         source: OrganisationSource | None = session.get(OrganisationSource, source_id)
@@ -116,7 +125,7 @@ def document_extraction(self, organisation_id: str, source_id: str):  # pragma: 
             
             # Download file from storage
             logger.info(f"Downloading file from storage: {source.storage_path}")
-            file_content = asyncio.run(storage.get_blob_content(source.storage_path))
+            file_content = loop.run_until_complete(storage.get_blob_content(source.storage_path))
             temp_file.write(file_content)
             temp_file.flush()
 
@@ -176,12 +185,9 @@ def document_extraction(self, organisation_id: str, source_id: str):  # pragma: 
         session.add(job)
         session.commit()
 
-        # Prepare safe status value (Enum or str)
-        final_status_val = source.status.value if hasattr(source.status, "value") else str(source.status)
-
         publish_event = KnowledgeSourceEventUpdate(
             source_id=str(source.source_id),
-            status=final_status_val,
+            status=_get_status_str(source.status),
             updated_at=source.updated_at.isoformat() if source.updated_at else None,
             error_message=source.error_message,
             progress=None,
@@ -209,10 +215,9 @@ def document_extraction(self, organisation_id: str, source_id: str):  # pragma: 
                 session.commit()
 
                 # Publish failure status
-                final_status_val = source.status.value if hasattr(source.status, "value") else str(source.status)
                 publish_event = KnowledgeSourceEventUpdate(
                     source_id=str(source.source_id),
-                    status=final_status_val,
+                    status=_get_status_str(source.status),
                     updated_at=source.updated_at.isoformat() if source.updated_at else None,
                     error_message=source.error_message,
                     progress=None,
@@ -244,10 +249,9 @@ def document_extraction(self, organisation_id: str, source_id: str):  # pragma: 
                 session.commit()
 
                 # Publish failure status
-                final_status_val = source.status.value if hasattr(source.status, "value") else str(source.status)
                 publish_event = KnowledgeSourceEventUpdate(
                     source_id=str(source.source_id),
-                    status=final_status_val,
+                    status=_get_status_str(source.status),
                     updated_at=source.updated_at.isoformat() if source.updated_at else None,
                     error_message=source.error_message,
                     progress=None,
@@ -278,6 +282,8 @@ def document_extraction(self, organisation_id: str, source_id: str):  # pragma: 
             
         # Close storage connection
         try:
-            asyncio.run(storage.close())
+            loop.run_until_complete(storage.close())
         except Exception:
             pass
+        finally:
+            loop.close()

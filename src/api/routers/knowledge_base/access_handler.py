@@ -46,6 +46,13 @@ logger = get_logger("knowledge_access_handler")
 access_router = APIRouter()
 
 
+def _get_status_str(status_enum):
+    """Safely get the string value of a status enum."""
+    if status_enum is None:
+        return None
+    return getattr(status_enum, "value", str(status_enum))
+
+
 async def get_knowledge_access_service(
     user_ids: UserIDs = Depends(get_current_user),
     org_session: Session = Depends(get_org_session),
@@ -105,16 +112,13 @@ async def list_sources(
                 items.append(KnowledgeSourceListItem(**res))
         else:
             for src in sources:
-                status_val = (
-                    src.status.value if hasattr(src.status, "value") else str(src.status)
-                )
                 items.append(
                     KnowledgeSourceListItem(
                         source_id=src.source_id,
                         filename=src.filename,
                         mimetype=src.mimetype,
                         size_bytes=src.size_bytes,
-                        status=status_val,
+                        status=_get_status_str(src.status),
                         created_at=src.created_at,
                         updated_at=src.updated_at,
                         error_message=src.error_message,
@@ -178,6 +182,7 @@ async def sources_stats(
     response_model=GenericResponse[KnowledgeDeleteResponse],
     tags=["knowledge_access"],
     summary="Request deletion of a knowledge source and its derived records",
+    status_code=status.HTTP_202_ACCEPTED,
 )
 async def delete_source(
     source_id: UUID,
@@ -187,28 +192,33 @@ async def delete_source(
 
     Behaviour:
     - Validates access to the source (org + ownership).
-    - Enqueues background task to delete DB records and blobs (idempotent checks included).
+    - Marks the source as soft-deleted (`is_deleted` = True).
+    - Enqueues background task to delete DB records and blobs.
     - Returns 202 Accepted on successful enqueue.
     """
     try:
         # Permission check: source must exist and belong to caller
         src = service.session.get(OrganisationSource, source_id)
-        if (
-            not src
-            or src.organisation_id != service.organisation_id
-            or src.user_id != service.user_id
-        ):
+        if not src or src.organisation_id != service.organisation_id or src.user_id != service.user_id:
             return Response.not_found_error_response("Source not found or access denied")
 
-        # Optional: probe blob existence for user feedback (non-blocking for enqueue)
-        blob_exists = None
-        try:
-            if getattr(src, "storage_path", None):
-                props = await service.storage.get_blob_properties(src.storage_path)
-                blob_exists = bool(props)
-        except Exception:
-            # Swallow storage probe errors; worker will handle eventual consistency
-            logger.debug("Blob existence probe failed for %s", source_id, exc_info=True)
+        # Idempotent check: if already soft-deleted, return an accepted response
+        if getattr(src, 'is_deleted', False):
+            return Response.accepted_response(
+                "Deletion already in progress or completed",
+                KnowledgeDeleteResponse(source_id=source_id, status="deleted"),
+            )
+
+        # Mark as soft-deleted immediately
+        if hasattr(src, 'is_deleted'):
+            src.is_deleted = True
+            try:
+                service.session.add(src)
+                service.session.commit()
+            except Exception:
+                service.session.rollback()
+                logger.error("Soft delete commit failed for %s", source_id, exc_info=True)
+                return Response.internal_server_error_response("Failed to update source status")
 
         # Enqueue deletion task in knowledge worker (fast lane queue)
         try:
@@ -226,14 +236,11 @@ async def delete_source(
                 "Failed to enqueue delete request"
             )
 
-        msg = "Deletion enqueued"
         delete_resp = KnowledgeDeleteResponse(
             source_id=source_id,
-            status='deleting',
+            status="deleting",
         )
-        if blob_exists is False:
-            msg = "Blob not found; purge enqueued for related records"
-        return Response.accepted_response(msg, delete_resp)
+        return Response.accepted_response("Deletion enqueued", delete_resp)
     except Exception as e:  # pragma: no cover
         logger.error("Unexpected error enqueuing deletion: %s", e, exc_info=True)
         return Response.internal_server_error_response("An unexpected error occurred")
