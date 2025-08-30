@@ -34,6 +34,13 @@ logger = get_logger("upload_handler")
 upload_router = APIRouter()
 
 
+def _get_status_str(status_enum):
+    """Safely get the string value of a status enum."""
+    if status_enum is None:
+        return None
+    return getattr(status_enum, "value", str(status_enum))
+
+
 async def get_upload_service(
     user_ids: UserIDs = Depends(get_current_user),
     org_session: Session = Depends(get_org_session),
@@ -79,7 +86,7 @@ async def presign_batch(
                 success=True,
                 error_message=None,
                 expires_in_seconds=expiry_minutes * 60,
-                status=AttachmentStatus.PENDING_UPLOAD,
+                status=_get_status_str(AttachmentStatus.PENDING_UPLOAD),
             )
             for att, url in created
         ]
@@ -96,7 +103,7 @@ async def presign_batch(
                     error_message=err.get("error_message"),
                     size_bytes=None,
                     expires_in_seconds=0,
-                    status=AttachmentStatus.FAILED,
+                    status=_get_status_str(AttachmentStatus.FAILED),
                 )
             )
         all_files = success_entries + failed_entries
@@ -146,7 +153,7 @@ async def finalize_batch(
             results.append(
                 AttachmentBatchFinalizeResult(
                     attachment_id=att.attachment_id,
-                    status=getattr(att, "status", None),
+                    status=_get_status_str(getattr(att, "status", None)),
                     error=getattr(att, "processing_error", None),
                     updated_at=getattr(att, "updated_at", getattr(att, "created_at", None)),
                 )
@@ -232,7 +239,7 @@ async def presign_upload(
             upload_url=str(upload_url),
             size_bytes=attachment.size_bytes,
             expires_in_seconds=expiry_minutes * 60,
-            status=AttachmentStatus.PENDING_UPLOAD,
+            status=_get_status_str(AttachmentStatus.PENDING_UPLOAD),
             success=True,
             error_message=None,
         )
@@ -282,7 +289,7 @@ async def finalize_upload(
         resp = UploadedAttachmentResponse(
             attachment_id=attachment.attachment_id,
             uploaded_at=attachment.created_at,
-            status=attachment.status,
+            status=_get_status_str(attachment.status),
         )
         return Response.success_response(message="Attachment finalized", data=resp)
     except UploadServiceError as e:
@@ -327,7 +334,7 @@ async def get_attachment_status(
         resp = UploadedAttachmentResponse(
             attachment_id=attachment.attachment_id,
             uploaded_at=attachment.created_at,
-            status=getattr(attachment, "status", None),
+            status=_get_status_str(getattr(attachment, "status", None)),
         )
         return Response.success_response(message="Attachment status retrieved", data=resp)
     except UploadServiceError as e:
