@@ -11,6 +11,12 @@ python -m scripts.run_master_migrations || {
 	exit 1
 }
 
+echo "[startup] Running organization schema migrations (all orgs to head)..."
+python -m scripts.run_org_migrations --all || {
+	echo "[startup][ERROR] Organization migrations failed" >&2
+	exit 1
+}
+
 # Conditionally run super admin deployment only if SUPER_ADMIN_EMAIL present.
 if [ -n "${SUPER_ADMIN_EMAIL:-}" ]; then
 	echo "[startup] SUPER_ADMIN_EMAIL detected; running super admin initialization..."
