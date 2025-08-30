@@ -100,7 +100,8 @@ def post_upload_process(self, organisation_id: str, source_id: str):
             job.status = JobStatus.COMPLETED
             session.add(job)
             source.status = OrganisationSourceStatus.EXTRACTING
-            session.add(source)
+            session.merge(source)
+            session.commit()
 
             # Generate SAS URLs for newly created thumbnails (if present)
             thumbnail_small_url, thumbnail_medium_url = loop.run_until_complete(

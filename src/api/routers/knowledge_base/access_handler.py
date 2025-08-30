@@ -12,6 +12,7 @@ from typing import List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, status
+import asyncio
 from sqlmodel import Session
 
 from src.api.dependencies.organisation_dependencies import (
@@ -91,10 +92,14 @@ async def list_sources(
         # Build item dicts with optional URLs concurrently
         items: List[KnowledgeSourceListItem] = []
         if include_urls:
-            # Generate SAS URLs (async) sequentially (could optimize with gather)
-            for src in sources:
-                data = await service.build_item_dict(src, include_urls=True)
-                items.append(KnowledgeSourceListItem(**data))
+            # Generate SAS URLs concurrently for better latency across the page
+            tasks = [service.build_item_dict(src, include_urls=True) for src in sources]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for res in results:
+                if isinstance(res, Exception):
+                    logger.debug("build_item_dict failed during listing", exc_info=True)
+                    continue
+                items.append(KnowledgeSourceListItem(**res))
         else:
             for src in sources:
                 status_val = (

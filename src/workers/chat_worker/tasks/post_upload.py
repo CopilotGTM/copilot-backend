@@ -70,19 +70,19 @@ def post_upload(self, organisation_id: str, attachment_id: str):
                 if "thumb_medium" in created:
                     attachment.thumbnail_medium_path = created["thumb_medium"]
                 attachment.status = AttachmentStatus.UPLOADED
-                session.add(attachment)
+                session.merge(attachment)
                 session.commit()
 
             except Exception as e:
                 logger.exception("Thumbnail generation failed for attachment %s", attachment_id)
                 attachment.status = AttachmentStatus.FAILED
                 attachment.processing_error = f"thumbnail_failed: {e}"[:500]
-                session.add(attachment)
+                session.merge(attachment)
                 session.commit()
 
         # Finalize status
         attachment.status = AttachmentStatus.COMPLETED
-        session.add(attachment)
+        session.merge(attachment)
         session.commit()
 
         thumbnail_small_url = None
