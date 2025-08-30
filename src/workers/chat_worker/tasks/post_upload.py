@@ -97,7 +97,7 @@ def post_upload(self, organisation_id: str, attachment_id: str):
             )
         event_to_publish = AttachmentEventUpdate(
             attachment_id=str(attachment.attachment_id),
-            status=attachment.status.value if hasattr(attachment.status, "value") else str(attachment.status),
+            status=AttachmentStatus.COMPLETED,
             updated_at=attachment.updated_at.isoformat() if getattr(attachment, "updated_at", None) else None,
             error_message=attachment.processing_error,
             thumbnail_small_url=thumbnail_small_url,
