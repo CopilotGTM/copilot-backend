@@ -181,3 +181,37 @@ class ChatSessionService:
         )
         rows = self.db.exec(stmt).all()
         return rows
+
+    def set_favorite(
+        self,
+        *,
+        session_id: UUID,
+        user_id: UUID,
+        organisation_id: UUID,
+        favorite: bool,
+    ) -> ChatSession:
+        """Mark/unmark a chat as favorite using the JSONB properties field.
+
+        Avoids schema migration; can be replaced with a dedicated column later.
+        """
+        stmt = select(ChatSession).where(
+            ChatSession.session_id == session_id,
+            ChatSession.user_id == user_id,
+            ChatSession.organisation_id == organisation_id,
+            ChatSession.is_deleted.is_(False),
+        )
+        chat = self.db.exec(stmt).one_or_none()
+        if not chat:
+            raise ValueError("Chat session not found")
+
+        props = dict(chat.properties or {})
+        if favorite:
+            props["favorite"] = True
+        else:
+            # remove key to keep JSON small; reader treats missing as False
+            props.pop("favorite", None)
+        chat.properties = props
+        self.db.add(chat)
+        self.db.commit()
+        self.db.refresh(chat)
+        return chat

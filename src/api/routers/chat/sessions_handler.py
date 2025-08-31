@@ -15,6 +15,7 @@ from src.api.schemas.chat_models import (
     DeleteChat,
     RenameChat,
     ChatSessionsPage,
+    FavoriteChat,
 )
 from fastapi import Query
 from typing import Optional
@@ -39,6 +40,20 @@ async def get_chat_session_service(
         pass
 
 
+def _to_out(chat) -> ChatSessionOut:
+    props = getattr(chat, "properties", {}) or {}
+    is_fav = bool(props.get("favorite", False))
+    return ChatSessionOut(
+        session_id=chat.session_id,
+        title=chat.title,
+        chat_type=str(getattr(chat, "chat_type", "GENERAL_CHAT")),
+        is_favorite=is_fav,
+        tags=getattr(chat, "tags", []) or [],
+        created_at=chat.created_at,
+        updated_at=chat.updated_at,
+    )
+
+
 @router.post(
     "/create_chat",
     response_model=GenericResponse[ChatSessionOut],
@@ -57,7 +72,7 @@ async def create_chat(
             title=payload.title,
             tags=payload.tags,
         )
-        return Response.success_response("Chat created", data=ChatSessionOut.model_validate(chat))
+        return Response.success_response("Chat created", data=_to_out(chat))
     except ValueError as e:
         return Response.bad_request_error_response(str(e))
     except Exception as e:
@@ -82,7 +97,7 @@ async def delete_chat(
             user_id=user_ids.user_id,
             organisation_id=user_ids.organisation_id,
         )
-        return Response.success_response("Chat deleted", data=ChatSessionOut.model_validate(chat))
+        return Response.success_response("Chat deleted", data=_to_out(chat))
     except ValueError as e:
         return Response.not_found_error_response(str(e))
     except Exception as e:
@@ -108,7 +123,7 @@ async def rename_chat(
             organisation_id=user_ids.organisation_id,
             title=payload.title,
         )
-        return Response.success_response("Chat renamed", data=ChatSessionOut.model_validate(chat))
+        return Response.success_response("Chat renamed", data=_to_out(chat))
     except ValueError as e:
         msg = str(e)
         if "not found" in msg.lower():
@@ -138,7 +153,7 @@ async def list_chats(
             limit=limit,
             cursor=cursor,
         )
-        page = ChatSessionsPage(items=[ChatSessionOut.model_validate(i) for i in items], cursor=next_cursor)
+        page = ChatSessionsPage(items=[_to_out(i) for i in items], cursor=next_cursor)
         return Response.success_response("Chats listed", page)
     except Exception as e:
         logger.error("List chats failed: %s", e, exc_info=True)
@@ -164,8 +179,38 @@ async def search_chats(
             q=q,
             limit=limit,
         )
-        page = ChatSessionsPage(items=[ChatSessionOut.model_validate(i) for i in items], cursor=None)
+        page = ChatSessionsPage(items=[_to_out(i) for i in items], cursor=None)
         return Response.success_response("Chats searched", page)
     except Exception as e:
         logger.error("Search chats failed: %s", e, exc_info=True)
         return Response.internal_server_error_response("Unable to search chat sessions")
+
+
+@router.patch(
+    "/favorite_chat",
+    response_model=GenericResponse[ChatSessionOut],
+    tags=["chats"],
+    summary="Mark or unmark a chat as favorite",
+)
+async def favorite_chat(
+    payload: FavoriteChat = Body(...),
+    service: ChatSessionService = Depends(get_chat_session_service),
+    user_ids: UserIDs = Depends(get_current_user),
+):
+    try:
+        chat = service.set_favorite(
+            session_id=payload.session_id,
+            user_id=user_ids.user_id,
+            organisation_id=user_ids.organisation_id,
+            favorite=payload.favorite,
+        )
+        msg = "Chat favorited" if payload.favorite else "Chat unfavorited"
+        return Response.success_response(msg, data=_to_out(chat))
+    except ValueError as e:
+        msg = str(e)
+        if "not found" in msg.lower():
+            return Response.not_found_error_response(msg)
+        return Response.bad_request_error_response(msg)
+    except Exception as e:
+        logger.error("Favorite toggle failed: %s", e, exc_info=True)
+        return Response.internal_server_error_response("Unable to update favorite state")
