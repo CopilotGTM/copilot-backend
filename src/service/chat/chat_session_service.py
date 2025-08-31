@@ -147,3 +147,37 @@ class ChatSessionService:
             encode_cursor(items[-1].created_at, items[-1].session_id) if has_more else None
         )
         return items, next_cursor
+
+    def search_sessions(
+        self,
+        *,
+        user_id: UUID,
+        organisation_id: UUID,
+        q: str,
+        limit: int = 10,
+    ) -> list[ChatSession]:
+        """Quick title search using ILIKE on title, scoped by user/org.
+
+        This is a best‑effort, non‑paginated search suitable for typeahead.
+        For large datasets consider adding a GIN/Trigram index or full‑text search.
+        """
+        query = q.strip()
+        if not query:
+            raise ValueError("Empty search query")
+
+        if len(query) > 50:
+            raise ValueError("Search query cannot exceed 50 characters")
+
+        stmt = (
+            select(ChatSession)
+            .where(
+                ChatSession.user_id == user_id,
+                ChatSession.organisation_id == organisation_id,
+                ChatSession.is_deleted.is_(False),
+                ChatSession.title.ilike(f"%{query}%"),
+            )
+            .order_by(ChatSession.updated_at.desc(), ChatSession.created_at.desc())
+            .limit(limit)
+        )
+        rows = self.db.exec(stmt).all()
+        return rows

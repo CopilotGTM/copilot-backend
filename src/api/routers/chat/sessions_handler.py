@@ -143,3 +143,29 @@ async def list_chats(
     except Exception as e:
         logger.error("List chats failed: %s", e, exc_info=True)
         return Response.internal_server_error_response("Unable to list chat sessions")
+
+
+@router.get(
+    "/search_chats",
+    response_model=GenericResponse[ChatSessionsPage],
+    tags=["chats"],
+    summary="Search chat sessions by title (typeahead)",
+)
+async def search_chats(
+    q: str = Query(..., min_length=1, description="Search text in title (case-insensitive)"),
+    limit: int = Query(10, ge=1, le=50),
+    service: ChatSessionService = Depends(get_chat_session_service),
+    user_ids: UserIDs = Depends(get_current_user),
+):
+    try:
+        items = service.search_sessions(
+            user_id=user_ids.user_id,
+            organisation_id=user_ids.organisation_id,
+            q=q,
+            limit=limit,
+        )
+        page = ChatSessionsPage(items=[ChatSessionOut.model_validate(i) for i in items], cursor=None)
+        return Response.success_response("Chats searched", page)
+    except Exception as e:
+        logger.error("Search chats failed: %s", e, exc_info=True)
+        return Response.internal_server_error_response("Unable to search chat sessions")

@@ -72,6 +72,18 @@ class FakeChatSessionService:
         # Return records as objects compatible with ChatSessionOut
         return [ChatSessionOut.model_validate(r) for r in items], next_cursor
 
+    def search_sessions(self, *, user_id: UUID, organisation_id: UUID, q: str, limit: int = 10):
+        query = (q or "").strip().lower()
+        if not query:
+            return []
+        rows = [
+            r for r in self.sessions.values()
+            if not r.get("is_deleted") and query in r["title"].lower()
+        ]
+        rows.sort(key=lambda r: (r["updated_at"], r["created_at"]), reverse=True)
+        items = rows[:limit]
+        return [ChatSessionOut.model_validate(r) for r in items]
+
 
 @pytest.fixture(scope="function")
 def dependency_overrides(client, test_user_ids):

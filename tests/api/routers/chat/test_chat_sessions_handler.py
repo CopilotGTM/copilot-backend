@@ -123,3 +123,22 @@ def test_list_chats_pagination(client: TestClient, dependency_overrides):
     b2 = r2.json()
     data2 = b2["data"]
     assert len(data2["items"]) == 1
+
+
+def test_search_chats_typeahead(client: TestClient, dependency_overrides):
+    # Seed distinct titles
+    titles = ["Alpha", "Beta", "Gamma", "Delta"]
+    for t in titles:
+        client.post("/users/chats/create_chat", json={"title": t})
+
+    # Search for 'al' -> Alpha only
+    r1 = client.get("/users/chats/search_chats", params={"q": "al", "limit": 5})
+    assert r1.status_code == 200, r1.text
+    names1 = [i["title"] for i in r1.json()["data"]["items"]]
+    assert any(n == "Alpha" for n in names1)
+
+    # Search for 'ga' -> Gamma only
+    r2 = client.get("/users/chats/search_chats", params={"q": "ga"})
+    assert r2.status_code == 200
+    names2 = [i["title"] for i in r2.json()["data"]["items"]]
+    assert any(n == "Gamma" for n in names2)
