@@ -25,6 +25,7 @@ class ChatSessionOut(BaseModel):
     session_id: UUID
     title: str
     chat_type: str
+    is_favorite: bool = False
     tags: List[str] = []
     created_at: datetime
     updated_at: datetime
@@ -40,6 +41,11 @@ class DeleteChat(BaseModel):
 class RenameChat(BaseModel):
     session_id: UUID
     title: str
+
+
+class FavoriteChat(BaseModel):
+    session_id: UUID
+    favorite: bool
 
 
 # Backwards-compat aliases (legacy names)

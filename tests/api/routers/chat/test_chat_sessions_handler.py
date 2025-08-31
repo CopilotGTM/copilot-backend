@@ -142,3 +142,35 @@ def test_search_chats_typeahead(client: TestClient, dependency_overrides):
     assert r2.status_code == 200
     names2 = [i["title"] for i in r2.json()["data"]["items"]]
     assert any(n == "Gamma" for n in names2)
+
+
+def test_favorite_chat_toggle(client: TestClient, dependency_overrides):
+    # Create a chat
+    create = client.post("/users/chats/create_chat", json={"title": "Fav Me"})
+    assert create.status_code == 200, create.text
+    session_id = create.json()["data"]["session_id"]
+
+    # Mark favorite
+    fav = client.request("PATCH", "/users/chats/favorite_chat", json={"session_id": session_id, "favorite": True})
+    assert fav.status_code == 200, fav.text
+    body = fav.json()
+    assert body["status"] == "SUCCESS"
+    assert body["message"] == "Chat favorited"
+    assert body["data"]["is_favorite"] is True
+
+    # Unmark favorite
+    unfav = client.request("PATCH", "/users/chats/favorite_chat", json={"session_id": session_id, "favorite": False})
+    assert unfav.status_code == 200, unfav.text
+    body2 = unfav.json()
+    assert body2["status"] == "SUCCESS"
+    assert body2["message"] == "Chat unfavorited"
+    assert body2["data"]["is_favorite"] is False
+
+
+def test_favorite_chat_not_found(client: TestClient, dependency_overrides):
+    from uuid import uuid4
+    resp = client.request("PATCH", "/users/chats/favorite_chat", json={"session_id": str(uuid4()), "favorite": True})
+    assert resp.status_code == 404, resp.text
+    body = resp.json()
+    assert body["status"] == "ERROR"
+    assert "not found" in body["message"].lower()

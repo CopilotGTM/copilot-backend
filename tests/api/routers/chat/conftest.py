@@ -2,6 +2,7 @@ import asyncio
 from uuid import uuid4, UUID
 from datetime import datetime
 from src.infra.utils.cursor import encode_cursor, decode_cursor
+from types import SimpleNamespace
 import pytest
 
 from src.api.dependencies.organisation_dependencies import get_current_user, UserIDs
@@ -32,9 +33,10 @@ class FakeChatSessionService:
             "created_at": datetime(2024, 1, 1, 0, 0, 0),
             "updated_at": datetime(2024, 1, 1, 0, 0, 0),
             "is_deleted": False,
+            "properties": {},
         }
         self.sessions[sid] = rec
-        return ChatSessionOut.model_validate(rec)
+        return SimpleNamespace(**rec)
 
     def delete_session(self, *, session_id: UUID, user_id: UUID, organisation_id: UUID):
         sid = str(session_id)
@@ -42,7 +44,7 @@ class FakeChatSessionService:
         if not rec or rec.get("is_deleted"):
             raise ValueError("Chat session not found")
         rec["is_deleted"] = True
-        return ChatSessionOut.model_validate(rec)
+        return SimpleNamespace(**rec)
 
     def rename_session(self, *, session_id: UUID, user_id: UUID, organisation_id: UUID, title: str):
         if not title or not str(title).strip():
@@ -52,7 +54,7 @@ class FakeChatSessionService:
         if not rec or rec.get("is_deleted"):
             raise ValueError("Chat session not found")
         rec["title"] = title.strip()
-        return ChatSessionOut.model_validate(rec)
+        return SimpleNamespace(**rec)
 
     def list_sessions(self, *, user_id: UUID, organisation_id: UUID, limit: int = 20, cursor: str | None = None):
         # Collect non-deleted sessions
@@ -69,8 +71,8 @@ class FakeChatSessionService:
         has_more = len(rows) > limit
         items = rows[:limit]
         next_cursor = encode_cursor(items[-1]["created_at"], UUID(items[-1]["session_id"])) if has_more else None
-        # Return records as objects compatible with ChatSessionOut
-        return [ChatSessionOut.model_validate(r) for r in items], next_cursor
+        # Return records with attribute access (like domain model)
+        return [SimpleNamespace(**r) for r in items], next_cursor
 
     def search_sessions(self, *, user_id: UUID, organisation_id: UUID, q: str, limit: int = 10):
         query = (q or "").strip().lower()
@@ -82,7 +84,20 @@ class FakeChatSessionService:
         ]
         rows.sort(key=lambda r: (r["updated_at"], r["created_at"]), reverse=True)
         items = rows[:limit]
-        return [ChatSessionOut.model_validate(r) for r in items]
+        return [SimpleNamespace(**r) for r in items]
+
+    def set_favorite(self, *, session_id: UUID, user_id: UUID, organisation_id: UUID, favorite: bool):
+        sid = str(session_id)
+        rec = self.sessions.get(sid)
+        if not rec or rec.get("is_deleted"):
+            raise ValueError("Chat session not found")
+        props = dict(rec.get("properties") or {})
+        if favorite:
+            props["favorite"] = True
+        else:
+            props.pop("favorite", None)
+        rec["properties"] = props
+        return SimpleNamespace(**rec)
 
 
 @pytest.fixture(scope="function")
