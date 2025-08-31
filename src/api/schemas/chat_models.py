@@ -37,6 +37,11 @@ class DeleteChat(BaseModel):
     session_id: UUID
 
 
+class RenameChat(BaseModel):
+    session_id: UUID
+    title: str
+
+
 # Backwards-compat aliases (legacy names)
 CreateChat = ChatSessionCreate
 ChatSessionResponse = ChatSessionOut
@@ -50,4 +55,9 @@ class Pagination(_Base, Generic[T]):
 
 class PaginationChatMessages(_Base, Generic[T]):
     chat: Dict[str, Any]
+    cursor: Optional[str] = None
+
+
+class ChatSessionsPage(BaseModel):
+    items: List[ChatSessionOut]
     cursor: Optional[str] = None
