@@ -19,6 +19,8 @@
    pip install -r requirements.txt
    # Run Database Docker
    docker run -d --name my-postgres-container -p 5432:5432 -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=postgres pgvector/pgvector:pg16
+   # Run Redis
+   docker run -d --name my-redis-container -p 6379:6379 redis
    ```
 
 3. **Configure environment variables:**

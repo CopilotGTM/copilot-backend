@@ -1,3 +1,4 @@
+import importlib
 import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import create_engine, Session, SQLModel
@@ -15,7 +16,6 @@ os.environ.setdefault("ENV", "local")
 
 from fastapi import FastAPI
 import fakeredis
-from src.api.fastapi_app import create_fastapi_app
 from src.infra.utils.database import get_org_session
 from src.infra.messaging.redis_client import get_redis_client
 from src.api.dependencies.organisation_dependencies import auth as auth_dependency
@@ -62,6 +62,12 @@ def client(mocker):
     accept an override parameter. Instead, we patch dependencies directly before
     creating the ASGI app. This keeps changes test‑local and avoids touching src/.
     """
+    # Reload app_state and fastapi_app to ensure a fresh FastAPI instance per test
+    import src.infra.utils.app_state as app_state
+    import src.api.fastapi_app as fastapi_app
+    importlib.reload(app_state)
+    importlib.reload(fastapi_app)
+
     # Patch Redis client used during app creation
     mocker.patch("src.api.fastapi_app.get_redis_client", return_value=fakeredis.FakeRedis())
 
@@ -69,7 +75,7 @@ def client(mocker):
     mocker.patch("src.api.dependencies.organisation_dependencies.auth.verify_session", side_effect=_fake_verify_session)
 
     # Build ASGI app (Socket.IO wrapped)
-    asgi_app = create_fastapi_app()
+    asgi_app = fastapi_app.create_fastapi_app()
 
     # Apply dependency overrides on the underlying fastapp (import inside to avoid circulars)
     from src.infra.utils.app_state import fastapp as _fastapp

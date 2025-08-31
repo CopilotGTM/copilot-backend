@@ -1,57 +1,31 @@
-# models/chat_models.py
+from __future__ import annotations
 
 from uuid import UUID
 from datetime import datetime
+from typing import Optional, List, Dict, Any, Generic, TypeVar
 
-from pydantic import BaseModel, Field, HttpUrl, ConfigDict
-from typing import Optional, List, Dict, Any
-from uuid import UUID
-from datetime import datetime
-from typing import Generic, List, Optional, TypeVar
+from pydantic import BaseModel, Field
 from pydantic.generics import GenericModel as _Base
+
+from src.domain.models.organisation_tables.chat_session_models import ChatType
 
 T = TypeVar("T")
 
 
-class AttachmentModel(BaseModel):
-    """
-    Schema for an attachment in ChatMessage.attachments.
-    """
+class ChatSessionCreate(BaseModel):
+    """Create payload for a chat session."""
 
-    filename: str = Field(..., description="Original filename")
-    url: HttpUrl = Field(..., description="Publicly accessible URL")
-    mimetype: str = Field(..., description="MIME type, e.g. 'image/png'")
-    size_bytes: Optional[int] = Field(None, description="File size in bytes")
-    uploaded_at: datetime = Field(..., description="Upload timestamp (ISO8601)")
-    metadata: Dict[str, Any] = Field(default_factory=dict, description="Free-form metadata")
+    title: str = Field(..., description="The title of the chat session")
+    tags: Optional[List[str]] = None
 
 
-class ParseTranscript(BaseModel):
-    attachments: List[AttachmentModel]
+class ChatSessionOut(BaseModel):
+    """Response model mirroring ChatSession domain model."""
+
     session_id: UUID
-    message_id: UUID
-
-
-class CreateChat(BaseModel):
-    title: str
-
-
-class AccessTokenResponse(BaseModel):
-    access_token: Optional[str] = None
-    refresh_token: Optional[str] = None
-    token_type: str
-    expires_in: int
-
-
-class ChatSessionResponse(BaseModel):
-    session_id: UUID
-    user_id: UUID
-    organisation_id: UUID
     title: str
     chat_type: str
-    chat_version: str
-    properties: Dict[str, Any]
-    is_deleted: bool
+    tags: List[str] = []
     created_at: datetime
     updated_at: datetime
 
@@ -63,18 +37,17 @@ class DeleteChat(BaseModel):
     session_id: UUID
 
 
-class UploadFileURL(BaseModel):
-    file_name: str
-    file_type: str
-    file_size: int
-    session_id: UUID
+# Backwards-compat aliases (legacy names)
+CreateChat = ChatSessionCreate
+ChatSessionResponse = ChatSessionOut
 
 
-class Pagination(_Base, Generic[T]):  # correct order ✅
-    chats: List[ChatSessionResponse]
+# Legacy pagination helpers kept for compatibility with older handlers
+class Pagination(_Base, Generic[T]):
+    chats: List[ChatSessionOut]
     cursor: Optional[str] = None
 
 
-class PaginationChatMessages(_Base, Generic[T]):  # correct order ✅
+class PaginationChatMessages(_Base, Generic[T]):
     chat: Dict[str, Any]
     cursor: Optional[str] = None

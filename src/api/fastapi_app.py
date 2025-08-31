@@ -19,14 +19,15 @@ from ..infra.messaging.redis_client import get_redis_client
 
 from src.api.routers.healthcheck import healthcheck_router
 from src.api.routers.chat_handler import chat_router
+from src.api.routers.chat.sessions_handler import router as chat_sessions_router
 from src.api.routers.chat_attachments.upload_handler import upload_router
 from src.api.routers.chat_attachments.access_handler import download_router as attachment_access_router
 from src.api.routers.knowledge_base.upload_handler import upload_router as knowledge_upload_router
 from src.api.routers.knowledge_base.access_handler import access_router as knowledge_access_router
-from src.api.routers.technical_deck.transcript_format import transcript_router
-from src.api.routers.technical_deck.get_technical_deck import technical_deck
-from src.api.routers.technical_deck.select_template import select_template
-from src.api.routers.rfp_sheet.sheet_identification import rfp__sheet_router
+# from src.api.routers.technical_deck.transcript_format import transcript_router
+# from src.api.routers.technical_deck.get_technical_deck import technical_deck
+# from src.api.routers.technical_deck.select_template import select_template
+# from src.api.routers.rfp_sheet.sheet_identification import rfp__sheet_router
 from src.api.routers.admin.organizations_handler import router as admin_org_router
 from src.api.routers.admin.admin_auth_handler import router as admin_auth_router
 from src.api.routers.admin.users_handler import router as admin_user_router
@@ -98,6 +99,9 @@ def create_fastapi_app():
     # Knowledge base
     fastapp.include_router(knowledge_upload_router, prefix="/users/knowledge", tags=["knowledge_upload"])
     fastapp.include_router(knowledge_access_router, prefix="/users/knowledge", tags=["knowledge_access"])
+
+    # Chat sessions
+    fastapp.include_router(chat_sessions_router, prefix="/users/chats", tags=["chats"])
 
     # attachment
     fastapp.include_router(upload_router, prefix="/users/chats/upload", tags=["uploads"])
