@@ -17,12 +17,13 @@ This worker handles chat-related background tasks, specifically attachment proce
 
 - **attachments**: For attachment processing tasks
 - **chat_processing**: For general chat processing tasks
+- **chat_messages**: For user chat message processing jobs (task `chat.process_message`)
 
 ## Usage
 
 ### Start the worker:
 ```powershell
-celery -A src.workers.chat_worker.celery_app worker -l info -Q attachments,chat_processing --pool=solo
+celery -A src.workers.chat_worker.celery_app worker -l info -Q attachments,chat_processing,chat_messages --pool=solo
 ```
 
 ### Test connectivity:

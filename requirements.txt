@@ -32,7 +32,7 @@ aiohttp==3.9.1
 
 # Additional utilities
 packaging==23.2
-agno~=1.7.12
+agno~=1.8.1
 pgvector==0.4.1
 pypdf==5.9.0
 wikipedia==1.4.0

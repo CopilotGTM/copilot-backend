@@ -4,11 +4,11 @@ from uuid import UUID
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Generic, TypeVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic.generics import GenericModel as _Base
 
 from src.domain.models.organisation_tables.chat_session_models import ChatType
-
+from src.domain.models.organisation_tables.chat_message_models import ChatMessageRole, ChatMessageType
 T = TypeVar("T")
 
 
@@ -67,3 +67,39 @@ class PaginationChatMessages(_Base, Generic[T]):
 class ChatSessionsPage(BaseModel):
     items: List[ChatSessionOut]
     cursor: Optional[str] = None
+
+
+# Chat messages (API layer)
+class SendMessageRequest(BaseModel):
+    """Request model for sending a chat message."""
+    session_id: UUID
+    content: str
+    attachments: Optional[List[UUID]] = None
+    message_type: Optional[ChatMessageType] = ChatMessageType.GENERAL_MESSAGE
+    role: ChatMessageRole = ChatMessageRole.USER
+    is_edited: bool = False
+    edited_message_id: Optional[UUID] = None
+
+    @field_validator('content')
+    def content_must_not_be_empty(cls, v: str) -> str:
+        stripped_v = v.strip()
+        if not stripped_v:
+            raise ValueError('content must not be empty')
+        return stripped_v
+
+    @field_validator('role')
+    def role_must_be_user(cls, v: ChatMessageRole) -> ChatMessageRole:
+        if v != ChatMessageRole.USER:
+            raise ValueError('role must be USER')
+        return v
+
+    @model_validator(mode='after')
+    def check_edited_message_id_required(self) -> "SendMessageRequest":
+        if self.is_edited and not self.edited_message_id:
+            raise ValueError("edited_message_id is required when is_edited is True")
+        return self
+
+
+class SendMessageResponse(BaseModel):
+    message_id: UUID
+    job_id: UUID

@@ -40,4 +40,4 @@ def task_failure_handler(task_id=None, exception=None, traceback=None, einfo=Non
     print(f"Task failed: {task_id} exception={exception}")
 
 # Explicitly import task modules to ensure registration
-from .tasks import post_upload, test_tasks
+from .tasks import post_upload, test_tasks, message_processing
