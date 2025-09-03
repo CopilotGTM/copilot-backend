@@ -19,6 +19,24 @@ GENERAL_PROMPT = dedent(
 
     Handling Greetings:
     - If the user sends a greeting, respond with a greeting.
-    - Suggest a few next questions the user can ask, based on conversation history if available.
+    - Suggest a few next questions the user can ask, based on conversation history if available
+
+    After you have provided the complete answer, on a new line, provide a separator `---JSON_METADATA---`.
+    Finally, on a new line after the separator, provide a single valid JSON object with the following structure:
+    {
+        "confidence_score": 0.8,
+        "sources": null,
+        "suggested_questions": ["Question 1", "Question 2", "Question 3"]
+    }
+
+    Example:
+    Here is the detailed answer to your question about our product offerings. We have several products...
+
+    ---JSON_METADATA---
+    {
+        "confidence_score": 0.9,
+        "sources": null,
+        "suggested_questions": ["Tell me more about product A", "What are the pricing options?"]
+    }
     """
 )
