@@ -93,10 +93,33 @@ class SyncSqlAlchemyProvider(SyncDatabaseProvider):
             # Running inside async loop — execute the async call in a new thread
             from concurrent.futures import ThreadPoolExecutor
             with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(lambda: asyncio.run(secrets_manager.get(secret_name)))  # type: ignore
+                def fetch_secret():
+                    try:
+                        return asyncio.run(secrets_manager.get(secret_name))  # type: ignore
+                    except RuntimeError as e:
+                        if "Event loop is closed" in str(e):
+                            new_loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(new_loop)
+                            try:
+                                return new_loop.run_until_complete(secrets_manager.get(secret_name))  # type: ignore
+                            finally:
+                                new_loop.close()
+                        raise
+                future = executor.submit(fetch_secret)
                 password = future.result()
         else:
-            password = asyncio.run(secrets_manager.get(secret_name))  # type: ignore
+            try:
+                password = asyncio.run(secrets_manager.get(secret_name))  # type: ignore
+            except RuntimeError as e:
+                if "Event loop is closed" in str(e):
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        password = loop.run_until_complete(secrets_manager.get(secret_name))  # type: ignore
+                    finally:
+                        loop.close()
+                else:
+                    raise
         if password is None:
             raise RuntimeError(f"Secret '{secret_name}' not found for tenant {org_uuid}")
         return self._tenant_pools.get_or_create(role_name, password)
