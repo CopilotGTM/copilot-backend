@@ -8,7 +8,7 @@ from socketio.exceptions import ConnectionRefusedError
 from src.domain.models.master_tables import User
 from src.infra.utils.app_state import fastapp
 from src.infra.utils.logger import get_logger
-from src.infra.utils.database import get_master_session
+from src.api.dependencies.master_dependencies import get_master_session
 from src.infra.auth.supabase_admin_client import supabase_admin_client
 
 logger = get_logger()

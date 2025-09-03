@@ -17,7 +17,7 @@ from src.infra.messaging.redis_streams import xadd_json_frame
 from src.domain.models.organisation_tables.job_models import ChatMessageJob, JobStatus
 from src.domain.models.organisation_tables.chat_message_models import ChatMessage, ChatMessageRole
 from src.domain.models.organisation_tables.chat_session_models import ChatSession
-from src.service.chat.orchestrator import run_agent_for_chat_structured
+from src.agents.orchestrator import run_agent_for_chat
 
 logger = get_logger("chat_message_processing_task")
 
@@ -77,7 +77,7 @@ def process_message(self, organisation_id: str, job_id: str):
             import asyncio
 
             result = asyncio.run(
-                run_agent_for_chat_structured(
+                run_agent_for_chat(
                     chat_type=chat_session.chat_type,  # type: ignore[arg-type]
                     messages=history,
                 )
@@ -86,7 +86,7 @@ def process_message(self, organisation_id: str, job_id: str):
             # If already inside an event loop, use nested policy
             logger.debug("Asyncio runtime warning: %s", re)
             result = asyncio.get_event_loop().run_until_complete(
-                run_agent_for_chat_structured(
+                run_agent_for_chat(
                     chat_type=chat_session.chat_type,  # type: ignore[arg-type]
                     messages=history,
                 )

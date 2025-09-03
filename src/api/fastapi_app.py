@@ -14,7 +14,6 @@ from socketio import ASGIApp
 from ..api.events.socket_app import sio
 from ..infra.utils.logger import get_logger
 from ..infra.utils.app_state import fastapp
-from ..infra.utils.database import get_master_engine, get_session_dependency
 from ..infra.messaging.redis_client import get_redis_client
 
 from src.api.routers.healthcheck import healthcheck_router
@@ -73,11 +72,6 @@ def create_fastapi_app():
 
     # Initialize Redis client in app state
     fastapp.state.redis_client = get_redis_client()
-
-    # Initialize master database engine and session at FastAPI app level
-    master_engine = get_master_engine(echo=False)
-    fastapp.state.master_db_engine = master_engine
-    fastapp.state.master_session = get_session_dependency(master_engine)
 
     # App Level Variables
     fastapp.state.CLOUD_PROVIDER = os.getenv("CLOUD_PROVIDER")

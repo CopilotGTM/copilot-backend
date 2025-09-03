@@ -4,7 +4,7 @@ from typing import Dict, Any, Optional
 
 from fastapi import Depends, HTTPException, status, Request
 from sqlmodel import Session, select
-from src.infra.utils.database import get_master_session
+from src.api.dependencies.master_dependencies import get_master_session
 
 from src.domain.models.master_tables import AdminUserStatus, SupabaseUserStatus, User
 from src.infra.auth.supabase_user_client import supabase_user_client

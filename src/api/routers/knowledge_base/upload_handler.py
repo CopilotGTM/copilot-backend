@@ -19,8 +19,8 @@ from src.api.dependencies.organisation_dependencies import (
     UserIDs,
     get_current_user,
     get_org_session,
+    acquire_org_session,
 )
-from src.infra.utils.database import get_org_session as raw_get_org_session
 from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.knowledge_upload_models import (
     KnowledgeBatchFinalizeRequest,
@@ -337,14 +337,11 @@ async def stream_sources(
     explicit_ids: Optional[Set[UUID]] = set(source_ids) if source_ids else None
 
     async def event_generator():
-        # Acquire tenant session generator (keeps search_path active until we close)
-        sess_gen = raw_get_org_session(str(user_ids.organisation_id))
+        # Long-lived stream: use imperative acquisition to control lifetime
+        from contextlib import contextmanager
+        sess_gen = acquire_org_session(user_ids.organisation_id)
         session = next(sess_gen)
-        service = KnowledgeSourceSSEService(
-            session, 
-            user_ids.organisation_id, 
-            user_ids.user_id
-        )
+        service = KnowledgeSourceSSEService(session, user_ids.organisation_id, user_ids.user_id)
         try:
             async for evt in service.stream_events(
                 explicit_ids=explicit_ids,
@@ -353,12 +350,10 @@ async def stream_sources(
             ):
                 yield evt
         finally:
-            # Ensure service & session cleanup
             try:
                 await service.close()
             except Exception:
                 logger.debug("SSE service close failed", exc_info=True)
-            # Advance generator to trigger its finally (search_path reset + close)
             try:
                 next(sess_gen)
             except StopIteration:

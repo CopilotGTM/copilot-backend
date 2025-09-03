@@ -26,7 +26,13 @@ from sse_starlette.sse import EventSourceResponse
 from uuid import UUID
 from typing import Optional, Set
 from src.service.chat.chat_attachments_sse_service import AttachmentSSEService, AttachmentSSEError  # to be created
-from src.api.dependencies.organisation_dependencies import get_current_user, UserIDs, get_org_session
+from src.api.dependencies.organisation_dependencies import (
+    UserIDs,
+    get_current_user,
+    get_org_session,
+    acquire_org_session,
+)
+from contextlib import contextmanager
 from src.workers.chat_worker.celery_app import app as chat_app
 from src.domain.models.organisation_tables.chat_message_models import AttachmentStatus
 
@@ -186,8 +192,7 @@ async def stream_attachments(
     logger.info("Attachment SSE explicit IDs: %s", explicit_ids)
     async def event_generator():
         # Manual control of session lifetime (mirror knowledge base SSE pattern)
-        from src.infra.utils.database import get_org_session as raw_get_org_session
-        sess_gen = raw_get_org_session(str(user_ids.organisation_id))
+        sess_gen = acquire_org_session(user_ids.organisation_id)
         session = next(sess_gen)
         service = AttachmentSSEService(session, user_ids.organisation_id, user_ids.user_id)
         try:
@@ -201,13 +206,13 @@ async def stream_attachments(
             try:
                 await service.close()
             except Exception:
-                logger.debug("Attachment SSE service close failed", exc_info=True)
+                logger.debug("SSE service close failed", exc_info=True)
             try:
                 next(sess_gen)
             except StopIteration:
                 pass
             except Exception:
-                logger.debug("Attachment SSE session generator finalization failed", exc_info=True)
+                logger.debug("SSE session generator finalization failed", exc_info=True)
 
     return EventSourceResponse(event_generator())
 

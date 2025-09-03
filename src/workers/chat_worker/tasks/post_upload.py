@@ -6,7 +6,7 @@ import asyncio
 
 from src.workers.chat_worker.celery_app import app
 from src.infra.utils.logger import get_logger
-from src.infra.utils.database import get_org_session
+from src.api.dependencies.organisation_dependencies import acquire_org_session
 import os
 from src.domain.models.organisation_tables.chat_message_models import Attachment, AttachmentStatus
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
@@ -25,7 +25,7 @@ def post_upload(self, organisation_id: str, attachment_id: str):
     'Event loop is closed' errors from repeated asyncio.run() calls.
     """
     logger.info("Attachment post-upload task started org=%s attachment=%s", organisation_id, attachment_id)
-    session_gen = get_org_session(organisation_id)
+    session_gen = acquire_org_session(organisation_id)
     session = next(session_gen)
     storage = AzureOrganisationBlobStorage(organisation_id=organisation_id)  # type: ignore[arg-type]
     loop = asyncio.new_event_loop()

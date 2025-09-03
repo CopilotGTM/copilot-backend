@@ -11,7 +11,7 @@ Performs idempotent cleanup of:
 
 from src.workers.knowledge_worker.celery_app import app
 from src.infra.utils.logger import get_logger
-from src.infra.utils.database import get_org_session
+from src.api.dependencies.organisation_dependencies import acquire_org_session
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
 from src.domain.models.organisation_tables.knowledge_models import OrganisationSource
 from src.domain.models.organisation_tables.job_models import KnowledgeProcessingJob
@@ -36,7 +36,7 @@ def delete_source_task(self, organisation_id: str, source_id: str):  # pragma: n
     logger.info("Deleting knowledge source %s in org %s", source_id, organisation_id)
 
     # DB session & storage
-    session_gen = get_org_session(organisation_id)
+    session_gen = acquire_org_session(organisation_id)
     session = next(session_gen)
     storage = AzureOrganisationBlobStorage(organisation_id=organisation_id)
 

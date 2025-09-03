@@ -5,7 +5,7 @@ from typing import Optional, Dict, Any
 from uuid import UUID
 from fastapi import HTTPException, status, Depends, Request
 from sqlmodel import Session, select
-from src.infra.utils.database import get_master_session
+from src.api.dependencies.master_dependencies import get_master_session
 
 from src.domain.models.master_tables import SuperAdmin, AdminUserStatus, AdminRole, SupabaseAdminStatus
 from src.infra.utils.app_state import fastapp

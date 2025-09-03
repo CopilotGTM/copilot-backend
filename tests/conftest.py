@@ -16,7 +16,7 @@ os.environ.setdefault("ENV", "local")
 
 from fastapi import FastAPI
 import fakeredis
-from src.infra.utils.database import get_org_session
+from src.api.dependencies.organisation_dependencies import get_org_session
 from src.infra.messaging.redis_client import get_redis_client
 from src.api.dependencies.organisation_dependencies import auth as auth_dependency
 

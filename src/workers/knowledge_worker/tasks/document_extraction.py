@@ -11,7 +11,7 @@ from billiard.exceptions import TimeLimitExceeded
 
 from src.workers.knowledge_worker.celery_app import app
 from src.infra.utils.logger import get_logger
-from src.infra.utils.database import get_org_session
+from src.api.dependencies.organisation_dependencies import acquire_org_session
 from src.domain.models.organisation_tables.knowledge_models import (
     OrganisationSource,
     OrganisationSourceStatus,
@@ -47,7 +47,7 @@ def _get_status_str(status_enum):
 def document_extraction(self, organisation_id: str, source_id: str):  # pragma: no cover
     """Heavy extraction task (PDF/DOC etc.)."""
     logger.info(f"Starting document extraction for source {source_id} in org {organisation_id}")
-    session_gen = get_org_session(organisation_id)
+    session_gen = acquire_org_session(organisation_id)
     session = next(session_gen)
     storage = AzureOrganisationBlobStorage(organisation_id=organisation_id)
     temp_file_path = None
