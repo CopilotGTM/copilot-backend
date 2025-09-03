@@ -32,6 +32,8 @@ spec:
             - "src.workers.knowledge_worker.celery_app"
             {{- else if contains "organization" .Values.config.queueName }}
             - "src.workers.organization_worker.celery_app"
+            {{- else if contains "attachments" .Values.config.queueName }}
+            - "src.workers.chat_worker.celery_app"
             {{- else if contains "chat" .Values.config.queueName }}
             - "src.workers.chat_worker.celery_app"
             {{- else if contains "content" .Values.config.queueName }}
