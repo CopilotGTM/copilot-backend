@@ -16,7 +16,8 @@ from src.domain.models.organisation_tables.knowledge_models import (
     OrganisationSource,
     OrganisationSourceStatus,
 )
-from src.infra.messaging.redis_pubsub import AsyncRedisPubSub, channel_for_knowledge_update_status
+from src.infra.messaging.redis_pubsub import AsyncRedisPubSub
+from src.infra.messaging.redis_channels import channel_for_knowledge_update_status
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
 from src.infra.utils.logger import get_logger
 from src.api.schemas.knowledge_upload_models import KnowledgeSourceEventUpdate

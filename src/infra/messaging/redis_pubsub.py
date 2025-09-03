@@ -119,21 +119,3 @@ class AsyncRedisPubSub:
         except Exception as e:
             logger.warning(f"Error closing Redis connections: {e}")
 
-
-CHANNEL_TEMPLATE = "kb:{org_id}:sources"
-ATTACHMENT_CHANNEL_TEMPLATE = "att:{org_id}:attachments"
-
-
-def channel_for_knowledge_update_status(organisation_id: UUID | str) -> str:
-    """Generate Redis channel name for organisation knowledge sources."""
-    return CHANNEL_TEMPLATE.format(org_id=organisation_id)
-
-
-def channel_for_attachment_update_status(organisation_id: UUID | str) -> str:
-    """Generate Redis channel name for organisation attachment updates."""
-    return ATTACHMENT_CHANNEL_TEMPLATE.format(org_id=organisation_id)
-
-
-# Backwards compatibility alias (older code imported channel_for_org)
-def channel_for_org(organisation_id: UUID | str) -> str:  # pragma: no cover
-    return channel_for_knowledge_update_status(organisation_id)

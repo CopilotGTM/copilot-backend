@@ -23,7 +23,7 @@ from src.api.schemas.upload_models import AttachmentEventUpdate
 from src.infra.utils.app_state import fastapp
 from src.infra.utils.logger import get_logger
 from src.infra.messaging.redis_client import get_redis_client
-from src.infra.messaging.redis_pubsub import channel_for_attachment_update_status
+from src.infra.messaging.redis_channels import channel_for_attachment_update_status
 
 logger = get_logger("attachment_publish")
 

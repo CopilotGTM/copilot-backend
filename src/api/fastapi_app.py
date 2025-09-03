@@ -20,6 +20,7 @@ from ..infra.messaging.redis_client import get_redis_client
 from src.api.routers.healthcheck import healthcheck_router
 from src.api.routers.chat_handler import chat_router
 from src.api.routers.chat.sessions_handler import router as chat_sessions_router
+from src.api.routers.chat.messages_handler import router as chat_messages_router
 from src.api.routers.chat_attachments.upload_handler import upload_router
 from src.api.routers.chat_attachments.access_handler import download_router as attachment_access_router
 from src.api.routers.knowledge_base.upload_handler import upload_router as knowledge_upload_router
@@ -33,12 +34,12 @@ from src.api.routers.admin.admin_auth_handler import router as admin_auth_router
 from src.api.routers.admin.users_handler import router as admin_user_router
 from src.api.routers.users.auth_handler import router as user_auth_router
 
-from src.api.events import chat_message_handler
-from src.api.events import connect_handler
-from src.api.events.technical_deck import transcript_summary_handler
-from src.api.events.technical_deck import slide_outline_generation
-from src.api.events.technical_deck import technical_deck_generation
-from src.api.events.rfp_sheet import rfp_answer_generation
+# from src.api.events import chat_message_handler
+# from src.api.events import connect_handler
+# from src.api.events.technical_deck import transcript_summary_handler
+# from src.api.events.technical_deck import slide_outline_generation
+# from src.api.events.technical_deck import technical_deck_generation
+# from src.api.events.rfp_sheet import rfp_answer_generation
 from src.api.events import redis_subscriber
 
 logger = get_logger()
@@ -102,6 +103,8 @@ def create_fastapi_app():
 
     # Chat sessions
     fastapp.include_router(chat_sessions_router, prefix="/users/chats", tags=["chats"])
+    # Chat messages
+    fastapp.include_router(chat_messages_router, prefix="/users/chats", tags=["chat_messages"])
 
     # attachment
     fastapp.include_router(upload_router, prefix="/users/chats/upload", tags=["uploads"])
