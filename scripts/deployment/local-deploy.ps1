@@ -1,0 +1,367 @@
+# =============================================================================
+# Local Development Deployment Script (PowerShell) - Refactored to use .env.development
+# =============================================================================
+# This script allows you to test changes quickly by:
+# 1. Building Docker image locally
+# 2. Pushing to Azure Container Registry
+# 3. Deploying with Helm using the same configuration as Azure DevOps pipeline
+#
+# Prerequisites:
+# - Azure CLI logged in
+# - Docker running
+# - Helm installed
+# - kubectl configured for target cluster
+# - Access to Azure Container Registry
+# =============================================================================
+
+param(
+    [string]$DeployEnvironment = "dev",
+    [switch]$Help
+)
+
+# Show usage if help is requested
+if ($Help) {
+    Write-Host "Usage: .\local-deploy.ps1 [-DeployEnvironment <env>] [-Help]"
+    Write-Host ""
+    Write-Host "Parameters:"
+    Write-Host "  -DeployEnvironment  Target environment (default: dev)"
+    Write-Host "  -Help              Show this help message"
+    Write-Host ""
+    Write-Host "Example:"
+    Write-Host "  .\local-deploy.ps1                        # Deploy to dev environment"
+    Write-Host "  .\local-deploy.ps1 -DeployEnvironment staging  # Deploy to staging"
+    exit 0
+}
+
+# Error handling
+$ErrorActionPreference = "Stop"
+
+# =============================================================================
+# Load .env.development file and set environment variables
+# =============================================================================
+function Import-EnvFile {
+    param([string]$FilePath)
+    if (-not (Test-Path $FilePath)) {
+        Write-Error "Environment file not found: $FilePath"
+        exit 1
+    }
+    Get-Content $FilePath | ForEach-Object {
+        if ($_ -match "^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$") {
+            $name = $matches[1]
+            $value = $matches[2]
+            # Remove surrounding quotes if present
+            if ($value.StartsWith('"') -and $value.EndsWith('"')) {
+                $value = $value.Substring(1, $value.Length - 2)
+            }
+            Set-Item -Path "Env:$name" -Value $value
+        }
+    }
+}
+
+# Use $PSScriptRoot to reference .env.development relative to script location
+$envFilePath = Join-Path $PSScriptRoot "..\..\env.development"
+if (-not (Test-Path $envFilePath)) {
+    $envFilePath = Join-Path $PSScriptRoot "..\..\.env.development"
+}
+Import-EnvFile $envFilePath
+
+# =============================================================================
+# Configuration
+# =============================================================================
+
+# Azure Configuration (from .env.development)
+$ACR_NAME = $env:AZURE_ACR_NAME
+$ACR_LOGIN_SERVER = "$ACR_NAME.azurecr.io"
+$RESOURCE_GROUP = $env:AZURE_RESOURCE_GROUP
+$SUBSCRIPTION_ID = $env:AZURE_SUBSCRIPTION_ID
+
+# Kubernetes Configuration (from .env.development)
+$NAMESPACE = "copilotgtm"
+$HELM_RELEASE_NAME = "copilot-backend"
+$CHART_PATH = "$PSScriptRoot\..\..\charts\application"
+
+# Image Configuration
+$IMAGE_REPOSITORY = "copilot-backend"
+$IMAGE_TAG = "local-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+
+# =============================================================================
+# Functions
+# =============================================================================
+
+function Write-Header {
+    param([string]$Message)
+    Write-Host "=================================" -ForegroundColor Blue
+    Write-Host $Message -ForegroundColor Blue
+    Write-Host "=================================" -ForegroundColor Blue
+}
+
+function Write-Success {
+    param([string]$Message)
+    Write-Host "✅ $Message" -ForegroundColor Green
+}
+
+function Write-Warning {
+    param([string]$Message)
+    Write-Host "⚠️  $Message" -ForegroundColor Yellow
+}
+
+function Write-Error {
+    param([string]$Message)
+    Write-Host "❌ $Message" -ForegroundColor Red
+}
+
+function Test-Prerequisites {
+    Write-Header "Checking Prerequisites"
+
+    # Check if required tools are installed
+    try {
+        docker --version | Out-Null
+    } catch {
+        Write-Error "Docker is required but not installed. Aborting."
+        exit 1
+    }
+
+    try {
+        az --version | Out-Null
+    } catch {
+        Write-Error "Azure CLI is required but not installed. Aborting."
+        exit 1
+    }
+
+    try {
+        helm version | Out-Null
+    } catch {
+        Write-Error "Helm is required but not installed. Aborting."
+        exit 1
+    }
+
+    try {
+        kubectl version --client | Out-Null
+    } catch {
+        Write-Error "kubectl is required but not installed. Aborting."
+        exit 1
+    }
+
+    # Check if logged into Azure
+    try {
+        az account show | Out-Null
+    } catch {
+        Write-Error "Not logged into Azure CLI. Run 'az login' first."
+        exit 1
+    }
+
+    # Check if Docker is running
+    try {
+        docker ps | Out-Null
+    } catch {
+        Write-Error "Docker is not running. Please start Docker."
+        exit 1
+    }
+
+    # Check if Dockerfile exists (relative to repo root)
+    $dockerfilePath = Join-Path $PSScriptRoot "..\..\Dockerfile"
+    if (-not (Test-Path $dockerfilePath)) {
+        Write-Error "Dockerfile not found in repo root directory."
+        exit 1
+    }
+
+    # Check if Helm chart exists
+    if (-not (Test-Path $CHART_PATH)) {
+        Write-Error "Helm chart not found at $CHART_PATH."
+        exit 1
+    }
+
+    Write-Success "All prerequisites checked"
+}
+
+function Connect-ToACR {
+    Write-Header "Logging into Azure Container Registry"
+
+    # Login to ACR
+    az acr login --name $ACR_NAME
+    Write-Success "Logged into ACR: $ACR_LOGIN_SERVER"
+}
+
+function Build-AndPushImage {
+    Write-Header "Building and Pushing Docker Image"
+
+    # Build image
+    Write-Host "Building image: $ACR_LOGIN_SERVER/$IMAGE_REPOSITORY`:$IMAGE_TAG"
+    docker build -t "$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY`:$IMAGE_TAG" $PSScriptRoot\..\..
+
+    # Also tag as latest for this local deployment
+    docker tag "$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY`:$IMAGE_TAG" "$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY`:latest"
+
+    # Push image
+    Write-Host "Pushing image to ACR..."
+    docker push "$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY`:$IMAGE_TAG"
+    docker push "$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY`:latest"
+
+    Write-Success "Image pushed: $ACR_LOGIN_SERVER/$IMAGE_REPOSITORY`:$IMAGE_TAG"
+}
+
+function Get-AzureKeyVaultSecrets {
+    Write-Header "Retrieving Secrets from Azure Key Vault"
+
+    # Key Vault name for infrastructure secrets (from .env.development)
+    $KEY_VAULT_NAME = $env:AZURE_KEY_VAULT_NAME
+
+    Write-Host "Retrieving secrets from Key Vault: $KEY_VAULT_NAME"
+
+    # Function to safely get secret
+    function Get-SecretSafely {
+        param([string]$VaultName, [string]$SecretName, [string]$DefaultValue = "")
+        try {
+            $result = az keyvault secret show --vault-name $VaultName --name $SecretName --query value -o tsv 2>$null
+            if ($result) { return $result } else { return $DefaultValue }
+        } catch {
+            return $DefaultValue
+        }
+    }
+
+    # Get secrets from Key Vault (hidden values)
+    $env:AZURE_OPENAI_API_KEY = Get-SecretSafely $KEY_VAULT_NAME "azure-openai-api-key"
+    $env:AZURE_EMBEDDER_OPENAI_API_KEY = Get-SecretSafely $KEY_VAULT_NAME "azure-embedder-openai-api-key"
+    $env:DATABASE_PASSWORD = Get-SecretSafely $KEY_VAULT_NAME "database-password"
+    $env:REDIS_PASSWORD = Get-SecretSafely $KEY_VAULT_NAME "redis-password"
+    $env:RESEND_API_KEY = Get-SecretSafely $KEY_VAULT_NAME "resend-api-key"
+    $env:SUPABASE_ANON_KEY = Get-SecretSafely $KEY_VAULT_NAME "supabase-anon-key"
+    $env:SUPABASE_JWT_SECRET = Get-SecretSafely $KEY_VAULT_NAME "supabase-jwt-secret"
+    $env:SUPABASE_SERVICE_ROLE_KEY = Get-SecretSafely $KEY_VAULT_NAME "supabase-service-role-key"
+
+    Write-Success "Secrets retrieved from Key Vault and configuration set"
+}
+
+function Deploy-WithHelm {
+    Write-Header "Deploying with Helm"
+
+    # Clean up previous startup job and pods
+    Write-Host "Cleaning up previous startup job and pods..."
+    kubectl delete job copilot-backend-startup -n $NAMESPACE --ignore-not-found=true
+    kubectl delete pods -n $NAMESPACE -l job-name=copilot-backend-startup --ignore-not-found=true
+    Start-Sleep -Seconds 5
+
+    # Deploy with Helm using the same configuration as Azure DevOps pipeline
+    Write-Host "Deploying with Helm release: $HELM_RELEASE_NAME"
+
+    $helmArgs = @(
+        "upgrade", "--install", $HELM_RELEASE_NAME, $CHART_PATH,
+        "--namespace", $NAMESPACE,
+        "--create-namespace",
+        "--set", "api.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_BACKEND_CLIENT_ID)",
+        "--set", "api.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_API_TENANT_ID)",
+        "--set", "global.redis.host=$($env:REDIS_HOST)",
+        "--set", "global.redis.port=$($env:REDIS_PORT)",
+        "--set", "global.redis.enableTLS=true",
+        "--set", "global.redis.usePassword=true",
+        "--set", "api.image.repository=$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY",
+        "--set", "api.image.tag=$IMAGE_TAG",
+        "--set", "knowledge-extract-worker.image.repository=$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY",
+        "--set", "knowledge-extract-worker.image.tag=$IMAGE_TAG",
+        "--set", "knowledge-extract-worker.autoscaling.enabled=true",
+        "--set", "knowledge-upload-worker.image.repository=$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY",
+        "--set", "knowledge-upload-worker.image.tag=$IMAGE_TAG",
+        "--set", "knowledge-upload-worker.autoscaling.enabled=true",
+        "--set", "api.secrets.DATABASE_HOST=$($env:DATABASE_HOST)",
+        "--set", "api.secrets.DATABASE_USER=$($env:DATABASE_USER)",
+        "--set", "api.secrets.DATABASE_PORT=$($env:DATABASE_PORT)",
+        "--set", "api.secrets.DATABASE_NAME=$($env:DATABASE_NAME)",
+        "--set", "api.secrets.DATABASE_PASSWORD=$($env:DATABASE_PASSWORD)",
+        "--set", "api.secrets.DATABASE_SSL_MODE=$($env:DATABASE_SSL_MODE)",
+        "--set", "api.secrets.REDIS_HOST=$($env:REDIS_HOST)",
+        "--set", "api.secrets.REDIS_PORT=$($env:REDIS_PORT)",
+        "--set", "api.secrets.REDIS_PASSWORD=$($env:REDIS_PASSWORD)",
+        "--set", "api.secrets.AZURE_OPENAI_API_KEY=$($env:AZURE_OPENAI_API_KEY)",
+        "--set", "api.secrets.AZURE_OPENAI_ENDPOINT=$($env:AZURE_OPENAI_ENDPOINT)",
+        "--set", "api.secrets.CLOUD_PROVIDER=$($env:CLOUD_PROVIDER)",
+        "--set", "api.secrets.APPLICATION_STORAGE_NAME=$($env:APPLICATION_STORAGE_NAME)",
+        "--set", "api.secrets.ORGANISATION_STORAGE_NAME=$($env:ORGANISATION_STORAGE_NAME)",
+        "--set", "api.secrets.APPLICATION_REGION=$($env:APPLICATION_REGION)",
+        "--set", "api.secrets.ENV=$($env:ENV)",
+        "--set", "api.secrets.AZURE_KEY_VAULT_URL=$($env:AZURE_KEY_VAULT_URL)",
+        "--set", "api.secrets.AZURE_RESOURCE_GROUP=$RESOURCE_GROUP",
+        "--set", "api.secrets.AZURE_SUBSCRIPTION_ID=$SUBSCRIPTION_ID",
+        "--set", "api.secrets.SUPABASE_URL=$($env:SUPABASE_URL)",
+        "--set", "api.secrets.SUPABASE_ANON_KEY=$($env:SUPABASE_ANON_KEY)",
+        "--set", "api.secrets.SUPABASE_SERVICE_ROLE_KEY=$($env:SUPABASE_SERVICE_ROLE_KEY)",
+        "--set", "api.secrets.SUPABASE_JWT_SECRET=$($env:SUPABASE_JWT_SECRET)",
+        "--set", "api.secrets.RESEND_API_KEY=$($env:RESEND_API_KEY)",
+        "--set", "api.secrets.FROM_EMAIL=$($env:FROM_EMAIL)",
+        "--set", "api.secrets.APP_NAME=$($env:APP_NAME)",
+        "--set", "api.secrets.APP_URL=$($env:APP_URL)",
+        "--set", "api.secrets.ADMIN_APP_URL=$($env:ADMIN_APP_URL)",
+        "--set", "api.secrets.SUPER_ADMIN_EMAIL=$($env:SUPER_ADMIN_EMAIL)",
+        "--set", "api.secrets.WEB_APP_NAME=$($env:WEB_APP_NAME)",
+        "--set", "api.secrets.AZURE_EMBEDDER_OPENAI_API_KEY=$($env:AZURE_EMBEDDER_OPENAI_API_KEY)",
+        "--set", "api.secrets.AZURE_EMBEDDER_OPENAI_ENDPOINT=$($env:AZURE_EMBEDDER_OPENAI_ENDPOINT)",
+        "--set", "api.secrets.AZURE_EMBEDDER_DEPLOYMENT=$($env:AZURE_EMBEDDER_DEPLOYMENT)",
+        "--set", "api.secrets.AZURE_SUBSCRIPTION=$($env:AZURE_SUBSCRIPTION)",
+        "--set", "knowledge-extract-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
+        "--set", "knowledge-upload-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
+        "--set", "organization-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
+        "--set", "chat-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
+        "--set", "knowledge-extract-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
+        "--set", "knowledge-upload-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
+        "--set", "organization-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
+        "--set", "chat-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)"
+    )
+
+    & helm @helmArgs
+
+    Write-Success "Helm deployment completed"
+}
+
+function Test-DeploymentStatus {
+    Write-Header "Checking Deployment Status"
+
+    Write-Host "Pods in namespace $NAMESPACE`:"
+    kubectl get pods -n $NAMESPACE
+
+    Write-Host ""
+    Write-Host "Deployments in namespace $NAMESPACE`:"
+    kubectl get deployments -n $NAMESPACE
+
+    Write-Host ""
+    Write-Host "Services in namespace $NAMESPACE`:"
+    kubectl get services -n $NAMESPACE
+
+    Write-Host ""
+    Write-Host "Checking for worker deployments..."
+    $workers = kubectl get deployments -n $NAMESPACE | Select-String "knowledge"
+    if ($workers) {
+        $workers
+    } else {
+        Write-Host "No knowledge workers deployed yet"
+    }
+
+    Write-Success "Deployment status checked"
+}
+
+# =============================================================================
+# Main Execution
+# =============================================================================
+
+function Main {
+    Write-Header "Local Development Deployment Script"
+    Write-Host "Environment: $DeployEnvironment"
+    Write-Host "Image Tag: $IMAGE_TAG"
+    Write-Host "ACR: $ACR_LOGIN_SERVER"
+    Write-Host ""
+
+    # Run deployment steps
+    Test-Prerequisites
+    Connect-ToACR
+    Build-AndPushImage
+    Get-AzureKeyVaultSecrets
+    Deploy-WithHelm
+    Test-DeploymentStatus
+
+    Write-Success "Deployment completed successfully!"
+    Write-Host ""
+    Write-Host "🚀 Your application should now be running with the latest changes."
+    Write-Host "🔍 Check the status with: kubectl get pods -n $NAMESPACE"
+    Write-Host "📝 View logs with: kubectl logs -f deployment/copilot-backend-api -n $NAMESPACE"
+}
+
+# Run main function
+Main
