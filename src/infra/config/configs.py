@@ -43,8 +43,6 @@ class DatabaseConfig:
     POOL_RECYCLE_SEC: int = int(os.getenv("POOL_RECYCLE_SEC", "1800"))
     DATABASE_POOL_SIZE: int = int(os.getenv("DATABASE_POOL_SIZE", "10"))
     DATABASE_MAX_OVERFLOW: int = int(os.getenv("DATABASE_MAX_OVERFLOW", "20"))
-    DB_ADMIN_USER: Optional[str] = os.getenv("DB_ADMIN_USER")
-    DB_ADMIN_PASSWORD_SECRET: Optional[str] = os.getenv("DB_ADMIN_PASSWORD_SECRET")
 
 
 class AppConfig:

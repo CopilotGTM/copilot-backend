@@ -16,7 +16,7 @@ from src.domain.models.admin_models import (
     PasswordResetAction,
 )
 from src.domain.models.master_tables import SuperAdmin
-from src.infra.utils.database import get_master_session
+from src.api.dependencies.master_dependencies import get_master_session
 from src.infra.auth.admin_auth import admin_auth
 from src.infra.auth.email_service import email_service
 from src.infra.auth.supabase_admin_client import supabase_admin_client

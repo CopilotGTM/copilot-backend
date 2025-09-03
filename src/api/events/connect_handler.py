@@ -7,7 +7,7 @@ from sqlmodel import select
 
 from src.infra.utils.logger import get_logger
 from src.api.events.socket_app import sio
-from src.infra.utils.database import get_master_session
+from src.api.dependencies.master_dependencies import acquire_master_session
 from src.domain.models.master_tables import User
 from src.domain.models.authentication import Authentication
 from src.infra.messaging.redis_client import store_socket_connection, remove_socket_connection, get_socket_connection
@@ -17,7 +17,7 @@ auth_class = Authentication()
 WEBSOCKET_NAMESPACE = "/websocket/v1"
 
 # Wrap the get_master_session generator so it can be used as a context manager
-MasterSession = contextmanager(get_master_session)
+MasterSession = contextmanager(acquire_master_session)
 
 
 @sio.event(namespace=WEBSOCKET_NAMESPACE)

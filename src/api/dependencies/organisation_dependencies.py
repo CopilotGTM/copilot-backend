@@ -11,7 +11,7 @@ from typing import Iterator
 from src.domain.models.authentication import Authentication
 from src.domain.models.master_tables import User
 from src.infra.auth.user_auth import user_auth
-from src.infra.utils.database import get_org_session as _get_org_session
+from src.infra.database.factory import get_sync_provider
 from src.infra.utils.logger import get_logger
 
 auth = Authentication()
@@ -37,11 +37,28 @@ def get_current_user(user: User = Depends(user_auth)) -> UserIDs:
 
 
 def get_org_session(user_ids: UserIDs = Depends(get_current_user)) -> Iterator[Session]:
+    """FastAPI dependency yielding an organisation-scoped Session.
+
+    Production rationale:
+    - Central place to apply multi-tenant session acquisition (reduces drift).
+    - Easier to override in tests (FastAPI dependency override) without touching services.
+    - Hides provider implementation details from routers.
     """
-    FastAPI dependency that provides an organisation-specific database session
-    by extracting the organisation_id from the current authenticated user.
+    provider = get_sync_provider()  # singleton underneath
+    with provider.tenant_session(str(user_ids.organisation_id)) as session:  # type: ignore
+        yield session
+
+
+def acquire_org_session(organisation_id: UUID) -> Iterator[Session]:
+    """Imperative helper (non‑FastAPI) to acquire a tenant session.
+
+    Use in long‑lived flows (e.g. SSE generators, background threads) where
+    dependency scopes would close too early. Keeps logic colocated with
+    dependency version to avoid divergence.
     """
-    yield from _get_org_session(str(user_ids.organisation_id))
+    provider = get_sync_provider()
+    with provider.tenant_session(str(organisation_id)) as session:  # type: ignore
+        yield session
 
 
 class OrgServiceDependencies:

@@ -18,6 +18,7 @@ supabase>=2.17.0
 sqlmodel==0.0.24
 SQLAlchemy==2.0.42
 psycopg2-binary==2.9.10
+asyncpg==0.30.0
 alembic==1.16.4
 
 # Azure and OpenAI

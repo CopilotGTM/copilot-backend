@@ -7,7 +7,7 @@ import asyncio
 
 from src.workers.knowledge_worker.celery_app import app
 from src.infra.utils.logger import get_logger
-from src.infra.utils.database import get_org_session
+from src.api.dependencies.organisation_dependencies import acquire_org_session
 from src.domain.models.organisation_tables.knowledge_models import (
     OrganisationSource,
     OrganisationSourceStatus,
@@ -52,7 +52,7 @@ def post_upload_process(self, organisation_id: str, source_id: str):
     logger.info("org=%s source=%s", organisation_id, source_id)
 
     # Getting session and storage
-    session_gen = get_org_session(organisation_id)
+    session_gen = acquire_org_session(organisation_id)
     session = next(session_gen)
     storage = AzureOrganisationBlobStorage(organisation_id=organisation_id)
     loop = asyncio.new_event_loop()

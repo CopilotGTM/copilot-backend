@@ -9,15 +9,8 @@ from sqlmodel import SQLModel, create_engine, Session
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-from azure.identity import (
-    ClientSecretCredential,
-    WorkloadIdentityCredential,
-    ManagedIdentityCredential,
-    DefaultAzureCredential,
-)
-from azure.keyvault.secrets import SecretClient
-
-from src.infra.config.configs import Config, database_config, secret_manager_config, cloud_infra_config
+from src.infra.secrets.manager import secrets_manager
+from src.infra.config.configs import Config, database_config
 from src.infra.utils.resource_naming import get_key_vault_secret_name, get_role_name, get_schema_name
 
 # ---------------------------------------------------------------------------
@@ -50,52 +43,29 @@ def _now() -> float:
     return time.time()
 
 
-def _get_secret_from_key_vault(secret_name: str) -> str | None:
-    """Fetches a secret from Azure Key Vault with in-memory caching."""
-    # Cache check
+def _get_secret_from_key_vault(secret_name: str) -> str | None:  # legacy sync shim
     cached = _SECRET_CACHE.get(secret_name)
     if cached:
         value, ts = cached
         if _now() - ts < SECRET_TTL_SECONDS:
             return value
-
-    key_vault_url = secret_manager_config.AZURE_KEY_VAULT_URL
-    if not key_vault_url:
-        print(f"AZURE_KEY_VAULT_URL not set. Cannot fetch secret '{secret_name}'.")
-        return None
-
     try:
-        credential = None
-        # Use DefaultAzureCredential for local development for convenience
-        if os.getenv("ENV") == "local":
-            print("Auth strategy (database): DefaultAzureCredential (local development).")
-            credential = DefaultAzureCredential()
+        import asyncio
+        # If already in an event loop this will raise, so we fallback to creating a new task via run
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop and loop.is_running():
+            # Run the coroutine in a new thread to avoid blocking
+            value = asyncio.run(secrets_manager.get(secret_name))  # type: ignore
         else:
-            # Production credential order
-            tenant_id = cloud_infra_config.AZURE_TENANT_ID
-            client_id = cloud_infra_config.AZURE_CLIENT_ID
-
-            if tenant_id and client_id:
-                print("Auth strategy (database): Workload Identity (federated token)")
-                allowed_tenants = [t.strip() for t in (cloud_infra_config.AZURE_ADDITIONALLY_ALLOWED_TENANTS or "").split(",") if t.strip()] or None
-                credential = WorkloadIdentityCredential(
-                    tenant_id=tenant_id,
-                    client_id=client_id,
-                    additionally_allowed_tenants=allowed_tenants or ["*"]
-                )
-            elif client_id and not tenant_id:
-                print("[database] WARNING: Workload identity client id present but AZURE_TENANT_ID missing; using Managed Identity fallback.")
-            
-            if not credential:
-                print("Auth strategy (database): Managed Identity fallback")
-                credential = ManagedIdentityCredential()
-
-        client = SecretClient(vault_url=key_vault_url, credential=credential)
-        secret = client.get_secret(secret_name)
-        _SECRET_CACHE[secret_name] = (secret.value, _now())
-        return secret.value
-    except Exception as e:
-        print(f"Failed to fetch secret '{secret_name}' from Key Vault: {e}")
+            value = asyncio.run(secrets_manager.get(secret_name))
+        if value:
+            _SECRET_CACHE[secret_name] = (value, _now())
+        return value
+    except Exception as e:  # pragma: no cover
+        print(f"Secret fetch failed (shim) for {secret_name}: {e}")
         return None
 
 

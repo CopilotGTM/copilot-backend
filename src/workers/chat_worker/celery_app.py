@@ -1,4 +1,9 @@
 import os
+
+# Set minimal DB pool settings for worker process
+os.environ["MAX_TENANT_ENGINES"] = "1"
+os.environ["TENANT_POOL_MULTIPLIER"] = "1.0"
+
 from dotenv import load_dotenv
 from src.workers.base.celery_base import create_celery_app
 from src.workers.chat_worker.config import ChatWorkerConfig

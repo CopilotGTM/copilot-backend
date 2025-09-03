@@ -22,7 +22,7 @@ from src.domain.models.master_tables import (
     OrganisationEventType,
     OrganisationStatus,
 )
-from src.infra.utils.database import get_master_session
+from src.api.dependencies.master_dependencies import get_master_session
 from src.infra.utils.logger import get_logger
 from src.infra.utils.cursor import encode_cursor, decode_cursor
 from src.service.orgnisation.organization_management import organization_management_service

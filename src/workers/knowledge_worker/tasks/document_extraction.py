@@ -11,7 +11,7 @@ from billiard.exceptions import TimeLimitExceeded
 
 from src.workers.knowledge_worker.celery_app import app
 from src.infra.utils.logger import get_logger
-from src.infra.utils.database import get_org_session
+from src.api.dependencies.organisation_dependencies import acquire_org_session
 from src.domain.models.organisation_tables.knowledge_models import (
     OrganisationSource,
     OrganisationSourceStatus,
@@ -47,7 +47,7 @@ def _get_status_str(status_enum):
 def document_extraction(self, organisation_id: str, source_id: str):  # pragma: no cover
     """Heavy extraction task (PDF/DOC etc.)."""
     logger.info(f"Starting document extraction for source {source_id} in org {organisation_id}")
-    session_gen = get_org_session(organisation_id)
+    session_gen = acquire_org_session(organisation_id)
     session = next(session_gen)
     storage = AzureOrganisationBlobStorage(organisation_id=organisation_id)
     temp_file_path = None
@@ -90,10 +90,26 @@ def document_extraction(self, organisation_id: str, source_id: str):  # pragma: 
             logger.error(f"No MIME type found for source {source_id}")
             source.status = OrganisationSourceStatus.FAILED
             source.error_message = "No MIME type specified"
-            job.status = JobStatus.FAILED
+            if job:
+                job.status = JobStatus.FAILED
+                session.add(job)
             session.add(source)
-            session.add(job)
             session.commit()
+            try:
+                publish_source_status(
+                    organisation_id,
+                    KnowledgeSourceEventUpdate(
+                        source_id=str(source.source_id),
+                        status=_get_status_str(source.status),
+                        updated_at=source.updated_at.isoformat() if source.updated_at else None,
+                        error_message=source.error_message,
+                        progress=None,
+                        thumbnail_medium_url=None,
+                        thumbnail_small_url=None,
+                    ),
+                )
+            except Exception as e:
+                logger.warning(f"Failed to publish status for missing mimetype: {e}")
             return
 
         # Check if parser is available for this MIME type
@@ -102,10 +118,26 @@ def document_extraction(self, organisation_id: str, source_id: str):  # pragma: 
             logger.warning(f"No parser available for MIME type {mimetype}")
             source.status = OrganisationSourceStatus.FAILED
             source.error_message = f"Unsupported document type: {mimetype}"
-            job.status = JobStatus.FAILED
+            if job:
+                job.status = JobStatus.FAILED
+                session.add(job)
             session.add(source)
-            session.add(job)
             session.commit()
+            try:
+                publish_source_status(
+                    organisation_id,
+                    KnowledgeSourceEventUpdate(
+                        source_id=str(source.source_id),
+                        status=_get_status_str(source.status),
+                        updated_at=source.updated_at.isoformat() if source.updated_at else None,
+                        error_message=source.error_message,
+                        progress=None,
+                        thumbnail_medium_url=None,
+                        thumbnail_small_url=None,
+                    ),
+                )
+            except Exception as e:
+                logger.warning(f"Failed to publish status for unsupported mimetype: {e}")
             return
 
         # Download the file from storage
@@ -113,10 +145,26 @@ def document_extraction(self, organisation_id: str, source_id: str):  # pragma: 
             logger.error(f"No storage path found for source {source_id}")
             source.status = OrganisationSourceStatus.FAILED
             source.error_message = "No storage path found"
-            job.status = JobStatus.FAILED
+            if job:
+                job.status = JobStatus.FAILED
+                session.add(job)
             session.add(source)
-            session.add(job)
             session.commit()
+            try:
+                publish_source_status(
+                    organisation_id,
+                    KnowledgeSourceEventUpdate(
+                        source_id=str(source.source_id),
+                        status=_get_status_str(source.status),
+                        updated_at=source.updated_at.isoformat() if source.updated_at else None,
+                        error_message=source.error_message,
+                        progress=None,
+                        thumbnail_medium_url=None,
+                        thumbnail_small_url=None,
+                    ),
+                )
+            except Exception as e:
+                logger.warning(f"Failed to publish status for missing storage path: {e}")
             return
 
         # Create a temporary file to store the downloaded content
@@ -149,10 +197,26 @@ def document_extraction(self, organisation_id: str, source_id: str):  # pragma: 
             logger.error(f"No content extracted from document {source_id}")
             source.status = OrganisationSourceStatus.FAILED
             source.error_message = "Failed to extract content from document"
-            job.status = JobStatus.FAILED
+            if job:
+                job.status = JobStatus.FAILED
+                session.add(job)
             session.add(source)
-            session.add(job)
             session.commit()
+            try:
+                publish_source_status(
+                    organisation_id,
+                    KnowledgeSourceEventUpdate(
+                        source_id=str(source.source_id),
+                        status=_get_status_str(source.status),
+                        updated_at=source.updated_at.isoformat() if source.updated_at else None,
+                        error_message=source.error_message,
+                        progress=None,
+                        thumbnail_medium_url=None,
+                        thumbnail_small_url=None,
+                    ),
+                )
+            except Exception as e:
+                logger.warning(f"Failed to publish status for empty parse: {e}")
             return
 
         logger.info(f"Successfully parsed document {source_id}, extracted {len(parsed_documents)} chunks")
@@ -167,13 +231,38 @@ def document_extraction(self, organisation_id: str, source_id: str):  # pragma: 
         stored_ids = document_store.store_documents(parsed_documents, source_id, str(source.user_id) if source and source.user_id else None)
         
         if not stored_ids:
-            logger.error(f"Failed to store parsed documents for source {source_id}")
-            source.status = OrganisationSourceStatus.FAILED
-            source.error_message = "Failed to store parsed document content"
-            job.status = JobStatus.FAILED
+            # Distinguish between 'parsed but duplicates' and true failure based on parsed_documents presence
+            if parsed_documents:
+                logger.warning(f"No new unique document chunks stored for source {source_id} (all duplicates)")
+                source.status = OrganisationSourceStatus.COMPLETED
+                source.error_message = None
+                if job:
+                    job.status = JobStatus.COMPLETED
+                    session.add(job)
+            else:
+                logger.error(f"Failed to store parsed documents for source {source_id}")
+                source.status = OrganisationSourceStatus.FAILED
+                source.error_message = "Failed to store parsed document content"
+                if job:
+                    job.status = JobStatus.FAILED
+                    session.add(job)
             session.add(source)
-            session.add(job)
             session.commit()
+            try:
+                publish_source_status(
+                    organisation_id,
+                    KnowledgeSourceEventUpdate(
+                        source_id=str(source.source_id),
+                        status=_get_status_str(source.status),
+                        updated_at=source.updated_at.isoformat() if source.updated_at else None,
+                        error_message=source.error_message,
+                        progress=100 if source.status == OrganisationSourceStatus.COMPLETED else None,
+                        thumbnail_medium_url=None,
+                        thumbnail_small_url=None,
+                    ),
+                )
+            except Exception as e:
+                logger.warning(f"Failed to publish status for zero stored docs: {e}")
             return
 
         logger.info(f"Successfully stored {len(stored_ids)} document chunks for source {source_id}")
@@ -190,13 +279,13 @@ def document_extraction(self, organisation_id: str, source_id: str):  # pragma: 
             status=_get_status_str(source.status),
             updated_at=source.updated_at.isoformat() if source.updated_at else None,
             error_message=source.error_message,
-            progress=None,
+            progress=100,
             thumbnail_medium_url=None,
             thumbnail_small_url=None,
         )
 
         publish_source_status(organisation_id, publish_event)
-        logger.info("Published source status update", extra={"event": publish_event})
+        logger.info("Published source status update (completed)", extra={"event": publish_event})
 
     except (SoftTimeLimitExceeded, TimeLimitExceeded) as e:
         logger.error(f"Document extraction timed out for source {source_id}: {str(e)}")

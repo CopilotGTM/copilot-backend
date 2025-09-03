@@ -42,12 +42,19 @@ class DocumentStore:
             
             for doc_data in documents:
                 try:
-                    # Create OrganisationDocument instance
-                    # Do NOT set document_id; let SQLModel/DB generate a UUID
-                    # Determine uploader_user_id from param or doc_data/meta_data fallback
+                    # Create OrganisationDocument instance only if content_hash is unique
                     uid = uploader_user_id
                     if not uid and isinstance(doc_data, dict):
                         uid = doc_data.get('uploader_user_id') or doc_data.get('meta_data', {}).get('user_id')
+                    
+                    computed_hash = doc_data.get('content_hash', self._generate_content_hash(doc_data.get('content', '')))
+                    
+                    # Check if content_hash already exists to avoid UniqueViolation
+                    existing = session.query(OrganisationDocument).filter_by(content_hash=computed_hash).first()
+                    if existing:
+                        logger.warning(f"Skipping duplicate document with content_hash={computed_hash}")
+                        continue
+
                     doc = OrganisationDocument(
                         source_id=UUID(source_id),
                         uploader_user_id=UUID(uid) if uid else None,
@@ -57,12 +64,12 @@ class DocumentStore:
                         filters=doc_data.get('filters', {}),
                         embedding=doc_data.get('embedding', []),
                         usage=doc_data.get('usage', {}),
-                        content_hash=doc_data.get('content_hash', self._generate_content_hash(doc_data.get('content', '')))
+                        content_hash=computed_hash
                     )
                     
                     session.add(doc)
                     stored_ids.append(str(doc.document_id))
-                    logger.debug(f"Added document {doc.document_id} to session")
+                    logger.debug(f"Added document {doc.document_id} to session with content_hash={computed_hash}")
                     
                 except Exception as e:
                     logger.error(f"Error creating document: {str(e)}")

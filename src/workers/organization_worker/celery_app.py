@@ -1,5 +1,11 @@
 import os
 from dotenv import load_dotenv
+import os
+
+# Set minimal DB pool settings for worker process
+os.environ["MAX_TENANT_ENGINES"] = "1"
+os.environ["TENANT_POOL_MULTIPLIER"] = "1.0"
+
 from src.workers.base.celery_base import create_celery_app
 from src.workers.organization_worker.config import OrganizationWorkerConfig
 from celery.signals import task_received, task_prerun, task_postrun, task_failure

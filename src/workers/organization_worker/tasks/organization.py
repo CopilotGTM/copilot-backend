@@ -2,9 +2,7 @@ import os
 from dotenv import load_dotenv
 from src.workers.organization_worker.celery_app import app
 from src.service.orgnisation.organization_management import organization_management_service
-from src.infra.utils.database import get_master_engine
-from sqlalchemy import text
-from sqlmodel import Session
+from src.infra.database.factory import get_sync_provider
 from uuid import UUID
 from typing import Dict, Any
 from src.infra.utils.logger import get_logger
@@ -22,12 +20,10 @@ def create_organization_task(self, admin_id: str, organisation_name: str, org_de
     logger.info(f"Creating organization: {organisation_name} for admin: {admin_id}")
 
     try:
-        with Session(get_master_engine(echo=False)) as session:
-            try:
-                session.execute(text('RESET ROLE'))
-                session.execute(text('SET search_path TO public'))
-            except Exception:
-                pass
+        provider = get_sync_provider()
+        # Use master_session from new provider abstraction (commits/rollbacks managed centrally)
+        with provider.master_session() as session:  # type: ignore
+            # Role & search_path now centrally managed by provider; no manual resets needed.
             result = organization_management_service.create_organization(
                 admin_id=UUID(admin_id),
                 organisation_name=organisation_name,
@@ -35,9 +31,9 @@ def create_organization_task(self, admin_id: str, organisation_name: str, org_de
                 **org_details,
             )
             organization = result["organization"]
-            
+
             logger.info(f"Successfully created organization: {organization.organisation_id}")
-            
+
             return {
                 "organisation_id": str(organization.organisation_id),
                 "organisation_name": organization.organisation_name,
