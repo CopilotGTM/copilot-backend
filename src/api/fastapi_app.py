@@ -1,22 +1,23 @@
 # app_layer/utils/fastapi_app.py
 
 import os
+from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 load_dotenv(BASE_DIR / ".env", override=True)
 
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 from socketio import ASGIApp
 
 from ..api.events.socket_app import sio
 from ..infra.utils.logger import get_logger
-from ..infra.utils.app_state import fastapp
 from ..infra.messaging.redis_client import get_redis_client
 
-from src.api.routers.healthcheck import healthcheck_router
+from src.api.routers.healthcheck import healthcheck_router, public_health_router
 from src.api.routers.chat_handler import chat_router
 from src.api.routers.chat.sessions_handler import router as chat_sessions_router
 from src.api.routers.chat.messages_handler import router as chat_messages_router
@@ -33,6 +34,9 @@ from src.api.routers.admin.admin_auth_handler import router as admin_auth_router
 from src.api.routers.admin.users_handler import router as admin_user_router
 from src.api.routers.users.auth_handler import router as user_auth_router
 
+# Import secret maintenance system
+from src.infra.secrets.maintenance import maintenance_manager
+
 # from src.api.events import chat_message_handler
 # from src.api.events import connect_handler
 # from src.api.events.technical_deck import transcript_summary_handler
@@ -44,9 +48,40 @@ from src.api.events import redis_subscriber
 logger = get_logger()
 
 
-def create_fastapi_app():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan event handler for FastAPI application."""
+    # Startup
+    logger.info("Starting application services...")
+    
+    # Start secret maintenance manager
+    try:
+        await maintenance_manager.start()
+        logger.info("Secret maintenance manager started successfully")
+    except Exception as e:
+        logger.error(f"Failed to start secret maintenance manager: {e}")
+        # Don't fail startup for this, but log the error
+    
+    yield
+    
+    # Shutdown
+    logger.info("Shutting down application services...")
+    
+    # Stop secret maintenance manager
+    try:
+        await maintenance_manager.stop()
+        logger.info("Secret maintenance manager stopped successfully")
+    except Exception as e:
+        logger.error(f"Error stopping secret maintenance manager: {e}")
 
+
+def create_fastapi_app():
+    """Create and configure the FastAPI application."""
+    
     logger.info("Setting Up App Config")
+    
+    # Create FastAPI app with lifespan handler
+    fastapp = FastAPI(lifespan=lifespan)
 
     origins = os.getenv("ALLOW_ORIGIN_URL_AUTH", "*").split(",")
     fastapp.add_middleware(
@@ -79,7 +114,11 @@ def create_fastapi_app():
     fastapp.state.APPLICATION_REGION = os.getenv("APPLICATION_REGION")
 
     # Include routers here
-    fastapp.include_router(healthcheck_router, tags=["healthcheck"])
+    # Public health endpoint (safe for external access)
+    fastapp.include_router(public_health_router, tags=["health"])
+    
+    # Internal health endpoints (restricted access)
+    fastapp.include_router(healthcheck_router, tags=["internal", "healthcheck"])
     # fastapp.include_router(chat_router, prefix="/chats", tags=["chats"])
     fastapp.include_router(upload_router, prefix="/chats/upload", tags=["uploads"])
     fastapp.include_router(attachment_access_router, prefix="/chats", tags=["downloads"])  # /chats/attachment/{id}/download

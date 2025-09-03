@@ -6,6 +6,11 @@ metadata:
   labels:
     {{- include "webservice.labels" . | nindent 4 }}
   annotations:
+    # Block access to internal health endpoints from public ingress
+    nginx.ingress.kubernetes.io/server-snippet: |
+      location /internal {
+        return 403 "Access denied: Internal endpoints not available via public ingress";
+      }
     {{- toYaml .Values.ingress.annotations | nindent 4 }}
 spec:
   ingressClassName: {{ .Values.ingress.className }}

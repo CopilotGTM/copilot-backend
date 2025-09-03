@@ -30,7 +30,10 @@ from src.infra.utils.resource_naming import (
     get_role_name,
     get_schema_name,
 )
+from src.infra.utils.logger import get_logger
 import uuid
+
+logger = get_logger("sync_db_provider")
 
 class SyncSqlAlchemyProvider(SyncDatabaseProvider):
     def __init__(self, *, tenant_pool_max: int = 100, tenant_pool_multiplier: float = 5.0):
@@ -80,48 +83,100 @@ class SyncSqlAlchemyProvider(SyncDatabaseProvider):
             org_uuid = uuid.UUID(org_id)
         except Exception:
             raise ValueError(f"Invalid organisation id: {org_id}")
+        
         role_name = get_role_name(org_uuid)
         secret_name = get_key_vault_secret_name(org_uuid)
-        # Fetch tenant password (async provider behind sync facade)
-        # secrets_manager.get is async; invoke it safely in sync context
+        
+        logger.debug(f"Attempting to get tenant engine for org_id={org_id}, secret_name={secret_name}")
+        
+        # Fetch tenant password with enhanced error handling
         password = None
         try:
+            # Check if we're in an async context
             loop = asyncio.get_running_loop()
         except RuntimeError:
             loop = None
+        
+        # Define the secret fetching function with improved async handling
+        def fetch_secret_with_fallback():
+            """Fetch secret handling async/sync boundary properly."""
+            try:
+                # Always create a new event loop for secret fetching
+                # This avoids issues with closed event loops
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                
+                try:
+                    # First try normal get
+                    password = loop.run_until_complete(secrets_manager.get(secret_name))
+                    if password is not None:
+                        return password
+                    
+                    # If that fails, try get_with_fallback for critical database operations
+                    logger.warning(f"Normal secret fetch failed for '{secret_name}', trying fallback")
+                    password = loop.run_until_complete(
+                        secrets_manager.get_with_fallback(secret_name, fallback_ttl=7200)  # 2 hours fallback
+                    )
+                    
+                    if password is not None:
+                        logger.info(f"Successfully retrieved secret '{secret_name}' using fallback")
+                        return password
+                    
+                    return None
+                    
+                except Exception as e:
+                    logger.error(f"Error in event loop for secret '{secret_name}': {e}")
+                    return None
+                finally:
+                    try:
+                        # Clean up the event loop
+                        loop.close()
+                    except Exception:
+                        pass
+                    
+            except Exception as e:
+                logger.error(f"Failed to create event loop for secret '{secret_name}': {e}")
+                return None
+        
         if loop and loop.is_running():
-            # Running inside async loop — execute the async call in a new thread
+            # Running inside async loop — use thread pool but with better isolation
             from concurrent.futures import ThreadPoolExecutor
             with ThreadPoolExecutor(max_workers=1) as executor:
-                def fetch_secret():
-                    try:
-                        return asyncio.run(secrets_manager.get(secret_name))  # type: ignore
-                    except RuntimeError as e:
-                        if "Event loop is closed" in str(e):
-                            new_loop = asyncio.new_event_loop()
-                            asyncio.set_event_loop(new_loop)
-                            try:
-                                return new_loop.run_until_complete(secrets_manager.get(secret_name))  # type: ignore
-                            finally:
-                                new_loop.close()
-                        raise
-                future = executor.submit(fetch_secret)
-                password = future.result()
+                try:
+                    future = executor.submit(fetch_secret_with_fallback)
+                    password = future.result(timeout=30)  # 30 second timeout
+                except Exception as e:
+                    logger.error(f"Thread pool execution failed for secret '{secret_name}': {e}")
+                    password = None
         else:
-            try:
-                password = asyncio.run(secrets_manager.get(secret_name))  # type: ignore
-            except RuntimeError as e:
-                if "Event loop is closed" in str(e):
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    try:
-                        password = loop.run_until_complete(secrets_manager.get(secret_name))  # type: ignore
-                    finally:
-                        loop.close()
-                else:
-                    raise
+            # Not in async context, safe to run directly
+            password = fetch_secret_with_fallback()
+        
         if password is None:
-            raise RuntimeError(f"Secret '{secret_name}' not found for tenant {org_uuid}")
+            # Enhanced error message with troubleshooting info
+            metrics = secrets_manager.get_metrics()
+            health = secrets_manager.health_check()
+            
+            error_msg = (
+                f"Secret '{secret_name}' not found for tenant {org_uuid}. "
+                f"Secret manager health: {health['healthy']}, "
+                f"circuit breaker open: {health['circuit_breaker_open']}, "
+                f"consecutive failures: {health['consecutive_failures']}, "
+                f"cache hit rate: {metrics['cache_hit_rate']:.2%}"
+            )
+            logger.error(error_msg)
+            
+            # Check if this is a persistent issue and suggest actions
+            if health['consecutive_failures'] >= 3:
+                logger.error(
+                    f"Multiple consecutive failures detected for secrets. "
+                    f"This may indicate an Azure Key Vault connectivity issue. "
+                    f"Consider checking network connectivity and authentication."
+                )
+            
+            raise RuntimeError(error_msg)
+        
+        logger.info(f"Successfully retrieved tenant password for org_id={org_id}")
         return self._tenant_pools.get_or_create(role_name, password)
 
     # ------------------------------------------------------------------

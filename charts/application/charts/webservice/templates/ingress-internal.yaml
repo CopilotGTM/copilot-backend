@@ -1,0 +1,36 @@
+{{- if .Values.internalIngress.enabled -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "webservice.fullname" . }}-internal
+  labels:
+    {{- include "webservice.labels" . | nindent 4 }}
+    app.kubernetes.io/component: internal-health
+  annotations:
+    # Restrict to cluster-internal access only
+    nginx.ingress.kubernetes.io/whitelist-source-range: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+    nginx.ingress.kubernetes.io/server-snippet: |
+      location /internal {
+        allow 10.0.0.0/8;
+        allow 172.16.0.0/12;
+        allow 192.168.0.0/16;
+        allow 127.0.0.1;
+        deny all;
+      }
+    {{- toYaml .Values.internalIngress.annotations | nindent 4 }}
+spec:
+  ingressClassName: {{ .Values.internalIngress.className }}
+  rules:
+  {{- range .Values.internalIngress.hosts }}
+  - host: {{ .host | quote }}
+    http:
+      paths:
+      - path: /internal
+        pathType: Prefix
+        backend:
+          service:
+            name: {{ include "webservice.fullname" $ }}
+            port:
+              number: {{ $.Values.service.port }}
+  {{- end }}
+{{- end }}
