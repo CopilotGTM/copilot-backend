@@ -40,7 +40,6 @@ wikipedia==1.4.0
 duckduckgo-search~=8.1.1
 PyMuPDF==1.26.3
 docling~=2.47.1
-torch==2.8.0+cpu
 transformers~=4.55.4
 # Admin authentication and email
 resend==2.11.0
