@@ -7,6 +7,11 @@ metadata:
     {{- include "worker.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: {{ .Values.updateStrategy.maxSurge | default 1 }}
+      maxUnavailable: {{ .Values.updateStrategy.maxUnavailable | default 0 }}
   selector:
     matchLabels:
       {{- include "worker.selectorLabels" . | nindent 6 }}
@@ -21,6 +26,9 @@ spec:
       {{- if or .Values.serviceAccount.create .Values.serviceAccount.name }}
       serviceAccountName: {{ .Values.serviceAccount.name | default (include "worker.fullname" .) }}
       {{- end }}
+      {{- if .Values.shutdown.enabled }}
+      terminationGracePeriodSeconds: {{ .Values.shutdown.gracefulPeriodSeconds | default 600 }}
+      {{- end }}
       containers:
         - name: {{ .Chart.Name }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -32,6 +40,8 @@ spec:
             - "src.workers.knowledge_worker.celery_app"
             {{- else if contains "organization" .Values.config.queueName }}
             - "src.workers.organization_worker.celery_app"
+            {{- else if contains "attachments" .Values.config.queueName }}
+            - "src.workers.chat_worker.celery_app"
             {{- else if contains "chat" .Values.config.queueName }}
             - "src.workers.chat_worker.celery_app"
             {{- else if contains "content" .Values.config.queueName }}
@@ -65,6 +75,40 @@ spec:
             - name: AZURE_TENANT_ID
               value: {{ .Values.workloadIdentity.tenantId | quote }}
             {{- end }}
+            {{- if .Values.config.gracefulTimeout }}
+            - name: CELERYD_WORKER_SHUTDOWN_TIMEOUT
+              value: {{ .Values.config.gracefulTimeout | quote }}
+            {{- end }}
+          {{- else if .Values.config.gracefulTimeout }}
+          env:
+            - name: CELERYD_WORKER_SHUTDOWN_TIMEOUT
+              value: {{ .Values.config.gracefulTimeout | quote }}
+          {{- end }}
+          {{- if .Values.shutdown.enabled }}
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - >-
+                    echo "[preStop] Draining Celery worker: stopping consumer for queue {{ .Values.config.queueName }}";
+                    celery -A \
+                    {{- if contains "knowledge" .Values.config.queueName }} src.workers.knowledge_worker.celery_app \
+                    {{- else if contains "organization" .Values.config.queueName }} src.workers.organization_worker.celery_app \
+                    {{- else if contains "attachments" .Values.config.queueName }} src.workers.chat_worker.celery_app \
+                    {{- else if contains "chat" .Values.config.queueName }} src.workers.chat_worker.celery_app \
+                    {{- else if contains "content" .Values.config.queueName }} src.workers.content_worker.celery_app \
+                    {{- else }} src.workers.knowledge_worker.celery_app \
+                    {{- end }} control cancel_consumer {{ .Values.config.queueName }} || true;
+                    {{- if .Values.shutdown.remoteShutdown }} echo "[preStop] Optional remote shutdown after drain"; celery -A \
+                    {{- if contains "knowledge" .Values.config.queueName }} src.workers.knowledge_worker.celery_app \
+                    {{- else if contains "organization" .Values.config.queueName }} src.workers.organization_worker.celery_app \
+                    {{- else if contains "attachments" .Values.config.queueName }} src.workers.chat_worker.celery_app \
+                    {{- else if contains "chat" .Values.config.queueName }} src.workers.chat_worker.celery_app \
+                    {{- else if contains "content" .Values.config.queueName }} src.workers.content_worker.celery_app \
+                    {{- else }} src.workers.knowledge_worker.celery_app \
+                    {{- end }} control shutdown || true; {{- end }}
           {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}

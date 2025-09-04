@@ -30,6 +30,22 @@ service:
   type: ClusterIP
   port: 80
 
+# Internal service for health checks (cluster-internal only)
+# Note: Uses same port as main service since app runs on single port 80
+internalService:
+  type: ClusterIP
+  port: 80  # Same port as application (80) - app serves both public and internal endpoints
+  annotations:
+    # Service mesh or monitoring tool annotations can go here
+    prometheus.io/scrape: "true"
+    prometheus.io/path: "/internal/health/detailed"
+    prometheus.io/port: "80"
+
+# Network policy configuration for enhanced security
+networkPolicy:
+  enabled: true
+  monitoringNamespace: "monitoring"  # Namespace where monitoring tools run
+
 ingress:
   enabled: true
   className: "nginx"
@@ -49,6 +65,16 @@ ingress:
     - hosts:
         - "devapi.copilotgtm.com"
       secretName: "devapi-tls"
+
+# Internal ingress for health checks and monitoring (cluster-internal only)
+internalIngress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    # Additional security headers for internal endpoints  
+    nginx.ingress.kubernetes.io/rewrite-target: /$1
+  hosts:
+    - host: "internal.copilotgtm.local"  # Use internal cluster DNS
 
 autoscaling:
   enabled: false

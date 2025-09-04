@@ -5,6 +5,10 @@ enabled: false
 
 replicaCount: 1
 
+# Optional override names (added to avoid 'Value not defined' lint errors when unset)
+nameOverride: ""
+fullnameOverride: ""
+
 image:
   repository: "" # Must be overridden
   tag: "latest"
@@ -17,6 +21,9 @@ config:
   # Optional Celery execution tuning
   concurrency: null
   pool: null
+  # Time (seconds) Celery will wait for running tasks to finish after SIGTERM before cold shutdown.
+  # Set lower than shutdown.gracefulPeriodSeconds (leave null to use Celery default ~10s -> may be too short for long tasks)
+  gracefulTimeout: 540
 
 global:
   secretName: "" # Will be populated by parent chart
@@ -28,6 +35,28 @@ resources:
   requests:
     cpu: 128m
     memory: 256Mi
+
+# Rolling update strategy for the worker Deployment
+updateStrategy:
+  maxSurge: 1        # Allow one extra pod above desired during rollout so new workers start before old stop
+  maxUnavailable: 0  # Ensure we never reduce available workers during rollout
+
+# Graceful shutdown / draining behaviour
+# When enabled the pod will:
+# 1. Run a preStop hook that cancels consuming from the queue so no new tasks are taken.
+# 2. Rely on Kubernetes sending SIGTERM afterwards; Celery will finish the active task.
+# 3. After terminationGracePeriodSeconds (hard limit) Kubernetes will SIGKILL if still running.
+shutdown:
+  enabled: true
+  gracefulPeriodSeconds: 600   # Hard time limit for a pod to finish an in‑flight task before force kill
+  cancelConsumer: true         # Issue celery control cancel_consumer for the queue
+  # (Advanced) If you want to attempt remote shutdown after draining, set to true. Off by default to avoid aborting tasks.
+  remoteShutdown: false
+
+# Pod Disruption Budget to avoid all workers being evicted simultaneously (voluntary disruptions)
+pdb:
+  enabled: true
+  minAvailable: 1
 
 # ServiceAccount configuration (for workload identity / RBAC)
 serviceAccount:

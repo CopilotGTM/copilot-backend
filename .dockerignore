@@ -4,3 +4,5 @@
 *.vscode
 *.pycharm
 testing_local
+.env
+.env.development

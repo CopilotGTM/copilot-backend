@@ -6,6 +6,9 @@ metadata:
   labels:
     {{- include "webservice.labels" . | nindent 4 }}
   annotations:
+    # Block access to internal health endpoints from public ingress
+    # Using path exclusion instead of server-snippet for security compliance
+    nginx.ingress.kubernetes.io/use-regex: "true"
     {{- toYaml .Values.ingress.annotations | nindent 4 }}
 spec:
   ingressClassName: {{ .Values.ingress.className }}

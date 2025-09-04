@@ -106,6 +106,10 @@ stages:
                       --set knowledge-upload-worker.image.repository="$ACR_LOGIN_SERVER/copilot-backend" \
                       --set knowledge-upload-worker.image.tag="$BUILD_BUILDID" \
                       --set knowledge-upload-worker.autoscaling.enabled=true \
+                      --set chat-worker.image.repository="$ACR_LOGIN_SERVER/copilot-backend" \
+                      --set chat-worker.image.tag="$BUILD_BUILDID" \
+                      --set organization-worker.image.repository="$ACR_LOGIN_SERVER/copilot-backend" \
+                      --set organization-worker.image.tag="$BUILD_BUILDID" \
                       --set api.secrets.DATABASE_HOST="$(DATABASE_HOST)" \
                       --set api.secrets.DATABASE_USER="$(DATABASE_USER)" \
                       --set api.secrets.DATABASE_PORT="$(DATABASE_PORT)" \
@@ -198,6 +202,22 @@ stages:
                     echo "Checking worker deployments..."
                     kubectl get deployments -n copilotgtm | grep knowledge || echo "No knowledge workers deployed yet"
                   displayName: List AKS Deployments/Pods and Workers
+
+                - script: |
+                    # Force restart worker pods to ensure they pick up latest values
+                    echo "Restarting worker deployments to ensure latest values are applied..."
+                    kubectl rollout restart deployment copilot-backend-knowledge-extract-worker -n copilotgtm
+                    kubectl rollout restart deployment copilot-backend-knowledge-upload-worker -n copilotgtm
+                    kubectl rollout restart deployment copilot-backend-chat-worker -n copilotgtm
+                    kubectl rollout restart deployment copilot-backend-organization-worker -n copilotgtm
+                    
+                    # Wait for rollouts to complete
+                    echo "Waiting for rollouts to complete..."
+                    kubectl rollout status deployment copilot-backend-knowledge-extract-worker -n copilotgtm --timeout=300s
+                    kubectl rollout status deployment copilot-backend-knowledge-upload-worker -n copilotgtm --timeout=300s
+                    kubectl rollout status deployment copilot-backend-chat-worker -n copilotgtm --timeout=300s
+                    kubectl rollout status deployment copilot-backend-organization-worker -n copilotgtm --timeout=300s
+                  displayName: Force restart workers to pick up latest values
 
                 - task: Bash@3
                   displayName: Rollback on Helm Deploy Failure

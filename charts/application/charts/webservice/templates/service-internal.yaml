@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "webservice.fullname" . }}-internal
+  labels:
+    {{- include "webservice.labels" . | nindent 4 }}
+    app.kubernetes.io/component: internal-health
+  annotations:
+    # Mark as internal service for monitoring
+    service.beta.kubernetes.io/internal-load-balancer: "true"
+    {{- if .Values.internalService.annotations }}
+    {{- toYaml .Values.internalService.annotations | nindent 4 }}
+    {{- end }}
+spec:
+  type: {{ .Values.internalService.type }}
+  ports:
+    - port: {{ .Values.internalService.port }}
+      targetPort: 80
+      protocol: TCP
+      name: internal-health
+  selector:
+    {{- include "webservice.selectorLabels" . | nindent 4 }}

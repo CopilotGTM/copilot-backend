@@ -1,8 +1,36 @@
-# Scripts
+# Scripts Directory
 
-This directory contains various scripts for automating tasks related to database migrations, application startup, and administration.
+This directory contains production-ready utility scripts organized by purpose.
 
-## Available Scripts
+## Folder Structure
+
+### 📊 `/monitoring/`
+Production monitoring and health check scripts
+- `monitor_secrets.py` - Secret management system health monitor
+- Used by: Operations, DevOps, SRE teams
+
+### 🛡️ `/security/`
+Security validation and compliance tools
+- `validate_health_security.py` - Health endpoint security validation
+- Used by: Security teams, CI/CD pipelines
+
+### 🚀 `/deployment/`
+Application deployment and startup scripts
+- `local-deploy.ps1` - Local development deployment
+- Used by: DevOps, Developers
+
+### 🔧 `/maintenance/`
+Routine maintenance and cleanup scripts
+- For scheduled maintenance tasks
+- Used by: Operations teams
+
+### 👑 `/admin/`
+Administrative and super-admin scripts
+- `deploy_with_super_admin.py`
+- `init_super_admin.py`
+- Used by: System administrators
+
+## Available Scripts (Root Level)
 
 ### `startup.sh`
 
