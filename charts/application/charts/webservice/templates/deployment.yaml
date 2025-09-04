@@ -20,6 +20,7 @@ spec:
         azure.workload.identity/use: "true"
         {{- end }}
     spec:
+      terminationGracePeriodSeconds: 60
       serviceAccountName: {{ .Values.serviceAccount.name }}
       containers:
         - name: {{ .Chart.Name }}
@@ -44,9 +45,30 @@ spec:
               value: {{ .Values.workloadIdentity.tenantId | quote }}
             {{- end }}
             {{- end }}
+            # Graceful shutdown settings
+            - name: WORKER_CONNECTIONS_CLOSE_WAIT
+              value: "10"
+            - name: KEEP_ALIVE_TIMEOUT
+              value: "75"
           envFrom:
             - secretRef:
                 name: {{ include "webservice.fullname" . }}-secret
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
           resources:
             requests:
               memory: {{ .Values.resources.requests.memory | quote }}
@@ -54,3 +76,14 @@ spec:
             limits:
               memory: {{ .Values.resources.limits.memory | quote }}
               cpu: {{ .Values.resources.limits.cpu | quote }}
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - |
+                    echo "Gracefully shutting down FastAPI application..."
+                    # Send SIGTERM to uvicorn process and wait
+                    pkill -TERM -f "uvicorn\|fastapi" || true
+                    sleep 15

@@ -139,6 +139,8 @@ class AzureKeyVaultSecretProvider(SecretProvider):
             return "not_found", False
         elif isinstance(exception, ClientAuthenticationError):
             return "auth_error", False  # Don't retry auth errors immediately
+        elif isinstance(exception, asyncio.TimeoutError):
+            return "timeout", True
         elif isinstance(exception, ServiceRequestError):
             return "network_error", True
         elif isinstance(exception, HttpResponseError):
@@ -175,7 +177,11 @@ class AzureKeyVaultSecretProvider(SecretProvider):
 
         try:
             logger.debug(f"Fetching secret '{name}' from Azure Key Vault")
-            secret = await self._client.get_secret(name)
+            # Bound the network call to prevent indefinite stalls
+            secret = await asyncio.wait_for(
+                self._client.get_secret(name),
+                timeout=max(1, int(secret_manager_config.SECRET_GET_TIMEOUT_SEC)),
+            )
             logger.debug(f"Successfully retrieved secret '{name}'")
             return secret.value
             
@@ -205,7 +211,7 @@ class AzureKeyVaultSecretProvider(SecretProvider):
                     self._client = None
                 
                 return None
-            elif error_category in ["network_error", "rate_limit"]:
+            elif error_category in ["network_error", "rate_limit", "timeout"]:
                 logger.warning(f"Transient error fetching secret '{name}' ({error_category}): {e}")
                 # Re-raise transient errors so SecretsManager can retry
                 raise
