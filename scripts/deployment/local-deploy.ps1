@@ -309,6 +309,21 @@ function Deploy-WithHelm {
     & helm @helmArgs
 
     Write-Success "Helm deployment completed"
+    
+    # Force restart worker pods to ensure they pick up latest values
+    Write-Host "Restarting worker deployments to ensure latest values are applied..."
+    kubectl rollout restart deployment copilot-backend-knowledge-extract-worker -n $NAMESPACE
+    kubectl rollout restart deployment copilot-backend-knowledge-upload-worker -n $NAMESPACE
+    kubectl rollout restart deployment copilot-backend-chat-worker -n $NAMESPACE
+    kubectl rollout restart deployment copilot-backend-organization-worker -n $NAMESPACE
+    
+    Write-Host "Waiting for rollouts to complete..."
+    kubectl rollout status deployment copilot-backend-knowledge-extract-worker -n $NAMESPACE --timeout=300s
+    kubectl rollout status deployment copilot-backend-knowledge-upload-worker -n $NAMESPACE --timeout=300s
+    kubectl rollout status deployment copilot-backend-chat-worker -n $NAMESPACE --timeout=300s
+    kubectl rollout status deployment copilot-backend-organization-worker -n $NAMESPACE --timeout=300s
+    
+    Write-Success "Worker restarts completed"
 }
 
 function Test-DeploymentStatus {
