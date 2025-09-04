@@ -117,9 +117,18 @@ class TenantPoolManager:
             echo=False,
             pool_pre_ping=True,
             pool_recycle=database_config.POOL_RECYCLE_SEC,
+            pool_timeout=database_config.DATABASE_POOL_TIMEOUT_SEC,
             pool_size=pool_size,
             max_overflow=max_overflow,
-            connect_args={"sslmode": database_config.DATABASE_SSL_MODE},
+            connect_args={
+                "sslmode": database_config.DATABASE_SSL_MODE,
+                "connect_timeout": database_config.DATABASE_CONNECT_TIMEOUT_SEC,
+                "options": f"-c statement_timeout={database_config.DATABASE_STATEMENT_TIMEOUT_MS}",
+                "keepalives": 1,
+                "keepalives_idle": 30,
+                "keepalives_interval": 10,
+                "keepalives_count": 5,
+            },
         )
 
 __all__ = [

@@ -44,6 +44,13 @@ class DatabaseConfig:
     DATABASE_POOL_SIZE: int = int(os.getenv("DATABASE_POOL_SIZE", "10"))
     DATABASE_MAX_OVERFLOW: int = int(os.getenv("DATABASE_MAX_OVERFLOW", "20"))
 
+    # guard against hangs when DB unavailable
+    DATABASE_CONNECT_TIMEOUT_SEC: int = int(os.getenv("DATABASE_CONNECT_TIMEOUT_SEC", "10"))
+    DATABASE_POOL_TIMEOUT_SEC: int = int(os.getenv("DATABASE_POOL_TIMEOUT_SEC", "30"))
+
+    # default server-side statement timeout (ms). 0 disables.
+    DATABASE_STATEMENT_TIMEOUT_MS: int = int(os.getenv("DATABASE_STATEMENT_TIMEOUT_MS", "60000"))
+
 
 class AppConfig:
     """Application configuration"""
@@ -109,6 +116,8 @@ class SecretManagerConfig:
     """Configuration for Cloud Secret Manager"""
 
     AZURE_KEY_VAULT_URL: Optional[str] = os.getenv("AZURE_KEY_VAULT_URL")
+    # New: bound individual secret fetch duration to avoid event-loop stalls
+    SECRET_GET_TIMEOUT_SEC: int = int(os.getenv("SECRET_GET_TIMEOUT_SEC", "8"))
 
 
 class CloudInfraConfig:

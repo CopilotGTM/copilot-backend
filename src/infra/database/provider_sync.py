@@ -24,7 +24,8 @@ from sqlmodel import create_engine, Session as SQLModelSession
 from src.infra.database.interface import SyncDatabaseProvider
 from src.infra.database.pool_manager import TenantPoolManager
 from src.infra.config.configs import database_config
-from src.infra.secrets.manager import secrets_manager
+from src.infra.secrets.manager import secrets_manager, SecretsManager
+from src.infra.secrets.azure_key_vault import AzureKeyVaultSecretProvider
 from src.infra.utils.resource_naming import (
     get_key_vault_secret_name,
     get_role_name,
@@ -59,9 +60,21 @@ class SyncSqlAlchemyProvider(SyncDatabaseProvider):
                     echo=False,
                     pool_pre_ping=True,
                     pool_recycle=database_config.POOL_RECYCLE_SEC,
+                    pool_timeout=database_config.DATABASE_POOL_TIMEOUT_SEC,
                     pool_size=database_config.DATABASE_POOL_SIZE,
                     max_overflow=database_config.DATABASE_MAX_OVERFLOW,
-                    connect_args={"sslmode": database_config.DATABASE_SSL_MODE},
+                    connect_args={
+                        "sslmode": database_config.DATABASE_SSL_MODE,
+                        # Bound connection establishment time
+                        "connect_timeout": database_config.DATABASE_CONNECT_TIMEOUT_SEC,
+                        # Set server-side statement timeout for all sessions
+                        "options": f"-c statement_timeout={database_config.DATABASE_STATEMENT_TIMEOUT_MS}",
+                        # Enable TCP keepalives to detect dead peers faster
+                        "keepalives": 1,
+                        "keepalives_idle": 30,
+                        "keepalives_interval": 10,
+                        "keepalives_count": 5,
+                    },
                 )
                 # Use SQLModel Session for backward compatibility (.exec API)
                 self._SessionFactory = sessionmaker(bind=self._master_engine, expire_on_commit=False, class_=SQLModelSession)
@@ -91,6 +104,13 @@ class SyncSqlAlchemyProvider(SyncDatabaseProvider):
         
         # Fetch tenant password with enhanced error handling
         password = None
+        # Fast path: use fresh value from global cache to avoid cross-loop aio work
+        try:
+            cached_pw = secrets_manager.cache.get(secret_name)
+            if cached_pw is not None:
+                password = cached_pw
+        except Exception:
+            pass
         try:
             # Check if we're in an async context
             loop = asyncio.get_running_loop()
@@ -107,15 +127,18 @@ class SyncSqlAlchemyProvider(SyncDatabaseProvider):
                 asyncio.set_event_loop(loop)
                 
                 try:
+                    # Create isolated provider/manager bound to this loop
+                    provider = AzureKeyVaultSecretProvider()
+                    local_mgr = SecretsManager(provider=provider)
                     # First try normal get
-                    password = loop.run_until_complete(secrets_manager.get(secret_name))
+                    password = loop.run_until_complete(local_mgr.get(secret_name))
                     if password is not None:
                         return password
                     
                     # If that fails, try get_with_fallback for critical database operations
                     logger.warning(f"Normal secret fetch failed for '{secret_name}', trying fallback")
                     password = loop.run_until_complete(
-                        secrets_manager.get_with_fallback(secret_name, fallback_ttl=7200)  # 2 hours fallback
+                        local_mgr.get_with_fallback(secret_name, fallback_ttl=7200)  # 2 hours fallback
                     )
                     
                     if password is not None:
@@ -129,6 +152,11 @@ class SyncSqlAlchemyProvider(SyncDatabaseProvider):
                     return None
                 finally:
                     try:
+                        # Ensure provider resources are closed before loop teardown
+                        try:
+                            loop.run_until_complete(provider.close())
+                        except Exception:
+                            pass
                         # Clean up the event loop
                         loop.close()
                     except Exception:
@@ -138,7 +166,7 @@ class SyncSqlAlchemyProvider(SyncDatabaseProvider):
                 logger.error(f"Failed to create event loop for secret '{secret_name}': {e}")
                 return None
         
-        if loop and loop.is_running():
+        if password is None and loop and loop.is_running():
             # Running inside async loop — use thread pool but with better isolation
             from concurrent.futures import ThreadPoolExecutor
             with ThreadPoolExecutor(max_workers=1) as executor:
@@ -148,7 +176,7 @@ class SyncSqlAlchemyProvider(SyncDatabaseProvider):
                 except Exception as e:
                     logger.error(f"Thread pool execution failed for secret '{secret_name}': {e}")
                     password = None
-        else:
+        elif password is None:
             # Not in async context, safe to run directly
             password = fetch_secret_with_fallback()
         
@@ -176,6 +204,11 @@ class SyncSqlAlchemyProvider(SyncDatabaseProvider):
             
             raise RuntimeError(error_msg)
         
+        # Populate global cache for subsequent calls
+        try:
+            secrets_manager.cache.set(secret_name, password)
+        except Exception:
+            pass
         logger.info(f"Successfully retrieved tenant password for org_id={org_id}")
         return self._tenant_pools.get_or_create(role_name, password)
 
