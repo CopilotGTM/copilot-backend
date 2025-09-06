@@ -184,6 +184,28 @@ class ThumbnailConfig:
     ENABLE_PDF_PLACEHOLDER_FALLBACK: bool = os.getenv("ENABLE_PDF_PLACEHOLDER_FALLBACK", "false").lower() == "true"
 
 
+class PoolMonitorConfig:
+    """Defaults for DB pool monitor and enforcement.
+
+    These provide sensible base values so you don't need to set env vars.
+    Env vars still override when present.
+    """
+
+    # Tick interval in seconds
+    MONITOR_INTERVAL_SEC: float = float(os.getenv("DB_POOL_MONITOR_INTERVAL_SEC", "30"))
+
+    # App vs Worker max checkout age (seconds)
+    APP_MAX_CHECKOUT_SEC: int = int(os.getenv("APP_DB_CONN_MAX_CHECKOUT_SEC", "900"))  # 15 minutes
+    WORKER_MAX_CHECKOUT_SEC: int = int(os.getenv("WORKER_DB_CONN_MAX_CHECKOUT_SEC", "1200"))  # 20 minutes
+
+    # Force close behavior (recommended false; invalidate on check-in is safer)
+    APP_FORCE_CLOSE: bool = os.getenv("APP_DB_CONN_FORCE_CLOSE", "false").lower() == "true"
+    WORKER_FORCE_CLOSE: bool = os.getenv("WORKER_DB_CONN_FORCE_CLOSE", "false").lower() == "true"
+
+    # Optional discovery/warmup defaults
+    DISCOVER_MASTERS: bool = os.getenv("DB_POOL_MONITOR_DISCOVER_MASTERS", "true").lower() == "true"
+    WARMUP_MIN_IDLE: int = int(os.getenv("DB_POOL_MONITOR_WARMUP_MIN_IDLE", "0"))
+
 # Create config instances
 supabase_config = SupabaseConfig()
 database_config = DatabaseConfig()
@@ -198,6 +220,7 @@ cloud_infra_config = CloudInfraConfig()
 chat_file_upload_config = ChatFileUploadConfig()
 knowledge_file_upload_config = KnowledgeFileUploadConfig()
 thumbnail_config = ThumbnailConfig()
+pool_monitor_config = PoolMonitorConfig()
 
 
 class Config:

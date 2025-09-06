@@ -17,8 +17,9 @@ from ..api.events.socket_app import sio
 from ..infra.utils.logger import get_logger
 from ..infra.messaging.redis_client import get_redis_client
 
+from scripts.monitoring.db_pool_monitor import start_pool_monitor, stop_pool_monitor
+
 from src.api.routers.healthcheck import healthcheck_router, public_health_router
-from src.api.routers.chat_handler import chat_router
 from src.api.routers.chat.sessions_handler import router as chat_sessions_router
 from src.api.routers.chat.messages_handler import router as chat_messages_router
 from src.api.routers.chat_attachments.upload_handler import upload_router
@@ -34,21 +35,30 @@ from src.api.routers.users.auth_handler import router as user_auth_router
 
 logger = get_logger()
 
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan event handler for FastAPI application."""
     # Startup
     logger.info("Starting application services...")
-    
-    # Secret maintenance manager removed (no-op)
+    # Start DB pool monitor if available
+    if start_pool_monitor is not None:
+        try:
+            await start_pool_monitor()
+            logger.info("DB pool monitor started")
+        except Exception as e:
+            logger.warning("Failed to start DB pool monitor: %s", e)
     
     yield
     
     # Shutdown
     logger.info("Shutting down application services...")
-    
-    # Secret maintenance manager removed (no-op)
+    # Stop DB pool monitor if running
+    if stop_pool_monitor is not None:
+        try:
+            await stop_pool_monitor()
+            logger.info("DB pool monitor stopped")
+        except Exception as e:
+            logger.warning("Failed to stop DB pool monitor: %s", e)
 
 
 def create_fastapi_app():
@@ -97,8 +107,7 @@ def create_fastapi_app():
     fastapp.include_router(healthcheck_router, tags=["internal", "healthcheck"])
     # fastapp.include_router(chat_router, prefix="/chats", tags=["chats"])
     fastapp.include_router(upload_router, prefix="/chats/upload", tags=["uploads"])
-    fastapp.include_router(attachment_access_router, prefix="/chats", tags=["downloads"])  # /chats/attachment/{id}/download
-
+    fastapp.include_router(attachment_access_router, prefix="/chats", tags=["downloads"])
     # User auth
     fastapp.include_router(user_auth_router, prefix="/users/auth", tags=["user", "authentication"])
 

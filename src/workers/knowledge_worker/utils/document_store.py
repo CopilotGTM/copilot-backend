@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from src.infra.utils.logger import get_logger
-from src.infra.utils.database import get_org_session
+from src.api.dependencies.organisation_dependencies import acquire_org_session
 from src.domain.models.organisation_tables.knowledge_models import OrganisationDocument
 
 logger = get_logger("document_store")
@@ -42,7 +42,7 @@ class DocumentStore:
         stored_ids = []
 
         try:
-            session_gen = get_org_session(self.organisation_id)
+            session_gen = acquire_org_session(self.organisation_id)
             session = next(session_gen)
 
             for doc_data in documents:
@@ -103,12 +103,16 @@ class DocumentStore:
             logger.error(f"Error storing documents: {str(e)}")
             try:
                 session.rollback()
-            except:
+            except Exception:
                 pass
         finally:
             try:
                 session.close()
-            except:
+            except Exception:
+                pass
+            try:
+                session_gen.close()
+            except Exception:
                 pass
 
         return stored_ids
@@ -125,7 +129,7 @@ class DocumentStore:
             True if update was successful, False otherwise
         """
         try:
-            session_gen = get_org_session(self.organisation_id)
+            session_gen = acquire_org_session(self.organisation_id)
             session = next(session_gen)
 
             doc = (
@@ -154,13 +158,17 @@ class DocumentStore:
             logger.error(f"Error updating document {document_id}: {str(e)}")
             try:
                 session.rollback()
-            except:
+            except Exception:
                 pass
             return False
         finally:
             try:
                 session.close()
-            except:
+            except Exception:
+                pass
+            try:
+                session_gen.close()
+            except Exception:
                 pass
 
     def delete_documents_by_source(self, source_id: str) -> int:
@@ -174,7 +182,7 @@ class DocumentStore:
             Number of documents deleted
         """
         try:
-            session_gen = get_org_session(self.organisation_id)
+            session_gen = acquire_org_session(self.organisation_id)
             session = next(session_gen)
 
             deleted_count = (
@@ -191,13 +199,17 @@ class DocumentStore:
             logger.error(f"Error deleting documents for source {source_id}: {str(e)}")
             try:
                 session.rollback()
-            except:
+            except Exception:
                 pass
             return 0
         finally:
             try:
                 session.close()
-            except:
+            except Exception:
+                pass
+            try:
+                session_gen.close()
+            except Exception:
                 pass
 
     def get_documents_by_source(self, source_id: str) -> List[OrganisationDocument]:
@@ -211,7 +223,7 @@ class DocumentStore:
             List of OrganisationDocument instances
         """
         try:
-            session_gen = get_org_session(self.organisation_id)
+            session_gen = acquire_org_session(self.organisation_id)
             session = next(session_gen)
 
             documents = (
@@ -228,7 +240,11 @@ class DocumentStore:
         finally:
             try:
                 session.close()
-            except:
+            except Exception:
+                pass
+            try:
+                session_gen.close()
+            except Exception:
                 pass
 
     def _generate_content_hash(self, content: str) -> str:

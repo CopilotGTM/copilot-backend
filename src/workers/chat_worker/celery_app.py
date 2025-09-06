@@ -21,6 +21,12 @@ tasks_module = "src.workers.chat_worker.tasks"
 # Create the Celery app for the Chat Worker
 app = create_celery_app("chat_worker", config, tasks_module)
 
+# Register DB pool monitor for Celery workers (signals-based)
+try:
+    import scripts.monitoring.celery_integration
+except Exception:
+    pass
+
 # Add debug configuration
 app.conf.update(
     worker_log_format="[%(asctime)s: %(levelname)s/%(processName)s] %(message)s",

@@ -28,6 +28,12 @@ app.conf.update(
     worker_task_log_format="[%(asctime)s: %(levelname)s/%(processName)s][%(task_name)s(%(task_id)s)] %(message)s",
 )
 
+# Register DB pool monitor for Celery workers (signals-based)
+try:
+    import scripts.monitoring.celery_integration  # noqa: F401
+except Exception:
+    pass
+
 
 # Add signal handlers for debugging
 @task_received.connect

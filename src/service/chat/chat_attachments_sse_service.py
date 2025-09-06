@@ -1,15 +1,3 @@
-"""Attachment SSE streaming service.
-
-Streams real-time attachment processing updates (status + checksum + thumbnails)
-using Redis pub/sub (re-using knowledge base channel pattern with a dedicated channel name).
-
-Differences vs KnowledgeSourceSSEService:
-  * Tracks Attachment.status and checksum fields.
-  * Terminal statuses defined for attachments (processed|failed).
-  * Event payload keys: attachment_id, status (status), filename, mimetype,
-    size_bytes, checksum, virus_scan_status, processing_error, thumbnails + timestamps.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -234,10 +222,24 @@ class AttachmentSSEService:
         last_heartbeat = start_time
         watched_status: Dict[str, str] = {}
         try:
+            # Send initial snapshot
             async for evt in self._handle_initial(explicit_ids, watched_status):
                 yield evt
                 if evt["event"] == "complete":
+                    # Nothing more to stream; release DB session early
+                    try:
+                        await self.org_session.close()
+                    except Exception:
+                        logger.debug("Attachment SSE org_session early-close failed (complete)")
                     return
+
+            # Release DB session before long-lived Redis loop to avoid holding pool connections
+            try:
+                await self.org_session.close()
+            except Exception:
+                logger.debug("Attachment SSE org_session early-close failed (post-initial)")
+
+            # Stream updates from Redis only (no DB required)
             async for evt in self._stream_updates(
                 watched_status,
                 explicit_ids,

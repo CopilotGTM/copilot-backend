@@ -15,3 +15,9 @@ tasks_module = "src.workers.content_worker.tasks"
 
 # Create the Celery app for the Content Worker
 app = create_celery_app("content_worker", config, tasks_module)
+
+# Register DB pool monitor for Celery workers (signals-based)
+try:
+    import scripts.monitoring.celery_integration  # noqa: F401
+except Exception:
+    pass

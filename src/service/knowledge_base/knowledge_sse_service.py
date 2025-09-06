@@ -215,13 +215,29 @@ class KnowledgeSourceSSEService:
             # Handle initial sources
             initial_sources = await self.get_initial_sources(explicit_ids)
             if not initial_sources:
+                # No initial sources: release DB session before returning
+                try:
+                    await self.org_session.close()
+                except Exception:
+                    logger.debug("SSE org_session early-close failed (no sources)")
                 yield self._send_event("complete", {"message": "no_sources_to_watch"})
                 return
 
             async for event in self._handle_initial_sources(initial_sources, watched_status):
                 yield event
                 if event["event"] == "complete":
+                    # All sources already terminal: release DB session before returning
+                    try:
+                        await self.org_session.close()
+                    except Exception:
+                        logger.debug("SSE org_session early-close failed (complete)")
                     return
+
+            # Release DB session before long-lived Redis loop to avoid holding pool connections
+            try:
+                await self.org_session.close()
+            except Exception:
+                logger.debug("SSE org_session early-close failed (post-initial)")
 
             # Stream updates from Redis
             async for event in self._stream_redis_updates(

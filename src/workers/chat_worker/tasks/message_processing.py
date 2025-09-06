@@ -12,7 +12,7 @@ from src.infra.utils.logger import get_logger
 import json
 from typing import List
 
-from src.infra.utils.database import get_org_session
+from src.api.dependencies.organisation_dependencies import acquire_org_session
 from src.infra.messaging.redis_channels import channel_for_chat_job
 from src.infra.messaging.redis_streams import xadd_json_frame
 from src.domain.models.organisation_tables.job_models import ChatMessageJob, JobStatus
@@ -29,7 +29,7 @@ logger = get_logger("chat_message_processing_task")
 @app.task(name="chat.process_message", bind=True, acks_late=True, max_retries=3)
 def process_message(self, organisation_id: str, job_id: str):
     logger.info("Processing chat message job org=%s job=%s", organisation_id, job_id)
-    session_gen = get_org_session(organisation_id)
+    session_gen = acquire_org_session(organisation_id)
     session = next(session_gen)
     try:
         job = session.get(ChatMessageJob, job_id)
@@ -70,14 +70,13 @@ def process_message(self, organisation_id: str, job_id: str):
 
         # Build recent conversation (ordered by created_at)
         # Keep it light; last 30 messages
-        from sqlmodel import select
-
-        stmt = (
-            select(ChatMessage)
-            .where(ChatMessage.session_id == message.session_id)
+        history: List[ChatMessage] = (
+            session.query(ChatMessage)
+            .filter(ChatMessage.session_id == message.session_id)
             .order_by(ChatMessage.created_at.asc())
+            .limit(30)
+            .all()
         )
-        history: List[ChatMessage] = session.exec(stmt).all()
 
         # Run agent (structured output)
         try:
@@ -192,5 +191,9 @@ def process_message(self, organisation_id: str, job_id: str):
     finally:
         try:
             session.close()
+        except Exception:
+            pass
+        try:
+            session_gen.close()
         except Exception:
             pass
