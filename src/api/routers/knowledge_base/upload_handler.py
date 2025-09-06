@@ -1,25 +1,15 @@
-"""Knowledge base upload API router.
-
-This module exposes endpoints to presign and finalize knowledge source
-uploads. It delegates core business logic to
-`KnowledgeUploadService` and enqueues background Celery tasks for
-post‑upload processing (checksum + thumbnail etc.).
-
-All endpoints return a uniform `GenericResponse` envelope.
-"""
-
 from __future__ import annotations
 
 from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, status, Query
-from sqlmodel import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional, Set
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
     get_current_user,
-    get_org_session,
-    acquire_org_session,
+    get_org_async_session,
+    acquire_org_async_session,
 )
 from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.knowledge_upload_models import (
@@ -38,9 +28,10 @@ from src.service.knowledge_base.knowledge_upload_service import (
     KnowledgeUploadService,
     KnowledgeUploadServiceError,
 )
+from src.infra.config.constant import KnowledgeBaseErrors
 from src.service.knowledge_base.knowledge_sse_service import (
     KnowledgeSSEError,
-    KnowledgeSourceSSEService
+    KnowledgeSourceSSEService,
 )
 from src.domain.models.organisation_tables.job_models import (
     KnowledgeProcessingJob,
@@ -59,42 +50,50 @@ def _get_status_str(status_enum):
     return getattr(status_enum, "value", str(status_enum))
 
 
+async def _ensure_processing_jobs(session: AsyncSession, source_id):
+    """Idempotently ensure required processing jobs exist for a source (async)."""
+    from sqlalchemy import select
+
+    result = await session.execute(
+        select(KnowledgeProcessingJob.job_type).where(
+            KnowledgeProcessingJob.source_id == str(source_id)
+        )
+    )
+    existing = {row[0] for row in result.all()}
+    to_create = []
+    for job_type in ("post_upload_process", "document_extraction"):
+        if job_type not in existing:
+            to_create.append(
+                KnowledgeProcessingJob(
+                    source_id=str(source_id),
+                    job_type=job_type,
+                    status=JobStatus.PENDING,
+                )
+            )
+    if to_create:
+        session.add_all(to_create)
+        await session.commit()
+
+
 async def get_knowledge_upload_service(
     user_ids: UserIDs = Depends(get_current_user),
-    org_session: Session = Depends(get_org_session),
+    org_session: AsyncSession = Depends(get_org_async_session),
 ):
-    """FastAPI dependency returning a service bound to the caller's org.
-
-    Implemented as an async generator so we can guarantee cleanup of any
-    underlying async Azure clients (avoids 'Unclosed client session' warnings).
     """
-    service = KnowledgeUploadService(org_session, user_ids.organisation_id)
+    Dependency yielding a KnowledgeUploadService instance for the current org.
+    Cleanly disposes the service on exit, sync/async safe.
+    """
+    service = KnowledgeUploadService(
+        org_session, user_ids.organisation_id, user_ids.user_id
+    )
     try:
         yield service
     finally:
         try:
             await service.close()
-        except Exception:  # Swallow to not mask original response errors
+        except Exception:
             logger.debug("Service close failed", exc_info=True)
 
-
-async def get_knowledge_sse_service(
-    user_ids: UserIDs = Depends(get_current_user),
-    org_session: Session = Depends(get_org_session),
-):
-    """FastAPI dependency returning a service bound to the caller's org.
-
-    Implemented as an async generator so we can guarantee cleanup of any
-    underlying async Azure clients (avoids 'Unclosed client session' warnings).
-    """
-    service = KnowledgeSourceSSEService(org_session, user_ids.organisation_id, user_ids.user_id)
-    try:
-        yield service
-    finally:
-        try:
-            await service.close()
-        except Exception:  # Swallow to not mask original response errors
-            logger.debug("Service close failed", exc_info=True)
 
 @upload_router.post(
     "/presign/batch",
@@ -105,7 +104,6 @@ async def get_knowledge_sse_service(
 async def presign_batch(
     payload: KnowledgeBatchPresignRequest = Body(...),
     service: KnowledgeUploadService = Depends(get_knowledge_upload_service),
-    user_ids: UserIDs = Depends(get_current_user),
 ):
     """Batch presign one or more files.
 
@@ -115,9 +113,7 @@ async def presign_batch(
     """
     try:
         expiry_time = 10
-        created, errors = await service.presign_batch(
-            payload, user_ids.user_id, expiry_time
-        )
+        created, errors = await service.presign_batch(payload, expiry_time)
 
         # Build response entries for successfully presigned files
         success_files = [
@@ -178,7 +174,9 @@ async def presign_batch(
         logger.error(
             "Unexpected error in knowledge presign batch: %s", e, exc_info=True
         )
-        return Response.internal_server_error_response("An unexpected error occurred")
+        return Response.internal_server_error_response(
+            KnowledgeBaseErrors.UNEXPECTED_ERROR
+        )
 
 
 @upload_router.post(
@@ -190,7 +188,6 @@ async def presign_batch(
 async def finalize_batch(
     payload: KnowledgeBatchFinalizeRequest = Body(...),
     service: KnowledgeUploadService = Depends(get_knowledge_upload_service),
-    user_ids: UserIDs = Depends(get_current_user),
 ):
     """Finalize multiple previously presigned & uploaded sources.
 
@@ -202,31 +199,18 @@ async def finalize_batch(
     errors = []
     for item in payload.files:
         try:
-            src = await service.finalize_source(item, user_ids.user_id)
+            src = await service.finalize_source(item)
 
-            # Create job rows if missing
+            # Idempotent job creation delegated to helper
             session = service.session
             if session:
-                # TODO: Check if jobs already exist to make this idempotent
-                session.add_all([
-                    KnowledgeProcessingJob(
-                        source_id=str(src.source_id),
-                        job_type="post_upload_process",
-                        status=JobStatus.PENDING,
-                    ),
-                    KnowledgeProcessingJob(
-                        source_id=str(src.source_id),
-                        job_type="document_extraction",
-                        status=JobStatus.PENDING,
-                    ),
-                ])
-                session.commit()
+                await _ensure_processing_jobs(session, src.source_id)
 
-            # Enqueue first phase task
+            # Enqueue first phase task (fire-and-forget)
             try:
                 knowledge_app.send_task(
                     "knowledge.post_upload_process",
-                    args=[str(user_ids.organisation_id), str(src.source_id)],
+                    args=[str(service.organisation_id), str(src.source_id)],
                     queue="knowledge_upload",
                     routing_key="knowledge_upload",
                 )
@@ -236,21 +220,20 @@ async def finalize_batch(
                     src.source_id,
                     task_err,
                 )
+            results.append(
+                {
+                    "source_id": str(src.source_id),
+                    "status": _get_status_str(src.status),
+                    "error": src.error_message,
+                }
+            )
         except KnowledgeUploadServiceError as e:
             errors.append({"source_id": str(item.source_id), "reason": e.message})
-            continue
         except Exception:
             errors.append(
                 {"source_id": str(item.source_id), "reason": "unexpected_error"}
             )
-            continue
-        results.append(
-            {
-                "source_id": str(src.source_id),
-                "status": _get_status_str(src.status),
-                "error": src.error_message,
-            }
-        )
+
     data = {"results": results, "errors": errors}
     if results:
         return Response.success_response(message="Batch finalize completed", data=data)
@@ -259,6 +242,7 @@ async def finalize_batch(
         message="All finalize operations failed",
         data=data,
     )
+
 
 @upload_router.get(
     "/source/{source_id}",
@@ -269,23 +253,21 @@ async def finalize_batch(
 async def get_source(
     source_id: UUID,
     service: KnowledgeUploadService = Depends(get_knowledge_upload_service),
-    user_ids: UserIDs = Depends(get_current_user),
 ):
     """Return current state + fresh read SAS (short‑lived) for a source."""
     try:
-        source = await service.get_source(source_id, user_ids.user_id)
-        storage = AzureOrganisationBlobStorage(user_ids.organisation_id)
+        source = await service.get_source(source_id)
         read_url = None
         if source.storage_path:
             try:
-                read_url = await storage.generate_read_sas(
+                read_url = await service.storage.generate_read_sas(
                     source.storage_path, minutes=120, download_filename=source.filename
                 )
             except Exception:
                 pass
             finally:
                 try:
-                    await storage.close()
+                    await service.storage.close()
                 except Exception:
                     logger.debug("Temp storage close failed (get_source)")
         resp = KnowledgeSourceResponse(
@@ -308,7 +290,9 @@ async def get_source(
     except KnowledgeUploadServiceError as e:
         return Response.error_response(status_code=e.status_code, message=e.message)
     except Exception:
-        return Response.internal_server_error_response("An unexpected error occurred")
+        return Response.internal_server_error_response(
+            KnowledgeBaseErrors.UNEXPECTED_ERROR
+        )
 
 
 @upload_router.get(
@@ -331,17 +315,20 @@ async def stream_sources(
     search_path to public and causing missing tenant table errors).
     """
     logger.info(
-        "Starting SSE stream for user %s with source_ids=%s", user_ids.user_id, source_ids
+        "Starting SSE stream for user %s with source_ids=%s",
+        user_ids.user_id,
+        source_ids,
     )
 
     explicit_ids: Optional[Set[UUID]] = set(source_ids) if source_ids else None
 
     async def event_generator():
         # Long-lived stream: use imperative acquisition to control lifetime
-        from contextlib import contextmanager
-        sess_gen = acquire_org_session(user_ids.organisation_id)
-        session = next(sess_gen)
-        service = KnowledgeSourceSSEService(session, user_ids.organisation_id, user_ids.user_id)
+        sess_gen = acquire_org_async_session(user_ids.organisation_id)
+        session = await anext(sess_gen)
+        service = KnowledgeSourceSSEService(
+            session, user_ids.organisation_id, user_ids.user_id
+        )
         try:
             async for evt in service.stream_events(
                 explicit_ids=explicit_ids,
@@ -355,9 +342,7 @@ async def stream_sources(
             except Exception:
                 logger.debug("SSE service close failed", exc_info=True)
             try:
-                next(sess_gen)
-            except StopIteration:
-                pass
+                await sess_gen.aclose()
             except Exception:
                 logger.debug("SSE session generator finalization failed", exc_info=True)
 

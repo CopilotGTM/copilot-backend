@@ -1,18 +1,3 @@
-"""Service layer for listing and downloading knowledge sources.
-
-Responsibilities:
-    * Provide key‑set paginated listing of `OrganisationSource` records.
-    * Optional filtering by status, source_type, filename search query.
-    * Secure generation of short‑lived read SAS URLs for original file & thumbnails.
-
-Design notes:
-    * Pagination mirrors existing pattern (see `user_management.list_users` & chat listing):
-        ORDER BY created_at DESC, source_id DESC with `limit + 1` probe row.
-    * Cursor is base64( { ts, id } ) using shared helpers in `infra.utils.cursor`.
-    * We only generate SAS URLs when explicitly requested (`include_urls=True`) to
-      avoid N Azure calls per page list unnecessarily.
-    * Session passed in is organisation‑scoped (search_path already applied).
-"""
 from __future__ import annotations
 
 from typing import Iterable, List, Optional, Tuple
@@ -20,8 +5,8 @@ import asyncio
 from uuid import UUID
 from datetime import datetime
 
-from sqlmodel import Session, select, or_, and_
-from sqlalchemy import func
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, or_, and_, func
 
 from src.domain.models.organisation_tables.knowledge_models import (
     OrganisationSource,
@@ -50,24 +35,24 @@ class KnowledgeAccessServiceError(Exception):
 
 
 class KnowledgeAccessService:
-    def __init__(self, org_session: Session, organisation_id: UUID, user_id: UUID):
+    def __init__(self, org_session: AsyncSession, organisation_id: UUID, user_id: UUID):
         self.org_session = org_session
         self.organisation_id = organisation_id
         self.user_id = user_id
         self.storage = AzureOrganisationBlobStorage(organisation_id)
-
+    
     @property
-    def session(self) -> Session:  # pragma: no cover (delegation)
+    def session(self) -> AsyncSession:
         return self.org_session
 
-    async def close(self):  # pragma: no cover - simple cleanup
+    async def close(self):
         try:
             await self.storage.close()
         except Exception:
             logger.debug("Storage close swallow (access service)", exc_info=True)
 
     # -------- Listing ----------
-    def list_sources(
+    async def list_sources(
         self,
         limit: int = 20,
         cursor: Optional[str] = None,
@@ -82,7 +67,7 @@ class KnowledgeAccessService:
         stmt = select(OrganisationSource).where(
             OrganisationSource.organisation_id == self.organisation_id,
             OrganisationSource.user_id == self.user_id,
-            getattr(OrganisationSource, 'is_deleted', False) == False,  # exclude soft-deleted
+            OrganisationSource.is_deleted == False,  # exclude soft-deleted
         )
 
         if statuses:
@@ -117,7 +102,8 @@ class KnowledgeAccessService:
             OrganisationSource.source_id.desc(),
         ).limit(limit + 1)
 
-        rows: List[OrganisationSource] = self.org_session.exec(stmt).all()
+        res = await self.org_session.execute(stmt)
+        rows: List[OrganisationSource] = res.scalars().all()
         has_more = len(rows) == limit + 1
         items = rows[:limit]
         next_cursor: Optional[str] = None
@@ -133,7 +119,7 @@ class KnowledgeAccessService:
     async def generate_download_url(
         self, source_id: UUID, minutes: int = 120, download_filename: Optional[str] = None
     ) -> str:
-        src: OrganisationSource | None = self.org_session.get(OrganisationSource, source_id)
+        src: OrganisationSource | None = await self.org_session.get(OrganisationSource, source_id)
         if (
             not src
             or src.organisation_id != self.organisation_id
@@ -151,47 +137,49 @@ class KnowledgeAccessService:
             raise KnowledgeAccessServiceError("Could not generate download URL") from e
 
     async def build_item_dict(self, src: OrganisationSource, include_urls: bool) -> dict:
-        data = {
-            "source_id": str(src.source_id),
-            "filename": src.filename,
-            "mimetype": src.mimetype,
-            "size_bytes": src.size_bytes,
-            "status": _get_status_str(src.status),
-            "created_at": src.created_at,
-            "updated_at": src.updated_at,
-            "error_message": src.error_message,
-            "checksum": getattr(src, "checksum", None),
-        }
+        def base_data() -> dict:
+            return {
+                "source_id": str(src.source_id),
+                "filename": src.filename,
+                "mimetype": src.mimetype,
+                "size_bytes": src.size_bytes,
+                "status": _get_status_str(src.status),
+                "created_at": src.created_at,
+                "updated_at": src.updated_at,
+                "error_message": src.error_message,
+                "checksum": getattr(src, "checksum", None),
+            }
+
+        async def generate_url(path: str, key: str):
+            try:
+                return key, await self.storage.generate_read_sas(path, minutes=120)
+            except Exception:  # pragma: no cover - network variability
+                logger.debug("Failed generating %s for %s", key, src.source_id, exc_info=True)
+                return None
+
+        data = base_data()
+
         if include_urls:
-            tasks: List[asyncio.Task] = []
-            key_order: List[str] = []
-
-            async def _gen(path: str, key: str):
-                try:
-                    return key, await self.storage.generate_read_sas(path, minutes=120)
-                except Exception:  # pragma: no cover - network variability
-                    logger.debug("Failed generating %s for %s", key, src.source_id, exc_info=True)
-                    return None
-
-            for attr, key in (
+            paths_and_keys = [
                 ("thumbnail_small_path", "thumbnail_small_url"),
                 ("thumbnail_medium_path", "thumbnail_medium_url"),
-            ):
-                path = getattr(src, attr, None)
-                if path:
-                    key_order.append(key)
-                    tasks.append(asyncio.create_task(_gen(path, key)))
-
+            ]
+            tasks = [
+                asyncio.create_task(generate_url(getattr(src, attr), key))
+                for attr, key in paths_and_keys
+                if getattr(src, attr, None)
+            ]
             if tasks:
                 results = await asyncio.gather(*tasks)
                 for res in results:
                     if res:
                         k, v = res
                         data[k] = v
+
         return data
 
     # -------- Stats ----------
-    def get_stats(self) -> dict:
+    async def get_stats(self) -> dict:
         """Return aggregated counts for dashboard usage.
 
         Counts are restricted to current user + organisation (matching list logic).
@@ -207,7 +195,8 @@ class KnowledgeAccessService:
             .where(*base_filters)
             .group_by(OrganisationSource.status)
         )
-        status_rows = self.org_session.exec(status_stmt).all()
+        status_res = await self.org_session.execute(status_stmt)
+        status_rows = status_res.all()
         by_status: dict[str, int] = {}
         total = 0
         for status_val, count in status_rows:
@@ -221,7 +210,8 @@ class KnowledgeAccessService:
             .where(*base_filters)
             .group_by(OrganisationSource.source_type)
         )
-        type_rows = self.org_session.exec(type_stmt).all()
+        type_res = await self.org_session.execute(type_stmt)
+        type_rows = type_res.all()
         by_type: dict[str, int] = {}
         for stype, count in type_rows:
             key = _get_status_str(stype)

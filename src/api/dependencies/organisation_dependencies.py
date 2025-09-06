@@ -1,33 +1,36 @@
+"""Organisation-level database session dependencies (sync + async).
+
+Centralizes acquisition of organisation (tenant) database sessions for both
+sync and async contexts, backed by provider singletons. Use the sync or async
+variant that matches your endpoint/service.
+"""
+
 from __future__ import annotations
 
+from typing import AsyncIterator, Iterator
 from uuid import UUID
-from typing import Dict, Any
 
 from fastapi import Depends, HTTPException, status
+from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
-from sqlmodel import Session
-from typing import Iterator
 
 from src.domain.models.authentication import Authentication
 from src.domain.models.master_tables import User
 from src.infra.auth.user_auth import user_auth
-from src.infra.database.factory import get_sync_provider
-from src.infra.utils.logger import get_logger
+from src.infra.database.factory import get_sync_provider, get_async_provider
 
 auth = Authentication()
-logger = get_logger(__name__)
 
 
 class UserIDs(BaseModel):
-    """A Pydantic model to hold the user and organisation IDs for type safety."""
+    """A Pydantic model to hold user and organisation IDs for type safety."""
     user_id: UUID
     organisation_id: UUID
 
 
 def get_current_user(user: User = Depends(user_auth)) -> UserIDs:
-    """
-    FastAPI dependency to extract user_id and organisation_id from the authenticated user.
-    """
+    """FastAPI dependency to extract user_id and organisation_id from the authenticated user."""
     if not user or not user.user_id or not user.organisation_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -36,42 +39,53 @@ def get_current_user(user: User = Depends(user_auth)) -> UserIDs:
     return UserIDs(user_id=user.user_id, organisation_id=user.organisation_id)
 
 
-def get_org_session(user_ids: UserIDs = Depends(get_current_user)) -> Iterator[Session]:
-    """FastAPI dependency yielding an organisation-scoped Session.
+# ---- SYNC ----
 
-    Production rationale:
-    - Central place to apply multi-tenant session acquisition (reduces drift).
-    - Easier to override in tests (FastAPI dependency override) without touching services.
-    - Hides provider implementation details from routers.
-    """
-    provider = get_sync_provider()  # singleton underneath
-    with provider.tenant_session(str(user_ids.organisation_id)) as session:  # type: ignore
-        yield session
-
-
-def acquire_org_session(organisation_id: UUID) -> Iterator[Session]:
-    """Imperative helper (non‑FastAPI) to acquire a tenant session.
-
-    Use in long‑lived flows (e.g. SSE generators, background threads) where
-    dependency scopes would close too early. Keeps logic colocated with
-    dependency version to avoid divergence.
-    """
+def _sync_org_session_gen(organisation_id: UUID) -> Iterator[Session]:
+    """Generator function that yields a synchronous organisation database session."""
     provider = get_sync_provider()
     with provider.tenant_session(str(organisation_id)) as session:  # type: ignore
         yield session
 
+def get_org_session(user_ids: UserIDs = Depends(get_current_user)) -> Iterator[Session]:
+    """FastAPI dependency yielding an organisation-scoped Session.
 
-class OrgServiceDependencies:
+    Use in endpoint signatures: `session: Session = Depends(get_org_session)`.
     """
-    A dependency class that provides both the organisation-specific database session
-    and the current user's IDs. This is a convenient way to inject common
-    dependencies required by most organisation-specific services.
+    yield from _sync_org_session_gen(user_ids.organisation_id)
+
+def acquire_org_session(organisation_id: UUID) -> Iterator[Session]:
+    """Imperative helper for sync code outside FastAPI dependency system."""
+    return _sync_org_session_gen(organisation_id)
+
+# ---- ASYNC ----
+
+async def _async_org_session_gen(organisation_id: UUID) -> AsyncIterator[AsyncSession]:
+    """Generator function that yields an asynchronous organisation database session."""
+    provider = get_async_provider()
+    async with provider.tenant_session(str(organisation_id)) as session:  # type: ignore
+        yield session
+
+async def get_org_async_session(user_ids: UserIDs = Depends(get_current_user)) -> AsyncIterator[AsyncSession]:
+    """FastAPI dependency yielding an async organisation-scoped Session.
+
+    Use in endpoint signatures: `session: AsyncSession = Depends(get_org_async_session)`.
     """
-    def __init__(
-        self,
-        org_session: Session = Depends(get_org_session),
-        user_ids: UserIDs = Depends(get_current_user),
-    ):
-        self.org_session = org_session
-        self.user_id = user_ids.user_id
-        self.organisation_id = user_ids.organisation_id
+    async for s in _async_org_session_gen(user_ids.organisation_id):
+        yield s
+
+async def acquire_org_async_session(organisation_id: UUID) -> AsyncIterator[AsyncSession]:
+    """Imperative helper for async code outside FastAPI dependency system."""
+    async for s in _async_org_session_gen(organisation_id):
+        yield s
+
+# ---- __all__ ----
+
+__all__ = [
+    "get_org_session",
+    "acquire_org_session",
+    "get_org_async_session",
+    "acquire_org_async_session",
+    "UserIDs",
+    "get_current_user",
+]

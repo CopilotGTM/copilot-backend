@@ -25,7 +25,9 @@ class ChatMessageService:
         self.organisation_id = organisation_id
         self.user_id = user_id
 
-    def _resolve_attachments(self, attachment_ids: Optional[Iterable[UUID]]) -> List[Attachment]:
+    def _resolve_attachments(
+        self, attachment_ids: Optional[Iterable[UUID]]
+    ) -> List[Attachment]:
         if not attachment_ids:
             return []
         stmt = select(Attachment).where(

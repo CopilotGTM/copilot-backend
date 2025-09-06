@@ -23,26 +23,35 @@ app = create_celery_app("chat_worker", config, tasks_module)
 
 # Add debug configuration
 app.conf.update(
-    worker_log_format='[%(asctime)s: %(levelname)s/%(processName)s] %(message)s',
-    worker_task_log_format='[%(asctime)s: %(levelname)s/%(processName)s][%(task_name)s(%(task_id)s)] %(message)s',
+    worker_log_format="[%(asctime)s: %(levelname)s/%(processName)s] %(message)s",
+    worker_task_log_format="[%(asctime)s: %(levelname)s/%(processName)s][%(task_name)s(%(task_id)s)] %(message)s",
 )
+
 
 # Add signal handlers for debugging
 @task_received.connect
 def task_received_handler(sender=None, headers=None, body=None, **kwargs):
     print(f"Task received: {headers}")
 
+
 @task_prerun.connect
 def task_prerun_handler(task_id=None, task=None, args=None, kwargs=None, **kwds):
     print(f"Task starting: {task.name}({task_id}) with args={args} kwargs={kwargs}")
 
+
 @task_postrun.connect
-def task_postrun_handler(task_id=None, task=None, args=None, kwargs=None, retval=None, state=None, **kwds):
+def task_postrun_handler(
+    task_id=None, task=None, args=None, kwargs=None, retval=None, state=None, **kwds
+):
     print(f"Task finished: {task.name}({task_id}) state={state}")
 
+
 @task_failure.connect
-def task_failure_handler(task_id=None, exception=None, traceback=None, einfo=None, **kwds):
+def task_failure_handler(
+    task_id=None, exception=None, traceback=None, einfo=None, **kwds
+):
     print(f"Task failed: {task_id} exception={exception}")
+
 
 # Explicitly import task modules to ensure registration
 from .tasks import post_upload, test_tasks, message_processing

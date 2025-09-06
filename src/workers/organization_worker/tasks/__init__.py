@@ -2,4 +2,4 @@
 from . import organization
 from . import test_tasks
 
-__all__ = ['organization', 'test_tasks']
+__all__ = ["organization", "test_tasks"]

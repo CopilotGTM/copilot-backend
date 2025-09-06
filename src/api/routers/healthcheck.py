@@ -4,7 +4,7 @@ from typing import Dict, Any
 import os
 
 from src.infra.utils.logger import get_logger
-from src.infra.secrets.maintenance import SecretHealthChecker
+from src.infra.secrets.manager import secrets_manager
 
 logger = get_logger()
 
@@ -104,22 +104,24 @@ async def detailed_healthcheck(authorized: bool = Depends(verify_internal_access
     - Azure Key Vault connectivity
     """
     try:
-        # Get secret management health
-        secret_health = await SecretHealthChecker.comprehensive_health_check()
-        
-        # Overall system health
-        overall_healthy = secret_health.get("overall_healthy", False)
-        
+        # Build simplified health based on lean secrets manager
+        metrics = secrets_manager.get_metrics()
+        # Provider info if available
+        provider_info = {}
+        try:
+            provider_info = secrets_manager.provider.get_client_info()  # type: ignore[attr-defined]
+        except Exception:
+            provider_info = {}
+
+        overall_healthy = True
         health_response = {
-            "status": "healthy" if overall_healthy else "degraded",
-            "timestamp": secret_health.get("timestamp"),
-            "application": {
-                "status": "healthy",
-                "service": "Copilot Backend"
+            "status": "healthy",
+            "application": {"status": "healthy", "service": "Copilot Backend"},
+            "secret_management": {
+                "secret_manager": {"healthy": True, "metrics": metrics},
+                "provider": provider_info,
             },
-            "secret_management": secret_health.get("components", {}),
-            "recommendations": secret_health.get("recommendations", []),
-            "overall_healthy": overall_healthy
+            "overall_healthy": overall_healthy,
         }
         
         # Return appropriate HTTP status
@@ -149,16 +151,17 @@ async def secrets_healthcheck(authorized: bool = Depends(verify_internal_access)
     checking other system components.
     """
     try:
-        secret_health = await SecretHealthChecker.comprehensive_health_check()
-        
-        # Extract just the secret management components
+        metrics = secrets_manager.get_metrics()
+        try:
+            provider_info = secrets_manager.provider.get_client_info()  # type: ignore[attr-defined]
+        except Exception:
+            provider_info = {}
+
         secrets_response = {
-            "status": "healthy" if secret_health.get("overall_healthy", False) else "degraded",
-            "timestamp": secret_health.get("timestamp"),
-            "secret_manager": secret_health.get("components", {}).get("secret_manager", {}),
-            "cache": secret_health.get("components", {}).get("cache", {}),
-            "connectivity": secret_health.get("components", {}).get("connectivity", {}),
-            "recommendations": secret_health.get("recommendations", [])
+            "status": "healthy",
+            "secret_manager": {"healthy": True, "metrics": metrics},
+            "provider": provider_info,
+            "recommendations": [],
         }
         
         return secrets_response

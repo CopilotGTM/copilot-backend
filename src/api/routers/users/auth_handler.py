@@ -1,6 +1,7 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends
-from sqlmodel import Session, select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 from src.domain.models.user_models import (
     UserLoginRequest,
@@ -13,12 +14,13 @@ from src.domain.models.user_models import (
 )
 from src.domain.models.admin_models import PasswordResetAction
 from src.domain.models.master_tables import SupabaseUserStatus, User
-from src.api.dependencies.master_dependencies import get_master_session
-from src.infra.auth.supabase_user_client import supabase_user_client
+from src.api.dependencies.master_dependencies import get_master_async_session
+from src.infra.auth.supabase_user_client import supabase_user_client, SupabaseAuthError
 from src.infra.utils.logger import get_logger
 from src.api.utils.http_response import Response
 from src.api.schemas.base_models import GenericResponse
 from src.infra.auth.email_service import email_service
+from src.infra.config.constant import UserAuthErrors
 
 logger = get_logger("user_auth_handler")
 router = APIRouter()
@@ -29,20 +31,20 @@ router = APIRouter()
 )
 async def user_login(
     login_request: UserLoginRequest,
-    master_session: Session = Depends(get_master_session),
+    master_session: AsyncSession = Depends(get_master_async_session),
 ):
     """
     User login endpoint.
     """
     try:
         statement = select(User).where(User.email == login_request.email)
-        result = master_session.exec(statement)
-        user = result.first()
+        result = await master_session.execute(statement)
+        user = result.scalars().first()
         logger.info(f"User found in database: {user.email if user else 'None'}")
 
         if not user:
             logger.warning(f"User not found for email: {login_request.email}")
-            return Response.unauthorized_error_response("User not found")
+            return Response.unauthorized_error_response(UserAuthErrors.USER_NOT_FOUND)
 
         try:
             supabase_response = supabase_user_client.sign_in_with_password(
@@ -50,7 +52,9 @@ async def user_login(
             )
         except Exception as e:
             logger.warning(f"Invalid credentials for user: {login_request.email}")
-            return Response.unauthorized_error_response("Invalid credentials")
+            return Response.unauthorized_error_response(
+                UserAuthErrors.INVALID_CREDENTIALS
+            )
 
         user_data = supabase_response.get("user", {})
         session_data = supabase_response.get("session", {})
@@ -60,7 +64,9 @@ async def user_login(
 
         if not access_token:
             logger.warning(f"Invalid credentials for user: {login_request.email}")
-            return Response.unauthorized_error_response("Invalid credentials")
+            return Response.unauthorized_error_response(
+                UserAuthErrors.INVALID_CREDENTIALS
+            )
 
         requires_password_change = user_data.get("user_metadata", {}).get(
             "requires_password_change", False
@@ -86,13 +92,14 @@ async def user_login(
                     f"Failed to generate recovery token for user {user.email}: {str(e)}"
                 )
                 return Response.internal_server_error_response(
-                    message="Failed to generate password change token", data=None
+                    message=UserAuthErrors.PASSWORD_CHANGE_TOKEN_FAILED, data=None
                 )
         else:
-            user.last_login_at = datetime.utcnow()
+            # Use timezone-aware UTC timestamp (Sonar rule S6903)
+            user.last_login_at = datetime.now(timezone.utc)
             master_session.add(user)
-            master_session.commit()
-            master_session.refresh(user)
+            await master_session.commit()
+            await master_session.refresh(user)
             response_data = {
                 "email": user.email,
                 "first_name": user.first_name,
@@ -119,39 +126,37 @@ async def user_login(
             exc_info=True,
         )
         return Response.internal_server_error_response(
-            message="login failed", data=None
+            message=UserAuthErrors.LOGIN_FAILED, data=None
         )
 
 
 @router.post("/reset-password", tags=["user_auth"])
 async def reset_password(
     password_request: UserResetPasswordRequest,
-    master_session: Session = Depends(get_master_session),
+    master_session: AsyncSession = Depends(get_master_async_session),
 ):
     try:
         if not password_request.token_hash:
             return Response.bad_request_error_response(
-                "Recovery token_hash is required."
+                UserAuthErrors.RECOVERY_TOKEN_REQUIRED
             )
 
         if not password_request.new_password:
-            return Response.bad_request_error_response("New password is required.")
+            return Response.bad_request_error_response(
+                UserAuthErrors.NEW_PASSWORD_REQUIRED
+            )
 
         if (
             password_request.confirm_password
             and password_request.new_password != password_request.confirm_password
         ):
-            return Response.bad_request_error_response(
-                "New password and confirm password do not match"
-            )
+            return Response.bad_request_error_response(UserAuthErrors.PASSWORD_MISMATCH)
 
         if password_request.action not in [
             PasswordResetAction.FORCE_CHANGE,
             PasswordResetAction.FORGOT,
         ]:
-            return Response.bad_request_error_response(
-                "Invalid action. Must be 'force_change' or 'forgot'."
-            )
+            return Response.bad_request_error_response(UserAuthErrors.INVALID_ACTION)
 
         try:
             try:
@@ -162,17 +167,19 @@ async def reset_password(
             except Exception as e:
                 logger.error(f"Failed to reset password with recovery token: {str(e)}")
                 return Response.bad_request_error_response(
-                    "Invalid or expired recovery token"
+                    UserAuthErrors.INVALID_RECOVERY_TOKEN
                 )
 
             if password_request.action == PasswordResetAction.FORCE_CHANGE:
                 statement = select(User).where(User.supabase_user_id == user_id)
-                result = master_session.exec(statement)
-                current_user = result.first()
+                result = await master_session.execute(statement)
+                current_user = result.scalars().first()
 
                 if not current_user:
                     logger.warning(f"User not found for user_id: {user_id}")
-                    return Response.unauthorized_error_response("Unauthorized")
+                    return Response.unauthorized_error_response(
+                        UserAuthErrors.UNAUTHORIZED
+                    )
 
                 updated_metadata = {
                     "requires_password_change": False,
@@ -192,16 +199,17 @@ async def reset_password(
                         f"Failed to update user metadata in Supabase for user: {current_user.email}"
                     )
                     return Response.internal_server_error_response(
-                        message="Failed to update user metadata", data=None
+                        message=UserAuthErrors.UPDATE_METADATA_FAILED, data=None
                     )
 
                 logger.info(f"Updating local DB for user_id: {user_id}")
                 current_user.email_verified = True
                 current_user.status = SupabaseUserStatus.ACTIVE
-                current_user.last_login_at = datetime.utcnow()
+                # Use timezone-aware UTC timestamp (Sonar rule S6903)
+                current_user.last_login_at = datetime.now(timezone.utc)
                 master_session.add(current_user)
-                master_session.commit()
-                master_session.refresh(current_user)
+                await master_session.commit()
+                await master_session.refresh(current_user)
                 logger.info(f"Local DB updated for user_id: {user_id}")
             else:
                 logger.info(
@@ -211,7 +219,7 @@ async def reset_password(
         except Exception as e:
             logger.error(f"Error updating user data after password reset: {str(e)}")
             return Response.internal_server_error_response(
-                message="Error updating user data after password reset.", data=None
+                message=UserAuthErrors.UPDATE_USER_DATA_FAILED, data=None
             )
 
         return Response.success_response(
@@ -225,11 +233,15 @@ async def reset_password(
             exc_info=True,
         )
         return Response.internal_server_error_response(
-            message="First-time password change failed", data=None
+            message=UserAuthErrors.PASSWORD_RESET_FAILED, data=None
         )
 
 
-@router.post("/refresh-token", response_model=GenericResponse[UserRefreshTokenResponse], tags=["user_auth"])
+@router.post(
+    "/refresh-token",
+    response_model=GenericResponse[UserRefreshTokenResponse],
+    tags=["user_auth"],
+)
 async def refresh_token(refresh_request: UserRefreshTokenRequest):
     try:
         session_data = supabase_user_client.refresh_access_token(
@@ -247,29 +259,41 @@ async def refresh_token(refresh_request: UserRefreshTokenRequest):
         else:
             logger.warning("Refresh token is invalid or expired - logging out user")
             return Response.unauthorized_error_response(
-                "Invalid or expired refresh token. User has been logged out. Please log in again."
+                UserAuthErrors.REFRESH_TOKEN_INVALID
             )
-
+    except SupabaseAuthError as e:
+        logger.error(f"Token refresh failed: {e.message}")
+        # Use the status code and message from the custom exception
+        if e.status_code == 400:
+            return Response.bad_request_error_response(e.message)
+        elif e.status_code == 401:
+            return Response.unauthorized_error_response(e.message)
+        elif e.status_code == 404:
+            return Response.not_found_error_response(e.message)
+        elif e.status_code == 409:
+            return Response.conflict_error_response(e.message)
+        else:
+            return Response.internal_server_error_response(message=e.message, data=None)
     except Exception as e:
         logger.error(
             "Error during token refresh: %s",
             str(e),
             exc_info=True,
         )
-        return Response.internal_server_error_response(message="Token refresh failed. Please log in again.", data=None)
+        return Response.internal_server_error_response(
+            message=UserAuthErrors.REFRESH_TOKEN_FAILED, data=None
+        )
 
 
 @router.post("/forgot-password", tags=["user_auth"])
 async def forgot_password(
     forgot_password_request: UserForgotPasswordRequest,
-    master_session: Session = Depends(get_master_session),
+    master_session: AsyncSession = Depends(get_master_async_session),
 ):
     try:
-        statement = select(User).where(
-            User.email == forgot_password_request.email
-        )
-        result = master_session.exec(statement)
-        user = result.first()
+        statement = select(User).where(User.email == forgot_password_request.email)
+        result = await master_session.execute(statement)
+        user = result.scalars().first()
 
         if not user:
             logger.warning(
@@ -290,7 +314,7 @@ async def forgot_password(
                 f"Failed to generate password reset link for: {forgot_password_request.email}"
             )
             return Response.internal_server_error_response(
-                message="Failed to generate password reset link", data=None
+                message=UserAuthErrors.RESET_LINK_FAILED, data=None
             )
         logger.info(f"Password reset link generated for user: {user.email}")
 
@@ -305,7 +329,7 @@ async def forgot_password(
                 f"Failed to send password reset email for: {forgot_password_request.email}. Email service returned False."
             )
             return Response.internal_server_error_response(
-                message="Failed to send password reset email. Please check email service configuration.", data=None
+                message=UserAuthErrors.EMAIL_SEND_FAILED, data=None
             )
 
         return Response.success_response(
@@ -320,5 +344,5 @@ async def forgot_password(
             exc_info=True,
         )
         return Response.internal_server_error_response(
-            message="Forgot password request failed", data=None
+            message=UserAuthErrors.FORGOT_PASSWORD_FAILED, data=None
         )

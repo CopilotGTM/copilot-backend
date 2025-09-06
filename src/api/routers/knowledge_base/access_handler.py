@@ -1,32 +1,24 @@
-"""Knowledge base access (list & download) API router.
-
-Endpoints:
-    GET /sources             -> Key‑set paginated list of sources for current user/org.
-    GET /source/{id}/download -> Generate a short‑lived download URL.
-
-All responses wrapped in `GenericResponse` for consistency with existing upload APIs.
-"""
 from __future__ import annotations
 
+import asyncio
 from typing import List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, status
-import asyncio
-from sqlmodel import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
     get_current_user,
-    get_org_session,
+    get_org_async_session,
 )
 from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.knowledge_access_models import (
+    KnowledgeDeleteResponse,
+    KnowledgeDownloadResponse,
     KnowledgeSourceListItem,
     KnowledgeSourcesPage,
-    KnowledgeDownloadResponse,
     KnowledgeSourcesStats,
-    KnowledgeDeleteResponse,
 )
 from src.api.utils.http_response import Response
 from src.domain.models.organisation_tables.knowledge_models import (
@@ -34,14 +26,18 @@ from src.domain.models.organisation_tables.knowledge_models import (
     OrganisationSourceStatus,
     SourceType,
 )
+from src.infra.config.constant import KnowledgeBaseErrors
+from src.infra.utils.logger import get_logger
 from src.service.knowledge_base.knowledge_access_service import (
     KnowledgeAccessService,
     KnowledgeAccessServiceError,
 )
-from src.infra.utils.logger import get_logger
 from src.workers.knowledge_worker.celery_app import app as knowledge_app
 
 logger = get_logger("knowledge_access_handler")
+
+# Common error message reused across handlers (Sonar rule S1192)
+_UNEXPECTED_ERR_MSG = "An unexpected error occurred"
 
 access_router = APIRouter()
 
@@ -55,9 +51,15 @@ def _get_status_str(status_enum):
 
 async def get_knowledge_access_service(
     user_ids: UserIDs = Depends(get_current_user),
-    org_session: Session = Depends(get_org_session),
+    org_session: AsyncSession = Depends(get_org_async_session),
 ):
-    service = KnowledgeAccessService(org_session, user_ids.organisation_id, user_ids.user_id)
+    """
+    Dependency yielding a KnowledgeAccessService instance for the current org/user.
+    Cleanly disposes the service on exit, sync/async safe.
+    """
+    service = KnowledgeAccessService(
+        org_session, user_ids.organisation_id, user_ids.user_id
+    )
     try:
         yield service
     finally:
@@ -84,7 +86,9 @@ async def list_sources(
     source_types: Optional[List[SourceType]] = Query(
         None, description="Optional list of source types (e.g. file, integration)"
     ),
-    q: Optional[str] = Query(None, description="Case-insensitive filename search fragment"),
+    q: Optional[str] = Query(
+        None, description="Case-insensitive filename search fragment"
+    ),
     include_urls: bool = Query(
         False,
         description="If true include read + thumbnail SAS URLs (extra storage calls).",
@@ -92,7 +96,7 @@ async def list_sources(
     service: KnowledgeAccessService = Depends(get_knowledge_access_service),
 ):
     try:
-        sources, next_cursor = service.list_sources(
+        sources, next_cursor = await service.list_sources(
             limit=limit,
             cursor=cursor,
             statuses=statuses,
@@ -131,7 +135,9 @@ async def list_sources(
         return Response.error_response(status_code=e.status_code, message=e.message)
     except Exception as e:  # pragma: no cover - broad safety
         logger.error("Unexpected error listing sources: %s", e, exc_info=True)
-        return Response.internal_server_error_response("An unexpected error occurred")
+        return Response.internal_server_error_response(
+            KnowledgeBaseErrors.UNEXPECTED_ERROR
+        )
 
 
 @access_router.get(
@@ -148,14 +154,18 @@ async def download_source(
     try:
         url = await service.generate_download_url(source_id, minutes=expires_minutes)
         resp = KnowledgeDownloadResponse(
-            source_id=source_id, download_url=url, expires_in_seconds=expires_minutes * 60
+            source_id=source_id,
+            download_url=url,
+            expires_in_seconds=expires_minutes * 60,
         )
         return Response.success_response("Download URL generated", resp)
     except KnowledgeAccessServiceError as e:
         return Response.error_response(status_code=e.status_code, message=e.message)
     except Exception as e:  # pragma: no cover
         logger.error("Unexpected error generating download URL: %s", e, exc_info=True)
-        return Response.internal_server_error_response("An unexpected error occurred")
+        return Response.internal_server_error_response(
+            KnowledgeBaseErrors.UNEXPECTED_ERROR
+        )
 
 
 @access_router.get(
@@ -168,13 +178,17 @@ async def sources_stats(
     service: KnowledgeAccessService = Depends(get_knowledge_access_service),
 ):
     try:
-        stats = service.get_stats()
-        return Response.success_response("Source stats retrieved", KnowledgeSourcesStats(**stats))
+        stats = await service.get_stats()
+        return Response.success_response(
+            "Source stats retrieved", KnowledgeSourcesStats(**stats)
+        )
     except KnowledgeAccessServiceError as e:
         return Response.error_response(status_code=e.status_code, message=e.message)
     except Exception as e:  # pragma: no cover
         logger.error("Unexpected error getting source stats: %s", e, exc_info=True)
-        return Response.internal_server_error_response("An unexpected error occurred")
+        return Response.internal_server_error_response(
+            KnowledgeBaseErrors.UNEXPECTED_ERROR
+        )
 
 
 @access_router.delete(
@@ -198,27 +212,36 @@ async def delete_source(
     """
     try:
         # Permission check: source must exist and belong to caller
-        src = service.session.get(OrganisationSource, source_id)
-        if not src or src.organisation_id != service.organisation_id or src.user_id != service.user_id:
-            return Response.not_found_error_response("Source not found or access denied")
+        src = await service.session.get(OrganisationSource, source_id)
+        if (
+            not src
+            or src.organisation_id != service.organisation_id
+            or src.user_id != service.user_id
+        ):
+            return Response.not_found_error_response(
+                "Source not found or access denied"
+            )
 
         # Idempotent check: if already soft-deleted, return an accepted response
-        if getattr(src, 'is_deleted', False):
+        if getattr(src, "is_deleted", False):
             return Response.accepted_response(
                 "Deletion already in progress or completed",
                 KnowledgeDeleteResponse(source_id=source_id, status="deleted"),
             )
 
         # Mark as soft-deleted immediately
-        if hasattr(src, 'is_deleted'):
+        if hasattr(src, "is_deleted"):
             src.is_deleted = True
             try:
                 service.session.add(src)
-                service.session.commit()
             except Exception:
-                service.session.rollback()
-                logger.error("Soft delete commit failed for %s", source_id, exc_info=True)
-                return Response.internal_server_error_response("Failed to update source status")
+                await service.session.rollback()
+                logger.error(
+                    "Soft delete commit failed for %s", source_id, exc_info=True
+                )
+                return Response.internal_server_error_response(
+                    "Failed to update source status"
+                )
 
         # Enqueue deletion task in knowledge worker (fast lane queue)
         try:
@@ -243,4 +266,6 @@ async def delete_source(
         return Response.accepted_response("Deletion enqueued", delete_resp)
     except Exception as e:  # pragma: no cover
         logger.error("Unexpected error enqueuing deletion: %s", e, exc_info=True)
-        return Response.internal_server_error_response("An unexpected error occurred")
+        return Response.internal_server_error_response(
+            KnowledgeBaseErrors.UNEXPECTED_ERROR
+        )

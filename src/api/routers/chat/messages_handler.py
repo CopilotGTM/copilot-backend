@@ -2,12 +2,11 @@ from typing import Any, Dict, Optional, List
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Body, Request
-from sqlmodel import Session
-
+from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
     get_current_user,
-    get_org_session,
+    get_org_async_session,
 )
 from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.chat_models import (
@@ -28,9 +27,11 @@ router = APIRouter()
 
 async def get_chat_message_service(
     user_ids: UserIDs = Depends(get_current_user),
-    org_session: Session = Depends(get_org_session),
+    org_session: AsyncSession = Depends(get_org_async_session),
 ):
-    service = ChatMessageService(org_session, user_ids.organisation_id, user_ids.user_id)
+    service = ChatMessageService(
+        org_session, user_ids.organisation_id, user_ids.user_id
+    )
     try:
         yield service
     finally:
@@ -61,7 +62,7 @@ async def send_message(
         )
 
         resp = SendMessageResponse(message_id=message.message_id, job_id=job.job_id)
-        
+
         # Enqueue background processing task
         try:
             chat_app.send_task(
@@ -70,11 +71,22 @@ async def send_message(
                 queue="chat_messages",
                 routing_key="chat_messages",
             )
-            logger.info("Enqueued chat processing job org=%s job=%s", user_ids.organisation_id, job.job_id)
+            logger.info(
+                "Enqueued chat processing job org=%s job=%s",
+                user_ids.organisation_id,
+                job.job_id,
+            )
         except Exception as e:
-            logger.error("Failed to enqueue chat processing job %s: %s", job.job_id, e, exc_info=True)
+            logger.error(
+                "Failed to enqueue chat processing job %s: %s",
+                job.job_id,
+                e,
+                exc_info=True,
+            )
             service.db.rollback()
-            return Response.internal_server_error_response("Failed to schedule message processing.")
+            return Response.internal_server_error_response(
+                "Failed to schedule message processing."
+            )
 
         service.db.commit()
         return Response.success_response("Message accepted", resp)
@@ -91,12 +103,18 @@ async def send_message(
     tags=["chat_messages"],
     summary="SSE stream for a message job (no-op for now)",
 )
-async def message_events(job_id: str, request: Request, user_ids: UserIDs = Depends(get_current_user)):
+async def message_events(
+    job_id: str, request: Request, user_ids: UserIDs = Depends(get_current_user)
+):
     service = ChatMessageSSEService(user_ids.organisation_id, job_id)
-    logger.info(f"Client connected to chat SSE for org={user_ids.organisation_id} job={job_id}")
+    logger.info(
+        f"Client connected to chat SSE for org={user_ids.organisation_id} job={job_id}"
+    )
 
     # Extract Last-Event-ID header for replay (if provided by browser EventSource on reconnect)
-    last_event_id = request.headers.get("last-event-id") or request.headers.get("Last-Event-ID")
+    last_event_id = request.headers.get("last-event-id") or request.headers.get(
+        "Last-Event-ID"
+    )
 
     async def event_generator():
         try:

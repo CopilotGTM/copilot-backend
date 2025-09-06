@@ -25,25 +25,12 @@ from src.api.routers.chat_attachments.upload_handler import upload_router
 from src.api.routers.chat_attachments.access_handler import download_router as attachment_access_router
 from src.api.routers.knowledge_base.upload_handler import upload_router as knowledge_upload_router
 from src.api.routers.knowledge_base.access_handler import access_router as knowledge_access_router
-# from src.api.routers.technical_deck.transcript_format import transcript_router
-# from src.api.routers.technical_deck.get_technical_deck import technical_deck
-# from src.api.routers.technical_deck.select_template import select_template
-# from src.api.routers.rfp_sheet.sheet_identification import rfp__sheet_router
 from src.api.routers.admin.organizations_handler import router as admin_org_router
 from src.api.routers.admin.admin_auth_handler import router as admin_auth_router
 from src.api.routers.admin.users_handler import router as admin_user_router
 from src.api.routers.users.auth_handler import router as user_auth_router
 
-# Import secret maintenance system
-from src.infra.secrets.maintenance import maintenance_manager
-
-# from src.api.events import chat_message_handler
-# from src.api.events import connect_handler
-# from src.api.events.technical_deck import transcript_summary_handler
-# from src.api.events.technical_deck import slide_outline_generation
-# from src.api.events.technical_deck import technical_deck_generation
-# from src.api.events.rfp_sheet import rfp_answer_generation
-from src.api.events import redis_subscriber
+# Secret maintenance removed; no background task required
 
 logger = get_logger()
 
@@ -54,25 +41,14 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting application services...")
     
-    # Start secret maintenance manager
-    try:
-        await maintenance_manager.start()
-        logger.info("Secret maintenance manager started successfully")
-    except Exception as e:
-        logger.error(f"Failed to start secret maintenance manager: {e}")
-        # Don't fail startup for this, but log the error
+    # Secret maintenance manager removed (no-op)
     
     yield
     
     # Shutdown
     logger.info("Shutting down application services...")
     
-    # Stop secret maintenance manager
-    try:
-        await maintenance_manager.stop()
-        logger.info("Secret maintenance manager stopped successfully")
-    except Exception as e:
-        logger.error(f"Error stopping secret maintenance manager: {e}")
+    # Secret maintenance manager removed (no-op)
 
 
 def create_fastapi_app():
@@ -122,10 +98,6 @@ def create_fastapi_app():
     # fastapp.include_router(chat_router, prefix="/chats", tags=["chats"])
     fastapp.include_router(upload_router, prefix="/chats/upload", tags=["uploads"])
     fastapp.include_router(attachment_access_router, prefix="/chats", tags=["downloads"])  # /chats/attachment/{id}/download
-    # fastapp.include_router(transcript_router, prefix="/chats/transcript", tags=["transcript"])
-    # fastapp.include_router(technical_deck, prefix="/chats/technical_deck", tags=["technical_deck"])
-    # fastapp.include_router(select_template, prefix="/chats/technical_deck", tags=["technical_deck", "select_template"])
-    # fastapp.include_router(rfp__sheet_router, prefix="/chats/rfp_sheet", tags=["rfp sheet", "sheet identification"])
 
     # User auth
     fastapp.include_router(user_auth_router, prefix="/users/auth", tags=["user", "authentication"])

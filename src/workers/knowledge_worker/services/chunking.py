@@ -56,7 +56,9 @@ def _default_pdf_pipeline_options() -> PdfPipelineOptions:
 def get_pdf_converter() -> DocumentConverter:
     return DocumentConverter(
         format_options={
-            InputFormat.PDF: PdfFormatOption(pipeline_options=_default_pdf_pipeline_options()),
+            InputFormat.PDF: PdfFormatOption(
+                pipeline_options=_default_pdf_pipeline_options()
+            ),
         }
     )
 
@@ -79,4 +81,3 @@ def get_light_pdf_converter() -> DocumentConverter:
             InputFormat.PDF: PdfFormatOption(pipeline_options=light_opts),
         }
     )
-

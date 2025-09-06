@@ -19,29 +19,7 @@ logger = get_logger("azure_key_vault_provider")
 
 
 class AzureKeyVaultSecretProvider(SecretProvider):
-    """Production-ready Azure Key Vault implementation of :class:`SecretProvider`.
-
-    Responsibilities
-    ---------------
-    * Establish an authenticated `SecretClient` using an ordered credential strategy.
-    * Fetch secrets (`get`) and simple bulk retrieval (`get_many`).
-    * Translate authentication configuration into appropriate identity objects.
-    * Handle transient failures with appropriate error categorization.
-    * Automatic credential refresh and client recreation on auth failures.
-
-    Credential Order
-    ----------------
-    1. Local dev: `DefaultAzureCredential` (enables AZ CLI / VS Code / env vars).
-    2. Workload Identity (if `AZURE_TENANT_ID` + `AZURE_CLIENT_ID` present) – for
-       Kubernetes / federated identity.
-    3. Managed Identity fallback (VM / App Service / Container Apps system MI).
-
-    Error Handling
-    --------------
-    * Distinguishes between transient (network) and permanent (auth/not found) errors
-    * Automatic client recreation on authentication failures
-    * Detailed logging for production debugging
-    """
+    """Production-ready Azure Key Vault implementation of :class:`SecretProvider`."""
 
     def __init__(self):
         self._client: Optional[SecretClient] = None
@@ -176,34 +154,33 @@ class AzureKeyVaultSecretProvider(SecretProvider):
             return None
 
         try:
-            logger.debug(f"Fetching secret '{name}' from Azure Key Vault")
+            logger.debug("Fetching secret '%s' from Azure Key Vault", name)
             # Bound the network call to prevent indefinite stalls
             secret = await asyncio.wait_for(
                 self._client.get_secret(name),
                 timeout=max(1, int(secret_manager_config.SECRET_GET_TIMEOUT_SEC)),
             )
-            logger.debug(f"Successfully retrieved secret '{name}'")
+            logger.debug("Successfully retrieved secret '%s'", name)
             return secret.value
             
         except RuntimeError as e:
-            if "Event loop is closed" in str(e) or "no running event loop" in str(e):
-                logger.error(f"Event loop error for secret '{name}': {e}")
+            if self._is_event_loop_error(e):
+                logger.error("Event loop error for secret '%s': %s", name, e)
                 # Force client recreation for next attempt
                 self._client = None
                 return None
-            else:
-                # Re-raise other RuntimeErrors
-                raise
+            # Re-raise other RuntimeErrors
+            raise
         except Exception as e:
-            error_category, is_retryable = self._categorize_exception(e)
+            error_category, _ = self._categorize_exception(e)
             
             if error_category == "not_found":
-                logger.warning(f"Secret '{name}' not found in Azure Key Vault")
+                logger.warning("Secret '%s' not found in Azure Key Vault", name)
                 return None
             elif error_category == "auth_error":
                 self._last_auth_failure = time.time()
                 self._auth_failure_count += 1
-                logger.error(f"Authentication error for secret '{name}': {e}")
+                logger.error("Authentication error for secret '%s': %s", name, e)
                 
                 # If we have multiple auth failures, force client recreation
                 if self._auth_failure_count >= 2:
@@ -212,11 +189,11 @@ class AzureKeyVaultSecretProvider(SecretProvider):
                 
                 return None
             elif error_category in ["network_error", "rate_limit", "timeout"]:
-                logger.warning(f"Transient error fetching secret '{name}' ({error_category}): {e}")
+                logger.warning("Transient error fetching secret '%s' (%s): %s", name, error_category, e)
                 # Re-raise transient errors so SecretsManager can retry
                 raise
             else:
-                logger.error(f"Unexpected error fetching secret '{name}' ({error_category}): {e}")
+                logger.error("Unexpected error fetching secret '%s' (%s): %s", name, error_category, e)
                 return None
 
     async def get_many(self, names: Iterable[str]) -> Dict[str, Optional[str]]:
@@ -258,6 +235,10 @@ class AzureKeyVaultSecretProvider(SecretProvider):
         logger.info(f"Bulk fetch completed: {success_count}/{len(names_list)} secrets retrieved")
         
         return final_results
+
+    def _is_event_loop_error(self, err: RuntimeError) -> bool:
+        msg = str(err).lower()
+        return "event loop is closed" in msg or "no running event loop" in msg
 
     async def close(self):
         """Release underlying network resources / credential handles."""

@@ -4,6 +4,7 @@ Transitions the job through states, runs the appropriate chat agent to
 generate a structured answer, persists results, and streams JSON frames
 over Redis for SSE consumption by the frontend.
 """
+
 from __future__ import annotations
 
 from src.workers.chat_worker.celery_app import app
@@ -15,7 +16,10 @@ from src.infra.utils.database import get_org_session
 from src.infra.messaging.redis_channels import channel_for_chat_job
 from src.infra.messaging.redis_streams import xadd_json_frame
 from src.domain.models.organisation_tables.job_models import ChatMessageJob, JobStatus
-from src.domain.models.organisation_tables.chat_message_models import ChatMessage, ChatMessageRole
+from src.domain.models.organisation_tables.chat_message_models import (
+    ChatMessage,
+    ChatMessageRole,
+)
 from src.domain.models.organisation_tables.chat_session_models import ChatSession
 from src.agents.orchestrator import run_agent_for_chat
 
@@ -57,7 +61,9 @@ def process_message(self, organisation_id: str, job_id: str):
         # Load message + session context
         message: ChatMessage | None = session.get(ChatMessage, job.message_id)
         if not message:
-            raise RuntimeError(f"Message {job.message_id} not found for job {job.job_id}")
+            raise RuntimeError(
+                f"Message {job.message_id} not found for job {job.job_id}"
+            )
         chat_session: ChatSession | None = session.get(ChatSession, message.session_id)
         if not chat_session:
             raise RuntimeError(f"Session {message.session_id} not found")
@@ -65,6 +71,7 @@ def process_message(self, organisation_id: str, job_id: str):
         # Build recent conversation (ordered by created_at)
         # Keep it light; last 30 messages
         from sqlmodel import select
+
         stmt = (
             select(ChatMessage)
             .where(ChatMessage.session_id == message.session_id)
@@ -118,7 +125,10 @@ def process_message(self, organisation_id: str, job_id: str):
                     "type": "suggestions.replace",
                     "message_id": str(job.message_id),
                     "items": [
-                        {"label": q, "payload": {"intent": "suggested_question", "text": q}}
+                        {
+                            "label": q,
+                            "payload": {"intent": "suggested_question", "text": q},
+                        }
                         for q in result.suggested_questions
                     ],
                 }
@@ -144,7 +154,11 @@ def process_message(self, organisation_id: str, job_id: str):
         job.result_data = {
             "answer": result.answer,
             "confidence": result.confidence_score,
-            "sources": [s.model_dump() for s in (result.sources or [])] if result.sources else None,
+            "sources": (
+                [s.model_dump() for s in (result.sources or [])]
+                if result.sources
+                else None
+            ),
             "suggested_questions": result.suggested_questions,
             "assistant_message_id": str(assistant_msg.message_id),
         }

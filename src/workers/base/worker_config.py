@@ -25,7 +25,6 @@ class BaseWorkerConfig:
         
         redis_password_part = f":{self.redis_password}@" if self.redis_password else ""
         broker_url = f"{redis_scheme}://{redis_password_part}{self.redis_host}:{self.redis_port}/0"
-        print(f"Broker URL: {broker_url}")  # Debug print
         return broker_url
 
     def _get_ssl_config(self):

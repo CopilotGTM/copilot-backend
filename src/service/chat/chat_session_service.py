@@ -3,22 +3,27 @@ from __future__ import annotations
 from typing import Optional, Dict, Any, List
 from uuid import UUID
 
-from sqlmodel import Session, select
-from sqlalchemy import or_, and_
+from sqlalchemy import or_, and_, select
+from sqlalchemy.ext.asyncio import AsyncSession
 from src.infra.utils.cursor import encode_cursor, decode_cursor
 
-from src.domain.models.organisation_tables.chat_session_models import ChatSession, ChatType
+from src.domain.models.organisation_tables.chat_session_models import (
+    ChatSession,
+    ChatType,
+)
 
 
 class ChatSessionService:
-    def __init__(self, db: Session):
+    def __init__(self, db: AsyncSession, organisation_id: UUID, user_id: UUID):
         self.db = db
+        self.organisation_id = organisation_id
+        self.user_id = user_id
 
-    def create_session(
+    NOT_FOUND_MSG = "Chat session not found"
+
+    async def create_session(
         self,
         *,
-        user_id: UUID,
-        organisation_id: UUID,
         title: str,
         chat_type: ChatType | str = ChatType.GENERAL_CHAT,
         properties: Optional[Dict[str, Any]] = None,
@@ -38,25 +43,22 @@ class ChatSessionService:
                 chat_type = ChatType.GENERAL_CHAT
 
         chat = ChatSession(
-            user_id=user_id,
-            organisation_id=organisation_id,
+            user_id=self.user_id,
+            organisation_id=self.organisation_id,
             title=title.strip(),
             chat_type=chat_type,
             properties=properties or {},
             tags=tags or [],
         )
-
         self.db.add(chat)
-        self.db.commit()
-        self.db.refresh(chat)
+        await self.db.commit()
+        await self.db.refresh(chat)
         return chat
 
-    def delete_session(
+    async def delete_session(
         self,
         *,
         session_id: UUID,
-        user_id: UUID,
-        organisation_id: UUID,
     ) -> ChatSession:
         """Soft delete a chat session scoped to the caller's org and user.
 
@@ -64,26 +66,25 @@ class ChatSessionService:
         """
         stmt = select(ChatSession).where(
             ChatSession.session_id == session_id,
-            ChatSession.user_id == user_id,
-            ChatSession.organisation_id == organisation_id,
+            ChatSession.user_id == self.user_id,
+            ChatSession.organisation_id == self.organisation_id,
             ChatSession.is_deleted.is_(False),
         )
-        chat = self.db.exec(stmt).one_or_none()
+        res = await self.db.execute(stmt)
+        chat = res.scalars().one_or_none()
         if not chat:
-            raise ValueError("Chat session not found")
+            raise ValueError(self.NOT_FOUND_MSG)
 
         chat.is_deleted = True
         self.db.add(chat)
-        self.db.commit()
-        self.db.refresh(chat)
+        await self.db.commit()
+        await self.db.refresh(chat)
         return chat
 
-    def rename_session(
+    async def rename_session(
         self,
         *,
         session_id: UUID,
-        user_id: UUID,
-        organisation_id: UUID,
         title: str,
     ) -> ChatSession:
         """Rename a chat session, scoped by user/org and not deleted."""
@@ -94,31 +95,30 @@ class ChatSessionService:
 
         stmt = select(ChatSession).where(
             ChatSession.session_id == session_id,
-            ChatSession.user_id == user_id,
-            ChatSession.organisation_id == organisation_id,
+            ChatSession.user_id == self.user_id,
+            ChatSession.organisation_id == self.organisation_id,
             ChatSession.is_deleted.is_(False),
         )
-        chat = self.db.exec(stmt).one_or_none()
+        res = await self.db.execute(stmt)
+        chat = res.scalars().one_or_none()
         if not chat:
-            raise ValueError("Chat session not found")
+            raise ValueError(self.NOT_FOUND_MSG)
 
         chat.title = title.strip()
         self.db.add(chat)
-        self.db.commit()
-        self.db.refresh(chat)
+        await self.db.commit()
+        await self.db.refresh(chat)
         return chat
 
-    def list_sessions(
+    async def list_sessions(
         self,
         *,
-        user_id: UUID,
-        organisation_id: UUID,
         limit: int = 20,
         cursor: Optional[str] = None,
     ) -> tuple[list[ChatSession], Optional[str]]:
         filters = [
-            ChatSession.user_id == user_id,
-            ChatSession.organisation_id == organisation_id,
+            ChatSession.user_id == self.user_id,
+            ChatSession.organisation_id == self.organisation_id,
             ChatSession.is_deleted.is_(False),
         ]
 
@@ -140,19 +140,20 @@ class ChatSessionService:
             .order_by(ChatSession.created_at.desc(), ChatSession.session_id.desc())
             .limit(limit + 1)
         )
-        rows = self.db.exec(stmt).all()
+        res = await self.db.execute(stmt)
+        rows = res.scalars().all()
         has_more = len(rows) == limit + 1
         items = rows[:limit]
         next_cursor = (
-            encode_cursor(items[-1].created_at, items[-1].session_id) if has_more else None
+            encode_cursor(items[-1].created_at, items[-1].session_id)
+            if has_more
+            else None
         )
         return items, next_cursor
 
-    def search_sessions(
+    async def search_sessions(
         self,
         *,
-        user_id: UUID,
-        organisation_id: UUID,
         q: str,
         limit: int = 10,
     ) -> list[ChatSession]:
@@ -171,23 +172,22 @@ class ChatSessionService:
         stmt = (
             select(ChatSession)
             .where(
-                ChatSession.user_id == user_id,
-                ChatSession.organisation_id == organisation_id,
+                ChatSession.user_id == self.user_id,
+                ChatSession.organisation_id == self.organisation_id,
                 ChatSession.is_deleted.is_(False),
                 ChatSession.title.ilike(f"%{query}%"),
             )
             .order_by(ChatSession.updated_at.desc(), ChatSession.created_at.desc())
             .limit(limit)
         )
-        rows = self.db.exec(stmt).all()
+        res = await self.db.execute(stmt)
+        rows = res.scalars().all()
         return rows
 
-    def set_favorite(
+    async def set_favorite(
         self,
         *,
         session_id: UUID,
-        user_id: UUID,
-        organisation_id: UUID,
         favorite: bool,
     ) -> ChatSession:
         """Mark/unmark a chat as favorite using the JSONB properties field.
@@ -196,13 +196,14 @@ class ChatSessionService:
         """
         stmt = select(ChatSession).where(
             ChatSession.session_id == session_id,
-            ChatSession.user_id == user_id,
-            ChatSession.organisation_id == organisation_id,
+            ChatSession.user_id == self.user_id,
+            ChatSession.organisation_id == self.organisation_id,
             ChatSession.is_deleted.is_(False),
         )
-        chat = self.db.exec(stmt).one_or_none()
+        res = await self.db.execute(stmt)
+        chat = res.scalars().one_or_none()
         if not chat:
-            raise ValueError("Chat session not found")
+            raise ValueError(self.NOT_FOUND_MSG)
 
         props = dict(chat.properties or {})
         if favorite:
@@ -212,6 +213,6 @@ class ChatSessionService:
             props.pop("favorite", None)
         chat.properties = props
         self.db.add(chat)
-        self.db.commit()
-        self.db.refresh(chat)
+        await self.db.commit()
+        await self.db.refresh(chat)
         return chat

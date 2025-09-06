@@ -25,4 +25,3 @@ def plan_image_path_for_source(
         return f"{base_dir}/images/p{page_part}_{index}.png"
 
     return f"knowledgebase/{user_id}/{sid}/images/p{page_part}_{index}.png"
-

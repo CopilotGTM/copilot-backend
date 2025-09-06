@@ -1,23 +1,3 @@
-"""Service layer for knowledge source uploads.
-
-Responsibilities:
-    * Generate presigned (SAS) upload URLs for new knowledge sources.
-    * Persist initial source records (initial status=PENDING_UPLOAD).
-    * Finalize a source after client upload (verify blob -> UPLOADED -> PROCESSING).
-    * Provide accessors for retrieving source state.
-
-Schema handling:
-    The per‑organisation schema (`search_path`) is applied centrally by
-    `get_org_session` in `infra.utils.database`. This service therefore
-    MUST NOT attempt to re-apply or mutate the search_path; doing so
-    would duplicate logic and risk divergence. Any code that needs an
-    organisation context should obtain the session *only* through the
-    dependency / helper, guaranteeing the correct schema.
-
-The heavier post‑upload processing (checksum / thumbnail generation) is
-delegated to a Celery task to keep API latency low.
-"""
-
 from __future__ import annotations
 
 import os
@@ -25,7 +5,7 @@ import re
 from typing import Any, Dict, List, Tuple
 from uuid import UUID, uuid4
 
-from sqlmodel import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.schemas.knowledge_upload_models import (
     KnowledgeBatchPresignRequest,
@@ -51,7 +31,7 @@ class KnowledgeUploadServiceError(Exception):
 
 
 class KnowledgeUploadService:
-    def __init__(self, org_session: Session, organisation_id: UUID):
+    def __init__(self, org_session: AsyncSession, organisation_id: UUID, user_id: UUID):
         """Bind service to a specific organisation session & storage context.
 
         Assumes the passed session already has the correct search_path applied
@@ -59,12 +39,13 @@ class KnowledgeUploadService:
         """
         self.org_session = org_session
         self.organisation_id = organisation_id
+        self.user_id = user_id
         self.storage = AzureOrganisationBlobStorage(self.organisation_id)
 
     # Backwards‑compat: some routers referenced `service.session` (incorrect name).
     # Provide a property delegating to the canonical `org_session` to avoid AttributeError 500s.
     @property
-    def session(self) -> Session:  # pragma: no cover - thin delegation
+    def session(self) -> AsyncSession:
         return self.org_session
 
     async def close(self):  # pragma: no cover - simple resource cleanup
@@ -87,7 +68,6 @@ class KnowledgeUploadService:
     async def presign_batch(
         self,
         payload: KnowledgeBatchPresignRequest,
-        user_id: UUID,
         expiry_time: int = 15
     ) -> Tuple[List[Tuple[OrganisationSource, str]], List[Dict[str, Any]]]:
         """Create records and return upload SAS URLs for each requested file.
@@ -100,7 +80,7 @@ class KnowledgeUploadService:
 
         for idx, file in enumerate(payload.files):
             source_id = uuid4()
-            blob_path = self._plan_blob_path(user_id, source_id, file.filename)
+            blob_path = self._plan_blob_path(self.user_id, source_id, file.filename)
             try:
                 upload_url = await self.storage.generate_write_sas(blob_path, minutes=expiry_time)
             except Exception as exc:  # Broad: network / credential / azure errors
@@ -121,7 +101,7 @@ class KnowledgeUploadService:
             source = OrganisationSource(
                 source_id=source_id,
                 organisation_id=self.organisation_id,
-                user_id=user_id,
+                user_id=self.user_id,
                 filename=file.filename,
                 storage_path=blob_path,
                 mimetype=file.mimetype,
@@ -131,11 +111,14 @@ class KnowledgeUploadService:
 
             try:
                 self.org_session.add(source)
-                self.org_session.commit()
-                self.org_session.refresh(source)
+                # Flush to persist within the transaction; outer context commits
+                await self.org_session.flush()
+                await self.org_session.refresh(source)
+                # Commit per item to avoid rolling back previously created sources on later failures
+                await self.org_session.commit()
                 successes.append((source, upload_url))
             except Exception as exc:  # Broad DB failure capture
-                self.org_session.rollback()
+                await self.org_session.rollback()
                 logger.error(
                     "Failed to create organisation source %s: %s", source_id, exc, exc_info=True
                 )
@@ -152,7 +135,7 @@ class KnowledgeUploadService:
         return successes, errors
 
     async def finalize_source(
-        self, request: KnowledgeFinalizeRequest, user_id: UUID
+        self, request: KnowledgeFinalizeRequest
     ) -> OrganisationSource:
         """Validate uploaded blob presence then mark source for processing.
 
@@ -162,7 +145,7 @@ class KnowledgeUploadService:
         """
 
         # Retrieve the source from the database
-        source: OrganisationSource | None = self.org_session.get(
+        source: OrganisationSource | None = await self.org_session.get(
             OrganisationSource, 
             request.source_id
         )
@@ -171,7 +154,7 @@ class KnowledgeUploadService:
         if (
             not source
             or source.organisation_id != self.organisation_id
-            or source.user_id != user_id
+            or source.user_id != self.user_id
         ):
             raise KnowledgeUploadServiceError(
                 "Source not found or access denied", status_code=404
@@ -209,12 +192,13 @@ class KnowledgeUploadService:
 
             source.status = OrganisationSourceStatus.PROCESSING
             self.org_session.add(source)
-            self.org_session.commit()
-            self.org_session.refresh(source)
+            await self.org_session.flush()
+            await self.org_session.refresh(source)
+            await self.org_session.commit()
         except KnowledgeUploadServiceError:
             raise
         except Exception as exc:  # Broad catch for storage/DB errors
-            self.org_session.rollback()
+            await self.org_session.rollback()
             logger.error(
                 "Failed during finalize for source %s: %s", request.source_id, exc, exc_info=True
             )
@@ -222,16 +206,16 @@ class KnowledgeUploadService:
 
         return source
 
-    async def get_source(self, source_id: UUID, user_id: UUID) -> OrganisationSource:
+    async def get_source(self, source_id: UUID) -> OrganisationSource:
         """Retrieve a source (permission checked) from the org schema."""
-        source = self.org_session.get(OrganisationSource, source_id)
+        source: OrganisationSource | None = await self.org_session.get(OrganisationSource, source_id)
         if (
             not source
             or source.organisation_id != self.organisation_id
-            or source.user_id != user_id
+            or source.user_id != self.user_id
         ):
             raise KnowledgeUploadServiceError(
                 "Source not found or access denied", status_code=404
             )
-        self.org_session.refresh(source)
+        await self.org_session.refresh(source)
         return source

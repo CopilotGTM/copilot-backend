@@ -1,12 +1,12 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends
-from sqlmodel import Session, select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 from src.domain.models.admin_models import (
     AdminLoginRequest,
     AdminChangePasswordRequest,
     AdminLogoutRequest,
-    AdminLoginState,
     AdminLoginResponse,
     AdminStatus,
     AdminRefreshTokenRequest,
@@ -16,124 +16,74 @@ from src.domain.models.admin_models import (
     PasswordResetAction,
 )
 from src.domain.models.master_tables import SuperAdmin
-from src.api.dependencies.master_dependencies import get_master_session
+from src.api.dependencies.master_dependencies import get_master_async_session
 from src.infra.auth.admin_auth import admin_auth
 from src.infra.auth.email_service import email_service
-from src.infra.auth.supabase_admin_client import supabase_admin_client
+from src.infra.auth.supabase_admin_client import supabase_admin_client, SupabaseAuthError
 from src.infra.utils.logger import get_logger
 from src.api.utils.http_response import Response
 from src.api.schemas.base_models import GenericResponse
+from src.infra.config.constant import AdminAuthErrors
+from src.service.admin.admin_auth_service import admin_auth_service
 
 logger = get_logger("admin_auth_handler")
 router = APIRouter()
+
 
 @router.post(
     "/login", response_model=GenericResponse[AdminLoginResponse], tags=["admin_auth"]
 )
 async def admin_login(
     login_request: AdminLoginRequest,
-    master_session: Session = Depends(get_master_session),
+    master_session: AsyncSession = Depends(get_master_async_session),
 ):
     """
     Super Admin login endpoint.
-    Accepts email and password, verifies credentials, and returns super admin details,
-    Supabase session token (access_token), and requires_password_change flag.
-    The access_token must be used for authenticated requests such as first-time password change.
-
-    Handles two states:
-    - First stage: Login with temporary password (status == "pending_setup").
-      In this case, requires_password_change is True, forcing the user to change password.
-      Last login timestamp is NOT updated, as this is a temporary login for password reset purposes.
-    - Second stage: Login after first-time password change (status != "pending_setup").
-      In this case, requires_password_change is False, and last login timestamp is updated.
+    Verifies credentials and returns admin details and session tokens.
     """
     try:
-        # Fetch super admin by email
-        statement = select(SuperAdmin).where(SuperAdmin.email == login_request.email)
-        result = master_session.exec(statement)
-        super_admin = result.first()
-        logger.info(
-            f"User found in database: {super_admin.email if super_admin else 'None'}"
+        super_admin = await admin_auth_service.get_super_admin_by_email(
+            master_session, 
+            login_request.email
         )
-
         if not super_admin:
             logger.warning(f"Super admin not found for email: {login_request.email}")
-            return Response.unauthorized_error_response("User not found")
+            return Response.unauthorized_error_response(AdminAuthErrors.USER_NOT_FOUND)
 
-        # Sign in with Supabase
         try:
             supabase_response = supabase_admin_client.sign_in_with_password(
-                email=login_request.email, password=login_request.password
+                email=login_request.email, 
+                password=login_request.password
             )
-        except Exception as e:
+        except Exception:
             logger.warning(
                 f"Invalid credentials for super admin: {login_request.email}"
             )
-            return Response.unauthorized_error_response("Invalid credentials")
+            return Response.unauthorized_error_response(AdminAuthErrors.INVALID_CREDENTIALS)
+
+        session_data = supabase_response.get("session", {})
+        if not session_data or not session_data.get("access_token"):
+            logger.warning(
+                f"Supabase login failed for super admin: {login_request.email}"
+            )
+            return Response.unauthorized_error_response(AdminAuthErrors.INVALID_CREDENTIALS)
 
         user_data = supabase_response.get("user", {})
-        session_data = supabase_response.get("session", {})
-
-        access_token = session_data.get("access_token")
-        refresh_token = session_data.get("refresh_token")
-
-        if not access_token:
-            logger.warning(
-                f"Invalid credentials for super admin: {login_request.email}"
-            )
-            return Response.unauthorized_error_response("Invalid credentials")
-
-        requires_password_change = user_data.get("user_metadata", {}).get(
-            "requires_password_change", False
-        )
-        email_verified = user_data.get("user_metadata", {}).get("email_verified", False)
+        user_metadata = user_data.get("user_metadata", {})
+        requires_password_change = user_metadata.get("requires_password_change", False)
 
         if requires_password_change:
-            # For PENDING_SETUP users, we need to generate a proper recovery token
-            try:
-                # Generate a password reset link and extract the "ht=" parameter
-                password_reset_link = supabase_admin_client.generate_password_reset_link(
-                    email=login_request.email
-                )
+            return admin_auth_service.handle_pending_setup_login(super_admin.email)
 
-                response_data = {
-                    "state": AdminLoginState.PENDING_SETUP,
-                    "password_reset_link": password_reset_link,  # This is the "ht=" parameter from the reset link
-                }
-                return Response.success_response(
-                    message="Login successful", data=response_data
-                )
-            except Exception as e:
-                logger.error(
-                    f"Failed to generate recovery token for user {super_admin.email}: {str(e)}"
-                )
-                return Response.internal_server_error_response(
-                    message="Failed to generate password change token", data=None
-                )
-        else:
-            logger.info("Updating last_login_at for super_admin: %s", super_admin.email)
-            super_admin.last_login_at = datetime.utcnow()
-            master_session.add(super_admin)
-            master_session.commit()
-            master_session.refresh(super_admin)
-            logger.info(f"Updated last_login_at for super_admin: {super_admin.email}")
-            response_data = {
-                "email": super_admin.email,
-                "first_name": super_admin.first_name,
-                "last_name": super_admin.last_name,
-                "role": super_admin.role,
-                "state": AdminLoginState.ACTIVE,
-                "created_at": super_admin.created_at,
-                "email_verified": email_verified,
-                "last_login_at": super_admin.last_login_at,
-                "tokens": {
-                    "access_token": access_token,
-                    "refresh_token": refresh_token,
-                },
-            }
-            return Response.success_response(
-                message="Login successful", data=response_data
-            )
+        tokens = {
+            "access_token": session_data.get("access_token"),
+            "refresh_token": session_data.get("refresh_token"),
+        }
+        email_verified = user_metadata.get("email_verified", False)
+
+        return await admin_auth_service.handle_active_user_login(
+            master_session, super_admin, tokens, email_verified
+        )
 
     except Exception as e:
         logger.error(
@@ -143,249 +93,164 @@ async def admin_login(
             exc_info=True,
         )
         return Response.internal_server_error_response(
-            message="login failed", data=None
+            message=AdminAuthErrors.LOGIN_FAILED
         )
 
 
-@router.post("/reset-password")
+@router.post("/reset-password", tags=["admin_auth"])
 async def reset_password(
     password_request: AdminResetPasswordRequest,
-    master_session: Session = Depends(get_master_session),
+    master_session: AsyncSession = Depends(get_master_async_session),
 ):
     """
-    First-time password change endpoint for Super Admin.
-    This endpoint is used after logging in with a temporary password to set a new permanent password.
-    It requires authentication via a Supabase recovery token.
-    Updates the password in Supabase, sets requires_password_change to False in user metadata,
-    updates the local database status to active, marks email as verified if not already,
-    and updates the last_login_at timestamp.
-
-    - Validates that new_password and confirm_password match (if confirm_password is provided).
-    - Uses Supabase recovery token for authentication.
-    - This endpoint is intended only for first-time changes; regular password changes should use a separate endpoint if needed.
+    First-time or forgot-password reset endpoint for Super Admin.
+    Requires a Supabase recovery token.
     """
     try:
-        if not password_request.token_hash:
+        if not all([password_request.token_hash, password_request.new_password]):
             return Response.bad_request_error_response(
-                "Recovery token_hash is required."
+                AdminAuthErrors.RECOVERY_TOKEN_REQUIRED
             )
 
-        if not password_request.new_password:
-            return Response.bad_request_error_response("New password is required.")
-
-        # Validate new_password and confirm_password if provided
         if (
             password_request.confirm_password
             and password_request.new_password != password_request.confirm_password
         ):
             return Response.bad_request_error_response(
-                "New password and confirm password do not match"
+                AdminAuthErrors.PASSWORD_MISMATCH
             )
 
-        # Validate action
-        if password_request.action not in [
-            PasswordResetAction.FORCE_CHANGE,
-            PasswordResetAction.FORGOT,
-        ]:
-            return Response.bad_request_error_response(
-                "Invalid action. Must be 'force_change' or 'forgot'."
-            )
-
-        # Extract user information from the token
         try:
-            # For PENDING_SETUP users, we now have a proper recovery token
-            # We need to use the recovery token to reset the password
-            try:
-                # Use the recovery token_hash to reset the password
-                user_id = supabase_admin_client.reset_password_with_token(
-                    token_hash=password_request.token_hash,
-                    new_password=password_request.new_password
-                )
-            except Exception as e:
-                logger.error(f"Failed to reset password with recovery token: {str(e)}")
-                return Response.bad_request_error_response(
-                    "Invalid or expired recovery token"
-                )
-
-            # Only fetch user and update metadata for "force_change" action
-            if password_request.action == PasswordResetAction.FORCE_CHANGE:
-                # After successful password reset, we need to update the user metadata
-                # We'll need to get the user ID from the recovery token or use a different approach
-                # For now, let's use the email to find the user
-                statement = select(SuperAdmin).where(
-                    SuperAdmin.supabase_user_id == user_id
-                )
-                result = master_session.exec(statement)
-                current_admin = result.first()
-
-                if not current_admin:
-                    logger.warning(
-                        f"Admin not found for user_id: {user_id}"
-                    )
-                    return Response.unauthorized_error_response("Unauthorized")
-
-                # Update user metadata in Supabase to set requires_password_change to False
-                updated_metadata = {
-                    "requires_password_change": False,
-                    "email_verified": True,  # Ensure email is marked verified
-                    "first_name": current_admin.first_name,
-                    "last_name": current_admin.last_name,
-                    "role": current_admin.role,
-                }
-
-                try:
-                    supabase_admin_client.update_user_metadata(
-                        user_id=current_admin.supabase_user_id,
-                        metadata=updated_metadata,
-                    )
-                except Exception as e:
-                    logger.error(
-                        f"Failed to update user metadata in Supabase for user: {current_admin.email}"
-                    )
-                    return Response.internal_server_error_response(
-                        "Failed to update user metadata"
-                    )
-
-                # Update local database
-                logger.info(f"Updating local DB for user_id: {user_id}")
-                current_admin.status = AdminStatus.ACTIVE
-                current_admin.email_verified = True
-                current_admin.last_login_at = (
-                    datetime.utcnow()
-                )  # Update last login now that setup is complete
-                master_session.add(current_admin)
-                master_session.commit()
-                master_session.refresh(current_admin)
-                logger.info(f"Local DB updated for user_id: {user_id}")
-            else:
-                # For "forgot" action, just log that password was reset without metadata update
-                logger.info(
-                    f"Password reset completed for user: {user_id} (forgot action - no metadata update)"
-                )
-
+            user_id = supabase_admin_client.reset_password_with_token(
+                token_hash=password_request.token_hash,
+                new_password=password_request.new_password,
+            )
         except Exception as e:
-            logger.error(f"Error updating user data after password reset: {str(e)}")
-            # Password was reset successfully, but we couldn't update the user data
-            # This is not ideal but the password change was successful
-            return Response.success_response(
-                message="Password changed successfully. You can now log in with your new password."
+            logger.error(f"Failed to reset password with recovery token: {str(e)}")
+            return Response.bad_request_error_response(
+                AdminAuthErrors.INVALID_RECOVERY_TOKEN
             )
 
-        # Return success response
+        if password_request.action == PasswordResetAction.FORCE_CHANGE:
+            statement = select(SuperAdmin).where(
+                SuperAdmin.supabase_user_id == user_id
+            )
+            result = await master_session.execute(statement)
+            current_admin = result.scalars().first()
+
+            if not current_admin:
+                logger.warning(f"Admin not found for user_id: {user_id}")
+                return Response.unauthorized_error_response(AdminAuthErrors.UNAUTHORIZED)
+
+            # Update Supabase metadata and local database
+            updated_metadata = {
+                "requires_password_change": False,
+                "email_verified": True,
+                "first_name": current_admin.first_name,
+                "last_name": current_admin.last_name,
+                "role": current_admin.role,
+            }
+            supabase_admin_client.update_user_metadata(
+                user_id=current_admin.supabase_user_id, metadata=updated_metadata
+            )
+
+            current_admin.status = AdminStatus.ACTIVE
+            current_admin.email_verified = True
+            current_admin.last_login_at = datetime.now(timezone.utc)
+            master_session.add(current_admin)
+            await master_session.commit()
+
         return Response.success_response(
-            message="Password changed successfully. You can now log in with your new password."
+            message="Password changed successfully. You can now log in."
         )
 
     except Exception as e:
-        logger.error(
-            "Error during first-time password change: %s",
-            str(e),
-            exc_info=True,
-        )
+        logger.error("Error during password reset: %s", str(e), exc_info=True)
         return Response.internal_server_error_response(
-            "First-time password change failed"
+            AdminAuthErrors.PASSWORD_RESET_FAILED
         )
 
 
-@router.post("/refresh-token", tags=["admin_auth"])
+@router.post(
+    "/refresh-token",
+    response_model=GenericResponse[AdminRefreshTokenResponse],
+    tags=["admin_auth"],
+)
 async def refresh_token(refresh_request: AdminRefreshTokenRequest):
-    """
-    Refresh the access token using a refresh token.
-    If the refresh token is invalid, the user will be automatically logged out.
-    """
+    """Refresh the access token using a refresh token."""
     try:
-        # Use Supabase client to refresh token
         session_data = supabase_admin_client.refresh_access_token(
             refresh_request.refresh_token
         )
 
-        if session_data.get("session", {}).get("access_token"):
-            # Token refresh was successful, return new tokens
+        new_session = session_data.get("session")
+        if new_session and new_session.get("access_token"):
             return Response.success_response(
                 message="Token refreshed successfully",
                 data=AdminRefreshTokenResponse(
-                    access_token=session_data["session"]["access_token"],
-                    refresh_token=session_data["session"]["refresh_token"],
+                    access_token=new_session["access_token"],
+                    refresh_token=new_session["refresh_token"],
                 ),
             )
-        else:
-            # Token refresh failed - automatically logout the user
-            logger.warning("Refresh token is invalid or expired - logging out user")
-            return Response.unauthorized_error_response(
-                "Invalid or expired refresh token. User has been logged out. Please log in again."
-            )
-
-    except Exception as e:
-        logger.error(
-            "Error during token refresh: %s",
-            str(e),
-            exc_info=True,
-        )
         
-        # If refresh failed, just return error (no logout since we don't have user_id)
-        return Response.internal_server_error_response("Token refresh failed. Please log in again.")
+        logger.warning("Refresh token is invalid or expired.")
+        return Response.unauthorized_error_response(
+            AdminAuthErrors.REFRESH_TOKEN_INVALID
+        )
+    except SupabaseAuthError as e:
+        logger.error(f"Token refresh failed: {e.message}")
+        # Use the status code and message from the custom exception
+        if e.status_code == 400:
+            return Response.bad_request_error_response(e.message)
+        elif e.status_code == 401:
+            return Response.unauthorized_error_response(e.message)
+        elif e.status_code == 404:
+            return Response.not_found_error_response(e.message)
+        elif e.status_code == 409:
+            return Response.conflict_error_response(e.message)
+        else:
+            return Response.internal_server_error_response(message=e.message)
+    except Exception as e:
+        logger.error("Error during token refresh: %s", str(e), exc_info=True)
+        return Response.internal_server_error_response(
+            AdminAuthErrors.REFRESH_TOKEN_FAILED
+        )
+
 
 @router.post("/forgot-password", tags=["admin_auth"])
 async def forgot_password(
     forgot_password_request: AdminForgotPasswordRequest,
-    master_session: Session = Depends(get_master_session),
+    master_session: AsyncSession = Depends(get_master_async_session),
 ):
-    """
-    Forgot password endpoint for Super Admin.
-    Accepts an email address, verifies if the user exists, and if so,
-    triggers Supabase to send a password reset email.
-    """
+    """Triggers a password reset email for a super admin."""
     try:
-        # Fetch super admin by email to verify existence
-        statement = select(SuperAdmin).where(
-            SuperAdmin.email == forgot_password_request.email
+        super_admin = await admin_auth_service.get_super_admin_by_email(
+            master_session, forgot_password_request.email
         )
-        result = master_session.exec(statement)
-        super_admin = result.first()
 
         if not super_admin:
             logger.warning(
-                f"Password reset requested for non-existent user: {forgot_password_request.email}"
+                "Password reset requested for non-existent user: %s",
+                forgot_password_request.email,
             )
             # Return a generic success response to avoid user enumeration
-            return Response.not_found_error_response("User not found")
+            return Response.success_response(
+                message="If an account with this email exists, a password reset link has been sent."
+            )
 
-        # Generate a password reset link and extract the "ht=" parameter
         password_reset_link = supabase_admin_client.generate_password_reset_link(
             email=super_admin.email
         )
-        logger.info(
-            f"Generated password reset link for: {forgot_password_request.email}"
-        )
-        if not password_reset_link:
-            logger.error(
-                f"Failed to generate password reset link for: {forgot_password_request.email}"
-            )
-            return Response.internal_server_error_response(
-                message="Failed to generate password reset link", data=None
-            )
-        logger.info(f"Password reset link generated for user: {super_admin.email}")
-
-        # Send the password reset email using the email service
-        logger.info(f"Attempting to send password reset email to: {super_admin.email}")
-        email_sent = email_service.send_password_reset_email(
+        
+        email_service.send_password_reset_email(
             to_email=super_admin.email,
             first_name=super_admin.first_name,
             reset_url=password_reset_link,
         )
 
-        if not email_sent:
-            logger.error(
-                f"Failed to send password reset email for: {forgot_password_request.email}. Email service returned False."
-            )
-            return Response.internal_server_error_response(
-                message="Failed to send password reset email. Please check email service configuration.", data=None
-            )
-
         return Response.success_response(
             message="If an account with this email exists, a password reset link has been sent."
         )
-
     except Exception as e:
         logger.error(
             "Error during forgot password request for email %s: %s",
@@ -394,86 +259,45 @@ async def forgot_password(
             exc_info=True,
         )
         return Response.internal_server_error_response(
-            message="Forgot password request failed", data=None
+            AdminAuthErrors.FORGOT_PASSWORD_FAILED
         )
+
 
 @router.post("/logout", tags=["admin_auth"])
 async def admin_logout(
     logout_request: AdminLogoutRequest,
     current_admin: SuperAdmin = Depends(admin_auth),
-    master_session: Session = Depends(get_master_session),
+    master_session: AsyncSession = Depends(get_master_async_session),
 ):
-    """
-    Unified logout endpoint for super admin.
-    
-    - If global_logout=False: Logout current user from current session only
-    - If global_logout=True: Logout specified user from all sessions globally
-    """
+    """Unified logout endpoint for super admin."""
     try:
-        if not current_admin:
-            return Response.unauthorized_error_response("Unauthorized")
-
+        user_to_logout = current_admin
         if logout_request.global_logout:
-            # Global logout - logout specified user from all sessions
             if not logout_request.email:
-                return Response.bad_request_error_response("Email is required for global logout")
-
-            # Find the user to log out
-            statement = select(SuperAdmin).where(SuperAdmin.email == logout_request.email)
-            result = master_session.exec(statement)
-            user_to_logout = result.first()
-
+                return Response.bad_request_error_response(
+                    AdminAuthErrors.EMAIL_REQUIRED_FOR_LOGOUT
+                )
+            user_to_logout = await admin_auth_service.get_super_admin_by_email(
+                master_session, logout_request.email
+            )
             if not user_to_logout:
-                logger.warning(
-                    f"Global logout requested for non-existent user: {logout_request.email}"
-                )
-                return Response.not_found_error_response("User not found")
+                return Response.not_found_error_response(AdminAuthErrors.USER_NOT_FOUND)
 
-            # Perform global sign-out using Supabase
-            signed_out = supabase_admin_client.sign_out_user(
-                user_id=user_to_logout.supabase_user_id,
-                global_signout=True  # Global logout - all sessions
-            )
+        supabase_admin_client.sign_out_user(
+            user_id=user_to_logout.supabase_user_id,
+            global_signout=logout_request.global_logout,
+        )
 
-            if not signed_out:
-                logger.error(
-                    f"Failed to globally sign out user {logout_request.email} from Supabase."
-                )
-                return Response.internal_server_error_response("Global logout failed.")
-
-            logger.info(
-                f"Successfully performed global logout for user: {logout_request.email}"
-            )
-            return Response.success_response(
-                message=f"Successfully logged out user {logout_request.email} from all sessions."
-            )
-        else:
-            # Regular logout - logout current user from current session only
-            logger.info(f"Attempting to log out admin: {current_admin.email}")
-
-            signed_out = supabase_admin_client.sign_out_user(
-                user_id=current_admin.supabase_user_id,
-                global_signout=False  # Regular logout - current session only
-            )
-
-            if not signed_out:
-                logger.error(
-                    f"Failed to sign out user {current_admin.email} from Supabase."
-                )
-                return Response.internal_server_error_response("Logout failed.")
-
-            logger.info(f"Successfully logged out admin: {current_admin.email}")
-            return Response.success_response(message="Successfully logged out.")
+        message = (
+            f"Successfully logged out user {user_to_logout.email} from all sessions."
+            if logout_request.global_logout
+            else "Successfully logged out."
+        )
+        return Response.success_response(message=message)
 
     except Exception as e:
-        logger.error(
-            "Error during logout: %s",
-            str(e),
-            exc_info=True,
-        )
-        return Response.internal_server_error_response(
-            "An unexpected error occurred during logout."
-        )
+        logger.error("Error during logout: %s", str(e), exc_info=True)
+        return Response.internal_server_error_response(AdminAuthErrors.LOGOUT_FAILED)
 
 
 @router.post("/change-password", tags=["admin_auth"])
@@ -481,45 +305,38 @@ async def change_password(
     password_request: AdminChangePasswordRequest,
     current_admin: SuperAdmin = Depends(admin_auth),
 ):
-    """
-    Change password for an active, logged-in Super Admin.
-    Requires the current password for verification.
-    """
+    """Change password for an active, logged-in Super Admin."""
     try:
-        if not current_admin:
-            return Response.unauthorized_error_response("Unauthorized")
-
         # Verify the current password first
         try:
             supabase_admin_client.sign_in_with_password(
-                email=current_admin.email, password=password_request.current_password
+                email=current_admin.email,
+                password=password_request.current_password,
             )
         except Exception:
             logger.warning(
-                f"Incorrect current password for user: {current_admin.email}"
+                "Incorrect current password for user: %s", current_admin.email
             )
-            return Response.unauthorized_error_response("Incorrect current password")
+            return Response.unauthorized_error_response(
+                AdminAuthErrors.INCORRECT_CURRENT_PASSWORD
+            )
 
-        # If verification is successful, update the password
-        try:
-            supabase_admin_client.update_user_password(
-                user_id=current_admin.supabase_user_id,
-                new_password=password_request.new_password,
-            )
-        except Exception as e:
-            logger.error(
-                f"Failed to update password in Supabase for user: {current_admin.email}"
-            )
-            return Response.internal_server_error_response("Failed to update password")
+        # Update the password
+        supabase_admin_client.update_user_password(
+            user_id=current_admin.supabase_user_id,
+            new_password=password_request.new_password,
+        )
 
-        logger.info(f"Password changed successfully for user: {current_admin.email}")
+        logger.info("Password changed successfully for user: %s", current_admin.email)
         return Response.success_response(message="Password changed successfully.")
 
     except Exception as e:
         logger.error(
             "Error during password change for email %s: %s",
-            current_admin.email if current_admin else "unknown",
+            current_admin.email,
             str(e),
             exc_info=True,
         )
-        return Response.internal_server_error_response("Password change failed")
+        return Response.internal_server_error_response(
+            AdminAuthErrors.PASSWORD_CHANGE_FAILED
+        )

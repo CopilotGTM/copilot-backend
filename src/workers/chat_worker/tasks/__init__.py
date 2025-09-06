@@ -2,4 +2,4 @@
 from . import post_upload
 from . import test_tasks
 
-__all__ = ['post_upload', 'test_tasks']
+__all__ = ["post_upload", "test_tasks"]

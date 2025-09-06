@@ -69,22 +69,38 @@ class ChatMessageSSEService:
                 if timeout_seconds and (now - start_time) > timeout_seconds:
                     yield {
                         "event": "timeout",
-                        "data": json.dumps({"message": "Stream timeout", "job_id": self.job_id, "reconnect": True}),
+                        "data": json.dumps(
+                            {
+                                "message": "Stream timeout",
+                                "job_id": self.job_id,
+                                "reconnect": True,
+                            }
+                        ),
                     }
                     return
 
                 block_ms = int((heartbeat_interval / 2) * 1000)
-                entries = await self._streams.xread(self.stream_key, next_id, block_ms=block_ms, count=50)
+                entries = await self._streams.xread(
+                    self.stream_key, next_id, block_ms=block_ms, count=50
+                )
                 if not entries:
                     continue
                 for entry_id, frame in entries:
                     next_id = entry_id
                     yield {"id": entry_id, "event": "frame", "data": json.dumps(frame)}
                     if frame.get("type") == "finalize":
-                        yield {"event": "complete", "data": json.dumps({"job_id": self.job_id})}
+                        yield {
+                            "event": "complete",
+                            "data": json.dumps({"job_id": self.job_id}),
+                        }
                         return
         except Exception as e:
             logger.error("Chat SSE stream error: %s", e, exc_info=True)
-            yield {"event": "error", "data": json.dumps({"message": "Internal stream error", "reconnect": True})}
+            yield {
+                "event": "error",
+                "data": json.dumps(
+                    {"message": "Internal stream error", "reconnect": True}
+                ),
+            }
         finally:
             await self.close()

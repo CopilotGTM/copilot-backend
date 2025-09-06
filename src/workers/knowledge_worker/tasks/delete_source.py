@@ -16,6 +16,7 @@ from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorag
 from src.domain.models.organisation_tables.knowledge_models import OrganisationSource
 from src.domain.models.organisation_tables.job_models import KnowledgeProcessingJob
 from src.workers.knowledge_worker.utils import DocumentStore
+import asyncio
 
 logger = get_logger("knowledge_delete_task")
 
@@ -39,6 +40,8 @@ def delete_source_task(self, organisation_id: str, source_id: str):  # pragma: n
     session_gen = acquire_org_session(organisation_id)
     session = next(session_gen)
     storage = AzureOrganisationBlobStorage(organisation_id=organisation_id)
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
 
     try:
         # Fetch source (may be missing if already deleted)
@@ -48,7 +51,9 @@ def delete_source_task(self, organisation_id: str, source_id: str):  # pragma: n
         try:
             ds = DocumentStore(organisation_id)
             deleted_docs = ds.delete_documents_by_source(source_id)
-            logger.info("Deleted %s derived documents for source %s", deleted_docs, source_id)
+            logger.info(
+                "Deleted %s derived documents for source %s", deleted_docs, source_id
+            )
         except Exception as e:
             logger.warning("Failed deleting documents for %s: %s", source_id, e)
 
@@ -69,23 +74,16 @@ def delete_source_task(self, organisation_id: str, source_id: str):  # pragma: n
         try:
             if src and src.storage_path:
                 # original
-                import asyncio
-
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                try:
-                    loop.run_until_complete(storage.delete_blob(src.storage_path))
-                    # thumbnails
-                    if getattr(src, "thumbnail_small_path", None):
-                        loop.run_until_complete(storage.delete_blob(src.thumbnail_small_path))
-                    if getattr(src, "thumbnail_medium_path", None):
-                        loop.run_until_complete(storage.delete_blob(src.thumbnail_medium_path))
-                finally:
-                    try:
-                        loop.run_until_complete(storage.close())
-                    except Exception:
-                        pass
-                    loop.close()
+                loop.run_until_complete(storage.delete_blob(src.storage_path))
+                # thumbnails
+                if getattr(src, "thumbnail_small_path", None):
+                    loop.run_until_complete(
+                        storage.delete_blob(src.thumbnail_small_path)
+                    )
+                if getattr(src, "thumbnail_medium_path", None):
+                    loop.run_until_complete(
+                        storage.delete_blob(src.thumbnail_medium_path)
+                    )
         except Exception as e:
             logger.warning("Failed deleting blobs for %s: %s", source_id, e)
 
@@ -104,4 +102,14 @@ def delete_source_task(self, organisation_id: str, source_id: str):  # pragma: n
             session.close()
         except Exception:
             pass
-
+        try:
+            session_gen.close()
+        except Exception:
+            pass
+        # Close async Azure clients (run in event loop)
+        try:
+            loop.run_until_complete(storage.close())
+        except Exception:
+            pass
+        finally:
+            loop.close()

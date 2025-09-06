@@ -23,7 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.infra.secrets.manager import secrets_manager
-from src.infra.secrets.maintenance import SecretHealthChecker
+
 from src.infra.utils.logger import get_logger
 
 logger = get_logger("secrets_monitor")
