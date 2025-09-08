@@ -1,6 +1,7 @@
 from kombu import Queue, Exchange
 from src.workers.base.worker_config import BaseWorkerConfig
 
+
 class OrganizationWorkerConfig(BaseWorkerConfig):
     """Configuration for the Organization Worker."""
 
@@ -18,12 +19,25 @@ class OrganizationWorkerConfig(BaseWorkerConfig):
         self.task_default_routing_key = "organization"
 
         self.task_queues = (
-            Queue("organization", exchange=organization_exchange, routing_key="organization"),
+            Queue(
+                "organization",
+                exchange=organization_exchange,
+                routing_key="organization",
+            ),
             Queue("admin", exchange=organization_exchange, routing_key="admin"),
         )
 
         self.task_routes = {
-            "organization.create": {"queue": "organization", "routing_key": "organization"},
-            "organization.test_task": {"queue": "organization", "routing_key": "organization"},
-            "organization.ping": {"queue": "organization", "routing_key": "organization"},
+            "organization.create": {
+                "queue": "organization",
+                "routing_key": "organization",
+            },
+            "organization.test_task": {
+                "queue": "organization",
+                "routing_key": "organization",
+            },
+            "organization.ping": {
+                "queue": "organization",
+                "routing_key": "organization",
+            },
         }

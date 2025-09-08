@@ -8,9 +8,10 @@ Usage (sync):
 
 Usage (async):
     from src.infra.database.factory import get_async_provider
-    async with (await get_async_provider()).tenant_session(org_id) as s:
+    async with get_async_provider().tenant_session(org_id) as s:
         ...
 """
+
 from __future__ import annotations
 
 import threading
@@ -33,12 +34,19 @@ def get_sync_provider() -> SyncDatabaseProvider:
                 _sync_instance = SyncSqlAlchemyProvider()
     return _sync_instance
 
-async def get_async_provider() -> AsyncDatabaseProvider:
+
+def get_async_provider() -> AsyncDatabaseProvider:
+    """Return a singleton async-capable database provider.
+
+    This function is synchronous because provider construction is CPU-bound /
+    non-awaitable. The returned provider exposes async session/context APIs.
+    """
     global _async_instance
     if _async_instance is None:
         with _lock:
             if _async_instance is None:
                 _async_instance = AsyncSqlAlchemyProvider()
     return _async_instance
+
 
 __all__ = ["get_sync_provider", "get_async_provider"]

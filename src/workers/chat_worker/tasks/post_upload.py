@@ -17,6 +17,34 @@ from src.infra.media.thumbnail_generator import generate_thumbnails
 logger = get_logger("attachments_post_upload_task")
 
 
+def _maybe_generate_thumbnails(loop, storage, attachment) -> None:
+    """Generate thumbnails for supported mimetypes and update attachment fields.
+
+    Sets status and thumbnail paths on the attachment. Errors are captured into
+    attachment.processing_error and status is marked FAILED.
+    """
+    mt = (attachment.mimetype or "").lower()
+    if not (mt.startswith("image/") or mt == "application/pdf"):
+        return
+    try:
+        created = loop.run_until_complete(
+            generate_thumbnails(
+                storage=storage,
+                original_blob_path=attachment.storage_path,
+                mimetype=attachment.mimetype,
+            )
+        )
+        if "thumb_small" in created:
+            attachment.thumbnail_small_path = created["thumb_small"]
+        if "thumb_medium" in created:
+            attachment.thumbnail_medium_path = created["thumb_medium"]
+        attachment.status = AttachmentStatus.UPLOADED
+    except Exception as e:
+        logger.exception("Thumbnail generation failed for attachment %s", attachment.attachment_id)
+        attachment.status = AttachmentStatus.FAILED
+        attachment.processing_error = f"thumbnail_failed: {e}"[:500]
+
+
 @app.task(name="attachments.post_upload", bind=True, acks_late=True, max_retries=3)
 def post_upload(self, organisation_id: str, attachment_id: str):
     """Post-upload processing: checksum + optional thumbnails.
@@ -31,6 +59,7 @@ def post_upload(self, organisation_id: str, attachment_id: str):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
+    attachment: Optional[Attachment] = None
     try:
         attachment = session.get(Attachment, attachment_id)
         if not attachment:
@@ -40,45 +69,24 @@ def post_upload(self, organisation_id: str, attachment_id: str):
             logger.info("Attachment %s already processed", attachment_id)
             return
 
-        # Compute checksum (streamed)
-        maybe_image_bytes: Optional[bytes] | None = None
-        # try:
-        #     if attachment.storage_path:
-        #         checksum = loop.run_until_complete(
-        #             storage.compute_checksum(attachment.storage_path)
-        #         )
-        #         attachment.checksum = checksum
-        #         session.add(attachment)
-        #         session.commit()
-        # except Exception as e:
-        #     logger.exception("Checksum computation failed for attachment %s", attachment_id)
-
+        # Compute checksum if missing
+        try:
+            if attachment.storage_path and not attachment.checksum:
+                checksum = loop.run_until_complete(
+                    storage.compute_checksum(attachment.storage_path)
+                )
+                attachment.checksum = checksum
+                session.merge(attachment)
+                session.commit()
+        except Exception:
+            logger.exception(
+                "Checksum computation failed for attachment %s", attachment.attachment_id
+            )
 
         # Thumbnails for images / PDFs via shared service
-        mt = (attachment.mimetype or "").lower()
-        if mt.startswith("image/") or mt == "application/pdf":
-            try:
-                created = loop.run_until_complete(
-                    generate_thumbnails(
-                        storage=storage,
-                        original_blob_path=attachment.storage_path,
-                        mimetype=attachment.mimetype,
-                    )
-                )
-                if "thumb_small" in created:
-                    attachment.thumbnail_small_path = created["thumb_small"]
-                if "thumb_medium" in created:
-                    attachment.thumbnail_medium_path = created["thumb_medium"]
-                attachment.status = AttachmentStatus.UPLOADED
-                session.merge(attachment)
-                session.commit()
-
-            except Exception as e:
-                logger.exception("Thumbnail generation failed for attachment %s", attachment_id)
-                attachment.status = AttachmentStatus.FAILED
-                attachment.processing_error = f"thumbnail_failed: {e}"[:500]
-                session.merge(attachment)
-                session.commit()
+        _maybe_generate_thumbnails(loop, storage, attachment)
+        session.merge(attachment)
+        session.commit()
 
         # Finalize status
         attachment.status = AttachmentStatus.COMPLETED
@@ -104,9 +112,39 @@ def post_upload(self, organisation_id: str, attachment_id: str):
         )
         publish_attachment_status(organisation_id, event_to_publish)
         logger.info("Attachment post-upload task completed attachment=%s", attachment_id)
+    except Exception as e:
+        logger.error(
+            "Attachment post-upload failed org=%s attachment=%s error=%s",
+            organisation_id,
+            attachment_id,
+            e,
+        )
+        try:
+            if attachment is not None:
+                attachment.status = AttachmentStatus.FAILED
+                attachment.processing_error = f"post_upload_failed: {e}"[:500]
+                session.merge(attachment)
+                session.commit()
+
+                event = AttachmentEventUpdate(
+                    attachment_id=str(attachment.attachment_id),
+                    status=AttachmentStatus.FAILED,
+                    updated_at=attachment.updated_at.isoformat()
+                    if getattr(attachment, "updated_at", None)
+                    else None,
+                    error_message=attachment.processing_error,
+                    thumbnail_small_url=None,
+                )
+                publish_attachment_status(organisation_id, event)
+        except Exception:
+            logger.debug("Failed to persist/publish FAILED state for attachment %s", attachment_id, exc_info=True)
     finally:
         try:
             session.close()
+        except Exception:
+            pass
+        try:
+            session_gen.close()
         except Exception:
             pass
         try:

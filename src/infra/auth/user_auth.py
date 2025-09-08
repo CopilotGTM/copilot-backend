@@ -3,13 +3,15 @@ import string
 from typing import Dict, Any, Optional
 
 from fastapi import Depends, HTTPException, status, Request
-from sqlmodel import Session, select
-from src.api.dependencies.master_dependencies import get_master_session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from src.api.dependencies.master_dependencies import get_master_async_session
 
 from src.domain.models.master_tables import AdminUserStatus, SupabaseUserStatus, User
 from src.infra.auth.supabase_user_client import supabase_user_client
 from src.infra.utils.app_state import fastapp
 from src.infra.utils.logger import get_logger
+from src.infra.config.constant import UserAuthErrors
 
 logger = get_logger(__name__)
 
@@ -66,12 +68,16 @@ class UserAuth:
 
             user = response.get("user")
             if not user:
-                logger.error(f"Could not extract user from Supabase response for email {email}")
+                logger.error(
+                    f"Could not extract user from Supabase response for email {email}"
+                )
                 return None
 
             user_id = user.get("id")
             if not user_id:
-                logger.error(f"Could not extract user ID from Supabase response for email {email}")
+                logger.error(
+                    f"Could not extract user ID from Supabase response for email {email}"
+                )
                 return None
 
             logger.info(f"Successfully created user in Supabase: {user_id}")
@@ -80,17 +86,17 @@ class UserAuth:
             logger.error(f"Failed to create user in Supabase for email {email}: {e}")
             return None
 
-    def get_current_user(self, request: Request, session: Session) -> User:
+    async def get_current_user(self, request: Request, session: AsyncSession) -> User:
         """
         Get the current authenticated user.
-        
+
         Args:
             request: FastAPI request object
             session: Database session
-            
+
         Returns:
             User object
-            
+
         Raises:
             HTTPException: If authentication fails
         """
@@ -100,37 +106,41 @@ class UserAuth:
             if not auth_header or not auth_header.startswith("Bearer "):
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Missing or invalid authorization header"
+                    detail=UserAuthErrors.MISSING_AUTH_HEADER,
                 )
 
             token = auth_header.split(" ")[1]
-            
+
             # Verify token with Supabase
             user_data = self.supabase_user_client.verify_token(token)
-            
+
             # Get user ID from token
             user_id = user_data.get("user", {}).get("id")
             if not user_id:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Invalid token: missing user ID"
+                    detail=UserAuthErrors.INVALID_TOKEN_NO_ID,
                 )
 
             # Find user in database
             statement = select(User).where(User.supabase_user_id == user_id)
-            user = session.exec(statement).first()
+            result = await session.execute(statement)
+            user = result.scalars().first()
 
             if not user:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="User not found"
+                    detail=UserAuthErrors.USER_NOT_FOUND,
                 )
 
             # Check if user is active
-            if user.status != SupabaseUserStatus.ACTIVE or user.admin_status != AdminUserStatus.APPROVED:
+            if (
+                user.status != SupabaseUserStatus.ACTIVE
+                or user.admin_status != AdminUserStatus.APPROVED
+            ):
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="User account is not active or not approved"
+                    detail=UserAuthErrors.ACCOUNT_INACTIVE,
                 )
 
             return user
@@ -141,10 +151,14 @@ class UserAuth:
             logger.error(f"Authentication error: {str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Authentication failed"
+                detail=UserAuthErrors.AUTHENTICATION_FAILED,
             )
 
-    async def __call__(self, request: Request, session: Session = Depends(get_master_session)) -> User:
+    async def __call__(
+        self,
+        request: Request,
+        session: AsyncSession = Depends(get_master_async_session),
+    ) -> User:
         """
         FastAPI dependency to get current authenticated user from Supabase token
 
@@ -158,7 +172,7 @@ class UserAuth:
         Raises:
             HTTPException: If not authenticated
         """
-        return self.get_current_user(request, session)
+        return await self.get_current_user(request, session)
 
 
 # Create a global instance

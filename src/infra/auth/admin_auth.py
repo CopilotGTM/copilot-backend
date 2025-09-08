@@ -4,13 +4,15 @@ from datetime import datetime
 from typing import Optional, Dict, Any
 from uuid import UUID
 from fastapi import HTTPException, status, Depends, Request
-from sqlmodel import Session, select
-from src.api.dependencies.master_dependencies import get_master_session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from src.api.dependencies.master_dependencies import get_master_async_session
 
 from src.domain.models.master_tables import SuperAdmin, AdminUserStatus, AdminRole, SupabaseAdminStatus
 from src.infra.utils.app_state import fastapp
 from src.infra.utils.logger import get_logger
 from src.infra.auth.supabase_admin_client import supabase_admin_client
+from src.infra.config.constant import SupabaseErrors
 
 logger = get_logger("admin_auth")
 
@@ -18,7 +20,7 @@ logger = get_logger("admin_auth")
 class AdminAuth:
     """Admin authentication and management service using Supabase"""
  
-    async def __call__(self, request: Request, session: Session = Depends(get_master_session)) -> SuperAdmin:
+    async def __call__(self, request: Request, session: AsyncSession = Depends(get_master_async_session)) -> SuperAdmin:
         """
         FastAPI dependency to get current authenticated admin from Supabase token
 
@@ -32,7 +34,7 @@ class AdminAuth:
         Raises:
             HTTPException: If not authenticated
         """
-        return self.get_current_admin(request, session)
+        return await self.get_current_admin(request, session)
 
     def verify_token(self, token: str) -> Dict[str, Any]:
         """
@@ -52,10 +54,10 @@ class AdminAuth:
             logger.error(f"Token verification failed: {str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token"
+                detail=SupabaseErrors.INVALID_TOKEN
             )
 
-    def get_current_admin(self, request: Request, session: Session) -> SuperAdmin:
+    async def get_current_admin(self, request: Request, session: AsyncSession) -> SuperAdmin:
         """
         Get the current authenticated super admin.
         
@@ -75,7 +77,7 @@ class AdminAuth:
             if not auth_header or not auth_header.startswith("Bearer "):
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Missing or invalid authorization header"
+                    detail=SupabaseErrors.MISSING_AUTHORIZATION_HEADER
                 )
 
             token = auth_header.split(" ")[1]
@@ -88,24 +90,25 @@ class AdminAuth:
             if not user_id:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Invalid token: missing user ID"
+                    detail=SupabaseErrors.MISSING_USER_ID_IN_TOKEN
                 )
 
             # Find admin in database
             statement = select(SuperAdmin).where(SuperAdmin.supabase_user_id == user_id)
-            admin = session.exec(statement).first()
+            result = await session.execute(statement)
+            admin = result.scalars().first()
 
             if not admin:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Admin not found"
+                    detail=SupabaseErrors.ADMIN_NOT_FOUND
                 )
 
             # Check if admin is active (unless allow_pending_setup is True)
             if admin.status != SupabaseAdminStatus.ACTIVE:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Admin account is not active"
+                    detail=SupabaseErrors.ADMIN_ACCOUNT_NOT_ACTIVE
                 )
 
             return admin
@@ -116,7 +119,7 @@ class AdminAuth:
             logger.error(f"Authentication error: {str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Authentication failed"
+                detail=SupabaseErrors.AUTHENTICATION_FAILED
             )
 
     def generate_temp_password(self, length: int = 12) -> str:
@@ -189,8 +192,8 @@ class AdminAuth:
             logger.error(f"Failed to update metadata for user {supabase_user_id}: {str(e)}")
             return False
 
-    def create_super_admin(
-        self, email: str, first_name: str, last_name: str, session: Session
+    async def create_super_admin(
+        self, email: str, first_name: str, last_name: str, session: AsyncSession
     ) -> tuple[SuperAdmin, str]:
         """
         Create a new super admin account
@@ -207,10 +210,11 @@ class AdminAuth:
         Raises:
             HTTPException: If admin already exists
         """
-        existing_admin = session.exec(select(SuperAdmin).where(SuperAdmin.email == email)).one_or_none()
+        result = await session.execute(select(SuperAdmin).where(SuperAdmin.email == email))
+        existing_admin = result.scalars().one_or_none()
 
         if existing_admin:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Admin with this email already exists")
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=SupabaseErrors.ADMIN_EMAIL_ALREADY_EXISTS)
 
         temp_password = self.generate_temp_password()
         supabase_user_id = self.create_supabase_user(email, temp_password, first_name, last_name)
@@ -218,7 +222,7 @@ class AdminAuth:
         if not supabase_user_id:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to create user in authentication system",
+                detail=SupabaseErrors.FAILED_TO_CREATE_SUPABASE_USER,
             )
 
         admin = SuperAdmin(
@@ -232,12 +236,12 @@ class AdminAuth:
         )
 
         session.add(admin)
-        session.commit()
-        session.refresh(admin)
+        await session.commit()
+        await session.refresh(admin)
 
         return admin, temp_password
 
-    def get_admin_by_supabase_id(self, supabase_user_id: str, session: Session) -> Optional[SuperAdmin]:
+    async def get_admin_by_supabase_id(self, supabase_user_id: str, session: AsyncSession) -> Optional[SuperAdmin]:
         """
         Get admin by Supabase user ID
 
@@ -248,9 +252,10 @@ class AdminAuth:
         Returns:
             SuperAdmin object if found, None otherwise
         """
-        return session.exec(select(SuperAdmin).where(SuperAdmin.supabase_user_id == supabase_user_id)).one_or_none()
+        result = await session.execute(select(SuperAdmin).where(SuperAdmin.supabase_user_id == supabase_user_id))
+        return result.scalars().one_or_none()
 
-    def get_admin_by_email(self, email: str, session: Session) -> Optional[SuperAdmin]:
+    async def get_admin_by_email(self, email: str, session: AsyncSession) -> Optional[SuperAdmin]:
         """
         Get admin by email
 
@@ -261,7 +266,8 @@ class AdminAuth:
         Returns:
             SuperAdmin object if found, None otherwise
         """
-        return session.exec(select(SuperAdmin).where(SuperAdmin.email == email)).one_or_none()
+        result = await session.execute(select(SuperAdmin).where(SuperAdmin.email == email))
+        return result.scalars().one_or_none()
 
 
 

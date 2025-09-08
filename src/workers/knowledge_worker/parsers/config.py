@@ -25,11 +25,11 @@ class ParserConfig:
     def get_parser_settings(cls, parser_type: str) -> Dict[str, Any]:
         """Return common settings (PDF is the only active parser)."""
         return {
-            'max_chunk_size': cls.MAX_CHUNK_SIZE,
-            'chunk_overlap': cls.CHUNK_OVERLAP,
-            'min_content_length': cls.MIN_CONTENT_LENGTH,
-            'max_summary_length': cls.MAX_SUMMARY_LENGTH,
-            'max_embedding_text_length': cls.MAX_EMBEDDING_TEXT_LENGTH,
+            "max_chunk_size": cls.MAX_CHUNK_SIZE,
+            "chunk_overlap": cls.CHUNK_OVERLAP,
+            "min_content_length": cls.MIN_CONTENT_LENGTH,
+            "max_summary_length": cls.MAX_SUMMARY_LENGTH,
+            "max_embedding_text_length": cls.MAX_EMBEDDING_TEXT_LENGTH,
         }
 
     @classmethod

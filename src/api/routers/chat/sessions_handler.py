@@ -1,12 +1,12 @@
 from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, Body
-from sqlmodel import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
     get_current_user,
-    get_org_session,
+    get_org_async_session,
 )
 from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.chat_models import (
@@ -30,14 +30,16 @@ router = APIRouter()
 
 async def get_chat_session_service(
     user_ids: UserIDs = Depends(get_current_user),
-    org_session: Session = Depends(get_org_session),
+    org_session: AsyncSession = Depends(get_org_async_session),
 ):
-    service = ChatSessionService(org_session)
-    # No async resources inside for now, but keep symmetry with other services
+    service = ChatSessionService(
+        org_session, user_ids.organisation_id, user_ids.user_id
+    )
     try:
         yield service
     finally:
-        pass
+        # nothing to cleanup currently
+        ...
 
 
 def _to_out(chat) -> ChatSessionOut:
@@ -63,12 +65,9 @@ def _to_out(chat) -> ChatSessionOut:
 async def create_chat(
     payload: ChatSessionCreate = Body(...),
     service: ChatSessionService = Depends(get_chat_session_service),
-    user_ids: UserIDs = Depends(get_current_user),
 ):
     try:
-        chat = service.create_session(
-            user_id=user_ids.user_id,
-            organisation_id=user_ids.organisation_id,
+        chat = await service.create_session(
             title=payload.title,
             tags=payload.tags,
         )
@@ -89,13 +88,10 @@ async def create_chat(
 async def delete_chat(
     payload: DeleteChat = Body(...),
     service: ChatSessionService = Depends(get_chat_session_service),
-    user_ids: UserIDs = Depends(get_current_user),
 ):
     try:
-        chat = service.delete_session(
+        chat = await service.delete_session(
             session_id=payload.session_id,
-            user_id=user_ids.user_id,
-            organisation_id=user_ids.organisation_id,
         )
         return Response.success_response("Chat deleted", data=_to_out(chat))
     except ValueError as e:
@@ -114,13 +110,10 @@ async def delete_chat(
 async def rename_chat(
     payload: RenameChat = Body(...),
     service: ChatSessionService = Depends(get_chat_session_service),
-    user_ids: UserIDs = Depends(get_current_user),
 ):
     try:
-        chat = service.rename_session(
+        chat = await service.rename_session(
             session_id=payload.session_id,
-            user_id=user_ids.user_id,
-            organisation_id=user_ids.organisation_id,
             title=payload.title,
         )
         return Response.success_response("Chat renamed", data=_to_out(chat))
@@ -144,17 +137,14 @@ async def list_chats(
     limit: int = Query(20, ge=1, le=100),
     cursor: Optional[str] = Query(None, description="Opaque cursor from previous page"),
     service: ChatSessionService = Depends(get_chat_session_service),
-    user_ids: UserIDs = Depends(get_current_user),
 ):
     try:
-        items, next_cursor = service.list_sessions(
-            user_id=user_ids.user_id,
-            organisation_id=user_ids.organisation_id,
+        items, next_cursor = await service.list_sessions(
             limit=limit,
             cursor=cursor,
         )
         page = ChatSessionsPage(items=[_to_out(i) for i in items], cursor=next_cursor)
-        return Response.success_response("Chats listed", page)
+        return Response.success_response("Chats listed", data=page)
     except Exception as e:
         logger.error("List chats failed: %s", e, exc_info=True)
         return Response.internal_server_error_response("Unable to list chat sessions")
@@ -167,20 +157,19 @@ async def list_chats(
     summary="Search chat sessions by title (typeahead)",
 )
 async def search_chats(
-    q: str = Query(..., min_length=1, description="Search text in title (case-insensitive)"),
+    q: str = Query(
+        ..., min_length=1, description="Search text in title (case-insensitive)"
+    ),
     limit: int = Query(10, ge=1, le=50),
     service: ChatSessionService = Depends(get_chat_session_service),
-    user_ids: UserIDs = Depends(get_current_user),
 ):
     try:
-        items = service.search_sessions(
-            user_id=user_ids.user_id,
-            organisation_id=user_ids.organisation_id,
+        items = await service.search_sessions(
             q=q,
             limit=limit,
         )
         page = ChatSessionsPage(items=[_to_out(i) for i in items], cursor=None)
-        return Response.success_response("Chats searched", page)
+        return Response.success_response("Chats searched", data=page)
     except Exception as e:
         logger.error("Search chats failed: %s", e, exc_info=True)
         return Response.internal_server_error_response("Unable to search chat sessions")
@@ -195,13 +184,10 @@ async def search_chats(
 async def favorite_chat(
     payload: FavoriteChat = Body(...),
     service: ChatSessionService = Depends(get_chat_session_service),
-    user_ids: UserIDs = Depends(get_current_user),
 ):
     try:
-        chat = service.set_favorite(
+        chat = await service.set_favorite(
             session_id=payload.session_id,
-            user_id=user_ids.user_id,
-            organisation_id=user_ids.organisation_id,
             favorite=payload.favorite,
         )
         msg = "Chat favorited" if payload.favorite else "Chat unfavorited"
@@ -213,4 +199,6 @@ async def favorite_chat(
         return Response.bad_request_error_response(msg)
     except Exception as e:
         logger.error("Favorite toggle failed: %s", e, exc_info=True)
-        return Response.internal_server_error_response("Unable to update favorite state")
+        return Response.internal_server_error_response(
+            "Unable to update favorite state"
+        )

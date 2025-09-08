@@ -9,13 +9,14 @@ Fix notes:
     - We now treat absence of the async submodule as lack of support and
         raise a clear runtime error.
 """
+
 import asyncio
 import json
 
 try:  # redis >= 4.2 provides redis.asyncio; >=5 recommended
-        import redis.asyncio as redis  # type: ignore
+    import redis.asyncio as redis  # type: ignore
 except ImportError:  # pragma: no cover - fallback path
-        redis = None  # type: ignore
+    redis = None  # type: ignore
 
 from typing import AsyncGenerator, Dict, Any, Optional
 from uuid import UUID
@@ -28,19 +29,23 @@ logger = get_logger("redis_pubsub")
 
 class AsyncRedisPubSub:
     """Async Redis pub/sub client with connection management."""
-    
+
     def __init__(self):
         self.config = Config()
         self._redis: Optional[Any] = None
         self._pubsub: Optional[Any] = None
-    
+
     async def _get_redis_client(self) -> Any:
         """Get or create async Redis client."""
         if self._redis is None:
             if redis is None:
-                raise RuntimeError("Async redis support not available. Install/upgrade with: pip install 'redis>=5.0.0'")
+                raise RuntimeError(
+                    "Async redis support not available. Install/upgrade with: pip install 'redis>=5.0.0'"
+                )
 
-            redis_host, redis_port, redis_password = self.config.get_redis_client_details
+            redis_host, redis_port, redis_password = (
+                self.config.get_redis_client_details
+            )
             ssl_enabled = False if self.config.env == "local" else True
 
             # For long‑lived Pub/Sub, avoid read timeouts and client‑side health checks that
@@ -50,22 +55,24 @@ class AsyncRedisPubSub:
                 port=redis_port,
                 password=redis_password,
                 decode_responses=True,
-                socket_timeout=None,           # no read timeout for blocking pubsub
+                socket_timeout=None,  # no read timeout for blocking pubsub
                 socket_connect_timeout=30,
                 retry_on_timeout=True,
-                health_check_interval=0,       # disable client PING health check
+                health_check_interval=0,  # disable client PING health check
                 ssl=ssl_enabled,
                 socket_keepalive=True,
             )
             await self._redis.ping()  # connectivity check
         return self._redis
-    
-    async def subscribe_to_channel(self, channel: str) -> AsyncGenerator[Dict[str, Any], None]:
+
+    async def subscribe_to_channel(
+        self, channel: str
+    ) -> AsyncGenerator[Dict[str, Any], None]:
         """Subscribe to a Redis channel and yield messages.
-        
+
         Args:
             channel: Redis channel name to subscribe to
-            
+
         Yields:
             Parsed message data as dict
         """
@@ -73,9 +80,9 @@ class AsyncRedisPubSub:
             redis_client = await self._get_redis_client()
             self._pubsub = redis_client.pubsub()
             await self._pubsub.subscribe(channel)
-            
+
             logger.info(f"Subscribed to Redis channel: {channel}")
-            
+
             async for message in self._pubsub.listen():
                 if message["type"] == "message":
                     try:
@@ -84,14 +91,14 @@ class AsyncRedisPubSub:
                     except (json.JSONDecodeError, TypeError) as e:
                         logger.warning(f"Failed to parse message from {channel}: {e}")
                         continue
-                        
+
         except Exception as e:
             logger.error(f"Redis pub/sub error for channel {channel}: {e}")
             raise
-    
+
     async def publish_message(self, channel: str, data: Dict[str, Any]) -> None:
         """Publish a message to a Redis channel.
-        
+
         Args:
             channel: Redis channel name
             data: Message data to publish
@@ -103,7 +110,7 @@ class AsyncRedisPubSub:
         except Exception as e:
             logger.error(f"Failed to publish to {channel}: {e}")
             raise
-    
+
     async def close(self) -> None:
         """Clean up Redis connections."""
         try:
@@ -111,11 +118,10 @@ class AsyncRedisPubSub:
                 await self._pubsub.unsubscribe()
                 await self._pubsub.close()
                 self._pubsub = None
-            
+
             if self._redis:
                 await self._redis.close()
                 self._redis = None
-                
+
         except Exception as e:
             logger.warning(f"Error closing Redis connections: {e}")
-

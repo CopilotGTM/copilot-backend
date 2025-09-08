@@ -15,38 +15,26 @@ from socketio import ASGIApp
 
 from ..api.events.socket_app import sio
 from ..infra.utils.logger import get_logger
-from ..infra.messaging.redis_client import get_redis_client
+from ..infra.messaging.redis_client import close_redis_pool
+from ..infra.messaging.redis_streams import close_async_redis_pool
+
+from scripts.monitoring.db_pool_monitor import start_pool_monitor, stop_pool_monitor
 
 from src.api.routers.healthcheck import healthcheck_router, public_health_router
-from src.api.routers.chat_handler import chat_router
 from src.api.routers.chat.sessions_handler import router as chat_sessions_router
 from src.api.routers.chat.messages_handler import router as chat_messages_router
 from src.api.routers.chat_attachments.upload_handler import upload_router
 from src.api.routers.chat_attachments.access_handler import download_router as attachment_access_router
 from src.api.routers.knowledge_base.upload_handler import upload_router as knowledge_upload_router
 from src.api.routers.knowledge_base.access_handler import access_router as knowledge_access_router
-# from src.api.routers.technical_deck.transcript_format import transcript_router
-# from src.api.routers.technical_deck.get_technical_deck import technical_deck
-# from src.api.routers.technical_deck.select_template import select_template
-# from src.api.routers.rfp_sheet.sheet_identification import rfp__sheet_router
 from src.api.routers.admin.organizations_handler import router as admin_org_router
 from src.api.routers.admin.admin_auth_handler import router as admin_auth_router
 from src.api.routers.admin.users_handler import router as admin_user_router
 from src.api.routers.users.auth_handler import router as user_auth_router
 
-# Import secret maintenance system
-from src.infra.secrets.maintenance import maintenance_manager
-
-# from src.api.events import chat_message_handler
-# from src.api.events import connect_handler
-# from src.api.events.technical_deck import transcript_summary_handler
-# from src.api.events.technical_deck import slide_outline_generation
-# from src.api.events.technical_deck import technical_deck_generation
-# from src.api.events.rfp_sheet import rfp_answer_generation
-from src.api.events import redis_subscriber
+# Secret maintenance removed; no background task required
 
 logger = get_logger()
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -54,25 +42,27 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting application services...")
     
-    # Start secret maintenance manager
-    try:
-        await maintenance_manager.start()
-        logger.info("Secret maintenance manager started successfully")
-    except Exception as e:
-        logger.error(f"Failed to start secret maintenance manager: {e}")
-        # Don't fail startup for this, but log the error
-    
+    # Start DB pool monitor if available
+    if start_pool_monitor is not None:
+        await start_pool_monitor()
+
     yield
     
     # Shutdown
     logger.info("Shutting down application services...")
     
-    # Stop secret maintenance manager
-    try:
-        await maintenance_manager.stop()
-        logger.info("Secret maintenance manager stopped successfully")
-    except Exception as e:
-        logger.error(f"Error stopping secret maintenance manager: {e}")
+    # Close Redis connection pools
+    close_redis_pool()
+    await close_async_redis_pool()
+    logger.info("Redis connection pools closed")
+
+    # Stop DB pool monitor if running
+    if stop_pool_monitor is not None:
+        try:
+            await stop_pool_monitor()
+            logger.info("DB pool monitor stopped")
+        except Exception as e:
+            logger.warning("Failed to stop DB pool monitor: %s", e)
 
 
 def create_fastapi_app():
@@ -105,9 +95,6 @@ def create_fastapi_app():
         https_only=APP_ENV != "local",
     )
 
-    # Initialize Redis client in app state
-    fastapp.state.redis_client = get_redis_client()
-
     # App Level Variables
     fastapp.state.CLOUD_PROVIDER = os.getenv("CLOUD_PROVIDER")
     fastapp.state.APPLICATION_STORAGE_NAME = os.getenv("APPLICATION_STORAGE_NAME")
@@ -121,12 +108,7 @@ def create_fastapi_app():
     fastapp.include_router(healthcheck_router, tags=["internal", "healthcheck"])
     # fastapp.include_router(chat_router, prefix="/chats", tags=["chats"])
     fastapp.include_router(upload_router, prefix="/chats/upload", tags=["uploads"])
-    fastapp.include_router(attachment_access_router, prefix="/chats", tags=["downloads"])  # /chats/attachment/{id}/download
-    # fastapp.include_router(transcript_router, prefix="/chats/transcript", tags=["transcript"])
-    # fastapp.include_router(technical_deck, prefix="/chats/technical_deck", tags=["technical_deck"])
-    # fastapp.include_router(select_template, prefix="/chats/technical_deck", tags=["technical_deck", "select_template"])
-    # fastapp.include_router(rfp__sheet_router, prefix="/chats/rfp_sheet", tags=["rfp sheet", "sheet identification"])
-
+    fastapp.include_router(attachment_access_router, prefix="/chats", tags=["downloads"])
     # User auth
     fastapp.include_router(user_auth_router, prefix="/users/auth", tags=["user", "authentication"])
 

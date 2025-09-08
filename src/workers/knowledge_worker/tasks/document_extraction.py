@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """Heavy document extraction task (PDF/DOC extraction).
 """
 import asyncio
@@ -37,25 +38,31 @@ def _get_status_str(status_enum):
 
 
 @app.task(
-    name="knowledge.document_extraction", 
-    bind=True, 
-    acks_late=True, 
+    name="knowledge.document_extraction",
+    bind=True,
+    acks_late=True,
     max_retries=3,
     time_limit=1800,  # 30 minutes hard limit
-    soft_time_limit=1680  # 28 minutes soft limit
+    soft_time_limit=1680,  # 28 minutes soft limit
 )
-def document_extraction(self, organisation_id: str, source_id: str):  # pragma: no cover
+def document_extraction(
+    self, organisation_id: str, source_id: str
+):  # pragma: no cover  # noqa: C901  # NOSONAR
     """Heavy extraction task (PDF/DOC etc.)."""
-    logger.info(f"Starting document extraction for source {source_id} in org {organisation_id}")
+    logger.info(
+        f"Starting document extraction for source {source_id} in org {organisation_id}"
+    )
     session_gen = acquire_org_session(organisation_id)
     session = next(session_gen)
     storage = AzureOrganisationBlobStorage(organisation_id=organisation_id)
     temp_file_path = None
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    
+    job: KnowledgeProcessingJob | None = None
+    source: OrganisationSource | None = None
+
     try:
-        source: OrganisationSource | None = session.get(OrganisationSource, source_id)
+        source = session.get(OrganisationSource, source_id)
 
         # Check if source exists and is not in a terminal state
         if not source:
@@ -69,10 +76,23 @@ def document_extraction(self, organisation_id: str, source_id: str):  # pragma: 
         #     return
 
         # Fetch job row
-        job = session.query(KnowledgeProcessingJob).filter_by(source_id=source_id, job_type='document_extraction').first()
+        job = (
+            session.query(KnowledgeProcessingJob)
+            .filter_by(source_id=source_id, job_type="document_extraction")
+            .first()
+        )
         if not job:
             logger.warning(f"No document_extraction job found for source {source_id}")
             return
+
+        # Mark job as in progress and persist before heavy I/O
+        try:
+            job.status = JobStatus.IN_PROGRESS
+            session.add(job)
+            session.commit()
+        except Exception:
+            session.rollback()
+            logger.warning("Failed to mark job IN_PROGRESS for source %s", source_id)
 
         # # Update job status to processing
         # job.status = JobStatus.PROCESSING
@@ -101,7 +121,9 @@ def document_extraction(self, organisation_id: str, source_id: str):  # pragma: 
                     KnowledgeSourceEventUpdate(
                         source_id=str(source.source_id),
                         status=_get_status_str(source.status),
-                        updated_at=source.updated_at.isoformat() if source.updated_at else None,
+                        updated_at=(
+                            source.updated_at.isoformat() if source.updated_at else None
+                        ),
                         error_message=source.error_message,
                         progress=None,
                         thumbnail_medium_url=None,
@@ -129,7 +151,9 @@ def document_extraction(self, organisation_id: str, source_id: str):  # pragma: 
                     KnowledgeSourceEventUpdate(
                         source_id=str(source.source_id),
                         status=_get_status_str(source.status),
-                        updated_at=source.updated_at.isoformat() if source.updated_at else None,
+                        updated_at=(
+                            source.updated_at.isoformat() if source.updated_at else None
+                        ),
                         error_message=source.error_message,
                         progress=None,
                         thumbnail_medium_url=None,
@@ -137,7 +161,9 @@ def document_extraction(self, organisation_id: str, source_id: str):  # pragma: 
                     ),
                 )
             except Exception as e:
-                logger.warning(f"Failed to publish status for unsupported mimetype: {e}")
+                logger.warning(
+                    f"Failed to publish status for unsupported mimetype: {e}"
+                )
             return
 
         # Download the file from storage
@@ -156,7 +182,9 @@ def document_extraction(self, organisation_id: str, source_id: str):  # pragma: 
                     KnowledgeSourceEventUpdate(
                         source_id=str(source.source_id),
                         status=_get_status_str(source.status),
-                        updated_at=source.updated_at.isoformat() if source.updated_at else None,
+                        updated_at=(
+                            source.updated_at.isoformat() if source.updated_at else None
+                        ),
                         error_message=source.error_message,
                         progress=None,
                         thumbnail_medium_url=None,
@@ -164,22 +192,30 @@ def document_extraction(self, organisation_id: str, source_id: str):  # pragma: 
                     ),
                 )
             except Exception as e:
-                logger.warning(f"Failed to publish status for missing storage path: {e}")
+                logger.warning(
+                    f"Failed to publish status for missing storage path: {e}"
+                )
             return
 
         # Create a temporary file to store the downloaded content
-        with tempfile.NamedTemporaryFile(delete=False, suffix=Path(source.filename or "document").suffix) as temp_file:
+        with tempfile.NamedTemporaryFile(
+            delete=False, suffix=Path(source.filename or "document").suffix
+        ) as temp_file:
             temp_file_path = temp_file.name
-            
+
             # Download file from storage
             logger.info(f"Downloading file from storage: {source.storage_path}")
-            file_content = loop.run_until_complete(storage.get_blob_content(source.storage_path))
+            file_content = loop.run_until_complete(
+                storage.get_blob_content(source.storage_path)
+            )
             temp_file.write(file_content)
             temp_file.flush()
 
         # Parse the document using the appropriate parser
-        logger.info(f"Starting document parsing for source {source_id} with MIME type {mimetype}")
-        
+        logger.info(
+            f"Starting document parsing for source {source_id} with MIME type {mimetype}"
+        )
+
         parsed_documents = parser_factory.parse_document(
             file_path=temp_file_path,
             mimetype=mimetype,
@@ -190,7 +226,9 @@ def document_extraction(self, organisation_id: str, source_id: str):  # pragma: 
             source_id=str(source.source_id),
             source_blob_path=source.storage_path,
             original_filename=source.filename,
-            source_size_bytes=source.size_bytes if hasattr(source, 'size_bytes') else None,
+            source_size_bytes=(
+                source.size_bytes if hasattr(source, "size_bytes") else None
+            ),
         )
 
         if not parsed_documents:
@@ -208,7 +246,9 @@ def document_extraction(self, organisation_id: str, source_id: str):  # pragma: 
                     KnowledgeSourceEventUpdate(
                         source_id=str(source.source_id),
                         status=_get_status_str(source.status),
-                        updated_at=source.updated_at.isoformat() if source.updated_at else None,
+                        updated_at=(
+                            source.updated_at.isoformat() if source.updated_at else None
+                        ),
                         error_message=source.error_message,
                         progress=None,
                         thumbnail_medium_url=None,
@@ -219,7 +259,9 @@ def document_extraction(self, organisation_id: str, source_id: str):  # pragma: 
                 logger.warning(f"Failed to publish status for empty parse: {e}")
             return
 
-        logger.info(f"Successfully parsed document {source_id}, extracted {len(parsed_documents)} chunks")
+        logger.info(
+            f"Successfully parsed document {source_id}, extracted {len(parsed_documents)} chunks"
+        )
 
         # Remove any previous chunks for this source (idempotent re-run), then store
         document_store = DocumentStore(organisation_id)
@@ -227,13 +269,21 @@ def document_extraction(self, organisation_id: str, source_id: str):  # pragma: 
             deleted = document_store.delete_documents_by_source(source_id)
             logger.info(f"Deleted {deleted} existing chunks for source {source_id}")
         except Exception as e:
-            logger.warning(f"Failed to delete existing chunks for source {source_id}: {e}")
-        stored_ids = document_store.store_documents(parsed_documents, source_id, str(source.user_id) if source and source.user_id else None)
-        
+            logger.warning(
+                f"Failed to delete existing chunks for source {source_id}: {e}"
+            )
+        stored_ids = document_store.store_documents(
+            parsed_documents,
+            source_id,
+            str(source.user_id) if source and source.user_id else None,
+        )
+
         if not stored_ids:
             # Distinguish between 'parsed but duplicates' and true failure based on parsed_documents presence
             if parsed_documents:
-                logger.warning(f"No new unique document chunks stored for source {source_id} (all duplicates)")
+                logger.warning(
+                    f"No new unique document chunks stored for source {source_id} (all duplicates)"
+                )
                 source.status = OrganisationSourceStatus.COMPLETED
                 source.error_message = None
                 if job:
@@ -254,9 +304,15 @@ def document_extraction(self, organisation_id: str, source_id: str):  # pragma: 
                     KnowledgeSourceEventUpdate(
                         source_id=str(source.source_id),
                         status=_get_status_str(source.status),
-                        updated_at=source.updated_at.isoformat() if source.updated_at else None,
+                        updated_at=(
+                            source.updated_at.isoformat() if source.updated_at else None
+                        ),
                         error_message=source.error_message,
-                        progress=100 if source.status == OrganisationSourceStatus.COMPLETED else None,
+                        progress=(
+                            100
+                            if source.status == OrganisationSourceStatus.COMPLETED
+                            else None
+                        ),
                         thumbnail_medium_url=None,
                         thumbnail_small_url=None,
                     ),
@@ -265,7 +321,9 @@ def document_extraction(self, organisation_id: str, source_id: str):  # pragma: 
                 logger.warning(f"Failed to publish status for zero stored docs: {e}")
             return
 
-        logger.info(f"Successfully stored {len(stored_ids)} document chunks for source {source_id}")
+        logger.info(
+            f"Successfully stored {len(stored_ids)} document chunks for source {source_id}"
+        )
 
         # Update status to completed
         source.status = OrganisationSourceStatus.COMPLETED
@@ -285,29 +343,36 @@ def document_extraction(self, organisation_id: str, source_id: str):  # pragma: 
         )
 
         publish_source_status(organisation_id, publish_event)
-        logger.info("Published source status update (completed)", extra={"event": publish_event})
+        logger.info(
+            "Published source status update (completed)", extra={"event": publish_event}
+        )
 
     except (SoftTimeLimitExceeded, TimeLimitExceeded) as e:
         logger.error(f"Document extraction timed out for source {source_id}: {str(e)}")
-        
+
         # Update status to failed with timeout-specific message
         try:
             if session and source:
                 source.status = OrganisationSourceStatus.FAILED
-                source.error_message = f"Document extraction timed out after 30 minutes. The file may be too large or complex to process."
+                source.error_message = (
+                    "Document extraction timed out after 30 minutes. "
+                    "The file may be too large or complex to process."
+                )
                 session.add(source)
-                
+
                 if job:
                     job.status = JobStatus.FAILED
                     session.add(job)
-                
+
                 session.commit()
 
                 # Publish failure status
                 publish_event = KnowledgeSourceEventUpdate(
                     source_id=str(source.source_id),
                     status=_get_status_str(source.status),
-                    updated_at=source.updated_at.isoformat() if source.updated_at else None,
+                    updated_at=(
+                        source.updated_at.isoformat() if source.updated_at else None
+                    ),
                     error_message=source.error_message,
                     progress=None,
                     thumbnail_medium_url=None,
@@ -315,33 +380,39 @@ def document_extraction(self, organisation_id: str, source_id: str):  # pragma: 
                 )
                 publish_source_status(organisation_id, publish_event)
         except Exception as publish_error:
-            logger.error(f"Error publishing timeout failure status: {str(publish_error)}")
-        
+            logger.error(
+                f"Error publishing timeout failure status: {str(publish_error)}"
+            )
+
         # Don't retry timeout exceptions
         logger.warning(f"Task timed out for source {source_id}, not retrying")
         return
-        
+
     except Exception as e:
-        logger.error(f"Error during document extraction for source {source_id}: {str(e)}")
-        
+        logger.error(
+            f"Error during document extraction for source {source_id}: {str(e)}"
+        )
+
         # Update status to failed
         try:
             if session and source:
                 source.status = OrganisationSourceStatus.FAILED
                 source.error_message = f"Document extraction failed: {str(e)}"
                 session.add(source)
-                
+
                 if job:
                     job.status = JobStatus.FAILED
                     session.add(job)
-                
+
                 session.commit()
 
                 # Publish failure status
                 publish_event = KnowledgeSourceEventUpdate(
                     source_id=str(source.source_id),
                     status=_get_status_str(source.status),
-                    updated_at=source.updated_at.isoformat() if source.updated_at else None,
+                    updated_at=(
+                        source.updated_at.isoformat() if source.updated_at else None
+                    ),
                     error_message=source.error_message,
                     progress=None,
                     thumbnail_medium_url=None,
@@ -350,10 +421,10 @@ def document_extraction(self, organisation_id: str, source_id: str):  # pragma: 
                 publish_source_status(organisation_id, publish_event)
         except Exception as publish_error:
             logger.error(f"Error publishing failure status: {str(publish_error)}")
-        
+
         # Re-raise the exception for Celery retry logic
         raise
-        
+
     finally:
         # Clean up temporary file
         if temp_file_path and os.path.exists(temp_file_path):
@@ -361,14 +432,20 @@ def document_extraction(self, organisation_id: str, source_id: str):  # pragma: 
                 os.unlink(temp_file_path)
                 logger.debug(f"Cleaned up temporary file: {temp_file_path}")
             except Exception as e:
-                logger.warning(f"Failed to clean up temporary file {temp_file_path}: {str(e)}")
-        
+                logger.warning(
+                    f"Failed to clean up temporary file {temp_file_path}: {str(e)}"
+                )
+
         # Close database session
         try:
             session.close()
         except Exception:
             pass
-            
+        try:
+            session_gen.close()
+        except Exception:
+            pass
+
         # Close storage connection
         try:
             loop.run_until_complete(storage.close())

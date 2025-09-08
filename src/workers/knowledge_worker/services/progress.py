@@ -36,4 +36,3 @@ def publish(
         publish_source_status(organisation_id, event)
     except Exception as e:  # pragma: no cover - non-critical telemetry
         logger.debug(f"Failed to publish progress for source {source_id}: {e}")
-

@@ -7,11 +7,11 @@ from pathlib import Path
 
 class BaseParser(ABC):
     """Abstract base class for document parsers."""
-    
+
     def __init__(self, organisation_id: str, user_id: str, storage_backend: Any):
         """
         Initialize the parser.
-        
+
         Args:
             organisation_id: The organisation ID
             user_id: The user ID who uploaded the document
@@ -20,16 +20,20 @@ class BaseParser(ABC):
         self.organisation_id = organisation_id
         self.user_id = user_id
         self.storage_backend = storage_backend
-    
+
     @abstractmethod
-    def parse(self, file_path: str | Path, document_url: Optional[str] = None,
-              source_id: Optional[str] = None,
-              source_blob_path: Optional[str] = None,
-              original_filename: Optional[str] = None,
-              source_size_bytes: Optional[int] = None) -> List[Dict[str, Any]]:
+    def parse(
+        self,
+        file_path: str | Path,
+        document_url: Optional[str] = None,
+        source_id: Optional[str] = None,
+        source_blob_path: Optional[str] = None,
+        original_filename: Optional[str] = None,
+        source_size_bytes: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
         """
         Parse the document and return processed data.
-        
+
         Args:
             file_path: Path to the document file
             document_url: Optional URL of the document
@@ -37,12 +41,12 @@ class BaseParser(ABC):
             source_blob_path: Optional blob path of the original file in storage
             original_filename: Optional original filename provided by user
             source_size_bytes: Optional file size in bytes from OrganisationSource.size_bytes
-            
+
         Returns:
             List of processed document chunks/pages
         """
         pass
-    
+
     @classmethod
     def supported_mimetypes(cls) -> List[str]:
         """Optional classmethod listing supported MIME types.

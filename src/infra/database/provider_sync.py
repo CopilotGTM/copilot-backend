@@ -2,12 +2,12 @@
 
 Creates and caches:
   - A single master engine (using DATABASE_USER / DATABASE_PASSWORD)
-  - Tenant engines via TenantPoolManager with per-tenant login/password
+  - Per-tenant engines with per-tenant login/password
 
 Responsibilities kept minimal: session lifecycle + engine invalidation.
-Schema selection is assumed to be handled either via role default search_path
-or future connect event hooks.
+Schema selection is applied at connection creation time via search_path.
 """
+
 from __future__ import annotations
 
 import threading
@@ -15,17 +15,15 @@ import urllib.parse
 import asyncio
 from contextlib import contextmanager
 from typing import Iterator, Dict
-
+from uuid import UUID
 from sqlalchemy.engine import Engine
 from sqlalchemy import text
-from sqlalchemy.orm import sessionmaker
-from sqlmodel import create_engine, Session as SQLModelSession
+from sqlalchemy.orm import sessionmaker, Session as SASession
+from sqlalchemy import create_engine
 
 from src.infra.database.interface import SyncDatabaseProvider
-from src.infra.database.pool_manager import TenantPoolManager
 from src.infra.config.configs import database_config
-from src.infra.secrets.manager import secrets_manager, SecretsManager
-from src.infra.secrets.azure_key_vault import AzureKeyVaultSecretProvider
+from src.infra.secrets.manager import secrets_manager
 from src.infra.utils.resource_naming import (
     get_key_vault_secret_name,
     get_role_name,
@@ -36,22 +34,37 @@ import uuid
 
 logger = get_logger("sync_db_provider")
 
+
 class SyncSqlAlchemyProvider(SyncDatabaseProvider):
-    def __init__(self, *, tenant_pool_max: int = 100, tenant_pool_multiplier: float = 5.0):
+    def __init__(
+        self, *, tenant_pool_max: int = 100, tenant_pool_multiplier: float = 5.0
+    ):
+
+        # Global lock for master and tenant engine management
         self._lock = threading.RLock()
+        self._tenant_locks: Dict[UUID, threading.Lock] = {}
+
+        # Master and tenant engines
         self._master_engine: Engine | None = None
         self._SessionFactory: sessionmaker | None = None
-        self._tenant_pools = TenantPoolManager(
-            max_tenant_engines=tenant_pool_max,
-            pool_multiplier=tenant_pool_multiplier,
-        )
 
-    # ------------------------------------------------------------------
-    # Master
-    # ------------------------------------------------------------------
-    def _ensure_master(self):
+        # Inline minimal tenant engine cache (LRU)
+        self._tenant_engines: Dict[UUID, Engine] = {}
+        self._tenant_pool_order: list[UUID] = []
+        self._tenant_pool_max = tenant_pool_max
+        self._pool_multiplier = tenant_pool_multiplier
+
+    def _get_tenant_lock(self, org_id: UUID) -> threading.Lock:
+        with self._lock:
+            lock = self._tenant_locks.get(org_id)
+            if lock is None:
+                lock = threading.Lock()
+                self._tenant_locks[org_id] = lock
+            return lock
+
+    def _get_master_engine(self):
         if self._master_engine is not None:
-            return
+            return self._master_engine
         with self._lock:
             if self._master_engine is None:
                 url = self._build_master_url()
@@ -65,19 +78,14 @@ class SyncSqlAlchemyProvider(SyncDatabaseProvider):
                     max_overflow=database_config.DATABASE_MAX_OVERFLOW,
                     connect_args={
                         "sslmode": database_config.DATABASE_SSL_MODE,
-                        # Bound connection establishment time
                         "connect_timeout": database_config.DATABASE_CONNECT_TIMEOUT_SEC,
-                        # Set server-side statement timeout for all sessions
-                        "options": f"-c statement_timeout={database_config.DATABASE_STATEMENT_TIMEOUT_MS}",
-                        # Enable TCP keepalives to detect dead peers faster
                         "keepalives": 1,
                         "keepalives_idle": 30,
                         "keepalives_interval": 10,
                         "keepalives_count": 5,
                     },
                 )
-                # Use SQLModel Session for backward compatibility (.exec API)
-                self._SessionFactory = sessionmaker(bind=self._master_engine, expire_on_commit=False, class_=SQLModelSession)
+                return self._master_engine
 
     def _build_master_url(self) -> str:
         host = database_config.DATABASE_HOST
@@ -87,139 +95,138 @@ class SyncSqlAlchemyProvider(SyncDatabaseProvider):
         pw = urllib.parse.quote_plus(database_config.DATABASE_PASSWORD)
         return f"postgresql://{user}:{pw}@{host}:{port}/{db}"
 
-    # ------------------------------------------------------------------
     # Tenant
-    # ------------------------------------------------------------------
-    def _get_tenant_engine(self, org_id: str) -> Engine:
-        # Expect org_id as string UUID; convert for naming helpers
+    def _get_tenant_engine(self, org_id: UUID) -> Engine:
+        """Get or create the SQLAlchemy engine for a tenant."""
+        with self._lock:
+            engine = self._tenant_engines.get(org_id)
+            if engine:
+                if org_id in self._tenant_pool_order:
+                    self._tenant_pool_order.remove(org_id)
+                self._tenant_pool_order.append(org_id)
+                return engine
+
+        # Create new engine
+        lock = self._get_tenant_lock(org_id)
+        with lock:
+            with self._lock:
+                engine = self._tenant_engines.get(org_id)
+                if engine:
+                    if org_id in self._tenant_pool_order:
+                        self._tenant_pool_order.remove(org_id)
+                    self._tenant_pool_order.append(org_id)
+                    return engine
+
+            logger.debug(f"Creating new engine for org_id: {org_id}")
+            role_name = get_role_name(org_id)
+            secret_name = get_key_vault_secret_name(org_id)
+
+            # Single, simple fetch path (fallback is alias to get in simplified manager)
+            try:
+                password = asyncio.run(secrets_manager.get_with_fallback(secret_name))
+                if not password:
+                    password = asyncio.run(secrets_manager.get(secret_name))
+            except Exception as e:
+                logger.error("Secret fetch failed for '%s': %s", secret_name, e)
+                password = None
+
+            if not password:
+                logger.error(
+                    f"Password secret '{secret_name}' unavailable for org_id {org_id}"
+                )
+                raise RuntimeError(f"Tenant secret '{secret_name}' unavailable")
+
+            eng_new = self._build_tenant_engine(org_id, role_name, password)
+
+            # Cache + LRU
+            with self._lock:
+                self._tenant_engines[org_id] = eng_new
+                if org_id in self._tenant_pool_order:
+                    self._tenant_pool_order.remove(org_id)
+                self._tenant_pool_order.append(org_id)
+                while len(self._tenant_engines) > self._tenant_pool_max:
+                    evict_id = self._tenant_pool_order.pop(0)
+                    old = self._tenant_engines.pop(evict_id, None)
+                    try:
+                        if old:
+                            old.dispose()
+                    except Exception:
+                        pass
+            return eng_new
+
+    def _build_tenant_engine(
+        self, org_uuid: UUID, role_name: str, password: str
+    ) -> Engine:
+        host = database_config.DATABASE_HOST
+        port = database_config.DATABASE_PORT
+        db_name = database_config.DATABASE_NAME
+        if isinstance(password, bytes):
+            password = password.decode("utf-8")
+        pw = urllib.parse.quote_plus(password)
+        url = f"postgresql://{role_name}:{pw}@{host}:{port}/{db_name}"
+
+        base_size = database_config.DATABASE_POOL_SIZE or 5
+        overflow = database_config.DATABASE_MAX_OVERFLOW or 0
+        pool_size = max(1, int(base_size * self._pool_multiplier))
+        max_overflow = max(0, int(overflow * self._pool_multiplier))
+
+        schema = get_schema_name(org_uuid)
+        options_parts = [
+            f"-c statement_timeout={database_config.DATABASE_STATEMENT_TIMEOUT_MS}"
+        ]
+        if schema:
+            options_parts.insert(0, f'-c search_path="{schema}",public ')
+        options_str = "".join(options_parts)
+
+        return create_engine(
+            url,
+            echo=False,
+            pool_pre_ping=True,
+            pool_recycle=database_config.POOL_RECYCLE_SEC,
+            pool_timeout=database_config.DATABASE_POOL_TIMEOUT_SEC,
+            pool_size=pool_size,
+            max_overflow=max_overflow,
+            connect_args={
+                "sslmode": database_config.DATABASE_SSL_MODE,
+                "connect_timeout": database_config.DATABASE_CONNECT_TIMEOUT_SEC,
+                "options": options_str,
+                "keepalives": 1,
+                "keepalives_idle": 30,
+                "keepalives_interval": 10,
+                "keepalives_count": 5,
+            },
+        )
+
+    def _parse_tenant_info(self, org_id: str) -> tuple[uuid.UUID, str, str]:
+        """Parse org_id and generate tenant-specific names."""
         try:
             org_uuid = uuid.UUID(org_id)
         except Exception:
             raise ValueError(f"Invalid organisation id: {org_id}")
-        
+
         role_name = get_role_name(org_uuid)
         secret_name = get_key_vault_secret_name(org_uuid)
-        
-        logger.debug(f"Attempting to get tenant engine for org_id={org_id}, secret_name={secret_name}")
-        
-        # Fetch tenant password with enhanced error handling
-        password = None
-        # Fast path: use fresh value from global cache to avoid cross-loop aio work
-        try:
-            cached_pw = secrets_manager.cache.get(secret_name)
-            if cached_pw is not None:
-                password = cached_pw
-        except Exception:
-            pass
-        try:
-            # Check if we're in an async context
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-        
-        # Define the secret fetching function with improved async handling
-        def fetch_secret_with_fallback():
-            """Fetch secret handling async/sync boundary properly."""
-            try:
-                # Always create a new event loop for secret fetching
-                # This avoids issues with closed event loops
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                
-                try:
-                    # Create isolated provider/manager bound to this loop
-                    provider = AzureKeyVaultSecretProvider()
-                    local_mgr = SecretsManager(provider=provider)
-                    # First try normal get
-                    password = loop.run_until_complete(local_mgr.get(secret_name))
-                    if password is not None:
-                        return password
-                    
-                    # If that fails, try get_with_fallback for critical database operations
-                    logger.warning(f"Normal secret fetch failed for '{secret_name}', trying fallback")
-                    password = loop.run_until_complete(
-                        local_mgr.get_with_fallback(secret_name, fallback_ttl=7200)  # 2 hours fallback
-                    )
-                    
-                    if password is not None:
-                        logger.info(f"Successfully retrieved secret '{secret_name}' using fallback")
-                        return password
-                    
-                    return None
-                    
-                except Exception as e:
-                    logger.error(f"Error in event loop for secret '{secret_name}': {e}")
-                    return None
-                finally:
-                    try:
-                        # Ensure provider resources are closed before loop teardown
-                        try:
-                            loop.run_until_complete(provider.close())
-                        except Exception:
-                            pass
-                        # Clean up the event loop
-                        loop.close()
-                    except Exception:
-                        pass
-                    
-            except Exception as e:
-                logger.error(f"Failed to create event loop for secret '{secret_name}': {e}")
-                return None
-        
-        if password is None and loop and loop.is_running():
-            # Running inside async loop — use thread pool but with better isolation
-            from concurrent.futures import ThreadPoolExecutor
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                try:
-                    future = executor.submit(fetch_secret_with_fallback)
-                    password = future.result(timeout=30)  # 30 second timeout
-                except Exception as e:
-                    logger.error(f"Thread pool execution failed for secret '{secret_name}': {e}")
-                    password = None
-        elif password is None:
-            # Not in async context, safe to run directly
-            password = fetch_secret_with_fallback()
-        
-        if password is None:
-            # Enhanced error message with troubleshooting info
-            metrics = secrets_manager.get_metrics()
-            health = secrets_manager.health_check()
-            
-            error_msg = (
-                f"Secret '{secret_name}' not found for tenant {org_uuid}. "
-                f"Secret manager health: {health['healthy']}, "
-                f"circuit breaker open: {health['circuit_breaker_open']}, "
-                f"consecutive failures: {health['consecutive_failures']}, "
-                f"cache hit rate: {metrics['cache_hit_rate']:.2%}"
-            )
-            logger.error(error_msg)
-            
-            # Check if this is a persistent issue and suggest actions
-            if health['consecutive_failures'] >= 3:
-                logger.error(
-                    f"Multiple consecutive failures detected for secrets. "
-                    f"This may indicate an Azure Key Vault connectivity issue. "
-                    f"Consider checking network connectivity and authentication."
-                )
-            
-            raise RuntimeError(error_msg)
-        
-        # Populate global cache for subsequent calls
-        try:
-            secrets_manager.cache.set(secret_name, password)
-        except Exception:
-            pass
-        logger.info(f"Successfully retrieved tenant password for org_id={org_id}")
-        return self._tenant_pools.get_or_create(role_name, password)
+        return org_uuid, role_name, secret_name
 
-    # ------------------------------------------------------------------
-    # Public Provider API
-    # ------------------------------------------------------------------
+    def _fetch_tenant_password(self, secret_name: str) -> str:
+        """Fetch tenant password synchronously via the simplified secrets manager."""
+        try:
+            value = asyncio.run(secrets_manager.get(secret_name))
+        except Exception as e:
+            logger.error("Secret fetch failed for '%s': %s", secret_name, e)
+            value = None
+        if not value:
+            raise RuntimeError(f"Password secret '{secret_name}' unavailable")
+        return value
+
+    # Public Provider API ---------------------------------------------
     @contextmanager
-    def master_session(self) -> Iterator[SQLModelSession]:
-        self._ensure_master()
-        assert self._SessionFactory is not None
-        session: SQLModelSession = self._SessionFactory()  # type: ignore
+    def master_session(self) -> Iterator[SASession]:
+        master_engine = self._get_master_engine()
+        session_local = sessionmaker(
+            bind=master_engine, expire_on_commit=False, class_=SASession
+        )
+        session: SASession = session_local()
         try:
             yield session
             session.commit()
@@ -230,23 +237,12 @@ class SyncSqlAlchemyProvider(SyncDatabaseProvider):
             session.close()
 
     @contextmanager
-    def tenant_session(self, org_id: str) -> Iterator[SQLModelSession]:
+    def tenant_session(self, org_id: UUID) -> Iterator[SASession]:
         engine = self._get_tenant_engine(org_id)
-        SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, class_=SQLModelSession)
-        session: SQLModelSession = SessionLocal()  # type: ignore
-        # Apply tenant schema search_path explicitly (role defaults not yet guaranteed in all envs).
-        # Once provisioning ensures: ALTER ROLE <tenant_role> IN DATABASE <db> SET search_path = "<schema>", public;
-        # this block can be removed for a tiny performance win.
-        try:
-            org_uuid = uuid.UUID(org_id)
-            schema = get_schema_name(org_uuid)
-        except Exception:
-            schema = None
-        if schema:
-            try:
-                session.execute(text(f'SET search_path TO "{schema}", public'))
-            except Exception:
-                pass
+        session_local = sessionmaker(
+            bind=engine, expire_on_commit=False, class_=SASession
+        )
+        session: SASession = session_local()
         try:
             yield session
             session.commit()
@@ -254,11 +250,6 @@ class SyncSqlAlchemyProvider(SyncDatabaseProvider):
             session.rollback()
             raise
         finally:
-            if schema:
-                try:
-                    session.execute(text('SET search_path TO public'))
-                except Exception:
-                    pass
             session.close()
 
     def invalidate_tenant(self, org_id: str) -> None:
@@ -266,7 +257,15 @@ class SyncSqlAlchemyProvider(SyncDatabaseProvider):
             org_uuid = uuid.UUID(org_id)
         except Exception:
             return
-        role_name = get_role_name(org_uuid)
-        self._tenant_pools.invalidate(role_name)
+        with self._lock:
+            eng = self._tenant_engines.pop(org_uuid, None)
+            if org_uuid in self._tenant_pool_order:
+                self._tenant_pool_order.remove(org_uuid)
+        if eng:
+            try:
+                eng.dispose()
+            except Exception:
+                pass
+
 
 __all__ = ["SyncSqlAlchemyProvider"]

@@ -1,6 +1,7 @@
 from kombu import Queue, Exchange
 from src.workers.base.worker_config import BaseWorkerConfig
 
+
 class ChatWorkerConfig(BaseWorkerConfig):
     """Configuration for the Chat Worker."""
 
@@ -19,13 +20,24 @@ class ChatWorkerConfig(BaseWorkerConfig):
 
         self.task_queues = (
             Queue("attachments", exchange=chat_exchange, routing_key="attachments"),
-            Queue("chat_processing", exchange=chat_exchange, routing_key="chat_processing"),
+            Queue(
+                "chat_processing", exchange=chat_exchange, routing_key="chat_processing"
+            ),
             Queue("chat_messages", exchange=chat_exchange, routing_key="chat_messages"),
         )
 
         self.task_routes = {
-            "attachments.post_upload": {"queue": "attachments", "routing_key": "attachments"},
-            "chat.test_task": {"queue": "chat_processing", "routing_key": "chat_processing"},
+            "attachments.post_upload": {
+                "queue": "attachments",
+                "routing_key": "attachments",
+            },
+            "chat.test_task": {
+                "queue": "chat_processing",
+                "routing_key": "chat_processing",
+            },
             "chat.ping": {"queue": "chat_processing", "routing_key": "chat_processing"},
-            "chat.process_message": {"queue": "chat_messages", "routing_key": "chat_messages"},
+            "chat.process_message": {
+                "queue": "chat_messages",
+                "routing_key": "chat_messages",
+            },
         }

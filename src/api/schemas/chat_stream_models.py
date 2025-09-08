@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import time
 from typing import Any, Dict, List, Literal, Optional, Union
 from pydantic import BaseModel, Field
+import time
 
 
 class Suggestion(BaseModel):
@@ -15,13 +17,6 @@ class Citation(BaseModel):
     snippet: Optional[str] = None
 
 
-class FieldText(BaseModel):
-    name: str
-    kind: Literal["text"] = "text"
-    required: Optional[bool] = False
-    placeholder: Optional[str] = None
-
-
 class FieldSingleSelect(BaseModel):
     name: str
     kind: Literal["single_select"] = "single_select"
@@ -29,51 +24,85 @@ class FieldSingleSelect(BaseModel):
     required: Optional[bool] = False
 
 
-class FieldNumber(BaseModel):
-    name: str
-    kind: Literal["number"] = "number"
-    min: Optional[float] = None
-    max: Optional[float] = None
-    required: Optional[bool] = False
-
-
-FieldSpec = Union[FieldText, FieldSingleSelect, FieldNumber]
+FieldSpec = FieldSingleSelect
 
 
 class FrameBase(BaseModel):
     type: str
+    # Production-level metadata
+    frontend_id: str = Field(default="", description="Job ID - frontend identifier for request tracking")
+    backend_id: str = Field(default="", description="Message ID - backend identifier for data correlation")
+    version: str = Field(default="1.0", description="Frame schema version")
+    timestamp: float = Field(default_factory=time.time, description="Unix timestamp when frame was created")
+    sequence: Optional[int] = Field(default=None, description="Optional sequence number for ordering")
 
 
 class AnswerDelta(FrameBase):
     type: Literal["answer.delta"] = "answer.delta"
-    message_id: str
     content: str
     format: Optional[Literal["markdown", "plain"]] = None
 
 
 class AnswerReplace(FrameBase):
     type: Literal["answer.replace"] = "answer.replace"
-    message_id: str
     content: str
     format: Optional[Literal["markdown", "plain"]] = None
 
 
 class AnswerMetrics(FrameBase):
     type: Literal["answer.metrics"] = "answer.metrics"
-    message_id: str
-    confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-    citations: Optional[List[Citation]] = None
+    confidence: Optional[Literal["high", "medium", "low"]] = None
 
 
 class SuggestionsReplace(FrameBase):
     type: Literal["suggestions.replace"] = "suggestions.replace"
-    message_id: str
-    items: List[Suggestion]
+    items: List[str]
+
+
+class SourcesReplace(FrameBase):
+    # Canonical list of sources/citations referenced in the answer
+    type: Literal["sources.replace"] = "sources.replace"
+    # Keep key name as `sources` to match existing worker expectations
+    sources: Optional[List[Citation]] = None
+
+
+class ProgressUpdate(FrameBase):
+    # User-visible progress or status updates during long operations
+    type: Literal["progress.update"] = "progress.update"
+    message: str
+    stage: Optional[str] = None
+    progress: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    eta_seconds: Optional[int] = Field(default=None, ge=0)
+
+
+class AgentSwitch(FrameBase):
+    # Signal intent to switch to a different agent capability
+    type: Literal["agent.switch"] = "agent.switch"
+    from_agent: Optional[str] = None
+    to_agent: str
+    reason: Optional[str] = None
+
+
+class ToolUsage(FrameBase):
+    # Track tool usage for transparency
+    type: Literal["tool.usage"] = "tool.usage" 
+    tool_name: str
+    tool_description: Optional[str] = None
+    status: Literal["starting", "in_progress", "completed", "failed"] = "starting"
+    parameters: Optional[Dict[str, Any]] = None
+    result_summary: Optional[str] = None
+    duration_ms: Optional[int] = None
+
+
+class ThinkingUpdate(FrameBase):
+    # Show agent thinking/reasoning process
+    type: Literal["thinking.update"] = "thinking.update"
+    thought: str
+    stage: Optional[str] = None
 
 
 class QuestionPrompt(FrameBase):
     type: Literal["question.prompt"] = "question.prompt"
-    message_id: str
     prompt: str
     fields: Optional[List[FieldSpec]] = None
     await_user_response: bool = True
@@ -96,7 +125,6 @@ class ActionResult(FrameBase):
 
 class Finalize(FrameBase):
     type: Literal["finalize"] = "finalize"
-    message_id: str
     reason: Optional[Literal["done", "aborted", "error"]] = None
 
 
@@ -118,6 +146,11 @@ Frame = Union[
     AnswerReplace,
     AnswerMetrics,
     SuggestionsReplace,
+    SourcesReplace,
+    ProgressUpdate,
+    AgentSwitch,
+    ToolUsage,
+    ThinkingUpdate,
     QuestionPrompt,
     ActionCall,
     ActionResult,

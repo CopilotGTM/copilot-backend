@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from src.infra.utils.logger import get_logger
-from src.infra.utils.database import get_org_session
+from src.api.dependencies.organisation_dependencies import acquire_org_session
 from src.domain.models.organisation_tables.knowledge_models import OrganisationDocument
 
 logger = get_logger("document_store")
@@ -13,192 +13,240 @@ logger = get_logger("document_store")
 
 class DocumentStore:
     """Service for storing and managing parsed documents."""
-    
+
     def __init__(self, organisation_id: str):
         """
         Initialize the document store.
-        
+
         Args:
             organisation_id: The organisation ID
         """
         self.organisation_id = organisation_id
-    
-    def store_documents(self, documents: List[Dict[str, Any]], source_id: str, uploader_user_id: Optional[str] = None) -> List[str]:
+
+    def store_documents(
+        self,
+        documents: List[Dict[str, Any]],
+        source_id: str,
+        uploader_user_id: Optional[str] = None,
+    ) -> List[str]:
         """
         Store parsed documents in the database.
-        
+
         Args:
             documents: List of parsed document data
             source_id: The source ID these documents belong to
-            
+
         Returns:
             List of stored document IDs
         """
         stored_ids = []
-        
+
         try:
-            session_gen = get_org_session(self.organisation_id)
+            session_gen = acquire_org_session(self.organisation_id)
             session = next(session_gen)
-            
+
             for doc_data in documents:
                 try:
                     # Create OrganisationDocument instance only if content_hash is unique
                     uid = uploader_user_id
                     if not uid and isinstance(doc_data, dict):
-                        uid = doc_data.get('uploader_user_id') or doc_data.get('meta_data', {}).get('user_id')
-                    
-                    computed_hash = doc_data.get('content_hash', self._generate_content_hash(doc_data.get('content', '')))
-                    
+                        uid = doc_data.get("uploader_user_id") or doc_data.get(
+                            "meta_data", {}
+                        ).get("user_id")
+
+                    computed_hash = doc_data.get(
+                        "content_hash",
+                        self._generate_content_hash(doc_data.get("content", "")),
+                    )
+
                     # Check if content_hash already exists to avoid UniqueViolation
-                    existing = session.query(OrganisationDocument).filter_by(content_hash=computed_hash).first()
+                    existing = (
+                        session.query(OrganisationDocument)
+                        .filter_by(content_hash=computed_hash)
+                        .first()
+                    )
                     if existing:
-                        logger.warning(f"Skipping duplicate document with content_hash={computed_hash}")
+                        logger.warning(
+                            f"Skipping duplicate document with content_hash={computed_hash}"
+                        )
                         continue
 
                     doc = OrganisationDocument(
                         source_id=UUID(source_id),
                         uploader_user_id=UUID(uid) if uid else None,
-                        name=doc_data.get('name', 'Untitled'),
-                        content=doc_data.get('content', ''),
-                        meta_data=doc_data.get('meta_data', {}),
-                        filters=doc_data.get('filters', {}),
-                        embedding=doc_data.get('embedding', []),
-                        usage=doc_data.get('usage', {}),
-                        content_hash=computed_hash
+                        name=doc_data.get("name", "Untitled"),
+                        content=doc_data.get("content", ""),
+                        meta_data=doc_data.get("meta_data", {}),
+                        filters=doc_data.get("filters", {}),
+                        embedding=doc_data.get("embedding", []),
+                        usage=doc_data.get("usage", {}),
+                        content_hash=computed_hash,
                     )
-                    
+
                     session.add(doc)
                     stored_ids.append(str(doc.document_id))
-                    logger.debug(f"Added document {doc.document_id} to session with content_hash={computed_hash}")
-                    
+                    logger.debug(
+                        f"Added document {doc.document_id} to session with content_hash={computed_hash}"
+                    )
+
                 except Exception as e:
                     logger.error(f"Error creating document: {str(e)}")
                     continue
-            
+
             # Commit all documents
             session.commit()
-            logger.info(f"Successfully stored {len(stored_ids)} documents for source {source_id}")
-            
+            logger.info(
+                f"Successfully stored {len(stored_ids)} documents for source {source_id}"
+            )
+
         except Exception as e:
             logger.error(f"Error storing documents: {str(e)}")
             try:
                 session.rollback()
-            except:
+            except Exception:
                 pass
         finally:
             try:
                 session.close()
-            except:
+            except Exception:
                 pass
-        
+            try:
+                session_gen.close()
+            except Exception:
+                pass
+
         return stored_ids
-    
+
     def update_document(self, document_id: str, updates: Dict[str, Any]) -> bool:
         """
         Update an existing document.
-        
+
         Args:
             document_id: The document ID to update
             updates: Dictionary of fields to update
-            
+
         Returns:
             True if update was successful, False otherwise
         """
         try:
-            session_gen = get_org_session(self.organisation_id)
+            session_gen = acquire_org_session(self.organisation_id)
             session = next(session_gen)
-            
-            doc = session.query(OrganisationDocument).filter_by(document_id=document_id).first()
+
+            doc = (
+                session.query(OrganisationDocument)
+                .filter_by(document_id=document_id)
+                .first()
+            )
             if not doc:
                 logger.warning(f"Document {document_id} not found for update")
                 return False
-            
+
             # Update fields
             for field, value in updates.items():
                 if hasattr(doc, field):
                     setattr(doc, field, value)
-            
+
             # Update content hash if content was changed
-            if 'content' in updates:
-                doc.content_hash = self._generate_content_hash(updates['content'])
-            
+            if "content" in updates:
+                doc.content_hash = self._generate_content_hash(updates["content"])
+
             session.commit()
             logger.info(f"Successfully updated document {document_id}")
             return True
-            
+
         except Exception as e:
             logger.error(f"Error updating document {document_id}: {str(e)}")
             try:
                 session.rollback()
-            except:
+            except Exception:
                 pass
             return False
         finally:
             try:
                 session.close()
-            except:
+            except Exception:
                 pass
-    
+            try:
+                session_gen.close()
+            except Exception:
+                pass
+
     def delete_documents_by_source(self, source_id: str) -> int:
         """
         Delete all documents belonging to a source.
-        
+
         Args:
             source_id: The source ID
-            
+
         Returns:
             Number of documents deleted
         """
         try:
-            session_gen = get_org_session(self.organisation_id)
+            session_gen = acquire_org_session(self.organisation_id)
             session = next(session_gen)
-            
-            deleted_count = session.query(OrganisationDocument).filter_by(source_id=UUID(source_id)).delete()
+
+            deleted_count = (
+                session.query(OrganisationDocument)
+                .filter_by(source_id=UUID(source_id))
+                .delete()
+            )
             session.commit()
-            
+
             logger.info(f"Deleted {deleted_count} documents for source {source_id}")
             return deleted_count
-            
+
         except Exception as e:
             logger.error(f"Error deleting documents for source {source_id}: {str(e)}")
             try:
                 session.rollback()
-            except:
+            except Exception:
                 pass
             return 0
         finally:
             try:
                 session.close()
-            except:
+            except Exception:
                 pass
-    
+            try:
+                session_gen.close()
+            except Exception:
+                pass
+
     def get_documents_by_source(self, source_id: str) -> List[OrganisationDocument]:
         """
         Get all documents belonging to a source.
-        
+
         Args:
             source_id: The source ID
-            
+
         Returns:
             List of OrganisationDocument instances
         """
         try:
-            session_gen = get_org_session(self.organisation_id)
+            session_gen = acquire_org_session(self.organisation_id)
             session = next(session_gen)
-            
-            documents = session.query(OrganisationDocument).filter_by(source_id=UUID(source_id)).all()
+
+            documents = (
+                session.query(OrganisationDocument)
+                .filter_by(source_id=UUID(source_id))
+                .all()
+            )
             logger.info(f"Retrieved {len(documents)} documents for source {source_id}")
             return documents
-            
+
         except Exception as e:
             logger.error(f"Error retrieving documents for source {source_id}: {str(e)}")
             return []
         finally:
             try:
                 session.close()
-            except:
+            except Exception:
                 pass
-    
+            try:
+                session_gen.close()
+            except Exception:
+                pass
+
     def _generate_content_hash(self, content: str) -> str:
         """Generate SHA256 hash for content."""
-        return hashlib.sha256(content.encode('utf-8')).hexdigest()
+        return hashlib.sha256(content.encode("utf-8")).hexdigest()

@@ -3,6 +3,7 @@
 This allows services using Redis Streams to avoid importing the pub/sub implementation.
 Existing code can migrate to these helpers; legacy functions remain in `redis_pubsub`.
 """
+
 from __future__ import annotations
 
 from uuid import UUID
