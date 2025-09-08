@@ -3,6 +3,7 @@ from typing import List
 from agno.agent.agent import Message
 from src.domain.models.organisation_tables import ChatMessage
 
+
 def prepare_messages(message_list: List[ChatMessage]) -> List[Message]:
     """Prepare messages for the agent by extracting relevant content."""
     processed_messages = []

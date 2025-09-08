@@ -14,8 +14,6 @@ class Agent(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def run_stream(
-        self, message_list: List[ChatMessage]
-    ) -> AsyncIterator[Frame]:
+    async def run_stream(self, message_list: List[ChatMessage]) -> AsyncIterator[Frame]:
         """Run the agent and stream back frames."""
         ...

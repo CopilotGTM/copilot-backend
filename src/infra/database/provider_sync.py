@@ -7,6 +7,7 @@ Creates and caches:
 Responsibilities kept minimal: session lifecycle + engine invalidation.
 Schema selection is applied at connection creation time via search_path.
 """
+
 from __future__ import annotations
 
 import threading
@@ -33,8 +34,11 @@ import uuid
 
 logger = get_logger("sync_db_provider")
 
+
 class SyncSqlAlchemyProvider(SyncDatabaseProvider):
-    def __init__(self, *, tenant_pool_max: int = 100, tenant_pool_multiplier: float = 5.0):
+    def __init__(
+        self, *, tenant_pool_max: int = 100, tenant_pool_multiplier: float = 5.0
+    ):
 
         # Global lock for master and tenant engine management
         self._lock = threading.RLock()
@@ -113,7 +117,6 @@ class SyncSqlAlchemyProvider(SyncDatabaseProvider):
                     self._tenant_pool_order.append(org_id)
                     return engine
 
-
             logger.debug(f"Creating new engine for org_id: {org_id}")
             role_name = get_role_name(org_id)
             secret_name = get_key_vault_secret_name(org_id)
@@ -128,7 +131,9 @@ class SyncSqlAlchemyProvider(SyncDatabaseProvider):
                 password = None
 
             if not password:
-                logger.error(f"Password secret '{secret_name}' unavailable for org_id {org_id}")
+                logger.error(
+                    f"Password secret '{secret_name}' unavailable for org_id {org_id}"
+                )
                 raise RuntimeError(f"Tenant secret '{secret_name}' unavailable")
 
             eng_new = self._build_tenant_engine(org_id, role_name, password)
@@ -149,12 +154,14 @@ class SyncSqlAlchemyProvider(SyncDatabaseProvider):
                         pass
             return eng_new
 
-    def _build_tenant_engine(self, org_uuid: UUID, role_name: str, password: str) -> Engine:
+    def _build_tenant_engine(
+        self, org_uuid: UUID, role_name: str, password: str
+    ) -> Engine:
         host = database_config.DATABASE_HOST
         port = database_config.DATABASE_PORT
         db_name = database_config.DATABASE_NAME
         if isinstance(password, bytes):
-            password = password.decode('utf-8')
+            password = password.decode("utf-8")
         pw = urllib.parse.quote_plus(password)
         url = f"postgresql://{role_name}:{pw}@{host}:{port}/{db_name}"
 
@@ -164,7 +171,9 @@ class SyncSqlAlchemyProvider(SyncDatabaseProvider):
         max_overflow = max(0, int(overflow * self._pool_multiplier))
 
         schema = get_schema_name(org_uuid)
-        options_parts = [f"-c statement_timeout={database_config.DATABASE_STATEMENT_TIMEOUT_MS}"]
+        options_parts = [
+            f"-c statement_timeout={database_config.DATABASE_STATEMENT_TIMEOUT_MS}"
+        ]
         if schema:
             options_parts.insert(0, f'-c search_path="{schema}",public ')
         options_str = "".join(options_parts)
@@ -194,7 +203,7 @@ class SyncSqlAlchemyProvider(SyncDatabaseProvider):
             org_uuid = uuid.UUID(org_id)
         except Exception:
             raise ValueError(f"Invalid organisation id: {org_id}")
-        
+
         role_name = get_role_name(org_uuid)
         secret_name = get_key_vault_secret_name(org_uuid)
         return org_uuid, role_name, secret_name
@@ -214,7 +223,9 @@ class SyncSqlAlchemyProvider(SyncDatabaseProvider):
     @contextmanager
     def master_session(self) -> Iterator[SASession]:
         master_engine = self._get_master_engine()
-        session_local = sessionmaker(bind=master_engine, expire_on_commit=False, class_=SASession)
+        session_local = sessionmaker(
+            bind=master_engine, expire_on_commit=False, class_=SASession
+        )
         session: SASession = session_local()
         try:
             yield session
@@ -228,7 +239,9 @@ class SyncSqlAlchemyProvider(SyncDatabaseProvider):
     @contextmanager
     def tenant_session(self, org_id: UUID) -> Iterator[SASession]:
         engine = self._get_tenant_engine(org_id)
-        session_local = sessionmaker(bind=engine, expire_on_commit=False, class_=SASession)
+        session_local = sessionmaker(
+            bind=engine, expire_on_commit=False, class_=SASession
+        )
         session: SASession = session_local()
         try:
             yield session
@@ -253,5 +266,6 @@ class SyncSqlAlchemyProvider(SyncDatabaseProvider):
                 eng.dispose()
             except Exception:
                 pass
+
 
 __all__ = ["SyncSqlAlchemyProvider"]

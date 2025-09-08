@@ -10,7 +10,6 @@ from src.api.events.socket_app import sio
 from src.api.dependencies.master_dependencies import acquire_master_session
 from src.domain.models.master_tables import User
 from src.domain.models.authentication import Authentication
-from src.infra.messaging.redis_client import store_socket_connection, remove_socket_connection, get_socket_connection
 
 logger = get_logger()
 auth_class = Authentication()
@@ -27,8 +26,7 @@ async def connect(sid, environ, auth):
       1. Extract JWT from auth-storage cookie
       2. Decode & validate it
       3. Lookup user in DB
-      4. Save IDs to environ
-      5. Store the connection in Redis
+      4. Save IDs to environ for session use
     """
     logger.info(f"WebSocket connection attempt: sid={sid}")
 
@@ -63,19 +61,16 @@ async def connect(sid, environ, auth):
         logger.warning(f"Connect refused: no matching user in DB (user_id={user_id})")
         raise ConnectionRefusedError("User not found")
 
-    # Inject into environ for Redis persistence
+    # Inject into environ for session use
     environ["user_id"] = str(user_id)
     environ["organisation_id"] = str(organisation_id)
 
-    # Store connection in Redis
-    await store_socket_connection(sid, environ)
     logger.info(f"WebSocket connection established: sid={sid}, user_id={user_id}, organisation_id={organisation_id}")
 
 
 @sio.event(namespace=WEBSOCKET_NAMESPACE)
 async def disconnect(sid):
     """
-    Handle WebSocket disconnection by removing the connection from Redis.
+    Handle WebSocket disconnection.
     """
     logger.info(f"WebSocket disconnection: sid={sid}")
-    await remove_socket_connection(sid)

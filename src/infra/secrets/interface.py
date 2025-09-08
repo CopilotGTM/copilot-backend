@@ -34,6 +34,7 @@ class SecretNotFound(Exception):
 
 class TransientSecretError(Exception):
     """Raised when a temporary failure occurred (network, throttling, etc.)."""
+
     pass
 
 

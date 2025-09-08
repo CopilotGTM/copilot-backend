@@ -15,7 +15,8 @@ from socketio import ASGIApp
 
 from ..api.events.socket_app import sio
 from ..infra.utils.logger import get_logger
-from ..infra.messaging.redis_client import get_redis_client
+from ..infra.messaging.redis_client import close_redis_pool
+from ..infra.messaging.redis_streams import close_async_redis_pool
 
 from scripts.monitoring.db_pool_monitor import start_pool_monitor, stop_pool_monitor
 
@@ -40,18 +41,21 @@ async def lifespan(app: FastAPI):
     """Lifespan event handler for FastAPI application."""
     # Startup
     logger.info("Starting application services...")
+    
     # Start DB pool monitor if available
     if start_pool_monitor is not None:
-        try:
-            await start_pool_monitor()
-            logger.info("DB pool monitor started")
-        except Exception as e:
-            logger.warning("Failed to start DB pool monitor: %s", e)
-    
+        await start_pool_monitor()
+
     yield
     
     # Shutdown
     logger.info("Shutting down application services...")
+    
+    # Close Redis connection pools
+    close_redis_pool()
+    await close_async_redis_pool()
+    logger.info("Redis connection pools closed")
+
     # Stop DB pool monitor if running
     if stop_pool_monitor is not None:
         try:
@@ -90,9 +94,6 @@ def create_fastapi_app():
         same_site="lax",
         https_only=APP_ENV != "local",
     )
-
-    # Initialize Redis client in app state
-    fastapp.state.redis_client = get_redis_client()
 
     # App Level Variables
     fastapp.state.CLOUD_PROVIDER = os.getenv("CLOUD_PROVIDER")

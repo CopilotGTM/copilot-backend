@@ -6,6 +6,7 @@ Creates:
 
 Each tenant engine uses asyncpg driver.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -34,8 +35,11 @@ from src.infra.utils.logger import get_logger
 
 logger = get_logger("async_db_provider")
 
+
 class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
-    def __init__(self, *, tenant_pool_max: int = 100, tenant_pool_multiplier: float = 1.0):
+    def __init__(
+        self, *, tenant_pool_max: int = 100, tenant_pool_multiplier: float = 1.0
+    ):
 
         # Global and per-tenant locks
         self._lock = threading.RLock()
@@ -49,8 +53,6 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
         self._tenant_pool_order: list[UUID] = []
         self._tenant_pool_max = tenant_pool_max
         self._pool_multiplier = tenant_pool_multiplier
-        
-        
 
     def _get_tenant_lock(self, org_id: UUID) -> asyncio.Lock:
         with self._lock:
@@ -75,7 +77,11 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
                     pool_size=database_config.DATABASE_POOL_SIZE,
                     max_overflow=database_config.DATABASE_MAX_OVERFLOW,
                     connect_args={
-                        "ssl": False if database_config.DATABASE_HOST == "localhost" else True,
+                        "ssl": (
+                            False
+                            if database_config.DATABASE_HOST == "localhost"
+                            else True
+                        ),
                         "timeout": database_config.DATABASE_CONNECT_TIMEOUT_SEC,
                     },
                 )
@@ -117,7 +123,9 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
             with self._lock:
                 engine = self._tenant_engines.get(org_id)
                 if engine:
-                    logger.debug(f"Reusing existing engine after lock for org_id: {org_id}")
+                    logger.debug(
+                        f"Reusing existing engine after lock for org_id: {org_id}"
+                    )
                     if org_id in self._tenant_pool_order:
                         self._tenant_pool_order.remove(org_id)
                     self._tenant_pool_order.append(org_id)
@@ -134,7 +142,9 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
                 password = await secrets_manager.get(secret_name)
 
             if not password:
-                logger.error(f"Password secret '{secret_name}' unavailable for org_id {org_id}")
+                logger.error(
+                    f"Password secret '{secret_name}' unavailable for org_id {org_id}"
+                )
                 raise RuntimeError(f"Tenant secret '{secret_name}' unavailable")
 
             url = self._build_tenant_url(role_name, password)
@@ -153,9 +163,11 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
                 pool_size=pool_size,
                 max_overflow=max_overflow,
                 connect_args={
-                    "ssl": False if database_config.DATABASE_HOST == "localhost" else True,
+                    "ssl": (
+                        False if database_config.DATABASE_HOST == "localhost" else True
+                    ),
                     "timeout": database_config.DATABASE_CONNECT_TIMEOUT_SEC,
-                    "server_settings": {"search_path": f'"{schema}",public'}
+                    "server_settings": {"search_path": f'"{schema}",public'},
                 },
             )
 
@@ -205,5 +217,6 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
                 self._tenant_pool_order.remove(org_id)
         if eng:
             await eng.dispose()
+
 
 __all__ = ["AsyncSqlAlchemyProvider"]

@@ -332,7 +332,7 @@ async def stream_sources(
         try:
             async for evt in service.stream_events(
                 explicit_ids=explicit_ids,
-                timeout_seconds=1800,
+                timeout_seconds=900,
                 heartbeat_interval=25.0,
             ):
                 yield evt

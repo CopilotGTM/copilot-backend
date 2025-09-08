@@ -11,6 +11,7 @@ Usage (async):
     async with get_async_provider().tenant_session(org_id) as s:
         ...
 """
+
 from __future__ import annotations
 
 import threading
@@ -33,6 +34,7 @@ def get_sync_provider() -> SyncDatabaseProvider:
                 _sync_instance = SyncSqlAlchemyProvider()
     return _sync_instance
 
+
 def get_async_provider() -> AsyncDatabaseProvider:
     """Return a singleton async-capable database provider.
 
@@ -45,5 +47,6 @@ def get_async_provider() -> AsyncDatabaseProvider:
             if _async_instance is None:
                 _async_instance = AsyncSqlAlchemyProvider()
     return _async_instance
+
 
 __all__ = ["get_sync_provider", "get_async_provider"]

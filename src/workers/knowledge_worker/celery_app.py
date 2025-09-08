@@ -14,7 +14,13 @@ os.environ["TENANT_POOL_MULTIPLIER"] = "1.0"
 
 from src.workers.base.celery_base import create_celery_app
 from src.workers.knowledge_worker.config import KnowledgeWorkerConfig
-from celery.signals import task_received, task_prerun, task_postrun, task_failure
+from celery.signals import task_received, task_prerun, task_postrun, task_failure, worker_ready, worker_shutdown
+
+# Redis connection pool management
+from src.infra.messaging.redis_client import close_redis_pool
+from src.infra.utils.logger import get_logger
+
+logger = get_logger("knowledge_worker")
 
 # Initialize the configuration for the Knowledge Worker
 config = KnowledgeWorkerConfig()
@@ -44,7 +50,22 @@ except Exception:
     pass
 
 
-# Add signal handlers for debugging
+# Add signal handlers for debugging and resource management
+@worker_ready.connect
+def worker_ready_handler(sender=None, **kwargs):
+    """Initialize worker resources when worker is ready."""
+    logger.info("Knowledge worker is ready. Redis connection pool initialized.")
+
+@worker_shutdown.connect
+def worker_shutdown_handler(sender=None, **kwargs):
+    """Clean up worker resources on shutdown."""
+    logger.info("Knowledge worker shutting down. Closing Redis connection pool.")
+    try:
+        close_redis_pool()
+        logger.info("Redis connection pool closed successfully")
+    except Exception as e:
+        logger.error(f"Error closing Redis connection pool: {e}")
+
 @task_received.connect
 def task_received_handler(sender=None, headers=None, body=None, **kwargs):
     print(f"Task received: {headers}")

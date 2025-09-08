@@ -27,7 +27,9 @@ class SupabaseConfig:
     SUPABASE_JWT_SECRET: str = os.getenv("SUPABASE_JWT_SECRET", "")
 
     # Enable/disable Supabase auth
-    ENABLE_SUPABASE_AUTH: bool = os.getenv("ENABLE_SUPABASE_AUTH", "true").lower() == "true"
+    ENABLE_SUPABASE_AUTH: bool = (
+        os.getenv("ENABLE_SUPABASE_AUTH", "true").lower() == "true"
+    )
 
 
 class DatabaseConfig:
@@ -45,11 +47,15 @@ class DatabaseConfig:
     DATABASE_MAX_OVERFLOW: int = int(os.getenv("DATABASE_MAX_OVERFLOW", "2"))
 
     # guard against hangs when DB unavailable
-    DATABASE_CONNECT_TIMEOUT_SEC: int = int(os.getenv("DATABASE_CONNECT_TIMEOUT_SEC", "10"))
+    DATABASE_CONNECT_TIMEOUT_SEC: int = int(
+        os.getenv("DATABASE_CONNECT_TIMEOUT_SEC", "10")
+    )
     DATABASE_POOL_TIMEOUT_SEC: int = int(os.getenv("DATABASE_POOL_TIMEOUT_SEC", "30"))
 
     # default server-side statement timeout (ms). 0 disables.
-    DATABASE_STATEMENT_TIMEOUT_MS: int = int(os.getenv("DATABASE_STATEMENT_TIMEOUT_MS", "60000"))
+    DATABASE_STATEMENT_TIMEOUT_MS: int = int(
+        os.getenv("DATABASE_STATEMENT_TIMEOUT_MS", "60000")
+    )
 
 
 class AppConfig:
@@ -86,8 +92,12 @@ class OpenAIConfig:
 class EmbedderConfig:
     """Configuration for Embedder service"""
 
-    AZURE_EMBEDDER_OPENAI_API_KEY: Optional[str] = os.getenv("AZURE_EMBEDDER_OPENAI_API_KEY")
-    AZURE_EMBEDDER_OPENAI_ENDPOINT: Optional[str] = os.getenv("AZURE_EMBEDDER_OPENAI_ENDPOINT")
+    AZURE_EMBEDDER_OPENAI_API_KEY: Optional[str] = os.getenv(
+        "AZURE_EMBEDDER_OPENAI_API_KEY"
+    )
+    AZURE_EMBEDDER_OPENAI_ENDPOINT: Optional[str] = os.getenv(
+        "AZURE_EMBEDDER_OPENAI_ENDPOINT"
+    )
     AZURE_EMBEDDER_DEPLOYMENT: Optional[str] = os.getenv("AZURE_EMBEDDER_DEPLOYMENT")
 
 
@@ -112,6 +122,7 @@ class SuperAdminConfig:
 
     SUPER_ADMIN_EMAIL: Optional[str] = os.getenv("SUPER_ADMIN_EMAIL")
 
+
 class SecretManagerConfig:
     """Configuration for Cloud Secret Manager"""
 
@@ -129,7 +140,9 @@ class CloudInfraConfig:
     AZURE_TENANT_ID: Optional[str] = os.getenv("AZURE_TENANT_ID")
     AZURE_CLIENT_ID: Optional[str] = os.getenv("AZURE_CLIENT_ID")
     AZURE_CLIENT_SECRET: Optional[str] = os.getenv("AZURE_CLIENT_SECRET")
-    AZURE_ADDITIONALLY_ALLOWED_TENANTS: Optional[str] = os.getenv("AZURE_ADDITIONALLY_ALLOWED_TENANTS")
+    AZURE_ADDITIONALLY_ALLOWED_TENANTS: Optional[str] = os.getenv(
+        "AZURE_ADDITIONALLY_ALLOWED_TENANTS"
+    )
 
 
 class ChatFileUploadConfig:
@@ -160,7 +173,10 @@ class KnowledgeFileUploadConfig:
     """
 
     MAX_FILE_SIZE_BYTES: int = int(
-        os.getenv("KNOWLEDGE_MAX_UPLOAD_FILE_SIZE_BYTES", os.getenv("MAX_UPLOAD_FILE_SIZE_BYTES", "104857600"))
+        os.getenv(
+            "KNOWLEDGE_MAX_UPLOAD_FILE_SIZE_BYTES",
+            os.getenv("MAX_UPLOAD_FILE_SIZE_BYTES", "104857600"),
+        )
     )  # default 100MB if not set
 
     ALLOWED_MIMETYPES: list[str] = [
@@ -177,11 +193,15 @@ class ThumbnailConfig:
     """Configuration for thumbnail generation behavior."""
 
     # If true, generate placeholder thumbnails for text files (text/plain)
-    ENABLE_TEXT_PLACEHOLDERS: bool = os.getenv("ENABLE_TEXT_PLACEHOLDERS", "true").lower() == "true"
+    ENABLE_TEXT_PLACEHOLDERS: bool = (
+        os.getenv("ENABLE_TEXT_PLACEHOLDERS", "true").lower() == "true"
+    )
 
     # If true, when PDF renderer is unavailable or fails, do NOT fall back to placeholder automatically.
     # Keep default conservative (false) unless explicitly enabled.
-    ENABLE_PDF_PLACEHOLDER_FALLBACK: bool = os.getenv("ENABLE_PDF_PLACEHOLDER_FALLBACK", "false").lower() == "true"
+    ENABLE_PDF_PLACEHOLDER_FALLBACK: bool = (
+        os.getenv("ENABLE_PDF_PLACEHOLDER_FALLBACK", "false").lower() == "true"
+    )
 
 
 class PoolMonitorConfig:
@@ -195,16 +215,27 @@ class PoolMonitorConfig:
     MONITOR_INTERVAL_SEC: float = float(os.getenv("DB_POOL_MONITOR_INTERVAL_SEC", "30"))
 
     # App vs Worker max checkout age (seconds)
-    APP_MAX_CHECKOUT_SEC: int = int(os.getenv("APP_DB_CONN_MAX_CHECKOUT_SEC", "900"))  # 15 minutes
-    WORKER_MAX_CHECKOUT_SEC: int = int(os.getenv("WORKER_DB_CONN_MAX_CHECKOUT_SEC", "1200"))  # 20 minutes
+    APP_MAX_CHECKOUT_SEC: int = int(
+        os.getenv("APP_DB_CONN_MAX_CHECKOUT_SEC", "900")
+    )  # 15 minutes
+    WORKER_MAX_CHECKOUT_SEC: int = int(
+        os.getenv("WORKER_DB_CONN_MAX_CHECKOUT_SEC", "1200")
+    )  # 20 minutes
 
     # Force close behavior (recommended false; invalidate on check-in is safer)
-    APP_FORCE_CLOSE: bool = os.getenv("APP_DB_CONN_FORCE_CLOSE", "false").lower() == "true"
-    WORKER_FORCE_CLOSE: bool = os.getenv("WORKER_DB_CONN_FORCE_CLOSE", "false").lower() == "true"
+    APP_FORCE_CLOSE: bool = (
+        os.getenv("APP_DB_CONN_FORCE_CLOSE", "false").lower() == "true"
+    )
+    WORKER_FORCE_CLOSE: bool = (
+        os.getenv("WORKER_DB_CONN_FORCE_CLOSE", "false").lower() == "true"
+    )
 
     # Optional discovery/warmup defaults
-    DISCOVER_MASTERS: bool = os.getenv("DB_POOL_MONITOR_DISCOVER_MASTERS", "true").lower() == "true"
+    DISCOVER_MASTERS: bool = (
+        os.getenv("DB_POOL_MONITOR_DISCOVER_MASTERS", "true").lower() == "true"
+    )
     WARMUP_MIN_IDLE: int = int(os.getenv("DB_POOL_MONITOR_WARMUP_MIN_IDLE", "0"))
+
 
 # Create config instances
 supabase_config = SupabaseConfig()
@@ -224,10 +255,21 @@ pool_monitor_config = PoolMonitorConfig()
 
 
 class Config:
+    _instance = None
+    _initialized = False
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(Config, cls).__new__(cls)
+        return cls._instance
+
     def __init__(self):
-        self.env = os.getenv("ENV", "dev")
-        self._config = CONFIG_MAP[self.env]
-        logger.info(f"Config loaded for environment: {self.env}")
+        # Only initialize once
+        if not Config._initialized:
+            self.env = os.getenv("ENV", "dev")
+            self._config = CONFIG_MAP[self.env]
+            logger.info(f"Config loaded for environment: {self.env}")
+            Config._initialized = True
 
     @property
     def get_redis_client_details(self):

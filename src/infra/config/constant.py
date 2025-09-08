@@ -30,6 +30,7 @@ APP_NAME = "CopilotGTM"
 
 class GeneralErrors:
     """Generic, reusable error messages for consistent API responses."""
+
     UNEXPECTED_ERROR = "An unexpected error occurred"
     BAD_REQUEST = "Invalid request"
     UNAUTHORIZED = "Unauthorized"
@@ -100,7 +101,9 @@ class UserAuthErrors:
     REFRESH_TOKEN_FAILED = "Token refresh failed. Please log in again."
     FORGOT_PASSWORD_FAILED = "Forgot password request failed"
     RESET_LINK_FAILED = "Failed to generate password reset link"
-    EMAIL_SEND_FAILED = "Failed to send password reset email. Please check email service configuration."
+    EMAIL_SEND_FAILED = (
+        "Failed to send password reset email. Please check email service configuration."
+    )
     MISSING_AUTH_HEADER = "Missing or invalid authorization header"
     INVALID_TOKEN_NO_ID = "Invalid token: missing user ID"
     ACCOUNT_INACTIVE = "User account is not active or not approved"

@@ -55,12 +55,13 @@ def post_upload_process(self, organisation_id: str, source_id: str):
     asyncio.set_event_loop(loop)
 
     try:
-        # Load source
+        # Load source record
         source: OrganisationSource | None = session.get(OrganisationSource, source_id)
         if not source:
             logger.warning("Source %s not found", source_id)
             return
 
+        # Skip if not in expected state
         if source.status == OrganisationSourceStatus.PENDING_UPLOAD:
             logger.warning(
                 "Source %s still pending upload; skipping processing run", source_id

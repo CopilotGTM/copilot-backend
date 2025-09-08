@@ -9,6 +9,7 @@ from src.agents.workflows.router.agent import RouterAgent
 
 
 def resolve_agent(chat_type: ChatType | str) -> Type[Agent]:
+    """Resolve agent class based on chat type."""
     if isinstance(chat_type, str):
         try:
             chat_type = ChatType(chat_type)

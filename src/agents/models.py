@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Literal
 from pydantic import BaseModel, Field
 
 
@@ -13,7 +13,6 @@ class ChatAgentSource(BaseModel):
 
 class ChatAgentOutput(BaseModel):
     answer: str = Field(default="")
-    confidence_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    confidence_score: Optional[Literal["high", "medium", "low"]] = None
     sources: Optional[List[ChatAgentSource]] = Field(default=None)
     suggested_questions: Optional[List[str]] = Field(default=None)
-
