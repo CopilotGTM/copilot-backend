@@ -1,146 +1,143 @@
-Service Architecture Base: Tenancy, Auth, Storage, Messaging, Responses (Concise)
+Service Architecture Base: Tenancy, Auth, Storage, Messaging, Workers, Responses (Updated)
 
 Purpose
-- Reusable foundation for all services (knowledge base, chat attachments, etc.).
-- Compact map so engineers and LLM tools can pick the right building blocks quickly.
+- Single reference to understand how to add APIs quickly and correctly.
+- Reflects current code: new DB providers, Azure Key Vault secrets, Redis (pub/sub + streams), Celery workers.
 
-Quickstart (checklist)
-- Decide audience: user routes (tenant scope) vs admin routes (master scope).
-- Import dependencies: `get_current_user`, `get_org_session`, `Response`, `GenericResponse[T]`.
-- Create service bound to `org_session` (+ user/org IDs).
-- If uploading/downloading files: use `AzureOrganisationBlobStorage` to issue SAS.
-- If long work: enqueue Celery task; publish updates over Redis; expose SSE if needed.
-- Wrap every endpoint in the standard response envelope; return typed `GenericResponse`.
-- Enforce permissions: scope by `organisation_id` AND `user_id`.
+Quickstart (Checklist)
+- Scope: user routes (tenant) vs admin routes (master).
+- Import: `get_current_user`, `get_org_session` or async variants, `Response`, `GenericResponse[T]`.
+- Bind services to an org session and user/org IDs.
+- For uploads/downloads: use `AzureOrganisationBlobStorage` to issue SAS.
+- For long jobs: enqueue Celery; publish updates over Redis; expose SSE if needed.
+- Wrap responses using the standard envelope `GenericResponse[T]`.
+- Always scope queries by `organisation_id` and, where applicable, `user_id`.
 
 What To Use (by Concern)
-- Tenancy/DB session: `src/infra/utils/database.py:1` → `get_org_session(org_id)`; dependency: `src/api/dependencies/organisation_dependencies.py:1`.
-- User auth: `src/infra/auth/user_auth.py:1` → `user_auth`; dependency: `get_current_user()` returns `UserIDs(user_id, organisation_id)`.
-- Admin auth: `src/infra/auth/admin_auth.py:1` → `admin_auth` for master‑scope routes.
-- Storage: `src/infra/storage/azure_org_blob_storage.py:1` → `AzureOrganisationBlobStorage` (per‑org container, SAS read/write).
-- Pub/Sub + SSE: `src/infra/messaging/redis_pubsub.py:1` + SSE services:
-  - Knowledge: `src/service/knowledge_base/knowledge_sse_service.py:1`
-  - Attachments: `src/service/chat/chat_attachments_sse_service.py:1`
-- Background: Celery apps `src/workers/knowledge_worker/celery_app.py:1`, `src/workers/chat_worker/celery_app.py:1`.
-- Response envelope: `src/api/utils/http_response.py:1` + `GenericResponse[T]`.
+- Tenancy/DB sessions: `src/api/dependencies/organisation_dependencies.py:1` → `get_org_session()` (sync) or `get_org_async_session()` (async). Master scope: `src/api/dependencies/master_dependencies.py:1`.
+- DB providers (do not import directly for APIs): `src/infra/database/factory.py:1` (creates singletons for sync/async providers) backed by `provider_sync.py:1` / `provider_async.py:1`.
+- Secrets (Azure Key Vault): `src/infra/secrets/manager.py:1` with `src/infra/secrets/azure_key_vault.py:1`. Secret names: `src/infra/utils/resource_naming.py:1`.
+- Auth: Users via Supabase in `src/infra/auth/supabase_user_client.py:1` and admin helpers in `src/infra/auth/admin_auth.py:1`. Dependencies surface a `UserIDs` object via `get_current_user()`.
+- Storage: `src/infra/storage/azure_org_blob_storage.py:1` → `AzureOrganisationBlobStorage` (per‑org containers + SAS).
+- Messaging: Redis client `src/infra/messaging/redis_client.py:1`; Redis Pub/Sub `src/infra/messaging/redis_pubsub.py:1`; Redis Streams `src/infra/messaging/redis_streams.py:1`; channel helpers `src/infra/messaging/redis_channels.py:1`.
+- SSE services: Knowledge `src/service/knowledge_base/knowledge_sse_service.py:1`; Attachments `src/service/chat/chat_attachments_sse_service.py:1`; Chat message frames (Streams) `src/service/chat/chat_message_sse_service.py:1`.
+- Workers: Celery base `src/workers/base/celery_base.py:1` and config `src/workers/base/worker_config.py:1`; worker apps in `src/workers/*_worker/celery_app.py:1` with routing in each `config.py:1`.
+- Response envelope: `src/api/utils/http_response.py:1` and `src/api/schemas/base_models.py:1`.
 
 System Overview (ASCII)
 
 ```
- +--------+    +-----------+    +---------+    +--------------+
- | Client | -> |   API     | -> |  Auth   | -> | Org Session  |
- +--------+    +-----------+    +---------+    +--------------+
-      |                                   |
-      |                                   v
-      |                             +-----------+
-      |                             |  Service  |
-      |                             +-----------+
-      |                                   |
-      |    Presign: generate_write_sas     v
-      |   Finalize: get_blob_properties  +--------------+
-      |                                  |  Azure Blob  |
-      |                                  +--------------+
-      |                                          ^
-      |                                          |
-      |      Celery: post-upload/extract         |
-      |                                          |
-      |                                  +--------------+
-      +---- SSE (status/events) <--------| Redis PubSub |
-                                         +--------------+
+ +--------+    +-----------+    +---------+    +-------------------+
+ | Client | -> |   API     | -> |  Auth   | -> | Org/Master Session |
+ +--------+    +-----------+    +---------+    +-------------------+
+      |                                         |
+      |                                         v
+      |                                   +-----------+
+      |                                   |  Service  |
+      |                                   +-----------+
+      |                                         |
+      |    Presign: generate_write_sas           v
+      |   Finalize: get_blob_properties      +--------------+
+      |                                      |  Azure Blob  |
+      |                                      +--------------+
+      |                                             ^
+      |                                             |
+      |      Celery: post-upload/extract            |
+      |                                             |
+      |                                    +-----------------------+
+      +---- SSE (status/events) <----------| Redis (PubSub/Streams) |
+                                           +-----------------------+
 ```
 
-Tenancy & DB Access
-- Master DB (public schema) holds organisations, users, super admins.
-- Tenant schemas (one per org) hold business tables (attachments, sources, chunks).
-- Use `get_org_session(org_id)` which sets `SET search_path TO "{tenant}", public` and resets on exit.
-- Strategy: prefer direct tenant engine (role+password from Key Vault), fallback to `SET ROLE` on master.
-- SSE streams keep the tenant session open for the stream lifetime (manual generator pattern).
+Tenancy & Database Access
+- Master DB (public schema) stores organisations, users, admins.
+- Each organisation has its own schema (multi‑tenant) for business tables.
+- Providers build per‑tenant connections using per‑tenant DB roles and search_path.
+- Use dependencies, not engines, from APIs:
+  - Sync: `get_org_session()` / `get_master_session()` return SQLAlchemy sessions.
+  - Async: `get_org_async_session()` / `get_master_async_session()` return AsyncSession.
+- Providers: `src/infra/database/provider_sync.py:1`, `src/infra/database/provider_async.py:1` with a simple interface (`master_session()`, `tenant_session(org_id)`, `invalidate_tenant()`), instantiated via `src/infra/database/factory.py:1`.
 
-Credentials & Connections (ASCII)
+Secrets & Credentials
+- Per‑tenant DB passwords are stored in Azure Key Vault and retrieved via `secrets_manager`.
+- Azure credential strategy:
+  - Local: `DefaultAzureCredential`.
+  - Cloud: `WorkloadIdentityCredential` when `AZURE_TENANT_ID` + `AZURE_CLIENT_ID` are set; otherwise `ManagedIdentityCredential`.
+- Secret naming: `get_key_vault_secret_name(org_id)` and role/schema naming in `src/infra/utils/resource_naming.py:1`.
 
-```
-Azure Credentials
------------------
-[ENV=local] -> DefaultAzureCredential
-[ENV=prod]  -> if Workload Identity (tenant_id + client_id) -> WorkloadIdentityCredential
-               else -> ManagedIdentityCredential
+Redis, Channels, and Streams
+- Configuration: `src/infra/config/constant.py:1` and `src/infra/config/configs.py:1` (ENV‑aware host/port/password; TLS in non‑local).
+- Sync connections via `src/infra/messaging/redis_client.py:1` (connection pool).
+- Async Pub/Sub for real‑time broadcast: `src/infra/messaging/redis_pubsub.py:1`.
+- Redis Streams for replayable frames (chat): `src/infra/messaging/redis_streams.py:1`.
+- Channel helpers (import where needed): `src/infra/messaging/redis_channels.py:1`.
 
-Database (per request / stream)
---------------------------------
-get_org_session(org_id):
-  try Direct tenant engine (role password from Key Vault) -> search_path tenant,public
-  else Master engine + SET ROLE <org_role> -> search_path tenant,public
+SSE Patterns
+- Knowledge sources and attachments: use Redis Pub/Sub to stream `status` updates with heartbeats and completion detection.
+  - Knowledge: `src/service/knowledge_base/knowledge_sse_service.py:1`.
+  - Attachments: `src/service/chat/chat_attachments_sse_service.py:1`.
+- Chat message generation: use Redis Streams for structured frames + consumer groups for consume‑once semantics.
+  - Chat frames: `src/service/chat/chat_message_sse_service.py:1`.
+
+Workers (Celery)
+- Base: `src/workers/base/celery_base.py:1` creates a Celery app per worker using broker/backend from `BaseWorkerConfig`.
+- Redis is the broker + result backend; TLS is enabled automatically in non‑local environments.
+- Worker configs define queues/exchanges/routing:
+  - Chat: `src/workers/chat_worker/config.py:1`.
+  - Knowledge: `src/workers/knowledge_worker/config.py:1`.
+  - Organization: `src/workers/organization_worker/config.py:1`.
+  - Content: `src/workers/content_worker/config.py:1`.
+- Enqueue from API using `send_task(name, args, queue, routing_key)` against the appropriate worker app.
+
+Celery Enqueue Example
+```python
+from src.workers.chat_worker.celery_app import app as chat_app
+chat_app.send_task(
+    "attachments.post_upload",
+    args=[str(org_id), str(item_id)],
+    queue="attachments",
+    routing_key="attachments",
+)
 ```
 
 AuthN/AuthZ
-- User routes: verify Supabase JWT, then load `public.users`; require ACTIVE + APPROVED; dependency yields `UserIDs`.
-- Admin routes: verify admin JWT, use master session, enforce `AdminRole` per endpoint.
-
-Auth snippets
-```python
-# User context (tenant routes)
-from fastapi import Depends
-from sqlmodel import Session
-from src.api.dependencies.organisation_dependencies import get_current_user, get_org_session, UserIDs
-
-async def get_service(user: UserIDs = Depends(get_current_user), db: Session = Depends(get_org_session)):
-    svc = Service(db, user.organisation_id, getattr(user, 'user_id', None))
-    try:
-        yield svc
-    finally:
-        await svc.close()
-
-# Admin context (master routes)
-from src.infra.utils.database import get_master_session
-from src.infra.auth.admin_auth import admin_auth
-```
+- User routes: verify Supabase JWT and surface `UserIDs(user_id, organisation_id)` via `get_current_user()` in `src/api/dependencies/organisation_dependencies.py:1`.
+- Admin routes: use master session dependencies in `src/api/dependencies/master_dependencies.py:1` and enforce admin permissions.
 
 Storage Model
-- Single storage account per environment; one container per organisation.
-- Deterministic blob paths: `chat_uploads/{user}/{id}/file.ext` or `knowledgebase/{user}/{id}/file.ext`.
+- One storage account per environment; one container per organisation.
+- Deterministic blob paths (examples):
+  - Chat: `chat_uploads/{user_id}/{id}/file.ext`
+  - Knowledge: `knowledgebase/{user_id}/{id}/file.ext`
 - SAS URLs:
-  - Write SAS (client upload) short TTL (~10–15 min).
-  - Read SAS (download) TTL (~30–120 min), optional Content‑Disposition filename.
+  - Write SAS (client upload): short TTL (≈10–15 min).
+  - Read SAS (download): TTL 30–120 min; set Content‑Disposition filename when needed.
 
-Messaging & SSE
-- Channels per org: knowledge `kb:{org_id}:sources`, attachments `att:{org_id}:attachments`.
-- Async Redis client (redis>=5). SSE services:
-  - Emit initial non‑terminal snapshot as `status`.
-  - Stream `status` on updates; send `ping` heartbeats; `complete` when all watched IDs are terminal; `timeout` on deadline.
-
-Background Jobs
-- API enqueues Celery tasks (e.g., post‑upload processing, extraction). Workers update DB and publish Redis events.
-
-Celery snippets
-```python
-# Enqueue from API
-from src.workers.chat_worker.celery_app import app as chat_app
-chat_app.send_task("attachments.post_upload", args=[str(org_id), str(item_id)], queue="attachments", routing_key="attachments")
-
-# Define a task (worker)
-from src.workers.chat_worker.celery_app import app
-@app.task(name="attachments.post_upload", bind=True, acks_late=True, max_retries=3)
-def post_upload(self, organisation_id: str, attachment_id: str):
-    ...  # update DB, publish Redis event
-```
-
-Response Envelope (Generic)
+Response Envelope
 - Shape: `{ status: SUCCESS|ERROR, data, message }`.
-- Helpers: `Response.success_response`, `Response.accepted_response`, `Response.error_response`.
-- Annotate route responses with `GenericResponse[T]` for typing.
+- Helpers: `Response.success_response`, `Response.accepted_response`, `Response.error_response`, etc. in `src/api/utils/http_response.py:1`.
+- Type your responses with `GenericResponse[T]` in `src/api/schemas/base_models.py:1`.
 
-Router skeleton
+Router Skeleton (Tenant route)
 ```python
 from fastapi import APIRouter, Depends, Body
+from sqlalchemy.orm import Session
 from src.api.utils.http_response import Response
 from src.api.schemas.base_models import GenericResponse
+from src.api.dependencies.organisation_dependencies import (
+    get_current_user, get_org_session, UserIDs
+)
 
 router = APIRouter()
 
 @router.post("/example", response_model=GenericResponse[MyResponseModel])
-async def example(payload: MyRequestModel = Body(...), svc: Service = Depends(get_service)):
+def example(
+    payload: MyRequestModel = Body(...),
+    user: UserIDs = Depends(get_current_user),
+    db: Session = Depends(get_org_session),
+):
     try:
-        result = await svc.do_something(payload)
+        result = do_something(db, user.organisation_id, user.user_id, payload)
         return Response.success_response("ok", result)
     except DomainError as e:
         return Response.error_response(e.status_code, e.message)
@@ -149,57 +146,122 @@ async def example(payload: MyRequestModel = Body(...), svc: Service = Depends(ge
 ```
 
 Reusable Permission Rules
-- Always scope by `organisation_id` AND `user_id`.
-- Exclude soft‑deleted by default.
-- Downloads require READY/COMPLETED + valid `storage_path`.
-- SSE restricts to caller’s items or explicit IDs.
+- Always filter by `organisation_id` and `user_id` when data is user‑owned.
+- Exclude soft‑deleted records by default.
+- Downloads require READY/COMPLETED status and a valid `storage_path`.
+- SSE restricts to caller’s items or explicit ID lists.
 - Admin routes: master session only; never write tenant data.
 
-Tenancy snippet
+Publish/Consume Contracts (Examples)
 ```python
-# Read with key‑set pagination (example idea)
-stmt = select(Model).where(Model.organisation_id==org_id, Model.user_id==user_id, getattr(Model,'is_deleted',False)==False)
-```
-
-Minimal Router Template (pseudocode)
-```text
-async def get_service(user_ids=Depends(get_current_user), org_session=Depends(get_org_session)):
-    svc = Service(org_session, user_ids.organisation_id[, user_ids.user_id])
-    try: yield svc
-    finally: await svc.close()
-
-@router.post(...)
-async def handler(payload: Model, svc=Depends(get_service), user_ids=Depends(get_current_user)):
-    try:
-        # Use svc; enqueue Celery if needed
-        return Response.success_response("ok", data)
-    except DomainError as e:
-        return Response.error_response(e.status_code, e.message)
-    except Exception:
-        return Response.internal_server_error_response("An unexpected error occurred")
-```
-
-Where This Applies
-- Knowledge base uploads/access: reuse tenancy, SAS, Celery, Redis/SSE, envelope.
-- Chat attachments: same patterns; different DB models + channels.
-
-Minimal SSE publish/consume contract
-```python
-# Publish (worker)
+# Publish attachment status from a worker
 from src.infra.messaging.attachment_status_publish import publish_attachment_status
 publish_attachment_status(org_id, AttachmentEventUpdate(...))
 
-# Consume (API SSE service)
-async for message in AsyncRedisPubSub().subscribe_to_channel(channel):
+# Stream knowledge status in API using pub/sub
+from src.infra.messaging.redis_pubsub import AsyncRedisPubSub
+async for message in AsyncRedisPubSub().subscribe_to_channel(
+    channel_for_knowledge_update_status(org_id)
+):
     yield {"event": "status", "data": json.dumps([message])}
+
+# Produce chat frames using Redis Streams (worker)
+from src.infra.messaging.redis_streams import xadd_json_frame
+xadd_json_frame(stream_key, {"type": "delta", "data": {"content": "..."}})
 ```
 
 Local Dev Notes
-- ENV=local uses DefaultAzureCredential and favors SET ROLE fallback.
-- Run: Postgres + Redis + Celery worker + FastAPI app.
-- Common env vars: `ORGANISATION_STORAGE_NAME`, DB host/port/name/user/pass, Redis host/port/password.
+- ENV=local prefers non‑TLS Redis and `DefaultAzureCredential` for secrets.
+- Run: Postgres + Redis + Celery workers + FastAPI app (`src/api/fastapi_app.py:1`).
+- Common env vars (see `.env`): DB host/port/name/user/pass, Redis host/port/password, `AZURE_KEY_VAULT_URL`, storage names.
 - If Azure auth fails locally, ensure you’re logged in (e.g., az login) or configure env secrets.
 
 Observability
 - Loggers to tail: `azure_org_blob_storage`, `redis_pubsub`, workers (`attachments_post_upload_task`, `knowledge_*`), routers (`upload_handler`, `knowledge_*`).
 - SSE issues: watch server logs for heartbeat/timeout events; verify Redis channel names per org.
+
+API Surface (FastAPI)
+- Public: `GET /health` (load balancer probe) in `src/api/routers/healthcheck.py:25`.
+- Internal: `GET /internal/healthcheck`, `GET /internal/health/detailed`, `GET /internal/health/secrets` in `src/api/routers/healthcheck.py:46`.
+- User Auth: `POST /users/auth/login`, `POST /users/auth/reset-password`, `POST /users/auth/refresh-token`, `POST /users/auth/forgot-password` in `src/api/routers/users/auth_handler.py:1`.
+- Chats (sessions): `POST /users/chats/create_chat`, `DELETE /users/chats/delete_chat`, `PATCH /users/chats/rename_chat`, `GET /users/chats/list_chats`, `GET /users/chats/search_chats`, `PATCH /users/chats/favorite_chat` in `src/api/routers/chat/sessions_handler.py:1`.
+- Chats (messages): `POST /users/chats/send_message`, `GET /users/chats/message_events`, `GET /users/chats/messages/list` in `src/api/routers/chat/messages_handler.py:1`.
+- Chat Attachments (upload): `POST /users/chats/upload/presign`, `POST /users/chats/upload/finalize`, batch variants under `/presign/batch` and `/finalize/batch`, `GET /users/chats/upload/attachments/stream`, `GET /users/chats/upload/attachment/{id}` in `src/api/routers/chat_attachments/upload_handler.py:1`.
+- Chat Attachments (download): `GET /users/chats/upload/attachment/{id}/download` in `src/api/routers/chat_attachments/access_handler.py:1`.
+- Knowledge Base (upload + SSE): `POST /users/knowledge/presign/batch`, `POST /users/knowledge/finalize/batch`, `GET /users/knowledge/source/{id}`, `GET /users/knowledge/sources/stream` in `src/api/routers/knowledge_base/upload_handler.py:1`.
+- Knowledge Base (access): `GET /users/knowledge/sources`, `GET /users/knowledge/source/{id}/download`, `GET /users/knowledge/sources/stats`, `DELETE /users/knowledge/source/{id}` in `src/api/routers/knowledge_base/access_handler.py:1`.
+- Admin Auth: `POST /admin/auth/login`, `POST /admin/auth/reset-password`, `POST /admin/auth/refresh-token`, `POST /admin/auth/forgot-password`, `POST /admin/auth/logout`, `POST /admin/auth/change-password` in `src/api/routers/admin/admin_auth_handler.py:1`.
+- Admin Organisations: `POST /admin/organisations/create_organisation`, `GET /admin/organisations/list_organisations`, `GET /admin/organisations/all_organisations_history`, `GET /admin/organisations/{organisation_id}`, `PUT /admin/organisations/{organisation_id}/update`, `PUT /admin/organisations/{organisation_id}/status`, `GET /admin/organisations/{organisation_id}/history` in `src/api/routers/admin/organizations_handler.py:1`.
+- Admin Users: `POST /admin/users/create_user`, `GET /admin/users/{user_id}/profile`, `GET /admin/users/list_users`, `PUT /admin/users/{user_id}/admin_status`, `GET /admin/users/history/organisation/{organisation_id}`, `PUT /admin/users/{user_id}/update` in `src/api/routers/admin/users_handler.py:1`.
+
+Workers & Tasks
+- Chat Worker: `src/workers/chat_worker/celery_app.py:1`; tasks — `attachments.post_upload` (`src/workers/chat_worker/tasks/post_upload.py:1`), `chat.process_message` (`src/workers/chat_worker/tasks/message_processing.py:1`).
+- Knowledge Worker: `src/workers/knowledge_worker/celery_app.py:1`; tasks — `knowledge.post_upload_process`, `knowledge.document_extraction`, `knowledge.delete_source` in `src/workers/knowledge_worker/tasks/*:1`.
+- Content Worker: `src/workers/content_worker/celery_app.py:1`; tasks — slide/technical deck generation in `src/workers/content_worker/tasks/*:1`.
+- Organization Worker: `src/workers/organization_worker/celery_app.py:1`; tasks — `organization.create` in `src/workers/organization_worker/tasks/organization.py:1`.
+- Shared Base: Celery app factory and routing in `src/workers/base/celery_base.py:1`, `src/workers/base/worker_config.py:1`.
+- Messaging Contracts: Redis Pub/Sub channels and Streams utilities in `src/infra/messaging/*:1` (used by tasks and SSE services).
+
+Core Utilities (Quick Index)
+- Logging: `src/infra/utils/logger.py:1#get_logger(name, ...)` — consistent logger setup.
+- Cursors: `src/infra/utils/cursor.py:1#encode_cursor/decode_cursor` — opaque pagination tokens.
+- Responses: `src/api/utils/http_response.py:1#Response.*` — uniform API responses.
+- Constants (errors/app): `src/infra/config/constant.py:1` — central error/message strings (`GeneralErrors`, `UserAuthErrors`, `AdminAuthErrors`, `AdminOrganizationErrors`, `AdminUserErrors`, `KnowledgeBaseErrors`) and app constants (e.g., `APP_NAME`). Prefer these over literals in routers/services.
+- Naming: `src/infra/utils/resource_naming.py:1#get_schema_name/get_role_name/...` — org resource names.
+- DB URL: `src/infra/utils/get_master_db_url.py:1#get_master_db_url()` — builds master DB URL.
+- Redis: `src/infra/messaging/redis_client.py:1#get_redis_client()` — shared client/pool.
+- Streams: `src/infra/messaging/redis_streams.py:1#xadd_json_frame()` — append JSON frames.
+- Attach Events: `src/infra/messaging/attachment_status_publish.py:1#publish_attachment_status()` — Pub/Sub.
+- KB Events: `src/infra/messaging/knowledge_source_status_publish.py:1#publish_source_status()` — Pub/Sub.
+- Storage: `src/infra/storage/azure_org_blob_storage.py:1#AzureOrganisationBlobStorage` — SAS read/write helpers.
+
+Operational Scripts (Selected)
+- Database: `scripts/run_master_migrations.py:1`, `scripts/run_org_migrations.py:1` — Alembic migrations (master/tenant).
+- Admin: `scripts/admin/init_super_admin.py:1`, `scripts/admin/deploy_with_super_admin.py:1` — bootstrap super admin.
+- Monitoring: `scripts/monitoring/db_pool_monitor.py:1` — DB pool health; Celery hooks `scripts/monitoring/celery_integration.py:1`.
+ - Security: `scripts/security/validate_health_security.py:1` — validates health endpoint access.
+ - Deployment: `scripts/deployment/local-deploy.ps1:1`, `scripts/startup.sh:1` — local/container startup.
+
+Service Layer Index
+- Chat Sessions: `src/service/chat/chat_session_service.py:1` — create, rename, list, favorite, delete sessions.
+- Chat Messages: `src/service/chat/chat_message_service.py:1` — persist user messages, enqueue jobs, list/enrich history.
+- Chat Message SSE: `src/service/chat/chat_message_sse_service.py:1` — consume Redis Streams per message job.
+- Attachments: `src/service/chat/chat_attachments_service.py:1` — presign/finalize uploads, download SAS, batch ops.
+- Attachments SSE: `src/service/chat/chat_attachments_sse_service.py:1` — pub/sub stream of attachment events.
+- Knowledge Upload: `src/service/knowledge_base/knowledge_upload_service.py:1` — presign/finalize, enqueue KB jobs, status.
+- Knowledge Access: `src/service/knowledge_base/knowledge_access_service.py:1` — list/filter, stats, download SAS, delete.
+- Knowledge SSE: `src/service/knowledge_base/knowledge_sse_service.py:1` — pub/sub stream of KB source events.
+- Admin Auth: `src/service/admin/admin_auth_service.py:1` — super admin login flows and token handling.
+- Org/User Mgmt: `src/service/orgnisation/organization_management.py:1`, `src/service/orgnisation/user_management.py:1` — org and user lifecycle.
+
+Schemas (Primary Models)
+- Base envelope: `src/api/schemas/base_models.py:1#GenericResponse[T]`.
+- Chat: `src/api/schemas/chat_models.py:1` — sessions, messages, list/search/favorite DTOs.
+- Chat streaming: `src/api/schemas/chat_stream_models.py:1`, `src/api/schemas/chat_socket_models.py:1`.
+- Uploads (attachments): `src/api/schemas/upload_models.py:1` — `PresignRequest/Response`, `FinalizeRequest`, batch models, `AttachmentEventUpdate`.
+- Knowledge upload/access: `src/api/schemas/knowledge_upload_models.py:1`, `src/api/schemas/knowledge_access_models.py:1` — presign/finalize/status/list/stats, `KnowledgeSourceEventUpdate`.
+- Technical content: `src/api/schemas/technical_deck_models.py:1`.
+
+Queues & Routing (Celery)
+- Chat Worker exchange `chat`: queues `attachments`, `chat_processing`, `chat_messages`.
+  - Tasks: `attachments.post_upload` → `attachments`; `chat.process_message` → `chat_messages`.
+- Knowledge Worker exchange `knowledge`: queues `knowledge_upload`, `knowledge_extract`.
+  - Tasks: `knowledge.post_upload_process` → `knowledge_upload`; `knowledge.document_extraction` → `knowledge_extract`; `knowledge.delete_source` → `knowledge_upload`.
+- Content Worker: queues `content_generation`, `deck_generation`, `slides` (default `content_generation`).
+- Organization Worker exchange `organization`: queue `organization`.
+  - Tasks: `organization.create` → `organization`.
+
+Event Contracts (Streams/PubSub)
+- Chat Redis Stream frames (produced by worker):
+  - `answer.delta`, `answer.replace`, `answer.metrics`, `suggestions.replace`, `sources.replace`, `agent.switch`, `question.prompt`, `progress.update`, `tool.usage`, `thinking.update`, `finalize` (see `src/workers/chat_worker/tasks/message_processing.py:1`).
+- Attachments Pub/Sub event: `AttachmentEventUpdate` with `attachment_id`, `status`, `updated_at`, optional `error_message`, `thumbnail_small_url` (publish via `src/infra/messaging/attachment_status_publish.py:1#publish_attachment_status`).
+- Knowledge Pub/Sub event: `KnowledgeSourceEventUpdate` with `source_id`, `status`, optional `updated_at`, `error_message`, `progress`, `thumbnail_small_url`, `thumbnail_medium_url` (publish via `src/infra/messaging/knowledge_source_status_publish.py:1#publish_source_status`).
+
+Environment (Minimal to Run E2E)
+- App: `ENV` (`local|dev|prod`), `SESSION_SECRET` (FastAPI session middleware).
+- Database: either `DATABASE_URL` or `DATABASE_HOST`, `DATABASE_PORT`, `DATABASE_NAME`, `DATABASE_USER`, `DATABASE_PASSWORD`, optional `DATABASE_SSL_MODE`.
+- Redis: `REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWORD` (if set).
+- Storage: `CLOUD_PROVIDER`, `APPLICATION_STORAGE_NAME`, `ORGANISATION_STORAGE_NAME`, `APPLICATION_REGION`.
+- Secrets/Key Vault: `AZURE_KEY_VAULT_URL`; for cloud auth either workload identity (`AZURE_TENANT_ID`, `AZURE_CLIENT_ID` [+ optionally `AZURE_ADDITIONALLY_ALLOWED_TENANTS`]) or Managed Identity (no vars required). Local uses DefaultAzureCredential.
+- Email/Supabase (if auth enabled): `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_JWT_SECRET`, and `RESEND_API_KEY`/`FROM_EMAIL` if emailing.
+- File limits: `MAX_UPLOAD_FILE_SIZE_BYTES`, `ALLOWED_MIMETYPES`, and knowledge equivalents `KNOWLEDGE_MAX_UPLOAD_FILE_SIZE_BYTES`, `KNOWLEDGE_ALLOWED_MIMETYPES`.
