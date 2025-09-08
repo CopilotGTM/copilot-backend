@@ -112,7 +112,7 @@ class EmailService:
             <p><strong>⚠️ Important:</strong> You will be required to change this password upon your first login for security reasons.</p>
             
             <div class="button-container">
-                <a href="{self.admin_app_url}" class="button">Login to Your Account</a>
+                <a href="{self.admin_app_url}/signin" class="button">Login to Your Account</a>
             </div>
             
             <h3>Next Steps:</h3>
@@ -133,7 +133,7 @@ class EmailService:
         Welcome to {self.app_name}, {first_name}!
         Your Super Admin account has been created.
         Login with Email: {to_email} and Temporary Password: {temp_password}
-        Login here: {self.app_url}/admin/login
+        Login here: {self.admin_app_url}/signin
         You will be required to change your password upon first login.
         """
         
@@ -157,7 +157,7 @@ class EmailService:
             <p><strong>⚠️ Important:</strong> You will be required to change this password upon your first login for security reasons.</p>
             
             <div class="button-container">
-                <a href="{self.admin_app_url}" class="button">Login to Your Account</a>
+                <a href="{self.app_url}/signin" class="button">Login to Your Account</a>
             </div>
             
             <h3>Next Steps:</h3>
@@ -177,7 +177,7 @@ class EmailService:
         Welcome to {self.app_name}, {first_name}!
         Your account has been created.
         Login with Email: {to_email} and Temporary Password: {temp_password}
-        Login here: {self.app_url}/login
+        Login here: {self.app_url}/signin
         You will be required to change your password upon first login.
         """
         
