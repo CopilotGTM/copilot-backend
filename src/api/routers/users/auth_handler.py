@@ -21,6 +21,7 @@ from src.api.utils.http_response import Response
 from src.api.schemas.base_models import GenericResponse
 from src.infra.auth.email_service import email_service
 from src.infra.config.constant import UserAuthErrors
+from src.api.dependencies.rate_limit import rate_limit_login
 
 logger = get_logger("user_auth_handler")
 router = APIRouter()
@@ -32,6 +33,7 @@ router = APIRouter()
 async def user_login(
     login_request: UserLoginRequest,
     master_session: AsyncSession = Depends(get_master_async_session),
+    _rl_login: None = Depends(rate_limit_login),
 ):
     """
     User login endpoint.

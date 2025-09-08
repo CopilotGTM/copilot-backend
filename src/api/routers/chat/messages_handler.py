@@ -9,6 +9,7 @@ from src.api.dependencies.organisation_dependencies import (
     get_org_async_session,
 )
 from src.api.schemas.base_models import GenericResponse
+from src.api.dependencies.rate_limit import rate_limit_user_write, rate_limit_user_read
 from src.api.schemas.chat_models import (
     SendMessageRequest,
     SendMessageResponse,
@@ -54,6 +55,7 @@ async def send_message(
     payload: SendMessageRequest = Body(...),
     service: ChatMessageService = Depends(get_chat_message_service),
     user_ids: UserIDs = Depends(get_current_user),
+    _rl: None = Depends(rate_limit_user_write),
 ):
     try:
         # Map attachments to IDs, respecting order if provided
@@ -118,7 +120,7 @@ async def send_message(
 async def message_events(
     job_id: UUID, 
     request: Request, 
-    user_ids: UserIDs = Depends(get_current_user)
+    user_ids: UserIDs = Depends(get_current_user),
 ):
     service = ChatMessageSSEService(user_ids.organisation_id, job_id, user_ids.user_id)
     logger.info(
@@ -167,6 +169,7 @@ async def list_messages(
     role: Optional[ChatMessageRole] = Query(None, description="Filter by role"),
     message_type: Optional[ChatMessageType] = Query(None, description="Filter by type"),
     service: ChatMessageService = Depends(get_chat_message_service),
+    _rl_read: None = Depends(rate_limit_user_read),
 ):
     try:
         msgs, next_cursor = await service.list_messages(

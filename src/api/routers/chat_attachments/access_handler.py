@@ -14,6 +14,7 @@ from src.api.schemas.upload_models import AttachmentDownloadResponse
 from src.api.utils.http_response import Response
 from src.service.chat.chat_attachments_service import UploadService, UploadServiceError
 from src.infra.utils.logger import get_logger
+from src.api.dependencies.rate_limit import rate_limit_user_read
 
 logger = get_logger("attachment_download_handler")
 
@@ -44,6 +45,7 @@ async def download_attachment(
     attachment_id: UUID,
     expires_minutes: int = Query(30, ge=1, le=120),
     service: UploadService = Depends(get_upload_service),
+    _rl_read: None = Depends(rate_limit_user_read),
 ):
     try:
         url = await service.generate_download_url(

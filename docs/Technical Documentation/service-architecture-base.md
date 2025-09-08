@@ -67,10 +67,55 @@ Secrets & Credentials
 
 Redis, Channels, and Streams
 - Configuration: `src/infra/config/constant.py:1` and `src/infra/config/configs.py:1` (ENV‑aware host/port/password; TLS in non‑local).
-- Sync connections via `src/infra/messaging/redis_client.py:1` (connection pool).
+ Sync connections via `src/infra/messaging/redis_client.py:1` (connection pool).
 - Async Pub/Sub for real‑time broadcast: `src/infra/messaging/redis_pubsub.py:1`.
 - Redis Streams for replayable frames (chat): `src/infra/messaging/redis_streams.py:1`.
 - Channel helpers (import where needed): `src/infra/messaging/redis_channels.py:1`.
+
+Redis Client (how to use it effectively)
+Entry points:
+  - get a pooled, sync client with `from src.infra.messaging.redis_client import get_redis_client`.
+  - close pool during shutdown/tests with `close_redis_pool()`.
+Connection model:
+  - Lazy, module‑level singleton `RedisConnectionManager` creates a redis‑py `ConnectionPool`.
+  - Pool is initialized on first call; a `PING` verifies connectivity. On failure, the pool is discarded and error is logged.
+  - TLS is automatically enabled when `ENV != local` using `SSLConnection`. Cert requirements can be set with `REDIS_SSL_CERT_REQS` (CERT_NONE|CERT_OPTIONAL|CERT_REQUIRED).
+  - Timeouts set for resilience: `socket_timeout=30`, `socket_connect_timeout=30`, `retry_on_timeout=True`, `health_check_interval=30`, `socket_keepalive=True`, `max_connections=20`.
+Usage patterns:
+  - Counters/TTL (rate limiting, locks):
+    - Use `client.incr(key)` and set TTL only on first hit (`expire(key, seconds)` when result is 1).
+    - Always wrap calls with try/except; on infrastructure issues, prefer fail‑open for non‑critical paths (e.g., rate limits) and fail‑closed for critical locks.
+  - TTL/readiness:
+    - Use `client.ttl(key)`; remember -2 means missing and -1 means no expiry.
+  - Pub/Sub:
+    - Prefer async pub/sub helper `AsyncRedisPubSub` for SSE services; for simple sync publications, keep payloads small and JSON‑serializable.
+  - Streams:
+    - Use `redis_streams.py` helpers (xadd_json_frame, consumer groups) for ordered frames and replay.
+Best practices:
+  - Do not construct raw clients; always use `get_redis_client()` to reuse the pool.
+  - Namespace keys consistently: `rl:{subject}:{id}:...` for rate limits, `sse:{org}:{topic}:...` for pub/sub, `stream:{org}:{type}:{id}` for streams.
+  - Keep keys short but descriptive; include time bucket suffixes when implementing fixed windows.
+  - Validate retry logic in workers where operations are idempotent; avoid retry storms from the API layer.
+  - In cloud, validate TLS handshake by setting `REDIS_SSL_CERT_REQS=CERT_REQUIRED` where CA trust is configured.
+Examples:
+  - Get a client and increment with TTL:
+    ```python
+    from src.infra.messaging.redis_client import get_redis_client
+    client = get_redis_client()
+    count = client.incr(key)
+    if count == 1:
+        client.expire(key, 60)
+    ```
+  - Check TTL safely:
+    ```python
+    ttl = client.ttl(key)
+    ttl = None if ttl is None or ttl < 0 else int(ttl)
+    ```
+  - Publish a small JSON event (sync):
+    ```python
+    import json
+    client.publish(channel, json.dumps(payload))
+    ```
 
 SSE Patterns
 - Knowledge sources and attachments: use Redis Pub/Sub to stream `status` updates with heartbeats and completion detection.

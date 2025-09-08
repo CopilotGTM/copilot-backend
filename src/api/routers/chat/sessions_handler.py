@@ -9,6 +9,7 @@ from src.api.dependencies.organisation_dependencies import (
     get_org_async_session,
 )
 from src.api.schemas.base_models import GenericResponse
+from src.api.dependencies.rate_limit import rate_limit_user_write, rate_limit_user_read
 from src.api.schemas.chat_models import (
     ChatSessionCreate,
     ChatSessionOut,
@@ -65,6 +66,7 @@ def _to_out(chat) -> ChatSessionOut:
 async def create_chat(
     payload: ChatSessionCreate = Body(...),
     service: ChatSessionService = Depends(get_chat_session_service),
+    _rl: None = Depends(rate_limit_user_write),
 ):
     try:
         chat = await service.create_session(
@@ -88,6 +90,7 @@ async def create_chat(
 async def delete_chat(
     payload: DeleteChat = Body(...),
     service: ChatSessionService = Depends(get_chat_session_service),
+    _rl: None = Depends(rate_limit_user_write),
 ):
     try:
         chat = await service.delete_session(
@@ -110,6 +113,7 @@ async def delete_chat(
 async def rename_chat(
     payload: RenameChat = Body(...),
     service: ChatSessionService = Depends(get_chat_session_service),
+    _rl: None = Depends(rate_limit_user_write),
 ):
     try:
         chat = await service.rename_session(
@@ -137,6 +141,7 @@ async def list_chats(
     limit: int = Query(20, ge=1, le=100),
     cursor: Optional[str] = Query(None, description="Opaque cursor from previous page"),
     service: ChatSessionService = Depends(get_chat_session_service),
+    _rl_read: None = Depends(rate_limit_user_read),
 ):
     try:
         items, next_cursor = await service.list_sessions(
@@ -162,6 +167,7 @@ async def search_chats(
     ),
     limit: int = Query(10, ge=1, le=50),
     service: ChatSessionService = Depends(get_chat_session_service),
+    _rl_read: None = Depends(rate_limit_user_read),
 ):
     try:
         items = await service.search_sessions(
@@ -184,6 +190,7 @@ async def search_chats(
 async def favorite_chat(
     payload: FavoriteChat = Body(...),
     service: ChatSessionService = Depends(get_chat_session_service),
+    _rl: None = Depends(rate_limit_user_write),
 ):
     try:
         chat = await service.set_favorite(

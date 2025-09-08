@@ -237,6 +237,24 @@ class PoolMonitorConfig:
     WARMUP_MIN_IDLE: int = int(os.getenv("DB_POOL_MONITOR_WARMUP_MIN_IDLE", "0"))
 
 
+class RateLimitConfig:
+    """Configuration for API rate limiting.
+
+    Defaults are conservative for testing; override via env vars when needed.
+    """
+
+    PER_MINUTE: int = int(os.getenv("RATE_LIMIT_PER_MINUTE", "15"))
+    PER_HOUR: int = int(os.getenv("RATE_LIMIT_PER_HOUR", "100"))
+
+    # Lenient limits for read-only (GET) endpoints
+    READ_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_READ_PER_MINUTE", "60"))
+    READ_PER_HOUR: int = int(os.getenv("RATE_LIMIT_READ_PER_HOUR", "1000"))
+
+    # Strict limits for authentication (login attempts)
+    AUTH_LOGIN_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_AUTH_LOGIN_PER_MINUTE", "10"))
+    AUTH_LOGIN_PER_HOUR: int = int(os.getenv("RATE_LIMIT_AUTH_LOGIN_PER_HOUR", "50"))
+
+
 # Create config instances
 supabase_config = SupabaseConfig()
 database_config = DatabaseConfig()
@@ -252,6 +270,7 @@ chat_file_upload_config = ChatFileUploadConfig()
 knowledge_file_upload_config = KnowledgeFileUploadConfig()
 thumbnail_config = ThumbnailConfig()
 pool_monitor_config = PoolMonitorConfig()
+rate_limit_config = RateLimitConfig()
 
 
 class Config:
