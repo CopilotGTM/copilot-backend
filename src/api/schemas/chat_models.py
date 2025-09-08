@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic.generics import GenericModel as _Base
 
 from src.domain.models.organisation_tables.chat_session_models import ChatType
-from src.domain.models.organisation_tables.chat_message_models import ChatMessageRole, ChatMessageType
+from src.domain.models.organisation_tables.chat_message_models import ChatMessageRole, ChatMessageType, AttachmentStatus
 T = TypeVar("T")
 
 
@@ -103,3 +103,32 @@ class SendMessageRequest(BaseModel):
 class SendMessageResponse(BaseModel):
     message_id: UUID
     job_id: UUID
+
+
+class ChatMessageListItem(BaseModel):
+    """Slim message item for lists/infinite scroll."""
+    message_id: UUID
+    session_id: UUID
+    role: ChatMessageRole
+    message_type: ChatMessageType
+    content: str
+    is_edited: bool = False
+    created_at: datetime
+    updated_at: datetime
+    # Enriched fields
+    attachments: List["ChatAttachmentView"] = []
+    confidence_score: Optional[str] = None
+    sources: Optional[List[Dict[str, Any]]] = None
+    suggestions: Optional[List[str]] = None
+
+
+class ChatMessagesPage(BaseModel):
+    items: List[ChatMessageListItem]
+    cursor: Optional[str] = None
+
+
+class ChatAttachmentView(BaseModel):
+    attachment_id: UUID
+    filename: str
+    mimetype: str
+    thumbnail_small_url: Optional[str] = None

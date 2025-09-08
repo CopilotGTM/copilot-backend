@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from typing import Iterable, List, Optional, Dict, Any
+from typing import Iterable, List, Optional, Dict, Any, Tuple
 from uuid import UUID
 from functools import partial
 
 from sqlmodel import select
+from sqlalchemy import and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.domain.models.organisation_tables.chat_message_models import (
@@ -20,6 +21,33 @@ from src.domain.models.organisation_tables.job_models import (
     ChatMessageJob,
     JobStatus,
 )
+from src.infra.utils.cursor import encode_cursor, decode_cursor
+from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
+
+
+def _to_confidence(val) -> Optional[str]:
+    """Convert confidence value to string, handling both string labels and numeric values."""
+    if val is None:
+        return None
+    
+    if isinstance(val, str):
+        # Return string confidence as-is if it's a valid value
+        label = val.strip().lower()
+        valid_labels = {"very_low", "low", "medium", "high", "very_high"}
+        if label in valid_labels:
+            return label
+        return val.strip()  # Return original string if not in mapping
+    
+    if isinstance(val, (int, float)):
+        # Convert numeric to categorical string (matching agent output)
+        if val >= 0.8:
+            return "high"
+        elif val >= 0.5:
+            return "medium"
+        else:
+            return "low"
+    
+    return None
 
 
 class ChatMessageService:
@@ -115,3 +143,165 @@ class ChatMessageService:
         await self.db.refresh(message)
         await self.db.refresh(job)
         return message, job
+
+    async def list_messages(
+        self,
+        *,
+        session_id: UUID,
+        limit: int = 20,
+        cursor: Optional[str] = None,
+        role: Optional[ChatMessageRole] = None,
+        message_type: Optional[ChatMessageType] = None,
+    ) -> Tuple[List[ChatMessage], Optional[str]]:
+        """List messages for a session with stable cursor-based pagination.
+
+        Orders by created_at desc, message_id desc to ensure a consistent keyset.
+        Cursor encodes (created_at, message_id).
+        """
+        # Ensure session belongs to caller
+        sess_stmt = select(ChatSession).where(
+            ChatSession.session_id == session_id,
+            ChatSession.organisation_id == self.organisation_id,
+            ChatSession.user_id == self.user_id,
+            ChatSession.is_deleted.is_(False),
+        )
+        res = await self.db.execute(sess_stmt)
+        session = res.scalar_one_or_none()
+        if not session:
+            raise ValueError("Chat session not found")
+
+        filters = [
+            ChatMessage.session_id == session_id,
+        ]
+        if role:
+            filters.append(ChatMessage.role == role)
+        if message_type:
+            filters.append(ChatMessage.message_type == message_type)
+
+        if cursor:
+            ts, mid = decode_cursor(cursor)
+            filters.append(
+                or_(
+                    ChatMessage.created_at < ts,
+                    and_(ChatMessage.created_at == ts, ChatMessage.message_id < mid),
+                )
+            )
+
+        stmt = (
+            select(ChatMessage)
+            .where(*filters)
+            .order_by(ChatMessage.created_at.desc(), ChatMessage.message_id.desc())
+            .limit(limit + 1)
+        )
+        res = await self.db.execute(stmt)
+        rows = res.scalars().all()
+        has_more = len(rows) == limit + 1
+        items = rows[:limit]
+        next_cursor = (
+            encode_cursor(items[-1].created_at, items[-1].message_id)
+            if has_more
+            else None
+        )
+        return items, next_cursor
+
+    async def get_message_attachments(
+        self, messages: List[ChatMessage]
+    ) -> Dict[UUID, List[Attachment]]:
+        """Return attachments for messages keyed by message_id in attachment_order."""
+        if not messages:
+            return {}
+        msg_ids = [m.message_id for m in messages]
+        res = await self.db.execute(
+            select(
+                ChatMessageAttachmentLink.message_id,
+                Attachment,
+                ChatMessageAttachmentLink.attachment_order,
+            )
+            .join(
+                Attachment,
+                ChatMessageAttachmentLink.attachment_id == Attachment.attachment_id,
+            )
+            .where(
+                ChatMessageAttachmentLink.message_id.in_(msg_ids),
+                Attachment.organisation_id == self.organisation_id,
+                Attachment.user_id == self.user_id,
+                Attachment.is_deleted.is_(False),
+            )
+            .order_by(
+                ChatMessageAttachmentLink.message_id,
+                ChatMessageAttachmentLink.attachment_order,
+            )
+        )
+        result_map: Dict[UUID, List[Attachment]] = {mid: [] for mid in msg_ids}
+        for mid, att, _ord in res.all():
+            result_map[mid].append(att)
+        return result_map
+
+    async def build_attachment_urls(
+        self,
+        *,
+        attachments_by_msg: Dict[UUID, List[Attachment]],
+        minutes: int = 120,
+    ) -> Dict[UUID, List[Dict[str, Any]]]:
+        """Build thumbnail SAS URLs for attachments per message.
+
+    Returns dict[message_id] -> list of dicts conforming to ChatAttachmentView.
+        """
+        storage = AzureOrganisationBlobStorage(self.organisation_id)
+
+        async def _sas(path: Optional[str]) -> Optional[str]:
+            if not path:
+                return None
+            try:
+                return await storage.generate_read_sas(path, minutes=minutes)
+            except Exception:
+                return None
+
+        out: Dict[UUID, List[Dict[str, Any]]] = {}
+        for mid, atts in attachments_by_msg.items():
+            enriched: List[Dict[str, Any]] = []
+            for att in atts:
+                enriched.append(
+                    {
+                        "attachment_id": att.attachment_id,
+                        "filename": att.filename,
+                        "mimetype": att.mimetype,
+                        "thumbnail_small_url": await _sas(getattr(att, "thumbnail_small_path", None)),
+                    }
+                )
+            out[mid] = enriched
+        try:
+            await storage.close()
+        except Exception:
+            pass
+        return out
+
+    def build_message_list_items(
+        self,
+        messages: List[ChatMessage],
+        attachments_urls: Dict[UUID, List[Dict[str, Any]]],
+    ) -> List[Dict[str, Any]]:
+        """Build list items with enriched metadata for message listing."""
+        items = []
+        for m in messages:
+            agent = getattr(m, "agent_data", None) or {}
+            extra = getattr(m, "extra", None) or {}
+            text = m.content.get("text") if isinstance(m.content, dict) else m.content
+
+            items.append({
+                "message_id": m.message_id,
+                "session_id": m.session_id,
+                "role": m.role,
+                "message_type": m.message_type,
+                "content": text,
+                "is_edited": m.is_edited,
+                "created_at": m.created_at,
+                "updated_at": m.updated_at,
+                "attachments": attachments_urls.get(m.message_id, []),
+                "confidence_score": _to_confidence(
+                    extra.get("confidence_score") if isinstance(extra, dict) else None
+                ),
+                "sources": agent.get("sources") if isinstance(agent, dict) else None,
+                "suggestions": agent.get("suggested_questions") if isinstance(agent, dict) else None,
+            })
+        return items

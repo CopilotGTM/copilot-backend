@@ -45,6 +45,86 @@ def _maybe_generate_thumbnails(loop, storage, attachment) -> None:
         attachment.processing_error = f"thumbnail_failed: {e}"[:500]
 
 
+def _attachment_already_processed(attachment: Optional[Attachment]) -> bool:
+    """Return True if the attachment is already fully processed.
+
+    Consider an attachment processed if status is COMPLETED/FAILED and a checksum exists.
+    """
+    if not attachment:
+        return False
+    return (
+        attachment.status in {AttachmentStatus.COMPLETED, AttachmentStatus.FAILED}
+        and bool(attachment.checksum)
+    )
+
+
+def _compute_and_persist_checksum(
+    loop: asyncio.AbstractEventLoop,
+    storage: AzureOrganisationBlobStorage,
+    attachment: Attachment,
+    session,
+) -> None:
+    """Compute checksum if missing and persist it; swallow and log errors."""
+    try:
+        if attachment.storage_path and not attachment.checksum:
+            checksum = loop.run_until_complete(
+                storage.compute_checksum(attachment.storage_path)
+            )
+            attachment.checksum = checksum
+            session.merge(attachment)
+            session.commit()
+    except Exception:
+        logger.exception(
+            "Checksum computation failed for attachment %s", attachment.attachment_id
+        )
+
+
+def _update_status_and_commit(
+    session, attachment: Attachment, status: AttachmentStatus, error_message: Optional[str] = None
+) -> None:
+    """Update status and optional error message, then commit."""
+    attachment.status = status
+    if error_message:
+        attachment.processing_error = error_message[:500]
+    session.merge(attachment)
+    session.commit()
+
+
+def _generate_thumbnail_sas_url(
+    loop: asyncio.AbstractEventLoop,
+    storage: AzureOrganisationBlobStorage,
+    path: Optional[str],
+    minutes: int = 120,
+) -> Optional[str]:
+    """Generate a read SAS URL for a thumbnail path; return None on failure or missing path."""
+    if not path:
+        return None
+    try:
+        return loop.run_until_complete(storage.generate_read_sas(path, minutes=minutes))
+    except Exception:
+        logger.debug("Thumbnail SAS generation failed for path=%s", path, exc_info=True)
+        return None
+
+
+def _publish_status_event(
+    organisation_id: str,
+    attachment: Attachment,
+    status: AttachmentStatus,
+    thumbnail_small_url: Optional[str],
+) -> None:
+    """Publish attachment status update event."""
+    event_to_publish = AttachmentEventUpdate(
+        attachment_id=str(attachment.attachment_id),
+        status=status,
+        updated_at=attachment.updated_at.isoformat()
+        if getattr(attachment, "updated_at", None)
+        else None,
+        error_message=attachment.processing_error,
+        thumbnail_small_url=thumbnail_small_url,
+    )
+    publish_attachment_status(organisation_id, event_to_publish)
+
+
 @app.task(name="attachments.post_upload", bind=True, acks_late=True, max_retries=3)
 def post_upload(self, organisation_id: str, attachment_id: str):
     """Post-upload processing: checksum + optional thumbnails.
@@ -65,52 +145,29 @@ def post_upload(self, organisation_id: str, attachment_id: str):
         if not attachment:
             logger.warning("Attachment %s not found for processing", attachment_id)
             return
-        if attachment.status in {AttachmentStatus.COMPLETED, AttachmentStatus.FAILED} and attachment.checksum:
+
+        if _attachment_already_processed(attachment):
             logger.info("Attachment %s already processed", attachment_id)
             return
 
         # Compute checksum if missing
-        try:
-            if attachment.storage_path and not attachment.checksum:
-                checksum = loop.run_until_complete(
-                    storage.compute_checksum(attachment.storage_path)
-                )
-                attachment.checksum = checksum
-                session.merge(attachment)
-                session.commit()
-        except Exception:
-            logger.exception(
-                "Checksum computation failed for attachment %s", attachment.attachment_id
-            )
+        _compute_and_persist_checksum(loop, storage, attachment, session)
 
         # Thumbnails for images / PDFs via shared service
         _maybe_generate_thumbnails(loop, storage, attachment)
         session.merge(attachment)
         session.commit()
 
-        # Finalize status
-        attachment.status = AttachmentStatus.COMPLETED
-        session.merge(attachment)
-        session.commit()
+        # Finalize status and persist
+        _update_status_and_commit(session, attachment, AttachmentStatus.COMPLETED)
 
-        thumbnail_small_url = None
-        try:
-            if attachment.thumbnail_small_path:
-                thumbnail_small_url = loop.run_until_complete(
-                    storage.generate_read_sas(attachment.thumbnail_small_path, minutes=120)
-                )
-        except Exception:
-            logger.debug(
-                "Thumbnail SAS generation failed for attachment %s", attachment.attachment_id, exc_info=True
-            )
-        event_to_publish = AttachmentEventUpdate(
-            attachment_id=str(attachment.attachment_id),
-            status=AttachmentStatus.COMPLETED,
-            updated_at=attachment.updated_at.isoformat() if getattr(attachment, "updated_at", None) else None,
-            error_message=attachment.processing_error,
-            thumbnail_small_url=thumbnail_small_url,
+        # Publish completion event with optional SAS
+        thumbnail_small_url = _generate_thumbnail_sas_url(
+            loop, storage, attachment.thumbnail_small_path, minutes=120
         )
-        publish_attachment_status(organisation_id, event_to_publish)
+        _publish_status_event(
+            organisation_id, attachment, AttachmentStatus.COMPLETED, thumbnail_small_url
+        )
         logger.info("Attachment post-upload task completed attachment=%s", attachment_id)
     except Exception as e:
         logger.error(
@@ -121,21 +178,15 @@ def post_upload(self, organisation_id: str, attachment_id: str):
         )
         try:
             if attachment is not None:
-                attachment.status = AttachmentStatus.FAILED
-                attachment.processing_error = f"post_upload_failed: {e}"[:500]
-                session.merge(attachment)
-                session.commit()
-
-                event = AttachmentEventUpdate(
-                    attachment_id=str(attachment.attachment_id),
-                    status=AttachmentStatus.FAILED,
-                    updated_at=attachment.updated_at.isoformat()
-                    if getattr(attachment, "updated_at", None)
-                    else None,
-                    error_message=attachment.processing_error,
-                    thumbnail_small_url=None,
+                _update_status_and_commit(
+                    session,
+                    attachment,
+                    AttachmentStatus.FAILED,
+                    error_message=f"post_upload_failed: {e}",
                 )
-                publish_attachment_status(organisation_id, event)
+                _publish_status_event(
+                    organisation_id, attachment, AttachmentStatus.FAILED, None
+                )
         except Exception:
             logger.debug("Failed to persist/publish FAILED state for attachment %s", attachment_id, exc_info=True)
     finally:
