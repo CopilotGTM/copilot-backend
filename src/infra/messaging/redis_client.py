@@ -1,5 +1,7 @@
 # core/redis_client.py
 
+import os
+import ssl as ssl_mod
 import redis
 from typing import Optional
 from ..config.configs import Config
@@ -20,8 +22,9 @@ class RedisConnectionManager:
         return cls._instance
 
     def __init__(self):
-        if self._sync_pool is None:
-            self._initialize_pool()
+        # Do not eagerly initialize the pool at import time.
+        # Initialize lazily on first use to avoid import-time failures.
+        pass
 
     def _initialize_pool(self) -> None:
         """Initialize Redis connection pool."""
@@ -29,8 +32,8 @@ class RedisConnectionManager:
         redis_host, redis_port, redis_password = config.get_redis_client_details
         ssl_enabled = False if config.env == "local" else True
 
-        # Build connection parameters
-        connection_params = {
+        # Base connection parameters (compatible across redis-py versions)
+        connection_params: dict = {
             "host": redis_host,
             "port": redis_port,
             "password": redis_password,
@@ -40,23 +43,46 @@ class RedisConnectionManager:
             "retry_on_timeout": True,
             "health_check_interval": 30,
             "socket_keepalive": True,
-            "max_connections": 20,  # Connection pool size
+            "max_connections": 20,
         }
 
-        # Add SSL configuration only for non-local environments
+        # Prefer using SSLConnection class for TLS to avoid unsupported 'ssl' kwarg
+        # in older redis-py versions. Fall back gracefully if unavailable.
         if ssl_enabled:
-            connection_params["ssl"] = True
-            connection_params["ssl_check_hostname"] = False
+            try:
+                from redis.connection import SSLConnection  # type: ignore
+
+                # Configure certificate requirements from env, default CERT_NONE
+                ssl_cert_reqs_str = os.environ.get("REDIS_SSL_CERT_REQS", "CERT_NONE")
+                ssl_cert_reqs_map = {
+                    "CERT_NONE": ssl_mod.CERT_NONE,
+                    "CERT_OPTIONAL": ssl_mod.CERT_OPTIONAL,
+                    "CERT_REQUIRED": ssl_mod.CERT_REQUIRED,
+                }
+                connection_params["connection_class"] = SSLConnection
+                connection_params["ssl_cert_reqs"] = ssl_cert_reqs_map.get(
+                    ssl_cert_reqs_str, ssl_mod.CERT_NONE
+                )
+            except Exception:
+                # As a last resort, try the 'ssl' kwarg; some environments may still accept it.
+                # Do NOT pass unsupported options like 'ssl_check_hostname'.
+                connection_params["ssl"] = True  # type: ignore[assignment]
 
         self._sync_pool = redis.ConnectionPool(**connection_params)
 
-        # Test the connection
+        # Test the connection on first init
         test_client = redis.Redis(connection_pool=self._sync_pool)
         try:
             test_client.ping()
             logger.info("Redis connection pool initialized successfully")
         except Exception as e:
             logger.error("Failed to initialize Redis connection pool: %s", e)
+            # Ensure we don't keep a broken pool around
+            try:
+                self._sync_pool.disconnect()  # type: ignore[union-attr]
+            except Exception:
+                pass
+            self._sync_pool = None
             raise
 
     def get_client(self) -> redis.Redis:
@@ -73,14 +99,17 @@ class RedisConnectionManager:
             logger.info("Redis connection pool closed")
 
 
-# Global connection manager instance
-_redis_manager = RedisConnectionManager()
+# Lazy, module-level singleton (do not initialize at import time)
+_redis_manager: Optional[RedisConnectionManager] = None
 
 
 def get_redis_client() -> redis.Redis:
     """
     Return a Redis client instance from the connection pool.
     """
+    global _redis_manager
+    if _redis_manager is None:
+        _redis_manager = RedisConnectionManager()
     return _redis_manager.get_client()
 
 
@@ -88,4 +117,6 @@ def close_redis_pool() -> None:
     """
     Close the Redis connection pool.
     """
-    _redis_manager.close_pool()
+    global _redis_manager
+    if _redis_manager is not None:
+        _redis_manager.close_pool()

@@ -1,4 +1,4 @@
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Body, Request
@@ -12,6 +12,8 @@ from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.chat_models import (
     SendMessageRequest,
     SendMessageResponse,
+    ChatMessageListItem,
+    ChatMessagesPage,
 )
 from src.api.utils.http_response import Response
 from src.infra.utils.logger import get_logger
@@ -19,6 +21,8 @@ from src.service.chat.chat_message_service import ChatMessageService
 from src.workers.chat_worker.celery_app import app as chat_app
 from src.service.chat.chat_message_sse_service import ChatMessageSSEService
 from sse_starlette.sse import EventSourceResponse
+from fastapi import Query
+from src.domain.models.organisation_tables.chat_message_models import ChatMessageRole, ChatMessageType
 
 
 logger = get_logger("chat_messages")
@@ -146,3 +150,44 @@ async def message_events(
                 logger.debug("Chat SSE service close failed", exc_info=True)
 
     return EventSourceResponse(event_generator())
+
+
+@router.get(
+    "/messages/list",
+    response_model=GenericResponse[ChatMessagesPage],
+    tags=["chat_messages"],
+    summary="List messages in a session (cursor-based pagination)",
+)
+async def list_messages(
+    session_id: UUID,
+    limit: int = Query(20, ge=1, le=100),
+    cursor: Optional[str] = Query(
+        None, description="Opaque cursor returned by previous page (omit for first)"
+    ),
+    role: Optional[ChatMessageRole] = Query(None, description="Filter by role"),
+    message_type: Optional[ChatMessageType] = Query(None, description="Filter by type"),
+    service: ChatMessageService = Depends(get_chat_message_service),
+):
+    try:
+        msgs, next_cursor = await service.list_messages(
+            session_id=session_id,
+            limit=limit,
+            cursor=cursor,
+            role=role,
+            message_type=message_type,
+        )
+
+        # Enrich with attachments + thumbnail URLs
+        atts_by_msg = await service.get_message_attachments(msgs)
+        atts_urls = await service.build_attachment_urls(attachments_by_msg=atts_by_msg)
+
+        # Build enriched items using service method
+        item_dicts = service.build_message_list_items(msgs, atts_urls)
+        items: List[ChatMessageListItem] = [ChatMessageListItem(**item) for item in item_dicts]
+        page = ChatMessagesPage(items=items, cursor=next_cursor)
+        return Response.success_response("Messages listed", page)
+    except ValueError as e:
+        return Response.bad_request_error_response(str(e))
+    except Exception as e:
+        logger.error("Unexpected error listing messages: %s", e, exc_info=True)
+        return Response.internal_server_error_response("Unable to list messages")

@@ -134,7 +134,16 @@ def _process_metrics_frame(data: dict, result_summary: dict) -> None:
 def _process_suggestions_frame(data: dict, result_summary: dict) -> None:
     """Process suggestions frames."""
     items = data.get("items") or []
-    result_summary["suggestions"] = [i.get("label") for i in items if isinstance(i, dict)] or None
+    suggestions: list[str] = []
+    for i in items:
+        if isinstance(i, str):
+            suggestions.append(i)
+        elif isinstance(i, dict):
+            # Support both {label: str} objects and other common keys
+            label = i.get("label") or i.get("text") or i.get("title")
+            if label:
+                suggestions.append(str(label))
+    result_summary["suggestions"] = suggestions or None
 
 
 def _process_sources_frame(data: dict, result_summary: dict) -> None:

@@ -3,7 +3,6 @@ from __future__ import annotations
 import time
 from typing import Any, Dict, List, Literal, Optional, Union
 from pydantic import BaseModel, Field
-import time
 
 
 class Suggestion(BaseModel):
@@ -56,7 +55,8 @@ class AnswerMetrics(FrameBase):
 
 class SuggestionsReplace(FrameBase):
     type: Literal["suggestions.replace"] = "suggestions.replace"
-    items: List[str]
+    # Accept either plain strings or Suggestion objects
+    items: List[Union[str, Suggestion]]
 
 
 class SourcesReplace(FrameBase):
