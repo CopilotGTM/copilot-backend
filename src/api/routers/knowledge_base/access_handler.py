@@ -33,6 +33,7 @@ from src.service.knowledge_base.knowledge_access_service import (
     KnowledgeAccessServiceError,
 )
 from src.workers.knowledge_worker.celery_app import app as knowledge_app
+from src.api.dependencies.rate_limit import rate_limit_user_read
 
 logger = get_logger("knowledge_access_handler")
 
@@ -94,6 +95,7 @@ async def list_sources(
         description="If true include read + thumbnail SAS URLs (extra storage calls).",
     ),
     service: KnowledgeAccessService = Depends(get_knowledge_access_service),
+    _rl_read: None = Depends(rate_limit_user_read),
 ):
     try:
         sources, next_cursor = await service.list_sources(
@@ -150,6 +152,7 @@ async def download_source(
     source_id: UUID,
     expires_minutes: int = Query(120, ge=1, le=720),
     service: KnowledgeAccessService = Depends(get_knowledge_access_service),
+    _rl_read: None = Depends(rate_limit_user_read),
 ):
     try:
         url = await service.generate_download_url(source_id, minutes=expires_minutes)
@@ -176,6 +179,7 @@ async def download_source(
 )
 async def sources_stats(
     service: KnowledgeAccessService = Depends(get_knowledge_access_service),
+    _rl_read: None = Depends(rate_limit_user_read),
 ):
     try:
         stats = await service.get_stats()

@@ -21,6 +21,7 @@ from src.api.schemas.upload_models import (
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
 from src.api.utils.http_response import Response
 from src.api.schemas.base_models import GenericResponse
+from src.api.dependencies.rate_limit import rate_limit_user_write
 from src.service.chat.chat_attachments_service import UploadService, UploadServiceError
 from sse_starlette.sse import EventSourceResponse
 from uuid import UUID
@@ -82,6 +83,7 @@ async def get_upload_service(
 async def presign_batch(
     payload: AttachmentBatchPresignRequest = Body(...),
     service: UploadService = Depends(get_upload_service),
+    _rl: None = Depends(rate_limit_user_write),
 ):
     try:
         expiry_minutes = 15
@@ -149,6 +151,7 @@ async def presign_batch(
 async def finalize_batch(
     payload: AttachmentBatchFinalizeRequest = Body(...),
     service: UploadService = Depends(get_upload_service),
+    _rl: None = Depends(rate_limit_user_write),
 ):
     results: list[AttachmentBatchFinalizeResult] = []
     errors: list[dict] = []
@@ -253,6 +256,7 @@ async def stream_attachments(
 async def presign_upload(
     payload: PresignRequest = Body(...),
     service: UploadService = Depends(get_upload_service),
+    _rl: None = Depends(rate_limit_user_write),
 ):
     """
     Generate a presigned URL for direct client-side file upload.
@@ -300,6 +304,7 @@ async def presign_upload(
 async def finalize_upload(
     payload: FinalizeRequest = Body(...),
     service: UploadService = Depends(get_upload_service),
+    _rl: None = Depends(rate_limit_user_write),
 ):
     """
     Finalize a presigned upload by verifying checksum and updating metadata.

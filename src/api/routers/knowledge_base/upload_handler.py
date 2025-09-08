@@ -12,6 +12,7 @@ from src.api.dependencies.organisation_dependencies import (
     acquire_org_async_session,
 )
 from src.api.schemas.base_models import GenericResponse
+from src.api.dependencies.rate_limit import rate_limit_user_write
 from src.api.schemas.knowledge_upload_models import (
     KnowledgeBatchFinalizeRequest,
     KnowledgeBatchPresignRequest,
@@ -104,6 +105,7 @@ async def get_knowledge_upload_service(
 async def presign_batch(
     payload: KnowledgeBatchPresignRequest = Body(...),
     service: KnowledgeUploadService = Depends(get_knowledge_upload_service),
+    _rl: None = Depends(rate_limit_user_write),
 ):
     """Batch presign one or more files.
 
@@ -188,6 +190,7 @@ async def presign_batch(
 async def finalize_batch(
     payload: KnowledgeBatchFinalizeRequest = Body(...),
     service: KnowledgeUploadService = Depends(get_knowledge_upload_service),
+    _rl: None = Depends(rate_limit_user_write),
 ):
     """Finalize multiple previously presigned & uploaded sources.
 

@@ -74,6 +74,10 @@ class Response:
     def unprocessable_entity_error_response(cls, message: Any, data: Any = None):
         return cls._response(fastapi.status.HTTP_422_UNPROCESSABLE_ENTITY, "ERROR", message, data)
 
+    @classmethod
+    def too_many_requests_error_response(cls, message: Any, data: Any = None):
+        return cls._response(fastapi.status.HTTP_429_TOO_MANY_REQUESTS, "ERROR", message, data)
+
     # Convenience generic error helper used by some legacy handlers expecting a unified name.
     @classmethod
     def error_response(cls, status_code: int, message: Any, data: Any = None):
