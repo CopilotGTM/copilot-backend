@@ -11,7 +11,7 @@ This module is intentionally infra-level so both domains can depend on it.
 """
 
 from io import BytesIO
-from typing import Optional, Dict, Tuple
+from typing import Optional, Dict, Tuple, List
 
 from PIL import Image, UnidentifiedImageError
 
@@ -32,6 +32,34 @@ THUMB_VARIANTS: list[Tuple[str, int]] = [
     ("thumb_medium", 512),
 ]
 
+
+def _load_font_prefer_truetype(size: int):
+    """Try to load a truetype font with the given size; fallback to default.
+
+    Attempts common fonts often available with Pillow or on systems. Returns a PIL font object.
+    """
+    try:
+        from PIL import ImageFont  # local import to avoid hard dep at module import
+
+        candidates: List[str] = [
+            "DejaVuSansMono.ttf",
+            "DejaVuSans.ttf",
+            "arial.ttf",
+        ]
+        for name in candidates:
+            try:
+                return ImageFont.truetype(name, size)
+            except Exception:
+                continue
+        # Fallback
+        return ImageFont.load_default()
+    except Exception:  # pragma: no cover - defensive
+        try:
+            from PIL import ImageFont as _ImageFont
+
+            return _ImageFont.load_default()
+        except Exception:
+            return None
 
 
 def _pdf_page_preview_bytes(pdf_bytes: bytes, label: str) -> Optional[bytes]:
@@ -54,26 +82,157 @@ def _pdf_page_preview_bytes(pdf_bytes: bytes, label: str) -> Optional[bytes]:
 
 
 def _placeholder_bytes(label: str) -> Optional[bytes]:
-    """Create a simple placeholder PNG with a centered label (e.g., 'txt')."""
+    """Create a simple, readable placeholder PNG with a centered large label (e.g., 'TXT')."""
     try:
-        from PIL import Image as _Image, ImageDraw, ImageFont
-        img = _Image.new("RGB", (512, 512), (240, 240, 240))
+        from PIL import Image as _Image, ImageDraw
+
+        img_size = 1024
+        img = _Image.new("RGB", (img_size, img_size), (245, 246, 248))
         d = ImageDraw.Draw(img)
         text = label.upper()
-        try:  # default font; platform-safe
-            font = ImageFont.load_default()  # type: ignore
+        font = _load_font_prefer_truetype(size=int(img_size * 0.25))
+        # Measure text and center
+        try:
+            tw = d.textlength(text, font=font)
         except Exception:
-            font = None
-        # crude centering
-        tw = d.textlength(text, font=font)
-        th = 12
-        d.text(((512 - tw) / 2, (512 - th) / 2), text, fill=(60, 60, 60), font=font)
+            # Fallback approximate
+            tw = len(text) * (img_size * 0.12)
+        th = int(img_size * 0.25)
+        d.text(
+            ((img_size - tw) / 2, (img_size - th) / 2),
+            text,
+            fill=(55, 65, 81),
+            font=font,
+        )
         out = BytesIO()
         img.save(out, format="PNG")
         return out.getvalue()
     except Exception:
-        logger.debug("Failed to create placeholder image for label=%s", label, exc_info=True)
+        logger.debug(
+            "Failed to create placeholder image for label=%s", label, exc_info=True
+        )
         return None
+
+
+TEXT_MIME_LABELS = thumbnail_config.TEXT_LABEL_MAP
+
+
+def _text_preview_bytes(text_bytes: bytes, label: str) -> Optional[bytes]:
+    """Render a readable preview image from text bytes.
+
+    - Decodes as UTF-8 with errors ignored.
+    - Renders first lines with wrapping onto a canvas so small thumbnails remain legible.
+    """
+    try:
+        from PIL import Image as _Image, ImageDraw
+        import textwrap
+
+        text = text_bytes.decode("utf-8", errors="ignore") if text_bytes else ""
+        if not text.strip():
+            return _placeholder_bytes("txt")
+
+        # Normalize line endings and limit length
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        max_chars = 4000
+        if len(text) > max_chars:
+            text = text[:max_chars] + "\n…"
+
+        # Canvas and font
+        W, H = 1024, 1024
+        margin = 48
+        bg = (255, 255, 255)
+        fg = (20, 20, 20)
+        subfg = (99, 102, 106)
+        img = _Image.new("RGB", (W, H), bg)
+        draw = ImageDraw.Draw(img)
+        title_font = _load_font_prefer_truetype(size=40)
+        body_font = _load_font_prefer_truetype(size=28)
+
+        # Header chip
+        chip_text = label.upper()[:10]
+        chip_w = int(W * 0.18)
+        chip_h = 56
+        chip_x = margin
+        chip_y = margin
+        draw.rounded_rectangle(
+            [chip_x, chip_y, chip_x + chip_w, chip_y + chip_h],
+            radius=12,
+            fill=(241, 245, 249),
+        )
+        try:
+            tw = draw.textlength(chip_text, font=title_font)
+        except Exception:
+            tw = len(chip_text) * 20
+        draw.text(
+            (chip_x + (chip_w - tw) / 2, chip_y + 10),
+            chip_text,
+            fill=subfg,
+            font=title_font,
+        )
+
+        # Text area
+        text_x = margin
+        text_y = chip_y + chip_h + 24
+        text_w = W - 2 * margin
+        text_h = H - text_y - margin
+
+        # Wrap text by measuring average character width
+        try:
+            avg_char_w = max(12, int(draw.textlength("M" * 10, font=body_font) / 10))
+        except Exception:
+            avg_char_w = 14
+        max_cols = max(20, int(text_w / avg_char_w))
+        wrapped_lines: List[str] = []
+        for line in text.split("\n"):
+            wrapped_lines.extend(textwrap.wrap(line, width=max_cols) or [""])
+
+        # Draw lines until we run out of space
+        _, ascent = (0, 0)
+        try:
+            ascent, _ = body_font.getmetrics()  # type: ignore[attr-defined]
+        except Exception:
+            ascent = 28
+        line_h = int(ascent * 1.4)
+        y = text_y
+        for line in wrapped_lines:
+            if y + line_h > text_y + text_h:
+                draw.text((text_x, y), "…", fill=fg, font=body_font)
+                break
+            draw.text((text_x, y), line, fill=fg, font=body_font)
+            y += line_h
+
+        out = BytesIO()
+        img.save(out, format="PNG")
+        return out.getvalue()
+    except Exception:
+        logger.debug("Failed to create text preview image", exc_info=True)
+        return None
+
+
+def _derive_image_bytes_for_thumbnail(
+    *, mt: str, raw_bytes: bytes, original_blob_path: str
+) -> Optional[bytes]:
+    """Pure helper that returns representative image bytes or None based on mimetype."""
+    if mt in thumbnail_config.IMAGE_MIMETYPES or (
+        thumbnail_config.ENABLE_IMAGE_PREFIX_FALLBACK
+        and any(mt.startswith(pref) for pref in thumbnail_config.IMAGE_PREFIXES)
+    ):
+        return raw_bytes
+    if mt in thumbnail_config.PDF_MIMETYPES:
+        preview = _pdf_page_preview_bytes(raw_bytes, original_blob_path)
+        if not preview and thumbnail_config.ENABLE_PDF_PLACEHOLDER_FALLBACK:
+            return _placeholder_bytes("pdf")
+        return preview
+    if mt in TEXT_MIME_LABELS and thumbnail_config.ENABLE_TEXT_PLACEHOLDERS:
+        label = TEXT_MIME_LABELS.get(mt, "TXT")
+        return _text_preview_bytes(raw_bytes, label) or _placeholder_bytes(
+            label.lower()
+        )
+    if mt in thumbnail_config.DOCUMENT_LABEL_MAP:
+        # We deliberately do NOT attempt to parse these binary/markup formats; a labeled placeholder is enough.
+        label = thumbnail_config.DOCUMENT_LABEL_MAP.get(mt, "DOC")
+        return _placeholder_bytes(label)
+    return None
 
 
 async def generate_thumbnails(
@@ -98,23 +257,15 @@ async def generate_thumbnails(
     # Download original bytes
     try:
         raw_bytes = await storage.get_blob_content(original_blob_path)
-    except Exception as e:
+    except Exception as e:  # pragma: no cover - network path
         logger.exception("Failed to download blob for thumbnails: %s", e)
         return {}
 
-    image_bytes: Optional[bytes] = None
-    match mt:
-        case m if m.startswith("image/"):
-            image_bytes = raw_bytes
-        case "application/pdf":
-            image_bytes = _pdf_page_preview_bytes(raw_bytes, original_blob_path)
-            if not image_bytes and thumbnail_config.ENABLE_PDF_PLACEHOLDER_FALLBACK:
-                image_bytes = _placeholder_bytes("pdf")
-        case "text/plain":
-            if thumbnail_config.ENABLE_TEXT_PLACEHOLDERS:
-                image_bytes = _placeholder_bytes("txt")
-        case _:
-            return {}
+    image_bytes = _derive_image_bytes_for_thumbnail(
+        mt=mt, raw_bytes=raw_bytes, original_blob_path=original_blob_path
+    )
+    if image_bytes is None:
+        return {}
 
     if not image_bytes:
         return {}
@@ -131,7 +282,9 @@ async def generate_thumbnails(
                 thumb.save(out, format="JPEG", quality=85, optimize=True)
                 out.seek(0)
                 thumb_path = storage.thumbnail_blob_path(original_blob_path, variant)
-                await storage.upload_bytes(thumb_path, out.read(), content_type="image/jpeg")
+                await storage.upload_bytes(
+                    thumb_path, out.read(), content_type="image/jpeg"
+                )
                 created[variant] = thumb_path
     except UnidentifiedImageError:
         logger.debug("Not a supported image for thumbnailing: %s", original_blob_path)
@@ -156,5 +309,10 @@ async def generate_thumbnail_sas_urls(
         if medium_path:
             medium_url = await storage.generate_read_sas(medium_path, minutes=minutes)
     except Exception:
-        logger.debug("Thumbnail SAS generation failed for %s | %s", small_path, medium_path, exc_info=True)
+        logger.debug(
+            "Thumbnail SAS generation failed for %s | %s",
+            small_path,
+            medium_path,
+            exc_info=True,
+        )
     return small_url, medium_url

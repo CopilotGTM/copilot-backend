@@ -34,24 +34,29 @@ FRAME_TYPE_THINKING_UPDATE = "thinking.update"
 FRAME_TYPE_FINALIZE = "finalize"
 
 
-def _cleanup_job_stream(organisation_id: UUID, job_id: UUID, delay_seconds: int = 30) -> None:
+def _cleanup_job_stream(
+    organisation_id: UUID, job_id: UUID, delay_seconds: int = 30
+) -> None:
     """
     Clean up Redis stream for completed job after a delay.
     This prevents immediate cleanup in case of reconnections.
     """
     try:
         import time
-        time.sleep(delay_seconds)  # Simple delay - in production, consider using Celery's countdown
-        
+
+        time.sleep(
+            delay_seconds
+        )  # Simple delay - in production, consider using Celery's countdown
+
         stream_key = channel_for_chat_job(organisation_id, job_id)
         client = get_redis_client()
         result = client.delete(stream_key)
-        
+
         if result:
             logger.info("Cleaned up stream for completed job: %s", stream_key)
         else:
             logger.debug("Stream was already cleaned up: %s", stream_key)
-            
+
     except Exception as e:
         logger.warning("Failed to cleanup stream for job %s: %s", job_id, e)
 
@@ -94,7 +99,7 @@ class RedisPublisher:
 def _process_frame_data(data: dict, result_summary: dict) -> None:
     """Process individual frame data and update result summary."""
     ftype = data.get("type")
-    
+
     if ftype in [FRAME_TYPE_ANSWER_DELTA, FRAME_TYPE_ANSWER_REPLACE]:
         _process_answer_frame(data, result_summary)
     elif ftype == FRAME_TYPE_ANSWER_METRICS:
@@ -157,48 +162,55 @@ def _process_agent_switch_frame(data: dict, result_summary: dict) -> None:
         "to_agent": data.get("to_agent"),
         "from_agent": data.get("from_agent"),
         "reason": data.get("reason"),
-        "confidence": data.get("confidence")
+        "confidence": data.get("confidence"),
     }
 
 
 def _process_question_frame(data: dict, result_summary: dict) -> None:
     """Process question prompt frames."""
-    result_summary["user_questions"].append({
-        "prompt": data.get("prompt"),
-        "fields": data.get("fields"),
-        "await_user_response": data.get("await_user_response", True)
-    })
+    result_summary["user_questions"].append(
+        {
+            "prompt": data.get("prompt"),
+            "fields": data.get("fields"),
+            "await_user_response": data.get("await_user_response", True),
+        }
+    )
 
 
 def _process_progress_frame(data: dict, result_summary: dict) -> None:
     """Process progress update frames."""
-    result_summary["progress_updates"].append({
-        "stage": data.get("stage"),
-        "message": data.get("message"),
-        "progress": data.get("progress"),
-        "eta_seconds": data.get("eta_seconds")
-    })
+    result_summary["progress_updates"].append(
+        {
+            "stage": data.get("stage"),
+            "message": data.get("message"),
+            "progress": data.get("progress"),
+            "eta_seconds": data.get("eta_seconds"),
+        }
+    )
 
 
 def _process_tool_usage_frame(data: dict, result_summary: dict) -> None:
     """Process tool usage frames."""
-    result_summary["tool_usage"].append({
-        "tool_name": data.get("tool_name"),
-        "status": data.get("status"),
-        "duration_ms": data.get("duration_ms"),
-        "result_summary": data.get("result_summary")
-    })
+    result_summary["tool_usage"].append(
+        {
+            "tool_name": data.get("tool_name"),
+            "status": data.get("status"),
+            "duration_ms": data.get("duration_ms"),
+            "result_summary": data.get("result_summary"),
+        }
+    )
 
 
 def _process_thinking_frame(data: dict, result_summary: dict) -> None:
     """Process thinking update frames."""
-    result_summary["thinking_updates"].append({
-        "thought": data.get("thought"),
-        "stage": data.get("stage")
-    })
+    result_summary["thinking_updates"].append(
+        {"thought": data.get("thought"), "stage": data.get("stage")}
+    )
 
 
-async def _consume_agent_stream(chat_type, history, publisher: RedisPublisher, job: ChatMessageJob) -> dict:
+async def _consume_agent_stream(
+    chat_type, history, publisher: RedisPublisher, job: ChatMessageJob
+) -> dict:
     """Run the async agent (async generator), stream frames, and return a summary.
 
     Returns a dict with keys: answer, confidence, suggestions, sources, agent_switch_request, user_questions.
@@ -215,7 +227,7 @@ async def _consume_agent_stream(chat_type, history, publisher: RedisPublisher, j
         "tool_usage": [],
         "thinking_updates": [],
     }
-    
+
     sequence_counter = 0
 
     async for frame in run_agent_for_chat(chat_type=chat_type, messages=history):  # type: ignore[arg-type]
@@ -225,6 +237,7 @@ async def _consume_agent_stream(chat_type, history, publisher: RedisPublisher, j
             # Create a closure to capture current frame value
             def get_dict(current_frame=frame):
                 return getattr(current_frame, "dict", lambda: dict(current_frame))()
+
             data = get_dict()
 
         # Transform to production-level frame structure
@@ -236,17 +249,21 @@ async def _consume_agent_stream(chat_type, history, publisher: RedisPublisher, j
             "timestamp": time.time(),
             "sequence": sequence_counter,
         }
-        
+
         sequence_counter += 1
 
         # Publish frame to Redis Stream
         publisher.publish(production_frame)
-        
+
         # Process frame data for summary (using original data structure)
         _process_frame_data(data, result_summary)
 
     return {
-        "answer": "".join(result_summary["answer_parts"]) if result_summary["answer_parts"] else result_summary["final_answer"],
+        "answer": (
+            "".join(result_summary["answer_parts"])
+            if result_summary["answer_parts"]
+            else result_summary["final_answer"]
+        ),
         "confidence": result_summary["confidence"],
         "suggestions": result_summary["suggestions"],
         "sources": result_summary["sources"],
@@ -256,6 +273,8 @@ async def _consume_agent_stream(chat_type, history, publisher: RedisPublisher, j
         "tool_usage": result_summary["tool_usage"],
         "thinking_updates": result_summary["thinking_updates"],
     }
+
+
 @app.task(name="chat.process_message", acks_late=True, max_retries=3)
 def process_message(organisation_id: UUID, job_id: UUID):
     """Process a chat message job."""
@@ -268,24 +287,22 @@ def process_message(organisation_id: UUID, job_id: UUID):
         # Load and validate job
         job = _load_job(session, job_id)
         _update_job_status(session, job, JobStatus.IN_PROGRESS)
-        
+
         # Load session and conversation data
         _, chat_session, history, current_message = _load_conversation_data(
             session, job
         )
-        
+
         # Execute agent and get results
-        result_summary = _execute_agent_workflow(
-            chat_session, history, publisher, job
-        )
-        
+        result_summary = _execute_agent_workflow(chat_session, history, publisher, job)
+
         # Publish final frames and persist results
         _publish_final_frames(publisher, job, result_summary)
         _persist_assistant_message(session, current_message, result_summary)
         _finalize_job(session, job, result_summary, organisation_id)
-        
+
         logger.info("Job %s completed", job_id)
-        
+
     except Exception as e:
         _handle_job_failure(session, job_id, e)
         raise
@@ -307,7 +324,7 @@ def _load_conversation_data(session, job: ChatMessageJob):
     session_id = md.get("session_id")
     if not session_id:
         raise RuntimeError("Missing session_id in job_metadata")
-    
+
     try:
         session_id = UUID(str(session_id))
     except Exception as e:
@@ -341,14 +358,14 @@ def _execute_agent_workflow(chat_session, history, publisher, job):
         result_summary = asyncio.run(
             _consume_agent_stream(chat_session.chat_type, history, publisher, job)
         )
-        
+
         # Ensure result_summary is never None
         if result_summary is None:
             logger.error(f"_consume_agent_stream returned None for job {job.job_id}")
             return _create_error_summary()
-            
+
         return result_summary
-        
+
     except Exception as e:
         logger.error(f"Error in _consume_agent_stream for job {job.job_id}: {e}")
         return _create_error_summary()
@@ -369,7 +386,9 @@ def _create_error_summary() -> dict:
     }
 
 
-def _publish_final_frames(publisher: RedisPublisher, job: ChatMessageJob, result_summary: dict):
+def _publish_final_frames(
+    publisher: RedisPublisher, job: ChatMessageJob, result_summary: dict
+):
     """Publish final frames with production metadata."""
     base_frame = {
         "frontend_id": str(job.job_id),
@@ -379,29 +398,37 @@ def _publish_final_frames(publisher: RedisPublisher, job: ChatMessageJob, result
     }
 
     if result_summary.get("answer"):
-        publisher.publish({
-            **base_frame,
-            "type": FRAME_TYPE_ANSWER_REPLACE,
-            "content": result_summary.get("answer") or "",
-            "format": "markdown",
-        })
+        publisher.publish(
+            {
+                **base_frame,
+                "type": FRAME_TYPE_ANSWER_REPLACE,
+                "content": result_summary.get("answer") or "",
+                "format": "markdown",
+            }
+        )
 
     if result_summary.get("confidence") is not None:
-        publisher.publish({
-            **base_frame,
-            "type": FRAME_TYPE_ANSWER_METRICS,
-            "confidence": result_summary.get("confidence"),
-        })
+        publisher.publish(
+            {
+                **base_frame,
+                "type": FRAME_TYPE_ANSWER_METRICS,
+                "confidence": result_summary.get("confidence"),
+            }
+        )
 
     if result_summary.get("suggestions"):
-        publisher.publish({
-            **base_frame,
-            "type": FRAME_TYPE_SUGGESTIONS_REPLACE,
-            "items": result_summary.get("suggestions") or [],
-        })
+        publisher.publish(
+            {
+                **base_frame,
+                "type": FRAME_TYPE_SUGGESTIONS_REPLACE,
+                "items": result_summary.get("suggestions") or [],
+            }
+        )
 
 
-def _persist_assistant_message(session, current_message: ChatMessage, result_summary: dict):
+def _persist_assistant_message(
+    session, current_message: ChatMessage, result_summary: dict
+):
     """Persist assistant message with enhanced metadata."""
     assistant_msg = ChatMessage(
         session_id=current_message.session_id,
@@ -432,7 +459,9 @@ def _persist_assistant_message(session, current_message: ChatMessage, result_sum
     return assistant_msg
 
 
-def _finalize_job(session, job: ChatMessageJob, result_summary: dict, organisation_id: UUID):
+def _finalize_job(
+    session, job: ChatMessageJob, result_summary: dict, organisation_id: UUID
+):
     """Finalize job with enhanced result data."""
     # Find the assistant message by querying the latest message for this session
     assistant_msg = (
@@ -442,13 +471,15 @@ def _finalize_job(session, job: ChatMessageJob, result_summary: dict, organisati
         .order_by(ChatMessage.created_at.desc())
         .first()
     )
-    
+
     job.result_data = {
         "answer": result_summary.get("answer"),
         "confidence": result_summary.get("confidence"),
         "sources": result_summary.get("sources"),
         "suggested_questions": result_summary.get("suggestions"),
-        "assistant_message_id": str(assistant_msg.message_id) if assistant_msg else None,
+        "assistant_message_id": (
+            str(assistant_msg.message_id) if assistant_msg else None
+        ),
         "agent_switch_request": result_summary.get("agent_switch_request"),
         "user_questions_count": len(result_summary.get("user_questions") or []),
         "progress_updates_count": len(result_summary.get("progress_updates") or []),
@@ -461,21 +492,22 @@ def _finalize_job(session, job: ChatMessageJob, result_summary: dict, organisati
 
     # Publish final frame
     publisher = RedisPublisher(organisation_id, job.job_id)
-    publisher.publish({
-        "type": FRAME_TYPE_FINALIZE,
-        "frontend_id": str(job.job_id),
-        "backend_id": str(job.message_id),
-        "version": "1.0",
-        "timestamp": time.time(),
-        "reason": "done",
-    })
-    
+    publisher.publish(
+        {
+            "type": FRAME_TYPE_FINALIZE,
+            "frontend_id": str(job.job_id),
+            "backend_id": str(job.message_id),
+            "version": "1.0",
+            "timestamp": time.time(),
+            "reason": "done",
+        }
+    )
+
     # Schedule stream cleanup in a background thread to avoid blocking
     import threading
+
     cleanup_thread = threading.Thread(
-        target=_cleanup_job_stream,
-        args=(organisation_id, job.job_id, 30),
-        daemon=True
+        target=_cleanup_job_stream, args=(organisation_id, job.job_id, 30), daemon=True
     )
     cleanup_thread.start()
     logger.info("Scheduled cleanup for job stream: %s", job.job_id)
@@ -487,9 +519,9 @@ def _handle_job_failure(session, job_id: UUID, error: Exception):
         session.rollback()
     except Exception:
         pass
-        
+
     logger.exception("Job %s failed: %s", job_id, error)
-    
+
     try:
         job = session.get(ChatMessageJob, job_id)
         if job:

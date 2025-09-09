@@ -152,14 +152,13 @@ class ChatFileUploadConfig:
     MAX_FILE_SIZE_BYTES: int = int(os.getenv("MAX_UPLOAD_FILE_SIZE_BYTES", "52428800"))
 
     # Allowed MIME types for uploads
+    # Requirement: restrict to only PDF and plain text for chat attachments.
     ALLOWED_MIMETYPES: list[str] = [
         item.strip()
         for item in os.getenv(
             "ALLOWED_MIMETYPES",
-            "application/pdf, text/plain, text/csv, application/msword, "
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document, "
-            "application/vnd.ms-powerpoint, "
-            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "application/pdf, text/plain, text/csv, text/tab-separated-values, text/tsv, "
+            "text/markdown, text/x-markdown, application/x-ndjson, application/ndjson, application/jsonl, application/json",
         ).split(",")
         if item.strip()
     ]
@@ -188,20 +187,100 @@ class KnowledgeFileUploadConfig:
         if item.strip()
     ]
 
-
 class ThumbnailConfig:
     """Configuration for thumbnail generation behavior."""
 
-    # If true, generate placeholder thumbnails for text files (text/plain)
     ENABLE_TEXT_PLACEHOLDERS: bool = (
         os.getenv("ENABLE_TEXT_PLACEHOLDERS", "true").lower() == "true"
     )
-
-    # If true, when PDF renderer is unavailable or fails, do NOT fall back to placeholder automatically.
-    # Keep default conservative (false) unless explicitly enabled.
     ENABLE_PDF_PLACEHOLDER_FALLBACK: bool = (
         os.getenv("ENABLE_PDF_PLACEHOLDER_FALLBACK", "false").lower() == "true"
     )
+
+    # Explicitly list the MIME types / families the thumbnail pipeline supports.
+    # This centralises what thumbnail generation will attempt so other parts of the
+    # codebase (validation, UI hints) can reference a single source of truth.
+    # Explicit safe raster image MIME types we actively thumbnail. Excludes SVG (vector) and
+    # very large/heavy formats by default for simplicity & security. Can be overridden via env.
+    IMAGE_MIMETYPES: list[str] = [
+        item.strip()
+        for item in os.getenv(
+            "THUMBNAIL_IMAGE_MIMETYPES",
+            "image/jpeg,image/png,image/webp,image/gif",
+        ).split(",")
+        if item.strip()
+    ]
+    # Backward-compatible prefix list (kept narrow). If you want to allow every image/* type
+    # set THUMBNAIL_ENABLE_IMAGE_PREFIX_FALLBACK=true — otherwise we only accept explicit list.
+    IMAGE_PREFIXES: list[str] = ["image/"]
+    ENABLE_IMAGE_PREFIX_FALLBACK: bool = (
+        os.getenv("THUMBNAIL_ENABLE_IMAGE_PREFIX_FALLBACK", "false").lower() == "true"
+    )
+    PDF_MIMETYPES: list[str] = ["application/pdf"]
+    TEXT_LABEL_MAP: dict[str, str] = {
+        # Plain text & structured line-oriented formats
+        "text/plain": "TXT",
+        "text/csv": "CSV",
+        "text/tab-separated-values": "TSV",
+        "text/tsv": "TSV",
+        # Markup / documentation
+        "text/markdown": "MD",
+        "text/x-markdown": "MD",
+        # Streaming / line-delimited JSON
+        "application/x-ndjson": "NDJSON",
+        "application/ndjson": "NDJSON",
+        "application/jsonl": "JSONL",
+        # Regular JSON
+        "application/json": "JSON",
+    }
+
+    # Office / document formats we can safely represent via labeled placeholders.
+    # (We avoid attempting to fully render content pages to keep infra lightweight.)
+    DOCUMENT_LABEL_MAP: dict[str, str] = {
+        "application/msword": "DOC",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "DOCX",
+        "application/vnd.ms-powerpoint": "PPT",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation": "PPTX",
+        "application/vnd.ms-excel": "XLS",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "XLSX",
+        # OpenDocument formats
+        "application/vnd.oasis.opendocument.text": "ODT",
+        "application/vnd.oasis.opendocument.spreadsheet": "ODS",
+        "application/vnd.oasis.opendocument.presentation": "ODP",
+        # Markup & structured docs (rendered only as placeholder, never executed)
+        "text/html": "HTML",
+        "application/xml": "XML",
+        "text/xml": "XML",
+        "application/x-yaml": "YAML",
+        "text/yaml": "YAML",
+        "text/x-yaml": "YAML",
+    }
+
+    @classmethod
+    def all_supported_mimetypes(cls) -> set[str]:  # convenient aggregated accessor
+        return (
+            set(cls.PDF_MIMETYPES)
+            | set(cls.TEXT_LABEL_MAP.keys())
+            | set(cls.DOCUMENT_LABEL_MAP.keys())
+        )
+
+    @classmethod
+    def is_supported(cls, mimetype: str) -> bool:
+        if not mimetype:
+            return False
+        if mimetype in cls.IMAGE_MIMETYPES:
+            return True
+        if cls.ENABLE_IMAGE_PREFIX_FALLBACK and any(
+            mimetype.startswith(pref) for pref in cls.IMAGE_PREFIXES
+        ):
+            return True
+        if mimetype in cls.PDF_MIMETYPES:
+            return True
+        if mimetype in cls.TEXT_LABEL_MAP or mimetype in cls.DOCUMENT_LABEL_MAP:
+            return True
+        return False
+
+thumbnail_config = ThumbnailConfig()
 
 
 class PoolMonitorConfig:
@@ -268,7 +347,7 @@ secret_manager_config = SecretManagerConfig()
 cloud_infra_config = CloudInfraConfig()
 chat_file_upload_config = ChatFileUploadConfig()
 knowledge_file_upload_config = KnowledgeFileUploadConfig()
-thumbnail_config = ThumbnailConfig()
+# NOTE: thumbnail_config now sourced from thumbnail_config.py for modularity.
 pool_monitor_config = PoolMonitorConfig()
 rate_limit_config = RateLimitConfig()
 
