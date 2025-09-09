@@ -39,6 +39,48 @@ def _assign_generated_thumbnails(source: OrganisationSource, created: dict[str, 
         source.thumbnail_medium_path = created["thumb_medium"]
 
 
+def _compute_and_persist_checksum(
+    loop: asyncio.AbstractEventLoop,
+    storage: AzureOrganisationBlobStorage,
+    source: OrganisationSource,
+    session,
+):
+    """Compute checksum early (if missing) and commit immediately.
+
+    Doing this before thumbnail generation ensures we still retain a checksum
+    even if later steps fail (mirrors chat worker approach)."""
+    try:
+        if source.storage_path and not source.checksum:
+            checksum = loop.run_until_complete(
+                storage.compute_checksum(source.storage_path)
+            )
+            source.checksum = checksum
+            session.merge(source)
+            session.commit()
+    except Exception:
+        logger.exception("Failed to compute checksum for source %s", source.source_id)
+
+
+def _publish_status_event(
+    organisation_id: str,
+    source: OrganisationSource,
+    status: OrganisationSourceStatus,
+    thumbnail_small_url: str | None,
+    thumbnail_medium_url: str | None,
+):
+    """Publish knowledge source status update event (unified helper)."""
+    publish_event = KnowledgeSourceEventUpdate(
+        source_id=str(source.source_id),
+        status=_get_status_str(status),
+        updated_at=source.updated_at.isoformat() if source.updated_at else None,
+        error_message=source.error_message,
+        progress=None,
+        thumbnail_medium_url=thumbnail_medium_url,
+        thumbnail_small_url=thumbnail_small_url,
+    )
+    publish_source_status(organisation_id, publish_event)
+
+
 @app.task(
     name="knowledge.post_upload_process", bind=True, acks_late=True, max_retries=3
 )
@@ -86,15 +128,8 @@ def post_upload_process(self, organisation_id: str, source_id: str):
         session.add(job)
         session.commit()
 
-        # Compute and persist checksum (streamed)
-        try:
-            if source.storage_path:
-                checksum = loop.run_until_complete(
-                    storage.compute_checksum(source.storage_path)
-                )
-                source.checksum = checksum
-        except Exception:
-            logger.exception("Failed to compute checksum for source %s", source_id)
+        # Compute checksum early (mirrors chat worker style)
+        _compute_and_persist_checksum(loop, storage, source, session)
 
         # Thumbnail generation using shared service
         try:
@@ -126,17 +161,13 @@ def post_upload_process(self, organisation_id: str, source_id: str):
                     )
                 )
 
-            publish_event = KnowledgeSourceEventUpdate(
-                source_id=str(source.source_id),
-                status=_get_status_str(OrganisationSourceStatus.EXTRACTING),
-                updated_at=source.updated_at.isoformat() if source.updated_at else None,
-                error_message=source.error_message,
-                progress=None,
-                thumbnail_medium_url=thumbnail_medium_url,
-                thumbnail_small_url=thumbnail_small_url,
+            _publish_status_event(
+                organisation_id,
+                source,
+                OrganisationSourceStatus.EXTRACTING,
+                thumbnail_small_url,
+                thumbnail_medium_url,
             )
-
-            publish_source_status(organisation_id, publish_event)
 
             app.send_task(
                 "knowledge.document_extraction",
@@ -158,6 +189,13 @@ def post_upload_process(self, organisation_id: str, source_id: str):
             session.add(job)
             session.commit()
         logger.info("post_upload_process finished source=%s", source_id)
+    except Exception as e:
+        logger.exception(
+            "knowledge post_upload_process failed org=%s source=%s error=%s",
+            organisation_id,
+            source_id,
+            e,
+        )
     finally:
         try:
             session.close()

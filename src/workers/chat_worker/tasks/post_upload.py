@@ -1,48 +1,31 @@
 from __future__ import annotations
-"""Celery task for attachment image processing: checksum + optional thumbnails."""
 
-from typing import Optional
 import asyncio
+from typing import Optional
 
-from src.workers.chat_worker.celery_app import app
-from src.infra.utils.logger import get_logger
 from src.api.dependencies.organisation_dependencies import acquire_org_session
-import os
-from src.domain.models.organisation_tables.chat_message_models import Attachment, AttachmentStatus
-from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
-from src.infra.messaging.attachment_status_publish import publish_attachment_status
 from src.api.schemas.upload_models import AttachmentEventUpdate
+from src.domain.models.organisation_tables.chat_message_models import (
+    Attachment,
+    AttachmentStatus,
+)
+from src.infra.config.configs import thumbnail_config
 from src.infra.media.thumbnail_generator import generate_thumbnails
+from src.infra.messaging.attachment_status_publish import publish_attachment_status
+from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
+from src.infra.utils.logger import get_logger
+from src.workers.chat_worker.celery_app import app
 
 logger = get_logger("attachments_post_upload_task")
 
 
-def _maybe_generate_thumbnails(loop, storage, attachment) -> None:
-    """Generate thumbnails for supported mimetypes and update attachment fields.
-
-    Sets status and thumbnail paths on the attachment. Errors are captured into
-    attachment.processing_error and status is marked FAILED.
-    """
-    mt = (attachment.mimetype or "").lower()
-    if not (mt.startswith("image/") or mt == "application/pdf"):
+def _assign_generated_thumbnails(attachment: Attachment, created: dict[str, str]):
+    if not created:
         return
-    try:
-        created = loop.run_until_complete(
-            generate_thumbnails(
-                storage=storage,
-                original_blob_path=attachment.storage_path,
-                mimetype=attachment.mimetype,
-            )
-        )
-        if "thumb_small" in created:
-            attachment.thumbnail_small_path = created["thumb_small"]
-        if "thumb_medium" in created:
-            attachment.thumbnail_medium_path = created["thumb_medium"]
-        attachment.status = AttachmentStatus.UPLOADED
-    except Exception as e:
-        logger.exception("Thumbnail generation failed for attachment %s", attachment.attachment_id)
-        attachment.status = AttachmentStatus.FAILED
-        attachment.processing_error = f"thumbnail_failed: {e}"[:500]
+    if "thumb_small" in created:
+        attachment.thumbnail_small_path = created["thumb_small"]
+    if "thumb_medium" in created:
+        attachment.thumbnail_medium_path = created["thumb_medium"]
 
 
 def _attachment_already_processed(attachment: Optional[Attachment]) -> bool:
@@ -52,10 +35,10 @@ def _attachment_already_processed(attachment: Optional[Attachment]) -> bool:
     """
     if not attachment:
         return False
-    return (
-        attachment.status in {AttachmentStatus.COMPLETED, AttachmentStatus.FAILED}
-        and bool(attachment.checksum)
-    )
+    return attachment.status in {
+        AttachmentStatus.COMPLETED,
+        AttachmentStatus.FAILED,
+    } and bool(attachment.checksum)
 
 
 def _compute_and_persist_checksum(
@@ -80,7 +63,10 @@ def _compute_and_persist_checksum(
 
 
 def _update_status_and_commit(
-    session, attachment: Attachment, status: AttachmentStatus, error_message: Optional[str] = None
+    session,
+    attachment: Attachment,
+    status: AttachmentStatus,
+    error_message: Optional[str] = None,
 ) -> None:
     """Update status and optional error message, then commit."""
     attachment.status = status
@@ -116,9 +102,7 @@ def _publish_status_event(
     event_to_publish = AttachmentEventUpdate(
         attachment_id=str(attachment.attachment_id),
         status=status,
-        updated_at=attachment.updated_at.isoformat()
-        if getattr(attachment, "updated_at", None)
-        else None,
+        updated_at=attachment.updated_at.isoformat() if attachment.updated_at else None,
         error_message=attachment.processing_error,
         thumbnail_small_url=thumbnail_small_url,
     )
@@ -127,12 +111,15 @@ def _publish_status_event(
 
 @app.task(name="attachments.post_upload", bind=True, acks_late=True, max_retries=3)
 def post_upload(self, organisation_id: str, attachment_id: str):
-    """Post-upload processing: checksum + optional thumbnails.
+    """Post-upload processing: checksum and thumbnail generation.
 
-    Uses a single dedicated event loop (mirrors knowledge_post_upload) to avoid
-    'Event loop is closed' errors from repeated asyncio.run() calls.
+    Uses a dedicated event loop (mirrors knowledge worker) to avoid repeated loop creation issues.
     """
-    logger.info("Attachment post-upload task started org=%s attachment=%s", organisation_id, attachment_id)
+    logger.info(
+        "Attachment post-upload task started org=%s attachment=%s",
+        organisation_id,
+        attachment_id,
+    )
     session_gen = acquire_org_session(organisation_id)
     session = next(session_gen)
     storage = AzureOrganisationBlobStorage(organisation_id=organisation_id)  # type: ignore[arg-type]
@@ -153,10 +140,27 @@ def post_upload(self, organisation_id: str, attachment_id: str):
         # Compute checksum if missing
         _compute_and_persist_checksum(loop, storage, attachment, session)
 
-        # Thumbnails for images / PDFs via shared service
-        _maybe_generate_thumbnails(loop, storage, attachment)
-        session.merge(attachment)
-        session.commit()
+        # Thumbnails via shared service (guard using config to avoid unnecessary work)
+        try:
+            mt = (attachment.mimetype or "").lower()
+            if thumbnail_config.is_supported(mt):
+                created = loop.run_until_complete(
+                    generate_thumbnails(
+                        storage=storage,
+                        original_blob_path=attachment.storage_path,
+                        mimetype=attachment.mimetype,
+                    )
+                )
+                _assign_generated_thumbnails(attachment, created)
+        except Exception as e:
+            logger.exception(
+                "Thumbnail generation failed for attachment %s", attachment.attachment_id
+            )
+            attachment.status = AttachmentStatus.FAILED
+            attachment.processing_error = f"thumbnail_failed: {e}"[:500]
+        finally:
+            session.merge(attachment)
+            session.commit()
 
         # Finalize status and persist
         _update_status_and_commit(session, attachment, AttachmentStatus.COMPLETED)
@@ -168,7 +172,9 @@ def post_upload(self, organisation_id: str, attachment_id: str):
         _publish_status_event(
             organisation_id, attachment, AttachmentStatus.COMPLETED, thumbnail_small_url
         )
-        logger.info("Attachment post-upload task completed attachment=%s", attachment_id)
+        logger.info(
+            "Attachment post-upload task completed attachment=%s", attachment_id
+        )
     except Exception as e:
         logger.error(
             "Attachment post-upload failed org=%s attachment=%s error=%s",
@@ -188,7 +194,11 @@ def post_upload(self, organisation_id: str, attachment_id: str):
                     organisation_id, attachment, AttachmentStatus.FAILED, None
                 )
         except Exception:
-            logger.debug("Failed to persist/publish FAILED state for attachment %s", attachment_id, exc_info=True)
+            logger.debug(
+                "Failed to persist/publish FAILED state for attachment %s",
+                attachment_id,
+                exc_info=True,
+            )
     finally:
         try:
             session.close()
