@@ -1,14 +1,15 @@
 # Utility modules for knowledge worker
-from .embedding_service import EmbeddingService
 from .document_store import DocumentStore
 from .content_processor import ContentProcessor
-from .image_summary_agent import image_summary_agent
-from .table_summary_agent import table_summary_agent
+from .status_events import publish_knowledge_source_status
+from .job_utils import mark_job_in_progress, set_job_status
+from .storage import download_blob_to_temp
 
 __all__ = [
-    "EmbeddingService",
     "DocumentStore",
     "ContentProcessor",
-    "image_summary_agent",
-    "table_summary_agent",
+    "publish_knowledge_source_status",
+    "mark_job_in_progress",
+    "set_job_status",
+    "download_blob_to_temp",
 ]

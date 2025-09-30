@@ -202,27 +202,30 @@ async def finalize_batch(
     errors = []
     for item in payload.files:
         try:
-            src = await service.finalize_source(item)
+            src, transitioned = await service.finalize_source(item)
 
-            # Idempotent job creation delegated to helper
-            session = service.session
-            if session:
-                await _ensure_processing_jobs(session, src.source_id)
+            # Only create jobs and enqueue tasks if we actually transitioned
+            # from PENDING_UPLOAD -> PROCESSING during this call.
+            if transitioned:
+                # Idempotent job creation delegated to helper
+                session = service.session
+                if session:
+                    await _ensure_processing_jobs(session, src.source_id)
 
-            # Enqueue first phase task (fire-and-forget)
-            try:
-                knowledge_app.send_task(
-                    "knowledge.post_upload_process",
-                    args=[str(service.organisation_id), str(src.source_id)],
-                    queue="knowledge_upload",
-                    routing_key="knowledge_upload",
-                )
-            except Exception as task_err:
-                logger.error(
-                    "Failed to enqueue knowledge processing for source %s: %s",
-                    src.source_id,
-                    task_err,
-                )
+                # Enqueue first phase task (fire-and-forget)
+                try:
+                    knowledge_app.send_task(
+                        "knowledge.post_upload_process",
+                        args=[service.organisation_id, src.source_id],
+                        queue="knowledge_upload",
+                        routing_key="knowledge_upload",
+                    )
+                except Exception as task_err:
+                    logger.error(
+                        "Failed to enqueue knowledge processing for source %s: %s",
+                        src.source_id,
+                        task_err,
+                    )
             results.append(
                 {
                     "source_id": str(src.source_id),

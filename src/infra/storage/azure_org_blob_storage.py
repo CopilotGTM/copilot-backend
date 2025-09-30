@@ -1,6 +1,6 @@
 from __future__ import annotations
 """Azure per-organization blob storage helper for chat attachments."""
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, AsyncGenerator
 from uuid import UUID, uuid4
 import re
@@ -117,8 +117,8 @@ class AzureOrganisationBlobStorage:
         await self._ensure_container()
         blob_service = await self._get_blob_service_client()
         container = self.container
-        start = datetime.utcnow() - timedelta(minutes=5)
-        expiry = datetime.utcnow() + timedelta(minutes=minutes)
+        start = datetime.now(timezone.utc) - timedelta(minutes=5)
+        expiry = datetime.now(timezone.utc) + timedelta(minutes=minutes)
         delegation_key = await blob_service.get_user_delegation_key(start, expiry)
 
         content_disposition = None
@@ -144,8 +144,8 @@ class AzureOrganisationBlobStorage:
         await self._ensure_container()
         blob_service = await self._get_blob_service_client()
         container = self.container
-        start = datetime.utcnow() - timedelta(minutes=5)
-        expiry = datetime.utcnow() + timedelta(minutes=minutes)
+        start = datetime.now(timezone.utc) - timedelta(minutes=5)
+        expiry = datetime.now(timezone.utc) + timedelta(minutes=minutes)
         delegation_key = await blob_service.get_user_delegation_key(start, expiry)
         sas = generate_blob_sas(
             account_name=self.account_name,
