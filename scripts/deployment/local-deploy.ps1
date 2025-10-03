@@ -235,10 +235,23 @@ function Get-AzureKeyVaultSecrets {
 function Deploy-WithHelm {
     Write-Header "Deploying with Helm"
 
+    # Check if Helm is locked and fix it
+    Write-Host "Checking Helm release status..."
+    $helmStatus = helm status copilot-backend -n $NAMESPACE 2>&1
+    if ($helmStatus -match "pending-upgrade|pending-install|pending-rollback") {
+        Write-Warning "Helm release is in pending state. Rolling back to unlock..."
+        helm rollback copilot-backend -n $NAMESPACE
+        Start-Sleep -Seconds 10
+    }
+
     # Clean up previous startup job and pods
     Write-Host "Cleaning up previous startup job and pods..."
     kubectl delete job copilot-backend-startup -n $NAMESPACE --ignore-not-found=true
     kubectl delete pods -n $NAMESPACE -l job-name=copilot-backend-startup --ignore-not-found=true
+    
+    # Clean up any stuck GPU worker pods
+    Write-Host "Cleaning up any stuck GPU worker pods..."
+    kubectl delete pods -n $NAMESPACE -l app.kubernetes.io/name=knowledge-extract-worker --grace-period=0 --force --ignore-not-found=true
     Start-Sleep -Seconds 5
 
     # Deploy with Helm using the same configuration as Azure DevOps pipeline
@@ -259,6 +272,7 @@ function Deploy-WithHelm {
         "--set", "knowledge-extract-worker.image.repository=$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY",
         "--set", "knowledge-extract-worker.image.tag=$IMAGE_TAG",
         "--set", "knowledge-extract-worker.autoscaling.enabled=true",
+        "--set", "knowledge-extract-worker.gpu.enabled=true",
         "--set", "knowledge-upload-worker.image.repository=$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY",
         "--set", "knowledge-upload-worker.image.tag=$IMAGE_TAG",
         "--set", "knowledge-upload-worker.autoscaling.enabled=true",
@@ -306,9 +320,22 @@ function Deploy-WithHelm {
         "--set", "chat-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)"
     )
 
-    & helm @helmArgs
+    # Execute Helm command and check for errors
+    $helmResult = & helm @helmArgs
+    $helmExitCode = $LASTEXITCODE
+    
+    if ($helmExitCode -ne 0) {
+        Write-Error "Helm deployment failed with exit code: $helmExitCode"
+        Write-Host "Helm output: $helmResult"
+        Write-Host "Attempting to check Helm status..."
+        helm status copilot-backend -n $NAMESPACE
+        exit 1
+    }
 
     Write-Success "Helm deployment completed"
+    
+    # Wait a moment for pods to be created
+    Start-Sleep -Seconds 10
     
     # Force restart worker pods to ensure they pick up latest values
     Write-Host "Restarting worker deployments to ensure latest values are applied..."
@@ -324,6 +351,15 @@ function Deploy-WithHelm {
     kubectl rollout status deployment copilot-backend-organization-worker -n $NAMESPACE --timeout=300s
     
     Write-Success "Worker restarts completed"
+    
+    # Verify GPU configuration was applied
+    Write-Host "Verifying GPU configuration..."
+    $gpuConfig = helm get values copilot-backend -n $NAMESPACE | Select-String -Pattern "gpu:" -Context 0,3
+    if ($gpuConfig) {
+        Write-Success "GPU configuration found in Helm values"
+    } else {
+        Write-Warning "GPU configuration not found in deployed values"
+    }
 }
 
 function Test-DeploymentStatus {

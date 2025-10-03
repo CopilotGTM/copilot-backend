@@ -1,7 +1,7 @@
 import uuid
 from uuid import UUID, uuid4
 from typing import Optional, Literal
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 
 from sqlmodel import SQLModel, Field
@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 
 def utcnow() -> datetime:
-    return datetime.utcnow()
+    return datetime.now(timezone.utc)
 
 
 class AdminLoginRequest(SQLModel):

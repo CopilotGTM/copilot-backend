@@ -136,7 +136,7 @@ class KnowledgeUploadService:
 
     async def finalize_source(
         self, request: KnowledgeFinalizeRequest
-    ) -> OrganisationSource:
+    ) -> tuple[OrganisationSource, bool]:
         """Validate uploaded blob presence then mark source for processing.
 
         Light validation only (size mismatch intentionally skipped by
@@ -171,8 +171,9 @@ class KnowledgeUploadService:
                     source.source_id,
                 )
 
+        # If not in a state eligible for transition, no-op and report no transition
         if source.status != OrganisationSourceStatus.PENDING_UPLOAD:
-            return source
+            return source, False
 
         try:
             props = await self.storage.get_blob_properties(source.storage_path)
@@ -204,7 +205,8 @@ class KnowledgeUploadService:
             )
             raise KnowledgeUploadServiceError("Failed to finalize source") from exc
 
-        return source
+        # Transition succeeded from PENDING_UPLOAD -> PROCESSING
+        return source, True
 
     async def get_source(self, source_id: UUID) -> OrganisationSource:
         """Retrieve a source (permission checked) from the org schema."""

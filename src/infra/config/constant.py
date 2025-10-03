@@ -111,12 +111,14 @@ class UserAuthErrors:
 
 
 class SupabaseErrors:
+    # Configuration / validation
     MISSING_CONFIG = "Missing required Supabase configuration: {}"
     INVALID_EMAIL = "Invalid email format"
     INVALID_PASSWORD = "Invalid password format"
     INVALID_USER_ID = "Invalid user ID format"
     INVALID_TOKEN = "Invalid token format"
     INVALID_HASHED_TOKEN = "Invalid hashed token format"
+    # Operation failures
     SIGN_IN_FAILED = "Sign in failed: {}"
     RESET_LINK_FAILED = "Failed to generate password reset link: {}"
     HASH_TOKEN_GENERATION_FAILED = "Failed to generate hash token"
@@ -129,6 +131,15 @@ class SupabaseErrors:
     TOKEN_VERIFICATION_FAILED_GENERIC = "Token verification failed"
     METADATA_UPDATE_FAILED = "Metadata update failed: {}"
     GET_USER_FROM_TOKEN_FAILED = "Failed to get user from token: {}"
+
+    # Admin/auth-specific messages used by AdminAuth service
+    MISSING_AUTHORIZATION_HEADER = "Missing or invalid Authorization header"
+    MISSING_USER_ID_IN_TOKEN = "Missing user ID in token"
+    ADMIN_NOT_FOUND = "Admin not found"
+    ADMIN_ACCOUNT_NOT_ACTIVE = "Admin account is not active"
+    AUTHENTICATION_FAILED = "Authentication failed"
+    ADMIN_EMAIL_ALREADY_EXISTS = "Admin with this email already exists"
+    FAILED_TO_CREATE_SUPABASE_USER = "Failed to create Supabase user"
 
 
 class KnowledgeBaseErrors:

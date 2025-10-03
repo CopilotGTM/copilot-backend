@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 from src.domain.models.organisation_tables.chat_message_models import AttachmentStatus
@@ -13,7 +13,7 @@ class FakeAttachment:
         self.mimetype = mimetype
         self.size_bytes = size_bytes
         self.storage_path = f"attachments/{user_id}/{attachment_id}/{filename}"
-        self.created_at = datetime.utcnow()
+        self.created_at = datetime.now(timezone.utc)
         self.status = AttachmentStatus.PENDING_UPLOAD
 
 

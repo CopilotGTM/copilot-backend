@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 
+from uuid import UUID
 from src.workers.knowledge_worker.celery_app import app
 from src.infra.utils.logger import get_logger
 from src.api.dependencies.organisation_dependencies import acquire_org_session
@@ -13,21 +14,13 @@ from src.domain.models.organisation_tables.job_models import (
     JobStatus,
 )
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
-from src.infra.messaging.knowledge_source_status_publish import publish_source_status
-from src.api.schemas.knowledge_upload_models import KnowledgeSourceEventUpdate
+from src.workers.knowledge_worker.services.progress import ProgressPublisher
 from src.infra.media.thumbnail_generator import (
     generate_thumbnails,
     generate_thumbnail_sas_urls,
 )
 
 logger = get_logger("knowledge_post_upload_task")
-
-
-def _get_status_str(status_enum):
-    """Safely get the string value of a status enum."""
-    if status_enum is None:
-        return None
-    return getattr(status_enum, "value", str(status_enum))
 
 
 def _assign_generated_thumbnails(source: OrganisationSource, created: dict[str, str]):
@@ -61,38 +54,82 @@ def _compute_and_persist_checksum(
         logger.exception("Failed to compute checksum for source %s", source.source_id)
 
 
-def _publish_status_event(
-    organisation_id: str,
+# Removed legacy status publish wrapper; use ProgressPublisher directly.
+
+
+def _handle_duplicate_if_any(
+    session,
     source: OrganisationSource,
-    status: OrganisationSourceStatus,
-    thumbnail_small_url: str | None,
-    thumbnail_medium_url: str | None,
-):
-    """Publish knowledge source status update event (unified helper)."""
-    publish_event = KnowledgeSourceEventUpdate(
-        source_id=str(source.source_id),
-        status=_get_status_str(status),
-        updated_at=source.updated_at.isoformat() if source.updated_at else None,
-        error_message=source.error_message,
-        progress=None,
-        thumbnail_medium_url=thumbnail_medium_url,
-        thumbnail_small_url=thumbnail_small_url,
-    )
-    publish_source_status(organisation_id, publish_event)
+    job: KnowledgeProcessingJob,
+    publisher: ProgressPublisher,
+) -> bool:
+    """Detect duplicate by checksum and handle status transitions.
+
+    Returns True if a duplicate was found and handled (caller should stop).
+    """
+    try:
+        if not source.checksum:
+            return False
+
+        # Exclude soft-deleted and FAILED sources from duplicate consideration
+        duplicate = (
+            session.query(OrganisationSource)
+            .filter(
+                OrganisationSource.checksum == source.checksum,
+                OrganisationSource.source_id != source.source_id,
+                OrganisationSource.is_deleted == False,
+                OrganisationSource.status != OrganisationSourceStatus.FAILED,
+            )
+            .first()
+        )
+        if not duplicate:
+            return False
+
+        source.status = OrganisationSourceStatus.FAILED
+        source.error_message = (
+            f"Duplicate file detected; same content as source {duplicate.source_id}"
+        )
+        session.merge(source)
+
+        job.status = JobStatus.COMPLETED
+        session.add(job)
+        session.commit()
+
+        # Publish failure with a clear duplicate message for consumers (SSE/UI)
+        publisher.publish(
+            status=OrganisationSourceStatus.FAILED.value,
+            error_message="file already exists",
+        )
+
+        logger.info(
+            "Duplicate checksum found for source=%s; marked FAILED and job COMPLETED",
+            source.source_id,
+        )
+        return True
+    except Exception:
+        logger.exception(
+            "Error during duplicate checksum detection for source %s",
+            source.source_id,
+        )
+        return False
 
 
 @app.task(
     name="knowledge.post_upload_process", bind=True, acks_late=True, max_retries=3
 )
-def post_upload_process(self, organisation_id: str, source_id: str):
+def post_upload_process(self, organisation_id: UUID, source_id: UUID):
     """Post-upload processing: checksum and thumbnail generation."""
     logger.info("post_upload_process started")
     logger.info("org=%s source=%s", organisation_id, source_id)
 
     # Getting session and storage (sync DB session; async storage via local loop)
+    organisation_id, source_id = str(organisation_id), str(source_id)
     session_gen = acquire_org_session(organisation_id)
     session = next(session_gen)
     storage = AzureOrganisationBlobStorage(organisation_id=organisation_id)
+    publisher = ProgressPublisher(
+        organisation_id=organisation_id, source_id=source_id
+    )
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
@@ -131,6 +168,10 @@ def post_upload_process(self, organisation_id: str, source_id: str):
         # Compute checksum early (mirrors chat worker style)
         _compute_and_persist_checksum(loop, storage, source, session)
 
+        # Duplicate detection and handling
+        if _handle_duplicate_if_any(session, source, job, publisher):
+            return
+
         # Thumbnail generation using shared service
         try:
             created = loop.run_until_complete(
@@ -161,17 +202,15 @@ def post_upload_process(self, organisation_id: str, source_id: str):
                     )
                 )
 
-            _publish_status_event(
-                organisation_id,
-                source,
-                OrganisationSourceStatus.EXTRACTING,
-                thumbnail_small_url,
-                thumbnail_medium_url,
+            publisher.publish(
+                status=OrganisationSourceStatus.EXTRACTING.value,
+                thumbnail_small_url=thumbnail_small_url,
+                thumbnail_medium_url=thumbnail_medium_url,
             )
 
             app.send_task(
                 "knowledge.document_extraction",
-                args=[organisation_id, source_id],
+                args=[UUID(organisation_id), UUID(source_id)],
                 queue="knowledge_extract",
             )
         except self.MaxRetriesExceededError:
