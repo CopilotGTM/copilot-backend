@@ -36,6 +36,22 @@ resources:
     cpu: 128m
     memory: 256Mi
 
+# GPU Configuration (optional)
+# Enable GPU support for workers that require GPU resources
+gpu:
+  enabled: false
+  # Node selector to target specific GPU node pools
+  nodeSelector: {}
+    # Example:
+    # workload: knowledge-gpu
+  # Tolerations to allow scheduling on tainted GPU nodes
+  tolerations: []
+    # Example:
+    # - key: dedicated
+    #   operator: Equal
+    #   value: gpu
+    #   effect: NoSchedule
+
 # Rolling update strategy for the worker Deployment
 updateStrategy:
   maxSurge: 1        # Allow one extra pod above desired during rollout so new workers start before old stop

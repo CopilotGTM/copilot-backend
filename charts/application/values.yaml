@@ -58,8 +58,8 @@ api:
   # HPA for the API (CPU/Memory based)
   autoscaling:
     enabled: false
-    minReplicas: 1
-    maxReplicas: 3
+    minReplicas: 2
+    maxReplicas: 5
     targetCPUUtilizationPercentage: 80
     targetMemoryUtilizationPercentage: 80
 
@@ -108,20 +108,49 @@ knowledge-extract-worker:
   config:
     queueName: "knowledge_extract"
     concurrency: 1
+  
+  # GPU Node Pool Configuration
+  # Targets dedicated GPU node pool (kgpu) with NVIDIA Tesla T4 GPU
+  # Node pool specs: Standard_NC4as_T4_v3 (4 vCPU, 28GB RAM, 1x T4 GPU)
+  gpu:
+    enabled: true
+    # Node selector to target GPU node pool
+    nodeSelector:
+      workload: knowledge-gpu
+    # Tolerations to allow scheduling on tainted GPU nodes
+    tolerations:
+    - key: dedicated
+      operator: Equal
+      value: gpu
+      effect: NoSchedule
+  
+  # GPU Resource Requests and Limits
+  # Request most of the node's capacity to maximize utilization
   resources:
     requests:
-      cpu: "500m"
-      memory: "3Gi"
+      nvidia.com/gpu: 1      # Request 1 Tesla T4 GPU
+      cpu: "2000m"           # Reserve 2 vCPU (of 4 available)
+      memory: "16Gi"         # Reserve 16GB RAM (of 28GB available)
     limits:
-      cpu: "1000m"
-      memory: "6Gi"
+      nvidia.com/gpu: 1      # Request 1 Tesla T4 GPU
+      cpu: "3500m"           # Allow burst to 3.5 vCPU
+      memory: "24Gi"         # Allow burst to 24GB RAM
+  
+  # KEDA Autoscaling Configuration
+  # Note: Cold start from scale-to-zero takes 3-5 minutes for GPU node provisioning
   autoscaling:
     enabled: true
-    minReplicas: 1
-    maxReplicas: 5
-    queueLength: 5
-    scaleDownDelay: 300
-    scaleUpDelay: 10
+    minReplicas: 0           # Scale to zero when idle (cost optimization)
+    maxReplicas: 1           # Single GPU node limit (can be increased if needed)
+    queueLength: 1           # Scale up when 1+ tasks in queue
+    scaleDownDelay: 600      # Wait 10 minutes before scaling down (node deprovisioning)
+    scaleUpDelay: 10         # Check queue every 10 seconds
+  
+  # Pod Disruption Budget - Allow zero pods during disruptions
+  # Critical for scale-to-zero behavior and cluster maintenance
+  pdb:
+    enabled: true
+    minAvailable: 0          # Allow zero pods (supports scale-to-zero)
 
 knowledge-upload-worker:
   enabled: true
@@ -151,7 +180,7 @@ knowledge-upload-worker:
 # Organization Worker
 organization-worker:
   enabled: true
-  replicaCount: 0
+  replicaCount: 1
   image:
     repository: "copilotgtmacrdev.azurecr.io/copilot-backend"
     tag: "latest"
@@ -168,7 +197,7 @@ organization-worker:
       memory: "512Mi"
   autoscaling:
     enabled: true
-    minReplicas: 0
+    minReplicas: 1 
     maxReplicas: 5
     queueLength: 1
     scaleDownDelay: 300
