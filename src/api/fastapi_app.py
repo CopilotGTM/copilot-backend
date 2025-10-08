@@ -24,33 +24,41 @@ from src.api.routers.healthcheck import healthcheck_router, public_health_router
 from src.api.routers.chat.sessions_handler import router as chat_sessions_router
 from src.api.routers.chat.messages_handler import router as chat_messages_router
 from src.api.routers.chat_attachments.upload_handler import upload_router
-from src.api.routers.chat_attachments.access_handler import download_router as attachment_access_router
-from src.api.routers.knowledge_base.upload_handler import upload_router as knowledge_upload_router
-from src.api.routers.knowledge_base.access_handler import access_router as knowledge_access_router
+from src.api.routers.chat_attachments.access_handler import (
+    download_router as attachment_access_router,
+)
+from src.api.routers.knowledge_base.upload_handler import (
+    upload_router as knowledge_upload_router,
+)
+from src.api.routers.knowledge_base.access_handler import (
+    access_router as knowledge_access_router,
+)
 from src.api.routers.admin.organizations_handler import router as admin_org_router
 from src.api.routers.admin.admin_auth_handler import router as admin_auth_router
 from src.api.routers.admin.users_handler import router as admin_user_router
 from src.api.routers.users.auth_handler import router as user_auth_router
+from src.api.routers.integrations import integrations_router
 
 # Secret maintenance removed; no background task required
 
 logger = get_logger()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan event handler for FastAPI application."""
     # Startup
     logger.info("Starting application services...")
-    
+
     # Start DB pool monitor if available
     if start_pool_monitor is not None:
         await start_pool_monitor()
 
     yield
-    
+
     # Shutdown
     logger.info("Shutting down application services...")
-    
+
     # Close Redis connection pools
     close_redis_pool()
     await close_async_redis_pool()
@@ -67,9 +75,9 @@ async def lifespan(app: FastAPI):
 
 def create_fastapi_app():
     """Create and configure the FastAPI application."""
-    
+
     logger.info("Setting Up App Config")
-    
+
     # Create FastAPI app with lifespan handler
     fastapp = FastAPI(lifespan=lifespan)
 
@@ -103,32 +111,57 @@ def create_fastapi_app():
     # Include routers here
     # Public health endpoint (safe for external access)
     fastapp.include_router(public_health_router, tags=["health"])
-    
+
     # Internal health endpoints (restricted access)
     fastapp.include_router(healthcheck_router, tags=["internal", "healthcheck"])
     # fastapp.include_router(chat_router, prefix="/chats", tags=["chats"])
     fastapp.include_router(upload_router, prefix="/chats/upload", tags=["uploads"])
-    fastapp.include_router(attachment_access_router, prefix="/chats", tags=["downloads"])
+    fastapp.include_router(
+        attachment_access_router, prefix="/chats", tags=["downloads"]
+    )
     # User auth
-    fastapp.include_router(user_auth_router, prefix="/users/auth", tags=["user", "authentication"])
+    fastapp.include_router(
+        user_auth_router, prefix="/users/auth", tags=["user", "authentication"]
+    )
 
     # Knowledge base
-    fastapp.include_router(knowledge_upload_router, prefix="/users/knowledge", tags=["knowledge_upload"])
-    fastapp.include_router(knowledge_access_router, prefix="/users/knowledge", tags=["knowledge_access"])
+    fastapp.include_router(
+        knowledge_upload_router, prefix="/users/knowledge", tags=["knowledge_upload"]
+    )
+    fastapp.include_router(
+        knowledge_access_router, prefix="/users/knowledge", tags=["knowledge_access"]
+    )
 
     # Chat sessions
     fastapp.include_router(chat_sessions_router, prefix="/users/chats", tags=["chats"])
     # Chat messages
-    fastapp.include_router(chat_messages_router, prefix="/users/chats", tags=["chat_messages"])
+    fastapp.include_router(
+        chat_messages_router, prefix="/users/chats", tags=["chat_messages"]
+    )
 
     # attachment
-    fastapp.include_router(upload_router, prefix="/users/chats/upload", tags=["uploads"])
-    fastapp.include_router(attachment_access_router, prefix="/users/chats/upload", tags=["downloads"])
+    fastapp.include_router(
+        upload_router, prefix="/users/chats/upload", tags=["uploads"]
+    )
+    fastapp.include_router(
+        attachment_access_router, prefix="/users/chats/upload", tags=["downloads"]
+    )
+
+    # Integration routers
+    fastapp.include_router(
+        integrations_router, prefix="/users/integrations", tags=["integrations"]
+    )
 
     # Admin routers
-    fastapp.include_router(admin_auth_router, prefix="/admin/auth", tags=["admin", "authentication"])
-    fastapp.include_router(admin_org_router, prefix="/admin/organisations", tags=["admin", "organizations"])
-    fastapp.include_router(admin_user_router, prefix="/admin/users", tags=["admin", "users"])
+    fastapp.include_router(
+        admin_auth_router, prefix="/admin/auth", tags=["admin", "authentication"]
+    )
+    fastapp.include_router(
+        admin_org_router, prefix="/admin/organisations", tags=["admin", "organizations"]
+    )
+    fastapp.include_router(
+        admin_user_router, prefix="/admin/users", tags=["admin", "users"]
+    )
 
     # Wrap in Socket.IO
     return ASGIApp(sio, other_asgi_app=fastapp)

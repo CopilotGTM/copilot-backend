@@ -127,9 +127,7 @@ def post_upload_process(self, organisation_id: UUID, source_id: UUID):
     session_gen = acquire_org_session(organisation_id)
     session = next(session_gen)
     storage = AzureOrganisationBlobStorage(organisation_id=organisation_id)
-    publisher = ProgressPublisher(
-        organisation_id=organisation_id, source_id=source_id
-    )
+    publisher = ProgressPublisher(organisation_id=organisation_id, source_id=source_id)
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 

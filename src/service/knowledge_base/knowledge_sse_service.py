@@ -4,6 +4,7 @@ Provides Server-Sent Events streaming for knowledge source status updates
 using Redis pub/sub for real-time notifications. Handles connection lifecycle,
 filtering, timeouts, and error recovery.
 """
+
 import asyncio
 import json
 from typing import Dict, Set, List, Optional, AsyncGenerator
@@ -40,6 +41,7 @@ class KnowledgeSSEError(Exception):
         self.status_code = status_code
         super().__init__(message)
 
+
 class KnowledgeSourceSSEService:
     """Service for streaming knowledge source status via SSE with Redis pub/sub.
 
@@ -56,7 +58,7 @@ class KnowledgeSourceSSEService:
     }
     # Cached list of terminal *values* (strings) for query / comparisons.
     TERMINAL_STATUS_VALUES = [s.value for s in TERMINAL_STATUSES]
-    
+
     def __init__(self, org_session: AsyncSession, organisation_id: UUID, user_id: UUID):
         """Initialize SSE service.
 
@@ -91,8 +93,10 @@ class KnowledgeSourceSSEService:
                 logger.debug("Storage close failed (SSE)", exc_info=True)
         except Exception:  # swallow
             logger.debug("Redis pubsub close failed (SSE)", exc_info=True)
-    
-    async def get_initial_sources(self, explicit_ids: Optional[Set[UUID]] = None) -> List[OrganisationSource]:
+
+    async def get_initial_sources(
+        self, explicit_ids: Optional[Set[UUID]] = None
+    ) -> List[OrganisationSource]:
         """Fetch initial source snapshot based on filter criteria (async)."""
         base_filters = [
             OrganisationSource.organisation_id == self.organisation_id,
@@ -108,12 +112,14 @@ class KnowledgeSourceSSEService:
             return res.scalars().all()
 
         logger.info("Fetching initial sources for User non-terminal IDs")
-        stmt = stmt.where(not_(OrganisationSource.status.in_(self.TERMINAL_STATUS_VALUES)))
+        stmt = stmt.where(
+            not_(OrganisationSource.status.in_(self.TERMINAL_STATUS_VALUES))
+        )
         res = await self.org_session.execute(stmt)
         sources = res.scalars().all()
         logger.debug("Initial non-terminal sources count=%d", len(sources))
         return sources
-    
+
     async def serialize_source(self, source: OrganisationSource) -> Dict:
         """Convert OrganisationSource to dict including dynamic SAS URLs.
 
@@ -135,7 +141,10 @@ class KnowledgeSourceSSEService:
         )
         data = model.model_dump()
 
-        if model.status in [OrganisationSourceStatus.EXTRACTING, OrganisationSourceStatus.COMPLETED]:
+        if model.status in [
+            OrganisationSourceStatus.EXTRACTING,
+            OrganisationSourceStatus.COMPLETED,
+        ]:
             # Generate SAS URLs conditionally (only if paths exist)
             if getattr(source, "thumbnail_small_path", None):
                 try:
@@ -150,32 +159,34 @@ class KnowledgeSourceSSEService:
                         source.thumbnail_medium_path, minutes=120
                     )
                 except Exception:
-                    logger.debug("Thumbnail medium SAS generation failed", exc_info=True)
+                    logger.debug(
+                        "Thumbnail medium SAS generation failed", exc_info=True
+                    )
         return data
-    
+
     def _send_event(self, event_type: str, data) -> Dict:
         """Helper to format SSE event as dict."""
         return {"event": event_type, "data": json.dumps(data)}
 
     async def _handle_initial_sources(
-        self, 
-        sources: List[OrganisationSource], 
-        watched_status: Dict[str, str]
+        self, sources: List[OrganisationSource], watched_status: Dict[str, str]
     ) -> AsyncGenerator[Dict, None]:
         """Serialize initial sources and yield initial status events."""
-        serialized_list = await asyncio.gather(*(self.serialize_source(s) for s in sources))
+        serialized_list = await asyncio.gather(
+            *(self.serialize_source(s) for s in sources)
+        )
         for s in serialized_list:
             watched_status[s["source_id"]] = s["status"]
         yield self._send_event("status", serialized_list)
-        
+
         if self._all_sources_terminal(watched_status):
             yield self._send_event("complete", {"message": "all_sources_terminal"})
 
     def _handle_message(
-        self, 
-        message: Dict, 
-        allowed_ids_set: Optional[Set[str]], 
-        watched_status: Dict[str, str]
+        self,
+        message: Dict,
+        allowed_ids_set: Optional[Set[str]],
+        watched_status: Dict[str, str],
     ) -> Optional[Dict]:
         """Process a single Redis pub/sub message and return an event dict if applicable."""
         source_id = message.get("source_id")
@@ -186,13 +197,22 @@ class KnowledgeSourceSSEService:
 
     def _all_sources_terminal(self, watched_status: Dict[str, str]) -> bool:
         """Check if all watched sources are in terminal status."""
-        return all(status in self.TERMINAL_STATUS_VALUES for status in watched_status.values())
+        return all(
+            status in self.TERMINAL_STATUS_VALUES for status in watched_status.values()
+        )
 
-    def _should_timeout(self, start_time: float, current_time: float, timeout_seconds: Optional[int]) -> bool:
+    def _should_timeout(
+        self, start_time: float, current_time: float, timeout_seconds: Optional[int]
+    ) -> bool:
         """Check if stream should timeout."""
-        return timeout_seconds is not None and (current_time - start_time) > timeout_seconds
+        return (
+            timeout_seconds is not None
+            and (current_time - start_time) > timeout_seconds
+        )
 
-    def _should_send_heartbeat(self, current_time: float, last_heartbeat: float, heartbeat_interval: float) -> bool:
+    def _should_send_heartbeat(
+        self, current_time: float, last_heartbeat: float, heartbeat_interval: float
+    ) -> bool:
         """Check if heartbeat should be sent."""
         return (current_time - last_heartbeat) >= heartbeat_interval
 
@@ -200,12 +220,14 @@ class KnowledgeSourceSSEService:
         self,
         explicit_ids: Optional[Set[UUID]] = None,
         timeout_seconds: Optional[int] = 1800,
-        heartbeat_interval: float = 25.0
+        heartbeat_interval: float = 25.0,
     ) -> AsyncGenerator[Dict, None]:
         """
         Generate SSE events for knowledge source status updates.
         """
-        logger.info(f"Starting SSE stream for org {self.organisation_id}, user {self.user_id}")
+        logger.info(
+            f"Starting SSE stream for org {self.organisation_id}, user {self.user_id}"
+        )
         start_time = asyncio.get_event_loop().time()
         last_heartbeat = start_time
         watched_status: Dict[str, str] = {}
@@ -223,7 +245,9 @@ class KnowledgeSourceSSEService:
                 yield self._send_event("complete", {"message": "no_sources_to_watch"})
                 return
 
-            async for event in self._handle_initial_sources(initial_sources, watched_status):
+            async for event in self._handle_initial_sources(
+                initial_sources, watched_status
+            ):
                 yield event
                 if event["event"] == "complete":
                     # All sources already terminal: release DB session before returning
@@ -241,18 +265,27 @@ class KnowledgeSourceSSEService:
 
             # Stream updates from Redis
             async for event in self._stream_redis_updates(
-                start_time, last_heartbeat, watched_status, allowed_ids_set, 
-                timeout_seconds, heartbeat_interval
+                start_time,
+                last_heartbeat,
+                watched_status,
+                allowed_ids_set,
+                timeout_seconds,
+                heartbeat_interval,
             ):
                 yield event
 
         except Exception as e:
-            logger.error(f"SSE stream error for org {self.organisation_id}: {e}", exc_info=True)
-            yield self._send_event("error", {
-                "message": "Internal stream error. Please reconnect.",
-                "error_type": type(e).__name__,
-                "reconnect": True
-            })
+            logger.error(
+                f"SSE stream error for org {self.organisation_id}: {e}", exc_info=True
+            )
+            yield self._send_event(
+                "error",
+                {
+                    "message": "Internal stream error. Please reconnect.",
+                    "error_type": type(e).__name__,
+                    "reconnect": True,
+                },
+            )
         finally:
             try:
                 await self.redis_pubsub.close()
@@ -266,30 +299,37 @@ class KnowledgeSourceSSEService:
         watched_status: Dict[str, str],
         allowed_ids_set: Optional[Set[str]],
         timeout_seconds: Optional[int],
-        heartbeat_interval: float
+        heartbeat_interval: float,
     ) -> AsyncGenerator[Dict, None]:
         """Stream updates from Redis pub/sub."""
         channel = channel_for_knowledge_update_status(self.organisation_id)
-        
+
         async for message in self.redis_pubsub.subscribe_to_channel(channel):
             current_time = asyncio.get_event_loop().time()
 
             # Check timeout
             if self._should_timeout(start_time, current_time, timeout_seconds):
-                yield self._send_event("timeout", {
-                    "message": "Stream timeout reached. Please reconnect.",
-                    "timeout_seconds": timeout_seconds,
-                    "reconnect": True
-                })
+                yield self._send_event(
+                    "timeout",
+                    {
+                        "message": "Stream timeout reached. Please reconnect.",
+                        "timeout_seconds": timeout_seconds,
+                        "reconnect": True,
+                    },
+                )
                 return
 
             # Send heartbeat if needed
-            if self._should_send_heartbeat(current_time, last_heartbeat, heartbeat_interval):
+            if self._should_send_heartbeat(
+                current_time, last_heartbeat, heartbeat_interval
+            ):
                 last_heartbeat = current_time
                 yield self._send_event("ping", {"timestamp": int(current_time)})
 
             # Handle status message
-            status_event = self._handle_message(message, allowed_ids_set, watched_status)
+            status_event = self._handle_message(
+                message, allowed_ids_set, watched_status
+            )
             if status_event:
                 yield status_event
 

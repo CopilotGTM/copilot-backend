@@ -230,14 +230,18 @@ class AttachmentSSEService:
                     try:
                         await self.org_session.close()
                     except Exception:
-                        logger.debug("Attachment SSE org_session early-close failed (complete)")
+                        logger.debug(
+                            "Attachment SSE org_session early-close failed (complete)"
+                        )
                     return
 
             # Release DB session before long-lived Redis loop to avoid holding pool connections
             try:
                 await self.org_session.close()
             except Exception:
-                logger.debug("Attachment SSE org_session early-close failed (post-initial)")
+                logger.debug(
+                    "Attachment SSE org_session early-close failed (post-initial)"
+                )
 
             # Stream updates from Redis only (no DB required)
             async for evt in self._stream_updates(

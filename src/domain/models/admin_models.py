@@ -23,22 +23,27 @@ class AdminPasswordChangeRequest(BaseModel):
     confirm_password: Optional[str] = None
     session_token: Optional[str] = None
 
+
 class AdminChangePasswordRequest(BaseModel):
     current_password: str
     new_password: str
 
+
 class AdminLogoutRequest(BaseModel):
     """
     Unified logout request that handles both regular and global logout.
-    
+
     - global: If True, logout from all sessions globally. If False, logout from current session only.
     - email: Required only for global logout (to specify which user to logout)
     """
+
     global_logout: bool = False
     email: Optional[EmailStr] = None
 
+
 class AdminForgotPasswordRequest(BaseModel):
     email: EmailStr
+
 
 class AdminRefreshTokenRequest(BaseModel):
     refresh_token: str
@@ -46,6 +51,7 @@ class AdminRefreshTokenRequest(BaseModel):
 
 class PasswordResetAction(str, Enum):
     """Enum for password reset actions"""
+
     FORGOT = "forgot"
     FORCE_CHANGE = "force_change"
 
@@ -54,19 +60,21 @@ class PasswordResetAction(str, Enum):
 class AdminResetPasswordRequest(BaseModel):
     """
     Unified password management request that handles password reset operations.
-    
+
     The action field determines which password operation to perform:
     - 'forgot': Request password reset email (requires email)
     - 'force_change': First-time password change (requires session_token, new_password)
     """
+
     action: PasswordResetAction = PasswordResetAction.FORGOT
-    
+
     # Common fields
     new_password: str  # For force_change action
     confirm_password: str  # For force_change action
-    
+
     # Action-specific fields
     token_hash: str  # For force_change action
+
 
 class AdminRole(str, Enum):
     SUPER_ADMIN = "super_admin"
@@ -77,6 +85,7 @@ class AdminStatus(str, Enum):
     ACTIVE = "active"
     INACTIVE = "inactive"
     PENDING_SETUP = "pending_setup"
+
 
 class AdminCreateRequest(SQLModel):
     email: EmailStr
@@ -90,14 +99,17 @@ class AdminUpdateRequest(SQLModel):
     last_name: Optional[str] = None
     status: Optional[AdminStatus] = None
 
+
 class Tokens(SQLModel):
     access_token: str
     refresh_token: str
+
 
 class AdminLoginState(str, Enum):
     ACTIVE = "ACTIVE"
     INACTIVE = "INACTIVE"
     PENDING_SETUP = "PASSWORD_CHANGE_REQUIRED"
+
 
 class AdminLoginResponse(SQLModel):
     email: Optional[EmailStr] = None

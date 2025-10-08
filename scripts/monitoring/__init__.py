@@ -1,2 +1,1 @@
 """Monitoring scripts package."""
-

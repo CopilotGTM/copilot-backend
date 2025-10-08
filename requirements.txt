@@ -14,6 +14,9 @@ PyJWT==2.10.1
 requests>=2.32.4
 supabase>=2.17.0
 
+# Integration management
+httpx>=0.28.1
+
 # Database and ORM
 sqlmodel==0.0.24
 SQLAlchemy==2.0.42

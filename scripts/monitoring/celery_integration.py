@@ -62,7 +62,12 @@ def _run_monitor_loop() -> None:
 
 
 def _enabled() -> bool:
-    return os.getenv("DB_POOL_MONITOR_ENABLE", "true").lower() in ("1", "true", "yes", "on")
+    return os.getenv("DB_POOL_MONITOR_ENABLE", "true").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
 
 @worker_ready.connect
@@ -73,7 +78,9 @@ def _on_worker_ready(sender=None, **kwargs):  # pragma: no cover - Celery signal
     if _started:
         return
     _started = True
-    _thread = threading.Thread(target=_run_monitor_loop, name="db-pool-monitor", daemon=True)
+    _thread = threading.Thread(
+        target=_run_monitor_loop, name="db-pool-monitor", daemon=True
+    )
     _thread.start()
     logger.info("DB pool monitor thread started in Celery worker")
 

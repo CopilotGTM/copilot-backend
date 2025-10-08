@@ -15,7 +15,9 @@ logger = get_logger(__name__)
 class AdminAuthService:
     """Service class for admin authentication and management."""
 
-    async def get_super_admin_by_email(self, session: AsyncSession, email: str) -> SuperAdmin | None:
+    async def get_super_admin_by_email(
+        self, session: AsyncSession, email: str
+    ) -> SuperAdmin | None:
         """Fetches a super admin from the database by email."""
         statement = select(SuperAdmin).where(SuperAdmin.email == email)
         result = await session.execute(statement)
@@ -35,7 +37,9 @@ class AdminAuthService:
                 message="Login successful", data=response_data
             )
         except Exception as e:
-            logger.error(f"Failed to generate recovery token for user {email}: {str(e)}")
+            logger.error(
+                f"Failed to generate recovery token for user {email}: {str(e)}"
+            )
             return Response.internal_server_error_response(
                 message="Failed to generate password change token"
             )
@@ -66,9 +70,7 @@ class AdminAuthService:
             "last_login_at": super_admin.last_login_at,
             "tokens": tokens,
         }
-        return Response.success_response(
-            message="Login successful", data=response_data
-        )
+        return Response.success_response(message="Login successful", data=response_data)
 
 
 admin_auth_service = AdminAuthService()

@@ -11,7 +11,13 @@ load_dotenv()
 
 # ---- import every module that declares SQLModel models ----
 # (so that SQLModel.metadata is populated)
-from src.domain.models.master_tables import Organisation, User, SuperAdmin, OrganisationActionHistory, UserActionHistory
+from src.domain.models.master_tables import (
+    Organisation,
+    User,
+    SuperAdmin,
+    OrganisationActionHistory,
+    UserActionHistory,
+)
 
 # (and import any new model modules here)
 
@@ -25,7 +31,10 @@ DATABASE_NAME = os.getenv("DATABASE_NAME", "postgres")
 DATABASE_USER = os.getenv("DATABASE_USER", "postgres")
 DATABASE_PASSWORD = os.getenv("DATABASE_PASSWORD", "")
 encoded_password = urllib.parse.quote_plus(DATABASE_PASSWORD)
-db_url = f"postgresql://{DATABASE_USER}:{encoded_password}" f"@{DATABASE_HOST}:{DATABASE_PORT}/{DATABASE_NAME}"
+db_url = (
+    f"postgresql://{DATABASE_USER}:{encoded_password}"
+    f"@{DATABASE_HOST}:{DATABASE_PORT}/{DATABASE_NAME}"
+)
 # Alembic requires % to be escaped as %%
 config.set_main_option("sqlalchemy.url", db_url.replace("%", "%%"))
 
@@ -77,7 +86,7 @@ def include_object(object, name, type_, reflected, compare_to):
             # that are defined in our target_metadata (master_db_models).
             # The schema check is implicitly handled by target_metadata containing only public tables.
             return name in target_metadata.tables
-    return True # Include other object types (e.g., sequences, indexes)
+    return True  # Include other object types (e.g., sequences, indexes)
 
 
 def run_migrations_offline() -> None:
@@ -89,8 +98,8 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
-        include_schemas=False, # Explicitly set to False
-        include_object=include_object, # Use the custom include_object function
+        include_schemas=False,  # Explicitly set to False
+        include_object=include_object,  # Use the custom include_object function
         version_table_schema=target_schema,
     )
 
@@ -119,8 +128,8 @@ def run_migrations_online() -> None:
             connection=connection,
             target_metadata=target_metadata,
             compare_type=True,
-            include_schemas=False, # Explicitly set to False
-            include_object=include_object, # Use the custom include_object function
+            include_schemas=False,  # Explicitly set to False
+            include_object=include_object,  # Use the custom include_object function
             version_table_schema=target_schema,
         )
 

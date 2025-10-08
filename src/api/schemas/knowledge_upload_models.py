@@ -47,7 +47,9 @@ class KnowledgeBatchPresignRequest(BaseModel):
     @field_validator("files")
     def validate_batch_len(cls, v: List[KnowledgePresignFileRequest]):
         if len(v) > MAX_BATCH_FILES:
-            raise ValueError(f"Too many files in one batch. Max allowed is {MAX_BATCH_FILES}.")
+            raise ValueError(
+                f"Too many files in one batch. Max allowed is {MAX_BATCH_FILES}."
+            )
         return v
 
 
@@ -98,11 +100,13 @@ class KnowledgeSourceResponse(BaseModel):
 
     model_config = {"from_attributes": True}
 
+
 class KnowledgeSourceEventUpdate(BaseModel):
     """Pydantic model matching the SSE source update payload.
 
     Named exactly as requested: `sourceenvetupdate`.
     """
+
     source_id: str
     status: str
     updated_at: Optional[str] = None

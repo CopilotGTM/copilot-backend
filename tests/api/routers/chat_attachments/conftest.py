@@ -13,10 +13,15 @@ def dependency_overrides(test_user_ids):
     It yields a fake upload service that preserves state across test functions.
     """
     # Provide a single service instance per test module to preserve state across calls
-    fake_service = FakeUploadService(test_user_ids["organisation_id"], test_user_ids["user_id"])
+    fake_service = FakeUploadService(
+        test_user_ids["organisation_id"], test_user_ids["user_id"]
+    )
 
     def _override_user():
-        return UserIDs(user_id=test_user_ids["user_id"], organisation_id=test_user_ids["organisation_id"])
+        return UserIDs(
+            user_id=test_user_ids["user_id"],
+            organisation_id=test_user_ids["organisation_id"],
+        )
 
     async def _override_service():
         try:

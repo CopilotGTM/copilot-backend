@@ -51,13 +51,11 @@ class DocumentConverterService:
                         ),
                         ocr_options=EasyOcrOptions(
                             force_full_page_ocr=True,
-                        )
+                        ),
                     )
                 ),
                 InputFormat.DOCX: WordFormatOption(
-                    pipeline_options=PipelineOptions(
-                        create_legacy_output=False
-                    )
+                    pipeline_options=PipelineOptions(create_legacy_output=False)
                 ),
             },
         )

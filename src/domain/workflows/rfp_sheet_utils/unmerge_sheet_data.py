@@ -29,7 +29,9 @@ def get_unmerged_sheet_data(workbook, target_sheet_name):
                 if cell.coordinate in merged_range:
                     is_merged = True
                     # Get the value from the top-left cell of the merged range
-                    top_left_cell = sheet.cell(row=merged_range.min_row, column=merged_range.min_col)
+                    top_left_cell = sheet.cell(
+                        row=merged_range.min_row, column=merged_range.min_col
+                    )
                     row_data[header] = top_left_cell.value
                     break
             if not is_merged:

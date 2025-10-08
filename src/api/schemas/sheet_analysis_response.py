@@ -62,7 +62,11 @@ class SheetAnalysisResponse(BaseModel):
                             "sheet_name": "5.1 Loyalty Management",
                             "is_sheet_selected": False,
                             "columns": [
-                                {"name": "Loyalty Requirement", "is_question_column": False, "is_answer_column": False}
+                                {
+                                    "name": "Loyalty Requirement",
+                                    "is_question_column": False,
+                                    "is_answer_column": False,
+                                }
                             ],
                             "column_row_number": 1,
                         }

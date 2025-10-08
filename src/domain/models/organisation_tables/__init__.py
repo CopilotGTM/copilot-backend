@@ -2,7 +2,7 @@
 Organisation DB Tables
 ====================
 
-This package contains the SQLModel definitions for the organisation-specific database, 
+This package contains the SQLModel definitions for the organisation-specific database,
 which is responsible for storing data related to chat sessions, messages, and knowledge base embeddings.
 
 The models are organised into separate files based on their domain:

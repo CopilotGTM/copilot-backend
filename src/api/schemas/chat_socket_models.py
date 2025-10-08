@@ -14,7 +14,9 @@ class AttachmentModel(BaseModel):
     mimetype: str = Field(..., description="MIME type, e.g. 'image/png'")
     size_bytes: Optional[int] = Field(None, description="File size in bytes")
     uploaded_at: datetime = Field(..., description="Upload timestamp (ISO8601)")
-    metadata: Dict[str, Any] = Field(default_factory=dict, description="Free-form metadata")
+    metadata: Dict[str, Any] = Field(
+        default_factory=dict, description="Free-form metadata"
+    )
 
 
 class ChatMessageReceived(BaseModel):
@@ -27,9 +29,15 @@ class ChatMessageReceived(BaseModel):
     message_id: UUID = Field(..., description="Unique message ID")
     content: Optional[str] = Field(None, description="Text content of the message")
     timestamp: datetime = Field(..., description="Message sent timestamp (ISO8601)")
-    attachments: List[AttachmentModel] = Field(default_factory=list, description="Attached files/images/etc.")
-    is_edited: bool = Field(False, description="True if the message was edited after sending")
-    message_type: Optional[str] = Field(..., description="Type of Message (e.g., 'general', 'private')")
+    attachments: List[AttachmentModel] = Field(
+        default_factory=list, description="Attached files/images/etc."
+    )
+    is_edited: bool = Field(
+        False, description="True if the message was edited after sending"
+    )
+    message_type: Optional[str] = Field(
+        ..., description="Type of Message (e.g., 'general', 'private')"
+    )
 
 
 class SlideContentGenerationModel(BaseModel):

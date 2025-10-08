@@ -66,6 +66,7 @@ async def _get_email_from_request(req: Request) -> Optional[str]:
         body_bytes = await req.body()
         if body_bytes:
             import json
+
             try:
                 data = json.loads(body_bytes)
                 if isinstance(data, dict):
@@ -95,8 +96,12 @@ def _enforce_rate_limit_for(subject_kind: str, subject_id: str, category: str) -
     """
     # Limits come from central config; allow distinct budgets per category
     if category == "read":
-        per_minute_limit = getattr(rate_limit_config, "READ_PER_MINUTE", rate_limit_config.PER_MINUTE)
-        per_hour_limit = getattr(rate_limit_config, "READ_PER_HOUR", rate_limit_config.PER_HOUR)
+        per_minute_limit = getattr(
+            rate_limit_config, "READ_PER_MINUTE", rate_limit_config.PER_MINUTE
+        )
+        per_hour_limit = getattr(
+            rate_limit_config, "READ_PER_HOUR", rate_limit_config.PER_HOUR
+        )
     else:
         per_minute_limit = rate_limit_config.PER_MINUTE
         per_hour_limit = rate_limit_config.PER_HOUR
@@ -166,6 +171,8 @@ def rate_limit_admin_read(admin: SuperAdmin = Depends(admin_auth)) -> None:
     Uses lenient 'read' budget separate from org user limits.
     """
     _enforce_rate_limit_for("a", str(admin.admin_id), "read")
+
+
 async def rate_limit_login(request: Request) -> None:
     """Limit login attempts by a combination of email and client IP.
 

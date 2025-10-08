@@ -5,7 +5,11 @@ logger = get_logger()
 
 
 def create_row_object(
-    sheet_name: str, row_data: Dict, row_index: int, question_column: Optional[str], answer_column: Optional[str]
+    sheet_name: str,
+    row_data: Dict,
+    row_index: int,
+    question_column: Optional[str],
+    answer_column: Optional[str],
 ) -> Dict:
     """
     Create a row object with sheet name, row number, and formatted input message.
@@ -28,15 +32,23 @@ def create_row_object(
         return None
 
     # Get description value if question column is not specified
-    description_value = row_data.get("Description", "") if not question_column else row_data.get(question_column, "")
+    description_value = (
+        row_data.get("Description", "")
+        if not question_column
+        else row_data.get(question_column, "")
+    )
 
     # Get values from other columns (excluding answer column)
     other_columns_data = {
-        col: row_data.get(col, "") for col in row_data.keys() if col != answer_column and row_data.get(col)
+        col: row_data.get(col, "")
+        for col in row_data.keys()
+        if col != answer_column and row_data.get(col)
     }
 
     # Create additional details string
-    additional_details = "\n".join(f"\t{col}: {value}" for col, value in other_columns_data.items())
+    additional_details = "\n".join(
+        f"\t{col}: {value}" for col, value in other_columns_data.items()
+    )
 
     # Create input message
     input_message = f"""
@@ -48,6 +60,10 @@ def create_row_object(
     """
 
     # Create the object
-    row_object = {"sheetname": sheet_name, "row_number": row_index, "input_message": input_message}
+    row_object = {
+        "sheetname": sheet_name,
+        "row_number": row_index,
+        "input_message": input_message,
+    }
 
     return row_object

@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """Azure per-organization blob storage helper for chat attachments."""
 from datetime import datetime, timedelta, timezone
 from typing import Optional, AsyncGenerator
@@ -45,14 +46,22 @@ async def _get_credential_async():
 
     if tenant_id and client_id:
         logger.info("Auth strategy (blob): Workload Identity (federated token)")
-        allowed_tenants = [t.strip() for t in (cloud_infra_config.AZURE_ADDITIONALLY_ALLOWED_TENANTS or "").split(",") if t.strip()] or None
+        allowed_tenants = [
+            t.strip()
+            for t in (
+                cloud_infra_config.AZURE_ADDITIONALLY_ALLOWED_TENANTS or ""
+            ).split(",")
+            if t.strip()
+        ] or None
         return WorkloadIdentityCredential(
             tenant_id=tenant_id,
             client_id=client_id,
-            additionally_allowed_tenants=allowed_tenants or ["*"]
+            additionally_allowed_tenants=allowed_tenants or ["*"],
         )
     if client_id and not tenant_id:
-        logger.warning("(blob) Workload identity client id present but AZURE_TENANT_ID missing; using Managed Identity fallback (possible wrong tenant).")
+        logger.warning(
+            "(blob) Workload identity client id present but AZURE_TENANT_ID missing; using Managed Identity fallback (possible wrong tenant)."
+        )
     logger.info("Auth strategy (blob): Managed Identity fallback")
     return ManagedIdentityCredential()
 
@@ -82,7 +91,9 @@ class AzureOrganisationBlobStorage:
         if self._blob_service is None:
             await self._init_credential()
             account_url = f"https://{self.account_name}.blob.core.windows.net"
-            self._blob_service = BlobServiceClient(account_url=account_url, credential=self._credential)
+            self._blob_service = BlobServiceClient(
+                account_url=account_url, credential=self._credential
+            )
         return self._blob_service
 
     _SAFE_FILENAME = re.compile(r"[^A-Za-z0-9._-]+")
@@ -99,7 +110,9 @@ class AzureOrganisationBlobStorage:
         container_client = bs.get_container_client(self.container)
         try:
             await container_client.create_container()
-            logger.info("Created container %s in account %s", self.container, self.account_name)
+            logger.info(
+                "Created container %s in account %s", self.container, self.account_name
+            )
         except Exception as e:
             # Ignore if already exists; Azure error code check kept simple.
             if "ContainerAlreadyExists" not in str(e):
@@ -157,7 +170,9 @@ class AzureOrganisationBlobStorage:
         )
         return f"https://{self.account_name}.blob.core.windows.net/{container}/{blob_path}?{sas}"
 
-    def plan_blob_path(self, *, user_id: UUID, attachment_id: UUID, original_filename: str) -> str:
+    def plan_blob_path(
+        self, *, user_id: UUID, attachment_id: UUID, original_filename: str
+    ) -> str:
         """
         Plans a structured, secure, and organized blob path based on database IDs.
 
@@ -169,43 +184,47 @@ class AzureOrganisationBlobStorage:
         safe_name = self._sanitize_filename(original_filename)
         return f"chat_uploads/{user_id}/{attachment_id}/{safe_name}"
 
-
     def thumbnail_blob_path(self, original_blob_path: str, variant: str) -> str:
-                """Return a deterministic thumbnail path inside a dedicated thumbnails/ folder.
+        """Return a deterministic thumbnail path inside a dedicated thumbnails/ folder.
 
-                New structure (v2):
-                    original: knowledgebase/<user>/<source>/file.pdf -> knowledgebase/<user>/<source>/thumbnails/<variant>.jpg
-                    original: chat_uploads/<user>/<att>/image.png   -> chat_uploads/<user>/<att>/thumbnails/<variant>.jpg
+        New structure (v2):
+            original: knowledgebase/<user>/<source>/file.pdf -> knowledgebase/<user>/<source>/thumbnails/<variant>.jpg
+            original: chat_uploads/<user>/<att>/image.png   -> chat_uploads/<user>/<att>/thumbnails/<variant>.jpg
 
-                Rationale:
-                    * Keeps derivatives grouped & easy to list/purge.
-                    * Avoids cluttering directory with many size suffixes.
-                    * Future-proofs for additional variants without renaming originals.
+        Rationale:
+            * Keeps derivatives grouped & easy to list/purge.
+            * Avoids cluttering directory with many size suffixes.
+            * Future-proofs for additional variants without renaming originals.
 
-                Backwards compatibility: If the original already looks like an old-style
-                thumbnail path (contains '_thumb_' and endswith .jpg) we just return it.
-                """
-                if not original_blob_path:
-                        return f"thumbnails/{variant}.jpg"
-                if "_thumb_" in original_blob_path and original_blob_path.endswith(".jpg"):
-                        return original_blob_path  # already a legacy thumbnail style
-                # Split directory and filename
-                if "/" in original_blob_path:
-                        dir_part, _filename = original_blob_path.rsplit("/", 1)
-                else:
-                        dir_part, _filename = "", original_blob_path
-                return f"{dir_part}/thumbnails/{variant}.jpg" if dir_part else f"thumbnails/{variant}.jpg"
+        Backwards compatibility: If the original already looks like an old-style
+        thumbnail path (contains '_thumb_' and endswith .jpg) we just return it.
+        """
+        if not original_blob_path:
+            return f"thumbnails/{variant}.jpg"
+        if "_thumb_" in original_blob_path and original_blob_path.endswith(".jpg"):
+            return original_blob_path  # already a legacy thumbnail style
+        # Split directory and filename
+        if "/" in original_blob_path:
+            dir_part, _filename = original_blob_path.rsplit("/", 1)
+        else:
+            dir_part, _filename = "", original_blob_path
+        return (
+            f"{dir_part}/thumbnails/{variant}.jpg"
+            if dir_part
+            else f"thumbnails/{variant}.jpg"
+        )
 
-    def plan_thumbnail_path_for_source(self, *, user_id: UUID, source_id: UUID, original_filename: str, variant: str) -> str:
-                """Plan a v2 thumbnail path for knowledge sources (thumbnails folder).
+    def plan_thumbnail_path_for_source(
+        self, *, user_id: UUID, source_id: UUID, original_filename: str, variant: str
+    ) -> str:
+        """Plan a v2 thumbnail path for knowledge sources (thumbnails folder).
 
-                Example:
-                    original file planned at: knowledgebase/<user>/<source>/<file>
-                    thumbnail path:           knowledgebase/<user>/<source>/thumbnails/<variant>.jpg
-                """
-                # We ignore the original filename beyond ensuring directory structure consistency.
-                return f"knowledgebase/{user_id}/{source_id}/thumbnails/{variant}.jpg"
-
+        Example:
+            original file planned at: knowledgebase/<user>/<source>/<file>
+            thumbnail path:           knowledgebase/<user>/<source>/thumbnails/<variant>.jpg
+        """
+        # We ignore the original filename beyond ensuring directory structure consistency.
+        return f"knowledgebase/{user_id}/{source_id}/thumbnails/{variant}.jpg"
 
     async def get_blob_properties(self, blob_path: str):
         """Return blob properties (exists check, size, content type) or None if missing."""
@@ -217,7 +236,11 @@ class AzureOrganisationBlobStorage:
             props = await blob_client.get_blob_properties()
             return {
                 "size": props.size,
-                "content_type": getattr(props, "content_settings", None).content_type if getattr(props, "content_settings", None) else None,
+                "content_type": (
+                    getattr(props, "content_settings", None).content_type
+                    if getattr(props, "content_settings", None)
+                    else None
+                ),
                 "last_modified": props.last_modified,
             }
         except Exception:
@@ -239,7 +262,12 @@ class AzureOrganisationBlobStorage:
             logger.error(f"Failed to download blob {blob_path}: {str(e)}")
             raise
 
-    async def upload_bytes(self, blob_path: str, data: bytes, content_type: str = "application/octet-stream") -> None:
+    async def upload_bytes(
+        self,
+        blob_path: str,
+        data: bytes,
+        content_type: str = "application/octet-stream",
+    ) -> None:
         """Upload bytes to the given blob path with content-type.
 
         Centralizes Azure SDK calls for uploads so higher layers don't touch SDK directly.
@@ -262,7 +290,9 @@ class AzureOrganisationBlobStorage:
             await self._ensure_container()
             blob_service = await self._get_blob_service_client()
             container = self.container
-            blob_client = blob_service.get_blob_client(container=container, blob=blob_path)
+            blob_client = blob_service.get_blob_client(
+                container=container, blob=blob_path
+            )
             await blob_client.delete_blob(delete_snapshots="include")
             logger.info("Deleted blob: %s/%s", container, blob_path)
         except Exception as e:
@@ -287,7 +317,7 @@ class AzureOrganisationBlobStorage:
         if self._blob_service:
             await self._blob_service.close()
             self._blob_service = None
-        
+
         # Some DefaultAzureCredential implementations expose an async close; support both.
         if self._credential and hasattr(self._credential, "close"):
             try:

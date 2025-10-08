@@ -1,7 +1,9 @@
 import asyncio
 from typing import Dict, List
 from src.infra.utils.logger import get_logger
-from src.service.rfp.rfp_sheet_mapping.sheet_mapping_workflow import SheetIdentificationWorkflow
+from src.service.rfp.rfp_sheet_mapping.sheet_mapping_workflow import (
+    SheetIdentificationWorkflow,
+)
 
 logger = get_logger()
 
@@ -36,12 +38,16 @@ async def process_sheets_in_parallel(
     """
     try:
         # Initialize the workflow
-        workflow = SheetIdentificationWorkflow(websocket_room=str(session_id), system_message_id=system_message_id)
+        workflow = SheetIdentificationWorkflow(
+            websocket_room=str(session_id), system_message_id=system_message_id
+        )
 
         # Create tasks for each sheet
         tasks = []
         for temp in sheets_data:
-            task = workflow.run_workflow({"sheet_name": temp["sheetname"], "data": temp["data"]})
+            task = workflow.run_workflow(
+                {"sheet_name": temp["sheetname"], "data": temp["data"]}
+            )
             tasks.append(task)
 
         # Run all tasks concurrently
@@ -53,7 +59,11 @@ async def process_sheets_in_parallel(
                 "sheet_name": sheet.sheet_name,
                 "is_sheet_selected": False,
                 "columns": [
-                    {"name": column.name, "is_question_column": False, "is_answer_column": False}
+                    {
+                        "name": column.name,
+                        "is_question_column": False,
+                        "is_answer_column": False,
+                    }
                     for column in sheet.columns
                 ],
                 "column_row_number": 1,

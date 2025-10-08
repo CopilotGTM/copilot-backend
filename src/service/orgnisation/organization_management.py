@@ -63,6 +63,7 @@ class OrganizationManagementService:
     def __init__(self):
         """Initializes the service."""
         self._vector_extension_checked = False
+
     # Master connection is acquired on-demand from master dependency
 
     async def create_organization(
@@ -255,9 +256,7 @@ class OrganizationManagementService:
                             {"pwd": password},
                         )
                     else:
-                        logger.info(
-                            f"Role '{role_name}' not found. Creating new role."
-                        )
+                        logger.info(f"Role '{role_name}' not found. Creating new role.")
                         session.execute(
                             text(
                                 f"CREATE ROLE {role_name} LOGIN PASSWORD :pwd NOINHERIT"

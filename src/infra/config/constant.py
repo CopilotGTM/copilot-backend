@@ -144,3 +144,20 @@ class SupabaseErrors:
 
 class KnowledgeBaseErrors:
     UNEXPECTED_ERROR = GeneralErrors.UNEXPECTED_ERROR
+
+
+class IntegrationErrors:
+    """Error messages for integration operations."""
+
+    INTEGRATION_NOT_FOUND = "Integration not found"
+    OAUTH_INITIATION_FAILED = "Failed to initiate OAuth flow"
+    OAUTH_CALLBACK_FAILED = "OAuth callback processing failed"
+    INTEGRATION_DISCONNECTION_FAILED = "Failed to disconnect integration"
+    INTEGRATION_LIST_FAILED = "Failed to retrieve integrations"
+    INTEGRATION_DETAILS_FAILED = "Failed to retrieve integration details"
+    INTEGRATION_STATUS_CHECK_FAILED = "Failed to check integration status"
+    INTEGRATION_UPDATE_FAILED = "Failed to update integration"
+    AVAILABLE_INTEGRATIONS_FAILED = "Failed to retrieve available integrations"
+    INVALID_CONNECTION_ID = "Invalid connection ID format"
+    TOKEN_REFRESH_FAILED = "Failed to refresh integration token"
+    SYNC_TRIGGER_FAILED = "Failed to trigger data sync"

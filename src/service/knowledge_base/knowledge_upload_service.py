@@ -66,9 +66,7 @@ class KnowledgeUploadService:
         return f"knowledgebase/{user_id}/{source_id}/{base}"
 
     async def presign_batch(
-        self,
-        payload: KnowledgeBatchPresignRequest,
-        expiry_time: int = 15
+        self, payload: KnowledgeBatchPresignRequest, expiry_time: int = 15
     ) -> Tuple[List[Tuple[OrganisationSource, str]], List[Dict[str, Any]]]:
         """Create records and return upload SAS URLs for each requested file.
 
@@ -82,10 +80,15 @@ class KnowledgeUploadService:
             source_id = uuid4()
             blob_path = self._plan_blob_path(self.user_id, source_id, file.filename)
             try:
-                upload_url = await self.storage.generate_write_sas(blob_path, minutes=expiry_time)
+                upload_url = await self.storage.generate_write_sas(
+                    blob_path, minutes=expiry_time
+                )
             except Exception as exc:  # Broad: network / credential / azure errors
                 logger.error(
-                    "Failed generating write SAS for source %s: %s", source_id, exc, exc_info=True
+                    "Failed generating write SAS for source %s: %s",
+                    source_id,
+                    exc,
+                    exc_info=True,
                 )
                 errors.append(
                     {
@@ -120,7 +123,10 @@ class KnowledgeUploadService:
             except Exception as exc:  # Broad DB failure capture
                 await self.org_session.rollback()
                 logger.error(
-                    "Failed to create organisation source %s: %s", source_id, exc, exc_info=True
+                    "Failed to create organisation source %s: %s",
+                    source_id,
+                    exc,
+                    exc_info=True,
                 )
                 errors.append(
                     {
@@ -146,8 +152,7 @@ class KnowledgeUploadService:
 
         # Retrieve the source from the database
         source: OrganisationSource | None = await self.org_session.get(
-            OrganisationSource, 
-            request.source_id
+            OrganisationSource, request.source_id
         )
 
         # Check for ownership and existence
@@ -201,7 +206,10 @@ class KnowledgeUploadService:
         except Exception as exc:  # Broad catch for storage/DB errors
             await self.org_session.rollback()
             logger.error(
-                "Failed during finalize for source %s: %s", request.source_id, exc, exc_info=True
+                "Failed during finalize for source %s: %s",
+                request.source_id,
+                exc,
+                exc_info=True,
             )
             raise KnowledgeUploadServiceError("Failed to finalize source") from exc
 
@@ -210,7 +218,9 @@ class KnowledgeUploadService:
 
     async def get_source(self, source_id: UUID) -> OrganisationSource:
         """Retrieve a source (permission checked) from the org schema."""
-        source: OrganisationSource | None = await self.org_session.get(OrganisationSource, source_id)
+        source: OrganisationSource | None = await self.org_session.get(
+            OrganisationSource, source_id
+        )
         if (
             not source
             or source.organisation_id != self.organisation_id

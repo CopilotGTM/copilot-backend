@@ -8,7 +8,12 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic.generics import GenericModel as _Base
 
 from src.domain.models.organisation_tables.chat_session_models import ChatType
-from src.domain.models.organisation_tables.chat_message_models import ChatMessageRole, ChatMessageType, AttachmentStatus
+from src.domain.models.organisation_tables.chat_message_models import (
+    ChatMessageRole,
+    ChatMessageType,
+    AttachmentStatus,
+)
+
 T = TypeVar("T")
 
 
@@ -72,6 +77,7 @@ class ChatSessionsPage(BaseModel):
 # Chat messages (API layer)
 class SendMessageRequest(BaseModel):
     """Request model for sending a chat message."""
+
     session_id: UUID
     content: str
     attachments: Optional[List[UUID]] = None
@@ -80,20 +86,20 @@ class SendMessageRequest(BaseModel):
     is_edited: bool = False
     edited_message_id: Optional[UUID] = None
 
-    @field_validator('content')
+    @field_validator("content")
     def content_must_not_be_empty(cls, v: str) -> str:
         stripped_v = v.strip()
         if not stripped_v:
-            raise ValueError('content must not be empty')
+            raise ValueError("content must not be empty")
         return stripped_v
 
-    @field_validator('role')
+    @field_validator("role")
     def role_must_be_user(cls, v: ChatMessageRole) -> ChatMessageRole:
         if v != ChatMessageRole.USER:
-            raise ValueError('role must be USER')
+            raise ValueError("role must be USER")
         return v
 
-    @model_validator(mode='after')
+    @model_validator(mode="after")
     def check_edited_message_id_required(self) -> "SendMessageRequest":
         if self.is_edited and not self.edited_message_id:
             raise ValueError("edited_message_id is required when is_edited is True")
@@ -107,6 +113,7 @@ class SendMessageResponse(BaseModel):
 
 class ChatMessageListItem(BaseModel):
     """Slim message item for lists/infinite scroll."""
+
     message_id: UUID
     session_id: UUID
     role: ChatMessageRole

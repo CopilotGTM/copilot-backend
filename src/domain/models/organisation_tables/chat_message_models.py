@@ -43,15 +43,14 @@ class ChatMessageAttachmentLink(SQLModel, table=True):
 
     __tablename__ = "chat_message_attachment_link"
 
-    message_id: UUID = Field(
-        foreign_key="chat_messages.message_id", primary_key=True
-    )
+    message_id: UUID = Field(foreign_key="chat_messages.message_id", primary_key=True)
     attachment_id: UUID = Field(
         foreign_key="attachments.attachment_id", primary_key=True
     )
     attachment_order: int = Field(
         default=0, description="Display order of attachment in message"
     )
+
 
 class AttachmentStatus(str, Enum):
     """Lifecycle states for an attachment.
@@ -69,6 +68,7 @@ class AttachmentStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
 
+
 class Attachment(TimestampMixin, table=True):
     """
     Represents a centrally-managed file attachment.
@@ -84,10 +84,13 @@ class Attachment(TimestampMixin, table=True):
     organisation_id: UUID = Field(
         index=True, description="The organisation this attachment belongs to."
     )
-    user_id: UUID = Field(index=True, description="The user who uploaded the attachment.")
+    user_id: UUID = Field(
+        index=True, description="The user who uploaded the attachment."
+    )
     filename: str = Field(description="The original filename of the attachment.")
     storage_path: str = Field(
-        unique=True, description="The path to the file in the storage backend (e.g., S3 key)."
+        unique=True,
+        description="The path to the file in the storage backend (e.g., S3 key).",
     )
     mimetype: str = Field(description="The MIME type of the file.")
     size_bytes: int = Field(description="The size of the file in bytes.")
@@ -107,7 +110,12 @@ class Attachment(TimestampMixin, table=True):
     )
     status: AttachmentStatus = Field(
         default=AttachmentStatus.PENDING_UPLOAD,
-        sa_column=Column(String(50), index=True, server_default=text("'pending_upload'"), nullable=False),
+        sa_column=Column(
+            String(50),
+            index=True,
+            server_default=text("'pending_upload'"),
+            nullable=False,
+        ),
         description="The current processing status of the document.",
     )
     thumbnail_small_path: Optional[str] = Field(
@@ -167,7 +175,12 @@ class ChatMessage(TimestampMixin, table=True):
     )
     message_type: ChatMessageType = Field(
         default=ChatMessageType.GENERAL_MESSAGE,
-        sa_column=Column(String(50), index=True, server_default=text("'GENERAL_MESSAGE'"), nullable=False),
+        sa_column=Column(
+            String(50),
+            index=True,
+            server_default=text("'GENERAL_MESSAGE'"),
+            nullable=False,
+        ),
         description="The type of message, used for categorization.",
     )
     message_version: int = Field(

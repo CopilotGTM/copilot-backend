@@ -24,9 +24,10 @@ def mark_job_in_progress(session, job: KnowledgeProcessingJob, source_id: str) -
         logger.warning("Failed to mark job IN_PROGRESS for source %s", source_id)
 
 
-def set_job_status(job: Optional[KnowledgeProcessingJob], status: Optional[JobStatus]) -> None:
+def set_job_status(
+    job: Optional[KnowledgeProcessingJob], status: Optional[JobStatus]
+) -> None:
     """Set a job status without committing. Safe to call with None job/status."""
     if job is None or status is None:
         return
     job.status = status
-

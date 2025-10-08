@@ -32,7 +32,10 @@ class Authentication:
         try:
             if not auth_storage:
                 logger.warning("Auth-storage cookie is missing")
-                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Authentication token missing")
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Authentication token missing",
+                )
 
             # Parse JSON
             try:
@@ -42,30 +45,50 @@ class Authentication:
                 storage_data = json.loads(decoded_storage)
             except json.JSONDecodeError as e:
                 logger.error("Failed to parse auth-storage JSON: %s", str(e))
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid auth-storage format")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid auth-storage format",
+                )
 
             # Extract Supabase session token
             access_token = storage_data.get("state", {}).get("access_token")
             if not access_token:
                 logger.warning("No access_token found in auth-storage")
-                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Authentication token missing")
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Authentication token missing",
+                )
 
             # Get user from Supabase token
-            user = supabase_admin_client.get_user_from_token(access_token, master_session)
+            user = supabase_admin_client.get_user_from_token(
+                access_token, master_session
+            )
 
             if not user:
                 logger.warning("User not found or token invalid")
-                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User not found or token invalid")
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="User not found or token invalid",
+                )
 
-            logger.info("HTTP session verified successfully for user_id=%s", user.user_id)
-            return {"user_id": str(user.user_id), "organisation_id": str(user.organisation_id), "user": user}
+            logger.info(
+                "HTTP session verified successfully for user_id=%s", user.user_id
+            )
+            return {
+                "user_id": str(user.user_id),
+                "organisation_id": str(user.organisation_id),
+                "user": user,
+            }
 
         except HTTPException:
             # Re-raise HTTP exceptions
             raise
         except Exception as e:
             logger.error("Unexpected error during session verification: %s", str(e))
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Authentication error")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Authentication error",
+            )
 
     def decode_for_ws(self, token: str) -> Dict[str, Any]:
         """
@@ -87,7 +110,9 @@ class Authentication:
             return {
                 "supabase_user_id": supabase_user_id,
                 "user_id": payload.get("user_id"),  # If you store this in token
-                "organisation_id": payload.get("organisation_id"),  # If you store this in token
+                "organisation_id": payload.get(
+                    "organisation_id"
+                ),  # If you store this in token
             }
 
         except HTTPException as e:

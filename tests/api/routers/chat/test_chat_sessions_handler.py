@@ -45,7 +45,9 @@ def test_delete_chat_success(client: TestClient, dependency_overrides):
     session_id = create.json()["data"]["session_id"]
 
     # Delete it
-    delete = client.request("DELETE", "/users/chats/delete_chat", json={"session_id": session_id})
+    delete = client.request(
+        "DELETE", "/users/chats/delete_chat", json={"session_id": session_id}
+    )
     assert delete.status_code == 200, delete.text
     body = delete.json()
     assert body["status"] == "SUCCESS"
@@ -56,7 +58,10 @@ def test_delete_chat_success(client: TestClient, dependency_overrides):
 def test_delete_chat_not_found(client: TestClient, dependency_overrides):
     # Attempt to delete a random/unknown session
     from uuid import uuid4
-    resp = client.request("DELETE", "/users/chats/delete_chat", json={"session_id": str(uuid4())})
+
+    resp = client.request(
+        "DELETE", "/users/chats/delete_chat", json={"session_id": str(uuid4())}
+    )
     assert resp.status_code == 404, resp.text
     body = resp.json()
     assert body["status"] == "ERROR"
@@ -70,7 +75,11 @@ def test_rename_chat_success(client: TestClient, dependency_overrides):
     session_id = create.json()["data"]["session_id"]
 
     # Rename it
-    resp = client.request("PATCH", "/users/chats/rename_chat", json={"session_id": session_id, "title": "New Title"})
+    resp = client.request(
+        "PATCH",
+        "/users/chats/rename_chat",
+        json={"session_id": session_id, "title": "New Title"},
+    )
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["status"] == "SUCCESS"
@@ -84,7 +93,11 @@ def test_rename_chat_rejects_empty_title(client: TestClient, dependency_override
     session_id = create.json()["data"]["session_id"]
 
     for bad in ["", "   "]:
-        resp = client.request("PATCH", "/users/chats/rename_chat", json={"session_id": session_id, "title": bad})
+        resp = client.request(
+            "PATCH",
+            "/users/chats/rename_chat",
+            json={"session_id": session_id, "title": bad},
+        )
         assert resp.status_code == 400, resp.text
         body = resp.json()
         assert body["status"] == "ERROR"
@@ -93,7 +106,12 @@ def test_rename_chat_rejects_empty_title(client: TestClient, dependency_override
 
 def test_rename_chat_not_found(client: TestClient, dependency_overrides):
     from uuid import uuid4
-    resp = client.request("PATCH", "/users/chats/rename_chat", json={"session_id": str(uuid4()), "title": "New"})
+
+    resp = client.request(
+        "PATCH",
+        "/users/chats/rename_chat",
+        json={"session_id": str(uuid4()), "title": "New"},
+    )
     assert resp.status_code == 404, resp.text
     body = resp.json()
     assert body["status"] == "ERROR"
@@ -151,7 +169,11 @@ def test_favorite_chat_toggle(client: TestClient, dependency_overrides):
     session_id = create.json()["data"]["session_id"]
 
     # Mark favorite
-    fav = client.request("PATCH", "/users/chats/favorite_chat", json={"session_id": session_id, "favorite": True})
+    fav = client.request(
+        "PATCH",
+        "/users/chats/favorite_chat",
+        json={"session_id": session_id, "favorite": True},
+    )
     assert fav.status_code == 200, fav.text
     body = fav.json()
     assert body["status"] == "SUCCESS"
@@ -159,7 +181,11 @@ def test_favorite_chat_toggle(client: TestClient, dependency_overrides):
     assert body["data"]["is_favorite"] is True
 
     # Unmark favorite
-    unfav = client.request("PATCH", "/users/chats/favorite_chat", json={"session_id": session_id, "favorite": False})
+    unfav = client.request(
+        "PATCH",
+        "/users/chats/favorite_chat",
+        json={"session_id": session_id, "favorite": False},
+    )
     assert unfav.status_code == 200, unfav.text
     body2 = unfav.json()
     assert body2["status"] == "SUCCESS"
@@ -169,7 +195,12 @@ def test_favorite_chat_toggle(client: TestClient, dependency_overrides):
 
 def test_favorite_chat_not_found(client: TestClient, dependency_overrides):
     from uuid import uuid4
-    resp = client.request("PATCH", "/users/chats/favorite_chat", json={"session_id": str(uuid4()), "favorite": True})
+
+    resp = client.request(
+        "PATCH",
+        "/users/chats/favorite_chat",
+        json={"session_id": str(uuid4()), "favorite": True},
+    )
     assert resp.status_code == 404, resp.text
     body = resp.json()
     assert body["status"] == "ERROR"

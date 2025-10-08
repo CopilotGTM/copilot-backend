@@ -51,17 +51,26 @@ class ChatSession(TimestampMixin, table=True):
 
     title: str = Field(
         default="Untitled Chat",
-        sa_column=Column(String(255), server_default=text("'Untitled Chat'"), nullable=False),
+        sa_column=Column(
+            String(255), server_default=text("'Untitled Chat'"), nullable=False
+        ),
         description="The title of the chat session.",
     )
     chat_type: ChatType = Field(
         default=ChatType.GENERAL_CHAT,
-        sa_column=Column(String(50), index=True, server_default=text("'GENERAL_CHAT'"), nullable=False),
+        sa_column=Column(
+            String(50),
+            index=True,
+            server_default=text("'GENERAL_CHAT'"),
+            nullable=False,
+        ),
         description="The type of chat, used for categorization.",
     )
     chat_version: str = Field(
         default="v1",
-        sa_column=Column(String(50), index=True, server_default=text("'v1'"), nullable=False),
+        sa_column=Column(
+            String(50), index=True, server_default=text("'v1'"), nullable=False
+        ),
         description="Version of the chat schema.",
     )
 
@@ -77,7 +86,9 @@ class ChatSession(TimestampMixin, table=True):
     )
     is_deleted: bool = Field(
         default=False,
-        sa_column=Column(Boolean, server_default=text("false"), nullable=False, index=True),
+        sa_column=Column(
+            Boolean, server_default=text("false"), nullable=False, index=True
+        ),
         description=(
             "Flag to mark the session as deleted without permanent removal. "
             "All data-access queries should filter on this flag by default."

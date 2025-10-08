@@ -16,7 +16,7 @@ from src.domain.models.organisation_tables import (
     KnowledgeIntegration,
     ChatMessageJob,
     KnowledgeProcessingJob,
-    ChatMessageAttachmentLink
+    ChatMessageAttachmentLink,
 )
 
 load_dotenv()
@@ -31,7 +31,10 @@ DATABASE_NAME = os.getenv("DATABASE_NAME", "postgres")
 DATABASE_USER = os.getenv("DATABASE_USER", "postgres")
 DATABASE_PASSWORD = os.getenv("DATABASE_PASSWORD", "")
 encoded_password = urllib.parse.quote_plus(DATABASE_PASSWORD)
-db_url = f"postgresql://{DATABASE_USER}:{encoded_password}" f"@{DATABASE_HOST}:{DATABASE_PORT}/{DATABASE_NAME}"
+db_url = (
+    f"postgresql://{DATABASE_USER}:{encoded_password}"
+    f"@{DATABASE_HOST}:{DATABASE_PORT}/{DATABASE_NAME}"
+)
 # Alembic requires % to be escaped as %%
 config.set_main_option("sqlalchemy.url", db_url.replace("%", "%%"))
 
@@ -58,7 +61,7 @@ all_org_models = [
     KnowledgeIntegration,
     ChatMessageJob,
     KnowledgeProcessingJob,
-    ChatMessageAttachmentLink
+    ChatMessageAttachmentLink,
 ]
 
 for model in all_org_models:

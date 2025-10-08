@@ -29,7 +29,7 @@ def _to_confidence(val) -> Optional[str]:
     """Convert confidence value to string, handling both string labels and numeric values."""
     if val is None:
         return None
-    
+
     if isinstance(val, str):
         # Return string confidence as-is if it's a valid value
         label = val.strip().lower()
@@ -37,7 +37,7 @@ def _to_confidence(val) -> Optional[str]:
         if label in valid_labels:
             return label
         return val.strip()  # Return original string if not in mapping
-    
+
     if isinstance(val, (int, float)):
         # Convert numeric to categorical string (matching agent output)
         if val >= 0.8:
@@ -46,7 +46,7 @@ def _to_confidence(val) -> Optional[str]:
             return "medium"
         else:
             return "low"
-    
+
     return None
 
 
@@ -124,7 +124,9 @@ class ChatMessageService:
         if attachments:
             with ThreadPoolExecutor() as executor:
                 # Create a partial function that includes message_id
-                create_link_with_message_id = partial(self.create_link, message.message_id)
+                create_link_with_message_id = partial(
+                    self.create_link, message.message_id
+                )
                 executor.map(create_link_with_message_id, enumerate(attachments))
 
         # Create a pending job for processing this message (assistant reply generation)
@@ -245,7 +247,7 @@ class ChatMessageService:
     ) -> Dict[UUID, List[Dict[str, Any]]]:
         """Build thumbnail SAS URLs for attachments per message.
 
-    Returns dict[message_id] -> list of dicts conforming to ChatAttachmentView.
+        Returns dict[message_id] -> list of dicts conforming to ChatAttachmentView.
         """
         storage = AzureOrganisationBlobStorage(self.organisation_id)
 
@@ -266,7 +268,9 @@ class ChatMessageService:
                         "attachment_id": att.attachment_id,
                         "filename": att.filename,
                         "mimetype": att.mimetype,
-                        "thumbnail_small_url": await _sas(getattr(att, "thumbnail_small_path", None)),
+                        "thumbnail_small_url": await _sas(
+                            getattr(att, "thumbnail_small_path", None)
+                        ),
                     }
                 )
             out[mid] = enriched
@@ -288,20 +292,30 @@ class ChatMessageService:
             extra = getattr(m, "extra", None) or {}
             text = m.content.get("text") if isinstance(m.content, dict) else m.content
 
-            items.append({
-                "message_id": m.message_id,
-                "session_id": m.session_id,
-                "role": m.role,
-                "message_type": m.message_type,
-                "content": text,
-                "is_edited": m.is_edited,
-                "created_at": m.created_at,
-                "updated_at": m.updated_at,
-                "attachments": attachments_urls.get(m.message_id, []),
-                "confidence_score": _to_confidence(
-                    extra.get("confidence_score") if isinstance(extra, dict) else None
-                ),
-                "sources": agent.get("sources") if isinstance(agent, dict) else None,
-                "suggestions": agent.get("suggested_questions") if isinstance(agent, dict) else None,
-            })
+            items.append(
+                {
+                    "message_id": m.message_id,
+                    "session_id": m.session_id,
+                    "role": m.role,
+                    "message_type": m.message_type,
+                    "content": text,
+                    "is_edited": m.is_edited,
+                    "created_at": m.created_at,
+                    "updated_at": m.updated_at,
+                    "attachments": attachments_urls.get(m.message_id, []),
+                    "confidence_score": _to_confidence(
+                        extra.get("confidence_score")
+                        if isinstance(extra, dict)
+                        else None
+                    ),
+                    "sources": (
+                        agent.get("sources") if isinstance(agent, dict) else None
+                    ),
+                    "suggestions": (
+                        agent.get("suggested_questions")
+                        if isinstance(agent, dict)
+                        else None
+                    ),
+                }
+            )
         return items

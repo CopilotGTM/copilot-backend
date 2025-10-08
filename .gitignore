@@ -190,3 +190,4 @@ workflows/deck_generation/slide_mapping.py
 workflows/deck_generation/test.py
 test-local-scripts/
 cache/
+.github/instructions/

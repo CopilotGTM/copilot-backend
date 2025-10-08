@@ -29,7 +29,6 @@ engine = create_engine(
 )
 
 
-
 def override_get_org_session():
     """Override the get_org_session dependency to use the test database."""
     with Session(engine) as session:
@@ -65,20 +64,27 @@ def client(mocker):
     # Reload app_state and fastapi_app to ensure a fresh FastAPI instance per test
     import src.infra.utils.app_state as app_state
     import src.api.fastapi_app as fastapi_app
+
     importlib.reload(app_state)
     importlib.reload(fastapi_app)
 
     # Patch Redis client used during app creation
-    mocker.patch("src.api.fastapi_app.get_redis_client", return_value=fakeredis.FakeRedis())
+    mocker.patch(
+        "src.api.fastapi_app.get_redis_client", return_value=fakeredis.FakeRedis()
+    )
 
     # Patch auth verification dependency (module path to the function used in router dependencies)
-    mocker.patch("src.api.dependencies.organisation_dependencies.auth.verify_session", side_effect=_fake_verify_session)
+    mocker.patch(
+        "src.api.dependencies.organisation_dependencies.auth.verify_session",
+        side_effect=_fake_verify_session,
+    )
 
     # Build ASGI app (Socket.IO wrapped)
     asgi_app = fastapi_app.create_fastapi_app()
 
     # Apply dependency overrides on the underlying fastapp (import inside to avoid circulars)
     from src.infra.utils.app_state import fastapp as _fastapp
+
     _fastapp.dependency_overrides[get_org_session] = override_get_org_session
     _fastapp.dependency_overrides[auth_dependency.verify_session] = _fake_verify_session
 

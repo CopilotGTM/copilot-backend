@@ -5,7 +5,15 @@ from src.domain.models.organisation_tables.chat_message_models import Attachment
 
 
 class FakeAttachment:
-    def __init__(self, attachment_id: UUID, user_id: UUID, org_id: UUID, filename: str, mimetype: str, size_bytes: int):
+    def __init__(
+        self,
+        attachment_id: UUID,
+        user_id: UUID,
+        org_id: UUID,
+        filename: str,
+        mimetype: str,
+        size_bytes: int,
+    ):
         self.attachment_id = attachment_id
         self.user_id = user_id
         self.organisation_id = org_id
@@ -25,9 +33,18 @@ class FakeUploadService:
 
     async def presign_upload(self, payload, user_id: UUID):
         att_id = uuid4()
-        att = FakeAttachment(att_id, user_id, self.organisation_id, payload.filename, payload.mimetype, payload.size_bytes)
+        att = FakeAttachment(
+            att_id,
+            user_id,
+            self.organisation_id,
+            payload.filename,
+            payload.mimetype,
+            payload.size_bytes,
+        )
         self._store[att_id] = att
-        upload_url = f"https://fake.blob.core.windows.net/container/{att.storage_path}?sastoken"
+        upload_url = (
+            f"https://fake.blob.core.windows.net/container/{att.storage_path}?sastoken"
+        )
         return att, upload_url
 
     async def finalize_upload(self, payload, user_id: UUID):
@@ -35,7 +52,9 @@ class FakeUploadService:
         if not att or att.user_id != user_id:
             from src.service.chat.chat_attachments_service import UploadServiceError
 
-            raise UploadServiceError("Attachment not found or access denied", status_code=404)
+            raise UploadServiceError(
+                "Attachment not found or access denied", status_code=404
+            )
         att.status = AttachmentStatus.PROCESSING
         return att
 
@@ -44,7 +63,9 @@ class FakeUploadService:
         if not att or att.user_id != user_id:
             from src.service.chat.chat_attachments_service import UploadServiceError
 
-            raise UploadServiceError("Attachment not found or access denied", status_code=404)
+            raise UploadServiceError(
+                "Attachment not found or access denied", status_code=404
+            )
         return att
 
     async def close(self):

@@ -18,4 +18,3 @@ def download_blob_to_temp(loop, storage, source) -> str:
         temp_file.write(file_content)
         temp_file.flush()
         return temp_file.name
-

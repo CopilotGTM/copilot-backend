@@ -7,7 +7,9 @@ from src.infra.utils.logger import get_logger
 from sqlmodel import select
 from src.infra.utils.database import get_master_session
 from src.domain.models.organisation_tables import ChatMessage
-from src.service.technical_deck.generate_slide_outline.slide_outline_workflow import SlideContentGenerator
+from src.service.technical_deck.generate_slide_outline.slide_outline_workflow import (
+    SlideContentGenerator,
+)
 
 logger = get_logger()
 WEBSOCKET_NAMESPACE = "/websocket/v1"
@@ -40,7 +42,10 @@ def generate_slide_outline_task(self, sid, data_json):
     master_session = next(get_master_session())
     try:
         chat_message = master_session.exec(
-            select(ChatMessage).where((ChatMessage.session_id == session_id) & (ChatMessage.message_id == message_id))
+            select(ChatMessage).where(
+                (ChatMessage.session_id == session_id)
+                & (ChatMessage.message_id == message_id)
+            )
         ).first()
         if not chat_message:
             raise RuntimeError("Chat message not found")

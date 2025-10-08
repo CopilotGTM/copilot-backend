@@ -74,7 +74,9 @@ def _store_password_in_key_vault(secret_name: str, password: str):
         credential = None
         # Use DefaultAzureCredential for local development for convenience
         if os.getenv("ENV") == "local":
-            print("Auth strategy (migrations): DefaultAzureCredential (local development).")
+            print(
+                "Auth strategy (migrations): DefaultAzureCredential (local development)."
+            )
             credential = DefaultAzureCredential()
         else:
             # Production credential order
@@ -88,8 +90,10 @@ def _store_password_in_key_vault(secret_name: str, password: str):
                     client_id=client_id,
                 )
             elif client_id and not tenant_id:
-                print("[migrations] WARNING: Workload identity client id present but AZURE_TENANT_ID missing; using Managed Identity fallback.")
-            
+                print(
+                    "[migrations] WARNING: Workload identity client id present but AZURE_TENANT_ID missing; using Managed Identity fallback."
+                )
+
             if not credential:
                 print("Auth strategy (migrations): Managed Identity fallback")
                 credential = ManagedIdentityCredential()

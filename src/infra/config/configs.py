@@ -123,6 +123,34 @@ class SuperAdminConfig:
     SUPER_ADMIN_EMAIL: Optional[str] = os.getenv("SUPER_ADMIN_EMAIL")
 
 
+class NangoIntegrationConfig:
+    """Configuration for Nango OAuth integration management
+
+    Note: As of July 31, 2025, Nango deprecated public keys in favor of Connect Sessions.
+    The new flow uses session tokens for authorization.
+    """
+
+    NANGO_SECRET_KEY: str = os.getenv("NANGO_SECRET_KEY", "")
+    NANGO_BASE_URL: str = os.getenv("NANGO_BASE_URL", "https://api.nango.dev")
+
+    # Webhook URL where Nango sends auth success notifications
+    NANGO_WEBHOOK_URL: Optional[str] = os.getenv("NANGO_WEBHOOK_URL")
+
+    # Integration behavior settings
+    INTEGRATION_TOKEN_REFRESH_BUFFER_MINUTES: int = int(
+        os.getenv("INTEGRATION_TOKEN_REFRESH_BUFFER_MINUTES", "30")
+    )
+    INTEGRATION_SYNC_RETRY_ATTEMPTS: int = int(
+        os.getenv("INTEGRATION_SYNC_RETRY_ATTEMPTS", "3")
+    )
+    INTEGRATION_MAX_CONCURRENT_SYNCS: int = int(
+        os.getenv("INTEGRATION_MAX_CONCURRENT_SYNCS", "5")
+    )
+
+    # OAuth callback URL base (for frontend redirects after connection)
+    OAUTH_CALLBACK_BASE_URL: Optional[str] = os.getenv("OAUTH_CALLBACK_BASE_URL")
+
+
 class SecretManagerConfig:
     """Configuration for Cloud Secret Manager"""
 
@@ -186,6 +214,7 @@ class KnowledgeFileUploadConfig:
         ).split(",")
         if item.strip()
     ]
+
 
 class ThumbnailConfig:
     """Configuration for thumbnail generation behavior."""
@@ -280,6 +309,7 @@ class ThumbnailConfig:
             return True
         return False
 
+
 thumbnail_config = ThumbnailConfig()
 
 
@@ -330,7 +360,9 @@ class RateLimitConfig:
     READ_PER_HOUR: int = int(os.getenv("RATE_LIMIT_READ_PER_HOUR", "1000"))
 
     # Strict limits for authentication (login attempts)
-    AUTH_LOGIN_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_AUTH_LOGIN_PER_MINUTE", "10"))
+    AUTH_LOGIN_PER_MINUTE: int = int(
+        os.getenv("RATE_LIMIT_AUTH_LOGIN_PER_MINUTE", "10")
+    )
     AUTH_LOGIN_PER_HOUR: int = int(os.getenv("RATE_LIMIT_AUTH_LOGIN_PER_HOUR", "50"))
 
 
@@ -350,6 +382,7 @@ knowledge_file_upload_config = KnowledgeFileUploadConfig()
 # NOTE: thumbnail_config now sourced from thumbnail_config.py for modularity.
 pool_monitor_config = PoolMonitorConfig()
 rate_limit_config = RateLimitConfig()
+nango_integration_config = NangoIntegrationConfig()
 
 
 class Config:

@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Optional, BinaryIO
 from io import BytesIO
+
 # import boto3
 # from botocore.exceptions import ClientError
 from dataclasses import dataclass
@@ -76,7 +77,9 @@ class AWSFileReader(CloudFileReader):
             file_obj = BytesIO()
 
             # Download file to memory
-            self.s3_client.download_fileobj(Bucket=bucket_name, Key=key, Fileobj=file_obj)
+            self.s3_client.download_fileobj(
+                Bucket=bucket_name, Key=key, Fileobj=file_obj
+            )
 
             # Reset pointer to beginning of file
             file_obj.seek(0)

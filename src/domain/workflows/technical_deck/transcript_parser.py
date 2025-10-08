@@ -23,7 +23,9 @@ WANTED_SECTIONS = ["Outcome", "Next Steps", "Transcript", "Discussion"]
 # Regex patterns for various transcript formats
 PATTERNS = {
     # [10:15] John: Hello everyone
-    "timestamp_bracket": re.compile(r"^\[(\d{1,2}:\d{2}(?::\d{2})?)\]\s*([^:]+):\s*(.+)"),
+    "timestamp_bracket": re.compile(
+        r"^\[(\d{1,2}:\d{2}(?::\d{2})?)\]\s*([^:]+):\s*(.+)"
+    ),
     # 10:15 John: Hello everyone
     "timestamp_plain": re.compile(r"^(\d{1,2}:\d{2}(?::\d{2})?)\s+([^:]+):\s*(.+)"),
     # (10:15) John: Hello everyone
@@ -37,7 +39,9 @@ PATTERNS = {
 # Header detection patterns
 HEADER_MARKERS = [
     re.compile(r"^#+\s*(.+)$"),  # Markdown headers
-    re.compile(rf"({'|'.join(re.escape(h) + r':?' for h in HEADERS)})", re.I),  # Standard headers
+    re.compile(
+        rf"({'|'.join(re.escape(h) + r':?' for h in HEADERS)})", re.I
+    ),  # Standard headers
     re.compile(r"^[A-Z][A-Z\s]+:$"),  # ALL CAPS headers
     re.compile(r"^=+$"),  # Underline headers
     re.compile(r"^-+$"),  # Underline headers
@@ -119,16 +123,26 @@ class TranscriptParser:
         for pattern_name, pattern in PATTERNS.items():
             match = pattern.match(line)
             if match:
-                if pattern_name in ["timestamp_bracket", "timestamp_plain", "timestamp_paren"]:
+                if pattern_name in [
+                    "timestamp_bracket",
+                    "timestamp_plain",
+                    "timestamp_paren",
+                ]:
                     timestamp, speaker_name, content = match.groups()
-                    self.last_timestamp = self._parse_timestamp(timestamp) or self.last_timestamp
+                    self.last_timestamp = (
+                        self._parse_timestamp(timestamp) or self.last_timestamp
+                    )
                 elif pattern_name == "no_timestamp":
                     speaker_name, content = match.groups()
                 else:  # dash_format
                     speaker_name, content = match.groups()
 
                 speaker = self._get_or_create_speaker(speaker_name)
-                return {"speaker": speaker.original_name, "content": content.strip(), "timestamp": self.last_timestamp}
+                return {
+                    "speaker": speaker.original_name,
+                    "content": content.strip(),
+                    "timestamp": self.last_timestamp,
+                }
 
         # If no pattern matches but we're in a conversation
         if self.sections[self.current_section] and line:
@@ -184,12 +198,16 @@ class TranscriptParser:
 
         # Add transcript section first if it exists and has content
         if self.sections.get("Transcript"):
-            result["sections"].append({"section_name": "Transcript", "dialogues": self.sections["Transcript"]})
+            result["sections"].append(
+                {"section_name": "Transcript", "dialogues": self.sections["Transcript"]}
+            )
 
         # Add other sections
         for section_name, dialogues in self.sections.items():
             if section_name != "Transcript" and dialogues:
-                result["sections"].append({"section_name": section_name, "dialogues": dialogues})
+                result["sections"].append(
+                    {"section_name": section_name, "dialogues": dialogues}
+                )
 
         return result
 

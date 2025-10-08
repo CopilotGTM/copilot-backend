@@ -19,7 +19,9 @@ class Response:
         custom_datetime_encoder = lambda obj: obj.isoformat() + "Z"
         return JSONResponse(
             status_code=status_code,
-            content=jsonable_encoder(content, custom_encoder={datetime: custom_datetime_encoder}),
+            content=jsonable_encoder(
+                content, custom_encoder={datetime: custom_datetime_encoder}
+            ),
         )
 
     @classmethod
@@ -40,15 +42,21 @@ class Response:
 
     @classmethod
     def internal_server_error_response(cls, message: Any, data: Any = None):
-        return cls._response(fastapi.status.HTTP_500_INTERNAL_SERVER_ERROR, "ERROR", message, data)
+        return cls._response(
+            fastapi.status.HTTP_500_INTERNAL_SERVER_ERROR, "ERROR", message, data
+        )
 
     @classmethod
     def bad_request_error_response(cls, message: Any, data: Any = None):
-        return cls._response(fastapi.status.HTTP_400_BAD_REQUEST, "ERROR", message, data)
+        return cls._response(
+            fastapi.status.HTTP_400_BAD_REQUEST, "ERROR", message, data
+        )
 
     @classmethod
     def unauthorized_error_response(cls, message: Any, data: Any = None):
-        return cls._response(fastapi.status.HTTP_401_UNAUTHORIZED, "ERROR", message, data)
+        return cls._response(
+            fastapi.status.HTTP_401_UNAUTHORIZED, "ERROR", message, data
+        )
 
     @classmethod
     def forbidden_error_response(cls, message: Any, data: Any = None):
@@ -64,19 +72,27 @@ class Response:
 
     @classmethod
     def request_entity_too_large_error_response(cls, message: Any, data: Any = None):
-        return cls._response(fastapi.status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "ERROR", message, data)
+        return cls._response(
+            fastapi.status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "ERROR", message, data
+        )
 
     @classmethod
     def unsupported_media_type_error_response(cls, message: Any, data: Any = None):
-        return cls._response(fastapi.status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "ERROR", message, data)
+        return cls._response(
+            fastapi.status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "ERROR", message, data
+        )
 
     @classmethod
     def unprocessable_entity_error_response(cls, message: Any, data: Any = None):
-        return cls._response(fastapi.status.HTTP_422_UNPROCESSABLE_ENTITY, "ERROR", message, data)
+        return cls._response(
+            fastapi.status.HTTP_422_UNPROCESSABLE_ENTITY, "ERROR", message, data
+        )
 
     @classmethod
     def too_many_requests_error_response(cls, message: Any, data: Any = None):
-        return cls._response(fastapi.status.HTTP_429_TOO_MANY_REQUESTS, "ERROR", message, data)
+        return cls._response(
+            fastapi.status.HTTP_429_TOO_MANY_REQUESTS, "ERROR", message, data
+        )
 
     # Convenience generic error helper used by some legacy handlers expecting a unified name.
     @classmethod

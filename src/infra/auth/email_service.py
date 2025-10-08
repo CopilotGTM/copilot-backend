@@ -24,7 +24,9 @@ class EmailService:
             self.is_configured = True
         else:
             self.is_configured = False
-            logger.warning("Resend API key not configured. Email functionality will be disabled.")
+            logger.warning(
+                "Resend API key not configured. Email functionality will be disabled."
+            )
 
     def _create_styled_html(self, title: str, preheader: str, content: str) -> str:
         """Creates a styled HTML email body."""
@@ -69,7 +71,13 @@ class EmailService:
         </html>
         """
 
-    def send_email(self, to_email: str, subject: str, html_content: str, text_content: Optional[str] = None) -> bool:
+    def send_email(
+        self,
+        to_email: str,
+        subject: str,
+        html_content: str,
+        text_content: Optional[str] = None,
+    ) -> bool:
         """
         Send an email using Resend
         """
@@ -86,7 +94,7 @@ class EmailService:
             }
             if text_content:
                 email_data["text"] = text_content
-            
+
             resend.Emails.send(email_data)
             logger.info(f"Email sent successfully to {to_email} via Resend")
             return True
@@ -94,11 +102,13 @@ class EmailService:
             logger.error(f"Failed to send email to {to_email}: {str(e)}")
             return False
 
-    def send_super_admin_creation_email(self, to_email: str, first_name: str, temp_password: str) -> bool:
+    def send_super_admin_creation_email(
+        self, to_email: str, first_name: str, temp_password: str
+    ) -> bool:
         """Send email to newly created super admin with temporary password"""
         subject = f"Welcome to {self.app_name} - Super Admin Account Created"
         preheader = "Your super admin account is ready."
-        
+
         main_content = f"""
             <h2>Welcome, {first_name}!</h2>
             <p>Your Super Admin account for {self.app_name} has been successfully created.</p>
@@ -136,10 +146,12 @@ class EmailService:
         Login here: {self.admin_app_url}/signin
         You will be required to change your password upon first login.
         """
-        
+
         return self.send_email(to_email, subject, html_content, text_content)
 
-    def send_user_creation_email(self, to_email: str, first_name: str, temp_password: str) -> bool:
+    def send_user_creation_email(
+        self, to_email: str, first_name: str, temp_password: str
+    ) -> bool:
         """Send email to newly created user with temporary password"""
         subject = f"Welcome to {self.app_name} - Your Account is Ready"
         preheader = "Your new account has been successfully created."
@@ -180,10 +192,12 @@ class EmailService:
         Login here: {self.app_url}/signin
         You will be required to change your password upon first login.
         """
-        
+
         return self.send_email(to_email, subject, html_content, text_content)
 
-    def send_password_reset_email(self, to_email: str, first_name: str, reset_url: str) -> bool:
+    def send_password_reset_email(
+        self, to_email: str, first_name: str, reset_url: str
+    ) -> bool:
         """Send password reset email to a user."""
         subject = f"{self.app_name} - Password Reset Request"
         preheader = "A request to reset your password was received."
@@ -215,7 +229,7 @@ class EmailService:
         A request was made to reset your password. Click the link to proceed: {reset_url}
         If you did not request this, please ignore this email. The link will expire in 24 hours.
         """
-        
+
         return self.send_email(to_email, subject, html_content, text_content)
 
 

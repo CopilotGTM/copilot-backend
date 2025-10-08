@@ -18,6 +18,7 @@ class JobStatus(str, Enum):
     """
     Enum for the status of a job.
     """
+
     PENDING = "pending"
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"

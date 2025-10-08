@@ -62,7 +62,13 @@ def check_environment_variables() -> bool:
     Returns:
         True if all required variables are set, False otherwise
     """
-    required_vars = ["SUPER_ADMIN_EMAIL", "DATABASE_HOST", "DATABASE_USER", "DATABASE_PASSWORD", "DATABASE_NAME"]
+    required_vars = [
+        "SUPER_ADMIN_EMAIL",
+        "DATABASE_HOST",
+        "DATABASE_USER",
+        "DATABASE_PASSWORD",
+        "DATABASE_NAME",
+    ]
 
     missing_vars = []
     for var in required_vars:
@@ -70,7 +76,9 @@ def check_environment_variables() -> bool:
             missing_vars.append(var)
 
     if missing_vars:
-        logger.error(f"Missing required environment variables: {', '.join(missing_vars)}")
+        logger.error(
+            f"Missing required environment variables: {', '.join(missing_vars)}"
+        )
         return False
 
     logger.info("✅ All required environment variables are set")
@@ -84,7 +92,9 @@ def run_master_migrations() -> bool:
     Returns:
         True if successful, False otherwise
     """
-    return run_command("python scripts/run_master_migrations.py", "Master database migrations")
+    return run_command(
+        "python scripts/run_master_migrations.py", "Master database migrations"
+    )
 
 
 def initialize_super_admin() -> bool:
@@ -95,8 +105,7 @@ def initialize_super_admin() -> bool:
         True if successful, False otherwise
     """
     return run_command(
-        "python scripts/admin/init_super_admin.py",
-        "Super admin initialization"
+        "python scripts/admin/init_super_admin.py", "Super admin initialization"
     )
 
 
@@ -123,7 +132,6 @@ def main():
     if not initialize_super_admin():
         logger.error("❌ Super admin initialization failed")
         sys.exit(1)
-    
 
     logger.info("🎉 Deployment completed successfully!")
 

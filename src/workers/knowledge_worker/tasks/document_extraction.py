@@ -131,6 +131,7 @@ def _finalize_failure_by_ids(
         progress=None,
     )
 
+
 def _validate_source_requirements(
     session,
     publisher: ProgressPublisher,
@@ -216,7 +217,9 @@ def _parse_store_finalize(
         source_id=str(source.source_id),
         source_blob_path=source.storage_path,
         original_filename=source.filename,
-        source_size_bytes=(source.size_bytes if hasattr(source, "size_bytes") else None),
+        source_size_bytes=(
+            source.size_bytes if hasattr(source, "size_bytes") else None
+        ),
     )
 
     if not parsed_documents:
@@ -243,7 +246,9 @@ def _parse_store_finalize(
     document_store = DocumentStore(organisation_id)
     try:
         deleted = document_store.delete_documents_by_source(str(source.source_id))
-        logger.info("Deleted %s existing chunks for source %s", deleted, source.source_id)
+        logger.info(
+            "Deleted %s existing chunks for source %s", deleted, source.source_id
+        )
     except Exception as e:
         logger.warning(
             "Failed to delete existing chunks for source %s: %s",

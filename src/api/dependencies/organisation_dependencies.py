@@ -25,6 +25,7 @@ auth = Authentication()
 
 class UserIDs(BaseModel):
     """A Pydantic model to hold user and organisation IDs for type safety."""
+
     user_id: UUID
     organisation_id: UUID
 
@@ -41,11 +42,13 @@ def get_current_user(user: User = Depends(user_auth)) -> UserIDs:
 
 # ---- SYNC ----
 
+
 def _sync_org_session_gen(organisation_id: UUID) -> Iterator[Session]:
     """Generator function that yields a synchronous organisation database session."""
     provider = get_sync_provider()
     with provider.tenant_session(str(organisation_id)) as session:  # type: ignore
         yield session
+
 
 def get_org_session(user_ids: UserIDs = Depends(get_current_user)) -> Iterator[Session]:
     """FastAPI dependency yielding an organisation-scoped Session.
@@ -54,11 +57,14 @@ def get_org_session(user_ids: UserIDs = Depends(get_current_user)) -> Iterator[S
     """
     yield from _sync_org_session_gen(user_ids.organisation_id)
 
+
 def acquire_org_session(organisation_id: UUID) -> Iterator[Session]:
     """Imperative helper for sync code outside FastAPI dependency system."""
     return _sync_org_session_gen(organisation_id)
 
+
 # ---- ASYNC ----
+
 
 async def _async_org_session_gen(organisation_id: UUID) -> AsyncIterator[AsyncSession]:
     """Generator function that yields an asynchronous organisation database session."""
@@ -66,7 +72,10 @@ async def _async_org_session_gen(organisation_id: UUID) -> AsyncIterator[AsyncSe
     async with provider.tenant_session(str(organisation_id)) as session:  # type: ignore
         yield session
 
-async def get_org_async_session(user_ids: UserIDs = Depends(get_current_user)) -> AsyncIterator[AsyncSession]:
+
+async def get_org_async_session(
+    user_ids: UserIDs = Depends(get_current_user),
+) -> AsyncIterator[AsyncSession]:
     """FastAPI dependency yielding an async organisation-scoped Session.
 
     Use in endpoint signatures: `session: AsyncSession = Depends(get_org_async_session)`.
@@ -74,10 +83,14 @@ async def get_org_async_session(user_ids: UserIDs = Depends(get_current_user)) -
     async for s in _async_org_session_gen(user_ids.organisation_id):
         yield s
 
-async def acquire_org_async_session(organisation_id: UUID) -> AsyncIterator[AsyncSession]:
+
+async def acquire_org_async_session(
+    organisation_id: UUID,
+) -> AsyncIterator[AsyncSession]:
     """Imperative helper for async code outside FastAPI dependency system."""
     async for s in _async_org_session_gen(organisation_id):
         yield s
+
 
 # ---- __all__ ----
 

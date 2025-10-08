@@ -20,7 +20,9 @@ def process_sheet(sheet_name: str, sheet) -> Dict[str, Any]:
     merged_cell_values = {}
     for merged_range in sheet.merged_cells.ranges:
         # Get the value from the top-left cell of the merged range
-        top_left_value = sheet.cell(row=merged_range.min_row, column=merged_range.min_col).value
+        top_left_value = sheet.cell(
+            row=merged_range.min_row, column=merged_range.min_col
+        ).value
         # Store this value for all cells in the merged range
         for row in range(merged_range.min_row, merged_range.max_row + 1):
             for col in range(merged_range.min_col, merged_range.max_col + 1):

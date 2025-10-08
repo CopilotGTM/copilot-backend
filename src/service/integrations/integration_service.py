@@ -1,0 +1,340 @@
+"""
+Core integration service for managing third-party OAuth integrations.
+
+This service provides CRUD operations for integrations and coordinates
+between the database and Nango client.
+"""
+
+from typing import List, Optional, Dict, Any
+from uuid import UUID
+from datetime import datetime
+import logging
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError
+
+from src.domain.models.organisation_tables.knowledge_models import (
+    KnowledgeIntegration,
+    IntegrationType,
+    IntegrationSyncHistory,
+    SyncStatus,
+)
+from .nango_client import NangoClient, NangoConnectionError
+
+logger = logging.getLogger(__name__)
+
+
+class IntegrationService:
+    """
+    Service for managing knowledge base integrations.
+
+    Handles:
+    - Creating and configuring integrations
+    - Updating integration settings
+    - Retrieving integration details
+    - Soft-deleting integrations
+    - Managing integration lifecycle
+    """
+
+    def __init__(
+        self,
+        db_session: AsyncSession,
+        organisation_id: UUID,
+        nango_client: Optional[NangoClient] = None,
+    ):
+        """
+        Initialize the integration service.
+
+        Args:
+            db_session: Async SQLAlchemy database session
+            organisation_id: Organization UUID for scoping queries
+            nango_client: Nango client instance (creates new one if not provided)
+        """
+        self.db = db_session
+        self.organisation_id = organisation_id
+        self.nango = nango_client or NangoClient()
+
+    async def create_integration(
+        self,
+        integration_type: IntegrationType,
+        name: str,
+        connection_id: str,
+        connection_metadata: Optional[Dict[str, Any]] = None,
+        scopes: Optional[List[str]] = None,
+        sync_frequency: str = "daily",
+        auto_sync_enabled: bool = True,
+    ) -> KnowledgeIntegration:
+        """
+        Create a new integration after OAuth is complete.
+
+        Args:
+            integration_type: Type of integration (HUBSPOT, SLACK, etc.)
+            name: User-defined name for the integration
+            connection_id: Nango connection identifier
+            connection_metadata: Additional metadata from Nango
+            scopes: OAuth scopes granted
+            sync_frequency: How often to sync ('hourly', 'daily', 'weekly', 'manual')
+            auto_sync_enabled: Whether automatic syncing is enabled
+
+        Returns:
+            Created KnowledgeIntegration instance
+
+        Raises:
+            ValueError: If integration creation fails
+        """
+        try:
+            # Get token expiry from Nango connection
+            nango_connection = await self.nango.get_connection(
+                provider=integration_type.value,
+                connection_id=connection_id,
+            )
+
+            credentials = nango_connection.get("credentials", {})
+            expires_in = credentials.get("expires_in")
+
+            integration = KnowledgeIntegration(
+                organisation_id=self.organisation_id,
+                integration_type=integration_type,
+                name=name,
+                connection_id=connection_id,
+                credentials={},  # Nango stores credentials, we just reference them
+                is_active=True,
+                connection_metadata=connection_metadata or {},
+                scopes=scopes,
+                access_token_expires_at=self.nango.parse_token_expiry(expires_in),
+                sync_frequency=sync_frequency,
+                auto_sync_enabled=auto_sync_enabled,
+                last_sync_status=None,
+            )
+
+            self.db.add(integration)
+            await self.db.commit()
+            await self.db.refresh(integration)
+
+            logger.info(
+                f"Created integration: {integration.integration_id} "
+                f"({integration_type.value}) for org {self.organisation_id}"
+            )
+
+            return integration
+
+        except IntegrityError as e:
+            await self.db.rollback()
+            logger.error(f"Database integrity error creating integration: {str(e)}")
+            raise ValueError(f"Failed to create integration: {str(e)}")
+        except Exception as e:
+            await self.db.rollback()
+            logger.error(f"Unexpected error creating integration: {str(e)}")
+            raise
+
+    async def get_integration(
+        self,
+        integration_id: UUID,
+    ) -> Optional[KnowledgeIntegration]:
+        """
+        Get an integration by ID (scoped to this service's organization).
+
+        Args:
+            integration_id: Integration UUID
+
+        Returns:
+            KnowledgeIntegration if found, None otherwise
+        """
+        statement = select(KnowledgeIntegration).where(
+            KnowledgeIntegration.integration_id == integration_id,
+            KnowledgeIntegration.organisation_id == self.organisation_id,
+        )
+
+        result = await self.db.execute(statement)
+        return result.scalars().first()
+
+    async def list_integrations(
+        self,
+        integration_type: Optional[IntegrationType] = None,
+        is_active: Optional[bool] = None,
+    ) -> List[KnowledgeIntegration]:
+        """
+        List all integrations for the organization.
+
+        Args:
+            integration_type: Optional filter by integration type
+            is_active: Optional filter by active status
+
+        Returns:
+            List of KnowledgeIntegration instances
+        """
+        statement = select(KnowledgeIntegration).where(
+            KnowledgeIntegration.organisation_id == self.organisation_id
+        )
+
+        if integration_type:
+            statement = statement.where(
+                KnowledgeIntegration.integration_type == integration_type
+            )
+
+        if is_active is not None:
+            statement = statement.where(KnowledgeIntegration.is_active == is_active)
+
+        result = await self.db.execute(statement)
+        return list(result.scalars().all())
+
+    async def update_integration(
+        self,
+        integration_id: UUID,
+        name: Optional[str] = None,
+        sync_frequency: Optional[str] = None,
+        auto_sync_enabled: Optional[bool] = None,
+    ) -> KnowledgeIntegration:
+        """
+        Update integration settings.
+
+        Args:
+            integration_id: Integration UUID
+            name: New name for the integration
+            sync_frequency: New sync frequency
+            auto_sync_enabled: Enable/disable automatic syncing
+
+        Returns:
+            Updated KnowledgeIntegration
+
+        Raises:
+            ValueError: If integration not found
+        """
+        integration = await self.get_integration(integration_id)
+
+        if not integration:
+            raise ValueError(f"Integration {integration_id} not found")
+
+        if name is not None:
+            integration.name = name
+        if sync_frequency is not None:
+            integration.sync_frequency = sync_frequency
+        if auto_sync_enabled is not None:
+            integration.auto_sync_enabled = auto_sync_enabled
+
+        self.db.add(integration)
+        await self.db.commit()
+        await self.db.refresh(integration)
+
+        logger.info(f"Updated integration {integration_id}")
+        return integration
+
+    async def deactivate_integration(
+        self,
+        integration_id: UUID,
+        error_message: Optional[str] = None,
+    ) -> KnowledgeIntegration:
+        """
+        Deactivate an integration (e.g., due to token refresh failure).
+
+        Args:
+            integration_id: Integration UUID
+            error_message: Reason for deactivation
+
+        Returns:
+            Updated KnowledgeIntegration
+        """
+        integration = await self.get_integration(integration_id)
+
+        if not integration:
+            raise ValueError(f"Integration {integration_id} not found")
+
+        integration.is_active = False
+        if error_message:
+            integration.last_sync_error = error_message
+
+        self.db.add(integration)
+        await self.db.commit()
+        await self.db.refresh(integration)
+
+        logger.warning(f"Deactivated integration {integration_id}: {error_message}")
+        return integration
+
+    async def delete_integration(
+        self,
+        integration_id: UUID,
+    ) -> bool:
+        """
+        Delete an integration and revoke Nango connection.
+
+        Args:
+            integration_id: Integration UUID
+
+        Returns:
+            True if deletion was successful
+
+        Raises:
+            ValueError: If integration not found
+        """
+        integration = await self.get_integration(integration_id)
+
+        if not integration:
+            raise ValueError(f"Integration {integration_id} not found")
+
+        # Delete from Nango
+        try:
+            await self.nango.delete_connection(
+                provider=integration.integration_type.value,
+                connection_id=integration.connection_id,
+            )
+        except NangoConnectionError as e:
+            logger.warning(
+                f"Failed to delete Nango connection: {str(e)}. "
+                "Proceeding with database deletion."
+            )
+
+        # Delete from database (cascade will handle sync history)
+        await self.db.delete(integration)
+        await self.db.commit()
+
+        logger.info(f"Deleted integration {integration_id}")
+        return True
+
+    async def check_and_refresh_token(
+        self,
+        integration: KnowledgeIntegration,
+    ) -> bool:
+        """
+        Check if token needs refresh and refresh if necessary.
+
+        Args:
+            integration: KnowledgeIntegration instance
+
+        Returns:
+            True if token is valid/refreshed, False if refresh failed
+        """
+        # Check if token is expiring soon
+        if not self.nango.is_token_expiring_soon(integration.access_token_expires_at):
+            return True
+
+        try:
+            # Refresh token via Nango
+            connection = await self.nango.refresh_token(
+                provider=integration.integration_type.value,
+                connection_id=integration.connection_id,
+            )
+
+            # Update expiry time
+            credentials = connection.get("credentials", {})
+            expires_in = credentials.get("expires_in")
+            integration.access_token_expires_at = self.nango.parse_token_expiry(
+                expires_in
+            )
+            from datetime import timezone
+
+            integration.last_synced_at = datetime.now(timezone.utc)
+
+            self.db.add(integration)
+            await self.db.commit()
+
+            logger.info(f"Refreshed token for integration {integration.integration_id}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Token refresh failed: {str(e)}")
+            await self.deactivate_integration(
+                integration.integration_id,
+                error_message=f"Token refresh failed: {str(e)}",
+            )
+            return False

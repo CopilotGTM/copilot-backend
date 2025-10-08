@@ -29,11 +29,19 @@ FieldSpec = FieldSingleSelect
 class FrameBase(BaseModel):
     type: str
     # Production-level metadata
-    frontend_id: str = Field(default="", description="Job ID - frontend identifier for request tracking")
-    backend_id: str = Field(default="", description="Message ID - backend identifier for data correlation")
+    frontend_id: str = Field(
+        default="", description="Job ID - frontend identifier for request tracking"
+    )
+    backend_id: str = Field(
+        default="", description="Message ID - backend identifier for data correlation"
+    )
     version: str = Field(default="1.0", description="Frame schema version")
-    timestamp: float = Field(default_factory=time.time, description="Unix timestamp when frame was created")
-    sequence: Optional[int] = Field(default=None, description="Optional sequence number for ordering")
+    timestamp: float = Field(
+        default_factory=time.time, description="Unix timestamp when frame was created"
+    )
+    sequence: Optional[int] = Field(
+        default=None, description="Optional sequence number for ordering"
+    )
 
 
 class AnswerDelta(FrameBase):
@@ -85,7 +93,7 @@ class AgentSwitch(FrameBase):
 
 class ToolUsage(FrameBase):
     # Track tool usage for transparency
-    type: Literal["tool.usage"] = "tool.usage" 
+    type: Literal["tool.usage"] = "tool.usage"
     tool_name: str
     tool_description: Optional[str] = None
     status: Literal["starting", "in_progress", "completed", "failed"] = "starting"
@@ -158,4 +166,3 @@ Frame = Union[
     ErrorFrame,
     LogFrame,
 ]
-

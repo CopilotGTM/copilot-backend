@@ -27,11 +27,13 @@ tasks_module = "src.workers.content_worker.tasks"
 # Create the Celery app for the Content Worker
 app = create_celery_app("content_worker", config, tasks_module)
 
+
 # Add signal handlers for resource management
 @worker_ready.connect
 def worker_ready_handler(sender=None, **kwargs):
     """Initialize worker resources when worker is ready."""
     logger.info("Content worker is ready. Redis connection pool initialized.")
+
 
 @worker_shutdown.connect
 def worker_shutdown_handler(sender=None, **kwargs):
@@ -42,6 +44,7 @@ def worker_shutdown_handler(sender=None, **kwargs):
         logger.info("Redis connection pool closed successfully")
     except Exception as e:
         logger.error(f"Error closing Redis connection pool: {e}")
+
 
 # Register DB pool monitor for Celery workers (signals-based)
 try:

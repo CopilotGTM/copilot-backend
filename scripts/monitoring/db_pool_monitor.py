@@ -163,14 +163,20 @@ class SinglePoolMonitor:
         status = self._call_maybe("status")
         configured_pool_size = None
         try:
-            configured_pool_size = getattr(getattr(self.pool, "_pool", None), "maxsize", None)
+            configured_pool_size = getattr(
+                getattr(self.pool, "_pool", None), "maxsize", None
+            )
         except Exception:
             configured_pool_size = None
 
         now = time.monotonic()
         with self._lock:
-            long_running = [t for (t, _, _) in self._checked_out.values() if now - t > threshold_sec]
-            longest = max(((now - t) for (t, _, _) in self._checked_out.values()), default=None)
+            long_running = [
+                t for (t, _, _) in self._checked_out.values() if now - t > threshold_sec
+            ]
+            longest = max(
+                ((now - t) for (t, _, _) in self._checked_out.values()), default=None
+            )
 
         health = self._derive_health(size, checked_out, max_overflow)
 
@@ -191,7 +197,9 @@ class SinglePoolMonitor:
         # Keep it minimal here; enrichment happens in collect_snapshot()
         return pm
 
-    def enforce_checkout_limit(self, max_sec: float, *, force_close: bool = False) -> int:
+    def enforce_checkout_limit(
+        self, max_sec: float, *, force_close: bool = False
+    ) -> int:
         """Invalidate connections checked out longer than max_sec.
 
         Returns number of connections marked for close. If force_close is True,
@@ -203,7 +211,11 @@ class SinglePoolMonitor:
             return count
         now = time.monotonic()
         with self._lock:
-            to_handle = [(key, t, rec, dbc) for key, (t, rec, dbc) in self._checked_out.items() if now - t > max_sec]
+            to_handle = [
+                (key, t, rec, dbc)
+                for key, (t, rec, dbc) in self._checked_out.items()
+                if now - t > max_sec
+            ]
         for key, t, rec, dbc in to_handle:
             try:
                 # Mark to be closed on check-in
@@ -257,11 +269,17 @@ class SinglePoolMonitor:
             return None
 
     @staticmethod
-    def _derive_health(size: Optional[int], checked_out: Optional[int], max_overflow: Optional[int]) -> str:
+    def _derive_health(
+        size: Optional[int], checked_out: Optional[int], max_overflow: Optional[int]
+    ) -> str:
         try:
             sz = int(size or 0)
             co = int(checked_out or 0)
-            mo = max_overflow if (isinstance(max_overflow, int) and max_overflow >= 0) else 0
+            mo = (
+                max_overflow
+                if (isinstance(max_overflow, int) and max_overflow >= 0)
+                else 0
+            )
             capacity = sz + mo if (sz + mo) > 0 else max(sz, 1)
             usage = co / capacity
             if co >= capacity:
@@ -279,8 +297,13 @@ class DbPoolsMonitorService:
     attaches listeners to track checkout durations, and logs aggregated metrics.
     """
 
-    def __init__(self, interval_sec: float = 30.0, long_running_threshold_sec: float = 300.0,
-                 enforce_max_checkout_sec: Optional[float] = None, force_close: bool = False):
+    def __init__(
+        self,
+        interval_sec: float = 30.0,
+        long_running_threshold_sec: float = 300.0,
+        enforce_max_checkout_sec: Optional[float] = None,
+        force_close: bool = False,
+    ):
         self.interval_sec = interval_sec
         self.long_running_threshold_sec = long_running_threshold_sec
         self._enforce_max_checkout_sec = enforce_max_checkout_sec
@@ -293,7 +316,11 @@ class DbPoolsMonitorService:
     def start(self) -> None:
         if self._task is not None and not self._task.done():
             return
-        logger.info("Starting DB pool monitor (interval=%ss, long_running>%ss)", self.interval_sec, self.long_running_threshold_sec)
+        logger.info(
+            "Starting DB pool monitor (interval=%ss, long_running>%ss)",
+            self.interval_sec,
+            self.long_running_threshold_sec,
+        )
         self._stopping.clear()
         self._task = asyncio.create_task(self._run())
 
@@ -349,10 +376,14 @@ class DbPoolsMonitorService:
         except Exception:
             warm_min_idle = 0
 
-        for pool, engine, label, kind in itertools.chain(self._iter_sync_pools(), self._iter_async_pools()):
+        for pool, engine, label, kind in itertools.chain(
+            self._iter_sync_pools(), self._iter_async_pools()
+        ):
             pid = id(pool)
             if pid not in self._monitors:
-                mon = SinglePoolMonitor(pool=pool, label=label, kind=kind, engine=engine)
+                mon = SinglePoolMonitor(
+                    pool=pool, label=label, kind=kind, engine=engine
+                )
                 try:
                     mon.attach()
                     self._monitors[pid] = mon
@@ -361,20 +392,33 @@ class DbPoolsMonitorService:
                     logger.warning("Failed to attach monitor to pool %s: %s", label, e)
             if warm_min_idle > 0:
                 try:
-                    self._monitors[pid].ensure_min_idle(min_idle=warm_min_idle, max_new=1)
+                    self._monitors[pid].ensure_min_idle(
+                        min_idle=warm_min_idle, max_new=1
+                    )
                 except Exception:
                     pass
             # optional warmup and probe + enforcement
             try:
-                self._monitors[pid].maybe_probe(min_interval_sec=max(self.interval_sec * 4.0, 120.0))
+                self._monitors[pid].maybe_probe(
+                    min_interval_sec=max(self.interval_sec * 4.0, 120.0)
+                )
             except Exception:
                 pass
             try:
-                if self._enforce_max_checkout_sec and self._enforce_max_checkout_sec > 0:
-                    n = self._monitors[pid].enforce_checkout_limit(self._enforce_max_checkout_sec,
-                                                                    force_close=self._enforce_force_close)
+                if (
+                    self._enforce_max_checkout_sec
+                    and self._enforce_max_checkout_sec > 0
+                ):
+                    n = self._monitors[pid].enforce_checkout_limit(
+                        self._enforce_max_checkout_sec,
+                        force_close=self._enforce_force_close,
+                    )
                     if n:
-                        logger.warning("Enforced max checkout on %s connections for pool %s", n, label)
+                        logger.warning(
+                            "Enforced max checkout on %s connections for pool %s",
+                            n,
+                            label,
+                        )
             except Exception:
                 pass
 
@@ -387,32 +431,46 @@ class DbPoolsMonitorService:
             # Pull configured size et al via a fresh call to keep in sync
             configured_pool_size = None
             try:
-                configured_pool_size = getattr(getattr(mon.pool, "_pool", None), "maxsize", None)
+                configured_pool_size = getattr(
+                    getattr(mon.pool, "_pool", None), "maxsize", None
+                )
             except Exception:
                 configured_pool_size = None
             checked_in = d.get("checked_in")
             checked_out = d.get("checked_out")
             max_overflow = d.get("max_overflow")
-            capacity_total = (configured_pool_size or 0) + (max_overflow or 0 if isinstance(max_overflow, int) else 0)
+            capacity_total = (configured_pool_size or 0) + (
+                max_overflow or 0 if isinstance(max_overflow, int) else 0
+            )
             in_use = d.get("checked_out")
-            d.update({
-                "configured_pool_size": configured_pool_size,
-                "capacity_total": capacity_total,
-                "idle": checked_in,
-                "in_use": checked_out,
-                "total_open": (None if (checked_in is None or checked_out is None) else int(checked_in) + int(checked_out)),
-                "usage_pct": (None if not capacity_total else float(in_use or 0) / float(capacity_total)),
-                "counters": {
-                    "checkout": mon._checkout_count,
-                    "checkin": mon._checkin_count,
-                    "connect": mon._connect_count,
-                    "invalidate": mon._invalidate_count,
-                    "close": mon._close_count,
-                    "enforced": mon._enforced_count,
-                },
-                "alive_sample_ok": mon._last_probe_ok,
-                "last_probe_ts": mon._last_probe_ts,
-            })
+            d.update(
+                {
+                    "configured_pool_size": configured_pool_size,
+                    "capacity_total": capacity_total,
+                    "idle": checked_in,
+                    "in_use": checked_out,
+                    "total_open": (
+                        None
+                        if (checked_in is None or checked_out is None)
+                        else int(checked_in) + int(checked_out)
+                    ),
+                    "usage_pct": (
+                        None
+                        if not capacity_total
+                        else float(in_use or 0) / float(capacity_total)
+                    ),
+                    "counters": {
+                        "checkout": mon._checkout_count,
+                        "checkin": mon._checkin_count,
+                        "connect": mon._connect_count,
+                        "invalidate": mon._invalidate_count,
+                        "close": mon._close_count,
+                        "enforced": mon._enforced_count,
+                    },
+                    "alive_sample_ok": mon._last_probe_ok,
+                    "last_probe_ts": mon._last_probe_ts,
+                }
+            )
             metrics.append(d)
 
         summary = {
@@ -422,9 +480,15 @@ class DbPoolsMonitorService:
             "total_checked_out": sum(int(m.get("checked_out") or 0) for m in metrics),
             "total_size": sum(int(m.get("size") or 0) for m in metrics),
             "total_idle": sum(int(m.get("checked_in") or 0) for m in metrics),
-            "total_current_overflow": sum(int(m.get("current_overflow") or 0) for m in metrics),
-            "total_long_running": sum(int(m.get("long_running_checked_out") or 0) for m in metrics),
-            "total_enforced": sum(int((m.get("counters") or {}).get("enforced") or 0) for m in metrics),
+            "total_current_overflow": sum(
+                int(m.get("current_overflow") or 0) for m in metrics
+            ),
+            "total_long_running": sum(
+                int(m.get("long_running_checked_out") or 0) for m in metrics
+            ),
+            "total_enforced": sum(
+                int((m.get("counters") or {}).get("enforced") or 0) for m in metrics
+            ),
             "health": {
                 "OK": sum(1 for m in metrics if m.get("health") == "OK"),
                 "WARN": sum(1 for m in metrics if m.get("health") == "WARN"),
@@ -450,25 +514,50 @@ class DbPoolsMonitorService:
                 int(self.long_running_threshold_sec),
                 snapshot["summary"]["total_long_running"],
                 snapshot["summary"].get("total_enforced"),
-                health.get("OK"), health.get("WARN"), health.get("CRITICAL"),
+                health.get("OK"),
+                health.get("WARN"),
+                health.get("CRITICAL"),
             )
         except Exception:
             pass
         # Log notable per-pool lines at INFO so they are visible without DEBUG
         try:
             for p in snapshot.get("pools", []):
-                in_use = int(p.get("in_use") if p.get("in_use") is not None else (p.get("checked_out") or 0))
-                idle = int(p.get("idle") if p.get("idle") is not None else (p.get("checked_in") or 0))
+                in_use = int(
+                    p.get("in_use")
+                    if p.get("in_use") is not None
+                    else (p.get("checked_out") or 0)
+                )
+                idle = int(
+                    p.get("idle")
+                    if p.get("idle") is not None
+                    else (p.get("checked_in") or 0)
+                )
                 usage = p.get("usage_pct")
                 long_running = int(p.get("long_running_checked_out") or 0)
                 alive = p.get("alive_sample_ok")
                 health = p.get("health")
                 enforced = int((p.get("counters") or {}).get("enforced") or 0)
-                if in_use > 0 or long_running > 0 or enforced > 0 or alive is False or health in ("WARN", "CRITICAL"):
+                if (
+                    in_use > 0
+                    or long_running > 0
+                    or enforced > 0
+                    or alive is False
+                    or health in ("WARN", "CRITICAL")
+                ):
                     logger.info(
                         "Pool %s: in_use=%s idle=%s size=%s cap=%s overflow=%s usage=%.2f health=%s alive=%s longest=%s enforced=%s",
-                        p.get("label"), in_use, idle, p.get("size"), p.get("capacity_total"), p.get("current_overflow"),
-                        0.0 if not usage else float(usage), health, alive, p.get("longest_checkout_seconds"), enforced,
+                        p.get("label"),
+                        in_use,
+                        idle,
+                        p.get("size"),
+                        p.get("capacity_total"),
+                        p.get("current_overflow"),
+                        0.0 if not usage else float(usage),
+                        health,
+                        alive,
+                        p.get("longest_checkout_seconds"),
+                        enforced,
                     )
         except Exception:
             pass
@@ -543,45 +632,70 @@ class DbPoolsMonitorService:
 _global_monitor: Optional[DbPoolsMonitorService] = None
 
 
-async def start_pool_monitor(interval_sec: float = 30.0, long_running_threshold_sec: float = 300.0,
-                             enforce_max_checkout_sec: Optional[float] = None,
-                             force_close: Optional[bool] = None) -> None:
+async def start_pool_monitor(
+    interval_sec: float = 30.0,
+    long_running_threshold_sec: float = 300.0,
+    enforce_max_checkout_sec: Optional[float] = None,
+    force_close: Optional[bool] = None,
+) -> None:
     global _global_monitor
     # Resolve enforcement from environment with app/worker distinction
     ctx = os.getenv("DB_MONITOR_CONTEXT", "app").lower()
+
     def _getf(name: str) -> Optional[float]:
         v = os.getenv(name)
         try:
             return None if v is None or v == "" else float(v)
         except Exception:
             return None
+
     if enforce_max_checkout_sec is None:
         if ctx == "worker":
             enforce_max_checkout_sec = _getf("WORKER_DB_CONN_MAX_CHECKOUT_SEC")
             if enforce_max_checkout_sec is None:
-                enforce_max_checkout_sec = float(pool_monitor_config.WORKER_MAX_CHECKOUT_SEC)
+                enforce_max_checkout_sec = float(
+                    pool_monitor_config.WORKER_MAX_CHECKOUT_SEC
+                )
         else:
             enforce_max_checkout_sec = _getf("APP_DB_CONN_MAX_CHECKOUT_SEC")
             if enforce_max_checkout_sec is None:
-                enforce_max_checkout_sec = float(pool_monitor_config.APP_MAX_CHECKOUT_SEC)
+                enforce_max_checkout_sec = float(
+                    pool_monitor_config.APP_MAX_CHECKOUT_SEC
+                )
         if enforce_max_checkout_sec is None:
             enforce_max_checkout_sec = _getf("DB_POOL_ENFORCE_MAX_CHECKOUT_SEC")
     if force_close is None:
         if ctx == "worker":
             if os.getenv("WORKER_DB_CONN_FORCE_CLOSE") is not None:
-                force_close = os.getenv("WORKER_DB_CONN_FORCE_CLOSE", "false").lower() in ("1","true","yes","on")
+                force_close = os.getenv(
+                    "WORKER_DB_CONN_FORCE_CLOSE", "false"
+                ).lower() in ("1", "true", "yes", "on")
             else:
                 force_close = bool(pool_monitor_config.WORKER_FORCE_CLOSE)
         else:
             if os.getenv("APP_DB_CONN_FORCE_CLOSE") is not None:
-                force_close = os.getenv("APP_DB_CONN_FORCE_CLOSE", "false").lower() in ("1","true","yes","on")
+                force_close = os.getenv("APP_DB_CONN_FORCE_CLOSE", "false").lower() in (
+                    "1",
+                    "true",
+                    "yes",
+                    "on",
+                )
             else:
                 force_close = bool(pool_monitor_config.APP_FORCE_CLOSE)
         if force_close is None:
-            force_close = os.getenv("DB_POOL_ENFORCE_FORCE_CLOSE", "false").lower() in ("1","true","yes","on")
+            force_close = os.getenv("DB_POOL_ENFORCE_FORCE_CLOSE", "false").lower() in (
+                "1",
+                "true",
+                "yes",
+                "on",
+            )
     if _global_monitor is None:
         _global_monitor = DbPoolsMonitorService(
-            interval_sec=interval_sec if interval_sec is not None else float(pool_monitor_config.MONITOR_INTERVAL_SEC),
+            interval_sec=(
+                interval_sec
+                if interval_sec is not None
+                else float(pool_monitor_config.MONITOR_INTERVAL_SEC)
+            ),
             long_running_threshold_sec=long_running_threshold_sec,
             enforce_max_checkout_sec=enforce_max_checkout_sec or 0,
             force_close=bool(force_close),

@@ -7,8 +7,13 @@ from src.infra.utils.logger import get_logger
 from src.infra.utils.logger import get_logger as InputSio
 from sqlmodel import select
 from src.infra.utils.database import get_master_session
-from src.domain.models.organisation_tables import ChatSession as ChatSessionDB, ChatMessage as ChatMessageDB
-from src.service.technical_deck.deck_generation.deck_generation_workflow import DeckGeneration
+from src.domain.models.organisation_tables import (
+    ChatSession as ChatSessionDB,
+    ChatMessage as ChatMessageDB,
+)
+from src.service.technical_deck.deck_generation.deck_generation_workflow import (
+    DeckGeneration,
+)
 
 
 logger = get_logger()
@@ -56,14 +61,17 @@ def generate_deck_task(self, sid, data_json):
 
         deck_message = master_session.exec(
             select(ChatMessageDB).where(
-                (ChatMessageDB.session_id == session_id) & (ChatMessageDB.message_id == system_message_id)
+                (ChatMessageDB.session_id == session_id)
+                & (ChatMessageDB.message_id == system_message_id)
             )
         ).first()
         if not deck_message:
             raise RuntimeError("Chat message not found")
 
         agent = DeckGeneration(provider="azure", model_name="o3-mini")
-        logger.info(f"Initialized deck generation workflow for session_id={session_id}, message_id={system_message_id}")
+        logger.info(
+            f"Initialized deck generation workflow for session_id={session_id}, message_id={system_message_id}"
+        )
 
         async def _run_workflow():
             full_response = ""
@@ -80,14 +88,18 @@ def generate_deck_task(self, sid, data_json):
                         "response": chunk.content.get("public_url", ""),
                         "message_type": "TECHNICAL_DECK",
                         "extras": {
-                            "completion_percentage": chunk.content.get("completion_percentage", 0),
+                            "completion_percentage": chunk.content.get(
+                                "completion_percentage", 0
+                            ),
                         },
                     }
                     publish_websocket_message(sid, RESPONSE_EVENT, response_data)
             return full_response
 
         full_response = asyncio.run(_run_workflow())
-        logger.info(f"Deck generation workflow completed, total chunks={len(full_response)}")
+        logger.info(
+            f"Deck generation workflow completed, total chunks={len(full_response)}"
+        )
 
         deck_message.technical_deck_details = {
             **deck_message.technical_deck_details,

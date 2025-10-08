@@ -19,7 +19,10 @@ from src.domain.models.master_tables import SuperAdmin
 from src.api.dependencies.master_dependencies import get_master_async_session
 from src.infra.auth.admin_auth import admin_auth
 from src.infra.auth.email_service import email_service
-from src.infra.auth.supabase_admin_client import supabase_admin_client, SupabaseAuthError
+from src.infra.auth.supabase_admin_client import (
+    supabase_admin_client,
+    SupabaseAuthError,
+)
 from src.infra.utils.logger import get_logger
 from src.api.utils.http_response import Response
 from src.api.schemas.base_models import GenericResponse
@@ -43,8 +46,7 @@ async def admin_login(
     """
     try:
         super_admin = await admin_auth_service.get_super_admin_by_email(
-            master_session, 
-            login_request.email
+            master_session, login_request.email
         )
         if not super_admin:
             logger.warning(f"Super admin not found for email: {login_request.email}")
@@ -52,21 +54,24 @@ async def admin_login(
 
         try:
             supabase_response = supabase_admin_client.sign_in_with_password(
-                email=login_request.email, 
-                password=login_request.password
+                email=login_request.email, password=login_request.password
             )
         except Exception:
             logger.warning(
                 f"Invalid credentials for super admin: {login_request.email}"
             )
-            return Response.unauthorized_error_response(AdminAuthErrors.INVALID_CREDENTIALS)
+            return Response.unauthorized_error_response(
+                AdminAuthErrors.INVALID_CREDENTIALS
+            )
 
         session_data = supabase_response.get("session", {})
         if not session_data or not session_data.get("access_token"):
             logger.warning(
                 f"Supabase login failed for super admin: {login_request.email}"
             )
-            return Response.unauthorized_error_response(AdminAuthErrors.INVALID_CREDENTIALS)
+            return Response.unauthorized_error_response(
+                AdminAuthErrors.INVALID_CREDENTIALS
+            )
 
         user_data = supabase_response.get("user", {})
         user_metadata = user_data.get("user_metadata", {})
@@ -132,15 +137,15 @@ async def reset_password(
             )
 
         if password_request.action == PasswordResetAction.FORCE_CHANGE:
-            statement = select(SuperAdmin).where(
-                SuperAdmin.supabase_user_id == user_id
-            )
+            statement = select(SuperAdmin).where(SuperAdmin.supabase_user_id == user_id)
             result = await master_session.execute(statement)
             current_admin = result.scalars().first()
 
             if not current_admin:
                 logger.warning(f"Admin not found for user_id: {user_id}")
-                return Response.unauthorized_error_response(AdminAuthErrors.UNAUTHORIZED)
+                return Response.unauthorized_error_response(
+                    AdminAuthErrors.UNAUTHORIZED
+                )
 
             # Update Supabase metadata and local database
             updated_metadata = {
@@ -192,7 +197,7 @@ async def refresh_token(refresh_request: AdminRefreshTokenRequest):
                     refresh_token=new_session["refresh_token"],
                 ),
             )
-        
+
         logger.warning("Refresh token is invalid or expired.")
         return Response.unauthorized_error_response(
             AdminAuthErrors.REFRESH_TOKEN_INVALID
@@ -241,7 +246,7 @@ async def forgot_password(
         password_reset_link = supabase_admin_client.generate_password_reset_link(
             email=super_admin.email
         )
-        
+
         email_service.send_password_reset_email(
             to_email=super_admin.email,
             first_name=super_admin.first_name,

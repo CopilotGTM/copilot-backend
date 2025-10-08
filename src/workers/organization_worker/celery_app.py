@@ -8,7 +8,14 @@ os.environ["TENANT_POOL_MULTIPLIER"] = "1.0"
 
 from src.workers.base.celery_base import create_celery_app
 from src.workers.organization_worker.config import OrganizationWorkerConfig
-from celery.signals import task_received, task_prerun, task_postrun, task_failure, worker_ready, worker_shutdown
+from celery.signals import (
+    task_received,
+    task_prerun,
+    task_postrun,
+    task_failure,
+    worker_ready,
+    worker_shutdown,
+)
 
 # Redis connection pool management
 from src.infra.messaging.redis_client import close_redis_pool
@@ -47,6 +54,7 @@ def worker_ready_handler(sender=None, **kwargs):
     """Initialize worker resources when worker is ready."""
     logger.info("Organization worker is ready. Redis connection pool initialized.")
 
+
 @worker_shutdown.connect
 def worker_shutdown_handler(sender=None, **kwargs):
     """Clean up worker resources on shutdown."""
@@ -56,6 +64,7 @@ def worker_shutdown_handler(sender=None, **kwargs):
         logger.info("Redis connection pool closed successfully")
     except Exception as e:
         logger.error(f"Error closing Redis connection pool: {e}")
+
 
 @task_received.connect
 def task_received_handler(sender=None, headers=None, body=None, **kwargs):

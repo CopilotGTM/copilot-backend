@@ -60,14 +60,71 @@ class KnowledgeIntegration(TimestampMixin, table=True):
     integration_id: UUID = Field(default_factory=uuid4, primary_key=True)
     organisation_id: UUID = Field(index=True)
     integration_type: IntegrationType = Field(sa_column=Column(String(50)))
-    name: str = Field(description="User-defined name for the integration (e.g., 'Engineering Slack')")
-    credentials: Dict[str, Any] = Field(sa_column=Column(JSONB), description="Encrypted credentials for the integration")
+    name: str = Field(
+        description="User-defined name for the integration (e.g., 'Engineering Slack')"
+    )
+    credentials: Dict[str, Any] = Field(
+        sa_column=Column(JSONB), description="Encrypted credentials for the integration"
+    )
     is_active: bool = Field(
         default=True,
-        sa_column=Column(Boolean, server_default=text("true"), nullable=False, index=True),
+        sa_column=Column(
+            Boolean, server_default=text("true"), nullable=False, index=True
+        ),
         description="Whether the integration is currently active.",
     )
     last_synced_at: Optional[datetime] = Field(default=None)
+
+    # OAuth and token management fields
+    connection_id: Optional[str] = Field(
+        default=None,
+        sa_column=Column(String(255), index=True),
+        description="Unique connection identifier for this integration (e.g., from Nango or other OAuth providers)",
+    )
+    access_token_expires_at: Optional[datetime] = Field(
+        default=None,
+        description="When the current access token expires",
+    )
+    refresh_token_expires_at: Optional[datetime] = Field(
+        default=None,
+        description="When the refresh token expires (if applicable)",
+    )
+    scopes: Optional[List[str]] = Field(
+        default=None,
+        sa_column=Column(JSONB),
+        description="OAuth scopes granted for this integration",
+    )
+    connection_metadata: Dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSONB, server_default=text("'{}'::jsonb")),
+        description="Additional metadata from Nango connection (e.g., account info, user details)",
+    )
+
+    # Sync configuration and status
+    sync_frequency: str = Field(
+        default="daily",
+        sa_column=Column(String(20), server_default=text("'daily'"), nullable=False),
+        description="How often to sync data: 'hourly', 'daily', 'weekly', or 'manual'",
+    )
+    last_sync_status: Optional[str] = Field(
+        default=None,
+        sa_column=Column(String(20)),
+        description="Status of last sync: 'success', 'failed', 'partial', 'in_progress'",
+    )
+    last_sync_error: Optional[str] = Field(
+        default=None,
+        description="Error message from last failed sync attempt",
+    )
+    auto_sync_enabled: bool = Field(
+        default=True,
+        sa_column=Column(Boolean, server_default=text("true"), nullable=False),
+        description="Whether automatic syncing is enabled for this integration",
+    )
+
+    # Relationships
+    sync_history: List["IntegrationSyncHistory"] = Relationship(
+        back_populates="integration"
+    )
 
 
 class SourceType(str, Enum):
@@ -112,16 +169,22 @@ class OrganisationSource(TimestampMixin, table=True):
         index=True, description="The organisation this source belongs to."
     )
     user_id: UUID = Field(index=True, description="The user who uploaded the source.")
-    
+
     source_type: SourceType = Field(
         default=SourceType.FILE,
-        sa_column=Column(String(50), index=True, server_default=text("'file'"), nullable=False),
+        sa_column=Column(
+            String(50), index=True, server_default=text("'file'"), nullable=False
+        ),
     )
 
     # --- Fields for FILE type ---
-    filename: Optional[str] = Field(default=None, description="The original filename of the source document.")
+    filename: Optional[str] = Field(
+        default=None, description="The original filename of the source document."
+    )
     storage_path: Optional[str] = Field(
-        default=None, unique=True, description="The path to the file in the storage backend."
+        default=None,
+        unique=True,
+        description="The path to the file in the storage backend.",
     )
     # Two thumbnail variants: small and medium
     thumbnail_small_path: Optional[str] = Field(
@@ -130,11 +193,19 @@ class OrganisationSource(TimestampMixin, table=True):
     thumbnail_medium_path: Optional[str] = Field(
         default=None, description="Blob path for a medium thumbnail (e.g., 512px)"
     )
-    mimetype: Optional[str] = Field(default=None, description="The MIME type of the file.")
-    size_bytes: Optional[int] = Field(default=None, description="The size of the file in bytes.")
+    mimetype: Optional[str] = Field(
+        default=None, description="The MIME type of the file."
+    )
+    size_bytes: Optional[int] = Field(
+        default=None, description="The size of the file in bytes."
+    )
     # Checksum (single field for optional client or server checksum)
-    checksum: Optional[str] = Field(default=None, index=True, description="Optional checksum for the file (e.g. sha256)")
-    
+    checksum: Optional[str] = Field(
+        default=None,
+        index=True,
+        description="Optional checksum for the file (e.g. sha256)",
+    )
+
     # --- Fields for INTEGRATION type ---
     integration_id: Optional[UUID] = Field(
         default=None,
@@ -145,7 +216,12 @@ class OrganisationSource(TimestampMixin, table=True):
 
     status: OrganisationSourceStatus = Field(
         default=OrganisationSourceStatus.PENDING_UPLOAD,
-        sa_column=Column(String(50), index=True, server_default=text("'pending_upload'"), nullable=False),
+        sa_column=Column(
+            String(50),
+            index=True,
+            server_default=text("'pending_upload'"),
+            nullable=False,
+        ),
         description="The current processing status of the document.",
     )
     error_message: Optional[str] = Field(
@@ -153,10 +229,12 @@ class OrganisationSource(TimestampMixin, table=True):
     )
     is_deleted: bool = Field(
         default=False,
-        sa_column=Column(Boolean, server_default=text("false"), nullable=False, index=True),
+        sa_column=Column(
+            Boolean, server_default=text("false"), nullable=False, index=True
+        ),
         description="Soft delete flag; deleted sources hidden from normal queries.",
     )
- 
+
     # This links a source document to all the chunks that were derived from it.
     documents: List["OrganisationDocument"] = Relationship(back_populates="source")
     integration: Optional["KnowledgeIntegration"] = Relationship()
@@ -206,7 +284,9 @@ class OrganisationDocument(TimestampMixin, table=True):
     )
     is_org_wide: bool = Field(
         default=True,
-        sa_column=Column(Boolean, server_default=text("true"), nullable=False, index=True),
+        sa_column=Column(
+            Boolean, server_default=text("true"), nullable=False, index=True
+        ),
         description="True => visible to all users in organisation; False => personal to uploader_user_id.",
     )
     deal_id: Optional[str] = Field(
@@ -236,12 +316,91 @@ class OrganisationDocument(TimestampMixin, table=True):
 
     is_searchable: bool = Field(
         default=True,
-        sa_column=Column(Boolean, server_default=text("true"), nullable=False, index=True),
+        sa_column=Column(
+            Boolean, server_default=text("true"), nullable=False, index=True
+        ),
         description="If False exclude from search results (draft or archived).",
     )
     is_archived: bool = Field(
         default=False,
-        sa_column=Column(Boolean, server_default=text("false"), nullable=False, index=True),
+        sa_column=Column(
+            Boolean, server_default=text("false"), nullable=False, index=True
+        ),
         description="Soft archive flag; archived docs hidden from normal queries.",
     )
     source: Optional["OrganisationSource"] = Relationship(back_populates="documents")
+
+
+class SyncStatus(str, Enum):
+    """Status values for integration sync operations."""
+
+    QUEUED = "queued"
+    IN_PROGRESS = "in_progress"
+    SUCCESS = "success"
+    FAILED = "failed"
+    PARTIAL = "partial"
+
+
+class IntegrationSyncHistory(TimestampMixin, table=True):
+    """
+    Tracks the history of all sync operations for integrations.
+    Used for auditing, debugging, and monitoring sync performance.
+    """
+
+    __tablename__ = "integration_sync_history"
+    __table_args__ = (
+        Index(
+            "ix_sync_history_integration_started",
+            "integration_id",
+            "started_at",
+        ),
+        Index(
+            "ix_sync_history_status",
+            "status",
+        ),
+    )
+
+    sync_id: UUID = Field(
+        default_factory=uuid4,
+        primary_key=True,
+        description="Primary key for the sync operation.",
+    )
+    integration_id: UUID = Field(
+        foreign_key="knowledge_integrations.integration_id",
+        index=True,
+        description="The integration that was synced.",
+    )
+    started_at: datetime = Field(
+        default_factory=datetime.utcnow,
+        description="When the sync operation started.",
+    )
+    completed_at: Optional[datetime] = Field(
+        default=None,
+        description="When the sync operation completed (success or failure).",
+    )
+    status: SyncStatus = Field(
+        default=SyncStatus.QUEUED,
+        sa_column=Column(String(20), server_default=text("'queued'"), nullable=False),
+        description="Current status of the sync operation.",
+    )
+    records_processed: int = Field(
+        default=0,
+        description="Number of records successfully processed.",
+    )
+    records_failed: int = Field(
+        default=0,
+        description="Number of records that failed to process.",
+    )
+    error_details: Optional[Dict[str, Any]] = Field(
+        default=None,
+        sa_column=Column(JSONB),
+        description="Detailed error information if sync failed.",
+    )
+    sync_metadata: Dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSONB, server_default=text("'{}'::jsonb")),
+        description="Additional metadata about the sync (e.g., types of records synced, API calls made).",
+    )
+
+    # Relationships
+    integration: "KnowledgeIntegration" = Relationship(back_populates="sync_history")

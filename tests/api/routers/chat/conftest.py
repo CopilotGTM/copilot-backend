@@ -20,7 +20,16 @@ class FakeChatSessionService:
         pass
 
     # Mimic the real service signature
-    def create_session(self, *, user_id, organisation_id, title, chat_type=None, properties=None, tags=None):
+    def create_session(
+        self,
+        *,
+        user_id,
+        organisation_id,
+        title,
+        chat_type=None,
+        properties=None,
+        tags=None
+    ):
         if not title or not str(title).strip():
             raise ValueError("Title cannot be null or empty")
         sid = str(uuid4())
@@ -46,7 +55,9 @@ class FakeChatSessionService:
         rec["is_deleted"] = True
         return SimpleNamespace(**rec)
 
-    def rename_session(self, *, session_id: UUID, user_id: UUID, organisation_id: UUID, title: str):
+    def rename_session(
+        self, *, session_id: UUID, user_id: UUID, organisation_id: UUID, title: str
+    ):
         if not title or not str(title).strip():
             raise ValueError("Title cannot be null or empty")
         sid = str(session_id)
@@ -56,7 +67,14 @@ class FakeChatSessionService:
         rec["title"] = title.strip()
         return SimpleNamespace(**rec)
 
-    def list_sessions(self, *, user_id: UUID, organisation_id: UUID, limit: int = 20, cursor: str | None = None):
+    def list_sessions(
+        self,
+        *,
+        user_id: UUID,
+        organisation_id: UUID,
+        limit: int = 20,
+        cursor: str | None = None
+    ):
         # Collect non-deleted sessions
         rows = [rec for rec in self.sessions.values() if not rec.get("is_deleted")]
         # Sort by created_at desc, session_id desc
@@ -64,29 +82,42 @@ class FakeChatSessionService:
 
         if cursor:
             ts, sid = decode_cursor(cursor)
+
             def is_after(r):
-                return (r["created_at"] < ts) or (r["created_at"] == ts and r["session_id"] < str(sid))
+                return (r["created_at"] < ts) or (
+                    r["created_at"] == ts and r["session_id"] < str(sid)
+                )
+
             rows = [r for r in rows if is_after(r)]
 
         has_more = len(rows) > limit
         items = rows[:limit]
-        next_cursor = encode_cursor(items[-1]["created_at"], UUID(items[-1]["session_id"])) if has_more else None
+        next_cursor = (
+            encode_cursor(items[-1]["created_at"], UUID(items[-1]["session_id"]))
+            if has_more
+            else None
+        )
         # Return records with attribute access (like domain model)
         return [SimpleNamespace(**r) for r in items], next_cursor
 
-    def search_sessions(self, *, user_id: UUID, organisation_id: UUID, q: str, limit: int = 10):
+    def search_sessions(
+        self, *, user_id: UUID, organisation_id: UUID, q: str, limit: int = 10
+    ):
         query = (q or "").strip().lower()
         if not query:
             return []
         rows = [
-            r for r in self.sessions.values()
+            r
+            for r in self.sessions.values()
             if not r.get("is_deleted") and query in r["title"].lower()
         ]
         rows.sort(key=lambda r: (r["updated_at"], r["created_at"]), reverse=True)
         items = rows[:limit]
         return [SimpleNamespace(**r) for r in items]
 
-    def set_favorite(self, *, session_id: UUID, user_id: UUID, organisation_id: UUID, favorite: bool):
+    def set_favorite(
+        self, *, session_id: UUID, user_id: UUID, organisation_id: UUID, favorite: bool
+    ):
         sid = str(session_id)
         rec = self.sessions.get(sid)
         if not rec or rec.get("is_deleted"):
@@ -108,10 +139,15 @@ def dependency_overrides(client, test_user_ids):
     """
 
     def _override_user():
-        return UserIDs(user_id=test_user_ids["user_id"], organisation_id=test_user_ids["organisation_id"])
+        return UserIDs(
+            user_id=test_user_ids["user_id"],
+            organisation_id=test_user_ids["organisation_id"],
+        )
 
     # Create a single service instance per test function to preserve state
-    fake_service = FakeChatSessionService(test_user_ids["organisation_id"], test_user_ids["user_id"])
+    fake_service = FakeChatSessionService(
+        test_user_ids["organisation_id"], test_user_ids["user_id"]
+    )
 
     async def _override_service():
         try:
@@ -120,8 +156,10 @@ def dependency_overrides(client, test_user_ids):
             await fake_service.close()
 
     from src.infra.utils.app_state import fastapp as app
+
     app.dependency_overrides[get_current_user] = _override_user
     app.dependency_overrides[get_chat_session_service] = _override_service
     yield
     from src.infra.utils.app_state import fastapp as app
+
     app.dependency_overrides = {}

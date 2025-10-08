@@ -1,15 +1,22 @@
 """
 Placeholder for unified environment/config loader.
 
-This file is intended for future environment configuration logic,
-e.g., using pydantic, dotenv, or similar tools.
-
-Replace this with your actual settings management code as needed.
+DEPRECATED: Use src.infra.config.configs instead.
+This file is maintained for backward compatibility only.
 """
 
+# Import from the actual config location for backward compatibility
+from src.infra.config.configs import (
+    app_config,
+    database_config,
+    nango_integration_config,
+)
 
+
+# Legacy settings object for backward compatibility
 class Settings:
-    # Add actual configuration fields here
+    """Deprecated: Use configs directly from src.infra.config.configs"""
+
     pass
 
 

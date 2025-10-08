@@ -47,11 +47,16 @@ def redis_subscriber():
                                 asyncio.set_event_loop(loop)
 
                                 # Emit message asynchronously
-                                loop.run_until_complete(emit_websocket_message(event, message_data, sid))
+                                loop.run_until_complete(
+                                    emit_websocket_message(event, message_data, sid)
+                                )
                                 loop.close()
 
                             except Exception as e:
-                                logger.error(f"Error processing Redis message: {e}", exc_info=True)
+                                logger.error(
+                                    f"Error processing Redis message: {e}",
+                                    exc_info=True,
+                                )
                 except Exception as e:
                     logger.error(f"Error in Redis subscriber loop: {e}", exc_info=True)
                     break

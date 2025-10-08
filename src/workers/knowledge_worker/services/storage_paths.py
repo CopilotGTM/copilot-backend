@@ -16,14 +16,14 @@ def plan_image_path_for_source(
     If the original document blob path is available, place images in a sibling
     `images/` folder next to it. Otherwise, fall back to a knowledgebase path
     grouped by user and source id.
-    
+
     Args:
         user_id: User ID
-        source_id: Source ID  
+        source_id: Source ID
         source_blob_path: Original document blob path
         page_no: Page number (optional)
         idx: Image index/identifier (e.g., "chunk_1_img_0", "table_0")
-    
+
     Returns:
         Blob path for the image
     """
@@ -46,16 +46,16 @@ def plan_table_image_path_for_source(
     table_idx: int,
 ) -> str:
     """Plan a deterministic blob path for an extracted table image.
-    
+
     Tables get stored in a separate 'tables/' folder to organize content by type.
-    
+
     Args:
         user_id: User ID
         source_id: Source ID
         source_blob_path: Original document blob path
         page_no: Page number where table is located
         table_idx: Table index within the chunk/document
-        
+
     Returns:
         Blob path for the table image
     """

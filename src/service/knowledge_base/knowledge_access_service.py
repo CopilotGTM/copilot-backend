@@ -40,7 +40,7 @@ class KnowledgeAccessService:
         self.organisation_id = organisation_id
         self.user_id = user_id
         self.storage = AzureOrganisationBlobStorage(organisation_id)
-    
+
     @property
     def session(self) -> AsyncSession:
         return self.org_session
@@ -71,11 +71,15 @@ class KnowledgeAccessService:
         )
 
         if statuses:
-            status_values = [s.value if hasattr(s, "value") else str(s) for s in statuses]
+            status_values = [
+                s.value if hasattr(s, "value") else str(s) for s in statuses
+            ]
             stmt = stmt.where(OrganisationSource.status.in_(status_values))  # type: ignore[arg-type]
 
         if source_types:
-            type_values = [s.value if hasattr(s, "value") else str(s) for s in source_types]
+            type_values = [
+                s.value if hasattr(s, "value") else str(s) for s in source_types
+            ]
             stmt = stmt.where(OrganisationSource.source_type.in_(type_values))  # type: ignore[arg-type]
 
         if q:
@@ -117,26 +121,41 @@ class KnowledgeAccessService:
 
     # -------- Download ----------
     async def generate_download_url(
-        self, source_id: UUID, minutes: int = 120, download_filename: Optional[str] = None
+        self,
+        source_id: UUID,
+        minutes: int = 120,
+        download_filename: Optional[str] = None,
     ) -> str:
-        src: OrganisationSource | None = await self.org_session.get(OrganisationSource, source_id)
+        src: OrganisationSource | None = await self.org_session.get(
+            OrganisationSource, source_id
+        )
         if (
             not src
             or src.organisation_id != self.organisation_id
             or src.user_id != self.user_id
         ):
-            raise KnowledgeAccessServiceError("Source not found or access denied", status_code=404)
+            raise KnowledgeAccessServiceError(
+                "Source not found or access denied", status_code=404
+            )
         if not src.storage_path:
-            raise KnowledgeAccessServiceError("Source has no storage path", status_code=400)
+            raise KnowledgeAccessServiceError(
+                "Source has no storage path", status_code=400
+            )
         try:
             return await self.storage.generate_read_sas(
-                src.storage_path, minutes=minutes, download_filename=download_filename or src.filename
+                src.storage_path,
+                minutes=minutes,
+                download_filename=download_filename or src.filename,
             )
         except Exception as e:  # pragma: no cover - network/azure path
-            logger.error("Failed generating read SAS for %s: %s", source_id, e, exc_info=True)
+            logger.error(
+                "Failed generating read SAS for %s: %s", source_id, e, exc_info=True
+            )
             raise KnowledgeAccessServiceError("Could not generate download URL") from e
 
-    async def build_item_dict(self, src: OrganisationSource, include_urls: bool) -> dict:
+    async def build_item_dict(
+        self, src: OrganisationSource, include_urls: bool
+    ) -> dict:
         def base_data() -> dict:
             return {
                 "source_id": str(src.source_id),
@@ -154,7 +173,9 @@ class KnowledgeAccessService:
             try:
                 return key, await self.storage.generate_read_sas(path, minutes=120)
             except Exception:  # pragma: no cover - network variability
-                logger.debug("Failed generating %s for %s", key, src.source_id, exc_info=True)
+                logger.debug(
+                    "Failed generating %s for %s", key, src.source_id, exc_info=True
+                )
                 return None
 
         data = base_data()
@@ -187,7 +208,7 @@ class KnowledgeAccessService:
         base_filters = [
             OrganisationSource.organisation_id == self.organisation_id,
             OrganisationSource.user_id == self.user_id,
-            getattr(OrganisationSource, 'is_deleted', False) == False,
+            getattr(OrganisationSource, "is_deleted", False) == False,
         ]
 
         status_stmt = (

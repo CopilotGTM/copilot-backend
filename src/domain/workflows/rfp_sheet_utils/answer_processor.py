@@ -17,19 +17,25 @@ RESPONSE_EVENT = "recieve_sheet_answers"
 def process_single_answer_sync(workflow: RfpAgent, row_obj: Dict) -> Dict:
     """Process a single row object synchronously and return the answer."""
     start_time = time.time()
-    logger.info(f"Starting processing for row {row_obj['row_number']} in sheet {row_obj['sheetname']}")
+    logger.info(
+        f"Starting processing for row {row_obj['row_number']} in sheet {row_obj['sheetname']}"
+    )
 
     try:
         answer = workflow.run_workflow(input_message=row_obj["input_message"])
         end_time = time.time()
-        logger.info(f"Completed processing row {row_obj['row_number']} in {end_time - start_time:.2f} seconds")
+        logger.info(
+            f"Completed processing row {row_obj['row_number']} in {end_time - start_time:.2f} seconds"
+        )
         return {
             "sheetname": row_obj["sheetname"],
             "row_number": row_obj["row_number"],
             "answer": answer.content["answer"],
             "confidence_score": answer.content["confidence_score"],
             "confidence_level": answer.content["confidence_level"],
-            "answer_column": row_obj.get("answer_column", ""),  # Add answer column to response
+            "answer_column": row_obj.get(
+                "answer_column", ""
+            ),  # Add answer column to response
         }
     except Exception as e:
         end_time = time.time()
@@ -39,7 +45,9 @@ def process_single_answer_sync(workflow: RfpAgent, row_obj: Dict) -> Dict:
         return None
 
 
-async def process_answers_in_parallel(row_objects: List[Dict], session_id: str, system_message_id: str) -> List[Dict]:
+async def process_answers_in_parallel(
+    row_objects: List[Dict], session_id: str, system_message_id: str
+) -> List[Dict]:
     """
     Process multiple row objects in parallel using the RfpAgent workflow.
     Limits concurrent processing to MAX_CONCURRENT_PROCESSES at a time.
@@ -53,7 +61,9 @@ async def process_answers_in_parallel(row_objects: List[Dict], session_id: str, 
 
         # Create a semaphore to limit concurrent processes
         semaphore = asyncio.Semaphore(MAX_CONCURRENT_PROCESSES)
-        logger.info(f"Created semaphore with limit of {MAX_CONCURRENT_PROCESSES} concurrent processes")
+        logger.info(
+            f"Created semaphore with limit of {MAX_CONCURRENT_PROCESSES} concurrent processes"
+        )
 
         # Create a thread pool for CPU-bound tasks
         with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_PROCESSES) as executor:
@@ -65,7 +75,9 @@ async def process_answers_in_parallel(row_objects: List[Dict], session_id: str, 
 
                 async def process_with_semaphore(row):
                     async with semaphore:
-                        result = await loop.run_in_executor(executor, process_single_answer_sync, workflow, row)
+                        result = await loop.run_in_executor(
+                            executor, process_single_answer_sync, workflow, row
+                        )
                         if result:
                             # Send each answer to websocket as it's processed
                             response_data = {
@@ -77,7 +89,11 @@ async def process_answers_in_parallel(row_objects: List[Dict], session_id: str, 
                                 "response": result,
                                 "isFirstMessage": False,
                             }
-                            await sio.emit(RESPONSE_EVENT, response_data, namespace=WEBSOCKET_NAMESPACE)
+                            await sio.emit(
+                                RESPONSE_EVENT,
+                                response_data,
+                                namespace=WEBSOCKET_NAMESPACE,
+                            )
                         return result
 
                 tasks.append(process_with_semaphore(row_obj))
@@ -98,7 +114,9 @@ async def process_answers_in_parallel(row_objects: List[Dict], session_id: str, 
         logger.info(
             f"Completed processing {len(processed_answers)} rows in {total_end_time - total_start_time:.2f} seconds"
         )
-        logger.info(f"Successfully processed {len(processed_answers)} out of {len(row_objects)} rows")
+        logger.info(
+            f"Successfully processed {len(processed_answers)} out of {len(row_objects)} rows"
+        )
 
         return processed_answers
 

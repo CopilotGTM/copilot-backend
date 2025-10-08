@@ -39,7 +39,9 @@ async def connect(sid, environ, auth):
     payload = auth_class.decode_for_ws(token)
     user_id_str = payload.get("user_id")
     org_id_str = payload.get("organisation_id")
-    logger.info(f"WebSocket connection attempt: sid={sid}, user_id_str={user_id_str}, org_id_str={org_id_str}")
+    logger.info(
+        f"WebSocket connection attempt: sid={sid}, user_id_str={user_id_str}, org_id_str={org_id_str}"
+    )
 
     if not user_id_str or not org_id_str:
         logger.error("Connect refused: token missing user_id/org_id")
@@ -65,7 +67,9 @@ async def connect(sid, environ, auth):
     environ["user_id"] = str(user_id)
     environ["organisation_id"] = str(organisation_id)
 
-    logger.info(f"WebSocket connection established: sid={sid}, user_id={user_id}, organisation_id={organisation_id}")
+    logger.info(
+        f"WebSocket connection established: sid={sid}, user_id={user_id}, organisation_id={organisation_id}"
+    )
 
 
 @sio.event(namespace=WEBSOCKET_NAMESPACE)

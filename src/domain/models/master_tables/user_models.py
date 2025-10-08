@@ -4,7 +4,16 @@ from datetime import datetime
 from enum import Enum
 
 from pydantic import EmailStr
-from sqlalchemy import JSON, Column, DateTime, ForeignKey, Index, String, Text, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    Column,
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlmodel import Field, Relationship, SQLModel
 
 from .base_mixins import CreatedAtMixin, TimestampMixin
@@ -12,8 +21,8 @@ from .super_admin_models import AdminUserStatus
 
 
 if TYPE_CHECKING:
-   from .organisation_models import Organisation
-   from .super_admin_models import SuperAdmin
+    from .organisation_models import Organisation
+    from .super_admin_models import SuperAdmin
 
 
 # Enums for App/User domain
@@ -34,6 +43,7 @@ class SupabaseUserStatus(str, Enum):
 
 class UserEventType(str, Enum):
     """Enumerates user history events."""
+
     CREATED = "created"
     UPDATED = "updated"
     STATUS_CHANGED = "status_changed"
@@ -44,6 +54,7 @@ class UserEventType(str, Enum):
     EMAIL_VERIFIED = "email_verified"
     FIELD_CHANGED = "field_changed"
 
+
 class User(TimestampMixin, table=True):
     __tablename__ = "users"
     __table_args__ = {"schema": "public"}
@@ -51,91 +62,84 @@ class User(TimestampMixin, table=True):
     user_id: UUID = Field(
         default_factory=uuid4,
         primary_key=True,
-        description="Unique UUID for the user record."
+        description="Unique UUID for the user record.",
     )
     supabase_user_id: Optional[str] = Field(
         default=None,
         unique=True,
         index=True,
-        description="Unique user ID from Supabase authentication provider."
+        description="Unique user ID from Supabase authentication provider.",
     )
     organisation_id: UUID = Field(
         foreign_key="public.organisations.organisation_id",
         nullable=False,
         index=True,
-        description="UUID of the organisation this user belongs to."
+        description="UUID of the organisation this user belongs to.",
     )
-    first_name: str = Field(
-        ...,
-        max_length=100,
-        description="User's first name."
-    )
-    last_name: str = Field(
-        ...,
-        max_length=100,
-        description="User's last name."
-    )
+    first_name: str = Field(..., max_length=100, description="User's first name.")
+    last_name: str = Field(..., max_length=100, description="User's last name.")
     email: EmailStr = Field(
         ...,
         unique=True,
         max_length=255,
-        description="User's primary email address. Must be unique."
+        description="User's primary email address. Must be unique.",
     )
     user_role: UserAppRole = Field(
-        ...,
-        nullable=False,
-        description="Application-level role (MEMBER, ADMIN, etc.)."
+        ..., nullable=False, description="Application-level role (MEMBER, ADMIN, etc.)."
     )
     organisation_role: str = Field(
         ...,
         max_length=100,
-        description="User's job designation within the organisation (e.g., Senior Software Engineer)."
+        description="User's job designation within the organisation (e.g., Senior Software Engineer).",
     )
     job_title: Optional[str] = Field(
-        default=None,
-        max_length=100,
-        description="Optional job title for the user."
+        default=None, max_length=100, description="Optional job title for the user."
     )
     status: SupabaseUserStatus = Field(
         default=SupabaseUserStatus.PENDING_SETUP,
         index=True,
-        description="Supabase authentication status (active/inactive/pending_setup). Reflects the actual state of the Supabase account."
+        description="Supabase authentication status (active/inactive/pending_setup). Reflects the actual state of the Supabase account.",
     )
     admin_status: AdminUserStatus = Field(
         default=AdminUserStatus.PENDING,
         index=True,
-        description="Admin approval status (pending/approved/rejected/suspended). Indicates whether an admin has approved the user for access."
+        description="Admin approval status (pending/approved/rejected/suspended). Indicates whether an admin has approved the user for access.",
     )
     email_verified: bool = Field(
         default=False,
         nullable=False,
-        description="Indicates if the user's email address has been verified."
+        description="Indicates if the user's email address has been verified.",
     )
     last_login_at: Optional[datetime] = Field(
         default=None,
         sa_column=Column(DateTime(timezone=True), nullable=True),
-        description="Timestamp of the user's most recent login. Null if never logged in."
+        description="Timestamp of the user's most recent login. Null if never logged in.",
     )
     created_by_auth_user_id: Optional[str] = Field(
         default=None,
         nullable=True,
         index=True,
-        description="Supabase auth.users.id of the admin who created the user."
+        description="Supabase auth.users.id of the admin who created the user.",
     )
     approved_by: Optional[UUID] = Field(
         default=None,
-        sa_column=Column("approved_by", ForeignKey("public.super_admins.admin_id", ondelete="SET NULL"), nullable=True),
-        description="UUID of the admin who approved the user, if applicable."
+        sa_column=Column(
+            "approved_by",
+            ForeignKey("public.super_admins.admin_id", ondelete="SET NULL"),
+            nullable=True,
+        ),
+        description="UUID of the admin who approved the user, if applicable.",
     )
     approved_at: Optional[datetime] = Field(
         default=None,
         sa_column=Column(DateTime(timezone=True), nullable=True),
-        description="Timestamp when the user was approved by an admin."
+        description="Timestamp when the user was approved by an admin.",
     )
 
     # Relationships
     organisation: "Organisation" = Relationship(back_populates="users")
     action_history: List["UserActionHistory"] = Relationship(back_populates="user")
+
 
 class UserActionHistory(CreatedAtMixin, table=True):
     __tablename__ = "user_action_history"
@@ -150,38 +154,40 @@ class UserActionHistory(CreatedAtMixin, table=True):
     id: UUID = Field(
         default_factory=uuid4,
         primary_key=True,
-        description="Unique UUID for this action history record."
+        description="Unique UUID for this action history record.",
     )
     user_id: UUID = Field(
         foreign_key="public.users.user_id",
         nullable=False,
         index=True,
-        description="User UUID this action is associated with."
+        description="User UUID this action is associated with.",
     )
     actor_admin_id: Optional[UUID] = Field(
         default=None,
-        sa_column=Column(ForeignKey("public.super_admins.admin_id", ondelete="SET NULL"), index=True),
-        description="UUID of the admin who performed (or initiated) the action."
+        sa_column=Column(
+            ForeignKey("public.super_admins.admin_id", ondelete="SET NULL"), index=True
+        ),
+        description="UUID of the admin who performed (or initiated) the action.",
     )
     request_id: Optional[str] = Field(
         default=None,
         sa_column=Column(String(64), index=True),
-        description="Client request ID for idempotency/debugging."
+        description="Client request ID for idempotency/debugging.",
     )
     action: UserEventType = Field(
         ...,
         index=True,
-        description="Type of user action/event recorded (created, updated, etc.)."
+        description="Type of user action/event recorded (created, updated, etc.).",
     )
     note: Optional[str] = Field(
         default=None,
         sa_column=Column(Text),
-        description="Optional human-readable note for this action event."
+        description="Optional human-readable note for this action event.",
     )
     details: Optional[Dict[str, Any]] = Field(
         default=None,
         sa_column=Column(JSON),
-        description="Arbitrary structured data or metadata about the action (JSON)."
+        description="Arbitrary structured data or metadata about the action (JSON).",
     )
 
     # Relationships

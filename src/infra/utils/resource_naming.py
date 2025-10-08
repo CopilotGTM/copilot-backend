@@ -6,13 +6,16 @@ import os
 # Can be configured via environment variables for different environments (e.g., "prod", "dev").
 RESOURCE_PREFIX = os.getenv("RESOURCE_PREFIX", "gtm")
 
+
 def get_schema_name(organisation_id: uuid.UUID) -> str:
     """Generates the database schema name for an organization."""
     return f"org_{str(organisation_id).replace('-', '_')}"
 
+
 def get_role_name(organisation_id: uuid.UUID) -> str:
     """Generates the database role name for an organization."""
     return f"org_{str(organisation_id).replace('-', '_')}_role"
+
 
 def get_key_vault_secret_name(organisation_id: uuid.UUID) -> str:
     """
@@ -22,6 +25,7 @@ def get_key_vault_secret_name(organisation_id: uuid.UUID) -> str:
     # Key Vault names allow alphanumeric and dashes.
     secret_name = f"{RESOURCE_PREFIX}-{str(organisation_id)}-db-password"
     return secret_name
+
 
 def get_org_container_name(organisation_id: uuid.UUID) -> str:
     """Return deterministic, storage‑compliant container name for an organisation.

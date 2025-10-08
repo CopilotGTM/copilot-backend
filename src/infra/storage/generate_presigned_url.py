@@ -1,5 +1,6 @@
 from typing import Optional
 from src.infra.utils.logger import get_logger
+
 # import boto3
 # from botocore.exceptions import ClientError
 
@@ -17,7 +18,12 @@ class GeneratePresignedURL:
         self.s3_client = None
 
     def generate_presigned_url(
-        self, cloud_name: str, container_name: str, blob_path: str, file_type: str, expire_seconds: int = 300
+        self,
+        cloud_name: str,
+        container_name: str,
+        blob_path: str,
+        file_type: str,
+        expire_seconds: int = 300,
     ) -> Optional[str]:
         """
         Generate a presigned URL for file upload.
@@ -32,12 +38,16 @@ class GeneratePresignedURL:
         cloud_name = cloud_name.lower()
 
         if cloud_name == "aws":
-            return self._generate_s3_url(container_name, blob_path, file_type, expire_seconds)
+            return self._generate_s3_url(
+                container_name, blob_path, file_type, expire_seconds
+            )
         else:
             logger.error(f"Unsupported cloud provider: {cloud_name}")
             return None
 
-    def _generate_s3_url(self, bucket_name: str, file_path: str, file_type, expire_seconds: int) -> Optional[str]:
+    def _generate_s3_url(
+        self, bucket_name: str, file_path: str, file_type, expire_seconds: int
+    ) -> Optional[str]:
         """Generate S3 presigned URL using boto3"""
         # if not self.s3_client:
         #     logger.error("S3 client not initialized")

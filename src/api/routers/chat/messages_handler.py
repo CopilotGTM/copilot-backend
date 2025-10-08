@@ -23,7 +23,10 @@ from src.workers.chat_worker.celery_app import app as chat_app
 from src.service.chat.chat_message_sse_service import ChatMessageSSEService
 from sse_starlette.sse import EventSourceResponse
 from fastapi import Query
-from src.domain.models.organisation_tables.chat_message_models import ChatMessageRole, ChatMessageType
+from src.domain.models.organisation_tables.chat_message_models import (
+    ChatMessageRole,
+    ChatMessageType,
+)
 
 
 logger = get_logger("chat_messages")
@@ -41,7 +44,7 @@ async def get_chat_message_service(
         yield service
     finally:
         # Ensure proper cleanup of service resources
-        if hasattr(service, 'close') and callable(getattr(service, 'close')):
+        if hasattr(service, "close") and callable(getattr(service, "close")):
             await service.close()
 
 
@@ -118,8 +121,8 @@ async def send_message(
     summary="SSE stream for a message job with consume-once delivery",
 )
 async def message_events(
-    job_id: UUID, 
-    request: Request, 
+    job_id: UUID,
+    request: Request,
     user_ids: UserIDs = Depends(get_current_user),
 ):
     service = ChatMessageSSEService(user_ids.organisation_id, job_id, user_ids.user_id)
@@ -131,7 +134,7 @@ async def message_events(
     last_event_id = request.headers.get("last-event-id") or request.headers.get(
         "Last-Event-ID"
     )
-    
+
     # If client provides Last-Event-ID, they want to resume from that point
     # In consume-once mode, this helps handle reconnections gracefully
     resume_from_id = last_event_id if last_event_id else None
@@ -141,8 +144,7 @@ async def message_events(
             # Use consume_once=True by default for one-time message delivery
             # Pass resume_from_id for potential reconnection handling
             async for ev in service.stream_events(
-                consume_once=True, 
-                resume_from_id=resume_from_id
+                consume_once=True, resume_from_id=resume_from_id
             ):
                 yield ev
         finally:
@@ -186,7 +188,9 @@ async def list_messages(
 
         # Build enriched items using service method
         item_dicts = service.build_message_list_items(msgs, atts_urls)
-        items: List[ChatMessageListItem] = [ChatMessageListItem(**item) for item in item_dicts]
+        items: List[ChatMessageListItem] = [
+            ChatMessageListItem(**item) for item in item_dicts
+        ]
         page = ChatMessagesPage(items=items, cursor=next_cursor)
         return Response.success_response("Messages listed", page)
     except ValueError as e:

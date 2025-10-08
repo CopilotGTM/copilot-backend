@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Optional
 from urllib.parse import urlparse, ParseResult
+
 # import boto3
 # from botocore.exceptions import ClientError
 from dataclasses import dataclass
@@ -93,7 +94,9 @@ class GCPProvider:
                 raise ValueError("Invalid GCS URL: empty key")
 
             gcs_url = f"gs://{bucket_name}/{key}"
-            logger.info(f"Successfully converted URL - From: {https_url}, To: {gcs_url}")
+            logger.info(
+                f"Successfully converted URL - From: {https_url}, To: {gcs_url}"
+            )
             return gcs_url
 
         except Exception as e:

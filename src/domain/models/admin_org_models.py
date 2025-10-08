@@ -42,7 +42,6 @@ class ListOrganizationResponse(BaseModel):
         from_attributes = True
 
 
-
 class AdminUserResponse(BaseModel):
     user_id: UUID
     email: EmailStr
@@ -57,7 +56,6 @@ class CreateOrganizationResponse(BaseModel):
     schema_name: str
     created_at: datetime
     updated_at: datetime
-
 
 
 class PaginationOrganizations(_Base, Generic[T]):

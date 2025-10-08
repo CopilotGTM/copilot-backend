@@ -120,11 +120,11 @@ class SupabaseUserClient:
     def _validate_token(self, token: str, is_refresh: bool = False) -> bool:
         """
         Validate token format.
-    
+
         Args:
             token: Token to validate
             is_refresh: If True, treat as refresh token (opaque format)
-    
+
         Returns:
             True if token format is valid, False otherwise
         """
@@ -338,10 +338,10 @@ class SupabaseUserClient:
     def refresh_access_token(self, refresh_token: str) -> Dict[str, Any]:
         """
         Refresh access token using refresh token.
-    
+
         Args:
             refresh_token: Refresh token
-    
+
         Returns:
             New session data with access and refresh tokens
         """
@@ -349,7 +349,7 @@ class SupabaseUserClient:
             # Input validation: refresh token is not always JWT
             if not self._validate_token(refresh_token, is_refresh=True):
                 raise SupabaseAuthError(SupabaseErrors.INVALID_TOKEN, status_code=400)
-    
+
             response = self.client.auth.refresh_session(refresh_token)
             logger.info("Access token refreshed successfully")
             return response.model_dump()

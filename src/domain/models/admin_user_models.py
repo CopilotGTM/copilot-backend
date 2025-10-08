@@ -4,7 +4,12 @@ from datetime import datetime
 from pydantic import BaseModel, EmailStr
 from pydantic.generics import GenericModel as _Base
 
-from src.domain.models.master_tables import AdminUserStatus, User, UserAppRole, SupabaseUserStatus
+from src.domain.models.master_tables import (
+    AdminUserStatus,
+    User,
+    UserAppRole,
+    SupabaseUserStatus,
+)
 
 T = TypeVar("T")
 
@@ -47,7 +52,7 @@ class UserResponse(BaseModel):
         from_attributes = True
 
     @classmethod
-    def from_orm(cls: Type['UserResponse'], user: User) -> 'UserResponse':
+    def from_orm(cls: Type["UserResponse"], user: User) -> "UserResponse":
         return cls(
             user_id=user.user_id,
             first_name=user.first_name,

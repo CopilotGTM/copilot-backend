@@ -12,7 +12,7 @@ logger = get_logger("kw_progress")
 
 class ProgressPublisher:
     """Lightweight progress event publisher used across the knowledge worker.
-    
+
     - Per-run instances: initialize with `organisation_id` and `source_id` and
       reuse the same instance for all progress updates in that run.
     - A legacy module-level `publish` function remains for one-off calls and

@@ -154,7 +154,8 @@ def post_upload(self, organisation_id: str, attachment_id: str):
                 _assign_generated_thumbnails(attachment, created)
         except Exception as e:
             logger.exception(
-                "Thumbnail generation failed for attachment %s", attachment.attachment_id
+                "Thumbnail generation failed for attachment %s",
+                attachment.attachment_id,
             )
             attachment.status = AttachmentStatus.FAILED
             attachment.processing_error = f"thumbnail_failed: {e}"[:500]
