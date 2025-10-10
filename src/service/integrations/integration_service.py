@@ -55,6 +55,25 @@ class IntegrationService:
         self.organisation_id = organisation_id
         self.nango = nango_client or NangoClient()
 
+    @staticmethod
+    def _provider_from_type(type_or_str: Any) -> str:
+        """Return provider string from IntegrationType enum or string.
+
+        Handles cases where SQLAlchemy may return a raw string from the DB
+        (instead of the IntegrationType enum), avoiding attribute access errors
+        like: 'str' object has no attribute 'value'.
+        """
+        try:
+            if isinstance(type_or_str, IntegrationType):
+                return type_or_str.value
+            if isinstance(type_or_str, str):
+                return type_or_str
+            # Fallback to string representation
+            return str(type_or_str)
+        except Exception:
+            # Very defensive: never let provider resolution explode
+            return str(type_or_str)
+
     async def create_integration(
         self,
         integration_type: IntegrationType,
@@ -85,8 +104,9 @@ class IntegrationService:
         """
         try:
             # Get token expiry from Nango connection
+            provider = self._provider_from_type(integration_type)
             nango_connection = await self.nango.get_connection(
-                provider=integration_type.value,
+                provider=provider,
                 connection_id=connection_id,
             )
 
@@ -114,7 +134,7 @@ class IntegrationService:
 
             logger.info(
                 f"Created integration: {integration.integration_id} "
-                f"({integration_type.value}) for org {self.organisation_id}"
+                f"({provider}) for org {self.organisation_id}"
             )
 
             return integration
@@ -274,9 +294,17 @@ class IntegrationService:
 
         # Delete from Nango
         try:
+            provider = self._provider_from_type(integration.integration_type)
+            logger.info(
+                f"Revoking Nango connection for integration {integration_id} "
+                f"(provider={provider}, connection_id={integration.connection_id})"
+            )
             await self.nango.delete_connection(
-                provider=integration.integration_type.value,
+                provider=provider,
                 connection_id=integration.connection_id,
+            )
+            logger.info(
+                f"Successfully revoked Nango connection for integration {integration_id}"
             )
         except NangoConnectionError as e:
             logger.warning(
@@ -288,7 +316,9 @@ class IntegrationService:
         await self.db.delete(integration)
         await self.db.commit()
 
-        logger.info(f"Deleted integration {integration_id}")
+        logger.info(
+            f"Deleted integration {integration_id} for org {self.organisation_id}"
+        )
         return True
 
     async def check_and_refresh_token(
@@ -310,8 +340,13 @@ class IntegrationService:
 
         try:
             # Refresh token via Nango
+            provider = self._provider_from_type(integration.integration_type)
+            logger.debug(
+                f"Refreshing token for integration {integration.integration_id} "
+                f"(provider={provider}, connection_id={integration.connection_id})"
+            )
             connection = await self.nango.refresh_token(
-                provider=integration.integration_type.value,
+                provider=provider,
                 connection_id=integration.connection_id,
             )
 
