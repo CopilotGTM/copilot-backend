@@ -16,6 +16,9 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta, timezone
 import logging
 import httpx
+import hmac
+import hashlib
+import json
 
 from src.infra.config.configs import nango_integration_config
 
@@ -74,6 +77,68 @@ class NangoClient:
         )
         logger.info(f"Initialized Nango REST API client with base URL: {self.base_url}")
 
+    @staticmethod
+    def verify_webhook_signature(
+        signature: str,
+        payload: Dict[str, Any],
+        webhook_secret: Optional[str] = None
+    ) -> bool:
+        """
+        Verify the X-Nango-Signature header from a webhook request.
+        
+        Nango signs webhook payloads using SHA-256 hash (NOT HMAC).
+        The signature is the hex digest of: SHA256(secret_key + JSON_payload)
+        
+        Docs: https://docs.nango.dev/implementation-guides/platform/webhooks-from-nango#verifying-webhooks-from-nango
+        Source: https://github.com/NangoHQ/nango/blob/main/packages/node-client/lib/index.ts#L1037
+        
+        Args:
+            signature: The X-Nango-Signature header value
+            payload: The webhook request body as a dictionary
+            webhook_secret: The secret key from Nango (NANGO_SECRET_KEY).
+                          If not provided, uses config value.
+        
+        Returns:
+            True if signature is valid, False otherwise
+            
+        Example:
+            signature = request.headers.get("X-Nango-Signature")
+            is_valid = NangoClient.verify_webhook_signature(signature, request.json())
+        """
+        secret = webhook_secret or nango_integration_config.NANGO_SECRET_KEY
+        if not secret:
+            logger.error("NANGO_SECRET_KEY not configured - cannot verify webhook")
+            return False
+            
+        if not signature:
+            logger.warning("No X-Nango-Signature header provided")
+            return False
+        
+        try:
+            # Convert payload to JSON string (same format Nango uses)
+            # Nango uses JSON.stringify() which doesn't sort keys
+            payload_json = json.dumps(payload, separators=(',', ':'))
+            
+            # Compute SHA-256 hash (NOT HMAC!)
+            # Formula: SHA256(secret + payload_json)
+            signature_input = f"{secret}{payload_json}"
+            expected_signature = hashlib.sha256(signature_input.encode('utf-8')).hexdigest()
+            
+            # Constant-time comparison to prevent timing attacks
+            is_valid = hmac.compare_digest(signature, expected_signature)
+            
+            if not is_valid:
+                logger.warning(
+                    f"Webhook signature mismatch. Expected: {expected_signature[:10]}..., "
+                    f"Got: {signature[:10]}..."
+                )
+            
+            return is_valid
+            
+        except Exception as e:
+            logger.error(f"Error verifying webhook signature: {str(e)}")
+            return False
+
     async def create_connect_session(
         self,
         end_user_id: str,
@@ -108,20 +173,64 @@ class NangoClient:
             NangoConnectionError: If session creation fails
         """
         try:
+            # Build end_user object without null fields (Nango rejects null strings)
+            end_user: Dict[str, Any] = {
+                "id": end_user_id,
+                "tags": {"organizationId": organization_id},
+            }
+            if end_user_email is not None:
+                end_user["email"] = end_user_email
+            if end_user_display_name is not None:
+                end_user["display_name"] = end_user_display_name
+
             payload = {
-                "end_user": {
-                    "id": end_user_id,
-                    "email": end_user_email,
-                    "display_name": end_user_display_name,
-                    "tags": {"organizationId": organization_id},
-                },
+                "end_user": end_user,
                 "allowed_integrations": [integration_id],
             }
+
+            # Debug: high-level payload details (no secrets)
+            logger.debug(
+                "Creating Nango Connect session: end_user_id=%s org_id=%s integration=%s has_email=%s has_display_name=%s",
+                end_user_id,
+                organization_id,
+                integration_id,
+                str(end_user_email is not None),
+                str(end_user_display_name is not None),
+            )
 
             response = await self.client.post("/connect/sessions", json=payload)
             response.raise_for_status()
 
             result = response.json()
+
+            # Normalize response to expose token and expires_at at top-level
+            if isinstance(result, dict):
+                envelope = result.get("data") if isinstance(result.get("data"), dict) else None
+                body = envelope if envelope is not None else result
+                token = (
+                    body.get("token")
+                    or body.get("session_token")
+                    or body.get("connect_token")
+                    or (body.get("session") or {}).get("token")
+                )
+                expires_at = (
+                    body.get("expires_at")
+                    or (body.get("session") or {}).get("expires_at")
+                )
+                # Attach normalized fields for consumers
+                result["token"] = token
+                result["expires_at"] = expires_at
+
+                # Debug with masked token
+                masked = (
+                    f"{str(token)[:6]}...{str(token)[-4:]}" if isinstance(token, str) and len(token) > 12 else "***masked***"
+                )
+                logger.debug(
+                    "Nango Connect session response normalized: has_envelope=%s token=%s expires_at=%s",
+                    str(envelope is not None),
+                    masked,
+                    expires_at,
+                )
 
             logger.info(
                 f"Created Connect Session for user={end_user_id}, "
