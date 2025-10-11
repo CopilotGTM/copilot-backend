@@ -73,7 +73,7 @@ class AppConfig:
     ]
 
     # App URL
-    APP_URL: str = os.getenv("APP_URL", "http://localhost:3000")
+    APP_URL: str = os.getenv("APP_URL")
 
     # Security settings
     SECRET_KEY: str = os.getenv("SECRET_KEY", "your-secret-key-here")
@@ -133,10 +133,6 @@ class NangoIntegrationConfig:
     NANGO_SECRET_KEY: str = os.getenv("NANGO_SECRET_KEY", "")
     NANGO_BASE_URL: str = os.getenv("NANGO_BASE_URL", "https://api.nango.dev")
 
-    # Webhook URL where Nango sends auth success notifications
-    NANGO_WEBHOOK_URL: Optional[str] = os.getenv("NANGO_WEBHOOK_URL")
-    NANGO_WEBHOOK_SECRET: str = NANGO_SECRET_KEY
-
     # Integration behavior settings
     INTEGRATION_TOKEN_REFRESH_BUFFER_MINUTES: int = int(
         os.getenv("INTEGRATION_TOKEN_REFRESH_BUFFER_MINUTES", "30")
@@ -149,7 +145,7 @@ class NangoIntegrationConfig:
     )
 
     # OAuth callback URL base (for frontend redirects after connection)
-    OAUTH_CALLBACK_BASE_URL: Optional[str] = os.getenv("OAUTH_CALLBACK_BASE_URL")
+    OAUTH_CALLBACK_BASE_URL: Optional[str] = os.getenv("APP_URL")
 
 
 class SecretManagerConfig:
