@@ -180,7 +180,7 @@ curl -X GET "https://api.example.com/users/integrations/available" \
 
 ---
 
-## 2. Initiate OAuth Connection (Authorize)
+## 2. Initiate OAuth Flow (Create Nango Connect Session)
 
 ### Endpoint
 ```http
@@ -188,10 +188,27 @@ POST /users/integrations/oauth/authorize
 ```
 
 ### Description
-Initiates OAuth flow for connecting an integration. Returns an authorization URL that the user must visit to grant permissions. This is the **second step** after user clicks "Connect" on an integration from the available list.
+Creates a Nango Connect Session for the selected integration and returns a `session_token` that the frontend uses with the Nango Connect UI. 
+
+**New Flow (Post July 31, 2025):**
+1. Frontend calls this endpoint to get session token
+2. Frontend uses Nango Connect UI with the session token
+3. User authorizes on provider's site via Nango UI
+4. Nango sends webhook to backend with connection details
+5. Backend stores connection and you can refresh the integrations list
+
+**Note:** This is the modern Nango Connect flow - no callback endpoint is involved.
 
 ### Authentication
 Required - Bearer token
+
+**What Backend Extracts Automatically from JWT:**
+- `user_id` - Your internal user ID
+- `organisation_id` - Your internal organization ID
+- `email` - User's email address (from User model)
+- `first_name` and `last_name` - User's name (from User model)
+
+These are automatically sent to Nango and will be returned in the webhook.
 
 ### Request Body
 ```json
@@ -208,18 +225,21 @@ Required - Bearer token
 | `integration_type` | string | Yes | Integration type (hubspot, slack, etc.) from available list |
 | `integration_name` | string | No | Custom name for this connection (auto-generated if not provided) |
 
-**Note:** OAuth scopes are automatically configured by the backend based on integration requirements. Frontend doesn't need to specify scopes.
+**Frontend Does NOT Need to Send:**
+- ❌ `user_id` - Extracted from JWT automatically
+- ❌ `organisation_id` - Extracted from JWT automatically
+- ❌ `email` - Retrieved from User model automatically
+- ❌ `display_name` - Generated from User model automatically
 
 ### Response (200 OK)
 ```json
 {
   "status": "success",
-  "message": "OAuth authorization URL generated successfully",
+  "message": "Connect session created successfully. Use session_token with Nango Connect UI.",
   "data": {
-    "authorization_url": "https://app.hubspot.com/oauth/authorize?client_id=xxx&redirect_uri=xxx&state=xxx",
-    "connection_id": "org_123e4567_hubspot_20251005103000",
-    "state": "random-state-string",
-    "integration_type": "hubspot"
+    "session_token": "ngc_sess_abc123...",
+    "integration_type": "hubspot",
+    "expires_at": "2025-10-09T00:45:00Z"
   }
 }
 ```
@@ -228,12 +248,11 @@ Required - Bearer token
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `authorization_url` | string | URL to redirect user to for OAuth authorization |
-| `connection_id` | string | Unique connection identifier (format: `org_{org_id}_{type}_{timestamp}`) |
-| `state` | string | OAuth state parameter for security validation |
+| `session_token` | string | Token for initializing Nango Connect UI on the frontend |
 | `integration_type` | string | Integration type being connected |
+| `expires_at` | string | ISO 8601 timestamp when session token expires |
 
-### Error Response (500)
+### Error Responses
 ```json
 {
   "status": "error",
@@ -242,114 +261,177 @@ Required - Bearer token
 }
 ```
 
-### Implementation Notes
+### Frontend Implementation (Nango Connect UI)
 
-**Frontend Flow:**
-1. User clicks "Connect" button on an integration
-2. Call this endpoint with integration type
-3. Open returned `authorization_url` in popup or redirect
-4. User authorizes on provider's site
-5. Provider redirects to callback (handled by backend)
-6. Listen for redirect back to success page
-7. Refresh integrations list to show new connection
-
-**OAuth Popup Pattern:**
+**Step 1: Request session token from backend**
 ```typescript
-async function connectIntegration(integrationType: string) {
+const initiateOAuth = async (integrationType: string) => {
   try {
-    // Step 1: Get authorization URL
-    const response = await fetch('/users/integrations/oauth/authorize', {
+    const res = await fetch('/users/integrations/oauth/authorize', {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json'
+      headers: { 
+        'Authorization': `Bearer ${token}`, 
+        'Content-Type': 'application/json' 
       },
-      body: JSON.stringify({
-        integration_type: integrationType,
-        integration_name: `My ${integrationType} Account`
-      })
+      body: JSON.stringify({ integration_type: integrationType })
     });
     
-    const data = await response.json();
-    const authUrl = data.data.authorization_url;
+    const response = await res.json();
     
-    // Step 2: Open OAuth popup
-    const popup = window.open(
-      authUrl,
-      'OAuth',
-      'width=600,height=700,scrollbars=yes'
-    );
-    
-    // Step 3: Listen for completion
-    const checkPopup = setInterval(() => {
-      if (popup?.closed) {
-        clearInterval(checkPopup);
-        // Refresh integrations list
-        fetchIntegrations();
-      }
-    }, 500);
-    
+    if (response.status === 'success') {
+      // Open Nango Connect UI with session token
+      openNangoConnect(response.data.session_token);
+    }
   } catch (error) {
-    console.error('OAuth initiation failed:', error);
-    showError('Failed to connect integration');
+    console.error('Failed to initiate OAuth:', error);
+    showError('Failed to start authorization');
   }
-}
+};
 ```
 
-**Alternative: Full Page Redirect:**
+**Step 2: Use Nango Connect UI**
 ```typescript
-async function connectIntegration(integrationType: string) {
-  const response = await fetch('/users/integrations/oauth/authorize', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({ integration_type: integrationType })
-  });
+import Nango from '@nangohq/frontend';
+
+const openNangoConnect = (sessionToken: string) => {
+  const nango = new Nango({ publicKey: 'YOUR_NANGO_PUBLIC_KEY' });
   
-  const data = await response.json();
-  
-  // Redirect current page to authorization URL
-  // Backend will redirect back after completion
-  window.location.href = data.data.authorization_url;
-}
+  nango
+    .auth(sessionToken)
+    .then((result) => {
+      console.log('Authorization successful:', result);
+      
+      // Show success message
+      showNotification('Integration connected successfully!');
+      
+      // Refresh integrations list
+      refreshIntegrations();
+    })
+    .catch((error) => {
+      console.error('Authorization failed:', error);
+      showError('Failed to authorize integration');
+    });
+};
 ```
 
-### Example cURL
-```bash
-curl -X POST "https://api.example.com/users/integrations/oauth/authorize" \
-  -H "Authorization: Bearer YOUR_TOKEN_HERE" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "integration_type": "hubspot",
-    "integration_name": "Sales HubSpot"
-  }'
+**Step 3: Handle completion**
+```typescript
+const refreshIntegrations = async () => {
+  // Reload the integrations list to show the newly connected integration
+  const response = await fetch('/users/integrations/available', {
+    headers: { 'Authorization': `Bearer ${token}` }
+  });
+  const data = await response.json();
+  setIntegrations(data.data.integrations);
+};
 ```
+
+### 🔄 Data Flow: How User & Organization Information is Handled
+
+**See complete data flow documentation:** [`oauth-data-flow.md`](./oauth-data-flow.md)
+
+**Quick Summary:**
+
+1. **Frontend sends** (to backend):
+   - `integration_type` in request body
+   - JWT token in Authorization header
+
+2. **Backend automatically extracts** (from JWT + User model):
+   - `user_id`, `organisation_id` (from JWT)
+   - `email`, `first_name`, `last_name` (from User model)
+
+3. **Backend sends to Nango**:
+   ```json
+   {
+     "end_user": {
+       "id": "user_id",
+       "email": "user@example.com",
+       "display_name": "John Doe",
+       "tags": { "organizationId": "org_id" }
+     }
+   }
+   ```
+
+4. **Nango returns in webhook** (to backend):
+   ```json
+   {
+     "endUser": {
+       "id": "user_id",
+       "tags": { "organizationId": "org_id" }
+     }
+   }
+   ```
+
+5. **Backend creates integration** for the correct user/organization
+
+**Frontend developers do NOT need to:**
+- ❌ Send `user_id` or `organisation_id` explicitly
+- ❌ Extract these from JWT themselves
+- ❌ Handle webhook responses
+
+**Everything is handled automatically by the backend!**
 
 ### OAuth Scopes (Backend Managed)
 
-OAuth scopes are **automatically configured by the backend** based on each integration's requirements. The frontend doesn't need to know or specify scopes.
+OAuth scopes are managed server-side based on integration requirements; the frontend does not pass scopes.
 
 **Why backend manages scopes:**
-- ✅ **Security** - Backend knows exactly what permissions it needs
-- ✅ **Consistency** - All users get same, tested permissions
-- ✅ **Simplicity** - Frontend just says "connect HubSpot"
-- ✅ **Maintenance** - Add new scopes without frontend changes
+- Security, consistency, simplicity, and maintenance.
 
-**Current scope configuration:**
+**Examples:**
+- HubSpot: `crm.objects.contacts.read`, `crm.objects.deals.read`, `crm.objects.companies.read`, `files`
+- Slack: `channels:read`, `channels:history`, `files:read`, `users:read`
 
-**HubSpot:** (Backend requests)
-- `crm.objects.contacts.read` - Read contacts
-- `crm.objects.deals.read` - Read deals
-- `crm.objects.companies.read` - Read companies
-- `files` - Access files
+### Pydantic Models (Backend)
 
-**Slack:** (Backend requests)
-- `channels:read` - View channels
-- `channels:history` - Read messages
-- `files:read` - Access files
-- `users:read` - View users
+```python
+from pydantic import BaseModel, Field
+from typing import Optional
+from src.domain.models.organisation_tables.knowledge_models import IntegrationType
+
+
+class OAuthInitiateRequest(BaseModel):
+    """Request to initiate OAuth (create Connect Session)."""
+
+    integration_type: IntegrationType = Field(
+        ..., description="Integration to connect (e.g., HUBSPOT, SLACK, GOOGLE_DRIVE)"
+    )
+    integration_name: Optional[str] = Field(
+        default=None,
+        min_length=1,
+        max_length=100,
+        description="Optional user-defined name for this connection",
+    )
+
+
+class OAuthInitiateResponse(BaseModel):
+    """Response with Nango Connect session token for the frontend."""
+
+    session_token: str = Field(
+        ..., description="Token for initializing Nango Connect UI on the frontend"
+    )
+    integration_type: IntegrationType = Field(
+        ..., description="Integration type being connected"
+    )
+    expires_at: Optional[str] = Field(
+        default=None, description="ISO 8601 expiry timestamp for the session token"
+    )
+```
+
+### TypeScript Interfaces (Frontend)
+
+```ts
+interface OAuthInitiateRequest {
+  integration_type: string; // e.g., 'hubspot', 'slack'
+  integration_name?: string;
+}
+
+interface OAuthInitiateResponse {
+  session_token: string;
+  integration_type: string;
+  expires_at?: string; // ISO 8601
+}
+```
 
 ---
 
@@ -506,22 +588,188 @@ This tells the backend where to redirect users after OAuth completion.
 
 ---
 
+## 4. Disconnect Integration
+
+### Endpoint
+```http
+DELETE /users/integrations/oauth/disconnect/{integration_id}
+```
+
+### Description
+Disconnects and deletes an integration, revoking OAuth tokens and removing all associated data.
+
+### Authentication
+Required - Bearer token
+
+### Path Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `integration_id` | UUID | Yes | ID of the integration to disconnect |
+
+### Response (200 OK)
+```json
+{
+  "status": "success",
+  "message": "Integration disconnected successfully",
+  "data": null
+}
+```
+
+### Error Responses
+
+**404 Not Found:**
+```json
+{
+  "status": "error",
+  "message": "Integration not found",
+  "data": null
+}
+```
+
+**500 Internal Server Error:**
+```json
+{
+  "status": "error",
+  "message": "Failed to disconnect integration",
+  "data": null
+}
+```
+
+### What Gets Deleted
+
+When you disconnect an integration:
+1. ✅ **Nango Connection** - OAuth tokens revoked with provider
+2. ✅ **Integration Record** - Deleted from database
+3. ✅ **Sync History** - All sync records cascade deleted
+4. ✅ **Connection Metadata** - All stored metadata removed
+
+⚠️ **Warning:** This action is irreversible. User will need to re-authorize to reconnect.
+
+### Frontend Implementation
+
+```typescript
+const disconnectIntegration = async (integrationId: string) => {
+  if (!confirm('Are you sure you want to disconnect? This cannot be undone.')) {
+    return;
+  }
+  
+  try {
+    const response = await fetch(
+      `/users/integrations/oauth/disconnect/${integrationId}`,
+      {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    
+    const data = await response.json();
+    
+    if (data.status === 'success') {
+      showNotification('Integration disconnected successfully');
+      refreshIntegrations(); // Reload integrations list
+    } else {
+      showError(data.message);
+    }
+  } catch (error) {
+    console.error('Failed to disconnect:', error);
+    showError('Failed to disconnect integration');
+  }
+};
+```
+
+---
+
+## OAuth Flow Summary
+
+### Complete Flow (Nango Connect UI)
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Frontend
+    participant Backend
+    participant Nango
+    participant Provider (HubSpot/Slack)
+
+    User->>Frontend: Click "Connect HubSpot"
+    Frontend->>Backend: POST /oauth/authorize
+    Backend->>Nango: Create Connect Session
+    Nango-->>Backend: session_token
+    Backend-->>Frontend: session_token
+    
+    Frontend->>Nango: Open Nango Connect UI
+    Nango->>Provider: Redirect to OAuth
+    User->>Provider: Authorize
+    Provider-->>Nango: Authorization code
+    Nango->>Provider: Exchange for tokens
+    Provider-->>Nango: Access token
+    
+    Nango->>Backend: POST /webhooks/nango
+    Backend->>Backend: Save integration
+    Backend-->>Nango: 200 OK
+    
+    Nango-->>Frontend: Success callback
+    Frontend->>Backend: GET /available (refresh)
+    Backend-->>Frontend: Updated integrations
+    Frontend->>User: Show success message
+```
+
+### Key Differences from Old Flow
+
+**Old Flow (Deprecated):**
+- Backend provides authorization URL
+- User redirects through provider
+- Provider calls backend callback endpoint
+- Backend redirects user back to frontend
+
+**New Flow (Current - Nango Connect UI):**
+- Backend provides session token ✅
+- Frontend opens Nango Connect UI ✅
+- Nango handles entire OAuth flow ✅
+- Nango calls webhook endpoint ✅
+- Frontend receives success via Nango SDK ✅
+
+**Benefits:**
+- 🎯 Better UX - Modal UI instead of full redirects
+- 🔒 More secure - Tokens never touch your backend
+- ⚡ Faster - No page reloads
+- 🛠️ Easier - Less code to maintain
+
+---
+
 ## Common Error Codes
 
 | Status Code | Message | Solution |
 |-------------|---------|----------|
 | 401 | Unauthorized | Check bearer token is valid |
+| 404 | Integration not found | Verify integration_id exists |
 | 500 | Internal Server Error | Retry request or contact support |
 
 ---
 
 ## Best Practices
 
+### Frontend Best Practices
+
 1. **Cache the response** - Integration list changes rarely, cache for 5 minutes
 2. **Handle empty states** - Check if `connected_integrations` array is empty
 3. **Show loading states** - API call may take 1-2 seconds
 4. **Group by category** - Better UX when integrations are grouped
 5. **Check availability** - Don't show connect button for `coming_soon` integrations
+6. **Confirmation dialogs** - Always confirm before disconnecting
+7. **Refresh after connect** - Reload integrations list after successful OAuth
+
+### Backend Best Practices
+
+1. **Webhook signature verification** - Always verify `X-Nango-Signature` header
+2. **Idempotent webhook handling** - Handle duplicate webhook deliveries
+3. **Return 200 for webhooks** - Even on processing errors (log them instead)
+4. **Secure token storage** - Tokens stored by Nango, never in your database
+5. **Monitor webhook logs** - Check Nango dashboard for failed deliveries
 
 ---
 

@@ -135,6 +135,7 @@ class NangoIntegrationConfig:
 
     # Webhook URL where Nango sends auth success notifications
     NANGO_WEBHOOK_URL: Optional[str] = os.getenv("NANGO_WEBHOOK_URL")
+    NANGO_WEBHOOK_SECRET: str = NANGO_SECRET_KEY
 
     # Integration behavior settings
     INTEGRATION_TOKEN_REFRESH_BUFFER_MINUTES: int = int(
