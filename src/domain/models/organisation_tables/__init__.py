@@ -22,6 +22,7 @@ from .knowledge_models import (
     OrganisationDocument,
     OrganisationSource,
     KnowledgeIntegration,
+    IntegrationSyncHistory,
 )
 from .job_models import JobStatus, ChatMessageJob, KnowledgeProcessingJob
 
@@ -33,10 +34,12 @@ __all__ = [
     "ChatSession",
     "ChatMessage",
     "Attachment",
+    "ChatMessageAttachmentLink",
     # Knowledge Models
     "OrganisationDocument",
     "OrganisationSource",
     "KnowledgeIntegration",
+    "IntegrationSyncHistory",
     # Job Models
     "JobStatus",
     "ChatMessageJob",

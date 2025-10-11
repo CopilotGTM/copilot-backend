@@ -7,6 +7,7 @@ Handles:
 - Connection setup and validation
 """
 
+from typing import Any, Dict, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request, Header
@@ -27,16 +28,144 @@ from src.api.schemas.integrations import (
     IntegrationError,
 )
 from src.service.integrations import NangoClient, IntegrationService
+from src.service.integrations.nango_client import NangoConnectionError
 from src.infra.auth.user_auth import user_auth
 from src.domain.models.master_tables import User
 from src.infra.config.configs import nango_integration_config
 from src.infra.utils.logger import get_logger
 from src.infra.config.constant import IntegrationErrors
 from src.domain.models.organisation_tables.knowledge_models import IntegrationType
-from src.infra.config.integrations_metadata import get_integration_metadata
+from src.infra.config.integrations_metadata import (
+    get_integration_metadata,
+    AvailabilityStatus,
+    IntegrationMetadata,
+)
+from src.infra.config.nango_provider_mapping import (
+    to_nango_provider_key,
+    to_nango_connect_integration_key,
+    from_nango_provider_key,
+)
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/oauth", tags=["integrations-oauth"])
+
+_ALLOWED_AVAILABILITY_STATUSES = {
+    AvailabilityStatus.AVAILABLE,
+    AvailabilityStatus.BETA,
+}
+
+
+class IntegrationUnavailableError(Exception):
+    """Raised when an integration is not ready for user connections."""
+
+    def __init__(self, status: str) -> None:
+        super().__init__(status)
+        self.status = status
+
+
+def _extract_nango_error_message(payload: Any) -> Optional[str]:
+    """
+    Pull a user-friendly message from a Nango error payload.
+    """
+    if isinstance(payload, dict):
+        error_block = payload.get("error") or payload
+        if isinstance(error_block, dict):
+            message = error_block.get("message")
+            if isinstance(message, str) and message.strip():
+                return message.strip()
+
+            errors = error_block.get("errors")
+            if isinstance(errors, list):
+                for entry in errors:
+                    if isinstance(entry, dict):
+                        nested_message = entry.get("message")
+                        if isinstance(nested_message, str) and nested_message.strip():
+                            return nested_message.strip()
+                    elif isinstance(entry, str) and entry.strip():
+                        return entry.strip()
+
+        message = payload.get("message")
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+
+    if isinstance(payload, list):
+        for entry in payload:
+            if isinstance(entry, dict):
+                nested_message = entry.get("message")
+                if isinstance(nested_message, str) and nested_message.strip():
+                    return nested_message.strip()
+            elif isinstance(entry, str) and entry.strip():
+                return entry.strip()
+
+    if isinstance(payload, str) and payload.strip():
+        return payload.strip()
+
+    return None
+
+
+def _get_validated_metadata(
+    integration_type: IntegrationType,
+) -> IntegrationMetadata:
+    metadata = get_integration_metadata(integration_type)
+    if not metadata:
+        raise ValueError(f"Unknown integration type: {integration_type}")
+    return metadata
+
+
+def _ensure_integration_available(metadata: IntegrationMetadata) -> None:
+    if metadata.availability_status not in _ALLOWED_AVAILABILITY_STATUSES:
+        raise IntegrationUnavailableError(metadata.availability_status)
+
+
+def _should_include_stacktrace(error: NangoConnectionError) -> bool:
+    if error.status_code is None:
+        return True
+    return isinstance(error.status_code, int) and error.status_code >= 500
+
+
+def _extract_session_details(session_data: Dict[str, Any]) -> tuple[str, Optional[str]]:
+    raw = session_data.get("data") if isinstance(session_data, dict) else None
+    payload = raw if isinstance(raw, dict) else session_data
+
+    token = payload.get("token") or (payload.get("session") or {}).get("token")
+    expires_at = payload.get("expires_at") or (payload.get("session") or {}).get(
+        "expires_at"
+    )
+
+    if not token:
+        logger.error(f"Nango connect session created but token missing. Payload: {session_data}")
+        raise ValueError("Failed to retrieve session token")
+
+    return token, expires_at
+
+
+async def _create_nango_connect_session(
+    nango: NangoClient,
+    user_ids: UserIDs,
+    user: User,
+    integration_key: str,
+    provider_key: str,
+    integration_type: IntegrationType,
+) -> Dict[str, Any]:
+    session_data = await nango.create_connect_session(
+        end_user_id=str(user_ids.user_id),
+        organization_id=str(user_ids.organisation_id),
+        integration_id=integration_key,
+        end_user_email=user.email,
+        end_user_display_name=f"{user.first_name} {user.last_name}",
+    )
+
+    logger.info(f"Nango Connect session data: {session_data}")
+    logger.info(
+        "Created Connect Session for user %s, org %s, provider %s "
+        "(nango_provider=%s, nango_integration=%s)",
+        user_ids.user_id,
+        user_ids.organisation_id,
+        integration_type.value,
+        provider_key,
+        integration_key,
+    )
+    return session_data
 
 
 @router.post(
@@ -70,41 +199,25 @@ async def initiate_oauth_flow(
     OAuth scopes are automatically determined from integration metadata configuration.
     """
     try:
-        nango = NangoClient()     
+        metadata = _get_validated_metadata(request.integration_type)
+        _ensure_integration_available(metadata)
 
-        metadata = get_integration_metadata(request.integration_type)
-        if not metadata:
-            raise ValueError(f"Unknown integration type: {request.integration_type}")
-
-        # Create Connect Session with Nango
-        session_data = await nango.create_connect_session(
-            end_user_id=str(user_ids.user_id),
-            organization_id=str(user_ids.organisation_id),
-            integration_id=request.integration_type.value,
-            end_user_email=user.email,
-            end_user_display_name=f"{user.first_name} {user.last_name}",
-        )
-        
-        # Log the full session data at debug level
-        logger.info(f"Nango Connect session data: {session_data}")
-
-        logger.info(
-            f"Created Connect Session for user {user_ids.user_id}, "
-            f"org {user_ids.organisation_id}, provider {request.integration_type.value}"
+        nango_provider_key = to_nango_provider_key(request.integration_type)
+        nango_integration_key = to_nango_connect_integration_key(
+            request.integration_type
         )
 
-        # Normalize token/expires fields from Nango response
-        raw = session_data.get("data") if isinstance(session_data, dict) else None
-        payload = raw if isinstance(raw, dict) else session_data
+        nango = NangoClient()
+        session_data = await _create_nango_connect_session(
+            nango=nango,
+            user_ids=user_ids,
+            user=user,
+            integration_key=nango_integration_key,
+            provider_key=nango_provider_key,
+            integration_type=request.integration_type,
+        )
 
-        token = payload.get("token") or (payload.get("session") or {}).get("token")
-        expires_at = payload.get("expires_at") or (payload.get("session") or {}).get("expires_at")
-
-        if not token:
-            logger.error(f"Nango connect session created but token missing. Payload: {session_data}")
-            raise ValueError("Failed to retrieve session token")
-
-        # Return session token for frontend to use with Nango Connect UI
+        token, expires_at = _extract_session_details(session_data)
         response_data = OAuthInitiateResponse(
             session_token=token,
             integration_type=request.integration_type,
@@ -115,11 +228,42 @@ async def initiate_oauth_flow(
             message="Connect session created successfully.",
             data=response_data,
         )
-
+    except IntegrationUnavailableError as unavailable:
+        logger.warning(
+            "OAuth initiation attempted for unavailable integration %s (status=%s)",
+            request.integration_type.value,
+            unavailable.status,
+        )
+        return Response.bad_request_error_response(
+            message=IntegrationErrors.INTEGRATION_NOT_AVAILABLE
+        )
+    except NangoConnectionError as e:
+        error_detail = _extract_nango_error_message(e.payload)
+        should_log_stack = _should_include_stacktrace(e)
+        logger.error(
+            "Failed to initiate OAuth for user %s, org %s, provider %s "
+            "(status=%s, error=%s, payload=%s)",
+            user_ids.user_id,
+            user_ids.organisation_id,
+            request.integration_type.value,
+            e.status_code,
+            error_detail or str(e),
+            e.payload,
+            exc_info=should_log_stack,
+        )
+        if e.status_code == 400:
+            message = error_detail or IntegrationErrors.INTEGRATION_PROVIDER_NOT_CONFIGURED
+            return Response.bad_request_error_response(message=message)
+        return Response.internal_server_error_response(
+            message=IntegrationErrors.OAUTH_INITIATION_FAILED
+        )
     except Exception as e:
         logger.error(
-            f"Failed to initiate OAuth for user {user_ids.user_id}, "
-            f"org {user_ids.organisation_id}: {str(e)}",
+            "Failed to initiate OAuth for user %s, org %s, provider %s: %s",
+            user_ids.user_id,
+            user_ids.organisation_id,
+            request.integration_type.value,
+            str(e),
             exc_info=True,
         )
         return Response.internal_server_error_response(
@@ -277,10 +421,8 @@ async def handle_nango_webhook(
 
         # Convert provider_config_key to our IntegrationType
         try:
-            # Map Nango provider keys to our IntegrationType enum
-            # (e.g., "hubspot" -> IntegrationType.HUBSPOT)
-            # Note: IntegrationType values are lowercase (e.g., "slack" not "SLACK")
-            integration_type = IntegrationType(provider_config_key.lower())
+            # Use mapping helper to convert Nango provider key back to our enum
+            integration_type = from_nango_provider_key(provider_config_key)
         except ValueError:
             logger.error(f"Unknown provider config key: {provider_config_key}")
             return Response.bad_request_error_response(

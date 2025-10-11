@@ -28,7 +28,16 @@ logger = logging.getLogger(__name__)
 class NangoConnectionError(Exception):
     """Raised when there's an error with Nango connection operations."""
 
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: Optional[int] = None,
+        payload: Any = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.payload = payload
 
 
 class NangoTokenError(Exception):
@@ -76,6 +85,67 @@ class NangoClient:
             timeout=30.0,
         )
         logger.info(f"Initialized Nango REST API client with base URL: {self.base_url}")
+
+    @staticmethod
+    def _lookup_error_message(payload: Any) -> Optional[str]:
+        """
+        Extract a human-readable error message from a Nango error payload.
+        """
+        if isinstance(payload, dict):
+            # Nango typically nests details under "error" and/or "errors"
+            error_block = payload.get("error") or payload
+            if isinstance(error_block, dict):
+                message = error_block.get("message")
+                if isinstance(message, str) and message.strip():
+                    return message.strip()
+
+                errors = error_block.get("errors")
+                if isinstance(errors, list) and errors:
+                    first = errors[0]
+                    if isinstance(first, dict):
+                        nested_message = first.get("message")
+                        if isinstance(nested_message, str) and nested_message.strip():
+                            return nested_message.strip()
+                    # Fallback: string representation of first error entry
+                    return str(first)
+
+            # Fallback to top-level message field if present
+            message = payload.get("message")
+            if isinstance(message, str) and message.strip():
+                return message.strip()
+
+        if isinstance(payload, list) and payload:
+            first = payload[0]
+            if isinstance(first, dict):
+                nested_message = first.get("message")
+                if isinstance(nested_message, str) and nested_message.strip():
+                    return nested_message.strip()
+            return str(first)
+
+        if isinstance(payload, str):
+            stripped = payload.strip()
+            return stripped or None
+
+        return None
+
+    @staticmethod
+    def _extract_error_details(
+        response: Optional[httpx.Response],
+    ) -> tuple[Optional[int], Any, Optional[str]]:
+        """
+        Extract status code, payload, and message from an httpx response object.
+        """
+        if response is None:
+            return None, None, None
+
+        status_code = response.status_code
+        try:
+            payload: Any = response.json()
+        except (ValueError, json.JSONDecodeError):
+            payload = response.text
+
+        message = NangoClient._lookup_error_message(payload)
+        return status_code, payload, message
 
     @staticmethod
     def verify_webhook_signature(
@@ -240,13 +310,35 @@ class NangoClient:
             return result
 
         except httpx.HTTPStatusError as e:
+            status_code, payload, detail = self._extract_error_details(e.response)
+            context = {
+                "end_user_id": end_user_id,
+                "organization_id": organization_id,
+                "integration_id": integration_id,
+            }
             logger.error(
-                f"HTTP error creating connect session: {e.response.status_code} - {e.response.text}"
+                "HTTP error creating connect session (status=%s, context=%s): %s",
+                status_code,
+                context,
+                payload,
             )
-            raise NangoConnectionError(f"Failed to create connect session: {str(e)}")
+            message = detail or f"Failed to create connect session: {str(e)}"
+            raise NangoConnectionError(
+                message,
+                status_code=status_code,
+                payload=payload,
+            ) from None
         except Exception as e:
-            logger.error(f"Failed to create connect session: {str(e)}")
-            raise NangoConnectionError(f"Failed to create connect session: {str(e)}")
+            logger.error(
+                "Failed to create connect session for context=%s: %s",
+                {
+                    "end_user_id": end_user_id,
+                    "organization_id": organization_id,
+                    "integration_id": integration_id,
+                },
+                str(e),
+            )
+            raise NangoConnectionError(f"Failed to create connect session: {str(e)}") from None
 
     async def exchange_code_for_token(
         self,
@@ -329,15 +421,29 @@ class NangoClient:
             return connection
 
         except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                raise NangoConnectionError(f"Connection not found: {connection_id}")
+            status_code, payload, detail = self._extract_error_details(e.response)
+            if status_code == 404:
+                raise NangoConnectionError(
+                    f"Connection not found: {connection_id}",
+                    status_code=status_code,
+                    payload=payload,
+                ) from None
             logger.error(
-                f"HTTP error getting connection: {e.response.status_code} - {e.response.text}"
+                "HTTP error retrieving connection (status=%s, provider=%s, connection_id=%s): %s",
+                status_code,
+                provider,
+                connection_id,
+                payload,
             )
-            raise NangoConnectionError(f"Failed to get connection: {str(e)}")
+            message = detail or f"Failed to get connection: {str(e)}"
+            raise NangoConnectionError(
+                message,
+                status_code=status_code,
+                payload=payload,
+            ) from None
         except Exception as e:
             logger.error(f"Failed to get connection: {str(e)}")
-            raise NangoConnectionError(f"Failed to get connection: {str(e)}")
+            raise NangoConnectionError(f"Failed to get connection: {str(e)}") from None
 
     async def refresh_token(
         self,
@@ -405,18 +511,30 @@ class NangoClient:
             )
 
         except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
+            status_code, payload, detail = self._extract_error_details(e.response)
+            if status_code == 404:
                 logger.warning(
-                    f"Connection not found (already deleted?): {connection_id}"
+                    "Connection not found in Nango when deleting (provider=%s, connection_id=%s)",
+                    provider,
+                    connection_id,
                 )
                 return  # Consider it success if already gone
             logger.error(
-                f"HTTP error deleting connection: {e.response.status_code} - {e.response.text}"
+                "HTTP error deleting connection (status=%s, provider=%s, connection_id=%s): %s",
+                status_code,
+                provider,
+                connection_id,
+                payload,
             )
-            raise NangoConnectionError(f"Failed to delete connection: {str(e)}")
+            message = detail or f"Failed to delete connection: {str(e)}"
+            raise NangoConnectionError(
+                message,
+                status_code=status_code,
+                payload=payload,
+            ) from None
         except Exception as e:
             logger.error(f"Failed to delete connection: {str(e)}")
-            raise NangoConnectionError(f"Failed to delete connection: {str(e)}")
+            raise NangoConnectionError(f"Failed to delete connection: {str(e)}") from None
 
     async def get_connection_metadata(
         self,
@@ -505,13 +623,24 @@ class NangoClient:
             return result
 
         except httpx.HTTPStatusError as e:
+            status_code, error_payload, detail = self._extract_error_details(e.response)
             logger.error(
-                f"HTTP error in proxy request: {e.response.status_code} - {e.response.text}"
+                "HTTP error in proxy request (status=%s, provider=%s, endpoint=%s, method=%s): %s",
+                status_code,
+                provider,
+                endpoint,
+                method.upper(),
+                error_payload,
             )
-            raise NangoConnectionError(f"Proxy request failed: {str(e)}")
+            message = detail or f"Proxy request failed: {str(e)}"
+            raise NangoConnectionError(
+                message,
+                status_code=status_code,
+                payload=error_payload,
+            ) from None
         except Exception as e:
             logger.error(f"Proxy request failed: {str(e)}")
-            raise NangoConnectionError(f"Proxy request failed: {str(e)}")
+            raise NangoConnectionError(f"Proxy request failed: {str(e)}") from None
 
     def parse_token_expiry(
         self, expires_in: Optional[int] = None
