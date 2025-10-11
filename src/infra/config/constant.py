@@ -150,6 +150,8 @@ class IntegrationErrors:
     """Error messages for integration operations."""
 
     INTEGRATION_NOT_FOUND = "Integration not found"
+    INTEGRATION_NOT_AVAILABLE = "Integration is not available for connection yet"
+    INTEGRATION_PROVIDER_NOT_CONFIGURED = "Integration provider is not configured"
     OAUTH_INITIATION_FAILED = "Failed to initiate OAuth flow"
     OAUTH_CALLBACK_FAILED = "OAuth callback processing failed"
     INTEGRATION_DISCONNECTION_FAILED = "Failed to disconnect integration"

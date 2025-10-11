@@ -7,7 +7,7 @@ Update this file when adding new integration types or changing display informati
 
 from dataclasses import dataclass
 from typing import Dict, Optional, List
-from src.domain.models.organisation_tables.knowledge_models import IntegrationType
+from ...domain.models.organisation_tables.knowledge_models import IntegrationType
 
 
 # Category display names
@@ -20,6 +20,7 @@ class IntegrationCategory:
     PROJECT_MANAGEMENT = "Project Management"
     CUSTOMER_SUPPORT = "Customer Support"
     SALES_ENABLEMENT = "Sales Enablement"
+    SCHEDULING = "Scheduling & Calendar"
 
 
 # Availability status
@@ -124,6 +125,45 @@ INTEGRATION_METADATA: Dict[IntegrationType, IntegrationMetadata] = {
         availability_status=AvailabilityStatus.COMING_SOON,  # Coming soon
         documentation_url="https://developers.google.com/drive/api/guides/about-sdk",
         default_sync_frequency="daily",
+    ),
+    IntegrationType.GOOGLE_CALENDAR: IntegrationMetadata(
+        name="Google Calendar",
+        description="Sync events and availability from Google Calendar",
+        logo_url="https://cdn.simpleicons.org/googlecalendar",
+        category="collaboration",
+        category_name=IntegrationCategory.COLLABORATION,
+        availability_status=AvailabilityStatus.BETA,
+        oauth_scopes=[
+            "https://www.googleapis.com/auth/calendar.readonly",
+            # Consider adding Gmail profile or directory scopes only if needed later
+        ],
+        documentation_url="https://developers.google.com/calendar/api",
+        default_sync_frequency="hourly",
+    ),
+    IntegrationType.OUTLOOK_CALENDAR: IntegrationMetadata(
+        name="Outlook Calendar",
+        description="Sync events and availability from Microsoft Outlook/Office 365",
+        logo_url="https://static2.sharepointonline.com/files/fabric/assets/brand-icons/product/svg/outlook_48x1.svg",
+        category="collaboration",
+        category_name=IntegrationCategory.COLLABORATION,
+        availability_status=AvailabilityStatus.COMING_SOON,
+        oauth_scopes=[
+            # Minimal read access for Microsoft Graph
+            "Calendars.Read",
+        ],
+        documentation_url="https://learn.microsoft.com/en-us/graph/api/resources/calendar?view=graph-rest-1.0",
+        default_sync_frequency="hourly",
+    ),
+    IntegrationType.CALENDLY: IntegrationMetadata(
+        name="Calendly",
+        description="Ingest scheduled meetings and invitee details from Calendly",
+        logo_url="https://cdn.simpleicons.org/calendly",
+        category="collaboration",
+        category_name=IntegrationCategory.COLLABORATION,
+        availability_status=AvailabilityStatus.COMING_SOON,
+        oauth_scopes=None,  # token-based OAuth; set when implementing Nango provider
+        documentation_url="https://developer.calendly.com/",
+        default_sync_frequency="hourly",
     ),
     IntegrationType.SALESFORCE: IntegrationMetadata(
         name="Salesforce",

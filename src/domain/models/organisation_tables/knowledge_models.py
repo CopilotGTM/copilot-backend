@@ -14,6 +14,9 @@ if TYPE_CHECKING:
     from .job_models import KnowledgeProcessingJob
 
 
+EMPTY_JSONB_SQL = "'{}'::jsonb"
+
+
 class IntegrationType(str, Enum):
     # Collaboration & Communication
     SLACK = "slack"
@@ -21,6 +24,8 @@ class IntegrationType(str, Enum):
     GOOGLE_CHAT = "google_chat"
     ZOOM = "zoom"
     GOOGLE_DRIVE = "google_drive"
+    GOOGLE_CALENDAR = "google_calendar"
+    OUTLOOK_CALENDAR = "outlook_calendar"
     SHAREPOINT = "sharepoint"
     ONEDRIVE = "onedrive"
     BOX = "box"
@@ -29,6 +34,7 @@ class IntegrationType(str, Enum):
     CONFLUENCE = "confluence"
     MIRO = "miro"
     FIGMA = "figma"
+    CALENDLY = "calendly"
 
     # Project Management
     JIRA = "jira"
@@ -96,7 +102,7 @@ class KnowledgeIntegration(TimestampMixin, table=True):
     )
     connection_metadata: Dict[str, Any] = Field(
         default_factory=dict,
-        sa_column=Column(JSONB, server_default=text("'{}'::jsonb")),
+        sa_column=Column(JSONB, server_default=text(EMPTY_JSONB_SQL)),
         description="Additional metadata from Nango connection (e.g., account info, user details)",
     )
 
@@ -296,11 +302,11 @@ class OrganisationDocument(TimestampMixin, table=True):
     )
     name: Optional[str] = Field(default=None, index=True)
     meta_data: Dict[str, Any] = Field(
-        sa_column=Column(JSONB, server_default=text("'{}'::jsonb")),
+        sa_column=Column(JSONB, server_default=text(EMPTY_JSONB_SQL)),
         default_factory=dict,
     )
     filters: Dict[str, Any] = Field(
-        sa_column=Column(JSONB, server_default=text("'{}'::jsonb")),
+        sa_column=Column(JSONB, server_default=text(EMPTY_JSONB_SQL)),
         default_factory=dict,
     )
     content: Optional[str] = Field(default=None)
@@ -309,7 +315,7 @@ class OrganisationDocument(TimestampMixin, table=True):
         default=None,
     )
     usage: Optional[Dict[str, Any]] = Field(
-        sa_column=Column(JSONB, server_default=text("'{}'::jsonb")),
+        sa_column=Column(JSONB, server_default=text(EMPTY_JSONB_SQL)),
         default_factory=dict,
     )
     content_hash: Optional[str] = Field(default=None, index=True)
@@ -398,7 +404,7 @@ class IntegrationSyncHistory(TimestampMixin, table=True):
     )
     sync_metadata: Dict[str, Any] = Field(
         default_factory=dict,
-        sa_column=Column(JSONB, server_default=text("'{}'::jsonb")),
+        sa_column=Column(JSONB, server_default=text(EMPTY_JSONB_SQL)),
         description="Additional metadata about the sync (e.g., types of records synced, API calls made).",
     )
 
