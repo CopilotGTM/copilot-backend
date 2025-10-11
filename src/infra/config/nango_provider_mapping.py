@@ -56,10 +56,13 @@ _INTEGRATION_TO_NANGO: Dict[IntegrationType, str] = {
     IntegrationType.CHORUS: "chorus",
 }
 
-# Build reverse map (lower-cased)
-_NANGO_TO_INTEGRATION: Dict[str, IntegrationType] = {
-    v.lower(): k for k, v in _INTEGRATION_TO_NANGO.items()
-}
+def _build_reverse_map(mapping: Dict[IntegrationType, str]) -> Dict[str, IntegrationType]:
+    return {v.lower(): k for k, v in mapping.items()}
+
+# Build reverse maps (lower-cased)
+_NANGO_TO_INTEGRATION: Dict[str, IntegrationType] = _build_reverse_map(
+    _INTEGRATION_TO_NANGO
+)
 
 # Overrides for Nango Connect Session integration keys.
 # In many cases the integration unique key matches the provider key (e.g., "slack").
@@ -107,6 +110,10 @@ _NANGO_CONNECT_KEYS: Dict[IntegrationType, str] = {
     IntegrationType.CHORUS: "chorus",
 }
 
+_NANGO_CONNECT_TO_INTEGRATION: Dict[str, IntegrationType] = _build_reverse_map(
+    _NANGO_CONNECT_KEYS
+)
+
 
 def to_nango_provider_key(integration_type: IntegrationType) -> str:
     """Return the Nango provider_config_key for an IntegrationType.
@@ -128,13 +135,30 @@ def to_nango_connect_integration_key(integration_type: IntegrationType) -> str:
 def from_nango_provider_key(provider_key: str) -> IntegrationType:
     """Map a Nango provider_config_key back to our IntegrationType.
 
-    Tries explicit reverse map first; if not found, attempts a lenient
-    underscore/hyphen normalization fallback.
+    Tries explicit reverse maps first (provider and connect keys). If not found,
+    progressively trims hyphen suffixes (e.g., "google-calendar-getting-started"
+    -> "google-calendar"). Finally, replaces hyphens with underscores and tries
+    to construct the enum (e.g., "google-calendar" -> "google_calendar").
     """
-    key = provider_key.lower()
+    key = (provider_key or "").lower().strip()
+
+    # Direct matches
     if key in _NANGO_TO_INTEGRATION:
         return _NANGO_TO_INTEGRATION[key]
+    if key in _NANGO_CONNECT_TO_INTEGRATION:
+        return _NANGO_CONNECT_TO_INTEGRATION[key]
 
-    # Fallback: try replacing hyphens with underscores to match enum values
-    normalized = key.replace("-", "_")
+    # Progressive hyphen-trim
+    candidate = key
+    while True:
+        if candidate in _NANGO_TO_INTEGRATION:
+            return _NANGO_TO_INTEGRATION[candidate]
+        if candidate in _NANGO_CONNECT_TO_INTEGRATION:
+            return _NANGO_CONNECT_TO_INTEGRATION[candidate]
+        if '-' not in candidate:
+            break
+        candidate = candidate.rsplit('-', 1)[0]
+
+    # Enum fallback
+    normalized = key.replace('-', '_')
     return IntegrationType(normalized)

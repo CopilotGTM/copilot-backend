@@ -20,6 +20,9 @@ from src.domain.models.organisation_tables.knowledge_models import (
     IntegrationSyncHistory,
     SyncStatus,
 )
+from src.infra.config.nango_provider_mapping import (
+    to_nango_connect_integration_key,
+)
 from .nango_client import NangoClient, NangoConnectionError
 
 logger = logging.getLogger(__name__)
@@ -57,17 +60,21 @@ class IntegrationService:
 
     @staticmethod
     def _provider_from_type(type_or_str: Any) -> str:
-        """Return provider string from IntegrationType enum or string.
+        """Resolve Nango provider_config_key for given integration.
 
-        Handles cases where SQLAlchemy may return a raw string from the DB
-        (instead of the IntegrationType enum), avoiding attribute access errors
-        like: 'str' object has no attribute 'value'.
+        Uses the Connect integration key where applicable so downstream
+        Nango connection APIs address the correct configured integration.
         """
         try:
             if isinstance(type_or_str, IntegrationType):
-                return type_or_str.value
+                return to_nango_connect_integration_key(type_or_str)
             if isinstance(type_or_str, str):
-                return type_or_str
+                try:
+                    enum_value = IntegrationType(type_or_str)
+                    return to_nango_connect_integration_key(enum_value)
+                except ValueError:
+                    # Already a provider key; return as-is
+                    return type_or_str
             # Fallback to string representation
             return str(type_or_str)
         except Exception:

@@ -395,10 +395,20 @@ async def handle_nango_webhook(
             return Response.success_response(
                 message="Webhook received (failed authorization)", data=None
             )
-
-        # Extract required fields
         connection_id = payload.get("connectionId")
         provider_config_key = payload.get("providerConfigKey")
+        webhook_type = payload.get("type")
+        if webhook_type == "sync":
+            logger.info(
+                "Sync webhook received for connection %s (provider=%s). "
+                "No user identifiers expected; acknowledging without DB changes.",
+                connection_id,
+                provider_config_key,
+            )
+            return Response.success_response(
+                message="Sync webhook acknowledged", data=None
+            )
+        # Extract required fields for auth webhooks
         end_user = payload.get("endUser", {})
 
         if not connection_id or not provider_config_key:
