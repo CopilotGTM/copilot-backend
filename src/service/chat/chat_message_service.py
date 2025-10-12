@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Iterable, List, Optional, Dict, Any, Tuple
-from uuid import UUID
+from uuid import UUID, uuid4
 from functools import partial
 
 from sqlmodel import select
@@ -89,8 +89,12 @@ class ChatMessageService:
         message_type: ChatMessageType = ChatMessageType.GENERAL_MESSAGE,
         role: ChatMessageRole = ChatMessageRole.USER,
         job_type: str = "general_message",
-    ) -> tuple[ChatMessage, ChatMessageJob]:
-        """Create a user message and a corresponding job."""
+    ) -> tuple[ChatMessage, ChatMessageJob, str]:
+        """Create a user message and a corresponding job.
+        
+        Returns:
+            tuple: (user_message, job, assistant_message_id_str)
+        """
 
         # Guard: Ensure session belongs to caller's org/user
         sess_stmt = select(ChatSession).where(
@@ -130,13 +134,15 @@ class ChatMessageService:
                 executor.map(create_link_with_message_id, enumerate(attachments))
 
         # Create a pending job for processing this message (assistant reply generation)
+        assistant_message_id = str(uuid4())
         job = ChatMessageJob(
             message_id=message.message_id,
             job_type=job_type,
             status=JobStatus.PENDING,
             job_metadata={
                 "session_id": str(session_id),
-                "message_id": str(message.message_id),
+                "user_message_id": str(message.message_id),
+                "assistant_message_id": assistant_message_id,
             },
         )
         self.db.add(job)
@@ -144,7 +150,7 @@ class ChatMessageService:
         # The commit is handled by the caller to ensure atomicity with task queueing.
         await self.db.refresh(message)
         await self.db.refresh(job)
-        return message, job
+        return message, job, assistant_message_id
 
     async def list_messages(
         self,

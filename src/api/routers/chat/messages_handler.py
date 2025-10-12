@@ -62,9 +62,10 @@ async def send_message(
 ):
     try:
         # Map attachments to IDs, respecting order if provided
-        attach_ids: Optional[List[UUID]] = payload.attachments
+        attach_ids: Optional[List[UUID]] = payload.attachments        
 
-        message, job = await service.create_user_message(
+        # Create user message (this also creates and saves the job)
+        user_message, job, assistant_message_id = await service.create_user_message(
             session_id=payload.session_id,
             content=payload.content,
             attachment_ids=attach_ids,
@@ -72,7 +73,12 @@ async def send_message(
             role=payload.role,
         )
 
-        resp = SendMessageResponse(message_id=message.message_id, job_id=job.job_id)
+        # Build response with all three IDs
+        resp = SendMessageResponse(
+            job_id=job.job_id,
+            user_message_id=user_message.message_id,
+            assistant_message_id=assistant_message_id,
+        )
 
         # Enqueue background processing task
         logger.info(

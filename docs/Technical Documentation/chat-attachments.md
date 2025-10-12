@@ -1,56 +1,158 @@
 Chat Attachments Upload & Download (Technical)
 
-Scope: src/api/routers/chat_attachments and related services
+Scope: src/service/chat, src/api/routers/chat_attachments, src/api/schemas/upload_models.py
 
 Overview
-- Direct‑to‑blob upload using Azure SAS: client requests upload URL(s), uploads bytes, then finalizes.
+- Direct-to-blob uploads via Azure SAS: client requests upload URL(s), uploads bytes directly, then finalizes.
 - Background processing via Celery: checksum (optional), thumbnails for images/PDFs, status updates.
-- Real‑time status via SSE over Redis pub/sub.
-- Short‑lived read SAS for secure downloads.
+- Real-time status via SSE over Redis pub/sub.
+- Short-lived read SAS URLs for secure downloads.
 
-Mount points
-- Routers are mounted in two places for UI compatibility:
+Mount Points
+- Routers are mounted under both prefixes for UI compatibility:
   - `/chats/upload/*` and `/chats/attachment/*`
   - `/users/chats/upload/*`
-  The underlying paths below are relative to these prefixes.
 
-API surface
-- POST `/presign` → minimal single‑file presign (returns `PresignResponse`).
-- POST `/presign/batch` → batch presign (returns per‑file results; partial success allowed).
-- POST `/finalize` → finalize one upload (verifies blob, moves to PROCESSING; enqueues worker).
-- POST `/finalize/batch` → finalize many uploads (enqueues workers per item).
-- GET `/attachment/{attachment_id}` → current status for one attachment.
-- GET `/attachments/stream` → SSE stream of status updates for specified IDs or all non‑terminal IDs.
-- GET `/attachment/{attachment_id}/download` → short‑lived read SAS URL for original blob.
+API Surface
+- POST `/presign` — single-file presign (returns `PresignResponse`).
+- POST `/presign/batch` — batch presign (per-file results; partial success allowed).
+- POST `/finalize` — finalize one upload (verifies blob; enqueues worker).
+- POST `/finalize/batch` — finalize many uploads (enqueues worker per item).
+- GET `/attachment/{attachment_id}` — current status for one attachment.
+- GET `/attachments/stream` — SSE stream for specified IDs or all non-terminal IDs.
+- GET `/attachment/{attachment_id}/download` — short-lived read SAS URL for original blob.
 
-Schemas and models
-- Pydantic requests/responses: `PresignRequest`, `FinalizeRequest`, `PresignResponse`, `AttachmentDownloadResponse`,
-  batch models (`AttachmentBatchPresignRequest`, `AttachmentBatchPresignResponse`, `AttachmentBatchFinalizeRequest`, `AttachmentBatchFinalizeResponse`, `AttachmentBatchFinalizeResult`),
-  SSE: `AttachmentEventUpdate`.
-- DB models: `Attachment` + `AttachmentStatus` enum (pending_upload → uploaded → processing → completed | failed).
-- Response envelope: `GenericResponse[T]` via `src/api/utils/http_response.Response`.
+Response Envelope
+- All endpoints respond with `GenericResponse[T]` (see `src/api/schemas/base_models.py`):
+  - `status`: "SUCCESS" | "ERROR"
+  - `message`: human-readable
+  - `data`: payload (model below) or `null` on error
 
-Services and infra
-- `UploadService` (src/service/chat/chat_attachments_service.py)
-  - Sets tenant search_path (`SET search_path TO <org_schema>`) per request method.
-  - Presign: creates `Attachment` row, returns Azure write SAS for blob path `chat_uploads/{user_id}/{attachment_id}/{filename}`.
-  - Finalize: verifies blob properties; sets status PROCESSING; commit; router enqueues Celery job `attachments.post_upload`.
-  - Download: validates ownership; requires COMPLETED; returns read SAS with optional Content‑Disposition.
-  - Batch helpers wrap single‑file operations and accumulate errors.
-- `AttachmentSSEService` (src/service/chat/chat_attachments_sse_service.py)
-  - Initial snapshot: non‑terminal attachments for current user or explicit IDs.
-  - Subscribes to Redis channel `att:{org_id}:attachments`.
-  - Emits `status`, `ping`, `timeout`, and `complete` events; returns when all watched IDs are terminal.
-- Azure storage: `AzureOrganisationBlobStorage` handles SAS generation and container lifecycle per org.
-- Redis pub/sub: `AsyncRedisPubSub` (redis>=5), with channel helpers in `src/infra/messaging`.
-- Celery worker: `src/workers/chat_worker/celery_app.py`, task `attachments.post_upload` (see `tasks/post_upload.py`).
+Pydantic Schemas (Requests/Responses)
+- Source of truth: `src/api/schemas/upload_models.py`
+- Optional fields are declared as `Optional[...]` or have defaults; all others are required.
 
-Upload flow
+```python
+from typing import Optional
+from uuid import UUID
+from pydantic import BaseModel, Field, HttpUrl
+
+class PresignRequest(BaseModel):
+    filename: str = Field(..., min_length=1, max_length=255)
+    mimetype: str
+    size_bytes: int = Field(..., gt=0)
+
+class PresignResponse(BaseModel):
+    attachment_id: UUID
+    filename: str
+    mimetype: str
+    upload_url: HttpUrl
+    size_bytes: int
+    expires_in_seconds: int
+    status: str  # AttachmentStatus: pending_upload|uploaded|processing|completed|failed
+    success: bool = True
+    error_message: Optional[str] = None
+
+class FinalizeRequest(BaseModel):
+    attachment_id: UUID
+    checksum: Optional[str] = None
+
+class UploadedAttachmentResponse(BaseModel):
+    attachment_id: UUID
+    uploaded_at: str  # ISO8601
+    status: str
+
+class AttachmentDownloadResponse(BaseModel):
+    attachment_id: UUID
+    download_url: HttpUrl
+    expires_in_seconds: int
+
+class AttachmentPresignFileResponse(BaseModel):
+    attachment_id: Optional[UUID] = None
+    filename: str
+    mimetype: Optional[str] = None
+    upload_url: Optional[HttpUrl] = None
+    size_bytes: Optional[int] = None
+    success: bool = True
+    error_message: Optional[str] = None
+    expires_in_seconds: int = 0
+    status: Optional[str] = None  # AttachmentStatus
+
+class AttachmentBatchPresignRequest(BaseModel):
+    files: list[PresignRequest]
+
+class AttachmentBatchPresignResponse(BaseModel):
+    files: list[AttachmentPresignFileResponse]
+    errors: list[dict] = []
+
+class AttachmentBatchFinalizeRequest(BaseModel):
+    files: list[FinalizeRequest]
+
+class AttachmentBatchFinalizeResult(BaseModel):
+    attachment_id: UUID
+    status: Optional[str] = None
+    error: Optional[str] = None
+    updated_at: Optional[str] = None  # ISO8601
+
+class AttachmentBatchFinalizeResponse(BaseModel):
+    results: list[AttachmentBatchFinalizeResult]
+    errors: list[dict] = []
+
+class AttachmentEventUpdate(BaseModel):
+    attachment_id: str
+    status: str
+    updated_at: Optional[str] = None
+    error_message: Optional[str] = None
+    thumbnail_small_url: Optional[str] = None
+```
+
+Examples
+- Presign request
+```json
+{ "filename": "report.pdf", "mimetype": "application/pdf", "size_bytes": 123456 }
+```
+- Presign response
+```json
+{
+  "attachment_id": "2b5a4d8e-...",
+  "filename": "report.pdf",
+  "mimetype": "application/pdf",
+  "upload_url": "https://...sas...",
+  "size_bytes": 123456,
+  "expires_in_seconds": 900,
+  "status": "pending_upload",
+  "success": true,
+  "error_message": null
+}
+```
+- SSE status frame data (array)
+```json
+[
+  {
+    "attachment_id": "...",
+    "status": "processing",
+    "updated_at": "2025-10-06T08:12:15Z",
+    "error_message": null,
+    "thumbnail_small_url": null
+  }
+]
+```
+
+Services and Infra
+- Upload service: `src/service/chat/chat_attachments_service.py`
+  - Validates ownership and org scoping; generates Azure SAS; enqueues Celery tasks.
+- SSE service: `src/service/chat/chat_attachments_sse_service.py`
+  - Publishes `status`, `ping`, `complete`, `timeout` events from Redis pub/sub.
+- Azure storage: `AzureOrganisationBlobStorage` (SAS generation, container per org).
+- Redis: `AsyncRedisPubSub` channels `att:{org_id}:attachments`.
+- Celery worker: `src/workers/chat_worker/celery_app.py`, task `attachments.post_upload`.
+
+Upload Flow
 ```mermaid
 sequenceDiagram
   autonumber
   participant UI
-  participant API as FastAPI /chats/upload
+  participant API as FastAPI /users/chats/upload
   participant Svc as UploadService
   participant Blob as Azure Blob Storage
   participant Celery as Celery Worker
@@ -66,10 +168,10 @@ sequenceDiagram
   API->>Svc: finalize_upload / finalize_batch
   Svc->>Blob: get_blob_properties(path)
   API->>Celery: send_task("attachments.post_upload", org_id, attachment_id)
-  API-->>UI: per‑file result(s)
+  API-->>UI: per-file result(s)
 ```
 
-SSE flow
+SSE Flow
 ```mermaid
 sequenceDiagram
   participant UI
@@ -80,13 +182,13 @@ sequenceDiagram
 
   UI->>API: GET /attachments/stream?attachment_ids=...
   API->>SSE: stream_events(explicit_ids)
-  SSE->>DB: select non‑terminal attachments (org+user scoped)
-  SSE-->>UI: "status" event with initial list
+  SSE->>DB: select non-terminal attachments (org+user scoped)
+  SSE-->>UI: "status" event (initial list)
   Redis-->>SSE: messages {attachment_id, status, ...}
-  SSE-->>UI: "status" events; emits "complete" when all are terminal
+  SSE-->>UI: "status" events; emits "complete" when all terminal
 ```
 
-Download flow
+Download Flow
 ```mermaid
 flowchart LR
   A[Click download] --> B[API validates ownership/status]
@@ -94,31 +196,29 @@ flowchart LR
   C --> D[Browser downloads original]
 ```
 
-Tenancy and security
-- DB Session originates from `get_org_session`; service additionally sets `search_path` explicitly per call.
-- Access control: every read/write checks `organisation_id` and `user_id` on the `Attachment` row.
-- SAS links are short‑lived and scoped: write for upload, read for download with optional filename.
-- SSE limits updates to the current user’s attachments; filters explicit IDs when provided.
+Tenancy and Security
+- DB session is org-scoped via `get_org_session`; queries constrain by `organisation_id` and `user_id`.
+- SAS links are short-lived and scoped: write for upload, read for download with optional filename.
+- SSE limits updates to the current user's attachments; explicit ID filtering when supplied.
 
-Error handling
-- Domain exceptions: `UploadServiceError` carries `status_code` for router translation.
-- Batch operations aggregate errors per file; success continues despite failures.
-- API always returns the standard `GenericResponse` envelope.
+Error Handling
+- Domain errors raised with HTTP-aware exceptions; batch responses accumulate per-file errors.
+- Envelope always returned; `status` and `message` reflect outcome.
 
 Configuration
 - Upload limits from `chat_file_upload_config`:
-  - `MAX_UPLOAD_FILE_SIZE_BYTES` (default ~50MB)
-  - `ALLOWED_MIMETYPES` (defaults include PDFs, images, office docs)
-- Azure: `ORGANISATION_STORAGE_NAME`; credentials via Default/Workload/Managed Identity depending on env.
-- Redis: provided by `Config().get_redis_client_details`; async pub/sub requires redis>=5.
-- Celery: chat worker app name `chat_worker`; task `attachments.post_upload`.
+  - `MAX_UPLOAD_FILE_SIZE_BYTES` (~50MB default)
+  - `ALLOWED_MIMETYPES` (PDFs, images, office docs)
+- Azure: `ORGANISATION_STORAGE_NAME`; credentials via Default/Workload/Managed Identity.
+- Redis: `Config().get_redis_client_details` (async pub/sub, redis>=5).
+- Celery: chat worker `chat_worker`; task `attachments.post_upload`.
 
-Data model highlights
-- `Attachment` fields: `status`, `storage_path`, `thumbnail_small_path`, `thumbnail_medium_path`, `checksum`, `virus_scan_status`, timestamps.
+Data Model Highlights
+- `Attachment`: `status`, `storage_path`, `thumbnail_small_path`, `thumbnail_medium_path`, `checksum`, `virus_scan_status`, timestamps.
 - Terminal statuses: `completed`, `failed`.
 
-Operational notes
-- Logs: `upload_handler`, `attachment_download_handler`, `attachments_post_upload_task`, `attachment_sse_service`, `azure_org_blob_storage`, `redis_pubsub`.
-- SSE timeouts produce `timeout` events; client should reconnect when needed.
-- Ensure async clients are closed (`service.close()` in routers) to avoid resource warnings.
+Operational Notes
+- Loggers: `upload_handler`, `attachment_download_handler`, `attachments_post_upload_task`, `attachment_sse_service`, `azure_org_blob_storage`, `redis_pubsub`.
+- SSE timeouts emit `timeout`; client should reconnect with backoff when needed.
+- Ensure async clients are closed in routers to avoid resource warnings.
 

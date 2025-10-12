@@ -29,11 +29,11 @@ FieldSpec = FieldSingleSelect
 class FrameBase(BaseModel):
     type: str
     # Production-level metadata
-    frontend_id: str = Field(
-        default="", description="Job ID - frontend identifier for request tracking"
+    job_id: str = Field(
+        default="", description="Job ID - identifier for tracking the processing job"
     )
-    backend_id: str = Field(
-        default="", description="Message ID - backend identifier for data correlation"
+    assistant_message_id: str = Field(
+        default="", description="Assistant Message ID - identifier for the assistant's message being created"
     )
     version: str = Field(default="1.0", description="Frame schema version")
     timestamp: float = Field(
