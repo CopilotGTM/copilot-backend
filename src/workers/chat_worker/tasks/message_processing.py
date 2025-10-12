@@ -228,6 +228,9 @@ async def _consume_agent_stream(
         "thinking_updates": [],
     }
 
+    # Extract assistant_message_id from job metadata for SSE frames
+    assistant_message_id = job.job_metadata.get("assistant_message_id")
+
     sequence_counter = 0
 
     async for frame in run_agent_for_chat(chat_type=chat_type, messages=history):  # type: ignore[arg-type]
@@ -240,11 +243,11 @@ async def _consume_agent_stream(
 
             data = get_dict()
 
-        # Transform to production-level frame structure
+        # Transform to production-level frame structure with job_id and assistant_message_id
         production_frame = {
             **data,  # Copy all frame data
-            "frontend_id": str(job.job_id),
-            "backend_id": str(job.message_id),
+            "job_id": str(job.job_id),
+            "assistant_message_id": str(assistant_message_id),
             "version": "1.0",
             "timestamp": time.time(),
             "sequence": sequence_counter,
@@ -288,18 +291,20 @@ def process_message(organisation_id: UUID, job_id: UUID):
         job = _load_job(session, job_id)
         _update_job_status(session, job, JobStatus.IN_PROGRESS)
 
-        # Load session and conversation data
-        _, chat_session, history, current_message = _load_conversation_data(
+        # Load session and conversation data (assistant_message_id from metadata, not created yet)
+        _, chat_session, history, user_message, assistant_message_id = _load_conversation_data(
             session, job
         )
 
         # Execute agent and get results
         result_summary = _execute_agent_workflow(chat_session, history, publisher, job)
 
-        # Publish final frames and persist results
+        # Publish final frames and create assistant message with results
         _publish_final_frames(publisher, job, result_summary)
-        _persist_assistant_message(session, current_message, result_summary)
-        _finalize_job(session, job, result_summary, organisation_id)
+        assistant_message = _create_assistant_message(
+            session, user_message, assistant_message_id, result_summary
+        )
+        _finalize_job(session, job, result_summary, organisation_id, assistant_message)
 
         logger.info("Job %s completed", job_id)
 
@@ -318,24 +323,38 @@ def _update_job_status(session, job: ChatMessageJob, status: JobStatus) -> None:
 
 
 def _load_conversation_data(session, job: ChatMessageJob):
-    """Load session, chat session, history, and current message."""
-    # Extract session/chat id from metadata
+    """Load session, chat session, history, and user message. Returns assistant_message_id for creation."""
+    # Extract all IDs from job metadata (set by API layer)
     md = job.job_metadata or {}
     session_id = md.get("session_id")
+    user_message_id = md.get("user_message_id")
+    assistant_message_id = md.get("assistant_message_id")
+
     if not session_id:
         raise RuntimeError("Missing session_id in job_metadata")
+    if not user_message_id:
+        raise RuntimeError("Missing user_message_id in job_metadata")
+    if not assistant_message_id:
+        raise RuntimeError("Missing assistant_message_id in job_metadata")
 
     try:
         session_id = UUID(str(session_id))
+        user_message_id = UUID(str(user_message_id))
+        assistant_message_id = UUID(str(assistant_message_id))
     except Exception as e:
-        raise RuntimeError("Invalid session_id in job_metadata") from e
+        raise RuntimeError("Invalid UUID in job_metadata") from e
 
-    # Load session for chat_type
+    # Load chat session for chat_type
     chat_session: ChatSession | None = session.get(ChatSession, session_id)
     if not chat_session:
         raise RuntimeError(f"Session {session_id} not found")
 
-    # Load recent conversation (ordered asc, max 30)
+    # Load user message
+    user_message: ChatMessage | None = session.get(ChatMessage, user_message_id)
+    if not user_message:
+        raise RuntimeError(f"User message {user_message_id} not found for job {job.job_id}")
+
+    # Load recent conversation history (ordered asc, max 30)
     history = (
         session.query(ChatMessage)
         .filter(ChatMessage.session_id == session_id)
@@ -344,12 +363,12 @@ def _load_conversation_data(session, job: ChatMessageJob):
         .all()
     )
 
-    # Ensure the current message exists
-    current_message: ChatMessage | None = session.get(ChatMessage, job.message_id)
-    if not current_message:
-        raise RuntimeError(f"Message {job.message_id} not found for job {job.job_id}")
+    logger.info(
+        "Loaded conversation data for job %s: session=%s user_msg=%s asst_msg_id=%s history_count=%d",
+        job.job_id, session_id, user_message_id, assistant_message_id, len(history)
+    )
 
-    return session_id, chat_session, history, current_message
+    return session_id, chat_session, history, user_message, assistant_message_id
 
 
 def _execute_agent_workflow(chat_session, history, publisher, job):
@@ -390,9 +409,11 @@ def _publish_final_frames(
     publisher: RedisPublisher, job: ChatMessageJob, result_summary: dict
 ):
     """Publish final frames with production metadata."""
+    assistant_message_id = job.job_metadata.get("assistant_message_id")
+    
     base_frame = {
-        "frontend_id": str(job.job_id),
-        "backend_id": str(job.message_id),
+        "job_id": str(job.job_id),
+        "assistant_message_id": str(assistant_message_id),
         "version": "1.0",
         "timestamp": time.time(),
     }
@@ -426,15 +447,17 @@ def _publish_final_frames(
         )
 
 
-def _persist_assistant_message(
-    session, current_message: ChatMessage, result_summary: dict
-):
-    """Persist assistant message with enhanced metadata."""
-    assistant_msg = ChatMessage(
-        session_id=current_message.session_id,
-        parent_message_id=current_message.message_id,
+def _create_assistant_message(
+    session, user_message: ChatMessage, assistant_message_id: UUID, result_summary: dict
+) -> ChatMessage:
+    """Create the assistant message with the pre-generated ID and agent results."""
+    # Create assistant message with the ID provided by API layer
+    assistant_message = ChatMessage(
+        message_id=assistant_message_id,  # Use the pre-generated ID
+        session_id=user_message.session_id,
+        parent_message_id=user_message.message_id,
         role=ChatMessageRole.ASSISTANT,
-        message_type=current_message.message_type,
+        message_type=user_message.message_type,
         content={"text": (result_summary.get("answer") or "")},
         extra={
             "confidence_score": result_summary.get("confidence"),
@@ -454,32 +477,30 @@ def _persist_assistant_message(
             "thinking_updates": result_summary.get("thinking_updates") or [],
         },
     )
-    session.add(assistant_msg)
+    
+    session.add(assistant_message)
     session.flush()
-    return assistant_msg
+    
+    logger.info(
+        "Created assistant message %s with answer (length=%d)",
+        assistant_message.message_id,
+        len(result_summary.get("answer") or "")
+    )
+    
+    return assistant_message
 
 
 def _finalize_job(
-    session, job: ChatMessageJob, result_summary: dict, organisation_id: UUID
+    session, job: ChatMessageJob, result_summary: dict, organisation_id: UUID, assistant_message: ChatMessage
 ):
     """Finalize job with enhanced result data."""
-    # Find the assistant message by querying the latest message for this session
-    assistant_msg = (
-        session.query(ChatMessage)
-        .filter(ChatMessage.session_id == job.job_metadata.get("session_id"))
-        .filter(ChatMessage.role == ChatMessageRole.ASSISTANT)
-        .order_by(ChatMessage.created_at.desc())
-        .first()
-    )
-
+    # Use the assistant message passed from the workflow
     job.result_data = {
         "answer": result_summary.get("answer"),
         "confidence": result_summary.get("confidence"),
         "sources": result_summary.get("sources"),
         "suggested_questions": result_summary.get("suggestions"),
-        "assistant_message_id": (
-            str(assistant_msg.message_id) if assistant_msg else None
-        ),
+        "assistant_message_id": str(assistant_message.message_id),
         "agent_switch_request": result_summary.get("agent_switch_request"),
         "user_questions_count": len(result_summary.get("user_questions") or []),
         "progress_updates_count": len(result_summary.get("progress_updates") or []),
@@ -490,13 +511,13 @@ def _finalize_job(
     session.add(job)
     session.commit()
 
-    # Publish final frame
+    # Publish final frame with job_id
     publisher = RedisPublisher(organisation_id, job.job_id)
     publisher.publish(
         {
             "type": FRAME_TYPE_FINALIZE,
-            "frontend_id": str(job.job_id),
-            "backend_id": str(job.message_id),
+            "job_id": str(job.job_id),
+            "assistant_message_id": str(assistant_message.message_id),
             "version": "1.0",
             "timestamp": time.time(),
             "reason": "done",
@@ -510,7 +531,7 @@ def _finalize_job(
         target=_cleanup_job_stream, args=(organisation_id, job.job_id, 30), daemon=True
     )
     cleanup_thread.start()
-    logger.info("Scheduled cleanup for job stream: %s", job.job_id)
+    logger.info("Finalized job %s with assistant message %s", job.job_id, assistant_message.message_id)
 
 
 def _handle_job_failure(session, job_id: UUID, error: Exception):

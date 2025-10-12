@@ -1,62 +1,163 @@
 Knowledge Base Upload & Access (Technical)
 
-Scope: src/api/routers/knowledge_base and services it uses
+Scope: src/api/routers/knowledge_base, src/service/knowledge, src/api/schemas/knowledge_*.py
 
 Overview
-- Upload flow: Client requests presigned SAS URLs, uploads blobs directly to Azure, then calls finalize to trigger background processing.
-- Access flow: List sources with key‑set pagination and filters; generate short‑lived read SAS URLs; stream status via SSE (Redis pub/sub).
-- Tenancy: Every DB operation runs under an organisation‑scoped Session with search_path set to the org schema, then public.
+- Upload flow: client requests presigned SAS URLs, uploads blobs directly to Azure, then calls finalize to trigger background processing.
+- Access flow: list sources with cursor pagination and filters; generate short-lived read SAS URLs; stream status via SSE (Redis pub/sub).
+- Tenancy: every DB operation runs under an organisation-scoped Session with `search_path` set to the org schema.
 
-API surface (mounted under `/users/knowledge`)
-- POST `/presign/batch` → returns per‑file SAS upload URLs.
-- POST `/finalize/batch` → marks sources uploaded, creates jobs, enqueues processing.
-- GET `/source/{source_id}` → returns current state + optional read SAS link + metadata.
-- GET `/sources/stream` → SSE stream of status updates for specified IDs or all non‑terminal IDs.
-- GET `/sources` → paginated list (cursor) with optional filters; optional thumbnail/read URLs.
-- GET `/source/{source_id}/download` → read SAS URL for original blob.
-- DELETE `/source/{source_id}` → soft‑delete and enqueue async cleanup.
+API Surface (mounted under `/users/knowledge`)
+- POST `/presign/batch` — returns per-file SAS upload URLs.
+- POST `/finalize/batch` — marks sources uploaded; enqueues processing.
+- GET `/source/{source_id}` — returns current state + optional read SAS + metadata.
+- GET `/sources/stream` — SSE stream for specified IDs or all non-terminal IDs.
+- GET `/sources` — paginated list (cursor) with optional filters; optional thumbnail/read URLs.
+- GET `/source/{source_id}/download` — read SAS URL for original blob.
+- DELETE `/source/{source_id}` — soft-delete and enqueue async cleanup.
 
-Key models and schemas
-- DB: `OrganisationSource` (status enum, blob paths, checksum, thumbnails), `KnowledgeProcessingJob` (per‑source jobs), `OrganisationDocument` (derived chunks).
-- Pydantic (requests/responses):
-  - Upload: `KnowledgeBatchPresignRequest`, `KnowledgeBatchPresignResponse`, `KnowledgeBatchFinalizeRequest`, `KnowledgeSourceResponse`, `KnowledgeSourceEventUpdate`.
-  - Access: `KnowledgeSourcesPage`, `KnowledgeSourceListItem`, `KnowledgeDownloadResponse`, `KnowledgeSourcesStats`, `KnowledgeDeleteResponse`.
-- Response envelope: `GenericResponse[T]` via `src/api/utils/http_response.Response` helpers.
+Response Envelope
+- All endpoints respond with `GenericResponse[T]` (see `src/api/schemas/base_models.py`).
 
-Architecture and dependencies
-- Routers: `upload_handler.py`, `access_handler.py`.
-- Services: `KnowledgeUploadService`, `KnowledgeAccessService`, `KnowledgeSourceSSEService`.
-- Infra: `AzureOrganisationBlobStorage` (SAS read/write, thumbnails), `AsyncRedisPubSub` (Redis channels: `kb:{org_id}:sources`).
-- Background: Celery app `src/workers/knowledge_worker/celery_app.py` publishes tasks:
-  - `knowledge.post_upload_process` (checksum, thumbnails, extraction, etc.)
-  - `knowledge.delete_source` (cleanup DB + blobs)
-- Tenancy: `get_org_session(org_id)` applies search_path to `"{tenant_schema}", public` for the lifetime of the request.
+Pydantic Schemas (Uploads)
+- Source of truth: `src/api/schemas/knowledge_upload_models.py`
+- Optional fields are declared as `Optional[...]` or have defaults; all others are required.
 
-Upload batch flow
-```mermaid
-sequenceDiagram
-  autonumber
-  participant UI
-  participant API as FastAPI /users/knowledge
-  participant Svc as KnowledgeUploadService
-  participant Blob as Azure Blob Storage
-  participant Celery as Celery Worker
+```python
+from typing import Optional, List, Dict, Any
+from uuid import UUID
+from pydantic import BaseModel, Field, HttpUrl
 
-  UI->>API: POST /presign/batch (files[])
-  API->>Svc: presign_batch()
-  Svc->>Blob: generate_write_sas(path, ttl)
-  Svc-->>API: (source record + upload_url) per file
-  API-->>UI: SAS URLs (partial errors allowed)
+class KnowledgePresignFileRequest(BaseModel):
+    filename: str = Field(..., min_length=1, max_length=255)
+    mimetype: str
+    size_bytes: int = Field(..., gt=0)
 
-  UI->>Blob: PUT file bytes (direct upload)
-  UI->>API: POST /finalize/batch (source_ids)
-  API->>Svc: finalize_source()
-  Svc->>Blob: get_blob_properties()
-  API->>Celery: send_task("knowledge.post_upload_process", org_id, source_id)
-  API-->>UI: results per file
+class KnowledgeBatchPresignRequest(BaseModel):
+    files: List[KnowledgePresignFileRequest]
+    default_filters: Dict[str, Any] | None = None
+    client_batch_id: Optional[str] = Field(default=None, max_length=100)
+
+class KnowledgePresignFileResponse(BaseModel):
+    source_id: UUID
+    filename: str
+    mimetype: str
+    size_bytes: int
+    upload_url: Optional[HttpUrl] = None
+    expires_in_seconds: int = 0
+    status: str
+    error_message: Optional[str] = None
+    success: bool = True
+
+class KnowledgeBatchPresignResponse(BaseModel):
+    files: List[KnowledgePresignFileResponse]
+    errors: List[Dict[str, Any]] = []
+
+class KnowledgeFinalizeRequest(BaseModel):
+    source_id: UUID
+    checksum: Optional[str] = None
+
+class KnowledgeBatchFinalizeRequest(BaseModel):
+    files: List[KnowledgeFinalizeRequest]
+
+class KnowledgeSourceResponse(BaseModel):
+    source_id: UUID
+    filename: Optional[str]
+    mimetype: Optional[str]
+    size_bytes: Optional[int]
+    status: str
+    created_at: str  # ISO8601
+    updated_at: str  # ISO8601
+    error_message: Optional[str] = None
+    storage_path: Optional[str] = None
+    read_url: Optional[HttpUrl] = None
+    filters: Dict[str, Any] = {}
+    checksum: Optional[str] = None
+    thumbnail_small_path: Optional[str] = None
+    thumbnail_medium_path: Optional[str] = None
+
+class KnowledgeSourceEventUpdate(BaseModel):
+    source_id: str
+    status: str
+    updated_at: Optional[str] = None
+    error_message: Optional[str] = None
+    progress: Optional[int] = None
+    thumbnail_small_url: Optional[str] = None
+    thumbnail_medium_url: Optional[str] = None
 ```
 
-SSE status flow
+Pydantic Schemas (Access)
+- Source of truth: `src/api/schemas/knowledge_access_models.py`
+
+```python
+from typing import List, Optional, Dict
+from uuid import UUID
+from pydantic import BaseModel, HttpUrl, Field
+
+class KnowledgeSourceListItem(BaseModel):
+    source_id: UUID
+    filename: Optional[str]
+    mimetype: Optional[str]
+    size_bytes: Optional[int]
+    status: str
+    created_at: str  # ISO8601
+    updated_at: str  # ISO8601
+    error_message: Optional[str] = None
+    checksum: Optional[str] = None
+    thumbnail_small_url: Optional[HttpUrl] = None
+    thumbnail_medium_url: Optional[HttpUrl] = None
+
+class KnowledgeSourcesPage(BaseModel):
+    items: List[KnowledgeSourceListItem]
+    cursor: Optional[str] = None
+
+class KnowledgeDownloadResponse(BaseModel):
+    source_id: UUID
+    download_url: HttpUrl
+    expires_in_seconds: int = Field(default=120 * 60)
+
+class KnowledgeSourcesStats(BaseModel):
+    total: int
+    by_status: Dict[str, int]
+    by_type: Dict[str, int]
+
+class KnowledgeDeleteResponse(BaseModel):
+    source_id: UUID
+    status: str
+```
+
+Examples
+- Batch presign request
+```json
+{
+  "files": [
+    { "filename": "a.pdf", "mimetype": "application/pdf", "size_bytes": 1000 },
+    { "filename": "b.txt", "mimetype": "text/plain", "size_bytes": 2000 }
+  ]
+}
+```
+- List page (truncated)
+```json
+{
+  "items": [
+    {
+      "source_id": "...",
+      "filename": "a.pdf",
+      "status": "processing",
+      "thumbnail_small_url": null
+    }
+  ],
+  "cursor": null
+}
+```
+
+Architecture and Dependencies
+- Routers: `upload_handler.py`, `access_handler.py`.
+- Services: `KnowledgeUploadService`, `KnowledgeAccessService`, `KnowledgeSourceSSEService`.
+- Infra: `AzureOrganisationBlobStorage` (SAS read/write, thumbnails), `AsyncRedisPubSub` (channels `kb:{org_id}:sources`).
+- Background: Celery `src/workers/knowledge_worker/celery_app.py` tasks `knowledge.post_upload_process`, `knowledge.delete_source`.
+
+SSE Status Flow
 ```mermaid
 sequenceDiagram
   participant UI
@@ -67,45 +168,38 @@ sequenceDiagram
 
   UI->>API: GET /sources/stream?source_ids=...
   API->>SSE: stream_events(explicit_ids)
-  SSE->>DB: select non‑terminal sources (user+org scoped)
-  SSE-->>UI: "status" event with initial snapshot
+  SSE->>DB: select non-terminal sources (user+org scoped)
+  SSE-->>UI: "status" event (initial snapshot)
   Redis-->>SSE: messages {source_id, status, ...}
   SSE-->>UI: "status" events; emits "complete" when all terminal
 ```
 
-Listing and download
-- List: key‑set pagination over `(created_at DESC, source_id DESC)` with `limit+1` probe row. Cursor is `encode_cursor(ts, id)`.
-- Filters: status (enum values), type (file/integration), filename search (`ILIKE %q%`). Soft‑deleted rows (`is_deleted`) are excluded.
-- Optional URLs: when `include_urls=true`, SAS URLs for thumbnails are generated concurrently via `asyncio.gather`.
-- Download: validates org+user ownership and `storage_path`, then returns a read SAS URL with optional Content‑Disposition filename.
+Listing and Download
+- List: cursor over `(created_at DESC, source_id DESC)`; cursor is opaque and must be echoed back verbatim.
+- Filters: status (enum), type (file/integration), filename search (`ILIKE %q%`). Soft-deleted rows are excluded.
+- Optional URLs: when `include_urls=true`, SAS URLs for thumbnails are generated concurrently.
+- Download: validates org+user ownership and `storage_path`, then returns a read SAS URL.
 
-Tenancy and security
-- Session scoping: `get_org_session()` yields a Session with `SET search_path TO "{tenant}", public` and resets it after response. No code should mutate search_path inside services.
-- Access control: All DB queries constrain by `organisation_id` and `user_id`. SSE limits updates to the current user’s sources.
-- SAS links: Short‑lived, generated per request. Upload uses write permissions; downloads use read permissions with optional download filename.
+Tenancy and Security
+- Session scoping: `get_org_session()` applies `SET search_path TO "{tenant}", public` for the request lifetime.
+- Access control: all DB queries constrain by `organisation_id` and `user_id`. SSE limited to current user.
+- SAS links: short-lived; uploads use write permission; downloads use read permission with optional filename.
 
-Error handling
-- Domain errors: `KnowledgeUploadServiceError`, `KnowledgeAccessServiceError`, `KnowledgeSSEError` carry `status_code` for router translation.
-- Envelope: `Response.error_response(status_code, message, data?)` used for consistent API shape.
-- Partial success: Batch presign/finalize accumulates errors per item and returns successes alongside failures.
+Error Handling
+- Domain errors carry `status_code` for router translation.
+- Envelope helpers produce consistent responses; batch operations accumulate per-file errors.
 
-Configuration knobs (env)
-- Upload limits: `KNOWLEDGE_MAX_UPLOAD_FILE_SIZE_BYTES` (default 100MB), `KNOWLEDGE_ALLOWED_MIMETYPES` (defaults include `application/pdf`, `text/plain`).
-- Redis: From `Config().get_redis_client_details`; async client required (redis>=5 recommended).
-- Azure Storage: `ORGANISATION_STORAGE_NAME` (single account, container per org). Credentials via Default/Workload/Managed Identity depending on env.
+Configuration
+- Upload limits: `KNOWLEDGE_MAX_UPLOAD_FILE_SIZE_BYTES` (default 100MB), `KNOWLEDGE_ALLOWED_MIMETYPES`.
+- Redis: from `Config().get_redis_client_details`; async client required (redis>=5 recommended).
+- Azure Storage: `ORGANISATION_STORAGE_NAME` (single account, container per org).
 
-Data model highlights
-- `OrganisationSource` fields: `status`, `storage_path`, `thumbnail_small_path`, `thumbnail_medium_path`, `checksum`, `is_deleted`, timestamps.
-- Terminal statuses: `COMPLETED`, `FAILED`. SSE treats others as active.
-- Jobs: `KnowledgeProcessingJob` tracks `post_upload_process` and `document_extraction` phases.
+Performance Notes
+- Presign: per-file validation; partial failures do not block the batch.
+- SSE: heartbeats ~25s; returns `complete` when all watched sources reach terminal state.
+- Thumbnails: generated and signed on demand; use concurrency when building lists.
 
-Performance notes
-- Presign: No DB write until upload SAS is issued and record is prepared; errors per file don’t block the batch.
-- SSE: Streams only relevant IDs; heartbeats every ~25s; returns `complete` when all watched sources reach terminal state.
-- Thumbnails: URL generation deferred unless requested; concurrency used when building page items.
-
-Operational tips
-- Look for logs under loggers: `knowledge_upload_handler`, `knowledge_access_handler`, `knowledge_sse_service`, `azure_org_blob_storage`, `redis_pubsub`.
-- Redis channels: `kb:{org_id}:sources` for knowledge updates. Ensure workers publish here after state changes.
-- Be careful to close async clients (`service.close()` in routers) to avoid unclosed session warnings.
+Operational Tips
+- Logs: `knowledge_upload_handler`, `knowledge_access_handler`, `knowledge_sse_service`, `azure_org_blob_storage`, `redis_pubsub`.
+- Close async clients in routers to avoid unclosed session warnings.
 

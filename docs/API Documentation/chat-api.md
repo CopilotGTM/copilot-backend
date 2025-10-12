@@ -139,8 +139,9 @@ export interface ChatSessionsPage {
 }
 
 export interface SendMessageResponse {
-  message_id: UUID;
   job_id: UUID;
+  user_message_id: UUID;
+  assistant_message_id: UUID;
 }
 
 export interface ChatAttachmentView {
@@ -468,11 +469,16 @@ Notes
   "status": "SUCCESS",
   "message": "Message accepted",
   "data": {
-    "message_id": "f1b9e0a8-...",
-    "job_id": "0f49b5d8-..."
+    "job_id": "0f49b5d8-...",
+    "user_message_id": "f1b9e0a8-...",
+    "assistant_message_id": "a2c7d1e9-..."
   }
 }
 ```
+Notes
+- `job_id`: Use this to connect to the SSE stream at `/message_events`
+- `user_message_id`: The persisted ID of the user's message
+- `assistant_message_id`: Pre-generated ID for the assistant's response (message will be created by worker)
 
 ### Error Responses
 - 400 Bad Request — invalid content, role not `user`, or session not found
@@ -525,6 +531,44 @@ Streams Server-Sent Events for a specific message job. Includes reconnection sup
 { "type": "finalize", "reason": "done" }
 ```
 
+### SSE Semantics (Worker, Delta, Ordering)
+- Producer and delivery
+  - Frames originate from the chat worker processing the job. The worker publishes structured frames to a per-job Redis Stream; the API's SSE endpoint relays those frames to the client.
+  - Delivery uses Redis consumer groups for consume-once semantics by default, minimizing duplicates. Legacy replay mode is used when consumer groups are unavailable.
+
+- Base frame schema (always included)
+  - `job_id`: the job identifier (string) for SSE stream correlation
+  - `assistant_message_id`: the pre-generated ID for the assistant message being created
+  - `version`: frame schema version (e.g., "1.0")
+  - `timestamp`: float seconds since epoch
+  - `sequence`: 0-based, monotonically increasing per job
+  - `type`: one of the known frame types listed above
+
+- Ordering and resume
+  - Ordering: frames are emitted in order; use `sequence` (preferred) or the SSE `id` to ensure monotonic processing.
+  - Resume: pass `Last-Event-ID` on reconnect. In consume-once mode, the server tracks position; in legacy mode, the server replays from the provided ID.
+  - Heartbeats/Timeouts: you will receive `ping` heartbeats ~25s. After ~15 minutes idle, a `timeout` with `{ "reconnect": true }` is sent — reconnect with backoff.
+
+- Content streaming contract (delta vs replace)
+  - `answer.delta`: append-only partial content. Render incrementally by concatenating `content` chunks in order.
+  - `answer.replace`: full current answer. If received, treat this as the canonical text and replace the accumulated buffer.
+  - Finalization: a `finalize` frame is followed by an `event: complete`. After `complete`, close the stream and optionally refresh with `GET /messages/list` to show the persisted assistant message.
+
+- Diagnostics / “autopsy” frames (what the frontend can expect)
+  - `answer.metrics`: confidence signal for the answer (e.g., `very_low|low|medium|high|very_high`). May also include `citations` in some cases.
+  - `sources.replace`: full replacement list of sources/citations to display alongside the answer.
+  - `suggestions.replace`: full replacement list of suggested follow-ups.
+  - `progress.update`: background status such as `{ stage, message?, progress [0..1], eta_seconds? }` to drive progress UI.
+  - `tool.usage`: instrumentation about tools used `{ tool_name, status, duration_ms?, result_summary? }`.
+  - `thinking.update`: optional thinking/planning breadcrumbs `{ thought, stage }` for debug or dev UIs.
+  - `agent.switch` and `question.prompt`: advanced flows for agent handoff or asking the user for more info.
+
+- Frontend handling (practical expectations)
+  - Stream only from `answer.delta` (append) and apply `answer.replace` when present to ensure the UI shows the canonical answer.
+  - Merge diagnostics frames live: update confidence, sources, suggestions, progress bars, and tool/thinking panes as frames arrive.
+  - Stop on `event: complete` (or on `finalize` shortly followed by `complete`). On `timeout` or `error` where `reconnect` is true, reconnect with backoff and include `Last-Event-ID`.
+  - After completion, call `GET /users/chats/messages/list` for the session to render the stored assistant message and any enriched metadata.
+
 ### Frontend Handling Tips
 - Use `answer.delta` to append and `answer.replace` to overwrite the current answer.
 - Update confidence, suggestions, sources, and progress bars from corresponding frames.
@@ -532,17 +576,41 @@ Streams Server-Sent Events for a specific message job. Includes reconnection sup
 
 ### Minimal Browser Example
 ```js
+// After sending message, you receive: { job_id, user_message_id, assistant_message_id }
+// Create assistant message placeholder in UI with assistant_message_id
+
 const src = new EventSource(`/users/chats/message_events?job_id=${jobId}`, {
   withCredentials: true
 });
+
 src.addEventListener('ready', () => console.log('ready'));
 src.addEventListener('ping', () => {/* keep-alive */});
 src.addEventListener('frame', (e) => {
   const frame = JSON.parse(e.data);
+  // frame.job_id - correlate with your request
+  // frame.assistant_message_id - update this message in your UI
+  
   switch(frame.type){
-    case 'answer.delta': /* append */ break;
-    case 'answer.replace': /* replace */ break;
-    case 'finalize': /* will get complete next */ break;
+    case 'answer.delta': 
+      // Append frame.content to assistant message
+      updateMessage(frame.assistant_message_id, { content: append(frame.content) });
+      break;
+    case 'answer.replace': 
+      // Replace full content
+      updateMessage(frame.assistant_message_id, { content: frame.content });
+      break;
+    case 'suggestions.replace':
+      // Update suggestions
+      updateMessage(frame.assistant_message_id, { suggestions: frame.items });
+      break;
+    case 'sources.replace':
+      // Update sources
+      updateMessage(frame.assistant_message_id, { sources: frame.sources });
+      break;
+    case 'finalize': 
+      // Mark complete
+      updateMessage(frame.assistant_message_id, { status: 'completed' });
+      break;
   }
 });
 src.addEventListener('complete', () => src.close());
