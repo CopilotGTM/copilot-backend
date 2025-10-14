@@ -11,10 +11,13 @@ RUN apt-get update && apt-get install -y \
 # Create log directory
 RUN mkdir -p /var/log
 
-COPY requirements.txt .
+# Copy only requirements first to leverage Docker cache
+COPY requirements.txt ./
 
+# Install dependencies (this layer will be cached unless requirements files change)
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Copy the rest of the application
 COPY . .
 
 # Environment variables will be loaded at runtime from .env

@@ -54,20 +54,25 @@ class AsyncRedisSubscriber:
     async def _get_redis_client(self):
         if not aioredis:
             raise RuntimeError(
-                "Async redis support not available. Install redis>=5.0.0"
+                "Async redis support not available. Install redis>=6.0.0"
             )
         if self.redis is None:
-            host, port, password = self.config.get_redis_client_details
-            self.redis = aioredis.Redis(
-                host=host,
-                port=port,
-                password=password,
+            redis_host, port, password = self.config.get_redis_client_details
+            
+            # Determine if SSL should be used (enabled for non-local hosts)
+            ssl_enabled = not (redis_host in ["localhost", "127.0.0.1"] or redis_host.startswith("192.168."))
+            
+            # Use rediss:// protocol for SSL, redis:// for non-SSL
+            protocol = "rediss" if ssl_enabled else "redis"
+            redis_url = f"{protocol}://:{password}@{redis_host}:{port}"
+            
+            self.redis = aioredis.Redis.from_url(
+                redis_url,
                 decode_responses=True,
                 socket_timeout=None,
                 socket_connect_timeout=30,
                 retry_on_timeout=True,
                 health_check_interval=0,
-                ssl=False if self.config.env == "local" else True,
                 socket_keepalive=True,
             )
             await self.redis.ping()

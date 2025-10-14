@@ -119,6 +119,7 @@ stages:
                       --set api.secrets.REDIS_HOST="$(REDIS_HOST)" \
                       --set api.secrets.REDIS_PORT="$(REDIS_PORT)" \
                       --set api.secrets.REDIS_PASSWORD="$(REDIS_PASSWORD)" \
+                      --set api.secrets.REDIS_SSL_CERT_REQS=CERT_NONE \
                       --set api.secrets.AZURE_OPENAI_API_KEY="$(AZURE_OPENAI_API_KEY)" \
                       --set api.secrets.AZURE_OPENAI_ENDPOINT="$(AZURE_OPENAI_ENDPOINT)" \
                       --set api.secrets.AZURE_EMBEDDER_OPENAI_API_KEY="$(AZURE_EMBEDDER_OPENAI_API_KEY)" \

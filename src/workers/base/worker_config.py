@@ -21,10 +21,11 @@ class BaseWorkerConfig:
 
     def _get_broker_url(self):
         # Use redis (non-SSL) for localhost, even in dev/prod env
-        if self.redis_host in ["localhost", "127.0.0.1"]:
+        ssl_enabled = not (self.redis_host in ["localhost", "127.0.0.1"] or self.redis_host.startswith("192.168."))
+        if not ssl_enabled:
             redis_scheme = "redis"
         else:
-            redis_scheme = "redis" if self.config.env == "local" else "rediss"
+            redis_scheme = "rediss"
 
         redis_password_part = f":{self.redis_password}@" if self.redis_password else ""
         broker_url = f"{redis_scheme}://{redis_password_part}{self.redis_host}:{self.redis_port}/0"
@@ -32,16 +33,20 @@ class BaseWorkerConfig:
 
     def _get_ssl_config(self):
         # Only use SSL for remote Redis, not localhost
-        if self.config.env != "local" and self.redis_host not in [
-            "localhost",
-            "127.0.0.1",
-        ]:
-            ssl_cert_reqs_str = os.environ.get("REDIS_SSL_CERT_REQS", "CERT_NONE")
+        ssl_enabled = not (self.redis_host in ["localhost", "127.0.0.1"] or self.redis_host.startswith("192.168."))
+        if ssl_enabled:
+            # Default to CERT_REQUIRED for security (instead of CERT_NONE)
+            ssl_cert_reqs_str = os.environ.get("REDIS_SSL_CERT_REQS", "CERT_REQUIRED")
             ssl_cert_reqs_map = {
                 "CERT_NONE": ssl.CERT_NONE,
                 "CERT_OPTIONAL": ssl.CERT_OPTIONAL,
                 "CERT_REQUIRED": ssl.CERT_REQUIRED,
             }
-            ssl_cert_reqs = ssl_cert_reqs_map.get(ssl_cert_reqs_str, ssl.CERT_NONE)
-            return {"ssl_cert_reqs": ssl_cert_reqs}
+            ssl_cert_reqs = ssl_cert_reqs_map.get(ssl_cert_reqs_str, ssl.CERT_REQUIRED)
+            
+            # Return secure SSL configuration
+            return {
+                "ssl_cert_reqs": ssl_cert_reqs,
+                "ssl_check_hostname": True,  # Enable hostname verification
+            }
         return None

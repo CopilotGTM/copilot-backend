@@ -40,28 +40,31 @@ class AsyncRedisPubSub:
         if self._redis is None:
             if redis is None:
                 raise RuntimeError(
-                    "Async redis support not available. Install/upgrade with: pip install 'redis>=5.0.0'"
+                    "Async redis support not available. Install/upgrade with: pip install 'redis>=6.0.0'"
                 )
 
             redis_host, redis_port, redis_password = (
                 self.config.get_redis_client_details
             )
-            ssl_enabled = False if self.config.env == "local" else True
+            
+            # Determine if SSL should be used (enabled for non-local hosts)
+            ssl_enabled = not (redis_host in ["localhost", "127.0.0.1"] or redis_host.startswith("192.168."))
+            
+            # Use rediss:// protocol for SSL, redis:// for non-SSL
+            protocol = "rediss" if ssl_enabled else "redis"
+            redis_url = f"{protocol}://:{redis_password}@{redis_host}:{redis_port}"
 
             # For long‑lived Pub/Sub, avoid read timeouts and client‑side health checks that
             # inject PING (which can conflict with pubsub protocol). OS TCP keepalive is enabled.
-            self._redis = redis.Redis(  # type: ignore[attr-defined]
-                host=redis_host,
-                port=redis_port,
-                password=redis_password,
+            self._redis = redis.Redis.from_url(
+                redis_url,
                 decode_responses=True,
                 socket_timeout=None,  # no read timeout for blocking pubsub
                 socket_connect_timeout=30,
                 retry_on_timeout=True,
                 health_check_interval=0,  # disable client PING health check
-                ssl=ssl_enabled,
                 socket_keepalive=True,
-            )
+            )  # type: ignore[attr-defined]
             await self._redis.ping()  # connectivity check
         return self._redis
 

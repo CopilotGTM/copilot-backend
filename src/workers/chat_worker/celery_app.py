@@ -46,6 +46,16 @@ app.conf.update(
     worker_task_log_format="[%(asctime)s: %(levelname)s/%(processName)s][%(task_name)s(%(task_id)s)] %(message)s",
 )
 
+# Log broker connection details for debugging (mask password)
+broker_url_masked = config.broker_url
+if config.redis_password:
+    broker_url_masked = config.broker_url.replace(config.redis_password, "****")
+logger.info(f"Chat worker broker URL: {broker_url_masked}")
+logger.info(f"Chat worker backend URL: {config.backend_url.replace(config.redis_password, '****') if config.redis_password else config.backend_url}")
+logger.info(f"Chat worker SSL config: {config.ssl_config}")
+logger.info(f"Chat worker queues: {[q.name for q in config.task_queues]}")
+logger.info(f"Chat worker default queue: {config.task_default_queue}")
+
 
 # Add signal handlers for debugging and resource management
 @worker_ready.connect

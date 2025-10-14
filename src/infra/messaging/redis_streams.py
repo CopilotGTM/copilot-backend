@@ -77,33 +77,30 @@ class AsyncRedisConnectionManager:
         """Initialize async Redis connection pool."""
         if redis_async is None:
             raise RuntimeError(
-                "Async redis support not available. Install 'redis>=5.0.0'."
+                "Async redis support not available. Install 'redis>=6.0.0'."
             )
 
         config = Config()
         redis_host, redis_port, redis_password = config.get_redis_client_details
-        ssl_enabled = False if config.env == "local" else True
-
-        # Build connection parameters
-        connection_params = {
-            "host": redis_host,
-            "port": redis_port,
-            "password": redis_password,
-            "decode_responses": True,
-            "socket_timeout": None,
-            "socket_connect_timeout": 30,
-            "retry_on_timeout": True,
-            "socket_keepalive": True,
-            "health_check_interval": 0,
-            "max_connections": 20,
-        }
-
-        # Add SSL configuration only for non-local environments
-        if ssl_enabled:
-            connection_params["ssl"] = True
-            connection_params["ssl_check_hostname"] = False
-
-        self._async_pool = redis_async.ConnectionPool(**connection_params)
+        
+        # Determine if SSL should be used (enabled for non-local hosts)
+        ssl_enabled = not (redis_host in ["localhost", "127.0.0.1"] or redis_host.startswith("192.168."))
+        
+        # Use rediss:// protocol for SSL, redis:// for non-SSL
+        protocol = "rediss" if ssl_enabled else "redis"
+        redis_url = f"{protocol}://:{redis_password}@{redis_host}:{redis_port}"
+        
+        # Create connection pool using from_url for proper SSL handling
+        self._async_pool = redis_async.ConnectionPool.from_url(
+            redis_url,
+            decode_responses=True,
+            socket_timeout=None,
+            socket_connect_timeout=30,
+            retry_on_timeout=True,
+            socket_keepalive=True,
+            health_check_interval=0,
+            max_connections=20,
+        )
 
         # Test the connection
         test_client = redis_async.Redis(connection_pool=self._async_pool)
