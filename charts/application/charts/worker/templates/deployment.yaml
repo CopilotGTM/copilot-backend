@@ -71,7 +71,7 @@ spec:
             - "--pool={{ .Values.config.pool }}"
             {{- end }}
             - "-Q"
-            - "{{ .Values.config.queueName }}" # Consumes from a specific queue
+            - "{{ .Values.config.queueName }}{{- if .Values.config.additionalQueues }},{{ join "," .Values.config.additionalQueues }}{{- end }}"
           envFrom:
             - secretRef:
                 name: {{ .Values.config.secretName | default .Values.global.secretName }}

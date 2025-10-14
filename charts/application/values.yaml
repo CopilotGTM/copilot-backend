@@ -203,7 +203,7 @@ organization-worker:
     scaleDownDelay: 300
     scaleUpDelay: 5
 
-# Chat Worker (Attachments Queue)
+# Chat Worker (All Chat Queues: attachments, chat_processing, chat_messages)
 chat-worker:
   enabled: true
   replicaCount: 0
@@ -213,6 +213,7 @@ chat-worker:
     pullPolicy: IfNotPresent
   config:
     queueName: "attachments"
+    additionalQueues: ["chat_processing", "chat_messages"]
     concurrency: 3
   resources:
     requests:

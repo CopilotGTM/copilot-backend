@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Optional, Dict, Any, List
 from uuid import UUID
 
 from sqlalchemy import or_, and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.infra.utils.cursor import encode_cursor, decode_cursor
+from src.infra.utils.logger import get_logger
 
 from src.domain.models.organisation_tables.chat_session_models import (
     ChatSession,
@@ -14,10 +16,13 @@ from src.domain.models.organisation_tables.chat_session_models import (
 
 
 class ChatSessionService:
+    _RETRYABLE_RUNTIME_ERRORS = ("deque mutated during iteration",)
+
     def __init__(self, db: AsyncSession, organisation_id: UUID, user_id: UUID):
         self.db = db
         self.organisation_id = organisation_id
         self.user_id = user_id
+        self._logger = get_logger("chat_session_service")
 
     NOT_FOUND_MSG = "Chat session not found"
 
@@ -70,7 +75,7 @@ class ChatSessionService:
             ChatSession.organisation_id == self.organisation_id,
             ChatSession.is_deleted.is_(False),
         )
-        res = await self.db.execute(stmt)
+        res = await self._execute_with_retry(stmt)
         chat = res.scalars().one_or_none()
         if not chat:
             raise ValueError(self.NOT_FOUND_MSG)
@@ -99,7 +104,7 @@ class ChatSessionService:
             ChatSession.organisation_id == self.organisation_id,
             ChatSession.is_deleted.is_(False),
         )
-        res = await self.db.execute(stmt)
+        res = await self._execute_with_retry(stmt)
         chat = res.scalars().one_or_none()
         if not chat:
             raise ValueError(self.NOT_FOUND_MSG)
@@ -140,7 +145,7 @@ class ChatSessionService:
             .order_by(ChatSession.created_at.desc(), ChatSession.session_id.desc())
             .limit(limit + 1)
         )
-        res = await self.db.execute(stmt)
+        res = await self._execute_with_retry(stmt)
         rows = res.scalars().all()
         has_more = len(rows) == limit + 1
         items = rows[:limit]
@@ -180,7 +185,7 @@ class ChatSessionService:
             .order_by(ChatSession.updated_at.desc(), ChatSession.created_at.desc())
             .limit(limit)
         )
-        res = await self.db.execute(stmt)
+        res = await self._execute_with_retry(stmt)
         rows = res.scalars().all()
         return rows
 
@@ -200,7 +205,7 @@ class ChatSessionService:
             ChatSession.organisation_id == self.organisation_id,
             ChatSession.is_deleted.is_(False),
         )
-        res = await self.db.execute(stmt)
+        res = await self._execute_with_retry(stmt)
         chat = res.scalars().one_or_none()
         if not chat:
             raise ValueError(self.NOT_FOUND_MSG)
@@ -216,3 +221,27 @@ class ChatSessionService:
         await self.db.commit()
         await self.db.refresh(chat)
         return chat
+
+    async def _execute_with_retry(self, stmt, *, retries: int = 1):
+        attempt = 0
+        while True:
+            try:
+                return await self.db.execute(stmt)
+            except RuntimeError as exc:
+                msg = str(exc).lower()
+                if attempt >= retries or not any(
+                    token in msg for token in self._RETRYABLE_RUNTIME_ERRORS
+                ):
+                    raise
+                attempt += 1
+                self._logger.warning(
+                    "Retrying statement after RuntimeError '%s' (attempt %s/%s)",
+                    exc,
+                    attempt,
+                    retries + 1,
+                )
+                try:
+                    await self.db.rollback()
+                except Exception:
+                    pass
+                await asyncio.sleep(0.05)

@@ -73,7 +73,7 @@ async def create_organization(
             organisation_name=request.organisation_name,
             org_details=org_details,
         ).get(
-            timeout=60
+            timeout=120
         )  # 1-minute timeout for the synchronous task
 
         response_data = CreateOrganizationResponse(**task_result)
