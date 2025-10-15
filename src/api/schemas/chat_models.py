@@ -108,10 +108,12 @@ class SendMessageRequest(BaseModel):
 
 class SendMessageResponse(BaseModel):
     """Response after sending a message with IDs for frontend tracking."""
-    
+
     job_id: UUID = Field(..., description="Job ID for SSE streaming connection")
     user_message_id: UUID = Field(..., description="Created user message ID")
-    assistant_message_id: UUID = Field(..., description="Pre-created assistant message placeholder ID")
+    assistant_message_id: UUID = Field(
+        ..., description="Pre-created assistant message placeholder ID"
+    )
 
 
 class ChatMessageListItem(BaseModel):

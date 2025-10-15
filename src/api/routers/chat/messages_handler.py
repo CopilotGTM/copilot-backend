@@ -62,7 +62,7 @@ async def send_message(
 ):
     try:
         # Map attachments to IDs, respecting order if provided
-        attach_ids: Optional[List[UUID]] = payload.attachments        
+        attach_ids: Optional[List[UUID]] = payload.attachments
 
         # Create user message (this also creates and saves the job)
         user_message, job, assistant_message_id = await service.create_user_message(

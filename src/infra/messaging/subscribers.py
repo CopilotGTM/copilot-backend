@@ -58,14 +58,17 @@ class AsyncRedisSubscriber:
             )
         if self.redis is None:
             redis_host, port, password = self.config.get_redis_client_details
-            
+
             # Determine if SSL should be used (enabled for non-local hosts)
-            ssl_enabled = not (redis_host in ["localhost", "127.0.0.1"] or redis_host.startswith("192.168."))
-            
+            ssl_enabled = not (
+                redis_host in ["localhost", "127.0.0.1"]
+                or redis_host.startswith("192.168.")
+            )
+
             # Use rediss:// protocol for SSL, redis:// for non-SSL
             protocol = "rediss" if ssl_enabled else "redis"
             redis_url = f"{protocol}://:{password}@{redis_host}:{port}"
-            
+
             self.redis = aioredis.Redis.from_url(
                 redis_url,
                 decode_responses=True,

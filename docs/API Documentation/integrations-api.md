@@ -45,6 +45,10 @@ No request body or query parameters required.
             "organisation_id": "org-uuid",
             "integration_type": "hubspot",
             "name": "My HubSpot Account",
+            "created_by_user_id": "user-123-uuid",
+            "created_by_admin": true,
+            "integration_email": "sales@acme.com",
+            "integration_scope": "organization",
             "sync_frequency": "daily",
             "auto_sync_enabled": true,
             "is_active": true,
@@ -99,9 +103,28 @@ No request body or query parameters required.
 | `category_name` | string | Human-readable category name |
 | `availability_status` | string | `available`, `coming_soon`, `beta`, `deprecated` |
 | `is_connected` | boolean | Whether user has connected this integration |
-| `connected_integrations` | array | List of user's connected instances |
+| `connected_integrations` | array | List of user's connected instances (see Connected Integration Fields below) |
 | `total_available` | integer | Total number of integration types |
 | `total_connected` | integer | Total connected integrations |
+
+### Connected Integration Fields
+
+Each item in `connected_integrations` array includes:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `integration_id` | UUID | Unique identifier for this integration connection |
+| `created_by_user_id` | UUID | User who created/connected this integration |
+| `created_by_admin` | boolean | Whether this was created by an admin user |
+| `integration_email` | string\|null | Email/username of the connected account (e.g., 'sales@acme.com' for HubSpot, 'john@company.com' for Google Drive) |
+| `integration_scope` | string | Access scope: `organization` (all users), `user` (creator only), `team`, or `role_based` |
+| `name` | string | User-defined name for this connection |
+| `is_active` | boolean | Whether the integration is currently active |
+| `last_synced_at` | string\|null | ISO 8601 timestamp of last sync |
+| `last_sync_status` | string\|null | Status: `success`, `failed`, `partial`, `in_progress` |
+| `connection_metadata` | object | Provider-specific metadata |
+| `created_at` | string | ISO 8601 timestamp when connected |
+| `updated_at` | string | ISO 8601 timestamp of last update |
 
 ### Availability Status Values
 
@@ -128,6 +151,9 @@ No request body or query parameters required.
 2. **Connection status** - Use `is_connected` to show badges or different UI states
 3. **Connected instances** - Display list of connected accounts if `is_connected` is true
 4. **Availability** - Disable connect button if `availability_status` is `coming_soon`
+5. **Access scope indicators** - Show badges for `organization` vs `user` scoped integrations
+6. **Connected account email** - Display `integration_email` to show which account is connected (e.g., "Connected as: sales@acme.com")
+7. **Creator information** - Show who created the integration using `created_by_user_id` and `created_by_admin`
 
 **Example UI Logic:**
 ```typescript
@@ -138,11 +164,22 @@ const canConnect = integration.availability_status === 'available' ||
 // Show connection badge
 const showConnectedBadge = integration.is_connected;
 
-// Show "Add Another" button
+// Show "Add Another" button (for user-scoped integrations like Google Drive)
 const showAddAnother = integration.is_connected && canConnect;
 
 // Display coming soon badge
 const showComingSoon = integration.availability_status === 'coming_soon';
+
+// Display connected account info
+const getConnectionDisplay = (conn: ConnectedIntegration) => {
+  const scopeBadge = conn.integration_scope === 'user' ? '👤 Personal' : '🏢 Organization';
+  const accountInfo = conn.integration_email 
+    ? `Connected as: ${conn.integration_email}` 
+    : 'Connected';
+  const creatorInfo = conn.created_by_admin ? '(Created by Admin)' : '';
+  
+  return `${scopeBadge} ${accountInfo} ${creatorInfo}`;
+};
 ```
 
 **Performance:**
@@ -180,6 +217,113 @@ curl -X GET "https://api.example.com/users/integrations/available" \
 
 ---
 
+## Understanding Access Control Fields
+
+### New Fields Explained
+
+Starting from the latest version, all integrations include access control fields that determine who can see and use each integration:
+
+#### 1. `created_by_user_id` (UUID)
+- **What it is:** The ID of the user who connected this integration
+- **Use case:** Track who created the integration for audit purposes
+- **Example:** `"123e4567-e89b-12d3-a456-426614174000"`
+
+#### 2. `created_by_admin` (boolean)
+- **What it is:** Whether the integration was created by an admin user
+- **Use case:** Differentiate between admin-created (org-wide) and member-created (personal) integrations
+- **Example:** `true` for HubSpot connected by admin, `false` for personal Google Drive
+
+#### 3. `integration_email` (string | null)
+- **What it is:** The email/username of the **connected external account** (not your user's email)
+- **Use case:** Show which external account is connected; helps with multiple accounts of same type
+- **Examples:**
+  - HubSpot: `"sales@acme.com"` (the HubSpot account email)
+  - Google Drive: `"john@company.com"` (the Google account)
+  - Slack: `"workspace@company.slack.com"` (the Slack workspace)
+  - Can be `null` if provider doesn't share email
+
+#### 4. `integration_scope` (string)
+- **What it is:** Access level for the integration data
+- **Possible values:**
+  - `"organization"` - All users in org can see this data (e.g., HubSpot, Salesforce)
+  - `"user"` - Only the creator can see this data (e.g., personal Google Drive)
+  - `"team"` - Only specific team members (future feature)
+  - `"role_based"` - Based on user roles (future feature)
+
+### Access Scope Examples
+
+**Organization-Wide (HubSpot, Salesforce, Slack):**
+```json
+{
+  "integration_type": "hubspot",
+  "name": "Company HubSpot",
+  "created_by_user_id": "admin-uuid",
+  "created_by_admin": true,
+  "integration_email": "sales@acme.com",
+  "integration_scope": "organization"
+  // ✅ All users in org can search HubSpot data
+}
+```
+
+**User-Level (Google Drive, Personal Dropbox):**
+```json
+{
+  "integration_type": "google_drive",
+  "name": "John's Google Drive",
+  "created_by_user_id": "john-uuid",
+  "created_by_admin": false,
+  "integration_email": "john@company.com",
+  "integration_scope": "user"
+  // ✅ Only John can search his Google Drive data
+}
+```
+
+### Frontend Implementation Guidelines
+
+**Displaying Integration Email:**
+```typescript
+const IntegrationCard = ({ integration }) => {
+  return (
+    <div className="integration-card">
+      <h3>{integration.name}</h3>
+      
+      {/* Show connected account email */}
+      {integration.integration_email && (
+        <p className="connected-as">
+          Connected as: <strong>{integration.integration_email}</strong>
+        </p>
+      )}
+      
+      {/* Show scope badge */}
+      <span className={`scope-badge ${integration.integration_scope}`}>
+        {integration.integration_scope === 'organization' ? '🏢 Organization' : '👤 Personal'}
+      </span>
+      
+      {/* Show creator info */}
+      {integration.created_by_admin && (
+        <span className="creator-badge">Created by Admin</span>
+      )}
+    </div>
+  );
+};
+```
+
+**Filtering Integrations by Scope:**
+```typescript
+// Show only user's personal integrations
+const personalIntegrations = allIntegrations.filter(
+  (int) => int.integration_scope === 'user' && 
+           int.created_by_user_id === currentUser.id
+);
+
+// Show org-wide integrations (visible to all)
+const orgIntegrations = allIntegrations.filter(
+  (int) => int.integration_scope === 'organization'
+);
+```
+
+---
+
 ## 2. Initiate OAuth Flow (Create Nango Connect Session)
 
 ### Endpoint
@@ -205,10 +349,15 @@ Required - Bearer token
 **What Backend Extracts Automatically from JWT:**
 - `user_id` - Your internal user ID
 - `organisation_id` - Your internal organization ID
+- `user_role` - User's role (ADMIN or MEMBER) - determines `created_by_admin`
 - `email` - User's email address (from User model)
 - `first_name` and `last_name` - User's name (from User model)
 
 These are automatically sent to Nango and will be returned in the webhook.
+
+**What Backend Determines from Integration Metadata:**
+- `integration_scope` - Set based on integration type (ORGANIZATION for HubSpot/Salesforce, USER for Google Drive)
+- `integration_email` - Extracted from OAuth provider's response (e.g., connected account email)
 
 ### Request Body
 ```json
@@ -530,15 +679,36 @@ useEffect(() => {
    - Backend calls Nango to exchange authorization code for access token
    - Nango stores encrypted tokens securely
 
-3. **Save Integration**
+3. **Extract Integration Email**
+   - Backend retrieves connection details from Nango
+   - Extracts the connected account email from provider-specific metadata:
+     - **Google Drive**: `metadata.email` or `metadata.user_email`
+     - **HubSpot**: `metadata.user` or `metadata.hub_email`
+     - **Slack**: `metadata.user.email`
+     - **Salesforce**: `metadata.email` or `metadata.username`
+   - Stores in `integration_email` field for display
+
+4. **Determine Access Control**
+   - `created_by_user_id`: From JWT token
+   - `created_by_admin`: From user's role (ADMIN or MEMBER)
+   - `integration_scope`: From integration metadata:
+     - `organization` for HubSpot, Salesforce, Slack (all users see data)
+     - `user` for Google Drive, Dropbox (only creator sees data)
+   - `integration_email`: Extracted from OAuth provider response
+
+5. **Save Integration**
    - Creates integration record in database with:
      - `integration_type`: Type of integration
      - `name`: Auto-generated name (user can change later)
      - `connection_id`: Unique identifier for this connection
+     - `created_by_user_id`: User who connected
+     - `created_by_admin`: Whether user is admin
+     - `integration_email`: Connected account email
+     - `integration_scope`: Access level (organization/user)
      - `connection_metadata`: Provider-specific metadata
      - `scopes`: Granted OAuth scopes
 
-4. **Redirect User**
+6. **Redirect User**
    - Sends user back to frontend with success/error status
    - Frontend shows notification and refreshes integration list
 
@@ -793,6 +963,13 @@ interface ConnectedIntegration {
   organisation_id: string;
   integration_type: string;
   name: string;
+  
+  // Access Control Fields (New)
+  created_by_user_id: string;  // UUID of user who created this integration
+  created_by_admin: boolean;   // Whether created by an admin user
+  integration_email: string | null;  // Email/username of connected account (e.g., 'sales@acme.com')
+  integration_scope: 'organization' | 'user' | 'team' | 'role_based';  // Access scope
+  
   sync_frequency: string;
   auto_sync_enabled: boolean;
   is_active: boolean;

@@ -29,7 +29,10 @@ from src.api.schemas.integrations import (
     AvailableIntegration,
     AvailableIntegrationsResponse,
 )
-from src.domain.models.organisation_tables.knowledge_models import IntegrationType
+from src.domain.models.organisation_tables.knowledge_models import (
+    IntegrationType,
+    IntegrationScope,
+)
 from src.service.integrations import NangoClient, IntegrationService
 from src.infra.utils.logger import get_logger
 from src.infra.config.constant import IntegrationErrors
@@ -74,8 +77,10 @@ async def list_available_integrations(
     Use this to show users what integrations they can connect and which ones are already connected.
     """
     try:
-        # Get all user's connected integrations
-        connected_integrations = await service.list_integrations()
+        # Get all user's connected integrations (org-wide + user's personal)
+        connected_integrations = await service.list_integrations(
+            user_id=user_ids.user_id, include_user_scoped=True
+        )
 
         # Group connected integrations by type
         connected_by_type = {}
@@ -163,6 +168,19 @@ async def get_integration(
                 message=IntegrationErrors.INTEGRATION_NOT_FOUND
             )
 
+        # Check access: user can only access org-wide integrations or their own user-scoped ones
+        if (
+            integration.integration_scope == IntegrationScope.USER
+            and integration.created_by_user_id != user_ids.user_id
+        ):
+            logger.warning(
+                f"User {user_ids.user_id} attempted to access user-scoped integration "
+                f"{integration_id} owned by {integration.created_by_user_id}"
+            )
+            return Response.forbidden_error_response(
+                message="You don't have permission to access this integration"
+            )
+
         response_data = IntegrationResponse.model_validate(integration)
 
         return Response.success_response(
@@ -204,6 +222,19 @@ async def check_integration_status(
             )
             return Response.not_found_response(
                 message=IntegrationErrors.INTEGRATION_NOT_FOUND
+            )
+
+        # Check access: user can only access org-wide or their own user-scoped integrations
+        if (
+            integration.integration_scope == IntegrationScope.USER
+            and integration.created_by_user_id != user_ids.user_id
+        ):
+            logger.warning(
+                f"User {user_ids.user_id} attempted to check status of user-scoped integration "
+                f"{integration_id} created by {integration.created_by_user_id}"
+            )
+            return Response.forbidden_error_response(
+                message="You don't have permission to access this integration"
             )
 
         # Check if token needs reauthorization
@@ -265,6 +296,19 @@ async def update_integration(
             )
             return Response.not_found_response(
                 message=IntegrationErrors.INTEGRATION_NOT_FOUND
+            )
+
+        # Check access: user can only update org-wide or their own user-scoped integrations
+        if (
+            existing.integration_scope == IntegrationScope.USER
+            and existing.created_by_user_id != user_ids.user_id
+        ):
+            logger.warning(
+                f"User {user_ids.user_id} attempted to update user-scoped integration "
+                f"{integration_id} created by {existing.created_by_user_id}"
+            )
+            return Response.forbidden_error_response(
+                message="You don't have permission to update this integration"
             )
 
         # Update integration

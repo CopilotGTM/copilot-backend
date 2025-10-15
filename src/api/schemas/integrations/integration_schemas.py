@@ -12,7 +12,10 @@ from datetime import datetime
 from uuid import UUID
 from pydantic import BaseModel, Field, field_validator
 
-from src.domain.models.organisation_tables.knowledge_models import IntegrationType
+from src.domain.models.organisation_tables.knowledge_models import (
+    IntegrationType,
+    IntegrationScope,
+)
 
 
 # ==================== OAuth Schemas ====================
@@ -105,6 +108,17 @@ class IntegrationResponse(IntegrationBase):
 
     integration_id: UUID
     organisation_id: UUID
+    created_by_user_id: UUID = Field(description="User who created this integration")
+    created_by_admin: bool = Field(
+        description="Whether this integration was created by an admin"
+    )
+    integration_email: Optional[str] = Field(
+        default=None,
+        description="Email/username of the connected account (e.g., 'sales@acme.com' for HubSpot)",
+    )
+    integration_scope: IntegrationScope = Field(
+        description="Access scope: ORGANIZATION (all users) or USER (creator only)"
+    )
     is_active: bool
     last_synced_at: Optional[datetime] = None
     last_sync_status: Optional[str] = None
@@ -131,6 +145,12 @@ class IntegrationStatusResponse(BaseModel):
     integration_id: UUID
     name: str
     integration_type: IntegrationType
+    integration_scope: IntegrationScope
+    created_by_user_id: UUID
+    created_by_admin: bool
+    integration_email: Optional[str] = Field(
+        default=None, description="Email/username of the connected account"
+    )
     is_active: bool
     last_synced_at: Optional[datetime] = None
     last_sync_status: Optional[str] = None
