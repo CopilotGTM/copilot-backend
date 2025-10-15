@@ -17,6 +17,7 @@ from sqlalchemy.exc import IntegrityError
 from src.domain.models.organisation_tables.knowledge_models import (
     KnowledgeIntegration,
     IntegrationType,
+    IntegrationScope,
     IntegrationSyncHistory,
     SyncStatus,
 )
@@ -86,6 +87,10 @@ class IntegrationService:
         integration_type: IntegrationType,
         name: str,
         connection_id: str,
+        created_by_user_id: UUID,
+        created_by_admin: bool,
+        integration_scope: IntegrationScope,
+        integration_email: Optional[str] = None,
         connection_metadata: Optional[Dict[str, Any]] = None,
         scopes: Optional[List[str]] = None,
         sync_frequency: str = "daily",
@@ -98,6 +103,10 @@ class IntegrationService:
             integration_type: Type of integration (HUBSPOT, SLACK, etc.)
             name: User-defined name for the integration
             connection_id: Nango connection identifier
+            created_by_user_id: User who created this integration
+            created_by_admin: Whether this integration was created by an admin
+            integration_scope: Access scope (ORGANIZATION or USER)
+            integration_email: Email/username of the connected account (e.g., 'john@company.com')
             connection_metadata: Additional metadata from Nango
             scopes: OAuth scopes granted
             sync_frequency: How often to sync ('hourly', 'daily', 'weekly', 'manual')
@@ -125,6 +134,10 @@ class IntegrationService:
                 integration_type=integration_type,
                 name=name,
                 connection_id=connection_id,
+                created_by_user_id=created_by_user_id,
+                created_by_admin=created_by_admin,
+                integration_email=integration_email,
+                integration_scope=integration_scope,
                 credentials={},  # Nango stores credentials, we just reference them
                 is_active=True,
                 connection_metadata=connection_metadata or {},
@@ -141,7 +154,8 @@ class IntegrationService:
 
             logger.info(
                 f"Created integration: {integration.integration_id} "
-                f"({provider}) for org {self.organisation_id}"
+                f"({provider}) for org {self.organisation_id}, "
+                f"scope={integration_scope}, created_by={created_by_user_id}"
             )
 
             return integration
@@ -180,20 +194,48 @@ class IntegrationService:
         self,
         integration_type: Optional[IntegrationType] = None,
         is_active: Optional[bool] = None,
+        user_id: Optional[UUID] = None,
+        include_user_scoped: bool = True,
     ) -> List[KnowledgeIntegration]:
         """
-        List all integrations for the organization.
+        List integrations accessible to the organization or user.
 
         Args:
             integration_type: Optional filter by integration type
             is_active: Optional filter by active status
+            user_id: If provided, includes user-scoped integrations created by this user
+            include_user_scoped: Whether to include user-scoped integrations
 
         Returns:
-            List of KnowledgeIntegration instances
+            List of KnowledgeIntegration instances accessible to the user/org
         """
+        from sqlalchemy import or_
+
+        # Base query for organization
         statement = select(KnowledgeIntegration).where(
             KnowledgeIntegration.organisation_id == self.organisation_id
         )
+
+        # Filter by scope: include org-wide + user's personal integrations
+        if user_id and include_user_scoped:
+            statement = statement.where(
+                or_(
+                    KnowledgeIntegration.integration_scope
+                    == IntegrationScope.ORGANIZATION,
+                    (
+                        (
+                            KnowledgeIntegration.integration_scope
+                            == IntegrationScope.USER
+                        )
+                        & (KnowledgeIntegration.created_by_user_id == user_id)
+                    ),
+                )
+            )
+        elif not include_user_scoped:
+            # Only org-wide integrations
+            statement = statement.where(
+                KnowledgeIntegration.integration_scope == IntegrationScope.ORGANIZATION
+            )
 
         if integration_type:
             statement = statement.where(

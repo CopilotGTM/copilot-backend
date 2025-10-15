@@ -33,7 +33,8 @@ class FrameBase(BaseModel):
         default="", description="Job ID - identifier for tracking the processing job"
     )
     assistant_message_id: str = Field(
-        default="", description="Assistant Message ID - identifier for the assistant's message being created"
+        default="",
+        description="Assistant Message ID - identifier for the assistant's message being created",
     )
     version: str = Field(default="1.0", description="Frame schema version")
     timestamp: float = Field(

@@ -31,19 +31,16 @@ _INTEGRATION_TO_NANGO: Dict[IntegrationType, str] = {
     IntegrationType.MIRO: "miro",
     IntegrationType.FIGMA: "figma",
     IntegrationType.CALENDLY: "calendly",
-
     # Project Management
     IntegrationType.JIRA: "jira",
     IntegrationType.TRELLO: "trello",
     IntegrationType.ASANA: "asana",
     IntegrationType.MONDAY: "monday",
-
     # CRM & Customer Support
     IntegrationType.ZENDESK: "zendesk",
     IntegrationType.INTERCOM: "intercom",
     IntegrationType.PIPEDRIVE: "pipedrive",
     IntegrationType.ZOHO_CRM: "zoho-crm",
-
     # Sales & Presales Enablement
     IntegrationType.SALESFORCE: "salesforce",
     IntegrationType.HUBSPOT: "hubspot",
@@ -56,8 +53,12 @@ _INTEGRATION_TO_NANGO: Dict[IntegrationType, str] = {
     IntegrationType.CHORUS: "chorus",
 }
 
-def _build_reverse_map(mapping: Dict[IntegrationType, str]) -> Dict[str, IntegrationType]:
+
+def _build_reverse_map(
+    mapping: Dict[IntegrationType, str],
+) -> Dict[str, IntegrationType]:
     return {v.lower(): k for k, v in mapping.items()}
+
 
 # Build reverse maps (lower-cased)
 _NANGO_TO_INTEGRATION: Dict[str, IntegrationType] = _build_reverse_map(
@@ -85,19 +86,16 @@ _NANGO_CONNECT_KEYS: Dict[IntegrationType, str] = {
     IntegrationType.MIRO: "miro",
     IntegrationType.FIGMA: "figma",
     IntegrationType.CALENDLY: "calendly",
-
     # Project Management
     IntegrationType.JIRA: "jira",
     IntegrationType.TRELLO: "trello",
     IntegrationType.ASANA: "asana",
     IntegrationType.MONDAY: "monday",
-
     # CRM & Customer Support
     IntegrationType.ZENDESK: "zendesk",
     IntegrationType.INTERCOM: "intercom",
     IntegrationType.PIPEDRIVE: "pipedrive",
     IntegrationType.ZOHO_CRM: "zoho-crm",
-
     # Sales & Presales Enablement
     IntegrationType.SALESFORCE: "salesforce",
     IntegrationType.HUBSPOT: "hubspot",
@@ -155,10 +153,10 @@ def from_nango_provider_key(provider_key: str) -> IntegrationType:
             return _NANGO_TO_INTEGRATION[candidate]
         if candidate in _NANGO_CONNECT_TO_INTEGRATION:
             return _NANGO_CONNECT_TO_INTEGRATION[candidate]
-        if '-' not in candidate:
+        if "-" not in candidate:
             break
-        candidate = candidate.rsplit('-', 1)[0]
+        candidate = candidate.rsplit("-", 1)[0]
 
     # Enum fallback
-    normalized = key.replace('-', '_')
+    normalized = key.replace("-", "_")
     return IntegrationType(normalized)

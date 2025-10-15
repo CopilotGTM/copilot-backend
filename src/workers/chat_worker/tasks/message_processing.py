@@ -292,8 +292,8 @@ def process_message(organisation_id: UUID, job_id: UUID):
         _update_job_status(session, job, JobStatus.IN_PROGRESS)
 
         # Load session and conversation data (assistant_message_id from metadata, not created yet)
-        _, chat_session, history, user_message, assistant_message_id = _load_conversation_data(
-            session, job
+        _, chat_session, history, user_message, assistant_message_id = (
+            _load_conversation_data(session, job)
         )
 
         # Execute agent and get results
@@ -352,7 +352,9 @@ def _load_conversation_data(session, job: ChatMessageJob):
     # Load user message
     user_message: ChatMessage | None = session.get(ChatMessage, user_message_id)
     if not user_message:
-        raise RuntimeError(f"User message {user_message_id} not found for job {job.job_id}")
+        raise RuntimeError(
+            f"User message {user_message_id} not found for job {job.job_id}"
+        )
 
     # Load recent conversation history (ordered asc, max 30)
     history = (
@@ -365,7 +367,11 @@ def _load_conversation_data(session, job: ChatMessageJob):
 
     logger.info(
         "Loaded conversation data for job %s: session=%s user_msg=%s asst_msg_id=%s history_count=%d",
-        job.job_id, session_id, user_message_id, assistant_message_id, len(history)
+        job.job_id,
+        session_id,
+        user_message_id,
+        assistant_message_id,
+        len(history),
     )
 
     return session_id, chat_session, history, user_message, assistant_message_id
@@ -410,7 +416,7 @@ def _publish_final_frames(
 ):
     """Publish final frames with production metadata."""
     assistant_message_id = job.job_metadata.get("assistant_message_id")
-    
+
     base_frame = {
         "job_id": str(job.job_id),
         "assistant_message_id": str(assistant_message_id),
@@ -477,21 +483,25 @@ def _create_assistant_message(
             "thinking_updates": result_summary.get("thinking_updates") or [],
         },
     )
-    
+
     session.add(assistant_message)
     session.flush()
-    
+
     logger.info(
         "Created assistant message %s with answer (length=%d)",
         assistant_message.message_id,
-        len(result_summary.get("answer") or "")
+        len(result_summary.get("answer") or ""),
     )
-    
+
     return assistant_message
 
 
 def _finalize_job(
-    session, job: ChatMessageJob, result_summary: dict, organisation_id: UUID, assistant_message: ChatMessage
+    session,
+    job: ChatMessageJob,
+    result_summary: dict,
+    organisation_id: UUID,
+    assistant_message: ChatMessage,
 ):
     """Finalize job with enhanced result data."""
     # Use the assistant message passed from the workflow
@@ -531,7 +541,11 @@ def _finalize_job(
         target=_cleanup_job_stream, args=(organisation_id, job.job_id, 30), daemon=True
     )
     cleanup_thread.start()
-    logger.info("Finalized job %s with assistant message %s", job.job_id, assistant_message.message_id)
+    logger.info(
+        "Finalized job %s with assistant message %s",
+        job.job_id,
+        assistant_message.message_id,
+    )
 
 
 def _handle_job_failure(session, job_id: UUID, error: Exception):

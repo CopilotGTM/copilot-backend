@@ -7,7 +7,11 @@ Update this file when adding new integration types or changing display informati
 
 from dataclasses import dataclass
 from typing import Dict, Optional, List
-from ...domain.models.organisation_tables.knowledge_models import IntegrationType
+from ...domain.models.organisation_tables.knowledge_models import (
+    IntegrationType,
+    IntegrationScope,
+)
+from ...domain.models.master_tables import UserAppRole
 
 
 # Category display names
@@ -58,6 +62,9 @@ class IntegrationMetadata:
         documentation_url: Link to integration documentation (optional)
         default_sync_frequency: Recommended sync frequency
         supported_sync_frequencies: List of allowed sync frequencies
+        default_scope: Default access scope (ORGANIZATION or USER)
+        can_be_created_by: List of user roles that can create this integration
+        allow_multiple_connections: Whether multiple instances can be connected per org
     """
 
     name: str
@@ -71,6 +78,10 @@ class IntegrationMetadata:
     documentation_url: Optional[str] = None
     default_sync_frequency: str = "daily"
     supported_sync_frequencies: Optional[List[str]] = None
+    # NEW: Access control configuration
+    default_scope: IntegrationScope = IntegrationScope.ORGANIZATION
+    can_be_created_by: Optional[List[UserAppRole]] = None
+    allow_multiple_connections: bool = False
 
     def __post_init__(self):
         # Set default supported frequencies if not provided
@@ -80,6 +91,27 @@ class IntegrationMetadata:
                 "supported_sync_frequencies",
                 ["hourly", "daily", "weekly", "manual"],
             )
+
+        # Set default roles if not provided
+        if self.can_be_created_by is None:
+            # Default: Only admins can create org-wide integrations
+            if self.default_scope == IntegrationScope.ORGANIZATION:
+                object.__setattr__(
+                    self,
+                    "can_be_created_by",
+                    [UserAppRole.ADMIN],
+                )
+            else:
+                # User-scoped integrations can be created by anyone
+                object.__setattr__(
+                    self,
+                    "can_be_created_by",
+                    [UserAppRole.MEMBER, UserAppRole.ADMIN],
+                )
+
+    def can_user_create(self, user_role: UserAppRole) -> bool:
+        """Check if a user with the given role can create this integration."""
+        return user_role in self.can_be_created_by
 
 
 # Integration metadata registry
@@ -99,6 +131,10 @@ INTEGRATION_METADATA: Dict[IntegrationType, IntegrationMetadata] = {
         ],
         documentation_url="https://developers.hubspot.com/docs/api/overview",
         default_sync_frequency="daily",
+        # Access Control
+        default_scope=IntegrationScope.ORGANIZATION,
+        can_be_created_by=[UserAppRole.ADMIN, UserAppRole.MEMBER],
+        allow_multiple_connections=False,
     ),
     IntegrationType.SLACK: IntegrationMetadata(
         name="Slack",
@@ -115,6 +151,10 @@ INTEGRATION_METADATA: Dict[IntegrationType, IntegrationMetadata] = {
         ],
         documentation_url="https://api.slack.com/docs",
         default_sync_frequency="hourly",
+        # Access Control
+        default_scope=IntegrationScope.ORGANIZATION,
+        can_be_created_by=[UserAppRole.ADMIN, UserAppRole.MEMBER],
+        allow_multiple_connections=False,
     ),
     IntegrationType.GOOGLE_DRIVE: IntegrationMetadata(
         name="Google Drive",
@@ -125,6 +165,10 @@ INTEGRATION_METADATA: Dict[IntegrationType, IntegrationMetadata] = {
         availability_status=AvailabilityStatus.COMING_SOON,  # Coming soon
         documentation_url="https://developers.google.com/drive/api/guides/about-sdk",
         default_sync_frequency="daily",
+        # Access Control - User level for personal files
+        default_scope=IntegrationScope.USER,
+        can_be_created_by=[UserAppRole.MEMBER, UserAppRole.ADMIN],
+        allow_multiple_connections=True,
     ),
     IntegrationType.GOOGLE_CALENDAR: IntegrationMetadata(
         name="Google Calendar",
@@ -135,10 +179,13 @@ INTEGRATION_METADATA: Dict[IntegrationType, IntegrationMetadata] = {
         availability_status=AvailabilityStatus.BETA,
         oauth_scopes=[
             "https://www.googleapis.com/auth/calendar.readonly",
-            # Consider adding Gmail profile or directory scopes only if needed later
         ],
         documentation_url="https://developers.google.com/calendar/api",
         default_sync_frequency="hourly",
+        # Access Control - User level for personal calendars
+        default_scope=IntegrationScope.USER,
+        can_be_created_by=[UserAppRole.MEMBER, UserAppRole.ADMIN],
+        allow_multiple_connections=True,
     ),
     IntegrationType.OUTLOOK_CALENDAR: IntegrationMetadata(
         name="Outlook Calendar",
@@ -148,11 +195,14 @@ INTEGRATION_METADATA: Dict[IntegrationType, IntegrationMetadata] = {
         category_name=IntegrationCategory.COLLABORATION,
         availability_status=AvailabilityStatus.COMING_SOON,
         oauth_scopes=[
-            # Minimal read access for Microsoft Graph
             "Calendars.Read",
         ],
         documentation_url="https://learn.microsoft.com/en-us/graph/api/resources/calendar?view=graph-rest-1.0",
         default_sync_frequency="hourly",
+        # Access Control - User level for personal calendars
+        default_scope=IntegrationScope.USER,
+        can_be_created_by=[UserAppRole.MEMBER, UserAppRole.ADMIN],
+        allow_multiple_connections=True,
     ),
     IntegrationType.CALENDLY: IntegrationMetadata(
         name="Calendly",
@@ -161,9 +211,13 @@ INTEGRATION_METADATA: Dict[IntegrationType, IntegrationMetadata] = {
         category="collaboration",
         category_name=IntegrationCategory.COLLABORATION,
         availability_status=AvailabilityStatus.COMING_SOON,
-        oauth_scopes=None,  # token-based OAuth; set when implementing Nango provider
+        oauth_scopes=None,
         documentation_url="https://developer.calendly.com/",
         default_sync_frequency="hourly",
+        # Access Control - User level for personal Calendly
+        default_scope=IntegrationScope.USER,
+        can_be_created_by=[UserAppRole.MEMBER, UserAppRole.ADMIN],
+        allow_multiple_connections=True,
     ),
     IntegrationType.SALESFORCE: IntegrationMetadata(
         name="Salesforce",
@@ -171,9 +225,13 @@ INTEGRATION_METADATA: Dict[IntegrationType, IntegrationMetadata] = {
         logo_url="https://www.salesforce.com/content/dam/sfdc-docs/www/logos/logo-salesforce.svg",
         category="crm",
         category_name=IntegrationCategory.CRM_SALES,
-        availability_status=AvailabilityStatus.COMING_SOON,  # Coming soon
+        availability_status=AvailabilityStatus.COMING_SOON,
         documentation_url="https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/",
         default_sync_frequency="daily",
+        # Access Control - Organization wide CRM
+        default_scope=IntegrationScope.ORGANIZATION,
+        can_be_created_by=[UserAppRole.ADMIN, UserAppRole.MEMBER],
+        allow_multiple_connections=False,
     ),
     IntegrationType.NOTION: IntegrationMetadata(
         name="Notion",
@@ -181,9 +239,13 @@ INTEGRATION_METADATA: Dict[IntegrationType, IntegrationMetadata] = {
         logo_url="https://www.notion.so/images/favicon.ico",
         category="collaboration",
         category_name=IntegrationCategory.COLLABORATION,
-        availability_status=AvailabilityStatus.COMING_SOON,  # Coming soon
+        availability_status=AvailabilityStatus.COMING_SOON,
         documentation_url="https://developers.notion.com/",
         default_sync_frequency="daily",
+        # Access Control - Organization workspace
+        default_scope=IntegrationScope.ORGANIZATION,
+        can_be_created_by=[UserAppRole.ADMIN, UserAppRole.MEMBER],
+        allow_multiple_connections=False,
     ),
     IntegrationType.CONFLUENCE: IntegrationMetadata(
         name="Confluence",
@@ -191,9 +253,13 @@ INTEGRATION_METADATA: Dict[IntegrationType, IntegrationMetadata] = {
         logo_url="https://cdn.iconscout.com/icon/free/png-256/free-confluence-logo-icon-download-in-svg-png-gif-file-formats--technology-social-media-company-brand-vol-5-pack-logos-icons-2945073.png",
         category="collaboration",
         category_name=IntegrationCategory.COLLABORATION,
-        availability_status=AvailabilityStatus.COMING_SOON,  # Coming soon
+        availability_status=AvailabilityStatus.COMING_SOON,
         documentation_url="https://developer.atlassian.com/cloud/confluence/rest/v1/intro/",
         default_sync_frequency="daily",
+        # Access Control - Organization workspace
+        default_scope=IntegrationScope.ORGANIZATION,
+        can_be_created_by=[UserAppRole.ADMIN, UserAppRole.MEMBER],
+        allow_multiple_connections=False,
     ),
     IntegrationType.ONEDRIVE: IntegrationMetadata(
         name="OneDrive",
@@ -201,10 +267,14 @@ INTEGRATION_METADATA: Dict[IntegrationType, IntegrationMetadata] = {
         logo_url="https://upload.wikimedia.org/wikipedia/commons/3/3c/Microsoft_Office_OneDrive_%282019%E2%80%93present%29.svg",
         category="storage",
         category_name=IntegrationCategory.STORAGE,
-        availability_status=AvailabilityStatus.COMING_SOON,  # Coming soon
-        access_level=IntegrationAccessLevel.USER,  # User level for now
+        availability_status=AvailabilityStatus.COMING_SOON,
+        access_level=IntegrationAccessLevel.USER,
         documentation_url="https://learn.microsoft.com/en-us/onedrive/developer/",
         default_sync_frequency="daily",
+        # Access Control - User level for personal OneDrive
+        default_scope=IntegrationScope.USER,
+        can_be_created_by=[UserAppRole.MEMBER, UserAppRole.ADMIN],
+        allow_multiple_connections=True,
     ),
 }
 

@@ -60,11 +60,64 @@ class IntegrationType(str, Enum):
     CHORUS = "chorus"
 
 
+class IntegrationScope(str, Enum):
+    """
+    Defines the access scope for an integration connection.
+
+    ORGANIZATION: Integration data accessible to all users in the org (e.g., HubSpot, Salesforce, Slack)
+                  - Single connection per org
+                  - All synced data marked as is_org_wide=True
+                  - All users can search this data
+
+    USER: Integration data accessible only to the user who connected it (e.g., personal Google Drive)
+          - Each user has their own connection
+          - Synced data marked as is_org_wide=False with uploader_user_id
+          - Only the connecting user can search this data
+
+    TEAM: Integration data accessible to specific team members (future feature)
+
+    ROLE_BASED: Access determined by user role (future feature)
+    """
+
+    ORGANIZATION = "organization"
+    USER = "user"
+    TEAM = "team"
+    ROLE_BASED = "role_based"
+
+
 class KnowledgeIntegration(TimestampMixin, table=True):
     __tablename__ = "knowledge_integrations"
 
     integration_id: UUID = Field(default_factory=uuid4, primary_key=True)
     organisation_id: UUID = Field(index=True)
+
+    # Access Control Fields
+    created_by_user_id: UUID = Field(
+        index=True, description="User who created/connected this integration"
+    )
+    created_by_admin: bool = Field(
+        default=False,
+        sa_column=Column(
+            Boolean, server_default=text("false"), nullable=False, index=True
+        ),
+        description="Whether this integration was created by an admin user",
+    )
+    integration_email: Optional[str] = Field(
+        default=None,
+        sa_column=Column(String(255), index=True),
+        description="Email/username of the connected account (e.g., 'john@company.com' for Google Drive, 'sales@acme.com' for HubSpot)",
+    )
+    integration_scope: IntegrationScope = Field(
+        default=IntegrationScope.ORGANIZATION,
+        sa_column=Column(
+            String(20),
+            server_default=text("'organization'"),
+            nullable=False,
+            index=True,
+        ),
+        description="Access scope: ORGANIZATION (all users), USER (creator only), TEAM, or ROLE_BASED",
+    )
+
     integration_type: IntegrationType = Field(sa_column=Column(String(50)))
     name: str = Field(
         description="User-defined name for the integration (e.g., 'Engineering Slack')"

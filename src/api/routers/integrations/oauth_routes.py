@@ -19,6 +19,7 @@ from src.api.dependencies.organisation_dependencies import (
     acquire_org_async_session,
     UserIDs,
 )
+from src.api.dependencies.master_dependencies import acquire_master_async_session
 from src.api.schemas.base_models import GenericResponse
 from src.api.utils.http_response import Response
 from src.api.schemas.integrations import (
@@ -30,11 +31,14 @@ from src.api.schemas.integrations import (
 from src.service.integrations import NangoClient, IntegrationService
 from src.service.integrations.nango_client import NangoConnectionError
 from src.infra.auth.user_auth import user_auth
-from src.domain.models.master_tables import User
+from src.domain.models.master_tables import User, UserAppRole
 from src.infra.config.configs import nango_integration_config
 from src.infra.utils.logger import get_logger
 from src.infra.config.constant import IntegrationErrors
-from src.domain.models.organisation_tables.knowledge_models import IntegrationType
+from src.domain.models.organisation_tables.knowledge_models import (
+    IntegrationType,
+    IntegrationScope,
+)
 from src.infra.config.integrations_metadata import (
     get_integration_metadata,
     AvailabilityStatus,
@@ -63,44 +67,73 @@ class IntegrationUnavailableError(Exception):
         self.status = status
 
 
+def _extract_string_message(value: Any) -> Optional[str]:
+    """Extract and return a stripped string message if valid."""
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _extract_message_from_dict(data: dict) -> Optional[str]:
+    """Extract message from a dictionary, checking 'message' key."""
+    message = data.get("message")
+    return _extract_string_message(message)
+
+
+def _extract_message_from_error_list(errors: list) -> Optional[str]:
+    """Extract first valid message from a list of error entries."""
+    for entry in errors:
+        if isinstance(entry, dict):
+            message = _extract_message_from_dict(entry)
+            if message:
+                return message
+        else:
+            message = _extract_string_message(entry)
+            if message:
+                return message
+    return None
+
+
+def _extract_message_from_error_block(error_block: dict) -> Optional[str]:
+    """Extract message from error block, checking message and errors array."""
+    # Try direct message first
+    message = _extract_message_from_dict(error_block)
+    if message:
+        return message
+
+    # Try errors array
+    errors = error_block.get("errors")
+    if isinstance(errors, list):
+        return _extract_message_from_error_list(errors)
+
+    return None
+
+
 def _extract_nango_error_message(payload: Any) -> Optional[str]:
     """
     Pull a user-friendly message from a Nango error payload.
+    Handles dict, list, and string payloads with nested error structures.
     """
+    # Handle dictionary payload
     if isinstance(payload, dict):
-        error_block = payload.get("error") or payload
+        # Check error block first
+        error_block = payload.get("error")
         if isinstance(error_block, dict):
-            message = error_block.get("message")
-            if isinstance(message, str) and message.strip():
-                return message.strip()
+            message = _extract_message_from_error_block(error_block)
+            if message:
+                return message
 
-            errors = error_block.get("errors")
-            if isinstance(errors, list):
-                for entry in errors:
-                    if isinstance(entry, dict):
-                        nested_message = entry.get("message")
-                        if isinstance(nested_message, str) and nested_message.strip():
-                            return nested_message.strip()
-                    elif isinstance(entry, str) and entry.strip():
-                        return entry.strip()
+        # Fall back to payload itself as error block
+        message = _extract_message_from_error_block(payload)
+        if message:
+            return message
 
-        message = payload.get("message")
-        if isinstance(message, str) and message.strip():
-            return message.strip()
-
+    # Handle list payload
     if isinstance(payload, list):
-        for entry in payload:
-            if isinstance(entry, dict):
-                nested_message = entry.get("message")
-                if isinstance(nested_message, str) and nested_message.strip():
-                    return nested_message.strip()
-            elif isinstance(entry, str) and entry.strip():
-                return entry.strip()
+        return _extract_message_from_error_list(payload)
 
-    if isinstance(payload, str) and payload.strip():
-        return payload.strip()
-
-    return None
+    # Handle string payload
+    return _extract_string_message(payload)
 
 
 def _get_validated_metadata(
@@ -133,7 +166,9 @@ def _extract_session_details(session_data: Dict[str, Any]) -> tuple[str, Optiona
     )
 
     if not token:
-        logger.error(f"Nango connect session created but token missing. Payload: {session_data}")
+        logger.error(
+            f"Nango connect session created but token missing. Payload: {session_data}"
+        )
         raise ValueError("Failed to retrieve session token")
 
     return token, expires_at
@@ -252,7 +287,9 @@ async def initiate_oauth_flow(
             exc_info=should_log_stack,
         )
         if e.status_code == 400:
-            message = error_detail or IntegrationErrors.INTEGRATION_PROVIDER_NOT_CONFIGURED
+            message = (
+                error_detail or IntegrationErrors.INTEGRATION_PROVIDER_NOT_CONFIGURED
+            )
             return Response.bad_request_error_response(message=message)
         return Response.internal_server_error_response(
             message=IntegrationErrors.OAUTH_INITIATION_FAILED
@@ -269,6 +306,139 @@ async def initiate_oauth_flow(
         return Response.internal_server_error_response(
             message=IntegrationErrors.OAUTH_INITIATION_FAILED
         )
+
+
+def _extract_integration_email(
+    integration_type: IntegrationType, connection_metadata: Dict[str, Any]
+) -> Optional[str]:
+    """
+    Extract the integration account email from provider-specific metadata.
+
+    Args:
+        integration_type: Type of integration
+        connection_metadata: Metadata from Nango connection
+
+    Returns:
+        Email address of the connected account, or None if not available
+    """
+    logger.info(
+        f"Extracting email for {integration_type.value} from metadata keys: {list(connection_metadata.keys())}"
+    )
+
+    # Google services (Drive, Calendar, etc.)
+    if integration_type in [
+        IntegrationType.GOOGLE_DRIVE,
+        IntegrationType.GOOGLE_CALENDAR,
+    ]:
+        email = connection_metadata.get("email") or connection_metadata.get(
+            "user_email"
+        )
+        logger.info(f"Google service email extraction: {email}")
+        return email
+
+    # HubSpot
+    elif integration_type == IntegrationType.HUBSPOT:
+        return connection_metadata.get("user") or connection_metadata.get("hub_email")
+
+    # Slack
+    elif integration_type == IntegrationType.SLACK:
+        user_info = connection_metadata.get("user", {})
+        return user_info.get("email") if isinstance(user_info, dict) else None
+
+    # Salesforce
+    elif integration_type == IntegrationType.SALESFORCE:
+        return connection_metadata.get("email") or connection_metadata.get("username")
+
+    # Microsoft services (SharePoint, OneDrive, Outlook)
+    elif integration_type in [
+        IntegrationType.SHAREPOINT,
+        IntegrationType.ONEDRIVE,
+        IntegrationType.OUTLOOK_CALENDAR,
+    ]:
+        return connection_metadata.get("email") or connection_metadata.get(
+            "userPrincipalName"
+        )
+
+    # Calendly
+    elif integration_type == IntegrationType.CALENDLY:
+        # Calendly user object structure
+        user_info = connection_metadata.get("user", {})
+        return (
+            user_info.get("email")
+            if isinstance(user_info, dict)
+            else connection_metadata.get("email")
+        )
+
+    else:
+        # Generic fallback for other providers
+        email = connection_metadata.get("email")
+        logger.info(f"Generic fallback email extraction: {email}")
+        return email
+
+
+async def _get_integration_connection_details(
+    nango: NangoClient,
+    integration_type: IntegrationType,
+    connection_id: str,
+    provider_config_key: str,
+) -> tuple[Dict[str, Any], Optional[str]]:
+    """
+    Fetch connection details from Nango and extract integration email.
+
+    Args:
+        nango: Nango client instance
+        integration_type: The integration type enum
+        connection_id: The Nango connection ID
+        provider_config_key: The actual provider config key from Nango webhook
+
+    Returns:
+        Tuple of (connection_metadata, integration_email)
+    """
+    try:
+        logger.info(
+            f"Fetching Nango connection: provider={provider_config_key}, connection_id={connection_id}"
+        )
+
+        nango_connection = await nango.get_connection(
+            provider=provider_config_key, connection_id=connection_id
+        )
+
+        logger.info(f"Full Nango connection response: {nango_connection}")
+
+        # Try to extract email from multiple possible locations in Nango response
+        connection_metadata = (
+            nango_connection.get("connection_metadata")
+            or nango_connection.get("metadata")
+            or {}
+        )
+        end_user = nango_connection.get("end_user", {})
+
+        logger.info(f"Connection metadata: {connection_metadata}")
+        logger.info(f"End user data: {end_user}")
+
+        # First try extracting from connection_metadata (provider-specific)
+        integration_email = _extract_integration_email(
+            integration_type, connection_metadata
+        )
+
+        # If not found in metadata, check end_user object (Nango's standard location)
+        if not integration_email and end_user:
+            integration_email = end_user.get("email")
+            logger.info(f"Email extracted from end_user: {integration_email}")
+
+        logger.info(
+            f"Final extracted integration_email='{integration_email}' from {integration_type.value} connection"
+        )
+
+        return connection_metadata, integration_email
+
+    except Exception as e:
+        logger.error(
+            f"Failed to get connection details from Nango for {integration_type.value}: {str(e)}. "
+            f"Continuing without integration_email.",
+            exc_info=True,
+        )
+        return {}, None
 
 
 @router.delete(
@@ -301,6 +471,32 @@ async def disconnect_integration(
             organisation_id=user_ids.organisation_id,
             nango_client=nango,
         )
+
+        # First, get the integration to check access
+        integration = await integration_service.get_integration(
+            integration_id=integration_id
+        )
+
+        if not integration:
+            logger.warning(
+                f"Integration {integration_id} not found for org {user_ids.organisation_id}"
+            )
+            return Response.not_found_response(
+                message=IntegrationErrors.INTEGRATION_NOT_FOUND
+            )
+
+        # Check access: user can only disconnect org-wide or their own user-scoped integrations
+        if (
+            integration.integration_scope == IntegrationScope.USER
+            and integration.created_by_user_id != user_ids.user_id
+        ):
+            logger.warning(
+                f"User {user_ids.user_id} attempted to disconnect user-scoped integration "
+                f"{integration_id} created by {integration.created_by_user_id}"
+            )
+            return Response.forbidden_error_response(
+                message="You don't have permission to disconnect this integration"
+            )
 
         # Delete integration (includes Nango cleanup)
         await integration_service.delete_integration(
@@ -367,12 +563,12 @@ async def handle_nango_webhook(
 
     This endpoint is called by Nango's servers (not by frontend) after a user
     completes the OAuth flow. It creates the integration record in our database.
-    
-    **Security**: 
+
+    **Security**:
     - Does NOT use our JWT authentication (Nango doesn't have our tokens)
     - Instead verifies X-Nango-Signature header using HMAC-SHA256
     - Webhook secret must be configured in environment variables
-    
+
     **Data Flow**:
     - organization_id is extracted from the webhook payload (endUser.tags.organizationId)
     - Database session is created using that organization_id
@@ -380,8 +576,19 @@ async def handle_nango_webhook(
     try:
         # Parse the request body
         payload = await request.json()
-        logger.info(f"Received Nango webhook: type={payload.get('type')}, operation={payload.get('operation')}, connectionId={payload.get('connectionId')}")
-        
+
+        # Log full webhook payload for debugging
+        logger.info("=" * 80)
+        logger.info("NANGO WEBHOOK RECEIVED")
+        logger.info("=" * 80)
+        logger.info(f"Webhook Type: {payload.get('type')}")
+        logger.info(f"Operation: {payload.get('operation')}")
+        logger.info(f"Connection ID: {payload.get('connectionId')}")
+        logger.info(f"Provider Config Key: {payload.get('providerConfigKey')}")
+        logger.info(f"Success: {payload.get('success')}")
+        logger.info(f"Full Payload: {payload}")
+        logger.info("=" * 80)
+
         # Verify webhook signature for security
         if not NangoClient.verify_webhook_signature(x_nango_signature, payload):
             logger.error(f"Invalid webhook signature. Header: {x_nango_signature}")
@@ -439,30 +646,81 @@ async def handle_nango_webhook(
                 message=f"Unknown integration type: {provider_config_key}"
             )
 
-        # Acquire organization-scoped session without authentication
-        # (organization_id comes from webhook payload)
-        async for session in acquire_org_async_session(UUID(organization_id)):
+        # Step 1: Query user from master database to get role
+        # (Users table is in master schema, not org schema)
+        logger.info(f"Querying user {user_id} from master database...")
+        async for master_session in acquire_master_async_session():
+            from sqlalchemy import select
+
+            statement = select(User).where(User.user_id == UUID(user_id))
+            result = await master_session.execute(statement)
+            user = result.scalar_one_or_none()
+
+            if not user:
+                logger.error(f"User {user_id} not found in master database")
+                return Response.bad_request_error_response(message="User not found")
+
+            # Log user details for debugging
+            logger.info(
+                f"User found: {user.email}, role={user.user_role}, org={user.organisation_id}"
+            )
+
+            # Determine access control fields
+            # Logic: Admin creates org-wide, Member creates user-level
+            created_by_admin = user.user_role == UserAppRole.ADMIN
+            integration_scope = (
+                IntegrationScope.ORGANIZATION
+                if created_by_admin
+                else IntegrationScope.USER
+            )
+
+            logger.info(
+                f"Access control: created_by_admin={created_by_admin}, scope={integration_scope}"
+            )
+
+        # Step 2: Use organization session for integration operations
+        # (Integrations table is in org schema)
+        logger.info(f"Acquiring org session for organization {organization_id}...")
+        async for org_session in acquire_org_async_session(UUID(organization_id)):
             # Initialize services
             nango = NangoClient()
             integration_service = IntegrationService(
-                db_session=session,
+                db_session=org_session,
                 organisation_id=UUID(organization_id),
                 nango_client=nango,
             )
 
-            # Create integration record
-            # Note: IntegrationService.create_integration() expects:
-            # - integration_type, name, connection_id (not user_id or nango_connection_id)
-            # - user_id is tracked in Nango's connection metadata, not in our Integration model
+            # Get connection details from Nango to extract integration email
+            logger.info(
+                f"Fetching connection details from Nango for connection {connection_id}..."
+            )
+            connection_metadata, integration_email = (
+                await _get_integration_connection_details(
+                    nango, integration_type, connection_id, provider_config_key
+                )
+            )
+
+            logger.info(
+                f"Connection metadata keys: {list(connection_metadata.keys()) if connection_metadata else 'None'}"
+            )
+            logger.info(f"Extracted integration_email: {integration_email}")
+
+            # Create integration record with access control fields
             integration = await integration_service.create_integration(
                 integration_type=integration_type,
-                name=f"{integration_type.value.title()} Integration",
+                name=f"{integration_type.value.replace('_', ' ').title()} Integration",
                 connection_id=connection_id,
+                created_by_user_id=UUID(user_id),
+                created_by_admin=created_by_admin,
+                integration_scope=integration_scope,
+                integration_email=integration_email,
+                connection_metadata=connection_metadata,
             )
 
             logger.info(
                 f"Created integration {integration.integration_id} for user {user_id} "
-                f"in org {organization_id} via webhook"
+                f"(role={user.user_role.value}, admin={created_by_admin}, scope={integration_scope.value}, "
+                f"email={integration_email}) in org {organization_id} via webhook"
             )
 
             return Response.success_response(
@@ -471,6 +729,9 @@ async def handle_nango_webhook(
                     "integration_id": str(integration.integration_id),
                     "integration_type": integration_type.value,
                     "connection_id": connection_id,
+                    "integration_scope": integration_scope.value,
+                    "created_by_admin": created_by_admin,
+                    "integration_email": integration_email,
                 },
             )
 

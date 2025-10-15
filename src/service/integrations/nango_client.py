@@ -149,28 +149,26 @@ class NangoClient:
 
     @staticmethod
     def verify_webhook_signature(
-        signature: str,
-        payload: Dict[str, Any],
-        webhook_secret: Optional[str] = None
+        signature: str, payload: Dict[str, Any], webhook_secret: Optional[str] = None
     ) -> bool:
         """
         Verify the X-Nango-Signature header from a webhook request.
-        
+
         Nango signs webhook payloads using SHA-256 hash (NOT HMAC).
         The signature is the hex digest of: SHA256(secret_key + JSON_payload)
-        
+
         Docs: https://docs.nango.dev/implementation-guides/platform/webhooks-from-nango#verifying-webhooks-from-nango
         Source: https://github.com/NangoHQ/nango/blob/main/packages/node-client/lib/index.ts#L1037
-        
+
         Args:
             signature: The X-Nango-Signature header value
             payload: The webhook request body as a dictionary
             webhook_secret: The secret key from Nango (NANGO_SECRET_KEY).
                           If not provided, uses config value.
-        
+
         Returns:
             True if signature is valid, False otherwise
-            
+
         Example:
             signature = request.headers.get("X-Nango-Signature")
             is_valid = NangoClient.verify_webhook_signature(signature, request.json())
@@ -179,32 +177,34 @@ class NangoClient:
         if not secret:
             logger.error("NANGO_SECRET_KEY not configured - cannot verify webhook")
             return False
-            
+
         if not signature:
             logger.warning("No X-Nango-Signature header provided")
             return False
-        
+
         try:
             # Convert payload to JSON string (same format Nango uses)
             # Nango uses JSON.stringify() which doesn't sort keys
-            payload_json = json.dumps(payload, separators=(',', ':'))
-            
+            payload_json = json.dumps(payload, separators=(",", ":"))
+
             # Compute SHA-256 hash (NOT HMAC!)
             # Formula: SHA256(secret + payload_json)
             signature_input = f"{secret}{payload_json}"
-            expected_signature = hashlib.sha256(signature_input.encode('utf-8')).hexdigest()
-            
+            expected_signature = hashlib.sha256(
+                signature_input.encode("utf-8")
+            ).hexdigest()
+
             # Constant-time comparison to prevent timing attacks
             is_valid = hmac.compare_digest(signature, expected_signature)
-            
+
             if not is_valid:
                 logger.warning(
                     f"Webhook signature mismatch. Expected: {expected_signature[:10]}..., "
                     f"Got: {signature[:10]}..."
                 )
-            
+
             return is_valid
-            
+
         except Exception as e:
             logger.error(f"Error verifying webhook signature: {str(e)}")
             return False
@@ -275,7 +275,9 @@ class NangoClient:
 
             # Normalize response to expose token and expires_at at top-level
             if isinstance(result, dict):
-                envelope = result.get("data") if isinstance(result.get("data"), dict) else None
+                envelope = (
+                    result.get("data") if isinstance(result.get("data"), dict) else None
+                )
                 body = envelope if envelope is not None else result
                 token = (
                     body.get("token")
@@ -283,9 +285,8 @@ class NangoClient:
                     or body.get("connect_token")
                     or (body.get("session") or {}).get("token")
                 )
-                expires_at = (
-                    body.get("expires_at")
-                    or (body.get("session") or {}).get("expires_at")
+                expires_at = body.get("expires_at") or (body.get("session") or {}).get(
+                    "expires_at"
                 )
                 # Attach normalized fields for consumers
                 result["token"] = token
@@ -293,7 +294,9 @@ class NangoClient:
 
                 # Debug with masked token
                 masked = (
-                    f"{str(token)[:6]}...{str(token)[-4:]}" if isinstance(token, str) and len(token) > 12 else "***masked***"
+                    f"{str(token)[:6]}...{str(token)[-4:]}"
+                    if isinstance(token, str) and len(token) > 12
+                    else "***masked***"
                 )
                 logger.debug(
                     "Nango Connect session response normalized: has_envelope=%s token=%s expires_at=%s",
@@ -338,7 +341,9 @@ class NangoClient:
                 },
                 str(e),
             )
-            raise NangoConnectionError(f"Failed to create connect session: {str(e)}") from None
+            raise NangoConnectionError(
+                f"Failed to create connect session: {str(e)}"
+            ) from None
 
     async def exchange_code_for_token(
         self,
@@ -534,7 +539,9 @@ class NangoClient:
             ) from None
         except Exception as e:
             logger.error(f"Failed to delete connection: {str(e)}")
-            raise NangoConnectionError(f"Failed to delete connection: {str(e)}") from None
+            raise NangoConnectionError(
+                f"Failed to delete connection: {str(e)}"
+            ) from None
 
     async def get_connection_metadata(
         self,

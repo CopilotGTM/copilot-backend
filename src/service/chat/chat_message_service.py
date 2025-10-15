@@ -91,7 +91,7 @@ class ChatMessageService:
         job_type: str = "general_message",
     ) -> tuple[ChatMessage, ChatMessageJob, str]:
         """Create a user message and a corresponding job.
-        
+
         Returns:
             tuple: (user_message, job, assistant_message_id_str)
         """
