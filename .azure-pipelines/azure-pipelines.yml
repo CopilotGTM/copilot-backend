@@ -72,7 +72,7 @@ stages:
             displayName: 'Install Python $(PYTHON_VERSION)'
 
           - script: |
-              uv sync --frozen --no-install-project --only-group quality
+              uv sync --frozen --no-install-project --no-dev --only-group quality
             displayName: 'Install Quality Tools Only (Ruff, Bandit, MyPy)'
 
           # ================================================================
