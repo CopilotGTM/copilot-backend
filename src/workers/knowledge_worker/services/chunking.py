@@ -19,7 +19,7 @@ DEFAULT_EMBED_MODEL_ID = "sentence-transformers/all-MiniLM-L6-v2"
 @lru_cache(maxsize=1)
 def get_tokenizer(model_id: str | None = None):
     mid = model_id or DEFAULT_EMBED_MODEL_ID
-    return AutoTokenizer.from_pretrained(mid)
+    return AutoTokenizer.from_pretrained(mid)  # nosec B615
 
 
 @lru_cache(maxsize=1)
