@@ -91,7 +91,7 @@ api:
         - |
           set -euo pipefail
           echo "[startup-job] Starting migrations & seeding..."
-          sh ./scripts/startup.sh
+          bash ./scripts/startup.sh
           echo "[startup-job] Completed successfully."
 
   # Inline secrets (key: value) encoded automatically; override via --set-file for real secrets
