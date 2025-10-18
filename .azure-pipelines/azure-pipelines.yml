@@ -7,6 +7,16 @@
 # 3. Executes tests with coverage
 # 4. Builds and pushes optimized Docker images using UV
 # 5. Deploys to AKS using Helm
+#
+# DISK SPACE OPTIMIZATION:
+# - Docker cleanup runs before build to prevent "disk full" errors
+# - Build cache is reused from ACR for faster builds
+# - Multi-stage Dockerfile reduces final image size
+#
+# If disk space issues persist:
+# - Consider using Microsoft-hosted agents with more disk (see below)
+# - Use self-hosted agents with dedicated disk space
+# - Split large builds across multiple stages
 # ============================================================================
 
 trigger:
@@ -197,6 +207,38 @@ stages:
           vmImage: 'ubuntu-latest'
         steps:
           - checkout: self
+
+          # ===================================================================
+          # Disk Space Cleanup - Critical for avoiding "disk full" errors
+          # ===================================================================
+          - script: |
+              echo "##[section]📊 Checking disk space before cleanup..."
+              df -h
+              echo ""
+              echo "##[section]🧹 Cleaning up Docker resources..."
+
+              # Remove all stopped containers
+              docker container prune -f || true
+
+              # Remove all unused images (dangling and unreferenced)
+              docker image prune -a -f || true
+
+              # Remove all unused volumes
+              docker volume prune -f || true
+
+              # Remove build cache
+              docker builder prune -a -f || true
+
+              echo ""
+              echo "##[section]🧹 Cleaning up APT cache..."
+              sudo apt-get clean || true
+              sudo rm -rf /var/lib/apt/lists/* || true
+
+              echo ""
+              echo "##[section]✅ Disk space after cleanup:"
+              df -h
+            displayName: 'Clean Up Disk Space'
+            continueOnError: 'true'
 
           - script: |
               echo "##[group]Verifying Environment Configuration"
