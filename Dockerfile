@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.6
 # ============================================================================
 # Production-Grade Dockerfile with UV (Enhanced Version)
 # ============================================================================
@@ -9,7 +10,7 @@ ARG WORKERS=4
 # ============================================================================
 # Stage 0: UV installer (workaround for --from variable expansion)
 # ============================================================================
-FROM ghcr.io/astral-sh/uv:0.5.13 AS uv
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
 
 # ============================================================================
 # Stage 1: Builder - Install dependencies
@@ -27,7 +28,8 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    UV_LINK_MODE=copy
+    UV_LINK_MODE=copy \
+    UV_CACHE_DIR=/root/.cache/uv
 
 # Install system dependencies required for building Python packages
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -50,16 +52,19 @@ COPY pyproject.toml uv.lock .python-version ./
 # Using --frozen ensures we install exactly what's in the lockfile
 # --no-dev: Skip dev dependencies (black, pytest, etc.) for production
 # --no-install-project: Don't install the project itself yet (only dependencies)
-RUN uv sync --frozen --no-dev --no-install-project --verbose \
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --no-install-project --verbose \
     && find /app/.venv -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true \
     && find /app/.venv -type f -name "*.pyc" -delete \
     && find /app/.venv -type f -name "*.pyo" -delete \
-    && rm -rf /root/.cache
+    && find /app/.venv -type d \( -name "tests" -o -name "test" -o -name "__pypackages__" \) -prune -exec rm -rf {} +
 
 # ============================================================================
 # Stage 2: Runtime - Minimal production image
 # ============================================================================
 FROM python:${PYTHON_VERSION}-slim-bookworm AS runtime
+
+ARG WORKERS
 
 # Labels
 LABEL stage="runtime"
@@ -78,8 +83,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && apt-get clean \
-    && rm -rf /tmp/* /var/tmp/*
+    && apt-get clean
 
 # Create non-root user for security
 RUN groupadd -r appuser && useradd -r -g appuser appuser
@@ -94,6 +98,9 @@ COPY --from=builder --chown=appuser:appuser /app/.venv /app/.venv
 COPY --chown=appuser:appuser src/ ./src/
 COPY --chown=appuser:appuser migrations/ ./migrations/
 COPY --chown=appuser:appuser scripts/ ./scripts/
+
+# Convert Windows line endings to Unix (CRLF -> LF) for shell scripts
+RUN find ./scripts -type f -name "*.sh" -exec sed -i 's/\r$//' {} +
 
 # Remove any __pycache__ from source code
 RUN find ./src -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true \
@@ -114,7 +121,6 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
 EXPOSE 80
 
 # Start Uvicorn with production settings
-ARG WORKERS
 CMD uvicorn src.main:app \
     --host 0.0.0.0 \
     --port 80 \
