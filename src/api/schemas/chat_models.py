@@ -84,14 +84,16 @@ class SendMessageRequest(BaseModel):
     edited_message_id: UUID | None = None
 
     @field_validator("content")
-    def content_must_not_be_empty(self, v: str) -> str:
+    @classmethod
+    def content_must_not_be_empty(cls, v: str) -> str:
         stripped_v = v.strip()
         if not stripped_v:
             raise ValueError("content must not be empty")
         return stripped_v
 
     @field_validator("role")
-    def role_must_be_user(self, v: ChatMessageRole) -> ChatMessageRole:
+    @classmethod
+    def role_must_be_user(cls, v: ChatMessageRole) -> ChatMessageRole:
         if v != ChatMessageRole.USER:
             raise ValueError("role must be USER")
         return v

@@ -19,13 +19,15 @@ class KnowledgePresignFileRequest(BaseModel):
     size_bytes: int = Field(..., gt=0)
 
     @field_validator("mimetype")
-    def validate_mimetype(self, v: str) -> str:
+    @classmethod
+    def validate_mimetype(cls, v: str) -> str:
         if v not in KNOWLEDGE_ALLOWED_MIMETYPES:
             raise ValueError(f"MIME type '{v}' is not allowed for knowledge uploads.")
         return v
 
     @field_validator("size_bytes")
-    def validate_size(self, v: int) -> int:
+    @classmethod
+    def validate_size(cls, v: int) -> int:
         if v > KNOWLEDGE_MAX_FILE_SIZE_BYTES:
             raise ValueError(
                 f"File size of {v} bytes exceeds limit of {KNOWLEDGE_MAX_FILE_SIZE_BYTES} bytes."
@@ -45,7 +47,8 @@ class KnowledgeBatchPresignRequest(BaseModel):
     )
 
     @field_validator("files")
-    def validate_batch_len(self, v: list[KnowledgePresignFileRequest]):
+    @classmethod
+    def validate_batch_len(cls, v: list[KnowledgePresignFileRequest]):
         if len(v) > MAX_BATCH_FILES:
             raise ValueError(f"Too many files in one batch. Max allowed is {MAX_BATCH_FILES}.")
         return v
@@ -113,7 +116,7 @@ class KnowledgeSourceEventUpdate(BaseModel):
     thumbnail_small_url: str | None = None
     thumbnail_medium_url: str | None = None
 
-    class Config:
-        orm_mode = True
-        # Allow adding SAS URL fields (thumbnail_small_url, etc.) later
-        extra = "allow"
+    model_config = {
+        "from_attributes": True,
+        "extra": "allow",
+    }

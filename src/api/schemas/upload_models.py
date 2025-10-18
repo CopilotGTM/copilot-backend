@@ -26,13 +26,15 @@ class PresignRequest(BaseModel):
     size_bytes: int = Field(..., gt=0, description="The size of the file in bytes.")
 
     @field_validator("mimetype")
-    def validate_mimetype(self, v: str) -> str:
+    @classmethod
+    def validate_mimetype(cls, v: str) -> str:
         if v not in ALLOWED_MIMETYPES:
             raise ValueError(f"MIME type '{v}' is not allowed.")
         return v
 
     @field_validator("size_bytes")
-    def validate_size(self, v: int) -> int:
+    @classmethod
+    def validate_size(cls, v: int) -> int:
         if v > MAX_FILE_SIZE_BYTES:
             raise ValueError(
                 f"File size of {v} bytes exceeds the limit of {MAX_FILE_SIZE_BYTES} bytes."

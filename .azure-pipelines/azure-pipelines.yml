@@ -217,15 +217,35 @@ stages:
               # Remove build cache
               docker builder prune -a -f || true
 
-              if [ "$DISK_USAGE" -gt 70 ]; then
-                echo ""
-                echo "##[section]🧹 Removing large preinstalled tool caches (usage ${DISK_USAGE}%)..."
-                # These directories consume ~20GB on hosted agents and are safe to delete for Docker builds
-                sudo rm -rf /usr/share/dotnet || true
-                sudo rm -rf /usr/local/lib/android || true
-                sudo rm -rf /opt/ghc || true
-                sudo rm -rf /opt/hostedtoolcache || true
-              fi
+              echo ""
+              echo "##[section]🧹 Removing preinstalled SDK caches (as needed)"
+
+              target_free_gb=40
+              current_free_gb=$(df --output=avail / | tail -1)
+              current_free_gb=$((current_free_gb / 1024 / 1024))
+
+              free_space() {
+                df --output=avail / | tail -1 | awk '{printf "%d", $1 / 1024 / 1024}'
+              }
+
+              maybe_remove() {
+                local path=$1
+                local label=$2
+                if [ "$(free_space)" -lt "$target_free_gb" ] && [ -d "$path" ]; then
+                  echo "Removing $label at $path ..."
+                  sudo rm -rf "$path" || true
+                  echo "Free space after removing $label: $(free_space) GB"
+                else
+                  echo "Skipping $label ($path) - either already removed or enough free space"
+                fi
+              }
+
+              maybe_remove "/usr/share/dotnet" "Dotnet SDK"
+              maybe_remove "/opt/ghc" "GHC"
+              maybe_remove "/opt/hostedtoolcache" "Hosted tool cache"
+              maybe_remove "/usr/local/share/powershell" "Powershell"
+              maybe_remove "/usr/local/share/chromium" "Chromium cache"
+              maybe_remove "/usr/local/lib/android" "Android SDK"
 
               echo ""
               echo "##[section]🧹 Cleaning up system resources..."
