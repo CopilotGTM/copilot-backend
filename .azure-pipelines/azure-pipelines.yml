@@ -73,29 +73,34 @@ stages:
 
           - script: |
               uv sync --frozen --no-install-project --no-dev --only-group quality
+              source .venv/bin/activate
             displayName: 'Install Quality Tools Only (Ruff, Bandit, MyPy)'
 
           # ================================================================
           # Code Quality Checks
           # ================================================================
           - script: |
-              uv run ruff format --check src/ tests/
+              source .venv/bin/activate
+              ruff format --check src/ tests/
             displayName: '✨ Code Formatting Check (Ruff Format)'
 
           - script: |
-              uv run ruff check src/ tests/
+              source .venv/bin/activate
+              ruff check src/ tests/
             displayName: '🔍 Linting Check (Ruff)'
 
           - script: |
-              uv run mypy src/ || true
+              source .venv/bin/activate
+              mypy src/ || true
             displayName: '📝 Type Checking (MyPy) - Advisory Only'
 
           # ================================================================
           # Security Scan
           # ================================================================
           - script: |
-              uv run bandit -c pyproject.toml -r src/ -f json -o bandit-report.json || true
-              uv run bandit -c pyproject.toml -r src/
+              source .venv/bin/activate
+              bandit -c pyproject.toml -r src/ -f json -o bandit-report.json || true
+              bandit -c pyproject.toml -r src/
             displayName: '🔒 Security Scan (Bandit)'
 
           - task: PublishPipelineArtifact@1
