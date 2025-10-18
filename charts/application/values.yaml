@@ -86,7 +86,7 @@ api:
       enabled: true
       hook: "post-install,post-upgrade"
       hookWeight: "1"
-      command: ["/bin/sh", "-c"]
+      command: ["/bin/bash", "-c"]
       args:
         - |
           set -euo pipefail

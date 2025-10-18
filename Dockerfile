@@ -50,7 +50,11 @@ COPY pyproject.toml uv.lock .python-version ./
 # Using --frozen ensures we install exactly what's in the lockfile
 # --no-dev: Skip dev dependencies (black, pytest, etc.) for production
 # --no-install-project: Don't install the project itself yet (only dependencies)
-RUN uv sync --frozen --no-dev --no-install-project --verbose
+RUN uv sync --frozen --no-dev --no-install-project --verbose \
+    && find /app/.venv -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true \
+    && find /app/.venv -type f -name "*.pyc" -delete \
+    && find /app/.venv -type f -name "*.pyo" -delete \
+    && rm -rf /root/.cache
 
 # ============================================================================
 # Stage 2: Runtime - Minimal production image
@@ -68,12 +72,14 @@ ENV PYTHONUNBUFFERED=1 \
     UV_LINK_MODE=copy
 
 # Install only runtime system dependencies
+# Note: curl is only for healthcheck, ca-certificates for HTTPS
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
     curl \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && apt-get clean
+    && apt-get clean \
+    && rm -rf /tmp/* /var/tmp/*
 
 # Create non-root user for security
 RUN groupadd -r appuser && useradd -r -g appuser appuser
@@ -88,6 +94,10 @@ COPY --from=builder --chown=appuser:appuser /app/.venv /app/.venv
 COPY --chown=appuser:appuser src/ ./src/
 COPY --chown=appuser:appuser migrations/ ./migrations/
 COPY --chown=appuser:appuser scripts/ ./scripts/
+
+# Remove any __pycache__ from source code
+RUN find ./src -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true \
+    && find ./src -type f -name "*.pyc" -delete
 
 # Create log directory with proper permissions
 RUN mkdir -p /var/log /tmp && \

@@ -65,6 +65,8 @@ docs/
 .github/
 .gitlab-ci.yml
 .circleci/
+.azure-pipelines/
+azure-pipelines.yml
 
 # Local testing
 testing_local
@@ -74,6 +76,8 @@ test-local-scripts/
 cache/
 .cache/
 .uv_cache/
+.ruff_cache/
+.mypy_cache/
 
 # Requirements (no longer needed with pyproject.toml)
 requirements.txt
