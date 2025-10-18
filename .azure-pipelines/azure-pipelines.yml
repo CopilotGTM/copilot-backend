@@ -8,7 +8,8 @@
 # 4. Builds and pushes optimized Docker images using UV
 # 5. Deploys to AKS using Helm
 #
-# DISK SPACE OPTIMIZATION:
+# OPTIMIZATIONS:
+# - Single job for all quality checks (avoids duplicate dependency installs)
 # - Docker cleanup runs before build to prevent "disk full" errors
 # - Build cache is reused from ACR for faster builds
 # - Multi-stage Dockerfile reduces final image size
@@ -45,16 +46,22 @@ stages:
   # ==========================================================================
   # Stage 1: Code Quality & Testing
   # ==========================================================================
+  # OPTIMIZATION: Single job for all quality checks to avoid duplicate
+  # dependency installation (previously installed deps 2x - wasted ~1min)
+  # ==========================================================================
   - stage: QualityCheck
     displayName: Code Quality & Tests
     jobs:
-      - job: CodeQuality
-        displayName: Lint, Format, Type Check
+      - job: QualityAndSecurity
+        displayName: Quality Checks & Security Scan
         pool:
           vmImage: 'ubuntu-latest'
         steps:
           - checkout: self
 
+          # ================================================================
+          # Setup Environment (only once for all checks)
+          # ================================================================
           - script: |
               curl -LsSf https://astral.sh/uv/install.sh | sh
               echo "##vso[task.prependpath]$HOME/.cargo/bin"
@@ -66,52 +73,30 @@ stages:
 
           - script: |
               uv sync --frozen --extra dev
-            displayName: 'Install Dependencies with UV (including dev tools)'
+            displayName: 'Install Dependencies (once for all checks)'
 
-          # Ruff format check - fast, Black-compatible formatting
+          # ================================================================
+          # Code Quality Checks
+          # ================================================================
           - script: |
               uv run ruff format --check src/ tests/
-            displayName: 'Code Formatting Check (Ruff Format)'
+            displayName: '✨ Code Formatting Check (Ruff Format)'
 
-          # Ruff linting - must pass (matches pre-commit check mode)
           - script: |
               uv run ruff check src/ tests/
-            displayName: 'Linting Check (Ruff)'
+            displayName: '🔍 Linting Check (Ruff)'
 
-          # Black removed - using Ruff format as single formatter
-          # - script: |
-          #     uv run black --check --config pyproject.toml src/ tests/
-          #   displayName: 'Code Formatting Check (Black)'
-
-          # Type checking - advisory only (not in pre-commit)
           - script: |
               uv run mypy src/ || true
-            displayName: 'Type Checking (MyPy) - Advisory Only'
+            displayName: '📝 Type Checking (MyPy) - Advisory Only'
 
-      - job: SecurityScan
-        displayName: Security Scanning
-        pool:
-          vmImage: 'ubuntu-latest'
-        steps:
-          - checkout: self
-
-          - script: |
-              curl -LsSf https://astral.sh/uv/install.sh | sh
-              echo "##vso[task.prependpath]$HOME/.cargo/bin"
-            displayName: 'Install UV'
-
-          - script: |
-              uv python install $(PYTHON_VERSION)
-            displayName: 'Install Python $(PYTHON_VERSION)'
-
-          - script: |
-              uv sync --frozen --extra dev
-            displayName: 'Install Dependencies with UV (including dev tools)'
-
+          # ================================================================
+          # Security Scan
+          # ================================================================
           - script: |
               uv run bandit -c pyproject.toml -r src/ -f json -o bandit-report.json || true
               uv run bandit -c pyproject.toml -r src/
-            displayName: 'Run Bandit Security Scan'
+            displayName: '🔒 Security Scan (Bandit)'
 
           - task: PublishPipelineArtifact@1
             displayName: 'Upload Security Report'
@@ -214,6 +199,9 @@ stages:
           - script: |
               echo "##[section]📊 Checking disk space before cleanup..."
               df -h
+              DISK_USAGE=$(df / | tail -1 | awk '{print $5}' | sed 's/%//')
+              echo "Current disk usage: ${DISK_USAGE}%"
+
               echo ""
               echo "##[section]🧹 Cleaning up Docker resources..."
 
@@ -230,15 +218,36 @@ stages:
               docker builder prune -a -f || true
 
               echo ""
-              echo "##[section]🧹 Cleaning up APT cache..."
+              echo "##[section]🧹 Cleaning up system resources..."
+              # Clean APT cache
               sudo apt-get clean || true
               sudo rm -rf /var/lib/apt/lists/* || true
+
+              # Clean up old logs
+              sudo journalctl --vacuum-time=1d || true
+
+              # Clean up package manager caches
+              sudo rm -rf /tmp/* || true
+              sudo rm -rf /var/tmp/* || true
 
               echo ""
               echo "##[section]✅ Disk space after cleanup:"
               df -h
-            displayName: 'Clean Up Disk Space'
-            continueOnError: 'true'
+              DISK_USAGE_AFTER=$(df / | tail -1 | awk '{print $5}' | sed 's/%//')
+              echo "Disk usage after cleanup: ${DISK_USAGE_AFTER}%"
+
+              # Fail if disk usage is still > 90%
+              if [ "$DISK_USAGE_AFTER" -gt 90 ]; then
+                echo "##[error]❌ Critical: Disk usage is ${DISK_USAGE_AFTER}% - aborting build"
+                echo "##[error]Please contact DevOps to clean up the build agent"
+                exit 1
+              elif [ "$DISK_USAGE_AFTER" -gt 80 ]; then
+                echo "##[warning]⚠️ Warning: Disk usage is ${DISK_USAGE_AFTER}% - consider cleaning up agent"
+              else
+                echo "##[section]✅ Disk space is healthy (${DISK_USAGE_AFTER}% used)"
+              fi
+            displayName: 'Clean Up Disk Space & Check'
+            continueOnError: 'false'
 
           - script: |
               echo "##[group]Verifying Environment Configuration"
@@ -286,7 +295,15 @@ stages:
               echo "📦 Image: $(ACR_LOGIN_SERVER)/copilot-backend:$(Build.BuildId)"
               echo "📦 Latest: $(ACR_LOGIN_SERVER)/copilot-backend:latest"
               echo "⚡ Next build will reuse cached layers for faster builds"
-            displayName: 'Build Summary'
+              echo ""
+              echo "##[section]📊 Final disk space check:"
+              df -h
+              FINAL_DISK_USAGE=$(df / | tail -1 | awk '{print $5}' | sed 's/%//')
+              echo "Final disk usage: ${FINAL_DISK_USAGE}%"
+              if [ "$FINAL_DISK_USAGE" -gt 85 ]; then
+                echo "##[warning]⚠️ High disk usage (${FINAL_DISK_USAGE}%) - cleanup recommended for next run"
+              fi
+            displayName: 'Build Summary & Disk Check'
 
   - stage: Deploy
     displayName: Helm Deploy/Upgrade to AKS
