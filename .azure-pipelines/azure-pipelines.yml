@@ -217,6 +217,16 @@ stages:
               # Remove build cache
               docker builder prune -a -f || true
 
+              if [ "$DISK_USAGE" -gt 70 ]; then
+                echo ""
+                echo "##[section]🧹 Removing large preinstalled tool caches (usage ${DISK_USAGE}%)..."
+                # These directories consume ~20GB on hosted agents and are safe to delete for Docker builds
+                sudo rm -rf /usr/share/dotnet || true
+                sudo rm -rf /usr/local/lib/android || true
+                sudo rm -rf /opt/ghc || true
+                sudo rm -rf /opt/hostedtoolcache || true
+              fi
+
               echo ""
               echo "##[section]🧹 Cleaning up system resources..."
               # Clean APT cache
