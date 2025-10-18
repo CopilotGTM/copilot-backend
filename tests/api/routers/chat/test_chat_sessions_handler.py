@@ -45,9 +45,7 @@ def test_delete_chat_success(client: TestClient, dependency_overrides):
     session_id = create.json()["data"]["session_id"]
 
     # Delete it
-    delete = client.request(
-        "DELETE", "/users/chats/delete_chat", json={"session_id": session_id}
-    )
+    delete = client.request("DELETE", "/users/chats/delete_chat", json={"session_id": session_id})
     assert delete.status_code == 200, delete.text
     body = delete.json()
     assert body["status"] == "SUCCESS"
@@ -59,9 +57,7 @@ def test_delete_chat_not_found(client: TestClient, dependency_overrides):
     # Attempt to delete a random/unknown session
     from uuid import uuid4
 
-    resp = client.request(
-        "DELETE", "/users/chats/delete_chat", json={"session_id": str(uuid4())}
-    )
+    resp = client.request("DELETE", "/users/chats/delete_chat", json={"session_id": str(uuid4())})
     assert resp.status_code == 404, resp.text
     body = resp.json()
     assert body["status"] == "ERROR"

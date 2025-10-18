@@ -251,6 +251,53 @@ curl -X POST "$BASE_URL/users/auth/forgot-password" \
 
 ---
 
+## 5) Logout
+
+### Endpoint
+```http
+POST /users/auth/logout
+```
+
+### Description
+Logs out the current authenticated user. If `global_logout` is true, logs out from all active sessions for this user.
+
+### Authentication
+Required (Bearer access token)
+
+### Request Body
+```json
+{ "global_logout": false }
+```
+
+### Success Response (200)
+```json
+{
+  "status": "SUCCESS",
+  "message": "Successfully logged out.",
+  "data": null
+}
+```
+
+When `global_logout` is true, message becomes: "Successfully logged out from all sessions."
+
+### Error Responses
+- 401 Unauthorized
+  - `Missing or invalid authorization header`
+  - `Invalid token: missing user ID`
+  - `User account is not active or not approved`
+- 500 Internal Server Error
+  - `An unexpected error occurred during logout.`
+
+### Example cURL
+```bash
+curl -X POST "$BASE_URL/users/auth/logout" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"global_logout":false}'
+```
+
+---
+
 ## Security Notes
 - Use the returned `access_token` as a Bearer token for protected endpoints: `Authorization: Bearer <access_token>`.
 - Keep the `refresh_token` secure; it can mint new access tokens.

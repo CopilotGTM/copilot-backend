@@ -1,20 +1,20 @@
 from __future__ import annotations
 
 from uuid import UUID
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-
 from src.api.dependencies.organisation_dependencies import (
-    get_current_user,
     UserIDs,
+    get_current_user,
     get_org_async_session,
 )
+from src.api.dependencies.rate_limit import rate_limit_user_read
 from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.upload_models import AttachmentDownloadResponse
 from src.api.utils.http_response import Response
-from src.service.chat.chat_attachments_service import UploadService, UploadServiceError
 from src.infra.utils.logger import get_logger
-from src.api.dependencies.rate_limit import rate_limit_user_read
+from src.service.chat.chat_attachments_service import UploadService, UploadServiceError
 
 logger = get_logger("attachment_download_handler")
 
@@ -48,9 +48,7 @@ async def download_attachment(
     _rl_read: None = Depends(rate_limit_user_read),
 ):
     try:
-        url = await service.generate_download_url(
-            attachment_id, minutes=expires_minutes
-        )
+        url = await service.generate_download_url(attachment_id, minutes=expires_minutes)
         resp = AttachmentDownloadResponse(
             attachment_id=attachment_id,
             download_url=url,
@@ -60,7 +58,5 @@ async def download_attachment(
     except UploadServiceError as e:
         return Response.error_response(status_code=e.status_code, message=e.message)
     except Exception as e:  # pragma: no cover
-        logger.error(
-            "Unexpected error generating attachment download URL: %s", e, exc_info=True
-        )
+        logger.error("Unexpected error generating attachment download URL: %s", e, exc_info=True)
         return Response.internal_server_error_response("An unexpected error occurred")

@@ -1,15 +1,13 @@
-from typing import Dict, Any, Optional
-from fastapi import Depends, HTTPException, status, Cookie, Request
-from sqlmodel import Session, select
 import json
+from typing import Any
 from urllib.parse import unquote
-from uuid import UUID
+
+from fastapi import Cookie, Depends, HTTPException, status
 from socketio.exceptions import ConnectionRefusedError
-from src.domain.models.master_tables import User
-from src.infra.utils.app_state import fastapp
-from src.infra.utils.logger import get_logger
+from sqlmodel import Session
 from src.api.dependencies.master_dependencies import get_master_session
 from src.infra.auth.supabase_admin_client import supabase_admin_client
+from src.infra.utils.logger import get_logger
 
 logger = get_logger()
 
@@ -21,8 +19,8 @@ class Authentication:
         self,
         *,
         master_session: Session = Depends(get_master_session),
-        auth_storage: Optional[str] = Cookie(None, alias=cookie_name)
-    ) -> Dict[str, Any]:
+        auth_storage: str | None = Cookie(None, alias=cookie_name),
+    ) -> dict[str, Any]:
         """
         FastAPI dependency: verifies the auth_token cookie for HTTP routes.
         For Supabase, we'll verify the session token and extract user info.
@@ -48,7 +46,7 @@ class Authentication:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Invalid auth-storage format",
-                )
+                ) from e
 
             # Extract Supabase session token
             access_token = storage_data.get("state", {}).get("access_token")
@@ -60,9 +58,7 @@ class Authentication:
                 )
 
             # Get user from Supabase token
-            user = supabase_admin_client.get_user_from_token(
-                access_token, master_session
-            )
+            user = supabase_admin_client.get_user_from_token(access_token, master_session)
 
             if not user:
                 logger.warning("User not found or token invalid")
@@ -71,9 +67,7 @@ class Authentication:
                     detail="User not found or token invalid",
                 )
 
-            logger.info(
-                "HTTP session verified successfully for user_id=%s", user.user_id
-            )
+            logger.info("HTTP session verified successfully for user_id=%s", user.user_id)
             return {
                 "user_id": str(user.user_id),
                 "organisation_id": str(user.organisation_id),
@@ -88,9 +82,9 @@ class Authentication:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Authentication error",
-            )
+            ) from e
 
-    def decode_for_ws(self, token: str) -> Dict[str, Any]:
+    def decode_for_ws(self, token: str) -> dict[str, Any]:
         """
         Decode and validate token for WebSocket, raising ConnectionRefusedError on error.
         """
@@ -110,14 +104,12 @@ class Authentication:
             return {
                 "supabase_user_id": supabase_user_id,
                 "user_id": payload.get("user_id"),  # If you store this in token
-                "organisation_id": payload.get(
-                    "organisation_id"
-                ),  # If you store this in token
+                "organisation_id": payload.get("organisation_id"),  # If you store this in token
             }
 
         except HTTPException as e:
             logger.error("WebSocket auth failed: %s", str(e))
-            raise ConnectionRefusedError("Unauthorized")
+            raise ConnectionRefusedError("Unauthorized") from e
         except Exception as e:
             logger.error("WebSocket auth token decode failed: %s", str(e))
-            raise ConnectionRefusedError("Unauthorized")
+            raise ConnectionRefusedError("Unauthorized") from e

@@ -1,8 +1,8 @@
 import pytest
-
-from src.api.dependencies.organisation_dependencies import get_current_user, UserIDs
+from src.api.dependencies.organisation_dependencies import UserIDs, get_current_user
 from src.api.routers.chat_attachments.upload_handler import get_upload_service
 from src.infra.utils.app_state import fastapp as app
+
 from tests.api.routers.mocks import FakeUploadService
 
 
@@ -13,9 +13,7 @@ def dependency_overrides(test_user_ids):
     It yields a fake upload service that preserves state across test functions.
     """
     # Provide a single service instance per test module to preserve state across calls
-    fake_service = FakeUploadService(
-        test_user_ids["organisation_id"], test_user_ids["user_id"]
-    )
+    fake_service = FakeUploadService(test_user_ids["organisation_id"], test_user_ids["user_id"])
 
     def _override_user():
         return UserIDs(

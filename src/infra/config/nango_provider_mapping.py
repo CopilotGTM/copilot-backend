@@ -7,13 +7,10 @@ often use hyphens (e.g., "google-calendar"). HubSpot/Slack work because the keys
 
 from __future__ import annotations
 
-from typing import Dict
-
 from src.domain.models.organisation_tables.knowledge_models import IntegrationType
 
-
 # Explicit mappings where Nango's provider key differs from our enum value
-_INTEGRATION_TO_NANGO: Dict[IntegrationType, str] = {
+_INTEGRATION_TO_NANGO: dict[IntegrationType, str] = {
     # Collaboration & Communication
     IntegrationType.SLACK: "slack",
     IntegrationType.TEAMS: "teams",
@@ -55,20 +52,18 @@ _INTEGRATION_TO_NANGO: Dict[IntegrationType, str] = {
 
 
 def _build_reverse_map(
-    mapping: Dict[IntegrationType, str],
-) -> Dict[str, IntegrationType]:
+    mapping: dict[IntegrationType, str],
+) -> dict[str, IntegrationType]:
     return {v.lower(): k for k, v in mapping.items()}
 
 
 # Build reverse maps (lower-cased)
-_NANGO_TO_INTEGRATION: Dict[str, IntegrationType] = _build_reverse_map(
-    _INTEGRATION_TO_NANGO
-)
+_NANGO_TO_INTEGRATION: dict[str, IntegrationType] = _build_reverse_map(_INTEGRATION_TO_NANGO)
 
 # Overrides for Nango Connect Session integration keys.
 # In many cases the integration unique key matches the provider key (e.g., "slack").
 # When it differs, list the unique key here so we can target the correct integration.
-_NANGO_CONNECT_KEYS: Dict[IntegrationType, str] = {
+_NANGO_CONNECT_KEYS: dict[IntegrationType, str] = {
     # Collaboration & Communication
     IntegrationType.SLACK: "slack",
     IntegrationType.TEAMS: "teams",
@@ -108,9 +103,7 @@ _NANGO_CONNECT_KEYS: Dict[IntegrationType, str] = {
     IntegrationType.CHORUS: "chorus",
 }
 
-_NANGO_CONNECT_TO_INTEGRATION: Dict[str, IntegrationType] = _build_reverse_map(
-    _NANGO_CONNECT_KEYS
-)
+_NANGO_CONNECT_TO_INTEGRATION: dict[str, IntegrationType] = _build_reverse_map(_NANGO_CONNECT_KEYS)
 
 
 def to_nango_provider_key(integration_type: IntegrationType) -> str:

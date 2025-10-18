@@ -1,6 +1,7 @@
 """Centralized Redis subscriber abstractions (sync + async)."""
 
 import json
+
 from src.infra.messaging.redis_client import get_redis_client
 from src.infra.utils.logger import get_logger
 
@@ -34,7 +35,6 @@ class RedisSubscriber:
 
 
 # Async stream/pubsub variants
-import asyncio
 
 try:
     import redis.asyncio as aioredis
@@ -53,16 +53,13 @@ class AsyncRedisSubscriber:
 
     async def _get_redis_client(self):
         if not aioredis:
-            raise RuntimeError(
-                "Async redis support not available. Install redis>=6.0.0"
-            )
+            raise RuntimeError("Async redis support not available. Install redis>=6.0.0")
         if self.redis is None:
             redis_host, port, password = self.config.get_redis_client_details
 
             # Determine if SSL should be used (enabled for non-local hosts)
             ssl_enabled = not (
-                redis_host in ["localhost", "127.0.0.1"]
-                or redis_host.startswith("192.168.")
+                redis_host in ["localhost", "127.0.0.1"] or redis_host.startswith("192.168.")
             )
 
             # Use rediss:// protocol for SSL, redis:// for non-SSL
@@ -97,9 +94,7 @@ class AsyncRedisSubscriber:
                             f"Failed to parse or handle async message from {channel}: {e}"
                         )
         except Exception as e:
-            self.logger.error(
-                f"Error in AsyncRedisSubscriber.listen for {channel}: {e}"
-            )
+            self.logger.error(f"Error in AsyncRedisSubscriber.listen for {channel}: {e}")
         finally:
             await self.pubsub.unsubscribe(channel)
             await self.pubsub.close()

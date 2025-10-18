@@ -1,12 +1,9 @@
-from abc import ABC, abstractmethod
-from typing import Optional
-from urllib.parse import urlparse, ParseResult
+import logging
 
 # import boto3
 # from botocore.exceptions import ClientError
 from dataclasses import dataclass
-from urllib.parse import unquote
-import logging
+from urllib.parse import unquote, urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +13,7 @@ class CloudConfig:
     """Configuration for cloud provider."""
 
     provider: str
-    region: Optional[str] = None
+    region: str | None = None
 
 
 class AWSProvider:
@@ -57,7 +54,7 @@ class AWSProvider:
 
         except Exception as e:
             logger.error(f"Failed to convert URL '{https_url}': {str(e)}")
-            raise ValueError(f"Failed to convert URL: {str(e)}")
+            raise ValueError(f"Failed to convert URL: {str(e)}") from e
 
 
 class GCPProvider:
@@ -94,14 +91,12 @@ class GCPProvider:
                 raise ValueError("Invalid GCS URL: empty key")
 
             gcs_url = f"gs://{bucket_name}/{key}"
-            logger.info(
-                f"Successfully converted URL - From: {https_url}, To: {gcs_url}"
-            )
+            logger.info(f"Successfully converted URL - From: {https_url}, To: {gcs_url}")
             return gcs_url
 
         except Exception as e:
             logger.error(f"Failed to convert URL '{https_url}': {str(e)}")
-            raise ValueError(f"Failed to convert URL: {str(e)}")
+            raise ValueError(f"Failed to convert URL: {str(e)}") from e
 
 
 class CloudURIConverter:

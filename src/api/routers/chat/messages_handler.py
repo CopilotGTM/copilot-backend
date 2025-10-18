@@ -1,33 +1,30 @@
-from typing import Optional, List, Dict, Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Body, Request
+from fastapi import APIRouter, Body, Depends, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
     get_current_user,
     get_org_async_session,
 )
+from src.api.dependencies.rate_limit import rate_limit_user_read, rate_limit_user_write
 from src.api.schemas.base_models import GenericResponse
-from src.api.dependencies.rate_limit import rate_limit_user_write, rate_limit_user_read
 from src.api.schemas.chat_models import (
-    SendMessageRequest,
-    SendMessageResponse,
     ChatMessageListItem,
     ChatMessagesPage,
+    SendMessageRequest,
+    SendMessageResponse,
 )
 from src.api.utils.http_response import Response
-from src.infra.utils.logger import get_logger
-from src.service.chat.chat_message_service import ChatMessageService
-from src.workers.chat_worker.celery_app import app as chat_app
-from src.service.chat.chat_message_sse_service import ChatMessageSSEService
-from sse_starlette.sse import EventSourceResponse
-from fastapi import Query
 from src.domain.models.organisation_tables.chat_message_models import (
     ChatMessageRole,
     ChatMessageType,
 )
-
+from src.infra.utils.logger import get_logger
+from src.service.chat.chat_message_service import ChatMessageService
+from src.service.chat.chat_message_sse_service import ChatMessageSSEService
+from src.workers.chat_worker.celery_app import app as chat_app
+from sse_starlette.sse import EventSourceResponse
 
 logger = get_logger("chat_messages")
 router = APIRouter()
@@ -37,14 +34,12 @@ async def get_chat_message_service(
     user_ids: UserIDs = Depends(get_current_user),
     org_session: AsyncSession = Depends(get_org_async_session),
 ):
-    service = ChatMessageService(
-        org_session, user_ids.organisation_id, user_ids.user_id
-    )
+    service = ChatMessageService(org_session, user_ids.organisation_id, user_ids.user_id)
     try:
         yield service
     finally:
         # Ensure proper cleanup of service resources
-        if hasattr(service, "close") and callable(getattr(service, "close")):
+        if hasattr(service, "close") and callable(service.close):
             await service.close()
 
 
@@ -62,7 +57,7 @@ async def send_message(
 ):
     try:
         # Map attachments to IDs, respecting order if provided
-        attach_ids: Optional[List[UUID]] = payload.attachments
+        attach_ids: list[UUID] | None = payload.attachments
 
         # Create user message (this also creates and saves the job)
         user_message, job, assistant_message_id = await service.create_user_message(
@@ -106,9 +101,7 @@ async def send_message(
                 exc_info=True,
             )
             await service.db.rollback()
-            return Response.internal_server_error_response(
-                "Failed to schedule message processing."
-            )
+            return Response.internal_server_error_response("Failed to schedule message processing.")
 
         await service.db.commit()
         return Response.success_response("Message accepted", resp)
@@ -137,9 +130,7 @@ async def message_events(
     )
 
     # Extract Last-Event-ID header for replay (if provided by browser EventSource on reconnect)
-    last_event_id = request.headers.get("last-event-id") or request.headers.get(
-        "Last-Event-ID"
-    )
+    last_event_id = request.headers.get("last-event-id") or request.headers.get("Last-Event-ID")
 
     # If client provides Last-Event-ID, they want to resume from that point
     # In consume-once mode, this helps handle reconnections gracefully
@@ -149,9 +140,7 @@ async def message_events(
         try:
             # Use consume_once=True by default for one-time message delivery
             # Pass resume_from_id for potential reconnection handling
-            async for ev in service.stream_events(
-                consume_once=True, resume_from_id=resume_from_id
-            ):
+            async for ev in service.stream_events(consume_once=True, resume_from_id=resume_from_id):
                 yield ev
         finally:
             try:
@@ -171,11 +160,11 @@ async def message_events(
 async def list_messages(
     session_id: UUID,
     limit: int = Query(20, ge=1, le=100),
-    cursor: Optional[str] = Query(
+    cursor: str | None = Query(
         None, description="Opaque cursor returned by previous page (omit for first)"
     ),
-    role: Optional[ChatMessageRole] = Query(None, description="Filter by role"),
-    message_type: Optional[ChatMessageType] = Query(None, description="Filter by type"),
+    role: ChatMessageRole | None = Query(None, description="Filter by role"),
+    message_type: ChatMessageType | None = Query(None, description="Filter by type"),
     service: ChatMessageService = Depends(get_chat_message_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ):
@@ -194,9 +183,7 @@ async def list_messages(
 
         # Build enriched items using service method
         item_dicts = service.build_message_list_items(msgs, atts_urls)
-        items: List[ChatMessageListItem] = [
-            ChatMessageListItem(**item) for item in item_dicts
-        ]
+        items: list[ChatMessageListItem] = [ChatMessageListItem(**item) for item in item_dicts]
         page = ChatMessagesPage(items=items, cursor=next_cursor)
         return Response.success_response("Messages listed", page)
     except ValueError as e:

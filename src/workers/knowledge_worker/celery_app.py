@@ -6,19 +6,15 @@ load_dotenv(override=True)
 # Debug: Check if environment variables are loaded
 import os
 
-import os
-
 # Set minimal DB pool settings for worker process
 os.environ["MAX_TENANT_ENGINES"] = "1"
 os.environ["TENANT_POOL_MULTIPLIER"] = "1.0"
 
-from src.workers.base.celery_base import create_celery_app
-from src.workers.knowledge_worker.config import KnowledgeWorkerConfig
 from celery.signals import (
-    task_received,
-    task_prerun,
-    task_postrun,
     task_failure,
+    task_postrun,
+    task_prerun,
+    task_received,
     worker_ready,
     worker_shutdown,
 )
@@ -26,6 +22,8 @@ from celery.signals import (
 # Redis connection pool management
 from src.infra.messaging.redis_client import close_redis_pool
 from src.infra.utils.logger import get_logger
+from src.workers.base.celery_base import create_celery_app
+from src.workers.knowledge_worker.config import KnowledgeWorkerConfig
 
 logger = get_logger("knowledge_worker")
 
@@ -93,11 +91,8 @@ def task_postrun_handler(
 
 
 @task_failure.connect
-def task_failure_handler(
-    task_id=None, exception=None, traceback=None, einfo=None, **kwds
-):
+def task_failure_handler(task_id=None, exception=None, traceback=None, einfo=None, **kwds):
     print(f"Task failed: {task_id} exception={exception}")
 
 
 # Explicitly import task modules to ensure registration
-from .tasks import document_extraction, post_upload, test_tasks, delete_source

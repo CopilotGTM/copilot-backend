@@ -8,35 +8,31 @@ Handles:
 - Checking integration status
 """
 
-from typing import Optional, List
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
-
 from src.api.dependencies.organisation_dependencies import (
+    UserIDs,
     get_current_user,
     get_org_async_session,
-    UserIDs,
 )
 from src.api.schemas.base_models import GenericResponse
-from src.api.utils.http_response import Response
 from src.api.schemas.integrations import (
-    IntegrationResponse,
-    IntegrationListResponse,
-    IntegrationUpdate,
-    IntegrationStatusResponse,
     AvailableIntegration,
     AvailableIntegrationsResponse,
+    IntegrationResponse,
+    IntegrationStatusResponse,
+    IntegrationUpdate,
 )
+from src.api.utils.http_response import Response
 from src.domain.models.organisation_tables.knowledge_models import (
-    IntegrationType,
     IntegrationScope,
 )
-from src.service.integrations import NangoClient, IntegrationService
-from src.infra.utils.logger import get_logger
 from src.infra.config.constant import IntegrationErrors
 from src.infra.config.integrations_metadata import get_all_integration_metadata
+from src.infra.utils.logger import get_logger
+from src.service.integrations import IntegrationService, NangoClient
 
 logger = get_logger(__name__)
 router = APIRouter(tags=["integrations"])
@@ -110,8 +106,7 @@ async def list_available_integrations(
                     availability_status=metadata.availability_status,
                     is_connected=is_connected,
                     connected_integrations=[
-                        IntegrationResponse.model_validate(conn)
-                        for conn in connected_instances
+                        IntegrationResponse.model_validate(conn) for conn in connected_instances
                     ],
                 )
             )
@@ -164,9 +159,7 @@ async def get_integration(
             logger.warning(
                 f"Integration {integration_id} not found for org {user_ids.organisation_id}"
             )
-            return Response.not_found_response(
-                message=IntegrationErrors.INTEGRATION_NOT_FOUND
-            )
+            return Response.not_found_response(message=IntegrationErrors.INTEGRATION_NOT_FOUND)
 
         # Check access: user can only access org-wide integrations or their own user-scoped ones
         if (
@@ -220,9 +213,7 @@ async def check_integration_status(
             logger.warning(
                 f"Integration {integration_id} not found for org {user_ids.organisation_id}"
             )
-            return Response.not_found_response(
-                message=IntegrationErrors.INTEGRATION_NOT_FOUND
-            )
+            return Response.not_found_response(message=IntegrationErrors.INTEGRATION_NOT_FOUND)
 
         # Check access: user can only access org-wide or their own user-scoped integrations
         if (
@@ -294,9 +285,7 @@ async def update_integration(
             logger.warning(
                 f"Integration {integration_id} not found for org {user_ids.organisation_id}"
             )
-            return Response.not_found_response(
-                message=IntegrationErrors.INTEGRATION_NOT_FOUND
-            )
+            return Response.not_found_response(message=IntegrationErrors.INTEGRATION_NOT_FOUND)
 
         # Check access: user can only update org-wide or their own user-scoped integrations
         if (
@@ -319,9 +308,7 @@ async def update_integration(
             auto_sync_enabled=update_data.auto_sync_enabled,
         )
 
-        logger.info(
-            f"Updated integration {integration_id} for org {user_ids.organisation_id}"
-        )
+        logger.info(f"Updated integration {integration_id} for org {user_ids.organisation_id}")
 
         response_data = IntegrationResponse.model_validate(updated)
 
@@ -330,9 +317,7 @@ async def update_integration(
         )
 
     except ValueError as e:
-        logger.warning(
-            f"Validation error updating integration {integration_id}: {str(e)}"
-        )
+        logger.warning(f"Validation error updating integration {integration_id}: {str(e)}")
         return Response.bad_request_response(message=str(e))
     except Exception as e:
         logger.error(

@@ -1,20 +1,21 @@
-from src.workers.content_worker.celery_app import app
-import json
 import asyncio
-from src.infra.messaging.redis_client import get_redis_client
+import json
 
-from src.infra.utils.logger import get_logger
-from src.infra.utils.logger import get_logger as InputSio
 from sqlmodel import select
-from src.infra.utils.database import get_master_session
+
 from src.domain.models.organisation_tables import (
-    ChatSession as ChatSessionDB,
     ChatMessage as ChatMessageDB,
 )
+from src.domain.models.organisation_tables import (
+    ChatSession as ChatSessionDB,
+)
+from src.infra.messaging.redis_client import get_redis_client
+from src.infra.utils.database import get_master_session
+from src.infra.utils.logger import get_logger
 from src.service.technical_deck.deck_generation.deck_generation_workflow import (
     DeckGeneration,
 )
-
+from src.workers.content_worker.celery_app import app
 
 logger = get_logger()
 WEBSOCKET_NAMESPACE = "/websocket/v1"
@@ -50,7 +51,7 @@ def generate_deck_task(self, sid, data_json):
             ChatSessionDB.session_id == session_id,
             ChatSessionDB.user_id == user_id,
             ChatSessionDB.organisation_id == organisation_id,
-            ChatSessionDB.is_deleted == False,
+            not ChatSessionDB.is_deleted,
         )
         chat = master_session.exec(statement).one_or_none()
         logger.info(
@@ -88,18 +89,14 @@ def generate_deck_task(self, sid, data_json):
                         "response": chunk.content.get("public_url", ""),
                         "message_type": "TECHNICAL_DECK",
                         "extras": {
-                            "completion_percentage": chunk.content.get(
-                                "completion_percentage", 0
-                            ),
+                            "completion_percentage": chunk.content.get("completion_percentage", 0),
                         },
                     }
                     publish_websocket_message(sid, RESPONSE_EVENT, response_data)
             return full_response
 
         full_response = asyncio.run(_run_workflow())
-        logger.info(
-            f"Deck generation workflow completed, total chunks={len(full_response)}"
-        )
+        logger.info(f"Deck generation workflow completed, total chunks={len(full_response)}")
 
         deck_message.technical_deck_details = {
             **deck_message.technical_deck_details,

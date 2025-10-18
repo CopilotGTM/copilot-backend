@@ -1,14 +1,12 @@
 import os
-from typing import Optional
 from io import BytesIO
 
 import docx
 import fitz
-
 from src.infra.storage.cloud_file_reader import (
     CloudConfig,
-    get_cloud_reader,
     CloudFileReader,
+    get_cloud_reader,
 )
 from src.infra.storage.get_cloud_uri import CloudURIConverter
 
@@ -89,4 +87,4 @@ class DocumentReader:
             else:  # ext == ".pdf"
                 return self._read_pdf(file_obj)
         except Exception as e:
-            raise ValueError(f"Failed to read document: {str(e)}")
+            raise ValueError(f"Failed to read document: {str(e)}") from e

@@ -1,12 +1,11 @@
-from enum import Enum
-from uuid import UUID, uuid4
-from typing import List, Dict, Any, Optional, TYPE_CHECKING
 from datetime import datetime
+from enum import Enum
+from typing import TYPE_CHECKING, Any, Optional
+from uuid import UUID, uuid4
 
-from pydantic import BaseModel, HttpUrl, Field as PydanticField
-from sqlmodel import SQLModel, Field, Relationship
-from sqlalchemy import Column, String, Text, CheckConstraint, Boolean, text
+from sqlalchemy import Boolean, CheckConstraint, Column, String, text
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlmodel import Field, Relationship, SQLModel
 
 from .base_mixins import TimestampMixin
 from .job_models import ChatMessageJob
@@ -44,12 +43,8 @@ class ChatMessageAttachmentLink(SQLModel, table=True):
     __tablename__ = "chat_message_attachment_link"
 
     message_id: UUID = Field(foreign_key="chat_messages.message_id", primary_key=True)
-    attachment_id: UUID = Field(
-        foreign_key="attachments.attachment_id", primary_key=True
-    )
-    attachment_order: int = Field(
-        default=0, description="Display order of attachment in message"
-    )
+    attachment_id: UUID = Field(foreign_key="attachments.attachment_id", primary_key=True)
+    attachment_order: int = Field(default=0, description="Display order of attachment in message")
 
 
 class AttachmentStatus(str, Enum):
@@ -84,9 +79,7 @@ class Attachment(TimestampMixin, table=True):
     organisation_id: UUID = Field(
         index=True, description="The organisation this attachment belongs to."
     )
-    user_id: UUID = Field(
-        index=True, description="The user who uploaded the attachment."
-    )
+    user_id: UUID = Field(index=True, description="The user who uploaded the attachment.")
     filename: str = Field(description="The original filename of the attachment.")
     storage_path: str = Field(
         unique=True,
@@ -94,18 +87,18 @@ class Attachment(TimestampMixin, table=True):
     )
     mimetype: str = Field(description="The MIME type of the file.")
     size_bytes: int = Field(description="The size of the file in bytes.")
-    attachment_metadata: Dict[str, Any] = Field(
+    attachment_metadata: dict[str, Any] = Field(
         sa_column=Column(JSONB),
         default_factory=dict,
         description="Additional metadata for the attachment.",
     )
-    checksum: Optional[str] = Field(
+    checksum: str | None = Field(
         default=None, description="File checksum for integrity verification"
     )
-    virus_scan_status: Optional[str] = Field(
+    virus_scan_status: str | None = Field(
         default=None, description="Virus scan status: pending/clean/infected"
     )
-    retention_policy: Optional[str] = Field(
+    retention_policy: str | None = Field(
         default=None, description="Data retention policy identifier"
     )
     status: AttachmentStatus = Field(
@@ -118,13 +111,13 @@ class Attachment(TimestampMixin, table=True):
         ),
         description="The current processing status of the document.",
     )
-    thumbnail_small_path: Optional[str] = Field(
+    thumbnail_small_path: str | None = Field(
         default=None, description="Blob path for a small thumbnail (e.g., 128px)"
     )
-    thumbnail_medium_path: Optional[str] = Field(
+    thumbnail_medium_path: str | None = Field(
         default=None, description="Blob path for a medium thumbnail (e.g., 512px)"
     )
-    processing_error: Optional[str] = Field(
+    processing_error: str | None = Field(
         default=None, description="Error details if processing failed"
     )
     is_deleted: bool = Field(
@@ -132,11 +125,9 @@ class Attachment(TimestampMixin, table=True):
         sa_column=Column(Boolean, server_default=text("false"), nullable=False),
         description="Soft delete flag",
     )
-    deleted_at: Optional[datetime] = Field(
-        default=None, description="Soft delete timestamp"
-    )
+    deleted_at: datetime | None = Field(default=None, description="Soft delete timestamp")
 
-    messages: List["ChatMessage"] = Relationship(
+    messages: list["ChatMessage"] = Relationship(
         back_populates="attachments", link_model=ChatMessageAttachmentLink
     )
 
@@ -162,7 +153,7 @@ class ChatMessage(TimestampMixin, table=True):
         index=True,
         description="Foreign key linking to the chat session.",
     )
-    parent_message_id: Optional[UUID] = Field(
+    parent_message_id: UUID | None = Field(
         default=None,
         foreign_key="chat_messages.message_id",
         description="The ID of the parent message if this is a reply.",
@@ -183,11 +174,9 @@ class ChatMessage(TimestampMixin, table=True):
         ),
         description="The type of message, used for categorization.",
     )
-    message_version: int = Field(
-        default=1, description="Version of the message schema."
-    )
+    message_version: int = Field(default=1, description="Version of the message schema.")
 
-    content: Dict[str, Any] = Field(
+    content: dict[str, Any] = Field(
         sa_column=Column(JSONB, nullable=False),
         description="The JSON content of the message.",
     )
@@ -196,31 +185,31 @@ class ChatMessage(TimestampMixin, table=True):
         sa_column=Column(Boolean, server_default=text("false"), nullable=False),
         description="Flag to indicate if the message has been edited.",
     )
-    feedback_score: Optional[int] = Field(
+    feedback_score: int | None = Field(
         default=None,
         description="User feedback score for the message, e.g., +1 or -1.",
     )
-    token_usage: Optional[Dict[str, int]] = Field(
+    token_usage: dict[str, int] | None = Field(
         sa_column=Column(JSONB),
         default=None,
         description="Token usage for the message, e.g., {'prompt_tokens': 100, 'completion_tokens': 200}.",
     )
-    model_name: Optional[str] = Field(
+    model_name: str | None = Field(
         default=None,
         max_length=100,
         description="The name of the model that generated this message.",
     )
 
-    attachments: List["Attachment"] = Relationship(
+    attachments: list["Attachment"] = Relationship(
         back_populates="messages", link_model=ChatMessageAttachmentLink
     )
-    extra: Dict[str, Any] = Field(
+    extra: dict[str, Any] = Field(
         sa_column=Column(JSONB),
         default_factory=dict,
         description="Extra metadata for the message.",
     )
 
-    agent_data: Dict[str, Any] = Field(
+    agent_data: dict[str, Any] = Field(
         sa_column=Column("agent_data", JSONB),
         default_factory=dict,
         description="Stores agent-specific data, structure depends on message_type.",
@@ -232,9 +221,9 @@ class ChatMessage(TimestampMixin, table=True):
     # self-referencing relationship for message threads
     parent_message: Optional["ChatMessage"] = Relationship(
         back_populates="replies",
-        sa_relationship_kwargs=dict(remote_side="ChatMessage.message_id"),
+        sa_relationship_kwargs={"remote_side": "ChatMessage.message_id"},
     )
-    replies: List["ChatMessage"] = Relationship(back_populates="parent_message")
+    replies: list["ChatMessage"] = Relationship(back_populates="parent_message")
 
     # Relationship to ChatMessageJob
-    jobs: List["ChatMessageJob"] = Relationship(back_populates="message")
+    jobs: list["ChatMessageJob"] = Relationship(back_populates="message")

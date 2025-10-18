@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-from typing import Iterable, List, Optional, Tuple
 import asyncio
+from collections.abc import Iterable
 from uuid import UUID
-from datetime import datetime
 
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, or_, and_, func
-
 from src.domain.models.organisation_tables.knowledge_models import (
     OrganisationSource,
     OrganisationSourceStatus,
@@ -55,11 +53,11 @@ class KnowledgeAccessService:
     async def list_sources(
         self,
         limit: int = 20,
-        cursor: Optional[str] = None,
-        statuses: Optional[Iterable[OrganisationSourceStatus | str]] = None,
-        source_types: Optional[Iterable[SourceType | str]] = None,
-        q: Optional[str] = None,
-    ) -> Tuple[List[OrganisationSource], Optional[str]]:
+        cursor: str | None = None,
+        statuses: Iterable[OrganisationSourceStatus | str] | None = None,
+        source_types: Iterable[SourceType | str] | None = None,
+        q: str | None = None,
+    ) -> tuple[list[OrganisationSource], str | None]:
         """Return page of sources (key‑set pagination).
 
         Returns (items, next_cursor).
@@ -67,19 +65,15 @@ class KnowledgeAccessService:
         stmt = select(OrganisationSource).where(
             OrganisationSource.organisation_id == self.organisation_id,
             OrganisationSource.user_id == self.user_id,
-            OrganisationSource.is_deleted == False,  # exclude soft-deleted
+            not OrganisationSource.is_deleted,  # exclude soft-deleted
         )
 
         if statuses:
-            status_values = [
-                s.value if hasattr(s, "value") else str(s) for s in statuses
-            ]
+            status_values = [s.value if hasattr(s, "value") else str(s) for s in statuses]
             stmt = stmt.where(OrganisationSource.status.in_(status_values))  # type: ignore[arg-type]
 
         if source_types:
-            type_values = [
-                s.value if hasattr(s, "value") else str(s) for s in source_types
-            ]
+            type_values = [s.value if hasattr(s, "value") else str(s) for s in source_types]
             stmt = stmt.where(OrganisationSource.source_type.in_(type_values))  # type: ignore[arg-type]
 
         if q:
@@ -89,8 +83,8 @@ class KnowledgeAccessService:
         if cursor:
             try:
                 ts, sid = decode_cursor(cursor)
-            except Exception:
-                raise KnowledgeAccessServiceError("Invalid cursor", status_code=400)
+            except Exception as e:
+                raise KnowledgeAccessServiceError("Invalid cursor", status_code=400) from e
             stmt = stmt.where(
                 or_(
                     OrganisationSource.created_at < ts,
@@ -107,10 +101,10 @@ class KnowledgeAccessService:
         ).limit(limit + 1)
 
         res = await self.org_session.execute(stmt)
-        rows: List[OrganisationSource] = res.scalars().all()
+        rows: list[OrganisationSource] = res.scalars().all()
         has_more = len(rows) == limit + 1
         items = rows[:limit]
-        next_cursor: Optional[str] = None
+        next_cursor: str | None = None
         if has_more and items:
             # encode cursor lazily to avoid circular import (import inside)
             from src.infra.utils.cursor import encode_cursor
@@ -124,23 +118,13 @@ class KnowledgeAccessService:
         self,
         source_id: UUID,
         minutes: int = 120,
-        download_filename: Optional[str] = None,
+        download_filename: str | None = None,
     ) -> str:
-        src: OrganisationSource | None = await self.org_session.get(
-            OrganisationSource, source_id
-        )
-        if (
-            not src
-            or src.organisation_id != self.organisation_id
-            or src.user_id != self.user_id
-        ):
-            raise KnowledgeAccessServiceError(
-                "Source not found or access denied", status_code=404
-            )
+        src: OrganisationSource | None = await self.org_session.get(OrganisationSource, source_id)
+        if not src or src.organisation_id != self.organisation_id or src.user_id != self.user_id:
+            raise KnowledgeAccessServiceError("Source not found or access denied", status_code=404)
         if not src.storage_path:
-            raise KnowledgeAccessServiceError(
-                "Source has no storage path", status_code=400
-            )
+            raise KnowledgeAccessServiceError("Source has no storage path", status_code=400)
         try:
             return await self.storage.generate_read_sas(
                 src.storage_path,
@@ -148,14 +132,10 @@ class KnowledgeAccessService:
                 download_filename=download_filename or src.filename,
             )
         except Exception as e:  # pragma: no cover - network/azure path
-            logger.error(
-                "Failed generating read SAS for %s: %s", source_id, e, exc_info=True
-            )
+            logger.error("Failed generating read SAS for %s: %s", source_id, e, exc_info=True)
             raise KnowledgeAccessServiceError("Could not generate download URL") from e
 
-    async def build_item_dict(
-        self, src: OrganisationSource, include_urls: bool
-    ) -> dict:
+    async def build_item_dict(self, src: OrganisationSource, include_urls: bool) -> dict:
         def base_data() -> dict:
             return {
                 "source_id": str(src.source_id),
@@ -173,9 +153,7 @@ class KnowledgeAccessService:
             try:
                 return key, await self.storage.generate_read_sas(path, minutes=120)
             except Exception:  # pragma: no cover - network variability
-                logger.debug(
-                    "Failed generating %s for %s", key, src.source_id, exc_info=True
-                )
+                logger.debug("Failed generating %s for %s", key, src.source_id, exc_info=True)
                 return None
 
         data = base_data()
@@ -208,7 +186,7 @@ class KnowledgeAccessService:
         base_filters = [
             OrganisationSource.organisation_id == self.organisation_id,
             OrganisationSource.user_id == self.user_id,
-            getattr(OrganisationSource, "is_deleted", False) == False,
+            not getattr(OrganisationSource, "is_deleted", False),
         ]
 
         status_stmt = (

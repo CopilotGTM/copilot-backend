@@ -1,22 +1,23 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from uuid import UUID
 
-from src.workers.chat_worker.celery_app import app
-from src.infra.utils.logger import get_logger
+from src.agents.orchestrator import run_agent_for_chat
 from src.api.dependencies.organisation_dependencies import acquire_org_session
-from src.infra.messaging.redis_channels import channel_for_chat_job
-from src.infra.messaging.redis_streams import xadd_json_frame
-from src.infra.messaging.redis_client import get_redis_client
-from src.domain.models.organisation_tables.job_models import ChatMessageJob, JobStatus
 from src.domain.models.organisation_tables.chat_message_models import (
     ChatMessage,
     ChatMessageRole,
 )
 from src.domain.models.organisation_tables.chat_session_models import ChatSession
-from src.agents.orchestrator import run_agent_for_chat
+from src.domain.models.organisation_tables.job_models import ChatMessageJob, JobStatus
+from src.infra.messaging.redis_channels import channel_for_chat_job
+from src.infra.messaging.redis_client import get_redis_client
+from src.infra.messaging.redis_streams import xadd_json_frame
+from src.infra.utils.logger import get_logger
+from src.workers.chat_worker.celery_app import app
 
 logger = get_logger("chat_message_processing_task")
 
@@ -34,9 +35,7 @@ FRAME_TYPE_THINKING_UPDATE = "thinking.update"
 FRAME_TYPE_FINALIZE = "finalize"
 
 
-def _cleanup_job_stream(
-    organisation_id: UUID, job_id: UUID, delay_seconds: int = 30
-) -> None:
+def _cleanup_job_stream(organisation_id: UUID, job_id: UUID, delay_seconds: int = 30) -> None:
     """
     Clean up Redis stream for completed job after a delay.
     This prevents immediate cleanup in case of reconnections.
@@ -44,9 +43,7 @@ def _cleanup_job_stream(
     try:
         import time
 
-        time.sleep(
-            delay_seconds
-        )  # Simple delay - in production, consider using Celery's countdown
+        time.sleep(delay_seconds)  # Simple delay - in production, consider using Celery's countdown
 
         stream_key = channel_for_chat_job(organisation_id, job_id)
         client = get_redis_client()
@@ -86,12 +83,7 @@ class RedisPublisher:
         self._maxlen = maxlen
 
     def publish(self, frame: dict) -> None:
-        if (
-            xadd_json_frame(
-                self._stream_key, frame, maxlen=self._maxlen, approximate=True
-            )
-            is None
-        ):
+        if xadd_json_frame(self._stream_key, frame, maxlen=self._maxlen, approximate=True) is None:
             # Include job id if present in frame for easier debugging
             logger.warning("Failed to XADD frame for job %s", frame.get("job_id"))
 
@@ -292,8 +284,8 @@ def process_message(organisation_id: UUID, job_id: UUID):
         _update_job_status(session, job, JobStatus.IN_PROGRESS)
 
         # Load session and conversation data (assistant_message_id from metadata, not created yet)
-        _, chat_session, history, user_message, assistant_message_id = (
-            _load_conversation_data(session, job)
+        _, chat_session, history, user_message, assistant_message_id = _load_conversation_data(
+            session, job
         )
 
         # Execute agent and get results
@@ -352,9 +344,7 @@ def _load_conversation_data(session, job: ChatMessageJob):
     # Load user message
     user_message: ChatMessage | None = session.get(ChatMessage, user_message_id)
     if not user_message:
-        raise RuntimeError(
-            f"User message {user_message_id} not found for job {job.job_id}"
-        )
+        raise RuntimeError(f"User message {user_message_id} not found for job {job.job_id}")
 
     # Load recent conversation history (ordered asc, max 30)
     history = (
@@ -411,9 +401,7 @@ def _create_error_summary() -> dict:
     }
 
 
-def _publish_final_frames(
-    publisher: RedisPublisher, job: ChatMessageJob, result_summary: dict
-):
+def _publish_final_frames(publisher: RedisPublisher, job: ChatMessageJob, result_summary: dict):
     """Publish final frames with production metadata."""
     assistant_message_id = job.job_metadata.get("assistant_message_id")
 
@@ -550,10 +538,8 @@ def _finalize_job(
 
 def _handle_job_failure(session, job_id: UUID, error: Exception):
     """Handle job failure by rolling back and marking job as failed."""
-    try:
+    with contextlib.suppress(Exception):
         session.rollback()
-    except Exception:
-        pass
 
     logger.exception("Job %s failed: %s", job_id, error)
 
@@ -570,11 +556,7 @@ def _handle_job_failure(session, job_id: UUID, error: Exception):
 
 def _cleanup_resources(session, session_gen):
     """Clean up database resources."""
-    try:
+    with contextlib.suppress(Exception):
         session.close()
-    except Exception:
-        pass
-    try:
+    with contextlib.suppress(Exception):
         session_gen.close()
-    except Exception:
-        pass

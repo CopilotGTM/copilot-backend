@@ -1,5 +1,5 @@
-import fsspec
 import docx
+import fsspec
 
 
 def open_docx(path: str) -> docx.Document:

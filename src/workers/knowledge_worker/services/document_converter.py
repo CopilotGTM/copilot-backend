@@ -2,21 +2,19 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional, Union
 
+from docling.datamodel.base_models import InputFormat
+from docling.datamodel.pipeline_options import (
+    EasyOcrOptions,
+    PdfPipelineOptions,
+    PipelineOptions,
+    TableFormerMode,
+    TableStructureOptions,
+)
 from docling.document_converter import (
     DocumentConverter,
     PdfFormatOption,
     WordFormatOption,
-)
-from docling.datamodel.base_models import InputFormat
-from docling.datamodel.pipeline_options import (
-    PdfPipelineOptions,
-    PipelineOptions,
-    TableStructureOptions,
-    EasyOcrOptions,
-    OcrOptions,
-    TableFormerMode,
 )
 
 
@@ -65,7 +63,7 @@ class DocumentConverterService:
         """Access the underlying Docling `DocumentConverter`."""
         return self._converter
 
-    def convert_file(self, file_path: Union[str, Path]):
+    def convert_file(self, file_path: str | Path):
         """Convert a file from disk using the configured pipelines.
 
         Args:
@@ -76,7 +74,7 @@ class DocumentConverterService:
         """
         return self._converter.convert(file_path)
 
-    def __call__(self, file_path: Union[str, Path]):
+    def __call__(self, file_path: str | Path):
         """Shorthand to call `convert_file` directly on the service instance."""
         return self.convert_file(file_path)
 

@@ -1,29 +1,26 @@
 from __future__ import annotations
 
 """Azure per-organization blob storage helper for chat attachments."""
-from datetime import datetime, timedelta, timezone
-from typing import Optional, AsyncGenerator
-from uuid import UUID, uuid4
-import re
-import os
 import asyncio
 import hashlib
+import os
+import re
+from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 from azure.identity.aio import (
-    ClientSecretCredential,
-    WorkloadIdentityCredential,
-    ManagedIdentityCredential,
     DefaultAzureCredential,
+    ManagedIdentityCredential,
+    WorkloadIdentityCredential,
 )
-from azure.storage.blob.aio import BlobServiceClient
 from azure.storage.blob import (
+    BlobSasPermissions,
     ContentSettings,
     generate_blob_sas,
-    BlobSasPermissions,
 )
-
-from src.infra.utils.logger import get_logger
+from azure.storage.blob.aio import BlobServiceClient
 from src.infra.config.configs import cloud_infra_config, cloud_storage_config
+from src.infra.utils.logger import get_logger
 from src.infra.utils.resource_naming import get_org_container_name
 
 logger = get_logger("azure_org_blob_storage")
@@ -48,9 +45,7 @@ async def _get_credential_async():
         logger.info("Auth strategy (blob): Workload Identity (federated token)")
         allowed_tenants = [
             t.strip()
-            for t in (
-                cloud_infra_config.AZURE_ADDITIONALLY_ALLOWED_TENANTS or ""
-            ).split(",")
+            for t in (cloud_infra_config.AZURE_ADDITIONALLY_ALLOWED_TENANTS or "").split(",")
             if t.strip()
         ] or None
         return WorkloadIdentityCredential(
@@ -80,7 +75,7 @@ class AzureOrganisationBlobStorage:
         self.account_name = cloud_storage_config.ORGANISATION_STORAGE_NAME
         self.container = get_org_container_name(organisation_id)
         self._credential = None
-        self._blob_service: Optional[BlobServiceClient] = None
+        self._blob_service: BlobServiceClient | None = None
 
     async def _init_credential(self):
         if self._credential is None:
@@ -110,9 +105,7 @@ class AzureOrganisationBlobStorage:
         container_client = bs.get_container_client(self.container)
         try:
             await container_client.create_container()
-            logger.info(
-                "Created container %s in account %s", self.container, self.account_name
-            )
+            logger.info("Created container %s in account %s", self.container, self.account_name)
         except Exception as e:
             # Ignore if already exists; Azure error code check kept simple.
             if "ContainerAlreadyExists" not in str(e):
@@ -130,8 +123,8 @@ class AzureOrganisationBlobStorage:
         await self._ensure_container()
         blob_service = await self._get_blob_service_client()
         container = self.container
-        start = datetime.now(timezone.utc) - timedelta(minutes=5)
-        expiry = datetime.now(timezone.utc) + timedelta(minutes=minutes)
+        start = datetime.now(UTC) - timedelta(minutes=5)
+        expiry = datetime.now(UTC) + timedelta(minutes=minutes)
         delegation_key = await blob_service.get_user_delegation_key(start, expiry)
 
         content_disposition = None
@@ -157,8 +150,8 @@ class AzureOrganisationBlobStorage:
         await self._ensure_container()
         blob_service = await self._get_blob_service_client()
         container = self.container
-        start = datetime.now(timezone.utc) - timedelta(minutes=5)
-        expiry = datetime.now(timezone.utc) + timedelta(minutes=minutes)
+        start = datetime.now(UTC) - timedelta(minutes=5)
+        expiry = datetime.now(UTC) + timedelta(minutes=minutes)
         delegation_key = await blob_service.get_user_delegation_key(start, expiry)
         sas = generate_blob_sas(
             account_name=self.account_name,
@@ -170,9 +163,7 @@ class AzureOrganisationBlobStorage:
         )
         return f"https://{self.account_name}.blob.core.windows.net/{container}/{blob_path}?{sas}"
 
-    def plan_blob_path(
-        self, *, user_id: UUID, attachment_id: UUID, original_filename: str
-    ) -> str:
+    def plan_blob_path(self, *, user_id: UUID, attachment_id: UUID, original_filename: str) -> str:
         """
         Plans a structured, secure, and organized blob path based on database IDs.
 
@@ -208,11 +199,7 @@ class AzureOrganisationBlobStorage:
             dir_part, _filename = original_blob_path.rsplit("/", 1)
         else:
             dir_part, _filename = "", original_blob_path
-        return (
-            f"{dir_part}/thumbnails/{variant}.jpg"
-            if dir_part
-            else f"thumbnails/{variant}.jpg"
-        )
+        return f"{dir_part}/thumbnails/{variant}.jpg" if dir_part else f"thumbnails/{variant}.jpg"
 
     def plan_thumbnail_path_for_source(
         self, *, user_id: UUID, source_id: UUID, original_filename: str, variant: str
@@ -272,7 +259,6 @@ class AzureOrganisationBlobStorage:
 
         Centralizes Azure SDK calls for uploads so higher layers don't touch SDK directly.
         """
-        from azure.storage.blob import ContentSettings
 
         await self._ensure_container()
         blob_service = await self._get_blob_service_client()
@@ -290,9 +276,7 @@ class AzureOrganisationBlobStorage:
             await self._ensure_container()
             blob_service = await self._get_blob_service_client()
             container = self.container
-            blob_client = blob_service.get_blob_client(
-                container=container, blob=blob_path
-            )
+            blob_client = blob_service.get_blob_client(container=container, blob=blob_path)
             await blob_client.delete_blob(delete_snapshots="include")
             logger.info("Deleted blob: %s/%s", container, blob_path)
         except Exception as e:

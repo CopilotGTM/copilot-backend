@@ -16,15 +16,15 @@ Each model is a SQLModel class that also serves as a Pydantic model for API vali
 """
 
 from .base_mixins import CreatedAtMixin, TimestampMixin
+from .chat_message_models import Attachment, ChatMessage, ChatMessageAttachmentLink
 from .chat_session_models import ChatSession
-from .chat_message_models import ChatMessage, Attachment, ChatMessageAttachmentLink
+from .job_models import ChatMessageJob, JobStatus, KnowledgeProcessingJob
 from .knowledge_models import (
+    IntegrationSyncHistory,
+    KnowledgeIntegration,
     OrganisationDocument,
     OrganisationSource,
-    KnowledgeIntegration,
-    IntegrationSyncHistory,
 )
-from .job_models import JobStatus, ChatMessageJob, KnowledgeProcessingJob
 
 __all__ = [
     # Base Mixins

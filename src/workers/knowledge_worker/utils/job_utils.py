@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-from typing import Optional
-
 from src.domain.models.organisation_tables.job_models import (
-    KnowledgeProcessingJob,
     JobStatus,
+    KnowledgeProcessingJob,
 )
 from src.infra.utils.logger import get_logger
-
 
 logger = get_logger("knowledge_job_utils")
 
@@ -24,9 +21,7 @@ def mark_job_in_progress(session, job: KnowledgeProcessingJob, source_id: str) -
         logger.warning("Failed to mark job IN_PROGRESS for source %s", source_id)
 
 
-def set_job_status(
-    job: Optional[KnowledgeProcessingJob], status: Optional[JobStatus]
-) -> None:
+def set_job_status(job: KnowledgeProcessingJob | None, status: JobStatus | None) -> None:
     """Set a job status without committing. Safe to call with None job/status."""
     if job is None or status is None:
         return

@@ -1,24 +1,26 @@
 from __future__ import annotations
-import asyncio
 
+import asyncio
+import contextlib
 from uuid import UUID
-from src.workers.knowledge_worker.celery_app import app
-from src.infra.utils.logger import get_logger
+
 from src.api.dependencies.organisation_dependencies import acquire_org_session
+from src.domain.models.organisation_tables.job_models import (
+    JobStatus,
+    KnowledgeProcessingJob,
+)
 from src.domain.models.organisation_tables.knowledge_models import (
     OrganisationSource,
     OrganisationSourceStatus,
 )
-from src.domain.models.organisation_tables.job_models import (
-    KnowledgeProcessingJob,
-    JobStatus,
+from src.infra.media.thumbnail_generator import (
+    generate_thumbnail_sas_urls,
+    generate_thumbnails,
 )
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
+from src.infra.utils.logger import get_logger
+from src.workers.knowledge_worker.celery_app import app
 from src.workers.knowledge_worker.services.progress import ProgressPublisher
-from src.infra.media.thumbnail_generator import (
-    generate_thumbnails,
-    generate_thumbnail_sas_urls,
-)
 
 logger = get_logger("knowledge_post_upload_task")
 
@@ -44,9 +46,7 @@ def _compute_and_persist_checksum(
     even if later steps fail (mirrors chat worker approach)."""
     try:
         if source.storage_path and not source.checksum:
-            checksum = loop.run_until_complete(
-                storage.compute_checksum(source.storage_path)
-            )
+            checksum = loop.run_until_complete(storage.compute_checksum(source.storage_path))
             source.checksum = checksum
             session.merge(source)
             session.commit()
@@ -77,7 +77,7 @@ def _handle_duplicate_if_any(
             .filter(
                 OrganisationSource.checksum == source.checksum,
                 OrganisationSource.source_id != source.source_id,
-                OrganisationSource.is_deleted == False,
+                not OrganisationSource.is_deleted,
                 OrganisationSource.status != OrganisationSourceStatus.FAILED,
             )
             .first()
@@ -114,9 +114,7 @@ def _handle_duplicate_if_any(
         return False
 
 
-@app.task(
-    name="knowledge.post_upload_process", bind=True, acks_late=True, max_retries=3
-)
+@app.task(name="knowledge.post_upload_process", bind=True, acks_late=True, max_retries=3)
 def post_upload_process(self, organisation_id: UUID, source_id: UUID):
     """Post-upload processing: checksum and thumbnail generation."""
     logger.info("post_upload_process started")
@@ -140,9 +138,7 @@ def post_upload_process(self, organisation_id: UUID, source_id: UUID):
 
         # Skip if not in expected state
         if source.status == OrganisationSourceStatus.PENDING_UPLOAD:
-            logger.warning(
-                "Source %s still pending upload; skipping processing run", source_id
-            )
+            logger.warning("Source %s still pending upload; skipping processing run", source_id)
             return
 
         # Locate job for this step
@@ -153,9 +149,7 @@ def post_upload_process(self, organisation_id: UUID, source_id: UUID):
         )
 
         if not job:
-            logger.warning(
-                "No post_upload_process job found for source %s; skipping", source_id
-            )
+            logger.warning("No post_upload_process job found for source %s; skipping", source_id)
             return
 
         # Mark job as in progress and persist early
@@ -212,16 +206,12 @@ def post_upload_process(self, organisation_id: UUID, source_id: UUID):
                 queue="knowledge_extract",
             )
         except self.MaxRetriesExceededError:
-            logger.warning(
-                "Max retries exceeded for thumbnail generation source=%s", source_id
-            )
+            logger.warning("Max retries exceeded for thumbnail generation source=%s", source_id)
             job.status = JobStatus.FAILED
             session.add(job)
             session.commit()
         except Exception as e:
-            logger.warning(
-                "Thumbnail generation failed for source %s: %s", source_id, e
-            )
+            logger.warning("Thumbnail generation failed for source %s: %s", source_id, e)
             job.status = JobStatus.FAILED
             session.add(job)
             session.commit()
@@ -234,14 +224,10 @@ def post_upload_process(self, organisation_id: UUID, source_id: UUID):
             e,
         )
     finally:
-        try:
+        with contextlib.suppress(Exception):
             session.close()
-        except Exception:
-            pass
-        try:
+        with contextlib.suppress(Exception):
             session_gen.close()
-        except Exception:
-            pass
         # Close async Azure clients (run in event loop)
         try:
             loop.run_until_complete(storage.close())

@@ -11,7 +11,6 @@ This module is intentionally infra-level so both domains can depend on it.
 """
 
 from io import BytesIO
-from typing import Optional, Dict, Tuple, List
 
 from PIL import Image, UnidentifiedImageError
 
@@ -20,14 +19,14 @@ try:  # Optional dependency
 except Exception:  # pragma: no cover
     fitz = None  # type: ignore
 
-from src.infra.utils.logger import get_logger
-from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
 from src.infra.config.configs import thumbnail_config
+from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
+from src.infra.utils.logger import get_logger
 
 logger = get_logger("thumbnail_service")
 
 
-THUMB_VARIANTS: list[Tuple[str, int]] = [
+THUMB_VARIANTS: list[tuple[str, int]] = [
     ("thumb_small", 128),
     ("thumb_medium", 512),
 ]
@@ -41,7 +40,7 @@ def _load_font_prefer_truetype(size: int):
     try:
         from PIL import ImageFont  # local import to avoid hard dep at module import
 
-        candidates: List[str] = [
+        candidates: list[str] = [
             "DejaVuSansMono.ttf",
             "DejaVuSans.ttf",
             "arial.ttf",
@@ -62,7 +61,7 @@ def _load_font_prefer_truetype(size: int):
             return None
 
 
-def _pdf_page_preview_bytes(pdf_bytes: bytes, label: str) -> Optional[bytes]:
+def _pdf_page_preview_bytes(pdf_bytes: bytes, label: str) -> bytes | None:
     """Render the first page of a PDF to PNG bytes, or None if not possible."""
     if not pdf_bytes:
         return None
@@ -81,10 +80,11 @@ def _pdf_page_preview_bytes(pdf_bytes: bytes, label: str) -> Optional[bytes]:
         return None
 
 
-def _placeholder_bytes(label: str) -> Optional[bytes]:
+def _placeholder_bytes(label: str) -> bytes | None:
     """Create a simple, readable placeholder PNG with a centered large label (e.g., 'TXT')."""
     try:
-        from PIL import Image as _Image, ImageDraw
+        from PIL import Image as _Image
+        from PIL import ImageDraw
 
         img_size = 1024
         img = _Image.new("RGB", (img_size, img_size), (245, 246, 248))
@@ -108,24 +108,24 @@ def _placeholder_bytes(label: str) -> Optional[bytes]:
         img.save(out, format="PNG")
         return out.getvalue()
     except Exception:
-        logger.debug(
-            "Failed to create placeholder image for label=%s", label, exc_info=True
-        )
+        logger.debug("Failed to create placeholder image for label=%s", label, exc_info=True)
         return None
 
 
 TEXT_MIME_LABELS = thumbnail_config.TEXT_LABEL_MAP
 
 
-def _text_preview_bytes(text_bytes: bytes, label: str) -> Optional[bytes]:
+def _text_preview_bytes(text_bytes: bytes, label: str) -> bytes | None:
     """Render a readable preview image from text bytes.
 
     - Decodes as UTF-8 with errors ignored.
     - Renders first lines with wrapping onto a canvas so small thumbnails remain legible.
     """
     try:
-        from PIL import Image as _Image, ImageDraw
         import textwrap
+
+        from PIL import Image as _Image
+        from PIL import ImageDraw
 
         text = text_bytes.decode("utf-8", errors="ignore") if text_bytes else ""
         if not text.strip():
@@ -182,7 +182,7 @@ def _text_preview_bytes(text_bytes: bytes, label: str) -> Optional[bytes]:
         except Exception:
             avg_char_w = 14
         max_cols = max(20, int(text_w / avg_char_w))
-        wrapped_lines: List[str] = []
+        wrapped_lines: list[str] = []
         for line in text.split("\n"):
             wrapped_lines.extend(textwrap.wrap(line, width=max_cols) or [""])
 
@@ -211,7 +211,7 @@ def _text_preview_bytes(text_bytes: bytes, label: str) -> Optional[bytes]:
 
 def _derive_image_bytes_for_thumbnail(
     *, mt: str, raw_bytes: bytes, original_blob_path: str
-) -> Optional[bytes]:
+) -> bytes | None:
     """Pure helper that returns representative image bytes or None based on mimetype."""
     if mt in thumbnail_config.IMAGE_MIMETYPES or (
         thumbnail_config.ENABLE_IMAGE_PREFIX_FALLBACK
@@ -225,9 +225,7 @@ def _derive_image_bytes_for_thumbnail(
         return preview
     if mt in TEXT_MIME_LABELS and thumbnail_config.ENABLE_TEXT_PLACEHOLDERS:
         label = TEXT_MIME_LABELS.get(mt, "TXT")
-        return _text_preview_bytes(raw_bytes, label) or _placeholder_bytes(
-            label.lower()
-        )
+        return _text_preview_bytes(raw_bytes, label) or _placeholder_bytes(label.lower())
     if mt in thumbnail_config.DOCUMENT_LABEL_MAP:
         # We deliberately do NOT attempt to parse these binary/markup formats; a labeled placeholder is enough.
         label = thumbnail_config.DOCUMENT_LABEL_MAP.get(mt, "DOC")
@@ -239,9 +237,9 @@ async def generate_thumbnails(
     *,
     storage: AzureOrganisationBlobStorage,
     original_blob_path: str,
-    mimetype: Optional[str],
-    variants: list[Tuple[str, int]] = THUMB_VARIANTS,
-) -> Dict[str, str]:
+    mimetype: str | None,
+    variants: list[tuple[str, int]] = THUMB_VARIANTS,
+) -> dict[str, str]:
     """Generate and upload thumbnails for the given blob.
 
     - For images (image/*): resizes directly.
@@ -271,7 +269,7 @@ async def generate_thumbnails(
         return {}
 
     # Open and generate variants
-    created: Dict[str, str] = {}
+    created: dict[str, str] = {}
     try:
         with Image.open(BytesIO(image_bytes)) as img:
             img = img.convert("RGB")
@@ -282,9 +280,7 @@ async def generate_thumbnails(
                 thumb.save(out, format="JPEG", quality=85, optimize=True)
                 out.seek(0)
                 thumb_path = storage.thumbnail_blob_path(original_blob_path, variant)
-                await storage.upload_bytes(
-                    thumb_path, out.read(), content_type="image/jpeg"
-                )
+                await storage.upload_bytes(thumb_path, out.read(), content_type="image/jpeg")
                 created[variant] = thumb_path
     except UnidentifiedImageError:
         logger.debug("Not a supported image for thumbnailing: %s", original_blob_path)
@@ -297,10 +293,10 @@ async def generate_thumbnails(
 async def generate_thumbnail_sas_urls(
     *,
     storage: AzureOrganisationBlobStorage,
-    small_path: Optional[str],
-    medium_path: Optional[str],
+    small_path: str | None,
+    medium_path: str | None,
     minutes: int = 120,
-) -> tuple[Optional[str], Optional[str]]:
+) -> tuple[str | None, str | None]:
     small_url = None
     medium_url = None
     try:

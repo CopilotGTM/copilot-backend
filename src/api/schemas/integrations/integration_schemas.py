@@ -7,16 +7,15 @@ These schemas define the request/response structures for:
 - Sync operations and history
 """
 
-from typing import Optional, List, Dict, Any
 from datetime import datetime
+from typing import Any
 from uuid import UUID
-from pydantic import BaseModel, Field, field_validator
 
+from pydantic import BaseModel, Field
 from src.domain.models.organisation_tables.knowledge_models import (
-    IntegrationType,
     IntegrationScope,
+    IntegrationType,
 )
-
 
 # ==================== OAuth Schemas ====================
 
@@ -28,7 +27,7 @@ class OAuthInitiateRequest(BaseModel):
         ...,
         description="Type of integration to connect (e.g., HUBSPOT, SLACK, GOOGLE_DRIVE)",
     )
-    integration_name: Optional[str] = Field(
+    integration_name: str | None = Field(
         default=None,
         min_length=1,
         max_length=100,
@@ -49,10 +48,8 @@ class OAuthInitiateResponse(BaseModel):
         ...,
         description="Nango Connect Session token for frontend to use with Nango Connect UI",
     )
-    integration_type: IntegrationType = Field(
-        ..., description="Integration type being connected"
-    )
-    expires_at: Optional[str] = Field(
+    integration_type: IntegrationType = Field(..., description="Integration type being connected")
+    expires_at: str | None = Field(
         default=None, description="When the session token expires (ISO 8601 format)"
     )
 
@@ -61,8 +58,8 @@ class OAuthCallbackRequest(BaseModel):
     """Query parameters received in OAuth callback."""
 
     code: str = Field(..., description="Authorization code from OAuth provider")
-    state: Optional[str] = Field(default=None, description="State token for validation")
-    connection_id: Optional[str] = Field(
+    state: str | None = Field(default=None, description="State token for validation")
+    connection_id: str | None = Field(
         default=None, description="Connection identifier (may be in state or separate)"
     )
 
@@ -89,18 +86,16 @@ class IntegrationCreate(IntegrationBase):
     """Schema for creating a new integration (internal use after OAuth)."""
 
     connection_id: str
-    scopes: Optional[List[str]] = None
-    connection_metadata: Optional[Dict[str, Any]] = None
+    scopes: list[str] | None = None
+    connection_metadata: dict[str, Any] | None = None
 
 
 class IntegrationUpdate(BaseModel):
     """Schema for updating integration settings."""
 
-    name: Optional[str] = Field(default=None, min_length=1, max_length=100)
-    sync_frequency: Optional[str] = Field(
-        default=None, pattern="^(hourly|daily|weekly|manual)$"
-    )
-    auto_sync_enabled: Optional[bool] = None
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    sync_frequency: str | None = Field(default=None, pattern="^(hourly|daily|weekly|manual)$")
+    auto_sync_enabled: bool | None = None
 
 
 class IntegrationResponse(IntegrationBase):
@@ -109,10 +104,8 @@ class IntegrationResponse(IntegrationBase):
     integration_id: UUID
     organisation_id: UUID
     created_by_user_id: UUID = Field(description="User who created this integration")
-    created_by_admin: bool = Field(
-        description="Whether this integration was created by an admin"
-    )
-    integration_email: Optional[str] = Field(
+    created_by_admin: bool = Field(description="Whether this integration was created by an admin")
+    integration_email: str | None = Field(
         default=None,
         description="Email/username of the connected account (e.g., 'sales@acme.com' for HubSpot)",
     )
@@ -120,11 +113,11 @@ class IntegrationResponse(IntegrationBase):
         description="Access scope: ORGANIZATION (all users) or USER (creator only)"
     )
     is_active: bool
-    last_synced_at: Optional[datetime] = None
-    last_sync_status: Optional[str] = None
-    last_sync_error: Optional[str] = None
-    access_token_expires_at: Optional[datetime] = None
-    connection_metadata: Dict[str, Any] = Field(default_factory=dict)
+    last_synced_at: datetime | None = None
+    last_sync_status: str | None = None
+    last_sync_error: str | None = None
+    access_token_expires_at: datetime | None = None
+    connection_metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
 
@@ -135,7 +128,7 @@ class IntegrationResponse(IntegrationBase):
 class IntegrationListResponse(BaseModel):
     """Response for listing integrations."""
 
-    integrations: List[IntegrationResponse]
+    integrations: list[IntegrationResponse]
     total: int
 
 
@@ -148,12 +141,12 @@ class IntegrationStatusResponse(BaseModel):
     integration_scope: IntegrationScope
     created_by_user_id: UUID
     created_by_admin: bool
-    integration_email: Optional[str] = Field(
+    integration_email: str | None = Field(
         default=None, description="Email/username of the connected account"
     )
     is_active: bool
-    last_synced_at: Optional[datetime] = None
-    last_sync_status: Optional[str] = None
+    last_synced_at: datetime | None = None
+    last_sync_status: str | None = None
     needs_reauthorization: bool = Field(
         default=False, description="True if token has expired and requires re-auth"
     )
@@ -185,12 +178,12 @@ class SyncHistoryResponse(BaseModel):
     sync_id: UUID
     integration_id: UUID
     started_at: datetime
-    completed_at: Optional[datetime] = None
+    completed_at: datetime | None = None
     status: str
     records_processed: int = 0
     records_failed: int = 0
-    error_details: Optional[Dict[str, Any]] = None
-    sync_metadata: Dict[str, Any] = Field(default_factory=dict)
+    error_details: dict[str, Any] | None = None
+    sync_metadata: dict[str, Any] = Field(default_factory=dict)
 
     class Config:
         from_attributes = True
@@ -199,7 +192,7 @@ class SyncHistoryResponse(BaseModel):
 class SyncHistoryListResponse(BaseModel):
     """Response for listing sync history."""
 
-    history: List[SyncHistoryResponse]
+    history: list[SyncHistoryResponse]
     total: int
     integration_id: UUID
 
@@ -212,18 +205,10 @@ class AvailableIntegration(BaseModel):
 
     integration_type: IntegrationType
     name: str = Field(..., description="Display name for the integration")
-    description: str = Field(
-        ..., description="Brief description of what the integration does"
-    )
-    logo_url: Optional[str] = Field(
-        default=None, description="URL to integration provider's logo"
-    )
-    category: str = Field(
-        ..., description="Category slug: collaboration, crm, storage, etc."
-    )
-    category_name: str = Field(
-        ..., description="Human-readable category name for display"
-    )
+    description: str = Field(..., description="Brief description of what the integration does")
+    logo_url: str | None = Field(default=None, description="URL to integration provider's logo")
+    category: str = Field(..., description="Category slug: collaboration, crm, storage, etc.")
+    category_name: str = Field(..., description="Human-readable category name for display")
     availability_status: str = Field(
         ...,
         description="Integration availability: available, coming_soon, beta, deprecated",
@@ -231,7 +216,7 @@ class AvailableIntegration(BaseModel):
     is_connected: bool = Field(
         default=False, description="Whether user has already connected this integration"
     )
-    connected_integrations: List[IntegrationResponse] = Field(
+    connected_integrations: list[IntegrationResponse] = Field(
         default_factory=list,
         description="List of user's connected instances of this integration type",
     )
@@ -240,10 +225,8 @@ class AvailableIntegration(BaseModel):
 class AvailableIntegrationsResponse(BaseModel):
     """Response listing all available integration types with connection status."""
 
-    integrations: List[AvailableIntegration]
-    total_available: int = Field(
-        ..., description="Total number of available integration types"
-    )
+    integrations: list[AvailableIntegration]
+    total_available: int = Field(..., description="Total number of available integration types")
     total_connected: int = Field(
         ..., description="Total number of connected integrations across all types"
     )
@@ -257,6 +240,4 @@ class IntegrationError(BaseModel):
 
     error: str = Field(..., description="Error type or code")
     message: str = Field(..., description="Human-readable error message")
-    details: Optional[Dict[str, Any]] = Field(
-        default=None, description="Additional error details"
-    )
+    details: dict[str, Any] | None = Field(default=None, description="Additional error details")

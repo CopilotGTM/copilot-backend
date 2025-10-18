@@ -1,17 +1,14 @@
 import secrets
 import string
-from typing import Dict, Any, Optional
 
-from fastapi import Depends, HTTPException, status, Request
+from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.master_dependencies import get_master_async_session
-
 from src.domain.models.master_tables import AdminUserStatus, SupabaseUserStatus, User
 from src.infra.auth.supabase_user_client import supabase_user_client
-from src.infra.utils.app_state import fastapp
-from src.infra.utils.logger import get_logger
 from src.infra.config.constant import UserAuthErrors
+from src.infra.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -38,7 +35,7 @@ class UserAuth:
 
     def create_supabase_user(
         self, email: str, password: str, first_name: str, last_name: str, user_role: str
-    ) -> Optional[str]:
+    ) -> str | None:
         """
         Create a user in Supabase auth.
 
@@ -68,16 +65,12 @@ class UserAuth:
 
             user = response.get("user")
             if not user:
-                logger.error(
-                    f"Could not extract user from Supabase response for email {email}"
-                )
+                logger.error(f"Could not extract user from Supabase response for email {email}")
                 return None
 
             user_id = user.get("id")
             if not user_id:
-                logger.error(
-                    f"Could not extract user ID from Supabase response for email {email}"
-                )
+                logger.error(f"Could not extract user ID from Supabase response for email {email}")
                 return None
 
             logger.info(f"Successfully created user in Supabase: {user_id}")
@@ -152,7 +145,7 @@ class UserAuth:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=UserAuthErrors.AUTHENTICATION_FAILED,
-            )
+            ) from e
 
     async def __call__(
         self,

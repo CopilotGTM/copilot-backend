@@ -1,41 +1,39 @@
-from datetime import datetime, timezone
-from fastapi import APIRouter, Depends
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from datetime import UTC, datetime
 
+from fastapi import APIRouter, Depends
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from src.api.dependencies.master_dependencies import get_master_async_session
+from src.api.schemas.base_models import GenericResponse
+from src.api.utils.http_response import Response
 from src.domain.models.admin_models import (
-    AdminLoginRequest,
     AdminChangePasswordRequest,
-    AdminLogoutRequest,
+    AdminForgotPasswordRequest,
+    AdminLoginRequest,
     AdminLoginResponse,
-    AdminStatus,
+    AdminLogoutRequest,
     AdminRefreshTokenRequest,
     AdminRefreshTokenResponse,
-    AdminForgotPasswordRequest,
     AdminResetPasswordRequest,
+    AdminStatus,
     PasswordResetAction,
 )
 from src.domain.models.master_tables import SuperAdmin
-from src.api.dependencies.master_dependencies import get_master_async_session
 from src.infra.auth.admin_auth import admin_auth
 from src.infra.auth.email_service import email_service
 from src.infra.auth.supabase_admin_client import (
-    supabase_admin_client,
     SupabaseAuthError,
+    supabase_admin_client,
 )
-from src.infra.utils.logger import get_logger
-from src.api.utils.http_response import Response
-from src.api.schemas.base_models import GenericResponse
 from src.infra.config.constant import AdminAuthErrors
+from src.infra.utils.logger import get_logger
 from src.service.admin.admin_auth_service import admin_auth_service
 
 logger = get_logger("admin_auth_handler")
 router = APIRouter()
 
 
-@router.post(
-    "/login", response_model=GenericResponse[AdminLoginResponse], tags=["admin_auth"]
-)
+@router.post("/login", response_model=GenericResponse[AdminLoginResponse], tags=["admin_auth"])
 async def admin_login(
     login_request: AdminLoginRequest,
     master_session: AsyncSession = Depends(get_master_async_session),
@@ -57,21 +55,13 @@ async def admin_login(
                 email=login_request.email, password=login_request.password
             )
         except Exception:
-            logger.warning(
-                f"Invalid credentials for super admin: {login_request.email}"
-            )
-            return Response.unauthorized_error_response(
-                AdminAuthErrors.INVALID_CREDENTIALS
-            )
+            logger.warning(f"Invalid credentials for super admin: {login_request.email}")
+            return Response.unauthorized_error_response(AdminAuthErrors.INVALID_CREDENTIALS)
 
         session_data = supabase_response.get("session", {})
         if not session_data or not session_data.get("access_token"):
-            logger.warning(
-                f"Supabase login failed for super admin: {login_request.email}"
-            )
-            return Response.unauthorized_error_response(
-                AdminAuthErrors.INVALID_CREDENTIALS
-            )
+            logger.warning(f"Supabase login failed for super admin: {login_request.email}")
+            return Response.unauthorized_error_response(AdminAuthErrors.INVALID_CREDENTIALS)
 
         user_data = supabase_response.get("user", {})
         user_metadata = user_data.get("user_metadata", {})
@@ -97,9 +87,7 @@ async def admin_login(
             str(e),
             exc_info=True,
         )
-        return Response.internal_server_error_response(
-            message=AdminAuthErrors.LOGIN_FAILED
-        )
+        return Response.internal_server_error_response(message=AdminAuthErrors.LOGIN_FAILED)
 
 
 @router.post("/reset-password", tags=["admin_auth"])
@@ -113,17 +101,13 @@ async def reset_password(
     """
     try:
         if not all([password_request.token_hash, password_request.new_password]):
-            return Response.bad_request_error_response(
-                AdminAuthErrors.RECOVERY_TOKEN_REQUIRED
-            )
+            return Response.bad_request_error_response(AdminAuthErrors.RECOVERY_TOKEN_REQUIRED)
 
         if (
             password_request.confirm_password
             and password_request.new_password != password_request.confirm_password
         ):
-            return Response.bad_request_error_response(
-                AdminAuthErrors.PASSWORD_MISMATCH
-            )
+            return Response.bad_request_error_response(AdminAuthErrors.PASSWORD_MISMATCH)
 
         try:
             user_id = supabase_admin_client.reset_password_with_token(
@@ -132,9 +116,7 @@ async def reset_password(
             )
         except Exception as e:
             logger.error(f"Failed to reset password with recovery token: {str(e)}")
-            return Response.bad_request_error_response(
-                AdminAuthErrors.INVALID_RECOVERY_TOKEN
-            )
+            return Response.bad_request_error_response(AdminAuthErrors.INVALID_RECOVERY_TOKEN)
 
         if password_request.action == PasswordResetAction.FORCE_CHANGE:
             statement = select(SuperAdmin).where(SuperAdmin.supabase_user_id == user_id)
@@ -143,9 +125,7 @@ async def reset_password(
 
             if not current_admin:
                 logger.warning(f"Admin not found for user_id: {user_id}")
-                return Response.unauthorized_error_response(
-                    AdminAuthErrors.UNAUTHORIZED
-                )
+                return Response.unauthorized_error_response(AdminAuthErrors.UNAUTHORIZED)
 
             # Update Supabase metadata and local database
             updated_metadata = {
@@ -161,7 +141,7 @@ async def reset_password(
 
             current_admin.status = AdminStatus.ACTIVE
             current_admin.email_verified = True
-            current_admin.last_login_at = datetime.now(timezone.utc)
+            current_admin.last_login_at = datetime.now(UTC)
             master_session.add(current_admin)
             await master_session.commit()
 
@@ -171,9 +151,7 @@ async def reset_password(
 
     except Exception as e:
         logger.error("Error during password reset: %s", str(e), exc_info=True)
-        return Response.internal_server_error_response(
-            AdminAuthErrors.PASSWORD_RESET_FAILED
-        )
+        return Response.internal_server_error_response(AdminAuthErrors.PASSWORD_RESET_FAILED)
 
 
 @router.post(
@@ -184,9 +162,7 @@ async def reset_password(
 async def refresh_token(refresh_request: AdminRefreshTokenRequest):
     """Refresh the access token using a refresh token."""
     try:
-        session_data = supabase_admin_client.refresh_access_token(
-            refresh_request.refresh_token
-        )
+        session_data = supabase_admin_client.refresh_access_token(refresh_request.refresh_token)
 
         new_session = session_data.get("session")
         if new_session and new_session.get("access_token"):
@@ -199,9 +175,7 @@ async def refresh_token(refresh_request: AdminRefreshTokenRequest):
             )
 
         logger.warning("Refresh token is invalid or expired.")
-        return Response.unauthorized_error_response(
-            AdminAuthErrors.REFRESH_TOKEN_INVALID
-        )
+        return Response.unauthorized_error_response(AdminAuthErrors.REFRESH_TOKEN_INVALID)
     except SupabaseAuthError as e:
         logger.error(f"Token refresh failed: {e.message}")
         # Use the status code and message from the custom exception
@@ -217,9 +191,7 @@ async def refresh_token(refresh_request: AdminRefreshTokenRequest):
             return Response.internal_server_error_response(message=e.message)
     except Exception as e:
         logger.error("Error during token refresh: %s", str(e), exc_info=True)
-        return Response.internal_server_error_response(
-            AdminAuthErrors.REFRESH_TOKEN_FAILED
-        )
+        return Response.internal_server_error_response(AdminAuthErrors.REFRESH_TOKEN_FAILED)
 
 
 @router.post("/forgot-password", tags=["admin_auth"])
@@ -263,9 +235,7 @@ async def forgot_password(
             str(e),
             exc_info=True,
         )
-        return Response.internal_server_error_response(
-            AdminAuthErrors.FORGOT_PASSWORD_FAILED
-        )
+        return Response.internal_server_error_response(AdminAuthErrors.FORGOT_PASSWORD_FAILED)
 
 
 @router.post("/logout", tags=["admin_auth"])
@@ -319,12 +289,8 @@ async def change_password(
                 password=password_request.current_password,
             )
         except Exception:
-            logger.warning(
-                "Incorrect current password for user: %s", current_admin.email
-            )
-            return Response.unauthorized_error_response(
-                AdminAuthErrors.INCORRECT_CURRENT_PASSWORD
-            )
+            logger.warning("Incorrect current password for user: %s", current_admin.email)
+            return Response.unauthorized_error_response(AdminAuthErrors.INCORRECT_CURRENT_PASSWORD)
 
         # Update the password
         supabase_admin_client.update_user_password(
@@ -342,6 +308,4 @@ async def change_password(
             str(e),
             exc_info=True,
         )
-        return Response.internal_server_error_response(
-            AdminAuthErrors.PASSWORD_CHANGE_FAILED
-        )
+        return Response.internal_server_error_response(AdminAuthErrors.PASSWORD_CHANGE_FAILED)

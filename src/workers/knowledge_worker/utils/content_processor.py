@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import re
-from typing import List, Dict, Any, Optional
 from pathlib import Path
+from typing import Any
 
 from src.infra.utils.logger import get_logger
 
@@ -38,7 +38,7 @@ class ContentProcessor:
         return text
 
     @staticmethod
-    def extract_text_elements(elements: List[Dict[str, Any]]) -> str:
+    def extract_text_elements(elements: list[dict[str, Any]]) -> str:
         """
         Extract text content from slide/document elements.
 
@@ -50,7 +50,7 @@ class ContentProcessor:
         """
         text_parts = []
 
-        def extract_from_element(element: Dict[str, Any]):
+        def extract_from_element(element: dict[str, Any]):
             """Recursively extract text from an element."""
             element_type = element.get("type", "")
 
@@ -82,9 +82,7 @@ class ContentProcessor:
         return ContentProcessor.clean_text(combined_text)
 
     @staticmethod
-    def chunk_content(
-        content: str, max_chunk_size: int = 8000, overlap: int = 200
-    ) -> List[str]:
+    def chunk_content(content: str, max_chunk_size: int = 8000, overlap: int = 200) -> list[str]:
         """
         Split content into chunks for processing.
 
@@ -163,7 +161,7 @@ class ContentProcessor:
         return summary
 
     @staticmethod
-    def extract_metadata_from_filename(filename: str) -> Dict[str, Any]:
+    def extract_metadata_from_filename(filename: str) -> dict[str, Any]:
         """
         Extract metadata from filename.
 

@@ -1,4 +1,5 @@
-from kombu import Queue, Exchange
+from kombu import Exchange, Queue
+
 from src.workers.base.worker_config import BaseWorkerConfig
 
 
@@ -20,9 +21,7 @@ class ChatWorkerConfig(BaseWorkerConfig):
 
         self.task_queues = (
             Queue("attachments", exchange=chat_exchange, routing_key="attachments"),
-            Queue(
-                "chat_processing", exchange=chat_exchange, routing_key="chat_processing"
-            ),
+            Queue("chat_processing", exchange=chat_exchange, routing_key="chat_processing"),
             Queue("chat_messages", exchange=chat_exchange, routing_key="chat_messages"),
         )
 

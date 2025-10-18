@@ -1,29 +1,23 @@
-from typing import Any, Dict
-
-from fastapi import APIRouter, Depends, Body
+from fastapi import APIRouter, Body, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
     get_current_user,
     get_org_async_session,
 )
+from src.api.dependencies.rate_limit import rate_limit_user_read, rate_limit_user_write
 from src.api.schemas.base_models import GenericResponse
-from src.api.dependencies.rate_limit import rate_limit_user_write, rate_limit_user_read
 from src.api.schemas.chat_models import (
     ChatSessionCreate,
     ChatSessionOut,
-    DeleteChat,
-    RenameChat,
     ChatSessionsPage,
+    DeleteChat,
     FavoriteChat,
+    RenameChat,
 )
-from fastapi import Query
-from typing import Optional
 from src.api.utils.http_response import Response
 from src.infra.utils.logger import get_logger
 from src.service.chat.chat_session_service import ChatSessionService
-
 
 logger = get_logger("chat_sessions")
 router = APIRouter()
@@ -33,9 +27,7 @@ async def get_chat_session_service(
     user_ids: UserIDs = Depends(get_current_user),
     org_session: AsyncSession = Depends(get_org_async_session),
 ):
-    service = ChatSessionService(
-        org_session, user_ids.organisation_id, user_ids.user_id
-    )
+    service = ChatSessionService(org_session, user_ids.organisation_id, user_ids.user_id)
     try:
         yield service
     finally:
@@ -139,7 +131,7 @@ async def rename_chat(
 )
 async def list_chats(
     limit: int = Query(20, ge=1, le=100),
-    cursor: Optional[str] = Query(None, description="Opaque cursor from previous page"),
+    cursor: str | None = Query(None, description="Opaque cursor from previous page"),
     service: ChatSessionService = Depends(get_chat_session_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ):
@@ -162,9 +154,7 @@ async def list_chats(
     summary="Search chat sessions by title (typeahead)",
 )
 async def search_chats(
-    q: str = Query(
-        ..., min_length=1, description="Search text in title (case-insensitive)"
-    ),
+    q: str = Query(..., min_length=1, description="Search text in title (case-insensitive)"),
     limit: int = Query(10, ge=1, le=50),
     service: ChatSessionService = Depends(get_chat_session_service),
     _rl_read: None = Depends(rate_limit_user_read),
@@ -206,6 +196,4 @@ async def favorite_chat(
         return Response.bad_request_error_response(msg)
     except Exception as e:
         logger.error("Favorite toggle failed: %s", e, exc_info=True)
-        return Response.internal_server_error_response(
-            "Unable to update favorite state"
-        )
+        return Response.internal_server_error_response("Unable to update favorite state")

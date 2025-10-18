@@ -1,11 +1,10 @@
 from enum import Enum
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
-from typing import Optional, Dict, Any, TYPE_CHECKING
-from datetime import datetime
 
-from sqlmodel import SQLModel, Field, Relationship
 from sqlalchemy import Column, String, text
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlmodel import Field, Relationship
 
 from .base_mixins import TimestampMixin
 
@@ -52,17 +51,17 @@ class ChatMessageJob(TimestampMixin, table=True):
         sa_column=Column(String(50), server_default=text("'pending'"), nullable=False),
         description="The current status of the job.",
     )
-    job_metadata: Dict[str, Any] = Field(
+    job_metadata: dict[str, Any] = Field(
         sa_column=Column(JSONB, server_default=text("'{}'::jsonb")),
         default_factory=dict,
         description="Additional metadata for the job.",
     )
-    result_data: Optional[Dict[str, Any]] = Field(
+    result_data: dict[str, Any] | None = Field(
         sa_column=Column(JSONB),
         default=None,
         description="Result data of the job upon completion or failure.",
     )
-    error_message: Optional[str] = Field(
+    error_message: str | None = Field(
         default=None,
         description="Error message if the job failed.",
     )
@@ -100,17 +99,17 @@ class KnowledgeProcessingJob(TimestampMixin, table=True):
         sa_column=Column(String(50), server_default=text("'pending'"), nullable=False),
         description="The current status of the job.",
     )
-    job_metadata: Dict[str, Any] = Field(
+    job_metadata: dict[str, Any] = Field(
         sa_column=Column(JSONB, server_default=text("'{}'::jsonb")),
         default_factory=dict,
         description="Additional metadata for the job.",
     )
-    result_data: Optional[Dict[str, Any]] = Field(
+    result_data: dict[str, Any] | None = Field(
         sa_column=Column(JSONB),
         default=None,
         description="Result data of the job upon completion or failure.",
     )
-    error_message: Optional[str] = Field(
+    error_message: str | None = Field(
         default=None,
         description="Error message if the job failed.",
     )

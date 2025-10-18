@@ -1,35 +1,35 @@
-from datetime import datetime, timezone
-from fastapi import APIRouter, Depends
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from datetime import UTC, datetime
 
+from fastapi import APIRouter, Depends
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from src.api.dependencies.master_dependencies import get_master_async_session
+from src.api.dependencies.rate_limit import rate_limit_login
+from src.api.schemas.base_models import GenericResponse
+from src.api.utils.http_response import Response
+from src.domain.models.admin_models import PasswordResetAction
+from src.domain.models.master_tables import SupabaseUserStatus, User
 from src.domain.models.user_models import (
+    UserForgotPasswordRequest,
     UserLoginRequest,
     UserLoginResponse,
     UserLoginState,
-    UserResetPasswordRequest,
+    UserLogoutRequest,
     UserRefreshTokenRequest,
     UserRefreshTokenResponse,
-    UserForgotPasswordRequest,
+    UserResetPasswordRequest,
 )
-from src.domain.models.admin_models import PasswordResetAction
-from src.domain.models.master_tables import SupabaseUserStatus, User
-from src.api.dependencies.master_dependencies import get_master_async_session
-from src.infra.auth.supabase_user_client import supabase_user_client, SupabaseAuthError
-from src.infra.utils.logger import get_logger
-from src.api.utils.http_response import Response
-from src.api.schemas.base_models import GenericResponse
 from src.infra.auth.email_service import email_service
+from src.infra.auth.supabase_user_client import SupabaseAuthError, supabase_user_client
+from src.infra.auth.user_auth import user_auth
 from src.infra.config.constant import UserAuthErrors
-from src.api.dependencies.rate_limit import rate_limit_login
+from src.infra.utils.logger import get_logger
 
 logger = get_logger("user_auth_handler")
 router = APIRouter()
 
 
-@router.post(
-    "/login", response_model=GenericResponse[UserLoginResponse], tags=["user_auth"]
-)
+@router.post("/login", response_model=GenericResponse[UserLoginResponse], tags=["user_auth"])
 async def user_login(
     login_request: UserLoginRequest,
     master_session: AsyncSession = Depends(get_master_async_session),
@@ -52,11 +52,9 @@ async def user_login(
             supabase_response = supabase_user_client.sign_in_with_password(
                 email=login_request.email, password=login_request.password
             )
-        except Exception as e:
+        except Exception:
             logger.warning(f"Invalid credentials for user: {login_request.email}")
-            return Response.unauthorized_error_response(
-                UserAuthErrors.INVALID_CREDENTIALS
-            )
+            return Response.unauthorized_error_response(UserAuthErrors.INVALID_CREDENTIALS)
 
         user_data = supabase_response.get("user", {})
         session_data = supabase_response.get("session", {})
@@ -66,9 +64,7 @@ async def user_login(
 
         if not access_token:
             logger.warning(f"Invalid credentials for user: {login_request.email}")
-            return Response.unauthorized_error_response(
-                UserAuthErrors.INVALID_CREDENTIALS
-            )
+            return Response.unauthorized_error_response(UserAuthErrors.INVALID_CREDENTIALS)
 
         requires_password_change = user_data.get("user_metadata", {}).get(
             "requires_password_change", False
@@ -90,15 +86,13 @@ async def user_login(
                     data=response_data,
                 )
             except Exception as e:
-                logger.error(
-                    f"Failed to generate recovery token for user {user.email}: {str(e)}"
-                )
+                logger.error(f"Failed to generate recovery token for user {user.email}: {str(e)}")
                 return Response.internal_server_error_response(
                     message=UserAuthErrors.PASSWORD_CHANGE_TOKEN_FAILED, data=None
                 )
         else:
             # Use timezone-aware UTC timestamp (Sonar rule S6903)
-            user.last_login_at = datetime.now(timezone.utc)
+            user.last_login_at = datetime.now(UTC)
             master_session.add(user)
             await master_session.commit()
             await master_session.refresh(user)
@@ -116,9 +110,7 @@ async def user_login(
                     "refresh_token": refresh_token,
                 },
             }
-            return Response.success_response(
-                message="Login successful", data=response_data
-            )
+            return Response.success_response(message="Login successful", data=response_data)
 
     except Exception as e:
         logger.error(
@@ -139,14 +131,10 @@ async def reset_password(
 ):
     try:
         if not password_request.token_hash:
-            return Response.bad_request_error_response(
-                UserAuthErrors.RECOVERY_TOKEN_REQUIRED
-            )
+            return Response.bad_request_error_response(UserAuthErrors.RECOVERY_TOKEN_REQUIRED)
 
         if not password_request.new_password:
-            return Response.bad_request_error_response(
-                UserAuthErrors.NEW_PASSWORD_REQUIRED
-            )
+            return Response.bad_request_error_response(UserAuthErrors.NEW_PASSWORD_REQUIRED)
 
         if (
             password_request.confirm_password
@@ -168,9 +156,7 @@ async def reset_password(
                 )
             except Exception as e:
                 logger.error(f"Failed to reset password with recovery token: {str(e)}")
-                return Response.bad_request_error_response(
-                    UserAuthErrors.INVALID_RECOVERY_TOKEN
-                )
+                return Response.bad_request_error_response(UserAuthErrors.INVALID_RECOVERY_TOKEN)
 
             if password_request.action == PasswordResetAction.FORCE_CHANGE:
                 statement = select(User).where(User.supabase_user_id == user_id)
@@ -179,9 +165,7 @@ async def reset_password(
 
                 if not current_user:
                     logger.warning(f"User not found for user_id: {user_id}")
-                    return Response.unauthorized_error_response(
-                        UserAuthErrors.UNAUTHORIZED
-                    )
+                    return Response.unauthorized_error_response(UserAuthErrors.UNAUTHORIZED)
 
                 updated_metadata = {
                     "requires_password_change": False,
@@ -196,7 +180,7 @@ async def reset_password(
                         user_id=current_user.supabase_user_id,
                         metadata=updated_metadata,
                     )
-                except Exception as e:
+                except Exception:
                     logger.error(
                         f"Failed to update user metadata in Supabase for user: {current_user.email}"
                     )
@@ -208,7 +192,7 @@ async def reset_password(
                 current_user.email_verified = True
                 current_user.status = SupabaseUserStatus.ACTIVE
                 # Use timezone-aware UTC timestamp (Sonar rule S6903)
-                current_user.last_login_at = datetime.now(timezone.utc)
+                current_user.last_login_at = datetime.now(UTC)
                 master_session.add(current_user)
                 await master_session.commit()
                 await master_session.refresh(current_user)
@@ -246,9 +230,7 @@ async def reset_password(
 )
 async def refresh_token(refresh_request: UserRefreshTokenRequest):
     try:
-        session_data = supabase_user_client.refresh_access_token(
-            refresh_request.refresh_token
-        )
+        session_data = supabase_user_client.refresh_access_token(refresh_request.refresh_token)
 
         if session_data.get("session", {}).get("access_token"):
             return Response.success_response(
@@ -260,9 +242,7 @@ async def refresh_token(refresh_request: UserRefreshTokenRequest):
             )
         else:
             logger.warning("Refresh token is invalid or expired - logging out user")
-            return Response.unauthorized_error_response(
-                UserAuthErrors.REFRESH_TOKEN_INVALID
-            )
+            return Response.unauthorized_error_response(UserAuthErrors.REFRESH_TOKEN_INVALID)
     except SupabaseAuthError as e:
         logger.error(f"Token refresh failed: {e.message}")
         # Use the status code and message from the custom exception
@@ -305,12 +285,8 @@ async def forgot_password(
                 message="If an account with this email exists, a password reset link has been sent."
             )
 
-        password_reset_link = supabase_user_client.generate_password_reset_link(
-            email=user.email
-        )
-        logger.info(
-            f"Generated password reset link for: {forgot_password_request.email}"
-        )
+        password_reset_link = supabase_user_client.generate_password_reset_link(email=user.email)
+        logger.info(f"Generated password reset link for: {forgot_password_request.email}")
         if not password_reset_link:
             logger.error(
                 f"Failed to generate password reset link for: {forgot_password_request.email}"
@@ -348,3 +324,26 @@ async def forgot_password(
         return Response.internal_server_error_response(
             message=UserAuthErrors.FORGOT_PASSWORD_FAILED, data=None
         )
+
+
+@router.post("/logout", tags=["user_auth"])
+async def user_logout(
+    logout_request: UserLogoutRequest,
+    current_user: User = Depends(user_auth),
+):
+    """Logout the current user. If `global_logout` is true, sign out from all sessions."""
+    try:
+        supabase_user_client.sign_out_user(
+            user_id=current_user.supabase_user_id,
+            global_signout=logout_request.global_logout,
+        )
+
+        message = (
+            "Successfully logged out from all sessions."
+            if logout_request.global_logout
+            else "Successfully logged out."
+        )
+        return Response.success_response(message=message)
+    except Exception as e:
+        logger.error("Error during user logout: %s", str(e), exc_info=True)
+        return Response.internal_server_error_response(UserAuthErrors.LOGOUT_FAILED)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Optional
+import contextlib
 
 from src.api.dependencies.organisation_dependencies import acquire_org_session
 from src.api.schemas.upload_models import AttachmentEventUpdate
@@ -28,7 +28,7 @@ def _assign_generated_thumbnails(attachment: Attachment, created: dict[str, str]
         attachment.thumbnail_medium_path = created["thumb_medium"]
 
 
-def _attachment_already_processed(attachment: Optional[Attachment]) -> bool:
+def _attachment_already_processed(attachment: Attachment | None) -> bool:
     """Return True if the attachment is already fully processed.
 
     Consider an attachment processed if status is COMPLETED/FAILED and a checksum exists.
@@ -50,23 +50,19 @@ def _compute_and_persist_checksum(
     """Compute checksum if missing and persist it; swallow and log errors."""
     try:
         if attachment.storage_path and not attachment.checksum:
-            checksum = loop.run_until_complete(
-                storage.compute_checksum(attachment.storage_path)
-            )
+            checksum = loop.run_until_complete(storage.compute_checksum(attachment.storage_path))
             attachment.checksum = checksum
             session.merge(attachment)
             session.commit()
     except Exception:
-        logger.exception(
-            "Checksum computation failed for attachment %s", attachment.attachment_id
-        )
+        logger.exception("Checksum computation failed for attachment %s", attachment.attachment_id)
 
 
 def _update_status_and_commit(
     session,
     attachment: Attachment,
     status: AttachmentStatus,
-    error_message: Optional[str] = None,
+    error_message: str | None = None,
 ) -> None:
     """Update status and optional error message, then commit."""
     attachment.status = status
@@ -79,9 +75,9 @@ def _update_status_and_commit(
 def _generate_thumbnail_sas_url(
     loop: asyncio.AbstractEventLoop,
     storage: AzureOrganisationBlobStorage,
-    path: Optional[str],
+    path: str | None,
     minutes: int = 120,
-) -> Optional[str]:
+) -> str | None:
     """Generate a read SAS URL for a thumbnail path; return None on failure or missing path."""
     if not path:
         return None
@@ -96,7 +92,7 @@ def _publish_status_event(
     organisation_id: str,
     attachment: Attachment,
     status: AttachmentStatus,
-    thumbnail_small_url: Optional[str],
+    thumbnail_small_url: str | None,
 ) -> None:
     """Publish attachment status update event."""
     event_to_publish = AttachmentEventUpdate(
@@ -126,7 +122,7 @@ def post_upload(self, organisation_id: str, attachment_id: str):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    attachment: Optional[Attachment] = None
+    attachment: Attachment | None = None
     try:
         attachment = session.get(Attachment, attachment_id)
         if not attachment:
@@ -173,9 +169,7 @@ def post_upload(self, organisation_id: str, attachment_id: str):
         _publish_status_event(
             organisation_id, attachment, AttachmentStatus.COMPLETED, thumbnail_small_url
         )
-        logger.info(
-            "Attachment post-upload task completed attachment=%s", attachment_id
-        )
+        logger.info("Attachment post-upload task completed attachment=%s", attachment_id)
     except Exception as e:
         logger.error(
             "Attachment post-upload failed org=%s attachment=%s error=%s",
@@ -191,9 +185,7 @@ def post_upload(self, organisation_id: str, attachment_id: str):
                     AttachmentStatus.FAILED,
                     error_message=f"post_upload_failed: {e}",
                 )
-                _publish_status_event(
-                    organisation_id, attachment, AttachmentStatus.FAILED, None
-                )
+                _publish_status_event(organisation_id, attachment, AttachmentStatus.FAILED, None)
         except Exception:
             logger.debug(
                 "Failed to persist/publish FAILED state for attachment %s",
@@ -201,14 +193,10 @@ def post_upload(self, organisation_id: str, attachment_id: str):
                 exc_info=True,
             )
     finally:
-        try:
+        with contextlib.suppress(Exception):
             session.close()
-        except Exception:
-            pass
-        try:
+        with contextlib.suppress(Exception):
             session_gen.close()
-        except Exception:
-            pass
         try:
             loop.run_until_complete(storage.close())
         except Exception:

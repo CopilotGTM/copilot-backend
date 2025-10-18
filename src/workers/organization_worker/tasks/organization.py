@@ -1,14 +1,15 @@
-import os
 import asyncio
+from typing import Any
+from uuid import UUID
+
 from dotenv import load_dotenv
-from src.workers.organization_worker.celery_app import app
+
+from src.infra.database.factory import get_async_provider
+from src.infra.utils.logger import get_logger
 from src.service.orgnisation.organization_management import (
     organization_management_service,
 )
-from src.infra.database.factory import get_async_provider
-from uuid import UUID
-from typing import Dict, Any
-from src.infra.utils.logger import get_logger
+from src.workers.organization_worker.celery_app import app
 
 # Load environment variables
 load_dotenv(override=True)
@@ -18,8 +19,8 @@ logger = get_logger("organization_tasks")
 
 @app.task(name="organization.create", bind=True, acks_late=True, max_retries=3)
 def create_organization_task(
-    self, admin_id: str, organisation_name: str, org_details: Dict[str, Any]
-) -> Dict[str, Any]:
+    self, admin_id: str, organisation_name: str, org_details: dict[str, Any]
+) -> dict[str, Any]:
     """
     Celery task to create a new organization.
     """
@@ -40,9 +41,7 @@ def create_organization_task(
         result = asyncio.run(main())
         organization = result["organization"]
 
-        logger.info(
-            f"Successfully created organization: {organization.organisation_id}"
-        )
+        logger.info(f"Successfully created organization: {organization.organisation_id}")
 
         return {
             "organisation_id": str(organization.organisation_id),
@@ -52,7 +51,5 @@ def create_organization_task(
             "updated_at": organization.updated_at.isoformat(),
         }
     except Exception as e:
-        logger.error(
-            f"Failed to create organization {organisation_name}: {e}", exc_info=True
-        )
+        logger.error(f"Failed to create organization {organisation_name}: {e}", exc_info=True)
         raise

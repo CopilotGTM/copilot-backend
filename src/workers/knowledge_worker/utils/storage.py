@@ -12,9 +12,7 @@ def download_blob_to_temp(loop, storage, source) -> str:
     """
     suffix = Path(getattr(source, "filename", "document") or "document").suffix
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
-        file_content = loop.run_until_complete(
-            storage.get_blob_content(source.storage_path)
-        )
+        file_content = loop.run_until_complete(storage.get_blob_content(source.storage_path))
         temp_file.write(file_content)
         temp_file.flush()
         return temp_file.name

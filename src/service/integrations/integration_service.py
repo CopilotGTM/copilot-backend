@@ -5,25 +5,23 @@ This service provides CRUD operations for integrations and coordinates
 between the database and Nango client.
 """
 
-from typing import List, Optional, Dict, Any
-from uuid import UUID
-from datetime import datetime
 import logging
+from datetime import UTC, datetime
+from typing import Any
+from uuid import UUID
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
-
+from sqlalchemy.ext.asyncio import AsyncSession
 from src.domain.models.organisation_tables.knowledge_models import (
-    KnowledgeIntegration,
-    IntegrationType,
     IntegrationScope,
-    IntegrationSyncHistory,
-    SyncStatus,
+    IntegrationType,
+    KnowledgeIntegration,
 )
 from src.infra.config.nango_provider_mapping import (
     to_nango_connect_integration_key,
 )
+
 from .nango_client import NangoClient, NangoConnectionError
 
 logger = logging.getLogger(__name__)
@@ -45,7 +43,7 @@ class IntegrationService:
         self,
         db_session: AsyncSession,
         organisation_id: UUID,
-        nango_client: Optional[NangoClient] = None,
+        nango_client: NangoClient | None = None,
     ):
         """
         Initialize the integration service.
@@ -90,9 +88,9 @@ class IntegrationService:
         created_by_user_id: UUID,
         created_by_admin: bool,
         integration_scope: IntegrationScope,
-        integration_email: Optional[str] = None,
-        connection_metadata: Optional[Dict[str, Any]] = None,
-        scopes: Optional[List[str]] = None,
+        integration_email: str | None = None,
+        connection_metadata: dict[str, Any] | None = None,
+        scopes: list[str] | None = None,
         sync_frequency: str = "daily",
         auto_sync_enabled: bool = True,
     ) -> KnowledgeIntegration:
@@ -163,7 +161,7 @@ class IntegrationService:
         except IntegrityError as e:
             await self.db.rollback()
             logger.error(f"Database integrity error creating integration: {str(e)}")
-            raise ValueError(f"Failed to create integration: {str(e)}")
+            raise ValueError(f"Failed to create integration: {str(e)}") from e
         except Exception as e:
             await self.db.rollback()
             logger.error(f"Unexpected error creating integration: {str(e)}")
@@ -172,7 +170,7 @@ class IntegrationService:
     async def get_integration(
         self,
         integration_id: UUID,
-    ) -> Optional[KnowledgeIntegration]:
+    ) -> KnowledgeIntegration | None:
         """
         Get an integration by ID (scoped to this service's organization).
 
@@ -192,11 +190,11 @@ class IntegrationService:
 
     async def list_integrations(
         self,
-        integration_type: Optional[IntegrationType] = None,
-        is_active: Optional[bool] = None,
-        user_id: Optional[UUID] = None,
+        integration_type: IntegrationType | None = None,
+        is_active: bool | None = None,
+        user_id: UUID | None = None,
         include_user_scoped: bool = True,
-    ) -> List[KnowledgeIntegration]:
+    ) -> list[KnowledgeIntegration]:
         """
         List integrations accessible to the organization or user.
 
@@ -220,13 +218,9 @@ class IntegrationService:
         if user_id and include_user_scoped:
             statement = statement.where(
                 or_(
-                    KnowledgeIntegration.integration_scope
-                    == IntegrationScope.ORGANIZATION,
+                    KnowledgeIntegration.integration_scope == IntegrationScope.ORGANIZATION,
                     (
-                        (
-                            KnowledgeIntegration.integration_scope
-                            == IntegrationScope.USER
-                        )
+                        (KnowledgeIntegration.integration_scope == IntegrationScope.USER)
                         & (KnowledgeIntegration.created_by_user_id == user_id)
                     ),
                 )
@@ -238,9 +232,7 @@ class IntegrationService:
             )
 
         if integration_type:
-            statement = statement.where(
-                KnowledgeIntegration.integration_type == integration_type
-            )
+            statement = statement.where(KnowledgeIntegration.integration_type == integration_type)
 
         if is_active is not None:
             statement = statement.where(KnowledgeIntegration.is_active == is_active)
@@ -251,9 +243,9 @@ class IntegrationService:
     async def update_integration(
         self,
         integration_id: UUID,
-        name: Optional[str] = None,
-        sync_frequency: Optional[str] = None,
-        auto_sync_enabled: Optional[bool] = None,
+        name: str | None = None,
+        sync_frequency: str | None = None,
+        auto_sync_enabled: bool | None = None,
     ) -> KnowledgeIntegration:
         """
         Update integration settings.
@@ -292,7 +284,7 @@ class IntegrationService:
     async def deactivate_integration(
         self,
         integration_id: UUID,
-        error_message: Optional[str] = None,
+        error_message: str | None = None,
     ) -> KnowledgeIntegration:
         """
         Deactivate an integration (e.g., due to token refresh failure).
@@ -352,22 +344,17 @@ class IntegrationService:
                 provider=provider,
                 connection_id=integration.connection_id,
             )
-            logger.info(
-                f"Successfully revoked Nango connection for integration {integration_id}"
-            )
+            logger.info(f"Successfully revoked Nango connection for integration {integration_id}")
         except NangoConnectionError as e:
             logger.warning(
-                f"Failed to delete Nango connection: {str(e)}. "
-                "Proceeding with database deletion."
+                f"Failed to delete Nango connection: {str(e)}. Proceeding with database deletion."
             )
 
         # Delete from database (cascade will handle sync history)
         await self.db.delete(integration)
         await self.db.commit()
 
-        logger.info(
-            f"Deleted integration {integration_id} for org {self.organisation_id}"
-        )
+        logger.info(f"Deleted integration {integration_id} for org {self.organisation_id}")
         return True
 
     async def check_and_refresh_token(
@@ -402,12 +389,9 @@ class IntegrationService:
             # Update expiry time
             credentials = connection.get("credentials", {})
             expires_in = credentials.get("expires_in")
-            integration.access_token_expires_at = self.nango.parse_token_expiry(
-                expires_in
-            )
-            from datetime import timezone
+            integration.access_token_expires_at = self.nango.parse_token_expiry(expires_in)
 
-            integration.last_synced_at = datetime.now(timezone.utc)
+            integration.last_synced_at = datetime.now(UTC)
 
             self.db.add(integration)
             await self.db.commit()

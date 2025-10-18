@@ -1,10 +1,11 @@
+import asyncio
 import json
 import threading
 import time
-import asyncio
-from src.infra.utils.logger import get_logger
+
 from src.api.events.socket_app import sio
 from src.infra.messaging.redis_client import get_redis_client
+from src.infra.utils.logger import get_logger
 
 logger = get_logger()
 WEBSOCKET_NAMESPACE = "/websocket/v1"
@@ -34,29 +35,28 @@ def redis_subscriber():
                 try:
                     logger.debug("Waiting for message...")
                     message = pubsub.get_message(timeout=1.0)
-                    if message:
-                        if message["type"] == "message":
-                            try:
-                                data = json.loads(message["data"])
-                                sid = data["sid"]
-                                event = data["event"]
-                                message_data = data["data"]
+                    if message and message["type"] == "message":
+                        try:
+                            data = json.loads(message["data"])
+                            sid = data["sid"]
+                            event = data["event"]
+                            message_data = data["data"]
 
-                                # Create event loop for async operation
-                                loop = asyncio.new_event_loop()
-                                asyncio.set_event_loop(loop)
+                            # Create event loop for async operation
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
 
-                                # Emit message asynchronously
-                                loop.run_until_complete(
-                                    emit_websocket_message(event, message_data, sid)
-                                )
-                                loop.close()
+                            # Emit message asynchronously
+                            loop.run_until_complete(
+                                emit_websocket_message(event, message_data, sid)
+                            )
+                            loop.close()
 
-                            except Exception as e:
-                                logger.error(
-                                    f"Error processing Redis message: {e}",
-                                    exc_info=True,
-                                )
+                        except Exception as e:
+                            logger.error(
+                                f"Error processing Redis message: {e}",
+                                exc_info=True,
+                            )
                 except Exception as e:
                     logger.error(f"Error in Redis subscriber loop: {e}", exc_info=True)
                     break

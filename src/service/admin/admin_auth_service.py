@@ -1,8 +1,8 @@
-from datetime import datetime, timezone
-from typing import Dict, Any
+from datetime import UTC, datetime
+from typing import Any
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-
 from src.api.utils.http_response import Response
 from src.domain.models.admin_models import AdminLoginState
 from src.domain.models.master_tables import SuperAdmin
@@ -26,20 +26,14 @@ class AdminAuthService:
     def handle_pending_setup_login(self, email: str) -> Response:
         """Handles the login flow for a user who needs to set their password."""
         try:
-            password_reset_link = supabase_admin_client.generate_password_reset_link(
-                email
-            )
+            password_reset_link = supabase_admin_client.generate_password_reset_link(email)
             response_data = {
                 "state": AdminLoginState.PENDING_SETUP,
                 "password_reset_link": password_reset_link,
             }
-            return Response.success_response(
-                message="Login successful", data=response_data
-            )
+            return Response.success_response(message="Login successful", data=response_data)
         except Exception as e:
-            logger.error(
-                f"Failed to generate recovery token for user {email}: {str(e)}"
-            )
+            logger.error(f"Failed to generate recovery token for user {email}: {str(e)}")
             return Response.internal_server_error_response(
                 message="Failed to generate password change token"
             )
@@ -48,12 +42,12 @@ class AdminAuthService:
         self,
         session: AsyncSession,
         super_admin: SuperAdmin,
-        tokens: Dict[str, Any],
+        tokens: dict[str, Any],
         email_verified: bool,
     ) -> Response:
         """Handles the login flow for an active user."""
         logger.info("Updating last_login_at for super_admin: %s", super_admin.email)
-        super_admin.last_login_at = datetime.now(timezone.utc)
+        super_admin.last_login_at = datetime.now(UTC)
         session.add(super_admin)
         await session.commit()
         await session.refresh(super_admin)

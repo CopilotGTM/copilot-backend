@@ -1,3 +1,6 @@
+# ⚠️ DEPRECATED - Use pyproject.toml with UV instead
+# Add dev deps: uv add --dev package-name | Install: uv sync
+
 black==25.1.0
 pyperclip
 pymupdf

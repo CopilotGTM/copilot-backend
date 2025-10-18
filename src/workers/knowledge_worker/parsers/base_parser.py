@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import List, Any, Dict, Optional
 from pathlib import Path
+from typing import Any
 
 
 class BaseParser(ABC):
@@ -25,12 +25,12 @@ class BaseParser(ABC):
     def parse(
         self,
         file_path: str | Path,
-        document_url: Optional[str] = None,
-        source_id: Optional[str] = None,
-        source_blob_path: Optional[str] = None,
-        original_filename: Optional[str] = None,
-        source_size_bytes: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
+        document_url: str | None = None,
+        source_id: str | None = None,
+        source_blob_path: str | None = None,
+        original_filename: str | None = None,
+        source_size_bytes: int | None = None,
+    ) -> list[dict[str, Any]]:
         """
         Parse the document and return processed data.
 
@@ -48,7 +48,7 @@ class BaseParser(ABC):
         pass
 
     @classmethod
-    def supported_mimetypes(cls) -> List[str]:
+    def supported_mimetypes(cls) -> list[str]:
         """Optional classmethod listing supported MIME types.
 
         Parsers may override this to enable lightweight factory registration
@@ -57,7 +57,7 @@ class BaseParser(ABC):
         """
         return []
 
-    def get_supported_mimetypes(self) -> List[str]:
+    def get_supported_mimetypes(self) -> list[str]:
         """Backwards-compatible instance method for supported MIME types."""
         # If the classmethod is provided by subclass, prefer that
         cls = self.__class__

@@ -72,8 +72,8 @@ GENERAL_PROMPT = dedent(
             ]
         },
         "switch_agent": {"to": "RFP_SHEET", "reason": "User requested RFP assistance", "confidence": 0.7}
-        
-        
+
+
     }
     ```
     ⟦/AEP⟧

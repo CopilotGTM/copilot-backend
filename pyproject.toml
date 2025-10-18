@@ -1,0 +1,360 @@
+[project]
+name = "copilot-backend"
+version = "1.0.0"
+description = "Enterprise-grade B2B SaaS backend with FastAPI, async support, and AI integrations"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+license = { text = "Proprietary" }
+authors = [
+    { name = "CopilotGTM Team" }
+]
+keywords = ["fastapi", "saas", "ai", "backend", "async"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.11",
+    "Framework :: FastAPI",
+]
+
+dependencies = [
+    # FastAPI and ASGI server
+    "fastapi==0.116.1",
+    "uvicorn[standard]==0.35.0",
+    "sse-starlette==3.0.2",
+    
+    # Authentication and Security
+    "python-jose[cryptography]==3.5.0",
+    "PyJWT==2.10.1",
+    "werkzeug==3.1.3",
+    "itsdangerous==2.2.0",
+    
+    # WebSocket and Real-time
+    "python-socketio==5.13.0",
+    "eventlet==0.40.2",
+    
+    # Caching and Task Queue
+    "redis==6.2.0",
+    "celery~=5.5.3",
+    
+    # Configuration
+    "python-dotenv==1.1.1",
+    "pydantic~=2.11.7",
+    "pydantic[email]",
+    
+    # HTTP Clients
+    "requests>=2.32.4",
+    "httpx>=0.28.1",
+    "aiohttp==3.9.1",
+    
+    # Supabase Integration
+    "supabase>=2.17.0",
+    
+    # Database and ORM
+    "sqlmodel==0.0.24",
+    "SQLAlchemy==2.0.42",
+    "psycopg2-binary==2.9.10",
+    "asyncpg==0.30.0",
+    "alembic==1.16.4",
+    "pgvector==0.4.1",
+    
+    # Azure Services
+    "azure-ai-inference==1.0.0b9",
+    "azure-storage-blob==12.25.1",
+    "azure-common==1.1.28",
+    "azure-identity==1.25.1",
+    "azure-keyvault-secrets>=4.7.0",
+    "azure-mgmt-storage==21.1.0",
+    
+    # AI and ML
+    "openai==1.101.0",
+    "agno~=1.8.1",
+    "transformers~=4.55.4",
+    
+    # Document Processing
+    "pypdf==5.9.0",
+    "PyPDF2==3.0.1",
+    "PyMuPDF==1.26.3",
+    "docling~=2.47.1",
+    "python-docx~=1.2.0",
+    "python-pptx~=1.0.2",
+    "lxml",
+    "Pillow==10.4.0",
+    
+    # Data Processing
+    "pandas~=2.2.3",
+    "openpyxl~=3.1.5",
+    "fsspec~=2025.7.0",
+    
+    # External Services
+    "wikipedia==1.4.0",
+    "duckduckgo-search~=8.1.1",
+    "resend==2.11.0",
+    
+    # Utilities
+    "packaging==23.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "black==25.1.0",
+    "pytest>=8.0.0",
+    "pytest-mock>=3.12.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "httpx>=0.28.1",
+    "fakeredis>=2.20.0",
+    "pyperclip",
+    "pymupdf",
+    "ruff>=0.8.0",
+    "mypy>=1.8.0",
+    "pre-commit>=3.5.0",
+    "bandit>=1.7.5",
+]
+
+test = [
+    "pytest>=8.0.0",
+    "pytest-mock>=3.12.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "httpx>=0.28.1",
+    "fakeredis>=2.20.0",
+]
+
+docs = [
+    "mkdocs>=1.5.3",
+    "mkdocs-material>=9.5.0",
+]
+
+[dependency-groups]
+dev = [
+    "bandit>=1.8.6",
+    "detect-secrets>=1.5.0",
+    "pre-commit>=4.3.0",
+]
+
+# Lightweight quality tooling group for CI - no heavy ML/runtime dependencies
+quality = [
+    "ruff>=0.8.0",
+    "bandit>=1.8.6",
+    "mypy>=1.8.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.uv]
+# UV-specific configuration for production builds
+
+[tool.uv.sources]
+# Configure trusted hosts or private registries if needed
+# Example: package-name = { index = "private-pypi" }
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--strict-markers",
+    "--tb=short",
+    "--cov=src",
+    "--cov-report=term-missing",
+    "--cov-report=html",
+    "--cov-report=xml",
+]
+markers = [
+    "unit: Unit tests",
+    "integration: Integration tests",
+    "slow: Slow running tests",
+    "api: API endpoint tests",
+]
+asyncio_mode = "auto"
+filterwarnings = [
+    "error",
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+]
+
+[tool.black]
+line-length = 100
+target-version = ['py311']
+# Only format src/ and tests/ directories
+include = '^/(src|tests)/.*\.py$'
+extend-exclude = '''
+/(
+  # Directories to exclude
+  \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | _build
+  | buck-out
+  | build
+  | dist
+  | migrations
+  | cache
+  | htmlcov
+  | \.pytest_cache
+  | \.ruff_cache
+)/
+'''
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+# Only check src/ and tests/
+src = ["src", "tests"]
+
+exclude = [
+    ".git",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".venv",
+    ".pytest_cache",
+    "__pycache__",
+    "migrations",
+    "cache",
+    "build",
+    "dist",
+    "*.egg-info",
+]
+
+[tool.ruff.format]
+# Use Black-compatible formatting
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+    "ARG", # flake8-unused-arguments
+    "SIM", # flake8-simplify
+    "N",   # pep8-naming
+    "S",   # flake8-bandit (security)
+    "A",   # flake8-builtins
+]
+
+ignore = [
+    "E501",  # line too long (handled by black)
+    "B008",  # do not perform function calls in argument defaults
+    "C901",  # too complex
+    "W191",  # indentation contains tabs
+    "S101",  # Use of assert detected (tests need it)
+    "S104",  # Possible binding to all interfaces
+    "S105",  # Possible hardcoded password
+    "S106",  # Possible hardcoded password
+    "S107",  # Possible hardcoded password
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401", "F403"]
+"tests/**/*.py" = ["S101", "ARG", "S105", "S106", "E402"]
+# Celery workers need environment setup before imports
+"src/workers/**/celery_app.py" = ["E402", "ARG001", "S110", "SIM105"]
+# Celery tasks with bind=True need unused self parameter
+"src/workers/**/tasks/*.py" = ["ARG001", "E402", "S110"]
+# Signal handlers require specific unused parameters
+"src/workers/**/*_handler.py" = ["ARG001"]
+# Parser config and utilities
+"src/workers/knowledge_worker/parsers/*.py" = ["ARG002", "ARG003", "S110", "S112"]
+# Config files need to load dotenv before imports
+"src/infra/config/*.py" = ["E402"]
+"src/api/fastapi_app.py" = ["E402", "ARG001", "N806"]  # lifespan, APP_ENV constant
+# Dependency injection - FastAPI automatically uses these parameters
+"src/api/routers/healthcheck.py" = ["SIM102", "ARG001"]
+"src/api/routers/admin/organizations_handler.py" = ["ARG001"]
+# Rate limiting - defensive exception handling
+"src/api/dependencies/rate_limit.py" = ["S110"]
+# Sentinel constants for agent protocol
+"src/agents/workflows/general/agent.py" = ["N806", "UP038"]
+# Chat service numeric type checking
+"src/service/chat/chat_message_service.py" = ["UP038"]
+# Websocket uses ConnectionRefusedError from socketio
+"src/api/events/connect_handler.py" = ["A004"]
+"src/domain/models/authentication.py" = ["A004"]
+# WebSocket utilities
+"src/api/utils/websocket_response.py" = ["N812"]
+# Database cleanup in error handling
+"src/infra/database/provider_sync.py" = ["S110"]
+# Secret interface - established exception naming
+"src/infra/secrets/interface.py" = ["N818"]
+# Azure blob storage - planning method, module initialization
+"src/infra/storage/azure_org_blob_storage.py" = ["E402", "ARG002"]
+# Media files with module-level initialization
+"src/infra/media/thumbnail_generator.py" = ["E402", "S112", "N806"]
+# Knowledge upload - cleanup exception handling
+"src/api/routers/knowledge_base/upload_handler.py" = ["S110"]
+# Service files with docstring imports
+"src/service/chat/chat_message_sse_service.py" = ["E402"]
+# Stub methods in interfaces
+"src/infra/storage/generate_presigned_url.py" = ["ARG002"]
+"src/service/integrations/nango_client.py" = ["ARG002"]
+"src/service/integrations/token_refresh_service.py" = ["ARG002"]
+# Type alias using Union for clarity with many types
+"src/api/schemas/chat_stream_models.py" = ["UP007"]
+# Redis cleanup in error handler
+"src/infra/messaging/redis_client.py" = ["SIM105", "S110"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+follow_imports = "normal"
+ignore_missing_imports = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+ignore_errors = true
+
+[tool.coverage.run]
+source = ["src"]
+omit = [
+    "*/tests/*",
+    "*/migrations/*",
+    "*/__pycache__/*",
+    "*/site-packages/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "@abstractmethod",
+]
+
+[tool.bandit]
+targets = ["src"]
+exclude_dirs = ["tests", ".venv", "migrations"]
+skips = ["B101", "B104", "B105", "B106", "B107", "B110", "B112"]
+# B101: assert_used (needed in tests)
+# B104-B107: hardcoded passwords (false positives)
+# B110: try_except_pass (defensive cleanup patterns in error handlers)
+# B112: try_except_continue (font loading fallback pattern)

@@ -1,30 +1,27 @@
 import json
-import os
 import uuid
-from typing import AsyncIterator, List, Optional
+from collections.abc import AsyncIterator
 
 from agno.agent import Agent
-from agno.agent.agent import Message
 from agno.models.azure import AzureOpenAI
 from dotenv import load_dotenv
-
+from src.agents.base import Agent as BaseAgent
+from src.agents.tools.transparent_tools import AgentCapabilities
+from src.agents.utils import prepare_messages
+from src.agents.workflows.general.prompts.general_prompt import GENERAL_PROMPT
 from src.api.schemas.chat_stream_models import (
+    AgentSwitch,
     AnswerDelta,
     AnswerMetrics,
-    SourcesReplace,
+    FieldSingleSelect,
     Finalize,
     Frame,
     QuestionPrompt,
-    FieldSingleSelect,
+    SourcesReplace,
     SuggestionsReplace,
-    AgentSwitch,
 )
 from src.domain.models.organisation_tables import ChatMessage
 from src.infra.utils.logger import get_logger
-from src.agents.base import Agent as BaseAgent
-from src.agents.utils import prepare_messages
-from src.agents.workflows.general.prompts.general_prompt import GENERAL_PROMPT
-from src.agents.tools.transparent_tools import AgentCapabilities
 
 load_dotenv()
 logger = get_logger()
@@ -41,9 +38,9 @@ class GeneralAgent(BaseAgent):
             debug_mode=False,
             markdown=True,
         )
-        self.capabilities: Optional[AgentCapabilities] = None
+        self.capabilities: AgentCapabilities | None = None
 
-    def _extract_json_str(self, text: str) -> Optional[str]:
+    def _extract_json_str(self, text: str) -> str | None:
         """Extract a JSON object substring from text robustly."""
         if not text:
             return None
@@ -61,7 +58,7 @@ class GeneralAgent(BaseAgent):
         # Fall back to bracket matching
         return self._extract_from_brackets(text)
 
-    def _extract_from_sentinel(self, text: str) -> Optional[str]:
+    def _extract_from_sentinel(self, text: str) -> str | None:
         """Extract JSON from sentinel block ⟦AEP:1⟧ ... ⟦/AEP⟧."""
         S_START = "⟦AEP:1⟧"
         S_END = "⟦/AEP⟧"
@@ -81,7 +78,7 @@ class GeneralAgent(BaseAgent):
         except Exception:
             return None
 
-    def _extract_from_fence(self, text: str) -> Optional[str]:
+    def _extract_from_fence(self, text: str) -> str | None:
         """Extract JSON from fenced code block."""
         if "```" not in text:
             return None
@@ -106,7 +103,7 @@ class GeneralAgent(BaseAgent):
 
         return content.strip()
 
-    def _extract_from_brackets(self, text: str) -> Optional[str]:
+    def _extract_from_brackets(self, text: str) -> str | None:
         """Extract JSON using bracket matching."""
         start = text.find("{")
         if start == -1:
@@ -114,7 +111,7 @@ class GeneralAgent(BaseAgent):
 
         return self._match_json_brackets(text, start)
 
-    def _match_json_brackets(self, text: str, start: int) -> Optional[str]:
+    def _match_json_brackets(self, text: str, start: int) -> str | None:
         """Match JSON brackets starting from given position."""
         depth = 0
         state = {"in_str": False, "escaped": False}
@@ -188,9 +185,7 @@ class GeneralAgent(BaseAgent):
     def _yield_confidence_frame(self, response_data: dict):
         """Yield confidence frame if present."""
         if "confidence_score" in response_data:
-            confidence = self._convert_confidence_score(
-                response_data.get("confidence_score")
-            )
+            confidence = self._convert_confidence_score(response_data.get("confidence_score"))
             yield AnswerMetrics(confidence=confidence)
 
     def _yield_suggestions_frame(self, response_data: dict):
@@ -233,7 +228,7 @@ class GeneralAgent(BaseAgent):
                     await_user_response=bool(ask.get("await_user_response", True)),
                 )
 
-    def _create_single_select_field(self, spec: dict) -> Optional[FieldSingleSelect]:
+    def _create_single_select_field(self, spec: dict) -> FieldSingleSelect | None:
         """Create a single select field from specification."""
         name = spec.get("name") or "input"
         required = bool(spec.get("required", False))
@@ -274,9 +269,7 @@ class GeneralAgent(BaseAgent):
             )
         elif isinstance(switch, str) and switch.strip():
             # Handle simple string format
-            logger.info(
-                f"Agent switch detected (string format) - switching to: {switch}"
-            )
+            logger.info(f"Agent switch detected (string format) - switching to: {switch}")
             yield AgentSwitch(
                 from_agent="GENERAL_CHAT",
                 to_agent=switch.strip(),
@@ -284,17 +277,14 @@ class GeneralAgent(BaseAgent):
             )
         else:
             # Check if there are any other fields that might indicate agent switching
-            if any(
-                key.lower().startswith(("switch", "agent"))
-                for key in response_data.keys()
-            ):
+            if any(key.lower().startswith(("switch", "agent")) for key in response_data):
                 logger.info(
-                    f"Potential agent switch fields found but not in expected format: {[k for k in response_data.keys() if 'switch' in k.lower() or 'agent' in k.lower()]}"
+                    f"Potential agent switch fields found but not in expected format: {[k for k in response_data if 'switch' in k.lower() or 'agent' in k.lower()]}"
                 )
             else:
                 logger.info("No agent switch detected in response data")
 
-    def _convert_confidence_score(self, confidence_value) -> Optional[str]:
+    def _convert_confidence_score(self, confidence_value) -> str | None:
         """Convert confidence score to categorical value (high/medium/low)."""
         if confidence_value is None:
             return None
@@ -339,9 +329,7 @@ class GeneralAgent(BaseAgent):
                 continue
 
             # Process chunk for separator detection
-            for result in self._process_chunk_for_separator(
-                chunk.content, separators, state
-            ):
+            for result in self._process_chunk_for_separator(chunk.content, separators, state):
                 yield result
 
         logger.info(f"Agent log: {state['log_buffer']}")
@@ -351,9 +339,7 @@ class GeneralAgent(BaseAgent):
         """Check if chunk has valid content."""
         return hasattr(chunk, "content") and chunk.content
 
-    def _process_chunk_for_separator(
-        self, content: str, separators: list[str], state: dict
-    ):
+    def _process_chunk_for_separator(self, content: str, separators: list[str], state: dict):
         """Process chunk content looking for separators."""
         state["buffer"] += content
 
@@ -394,7 +380,7 @@ class GeneralAgent(BaseAgent):
             state["buffer"] = state["buffer"][safe_len:]
             yield ("answer", to_send)
 
-    async def run_stream(self, message_list: List[ChatMessage]) -> AsyncIterator[Frame]:
+    async def run_stream(self, message_list: list[ChatMessage]) -> AsyncIterator[Frame]:
         """Run with enhanced JSON streaming and transparency support."""
         logger.info("Starting enhanced workflow execution with transparency")
 
@@ -413,9 +399,7 @@ class GeneralAgent(BaseAgent):
                 yield frame
 
             # Execute main agent workflow
-            chat_response = await self.general_agent.arun(
-                messages=processed_messages, stream=True
-            )
+            chat_response = await self.general_agent.arun(messages=processed_messages, stream=True)
 
             # Process streaming response
             async for frame in self._process_streaming_response(
@@ -460,9 +444,7 @@ class GeneralAgent(BaseAgent):
         while frame_queue:
             yield frame_queue.pop(0)
 
-    async def _process_streaming_response(
-        self, chat_response, separators: list, frame_queue: list
-    ):
+    async def _process_streaming_response(self, chat_response, separators: list, frame_queue: list):
         """Process the streaming response from the agent."""
         buffer = ""
         json_part_started = False
@@ -480,14 +462,10 @@ class GeneralAgent(BaseAgent):
                 json_part_started = result[2]
 
         # Handle remaining content and metadata
-        async for frame in self._handle_final_content(
-            buffer, json_part_started, frame_queue
-        ):
+        async for frame in self._handle_final_content(buffer, json_part_started, frame_queue):
             yield frame
 
-    async def _handle_final_content(
-        self, buffer: str, json_part_started: bool, frame_queue: list
-    ):
+    async def _handle_final_content(self, buffer: str, json_part_started: bool, frame_queue: list):
         """Handle final content and metadata processing."""
         if not json_part_started and buffer:
             yield AnswerDelta(content=buffer)

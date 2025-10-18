@@ -12,14 +12,14 @@ Note: Nango doesn't have an official Python SDK, so we use their REST API direct
 API Documentation: https://docs.nango.dev/reference/api/connection/get
 """
 
-from typing import Dict, Any, Optional, List
-from datetime import datetime, timedelta, timezone
-import logging
-import httpx
-import hmac
 import hashlib
+import hmac
 import json
+import logging
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
+import httpx
 from src.infra.config.configs import nango_integration_config
 
 logger = logging.getLogger(__name__)
@@ -32,7 +32,7 @@ class NangoConnectionError(Exception):
         self,
         message: str,
         *,
-        status_code: Optional[int] = None,
+        status_code: int | None = None,
         payload: Any = None,
     ) -> None:
         super().__init__(message)
@@ -59,7 +59,7 @@ class NangoClient:
     API Reference: https://docs.nango.dev/reference/api
     """
 
-    def __init__(self, secret_key: Optional[str] = None):
+    def __init__(self, secret_key: str | None = None):
         """
         Initialize the Nango REST API client.
 
@@ -87,7 +87,7 @@ class NangoClient:
         logger.info(f"Initialized Nango REST API client with base URL: {self.base_url}")
 
     @staticmethod
-    def _lookup_error_message(payload: Any) -> Optional[str]:
+    def _lookup_error_message(payload: Any) -> str | None:
         """
         Extract a human-readable error message from a Nango error payload.
         """
@@ -130,8 +130,8 @@ class NangoClient:
 
     @staticmethod
     def _extract_error_details(
-        response: Optional[httpx.Response],
-    ) -> tuple[Optional[int], Any, Optional[str]]:
+        response: httpx.Response | None,
+    ) -> tuple[int | None, Any, str | None]:
         """
         Extract status code, payload, and message from an httpx response object.
         """
@@ -149,7 +149,7 @@ class NangoClient:
 
     @staticmethod
     def verify_webhook_signature(
-        signature: str, payload: Dict[str, Any], webhook_secret: Optional[str] = None
+        signature: str, payload: dict[str, Any], webhook_secret: str | None = None
     ) -> bool:
         """
         Verify the X-Nango-Signature header from a webhook request.
@@ -190,9 +190,7 @@ class NangoClient:
             # Compute SHA-256 hash (NOT HMAC!)
             # Formula: SHA256(secret + payload_json)
             signature_input = f"{secret}{payload_json}"
-            expected_signature = hashlib.sha256(
-                signature_input.encode("utf-8")
-            ).hexdigest()
+            expected_signature = hashlib.sha256(signature_input.encode("utf-8")).hexdigest()
 
             # Constant-time comparison to prevent timing attacks
             is_valid = hmac.compare_digest(signature, expected_signature)
@@ -214,9 +212,9 @@ class NangoClient:
         end_user_id: str,
         organization_id: str,
         integration_id: str,
-        end_user_email: Optional[str] = None,
-        end_user_display_name: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        end_user_email: str | None = None,
+        end_user_display_name: str | None = None,
+    ) -> dict[str, Any]:
         """
         Create a Nango Connect Session for OAuth authorization.
 
@@ -244,7 +242,7 @@ class NangoClient:
         """
         try:
             # Build end_user object without null fields (Nango rejects null strings)
-            end_user: Dict[str, Any] = {
+            end_user: dict[str, Any] = {
                 "id": end_user_id,
                 "tags": {"organizationId": organization_id},
             }
@@ -275,9 +273,7 @@ class NangoClient:
 
             # Normalize response to expose token and expires_at at top-level
             if isinstance(result, dict):
-                envelope = (
-                    result.get("data") if isinstance(result.get("data"), dict) else None
-                )
+                envelope = result.get("data") if isinstance(result.get("data"), dict) else None
                 body = envelope if envelope is not None else result
                 token = (
                     body.get("token")
@@ -285,9 +281,7 @@ class NangoClient:
                     or body.get("connect_token")
                     or (body.get("session") or {}).get("token")
                 )
-                expires_at = body.get("expires_at") or (body.get("session") or {}).get(
-                    "expires_at"
-                )
+                expires_at = body.get("expires_at") or (body.get("session") or {}).get("expires_at")
                 # Attach normalized fields for consumers
                 result["token"] = token
                 result["expires_at"] = expires_at
@@ -341,16 +335,14 @@ class NangoClient:
                 },
                 str(e),
             )
-            raise NangoConnectionError(
-                f"Failed to create connect session: {str(e)}"
-            ) from None
+            raise NangoConnectionError(f"Failed to create connect session: {str(e)}") from None
 
     async def exchange_code_for_token(
         self,
         provider: str,
         connection_id: str,
         code: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Exchange authorization code for access token.
 
@@ -377,14 +369,14 @@ class NangoClient:
 
         except Exception as e:
             logger.error(f"Failed to verify connection after code exchange: {str(e)}")
-            raise NangoTokenError(f"Failed to exchange code: {str(e)}")
+            raise NangoTokenError(f"Failed to exchange code: {str(e)}") from e
 
     async def get_connection(
         self,
         provider: str,
         connection_id: str,
         force_refresh: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Retrieve connection details including token status.
 
@@ -420,9 +412,7 @@ class NangoClient:
 
             connection = response.json()
 
-            logger.info(
-                f"Retrieved connection for provider={provider}, id={connection_id}"
-            )
+            logger.info(f"Retrieved connection for provider={provider}, id={connection_id}")
             return connection
 
         except httpx.HTTPStatusError as e:
@@ -454,7 +444,7 @@ class NangoClient:
         self,
         provider: str,
         connection_id: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Refresh an expired access token.
 
@@ -484,7 +474,7 @@ class NangoClient:
 
         except Exception as e:
             logger.error(f"Failed to refresh token: {str(e)}")
-            raise NangoTokenError(f"Failed to refresh token: {str(e)}")
+            raise NangoTokenError(f"Failed to refresh token: {str(e)}") from e
 
     async def delete_connection(
         self,
@@ -511,9 +501,7 @@ class NangoClient:
             response = await self.client.delete(url, params=params)
             response.raise_for_status()
 
-            logger.info(
-                f"Deleted connection for provider={provider}, id={connection_id}"
-            )
+            logger.info(f"Deleted connection for provider={provider}, id={connection_id}")
 
         except httpx.HTTPStatusError as e:
             status_code, payload, detail = self._extract_error_details(e.response)
@@ -539,15 +527,13 @@ class NangoClient:
             ) from None
         except Exception as e:
             logger.error(f"Failed to delete connection: {str(e)}")
-            raise NangoConnectionError(
-                f"Failed to delete connection: {str(e)}"
-            ) from None
+            raise NangoConnectionError(f"Failed to delete connection: {str(e)}") from None
 
     async def get_connection_metadata(
         self,
         provider: str,
         connection_id: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Get metadata about the connected account (e.g., user info, account details).
 
@@ -567,7 +553,7 @@ class NangoClient:
 
         except Exception as e:
             logger.error(f"Failed to get connection metadata: {str(e)}")
-            raise NangoConnectionError(f"Failed to get metadata: {str(e)}")
+            raise NangoConnectionError(f"Failed to get metadata: {str(e)}") from e
 
     async def proxy_request(
         self,
@@ -575,9 +561,9 @@ class NangoClient:
         connection_id: str,
         endpoint: str,
         method: str = "GET",
-        data: Optional[Dict] = None,
-        params: Optional[Dict] = None,
-    ) -> Dict[str, Any]:
+        data: dict | None = None,
+        params: dict | None = None,
+    ) -> dict[str, Any]:
         """
         Make an authenticated API request to the integrated service via Nango proxy.
 
@@ -606,7 +592,7 @@ class NangoClient:
             url = "/proxy"
 
             # Build proxy request payload
-            payload: Dict[str, Any] = {
+            payload: dict[str, Any] = {
                 "provider_config_key": provider,
                 "connection_id": connection_id,
                 "endpoint": endpoint,
@@ -623,10 +609,7 @@ class NangoClient:
 
             result = response.json()
 
-            logger.info(
-                f"Proxy request to {provider}:{endpoint} "
-                f"(method={method}) succeeded"
-            )
+            logger.info(f"Proxy request to {provider}:{endpoint} (method={method}) succeeded")
             return result
 
         except httpx.HTTPStatusError as e:
@@ -649,9 +632,7 @@ class NangoClient:
             logger.error(f"Proxy request failed: {str(e)}")
             raise NangoConnectionError(f"Proxy request failed: {str(e)}") from None
 
-    def parse_token_expiry(
-        self, expires_in: Optional[int] = None
-    ) -> Optional[datetime]:
+    def parse_token_expiry(self, expires_in: int | None = None) -> datetime | None:
         """
         Parse token expiry time.
 
@@ -664,12 +645,12 @@ class NangoClient:
         if expires_in is None:
             return None
 
-        return datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+        return datetime.now(UTC) + timedelta(seconds=expires_in)
 
     def is_token_expiring_soon(
         self,
-        expires_at: Optional[datetime],
-        buffer_minutes: Optional[int] = None,
+        expires_at: datetime | None,
+        buffer_minutes: int | None = None,
     ) -> bool:
         """
         Check if a token is expiring soon.
@@ -685,11 +666,8 @@ class NangoClient:
         if expires_at is None:
             return False
 
-        buffer = (
-            buffer_minutes
-            or nango_integration_config.INTEGRATION_TOKEN_REFRESH_BUFFER_MINUTES
-        )
-        threshold = datetime.now(timezone.utc) + timedelta(minutes=buffer)
+        buffer = buffer_minutes or nango_integration_config.INTEGRATION_TOKEN_REFRESH_BUFFER_MINUTES
+        threshold = datetime.now(UTC) + timedelta(minutes=buffer)
 
         return expires_at <= threshold
 

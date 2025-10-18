@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Dict, Set, List, Optional, AsyncGenerator
+from collections.abc import AsyncGenerator
 from uuid import UUID
 
-from sqlalchemy import select, not_
+from sqlalchemy import not_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-
+from src.api.schemas.upload_models import AttachmentEventUpdate
 from src.domain.models.organisation_tables.chat_message_models import (
     Attachment,
     AttachmentStatus,
@@ -15,7 +15,6 @@ from src.domain.models.organisation_tables.chat_message_models import (
 from src.infra.messaging.redis_pubsub import AsyncRedisPubSub
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
 from src.infra.utils.logger import get_logger
-from src.api.schemas.upload_models import AttachmentEventUpdate
 
 logger = get_logger("attachment_sse_service")
 
@@ -69,8 +68,8 @@ class AttachmentSSEService:
             logger.debug("Redis pubsub close failed (Attachment SSE)", exc_info=True)
 
     async def get_initial_attachments(
-        self, explicit_ids: Optional[Set[UUID]] = None
-    ) -> List[Attachment]:
+        self, explicit_ids: set[UUID] | None = None
+    ) -> list[Attachment]:
         """
         Fetch initial attachment snapshot based on filter criteria.
 
@@ -100,7 +99,7 @@ class AttachmentSSEService:
         res = await self.org_session.execute(stmt)
         return res.scalars().all()
 
-    async def serialize_attachment(self, attachment: Attachment) -> Dict:
+    async def serialize_attachment(self, attachment: Attachment) -> dict:
         """
         Convert Attachment to dict including dynamic SAS URLs.
 
@@ -112,9 +111,7 @@ class AttachmentSSEService:
         model = AttachmentEventUpdate(
             attachment_id=str(attachment.attachment_id),
             status=_get_status_str(attachment.status),
-            updated_at=(
-                attachment.updated_at.isoformat() if attachment.updated_at else None
-            ),
+            updated_at=(attachment.updated_at.isoformat() if attachment.updated_at else None),
             error_message=attachment.processing_error,
             thumbnail_small_url=None,
         )
@@ -133,35 +130,28 @@ class AttachmentSSEService:
                 )
         return data
 
-    def _send_event(self, event_type: str, data) -> Dict:
+    def _send_event(self, event_type: str, data) -> dict:
         return {"event": event_type, "data": json.dumps(data)}
 
-    def _all_terminal(self, watched_status: Dict[str, str]) -> bool:
+    def _all_terminal(self, watched_status: dict[str, str]) -> bool:
         return all(st in self.TERMINAL_STATUSES for st in watched_status.values())
 
     def _should_timeout(
-        self, start_time: float, current_time: float, timeout_seconds: Optional[int]
+        self, start_time: float, current_time: float, timeout_seconds: int | None
     ) -> bool:
-        return (
-            timeout_seconds is not None
-            and (current_time - start_time) > timeout_seconds
-        )
+        return timeout_seconds is not None and (current_time - start_time) > timeout_seconds
 
     def _should_heartbeat(
         self, current_time: float, last_heartbeat: float, heartbeat_interval: float
     ) -> bool:
         return (current_time - last_heartbeat) >= heartbeat_interval
 
-    async def _handle_initial(
-        self, explicit_ids: Optional[Set[UUID]], watched_status: Dict[str, str]
-    ):
+    async def _handle_initial(self, explicit_ids: set[UUID] | None, watched_status: dict[str, str]):
         initial = await self.get_initial_attachments(explicit_ids)
         if not initial:
             yield self._send_event("complete", {"message": "no_attachments_to_watch"})
             return
-        serialized_list = await asyncio.gather(
-            *[self.serialize_attachment(a) for a in initial]
-        )
+        serialized_list = await asyncio.gather(*[self.serialize_attachment(a) for a in initial])
         for serialized in serialized_list:
             watched_status[serialized["attachment_id"]] = serialized["status"]
         yield self._send_event("status", serialized_list)
@@ -170,24 +160,20 @@ class AttachmentSSEService:
 
     async def _stream_updates(
         self,
-        watched_status: Dict[str, str],
-        explicit_ids: Optional[Set[UUID]],
+        watched_status: dict[str, str],
+        explicit_ids: set[UUID] | None,
         start_time: float,
         last_heartbeat: float,
-        timeout_seconds: Optional[int],
+        timeout_seconds: int | None,
         heartbeat_interval: float,
     ):
         channel = channel_for_attachment_updates(self.organisation_id)
-        explicit_id_strs: Optional[Set[str]] = (
-            {str(i) for i in explicit_ids} if explicit_ids else None
-        )
+        explicit_id_strs: set[str] | None = {str(i) for i in explicit_ids} if explicit_ids else None
 
         async for message in self.redis_pubsub.subscribe_to_channel(channel):
             current_time = asyncio.get_event_loop().time()
             if self._should_timeout(start_time, current_time, timeout_seconds):
-                yield self._send_event(
-                    "timeout", {"message": "timeout", "reconnect": True}
-                )
+                yield self._send_event("timeout", {"message": "timeout", "reconnect": True})
                 return
             if self._should_heartbeat(current_time, last_heartbeat, heartbeat_interval):
                 last_heartbeat = current_time
@@ -201,17 +187,15 @@ class AttachmentSSEService:
             watched_status[att_id] = message.get("status")
             yield self._send_event("status", [message])
             if self._all_terminal(watched_status):
-                yield self._send_event(
-                    "complete", {"message": "all_attachments_terminal"}
-                )
+                yield self._send_event("complete", {"message": "all_attachments_terminal"})
                 return
 
     async def stream_events(
         self,
-        explicit_ids: Optional[Set[UUID]] = None,
-        timeout_seconds: Optional[int] = 1800,
+        explicit_ids: set[UUID] | None = None,
+        timeout_seconds: int | None = 1800,
         heartbeat_interval: float = 25.0,
-    ) -> AsyncGenerator[Dict, None]:
+    ) -> AsyncGenerator[dict, None]:
         """Generate SSE events for attachment status updates."""
         logger.info(
             "Starting attachment SSE stream org=%s user=%s",
@@ -220,7 +204,7 @@ class AttachmentSSEService:
         )
         start_time = asyncio.get_event_loop().time()
         last_heartbeat = start_time
-        watched_status: Dict[str, str] = {}
+        watched_status: dict[str, str] = {}
         try:
             # Send initial snapshot
             async for evt in self._handle_initial(explicit_ids, watched_status):
@@ -230,18 +214,14 @@ class AttachmentSSEService:
                     try:
                         await self.org_session.close()
                     except Exception:
-                        logger.debug(
-                            "Attachment SSE org_session early-close failed (complete)"
-                        )
+                        logger.debug("Attachment SSE org_session early-close failed (complete)")
                     return
 
             # Release DB session before long-lived Redis loop to avoid holding pool connections
             try:
                 await self.org_session.close()
             except Exception:
-                logger.debug(
-                    "Attachment SSE org_session early-close failed (post-initial)"
-                )
+                logger.debug("Attachment SSE org_session early-close failed (post-initial)")
 
             # Stream updates from Redis only (no DB required)
             async for evt in self._stream_updates(
@@ -255,9 +235,7 @@ class AttachmentSSEService:
                 yield evt
         except Exception as e:
             logger.error("Attachment SSE stream error: %s", e, exc_info=True)
-            yield self._send_event(
-                "error", {"message": "internal_error", "reconnect": True}
-            )
+            yield self._send_event("error", {"message": "internal_error", "reconnect": True})
         finally:
             try:
                 await self.redis_pubsub.close()

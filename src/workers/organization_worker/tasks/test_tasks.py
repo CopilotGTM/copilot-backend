@@ -1,7 +1,7 @@
 """Test tasks for debugging organization worker connectivity."""
 
-from src.workers.organization_worker.celery_app import app
 from src.infra.utils.logger import get_logger
+from src.workers.organization_worker.celery_app import app
 
 logger = get_logger("organization_test_tasks")
 

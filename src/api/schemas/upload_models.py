@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from uuid import UUID
-from typing import Dict, Any, Optional
-from pydantic import BaseModel, Field, HttpUrl, field_validator
 from datetime import datetime
+from uuid import UUID
 
-from src.infra.config.configs import chat_file_upload_config
+from pydantic import BaseModel, Field, HttpUrl, field_validator
 from src.domain.models.organisation_tables.chat_message_models import AttachmentStatus
+from src.infra.config.configs import chat_file_upload_config
 
 # Centralized constants for validation, sourced from the application config.
 # This makes the API schema the single source of truth for request validation.
@@ -27,12 +26,14 @@ class PresignRequest(BaseModel):
     size_bytes: int = Field(..., gt=0, description="The size of the file in bytes.")
 
     @field_validator("mimetype")
+    @classmethod
     def validate_mimetype(cls, v: str) -> str:
         if v not in ALLOWED_MIMETYPES:
             raise ValueError(f"MIME type '{v}' is not allowed.")
         return v
 
     @field_validator("size_bytes")
+    @classmethod
     def validate_size(cls, v: int) -> int:
         if v > MAX_FILE_SIZE_BYTES:
             raise ValueError(
@@ -52,12 +53,8 @@ class PresignResponse(BaseModel):
     filename: str
     mimetype: str
     upload_url: HttpUrl
-    size_bytes: int = Field(
-        ..., description="Client-reported size of the file in bytes"
-    )
-    expires_in_seconds: int = Field(
-        ..., description="Seconds until the upload URL expires"
-    )
+    size_bytes: int = Field(..., description="Client-reported size of the file in bytes")
+    expires_in_seconds: int = Field(..., description="Seconds until the upload URL expires")
     status: AttachmentStatus = Field(
         ...,
         description="Logical status for the attachment record (e.g. pending_upload)",
@@ -75,10 +72,8 @@ class PresignResponse(BaseModel):
 class FinalizeRequest(BaseModel):
     """Request to finalize an upload after the file is in storage."""
 
-    attachment_id: UUID = Field(
-        ..., description="The ID of the attachment to finalize."
-    )
-    checksum: Optional[str] = Field(
+    attachment_id: UUID = Field(..., description="The ID of the attachment to finalize.")
+    checksum: str | None = Field(
         default=None,
         description="The MD5 or SHA256 checksum of the uploaded file for integrity verification (optional).",
     )
@@ -104,9 +99,7 @@ class AttachmentDownloadResponse(BaseModel):
 
     attachment_id: UUID
     download_url: HttpUrl
-    expires_in_seconds: int = Field(
-        default=120 * 60, description="Seconds until the URL expires"
-    )
+    expires_in_seconds: int = Field(default=120 * 60, description="Seconds until the URL expires")
 
 
 # ---------------------------- Batch Models ---------------------------- #
@@ -183,9 +176,9 @@ class AttachmentEventUpdate(BaseModel):
 
     attachment_id: str
     status: str
-    updated_at: Optional[str] = None
-    error_message: Optional[str] = None
-    thumbnail_small_url: Optional[str] = None
+    updated_at: str | None = None
+    error_message: str | None = None
+    thumbnail_small_url: str | None = None
 
     class Config:
         orm_mode = True

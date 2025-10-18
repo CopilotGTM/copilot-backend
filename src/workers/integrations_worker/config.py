@@ -1,5 +1,6 @@
-from kombu import Queue, Exchange
 from celery.schedules import crontab
+from kombu import Exchange, Queue
+
 from src.workers.base.worker_config import BaseWorkerConfig
 
 

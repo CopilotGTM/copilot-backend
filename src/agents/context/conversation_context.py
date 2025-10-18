@@ -5,9 +5,9 @@ Supports multi-turn conversations, context switching, and state persistence.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
-from uuid import UUID, uuid4
 from datetime import datetime
+from typing import Any
+from uuid import UUID, uuid4
 
 from src.domain.models.organisation_tables.chat_message_models import ChatMessage
 
@@ -15,14 +15,14 @@ from src.domain.models.organisation_tables.chat_message_models import ChatMessag
 class ConversationContext:
     """Maintains context for a conversation session."""
 
-    def __init__(self, session_id: UUID, user_id: Optional[UUID] = None):
+    def __init__(self, session_id: UUID, user_id: UUID | None = None):
         self.session_id = session_id
         self.user_id = user_id
-        self.context_data: Dict[str, Any] = {}
-        self.interaction_history: List[Dict] = []
-        self.pending_questions: List[Dict] = []
-        self.current_agent: Optional[str] = None
-        self.agent_switches: List[Dict] = []
+        self.context_data: dict[str, Any] = {}
+        self.interaction_history: list[dict] = []
+        self.pending_questions: list[dict] = []
+        self.current_agent: str | None = None
+        self.agent_switches: list[dict] = []
         self.created_at = datetime.now()
         self.last_updated = datetime.now()
 
@@ -38,7 +38,7 @@ class ConversationContext:
         )
         self.last_updated = datetime.now()
 
-    def add_agent_response(self, response_summary: Dict):
+    def add_agent_response(self, response_summary: dict):
         """Add agent response summary to context."""
         self.interaction_history.append(
             {
@@ -50,7 +50,7 @@ class ConversationContext:
         )
         self.last_updated = datetime.now()
 
-    def add_pending_question(self, question_data: Dict):
+    def add_pending_question(self, question_data: dict):
         """Add a pending question from agent."""
         question_id = str(uuid4())
         question_entry = {
@@ -63,7 +63,7 @@ class ConversationContext:
         self.pending_questions.append(question_entry)
         return question_id
 
-    def answer_question(self, question_id: str, answer: Dict) -> bool:
+    def answer_question(self, question_id: str, answer: dict) -> bool:
         """Mark a question as answered."""
         for q in self.pending_questions:
             if q["id"] == question_id:
@@ -73,7 +73,7 @@ class ConversationContext:
                 return True
         return False
 
-    def request_agent_switch(self, switch_data: Dict):
+    def request_agent_switch(self, switch_data: dict):
         """Record agent switch request."""
         switch_entry = {
             "id": str(uuid4()),
@@ -106,19 +106,19 @@ class ConversationContext:
         """Get context data."""
         return self.context_data.get(key, default)
 
-    def get_recent_interactions(self, limit: int = 5) -> List[Dict]:
+    def get_recent_interactions(self, limit: int = 5) -> list[dict]:
         """Get recent interaction history."""
         return self.interaction_history[-limit:]
 
-    def get_pending_questions(self) -> List[Dict]:
+    def get_pending_questions(self) -> list[dict]:
         """Get all pending questions."""
         return [q for q in self.pending_questions if q["status"] == "pending"]
 
-    def get_pending_agent_switches(self) -> List[Dict]:
+    def get_pending_agent_switches(self) -> list[dict]:
         """Get pending agent switches."""
         return [s for s in self.agent_switches if s["status"] == "pending"]
 
-    def summarize(self) -> Dict[str, Any]:
+    def summarize(self) -> dict[str, Any]:
         """Get context summary."""
         return {
             "session_id": str(self.session_id),
@@ -136,17 +136,17 @@ class ContextManager:
     """Manages conversation contexts across sessions."""
 
     def __init__(self):
-        self._contexts: Dict[UUID, ConversationContext] = {}
+        self._contexts: dict[UUID, ConversationContext] = {}
 
     def get_or_create_context(
-        self, session_id: UUID, user_id: Optional[UUID] = None
+        self, session_id: UUID, user_id: UUID | None = None
     ) -> ConversationContext:
         """Get existing context or create new one."""
         if session_id not in self._contexts:
             self._contexts[session_id] = ConversationContext(session_id, user_id)
         return self._contexts[session_id]
 
-    def get_context(self, session_id: UUID) -> Optional[ConversationContext]:
+    def get_context(self, session_id: UUID) -> ConversationContext | None:
         """Get existing context."""
         return self._contexts.get(session_id)
 
@@ -172,7 +172,7 @@ class ContextManager:
 
         return len(to_remove)
 
-    def get_all_contexts_summary(self) -> List[Dict]:
+    def get_all_contexts_summary(self) -> list[dict]:
         """Get summary of all contexts."""
         return [ctx.summarize() for ctx in self._contexts.values()]
 

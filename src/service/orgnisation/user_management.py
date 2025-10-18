@@ -1,25 +1,24 @@
-from typing import Optional, List
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from datetime import UTC, datetime
 from uuid import UUID
-from datetime import datetime, timezone
 
-from src.domain.models.master_tables import (
-    User,
-    Organisation,
-    UserActionHistory,
-    UserEventType,
-    AdminUserStatus,
-)
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from src.domain.models.admin_user_models import (
     CreateUserRequest,
     UpdateUserRequest,
 )
+from src.domain.models.master_tables import (
+    AdminUserStatus,
+    Organisation,
+    User,
+    UserActionHistory,
+    UserEventType,
+)
 from src.infra.auth.email_service import email_service
 from src.infra.auth.user_auth import user_auth
-from src.infra.utils.logger import get_logger
-from src.infra.utils.cursor import decode_cursor
 from src.infra.config.constant import AdminUserErrors
+from src.infra.utils.cursor import decode_cursor
+from src.infra.utils.logger import get_logger
 
 logger = get_logger("user_management_service")
 
@@ -38,9 +37,7 @@ class UserManagementService:
             raise ValueError(AdminUserErrors.ORGANISATION_NOT_FOUND)
 
         # Check if user already exists in local DB
-        result = await session.execute(
-            select(User).where(User.email == user_data.email)
-        )
+        result = await session.execute(select(User).where(User.email == user_data.email))
         existing_user = result.scalars().first()
         if existing_user:
             raise ValueError(AdminUserErrors.USER_ALREADY_EXISTS)
@@ -93,21 +90,19 @@ class UserManagementService:
                 f"Failed to send creation email to {new_user.email}. Please send credentials manually."
             )
 
-        logger.info(
-            f"Successfully created user {new_user.email} with ID {new_user.user_id}"
-        )
+        logger.info(f"Successfully created user {new_user.email} with ID {new_user.user_id}")
         return new_user
 
-    async def get_user(self, session: AsyncSession, user_id: UUID) -> Optional[User]:
+    async def get_user(self, session: AsyncSession, user_id: UUID) -> User | None:
         return await session.get(User, user_id)
 
     async def list_users(
         self,
         session: AsyncSession,
         limit: int,
-        cursor: Optional[str],
-        organisation_id: Optional[UUID],
-    ) -> List[User]:
+        cursor: str | None,
+        organisation_id: UUID | None,
+    ) -> list[User]:
         statement = select(User)
         if organisation_id:
             statement = statement.where(User.organisation_id == organisation_id)
@@ -115,13 +110,10 @@ class UserManagementService:
         if cursor:
             ts, user_id = decode_cursor(cursor)
             statement = statement.where(
-                (User.created_at < ts)
-                | ((User.created_at == ts) & (User.user_id < user_id))
+                (User.created_at < ts) | ((User.created_at == ts) & (User.user_id < user_id))
             )
 
-        statement = statement.order_by(
-            User.created_at.desc(), User.user_id.desc()
-        ).limit(limit + 1)
+        statement = statement.order_by(User.created_at.desc(), User.user_id.desc()).limit(limit + 1)
         result = await session.execute(statement)
         return result.scalars().all()
 
@@ -163,7 +155,7 @@ class UserManagementService:
         user_id: UUID,
         admin_id: UUID,
         new_admin_status: AdminUserStatus,
-        note: Optional[str],
+        note: str | None,
     ) -> User:
         user = await session.get(User, user_id)
         if not user:
@@ -171,7 +163,7 @@ class UserManagementService:
 
         user.admin_status = new_admin_status
         if new_admin_status == AdminUserStatus.APPROVED:
-            user.approved_at = datetime.now(timezone.utc)
+            user.approved_at = datetime.now(UTC)
             user.approved_by = admin_id
 
         history_entry = UserActionHistory(
@@ -193,22 +185,17 @@ class UserManagementService:
         session: AsyncSession,
         organisation_id: UUID,
         limit: int,
-        cursor: Optional[str],
-    ) -> List[UserActionHistory]:
+        cursor: str | None,
+    ) -> list[UserActionHistory]:
         statement = (
-            select(UserActionHistory)
-            .join(User)
-            .where(User.organisation_id == organisation_id)
+            select(UserActionHistory).join(User).where(User.organisation_id == organisation_id)
         )
 
         if cursor:
             ts, history_id = decode_cursor(cursor)
             statement = statement.where(
                 (UserActionHistory.created_at < ts)
-                | (
-                    (UserActionHistory.created_at == ts)
-                    & (UserActionHistory.id < history_id)
-                )
+                | ((UserActionHistory.created_at == ts) & (UserActionHistory.id < history_id))
             )
 
         statement = statement.order_by(

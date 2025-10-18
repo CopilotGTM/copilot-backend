@@ -1,31 +1,29 @@
-from typing import Optional, Dict, Any, List
 from uuid import UUID
-from fastapi import APIRouter, Depends, Query
-from sqlalchemy import or_, and_, select
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.domain.models.master_tables import SuperAdmin, AdminRole
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy import and_, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
+from src.api.dependencies.master_dependencies import get_master_async_session
+from src.api.schemas.base_models import GenericResponse
+from src.api.utils.http_response import Response
 from src.domain.models.admin_org_models import (
     CreateOrganizationRequest,
     CreateOrganizationResponse,
-    PaginationOrganizations,
-    UpdateOrganizationRequest,
     ListOrganizationResponse,
+    PaginatedOrganisationActionHistoryResponse,
+    PaginationOrganizations,
     UpdateOrganisationStatusRequest,
     UpdateOrganisationStatusResponse,
-    PaginatedOrganisationActionHistoryResponse,
+    UpdateOrganizationRequest,
 )
-from src.domain.models.master_tables import Organisation
-from src.api.dependencies.master_dependencies import get_master_async_session
+from src.domain.models.master_tables import AdminRole, Organisation, SuperAdmin
+from src.infra.auth.admin_auth import admin_auth
+from src.infra.config.constant import AdminOrganizationErrors
+from src.infra.utils.cursor import decode_cursor, encode_cursor
 from src.infra.utils.logger import get_logger
-from src.infra.utils.cursor import encode_cursor, decode_cursor
 from src.service.orgnisation.organization_management import (
     organization_management_service,
 )
-from src.api.utils.http_response import Response
-from src.infra.auth.admin_auth import admin_auth
-from src.api.schemas.base_models import GenericResponse
-from src.infra.config.constant import AdminOrganizationErrors
 from src.workers.organization_worker.tasks.organization import create_organization_task
 
 logger = get_logger("admin_organisations_handler")
@@ -63,18 +61,14 @@ async def create_organization(
             )
 
         # details for the organization
-        org_details = request.model_dump(
-            exclude_unset=True, exclude={"organisation_name"}
-        )
+        org_details = request.model_dump(exclude_unset=True, exclude={"organisation_name"})
         logger.info(f"Organization details: {org_details}")
 
         task_result = create_organization_task.delay(
             admin_id=str(current_user),
             organisation_name=request.organisation_name,
             org_details=org_details,
-        ).get(
-            timeout=120
-        )  # 1-minute timeout for the synchronous task
+        ).get(timeout=120)  # 1-minute timeout for the synchronous task
 
         response_data = CreateOrganizationResponse(**task_result)
 
@@ -102,7 +96,7 @@ async def create_organization(
 )
 async def list_organizations(
     limit: int = Query(20, ge=1, le=100),
-    cursor: Optional[str] = Query(
+    cursor: str | None = Query(
         None,
         description="Opaque cursor returned by the previous call (omit for first page)",
     ),
@@ -141,21 +135,17 @@ async def list_organizations(
         stmt = (
             select(Organisation)
             .where(*filters)
-            .order_by(
-                Organisation.created_at.desc(), Organisation.organisation_id.desc()
-            )
+            .order_by(Organisation.created_at.desc(), Organisation.organisation_id.desc())
             .limit(limit + 1)
         )
 
         result = await master_session.execute(stmt)
-        organizations: List[Organisation] = result.scalars().all()
+        organizations: list[Organisation] = result.scalars().all()
         has_more = len(organizations) == limit + 1
         items = organizations[:limit]
 
         next_cursor = (
-            encode_cursor(items[-1].created_at, items[-1].organisation_id)
-            if has_more
-            else None
+            encode_cursor(items[-1].created_at, items[-1].organisation_id) if has_more else None
         )
 
         response_data = PaginationOrganizations(organizations=items, cursor=next_cursor)
@@ -181,7 +171,7 @@ async def list_organizations(
 )
 async def get_all_organisation_history(
     limit: int = Query(20, ge=1, le=100),
-    cursor: Optional[str] = None,
+    cursor: str | None = None,
     current_admin: SuperAdmin = Depends(admin_auth),
     master_session: AsyncSession = Depends(get_master_async_session),
 ):
@@ -194,19 +184,15 @@ async def get_all_organisation_history(
                 AdminOrganizationErrors.SUPER_ADMIN_ACCESS_REQUIRED
             )
 
-        history_items = (
-            await organization_management_service.get_all_organization_history(
-                session=master_session,
-                limit=limit,
-                cursor=cursor,
-            )
+        history_items = await organization_management_service.get_all_organization_history(
+            session=master_session,
+            limit=limit,
+            cursor=cursor,
         )
 
         has_more = len(history_items) == limit + 1
         items = history_items[:limit]
-        next_cursor = (
-            encode_cursor(items[-1].created_at, items[-1].id) if has_more else None
-        )
+        next_cursor = encode_cursor(items[-1].created_at, items[-1].id) if has_more else None
 
         response_data = PaginatedOrganisationActionHistoryResponse(
             history=items, cursor=next_cursor
@@ -247,22 +233,16 @@ async def get_organization(
             logger.warning(
                 f"Unauthorized attempt to get organization by user: {current_admin.admin_id}."
             )
-            return Response.forbidden_error_response(
-                AdminOrganizationErrors.ADMIN_ACCESS_REQUIRED
-            )
+            return Response.forbidden_error_response(AdminOrganizationErrors.ADMIN_ACCESS_REQUIRED)
 
         # Fetch organization by ID
-        statement = select(Organisation).where(
-            Organisation.organisation_id == organisation_id
-        )
+        statement = select(Organisation).where(Organisation.organisation_id == organisation_id)
         result = await master_session.execute(statement)
         organization = result.scalars().first()
 
         if not organization:
             logger.warning(f"Organization with ID '{organisation_id}' not found.")
-            return Response.not_found_error_response(
-                AdminOrganizationErrors.ORGANIZATION_NOT_FOUND
-            )
+            return Response.not_found_error_response(AdminOrganizationErrors.ORGANIZATION_NOT_FOUND)
 
         response_data = ListOrganizationResponse.from_orm(organization)
 
@@ -314,9 +294,7 @@ async def update_organization(
 
         update_data = request.dict(exclude_unset=True)
         if not update_data:
-            return Response.bad_request_error_response(
-                AdminOrganizationErrors.NO_UPDATE_DATA
-            )
+            return Response.bad_request_error_response(AdminOrganizationErrors.NO_UPDATE_DATA)
 
         organization = await organization_management_service.update_organization(
             session=master_session,
@@ -325,9 +303,7 @@ async def update_organization(
             update_data=update_data,
         )
 
-        logger.info(
-            f"Successfully updated organization: {organization.organisation_name}"
-        )
+        logger.info(f"Successfully updated organization: {organization.organisation_name}")
         return Response.success_response(
             message="Organization updated successfully",
             data=ListOrganizationResponse.from_orm(organization),
@@ -418,7 +394,7 @@ async def update_organisation_status(
 async def get_organisation_history(
     organisation_id: UUID,
     limit: int = Query(20, ge=1, le=100),
-    cursor: Optional[str] = None,
+    cursor: str | None = None,
     current_admin: SuperAdmin = Depends(admin_auth),
     master_session: AsyncSession = Depends(get_master_async_session),
 ):
@@ -427,9 +403,7 @@ async def get_organisation_history(
     """
     try:
         if current_admin.role not in [AdminRole.SUPER_ADMIN, AdminRole.ADMIN]:
-            return Response.forbidden_error_response(
-                AdminOrganizationErrors.ADMIN_ACCESS_REQUIRED
-            )
+            return Response.forbidden_error_response(AdminOrganizationErrors.ADMIN_ACCESS_REQUIRED)
 
         history_items = await organization_management_service.get_organization_history(
             session=master_session,
@@ -440,9 +414,7 @@ async def get_organisation_history(
 
         has_more = len(history_items) == limit + 1
         items = history_items[:limit]
-        next_cursor = (
-            encode_cursor(items[-1].created_at, items[-1].id) if has_more else None
-        )
+        next_cursor = encode_cursor(items[-1].created_at, items[-1].id) if has_more else None
 
         response_data = PaginatedOrganisationActionHistoryResponse(
             history=items, cursor=next_cursor

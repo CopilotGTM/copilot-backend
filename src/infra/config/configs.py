@@ -1,12 +1,12 @@
 import os
-from typing import Optional
+
 from dotenv import load_dotenv
 
 # Load environment variables at the beginning of config module
 load_dotenv(override=True)
 
-from .constant import CONFIG_MAP
 from ..utils.logger import get_logger
+from .constant import CONFIG_MAP
 
 logger = get_logger()
 
@@ -27,9 +27,7 @@ class SupabaseConfig:
     SUPABASE_JWT_SECRET: str = os.getenv("SUPABASE_JWT_SECRET", "")
 
     # Enable/disable Supabase auth
-    ENABLE_SUPABASE_AUTH: bool = (
-        os.getenv("ENABLE_SUPABASE_AUTH", "true").lower() == "true"
-    )
+    ENABLE_SUPABASE_AUTH: bool = os.getenv("ENABLE_SUPABASE_AUTH", "true").lower() == "true"
 
 
 class DatabaseConfig:
@@ -41,21 +39,17 @@ class DatabaseConfig:
     DATABASE_PASSWORD: str = os.getenv("DATABASE_PASSWORD", "")
     DATABASE_NAME: str = os.getenv("DATABASE_NAME", "postgres")
     DATABASE_SSL_MODE: str = os.getenv("DATABASE_SSL_MODE", "require")
-    DATABASE_SSL_ROOT_CERT: Optional[str] = os.getenv("DATABASE_SSL_ROOT_CERT")
+    DATABASE_SSL_ROOT_CERT: str | None = os.getenv("DATABASE_SSL_ROOT_CERT")
     POOL_RECYCLE_SEC: int = int(os.getenv("POOL_RECYCLE_SEC", "1800"))
     DATABASE_POOL_SIZE: int = int(os.getenv("DATABASE_POOL_SIZE", "5"))
     DATABASE_MAX_OVERFLOW: int = int(os.getenv("DATABASE_MAX_OVERFLOW", "2"))
 
     # guard against hangs when DB unavailable
-    DATABASE_CONNECT_TIMEOUT_SEC: int = int(
-        os.getenv("DATABASE_CONNECT_TIMEOUT_SEC", "10")
-    )
+    DATABASE_CONNECT_TIMEOUT_SEC: int = int(os.getenv("DATABASE_CONNECT_TIMEOUT_SEC", "10"))
     DATABASE_POOL_TIMEOUT_SEC: int = int(os.getenv("DATABASE_POOL_TIMEOUT_SEC", "30"))
 
     # default server-side statement timeout (ms). 0 disables.
-    DATABASE_STATEMENT_TIMEOUT_MS: int = int(
-        os.getenv("DATABASE_STATEMENT_TIMEOUT_MS", "60000")
-    )
+    DATABASE_STATEMENT_TIMEOUT_MS: int = int(os.getenv("DATABASE_STATEMENT_TIMEOUT_MS", "60000"))
 
 
 class AppConfig:
@@ -85,42 +79,38 @@ class AppConfig:
 class OpenAIConfig:
     """Configuration for OpenAI services"""
 
-    AZURE_OPENAI_API_KEY: Optional[str] = os.getenv("AZURE_OPENAI_API_KEY")
-    AZURE_OPENAI_ENDPOINT: Optional[str] = os.getenv("AZURE_OPENAI_ENDPOINT")
+    AZURE_OPENAI_API_KEY: str | None = os.getenv("AZURE_OPENAI_API_KEY")
+    AZURE_OPENAI_ENDPOINT: str | None = os.getenv("AZURE_OPENAI_ENDPOINT")
 
 
 class EmbedderConfig:
     """Configuration for Embedder service"""
 
-    AZURE_EMBEDDER_OPENAI_API_KEY: Optional[str] = os.getenv(
-        "AZURE_EMBEDDER_OPENAI_API_KEY"
-    )
-    AZURE_EMBEDDER_OPENAI_ENDPOINT: Optional[str] = os.getenv(
-        "AZURE_EMBEDDER_OPENAI_ENDPOINT"
-    )
-    AZURE_EMBEDDER_DEPLOYMENT: Optional[str] = os.getenv("AZURE_EMBEDDER_DEPLOYMENT")
+    AZURE_EMBEDDER_OPENAI_API_KEY: str | None = os.getenv("AZURE_EMBEDDER_OPENAI_API_KEY")
+    AZURE_EMBEDDER_OPENAI_ENDPOINT: str | None = os.getenv("AZURE_EMBEDDER_OPENAI_ENDPOINT")
+    AZURE_EMBEDDER_DEPLOYMENT: str | None = os.getenv("AZURE_EMBEDDER_DEPLOYMENT")
 
 
 class CloudStorageConfig:
     """Configuration for Cloud Storage"""
 
     CLOUD_PROVIDER: str = os.getenv("CLOUD_PROVIDER", "aws")
-    APPLICATION_STORAGE_NAME: Optional[str] = os.getenv("APPLICATION_STORAGE_NAME")
-    ORGANISATION_STORAGE_NAME: Optional[str] = os.getenv("ORGANISATION_STORAGE_NAME")
-    APPLICATION_REGION: Optional[str] = os.getenv("APPLICATION_REGION")
+    APPLICATION_STORAGE_NAME: str | None = os.getenv("APPLICATION_STORAGE_NAME")
+    ORGANISATION_STORAGE_NAME: str | None = os.getenv("ORGANISATION_STORAGE_NAME")
+    APPLICATION_REGION: str | None = os.getenv("APPLICATION_REGION")
 
 
 class ResendConfig:
     """Configuration for Resend email service"""
 
-    RESEND_API_KEY: Optional[str] = os.getenv("RESEND_API_KEY")
-    FROM_EMAIL: Optional[str] = os.getenv("FROM_EMAIL")
+    RESEND_API_KEY: str | None = os.getenv("RESEND_API_KEY")
+    FROM_EMAIL: str | None = os.getenv("FROM_EMAIL")
 
 
 class SuperAdminConfig:
     """Configuration for Super Admin"""
 
-    SUPER_ADMIN_EMAIL: Optional[str] = os.getenv("SUPER_ADMIN_EMAIL")
+    SUPER_ADMIN_EMAIL: str | None = os.getenv("SUPER_ADMIN_EMAIL")
 
 
 class NangoIntegrationConfig:
@@ -137,21 +127,17 @@ class NangoIntegrationConfig:
     INTEGRATION_TOKEN_REFRESH_BUFFER_MINUTES: int = int(
         os.getenv("INTEGRATION_TOKEN_REFRESH_BUFFER_MINUTES", "30")
     )
-    INTEGRATION_SYNC_RETRY_ATTEMPTS: int = int(
-        os.getenv("INTEGRATION_SYNC_RETRY_ATTEMPTS", "3")
-    )
-    INTEGRATION_MAX_CONCURRENT_SYNCS: int = int(
-        os.getenv("INTEGRATION_MAX_CONCURRENT_SYNCS", "5")
-    )
+    INTEGRATION_SYNC_RETRY_ATTEMPTS: int = int(os.getenv("INTEGRATION_SYNC_RETRY_ATTEMPTS", "3"))
+    INTEGRATION_MAX_CONCURRENT_SYNCS: int = int(os.getenv("INTEGRATION_MAX_CONCURRENT_SYNCS", "5"))
 
     # OAuth callback URL base (for frontend redirects after connection)
-    OAUTH_CALLBACK_BASE_URL: Optional[str] = os.getenv("APP_URL")
+    OAUTH_CALLBACK_BASE_URL: str | None = os.getenv("APP_URL")
 
 
 class SecretManagerConfig:
     """Configuration for Cloud Secret Manager"""
 
-    AZURE_KEY_VAULT_URL: Optional[str] = os.getenv("AZURE_KEY_VAULT_URL")
+    AZURE_KEY_VAULT_URL: str | None = os.getenv("AZURE_KEY_VAULT_URL")
     # New: bound individual secret fetch duration to avoid event-loop stalls
     SECRET_GET_TIMEOUT_SEC: int = int(os.getenv("SECRET_GET_TIMEOUT_SEC", "8"))
 
@@ -159,15 +145,13 @@ class SecretManagerConfig:
 class CloudInfraConfig:
     """Configuration for Cloud Infrastructure"""
 
-    AZURE_SUBSCRIPTION_ID: Optional[str] = os.getenv("AZURE_SUBSCRIPTION_ID")
-    AZURE_RESOURCE_GROUP: Optional[str] = os.getenv("AZURE_RESOURCE_GROUP")
+    AZURE_SUBSCRIPTION_ID: str | None = os.getenv("AZURE_SUBSCRIPTION_ID")
+    AZURE_RESOURCE_GROUP: str | None = os.getenv("AZURE_RESOURCE_GROUP")
     # Optional auth parameters (may be absent when relying purely on workload identity)
-    AZURE_TENANT_ID: Optional[str] = os.getenv("AZURE_TENANT_ID")
-    AZURE_CLIENT_ID: Optional[str] = os.getenv("AZURE_CLIENT_ID")
-    AZURE_CLIENT_SECRET: Optional[str] = os.getenv("AZURE_CLIENT_SECRET")
-    AZURE_ADDITIONALLY_ALLOWED_TENANTS: Optional[str] = os.getenv(
-        "AZURE_ADDITIONALLY_ALLOWED_TENANTS"
-    )
+    AZURE_TENANT_ID: str | None = os.getenv("AZURE_TENANT_ID")
+    AZURE_CLIENT_ID: str | None = os.getenv("AZURE_CLIENT_ID")
+    AZURE_CLIENT_SECRET: str | None = os.getenv("AZURE_CLIENT_SECRET")
+    AZURE_ADDITIONALLY_ALLOWED_TENANTS: str | None = os.getenv("AZURE_ADDITIONALLY_ALLOWED_TENANTS")
 
 
 class ChatFileUploadConfig:
@@ -216,9 +200,7 @@ class KnowledgeFileUploadConfig:
 class ThumbnailConfig:
     """Configuration for thumbnail generation behavior."""
 
-    ENABLE_TEXT_PLACEHOLDERS: bool = (
-        os.getenv("ENABLE_TEXT_PLACEHOLDERS", "true").lower() == "true"
-    )
+    ENABLE_TEXT_PLACEHOLDERS: bool = os.getenv("ENABLE_TEXT_PLACEHOLDERS", "true").lower() == "true"
     ENABLE_PDF_PLACEHOLDER_FALLBACK: bool = (
         os.getenv("ENABLE_PDF_PLACEHOLDER_FALLBACK", "false").lower() == "true"
     )
@@ -302,9 +284,7 @@ class ThumbnailConfig:
             return True
         if mimetype in cls.PDF_MIMETYPES:
             return True
-        if mimetype in cls.TEXT_LABEL_MAP or mimetype in cls.DOCUMENT_LABEL_MAP:
-            return True
-        return False
+        return bool(mimetype in cls.TEXT_LABEL_MAP or mimetype in cls.DOCUMENT_LABEL_MAP)
 
 
 thumbnail_config = ThumbnailConfig()
@@ -321,25 +301,17 @@ class PoolMonitorConfig:
     MONITOR_INTERVAL_SEC: float = float(os.getenv("DB_POOL_MONITOR_INTERVAL_SEC", "30"))
 
     # App vs Worker max checkout age (seconds)
-    APP_MAX_CHECKOUT_SEC: int = int(
-        os.getenv("APP_DB_CONN_MAX_CHECKOUT_SEC", "900")
-    )  # 15 minutes
+    APP_MAX_CHECKOUT_SEC: int = int(os.getenv("APP_DB_CONN_MAX_CHECKOUT_SEC", "900"))  # 15 minutes
     WORKER_MAX_CHECKOUT_SEC: int = int(
         os.getenv("WORKER_DB_CONN_MAX_CHECKOUT_SEC", "1200")
     )  # 20 minutes
 
     # Force close behavior (recommended false; invalidate on check-in is safer)
-    APP_FORCE_CLOSE: bool = (
-        os.getenv("APP_DB_CONN_FORCE_CLOSE", "false").lower() == "true"
-    )
-    WORKER_FORCE_CLOSE: bool = (
-        os.getenv("WORKER_DB_CONN_FORCE_CLOSE", "false").lower() == "true"
-    )
+    APP_FORCE_CLOSE: bool = os.getenv("APP_DB_CONN_FORCE_CLOSE", "false").lower() == "true"
+    WORKER_FORCE_CLOSE: bool = os.getenv("WORKER_DB_CONN_FORCE_CLOSE", "false").lower() == "true"
 
     # Optional discovery/warmup defaults
-    DISCOVER_MASTERS: bool = (
-        os.getenv("DB_POOL_MONITOR_DISCOVER_MASTERS", "true").lower() == "true"
-    )
+    DISCOVER_MASTERS: bool = os.getenv("DB_POOL_MONITOR_DISCOVER_MASTERS", "true").lower() == "true"
     WARMUP_MIN_IDLE: int = int(os.getenv("DB_POOL_MONITOR_WARMUP_MIN_IDLE", "0"))
 
 
@@ -357,9 +329,7 @@ class RateLimitConfig:
     READ_PER_HOUR: int = int(os.getenv("RATE_LIMIT_READ_PER_HOUR", "1000"))
 
     # Strict limits for authentication (login attempts)
-    AUTH_LOGIN_PER_MINUTE: int = int(
-        os.getenv("RATE_LIMIT_AUTH_LOGIN_PER_MINUTE", "10")
-    )
+    AUTH_LOGIN_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_AUTH_LOGIN_PER_MINUTE", "10"))
     AUTH_LOGIN_PER_HOUR: int = int(os.getenv("RATE_LIMIT_AUTH_LOGIN_PER_HOUR", "50"))
 
 
@@ -388,7 +358,7 @@ class Config:
 
     def __new__(cls):
         if cls._instance is None:
-            cls._instance = super(Config, cls).__new__(cls)
+            cls._instance = super().__new__(cls)
         return cls._instance
 
     def __init__(self):

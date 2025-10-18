@@ -6,12 +6,12 @@ Update this file when adding new integration types or changing display informati
 """
 
 from dataclasses import dataclass
-from typing import Dict, Optional, List
-from ...domain.models.organisation_tables.knowledge_models import (
-    IntegrationType,
-    IntegrationScope,
-)
+
 from ...domain.models.master_tables import UserAppRole
+from ...domain.models.organisation_tables.knowledge_models import (
+    IntegrationScope,
+    IntegrationType,
+)
 
 
 # Category display names
@@ -74,13 +74,13 @@ class IntegrationMetadata:
     category_name: str
     availability_status: str = AvailabilityStatus.AVAILABLE
     access_level: str = IntegrationAccessLevel.USER
-    oauth_scopes: Optional[List[str]] = None
-    documentation_url: Optional[str] = None
+    oauth_scopes: list[str] | None = None
+    documentation_url: str | None = None
     default_sync_frequency: str = "daily"
-    supported_sync_frequencies: Optional[List[str]] = None
+    supported_sync_frequencies: list[str] | None = None
     # NEW: Access control configuration
     default_scope: IntegrationScope = IntegrationScope.ORGANIZATION
-    can_be_created_by: Optional[List[UserAppRole]] = None
+    can_be_created_by: list[UserAppRole] | None = None
     allow_multiple_connections: bool = False
 
     def __post_init__(self):
@@ -115,7 +115,7 @@ class IntegrationMetadata:
 
 
 # Integration metadata registry
-INTEGRATION_METADATA: Dict[IntegrationType, IntegrationMetadata] = {
+INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
     IntegrationType.HUBSPOT: IntegrationMetadata(
         name="HubSpot",
         description="Sync contacts, deals, and sales activities from HubSpot CRM",
@@ -281,7 +281,7 @@ INTEGRATION_METADATA: Dict[IntegrationType, IntegrationMetadata] = {
 
 def get_integration_metadata(
     integration_type: IntegrationType,
-) -> Optional[IntegrationMetadata]:
+) -> IntegrationMetadata | None:
     """
     Get metadata for a specific integration type.
 
@@ -294,7 +294,7 @@ def get_integration_metadata(
     return INTEGRATION_METADATA.get(integration_type)
 
 
-def get_all_integration_metadata() -> Dict[IntegrationType, IntegrationMetadata]:
+def get_all_integration_metadata() -> dict[IntegrationType, IntegrationMetadata]:
     """
     Get all integration metadata.
 
@@ -306,7 +306,7 @@ def get_all_integration_metadata() -> Dict[IntegrationType, IntegrationMetadata]
 
 def list_integrations_by_category(
     category: str,
-) -> List[tuple[IntegrationType, IntegrationMetadata]]:
+) -> list[tuple[IntegrationType, IntegrationMetadata]]:
     """
     Get all integrations in a specific category.
 
@@ -323,7 +323,7 @@ def list_integrations_by_category(
     ]
 
 
-def get_all_categories() -> Dict[str, str]:
+def get_all_categories() -> dict[str, str]:
     """
     Get all unique categories with their display names.
 

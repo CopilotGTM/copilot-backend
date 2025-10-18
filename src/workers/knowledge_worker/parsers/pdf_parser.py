@@ -1,59 +1,46 @@
 from __future__ import annotations
 
-import os
-import asyncio
 import hashlib
-from io import BytesIO
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
-from uuid import UUID
-import json
-import gzip
-import hashlib as _hashlib
+import os
 from dataclasses import dataclass
-from PIL import Image
+from pathlib import Path
+from typing import Any
+from uuid import UUID
 
 try:
     from PyPDF2 import PdfReader
 except ImportError:
     PdfReader = None
-from src.workers.knowledge_worker.services.document_converter import get_doc_converter
-from src.workers.knowledge_worker.services.chunking import (
-    get_pdf_converter,
-    get_light_pdf_converter,
-    get_hybrid_chunker,
-    get_tokenizer,
-    DEFAULT_EMBED_MODEL_ID,
-)
-from docling_core.types.doc import (
-    TableItem,
-    PictureItem,
-    DocItemLabel,
-    DocItem,
-    ContentLayer,
-    PictureClassificationData,
-    PictureClassificationLabel,
-)
-from docling_core.types.doc.document import DoclingDocument
 from agno.media import Image as AgnoImage
-from datetime import datetime, timezone
-from .base_parser import BaseParser
+from docling_core.types.doc import (
+    DocItem,
+    DocItemLabel,
+    PictureItem,
+    TableItem,
+)
+
+from src.domain.models.organisation_tables.knowledge_models import (
+    OrganisationDocument,
+    OrganisationSourceStatus,
+)
+from src.infra.utils.logger import get_logger
 from src.workers.knowledge_worker.agents.embedding_service import get_embedding_service
-from src.workers.knowledge_worker.utils.content_processor import ContentProcessor
 from src.workers.knowledge_worker.agents.image_summary_agent import image_summary_agent
 from src.workers.knowledge_worker.agents.table_summary_agent import table_summary_agent
-from src.workers.knowledge_worker.config import KnowledgeWorkerConfig
-from src.infra.utils.logger import get_logger
+from src.workers.knowledge_worker.services.chunking import (
+    DEFAULT_EMBED_MODEL_ID,
+    get_hybrid_chunker,
+    get_tokenizer,
+)
+from src.workers.knowledge_worker.services.document_converter import get_doc_converter
 from src.workers.knowledge_worker.services.progress import ProgressPublisher
 from src.workers.knowledge_worker.services.storage_paths import (
     plan_image_path_for_source,
     plan_table_image_path_for_source,
 )
-from src.domain.models.organisation_tables.knowledge_models import OrganisationDocument
-from src.domain.models.organisation_tables.knowledge_models import (
-    OrganisationSourceStatus,
-)
+from src.workers.knowledge_worker.utils.content_processor import ContentProcessor
+
+from .base_parser import BaseParser
 
 logger = get_logger("pdf_parser")
 EMBED_MODEL_ID = DEFAULT_EMBED_MODEL_ID
@@ -63,16 +50,16 @@ EMBED_MODEL_ID = DEFAULT_EMBED_MODEL_ID
 class _ChunkInfo:
     index: int
     text: str
-    page_start: Optional[int]
-    page_end: Optional[int]
+    page_start: int | None
+    page_end: int | None
     has_tables: bool
     has_images: bool
-    tables: List[TableItem]
-    pictures: List[PictureItem]
-    table_summaries: List[str]
-    image_summaries: List[str]
-    table_images: List[Dict[str, Any]]  # Table image metadata and bytes
-    picture_images: List[Dict[str, Any]]  # Picture image metadata and bytes
+    tables: list[TableItem]
+    pictures: list[PictureItem]
+    table_summaries: list[str]
+    image_summaries: list[str]
+    table_images: list[dict[str, Any]]  # Table image metadata and bytes
+    picture_images: list[dict[str, Any]]  # Picture image metadata and bytes
     enhanced_content: str  # Combined text + summaries for embedding
 
 
@@ -88,18 +75,18 @@ class PDFParser(BaseParser):
         self.chunker = get_hybrid_chunker(EMBED_MODEL_ID)
 
     @classmethod
-    def supported_mimetypes(cls) -> List[str]:
+    def supported_mimetypes(cls) -> list[str]:
         return ["application/pdf"]
 
     def parse(
         self,
         file_path: str | Path,
-        document_url: Optional[str] = None,
-        source_id: Optional[str] = None,
-        source_blob_path: Optional[str] = None,
-        original_filename: Optional[str] = None,
-        source_size_bytes: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
+        document_url: str | None = None,
+        source_id: str | None = None,
+        source_blob_path: str | None = None,
+        original_filename: str | None = None,
+        source_size_bytes: int | None = None,
+    ) -> list[dict[str, Any]]:
         """
         Parse a PDF file and return processed document data using Docling.
 
@@ -126,9 +113,7 @@ class PDFParser(BaseParser):
             # Commented for testing only
             doc_converter = get_doc_converter()
             result = doc_converter.convert(temp_file_path)
-            self.publisher.publish(
-                status=OrganisationSourceStatus.EXTRACTING, progress=20
-            )
+            self.publisher.publish(status=OrganisationSourceStatus.EXTRACTING, progress=20)
 
             # # Docling document object
             dl_doc = result.document
@@ -143,7 +128,7 @@ class PDFParser(BaseParser):
                 logger.warning("No chunks produced by HybridChunker")
                 return []
 
-            output: List[OrganisationDocument] = []
+            output: list[OrganisationDocument] = []
             for index, chunk in enumerate(raw_chunks):
                 logger.info(f"Chunk {index} type: {type(chunk)}")
                 chunk_info = self._chunk_level_processing(
@@ -170,9 +155,7 @@ class PDFParser(BaseParser):
                     "is_pdf": True,
                 }
                 chunk_hash = self._compute_chunk_hash(chunk_info)
-                embedding = self.embedding_service.get_embedding(
-                    chunk_info.enhanced_content
-                )
+                embedding = self.embedding_service.get_embedding(chunk_info.enhanced_content)
                 output.append(
                     OrganisationDocument(
                         source_id=source_id,
@@ -254,18 +237,18 @@ class PDFParser(BaseParser):
 
     def summarize_tables(
         self,
-        tables: List[TableItem],
+        tables: list[TableItem],
         dl_doc: Any,
-        source_id: Optional[str] = None,
-        source_blob_path: Optional[str] = None,
-    ) -> Tuple[List[str], List[Dict[str, Any]]]:
+        source_id: str | None = None,
+        source_blob_path: str | None = None,
+    ) -> tuple[list[str], list[dict[str, Any]]]:
         """Generate summaries for tables and extract their images simultaneously."""
         if not tables:
             return [], []
 
         logger.info(f"Processing {len(tables)} tables")
-        summaries: List[str] = []
-        table_images: List[Dict[str, Any]] = []
+        summaries: list[str] = []
+        table_images: list[dict[str, Any]] = []
 
         for idx, table in enumerate(tables):
             try:
@@ -291,12 +274,9 @@ class PDFParser(BaseParser):
 
                         # Get page info and plan storage path
                         table_pages = [
-                            getattr(prov, "page_no", None)
-                            for prov in getattr(table, "prov", [])
+                            getattr(prov, "page_no", None) for prov in getattr(table, "prov", [])
                         ]
-                        first_page = min(
-                            [p for p in table_pages if p is not None], default=None
-                        )
+                        first_page = min([p for p in table_pages if p is not None], default=None)
 
                         blob_path = plan_table_image_path_for_source(
                             user_id=self.user_id,
@@ -330,25 +310,23 @@ class PDFParser(BaseParser):
                 logger.error(f"Error processing table {idx}: {e}")
                 continue
 
-        logger.info(
-            f"Generated {len(summaries)} summaries and {len(table_images)} images"
-        )
+        logger.info(f"Generated {len(summaries)} summaries and {len(table_images)} images")
         return summaries, table_images
 
     def summarize_pictures(
         self,
-        pictures: List[PictureItem],
+        pictures: list[PictureItem],
         dl_doc: Any,
-        source_id: Optional[str] = None,
-        source_blob_path: Optional[str] = None,
-    ) -> Tuple[List[str], List[Dict[str, Any]]]:
+        source_id: str | None = None,
+        source_blob_path: str | None = None,
+    ) -> tuple[list[str], list[dict[str, Any]]]:
         """Generate summaries for pictures and store images simultaneously."""
         if not pictures:
             return [], []
 
         logger.info(f"Processing {len(pictures)} pictures")
-        summaries: List[str] = []
-        picture_images: List[Dict[str, Any]] = []
+        summaries: list[str] = []
+        picture_images: list[dict[str, Any]] = []
 
         for idx, pic in enumerate(pictures):
             try:
@@ -390,12 +368,9 @@ class PDFParser(BaseParser):
                     if self.storage_backend:
                         # Get page info and plan storage path
                         pic_pages = [
-                            getattr(prov, "page_no", None)
-                            for prov in getattr(pic, "prov", [])
+                            getattr(prov, "page_no", None) for prov in getattr(pic, "prov", [])
                         ]
-                        first_page = min(
-                            [p for p in pic_pages if p is not None], default=None
-                        )
+                        first_page = min([p for p in pic_pages if p is not None], default=None)
 
                         blob_path = plan_image_path_for_source(
                             user_id=self.user_id,
@@ -429,13 +404,11 @@ class PDFParser(BaseParser):
                 logger.warning(f"Failed to process picture {idx}")
                 continue
 
-        logger.info(
-            f"Generated {len(summaries)} summaries and {len(picture_images)} images"
-        )
+        logger.info(f"Generated {len(summaries)} summaries and {len(picture_images)} images")
         return summaries, picture_images
 
     def _create_enhanced_content(
-        self, text: str, table_summaries: List[str], image_summaries: List[str]
+        self, text: str, table_summaries: list[str], image_summaries: list[str]
     ) -> str:
         """Create enhanced content by combining text with table and image summaries.
 
@@ -446,13 +419,13 @@ class PDFParser(BaseParser):
 
         if table_summaries:
             table_context = "\n\n[TABLE CONTENT]\n" + "\n".join(
-                f"Table {i+1}: {summary}" for i, summary in enumerate(table_summaries)
+                f"Table {i + 1}: {summary}" for i, summary in enumerate(table_summaries)
             )
             sections.append(table_context)
 
         if image_summaries:
             image_context = "\n\n[VISUAL CONTENT]\n" + "\n".join(
-                f"Image {i+1}: {summary}" for i, summary in enumerate(image_summaries)
+                f"Image {i + 1}: {summary}" for i, summary in enumerate(image_summaries)
             )
             sections.append(image_context)
 
@@ -502,15 +475,13 @@ class PDFParser(BaseParser):
         except Exception:
             return False
 
-    def _filter_pictures(
-        self, pictures: List[PictureItem], dl_doc: Any
-    ) -> List[PictureItem]:
+    def _filter_pictures(self, pictures: list[PictureItem], dl_doc: Any) -> list[PictureItem]:
         """Filter out tiny/irrelevant pictures in a best-effort manner.
 
         - drop pictures classified as decorative (logo/icon/background)
         - drop pictures with very small raster size
         """
-        out: List[PictureItem] = []
+        out: list[PictureItem] = []
         for p in pictures:
             try:
                 if self._is_excluded_by_class(p):
@@ -533,7 +504,7 @@ class PDFParser(BaseParser):
 
     def _extract_page_numbers(self, chunk_obj) -> int:
         """Extract page numbers from chunk metadata, if available."""
-        page_nos: List[int] = []
+        page_nos: list[int] = []
         seen_pages = set()
         meta = getattr(chunk_obj, "meta", None)
         doc_items = getattr(meta, "doc_items", []) if meta else []
@@ -547,7 +518,7 @@ class PDFParser(BaseParser):
         page_end = max(page_nos) if page_nos else page_start
         return page_start, page_end
 
-    def _extract_tables(self, doc_items: List[DocItem], dl_doc: Any) -> List[TableItem]:
+    def _extract_tables(self, doc_items: list[DocItem], dl_doc: Any) -> list[TableItem]:
         """Extract tables from this chunk's doc_items.
 
         The chunker creates DocItem objects with label='table' instead of TableItem objects.
@@ -565,40 +536,29 @@ class PDFParser(BaseParser):
         mapped_tables = []
         for item in doc_items:
             item_label = getattr(item, "label", None)
-            is_table_labeled = (
-                str(item_label).lower() == "table" if item_label else False
-            )
+            is_table_labeled = str(item_label).lower() == "table" if item_label else False
 
             if not isinstance(item, TableItem) and is_table_labeled:
                 # Get pages for this DocItem
-                item_pages = [
-                    getattr(prov, "page_no", None) for prov in getattr(item, "prov", [])
-                ]
+                item_pages = [getattr(prov, "page_no", None) for prov in getattr(item, "prov", [])]
                 item_pages = [p for p in item_pages if p is not None]
 
-                logger.info(
-                    f"🔄 Mapping DocItem with label='table' on pages {item_pages}"
-                )
+                logger.info(f"🔄 Mapping DocItem with label='table' on pages {item_pages}")
 
                 # Find matching TableItem in document by page overlap
                 for doc_table in dl_doc.tables:
                     doc_table_pages = [
-                        getattr(prov, "page_no", None)
-                        for prov in getattr(doc_table, "prov", [])
+                        getattr(prov, "page_no", None) for prov in getattr(doc_table, "prov", [])
                     ]
                     doc_table_pages = [p for p in doc_table_pages if p is not None]
 
                     if set(item_pages) & set(doc_table_pages):
-                        logger.info(
-                            f"✅ Found matching TableItem for pages {item_pages}"
-                        )
+                        logger.info(f"✅ Found matching TableItem for pages {item_pages}")
                         mapped_tables.append(doc_table)
                         break
 
         # Combine and deduplicate
-        unique_tables = list(
-            {id(table): table for table in direct_tables + mapped_tables}.values()
-        )
+        unique_tables = list({id(table): table for table in direct_tables + mapped_tables}.values())
 
         logger.info(
             f"📊 Extracted {len(unique_tables)} TableItem(s): {len(direct_tables)} direct + {len(mapped_tables)} mapped"
@@ -610,20 +570,16 @@ class PDFParser(BaseParser):
 
         return unique_tables
 
-    def _extract_pictures(
-        self, doc_items: List[DocItem], dl_doc: Any
-    ) -> List[PictureItem]:
+    def _extract_pictures(self, doc_items: list[DocItem], dl_doc: Any) -> list[PictureItem]:
         """Extract pictures from document items."""
         logger.info(f"Extracting pictures from {len(doc_items)} doc_items")
 
         # Robust picture capture: direct + caption-linked
         pictures_direct = [it for it in doc_items if isinstance(it, PictureItem)]
-        pictures_linked: List[PictureItem] = []
+        pictures_linked: list[PictureItem] = []
         for it in doc_items:
             try:
-                if getattr(it, "label", None) == DocItemLabel.CAPTION and hasattr(
-                    it, "parent"
-                ):
+                if getattr(it, "label", None) == DocItemLabel.CAPTION and hasattr(it, "parent"):
                     cref = getattr(it.parent, "cref", "")
                     if isinstance(cref, str) and cref.startswith("#/pictures/"):
                         idx = int(cref.rsplit("/", 1)[1])
@@ -633,9 +589,7 @@ class PDFParser(BaseParser):
                 # Best-effort; ignore malformed references
                 logger.warning(f"Error processing caption reference: {e}")
                 continue
-        pictures_raw = list(
-            {id(p): p for p in (pictures_direct + pictures_linked)}.values()
-        )
+        pictures_raw = list({id(p): p for p in (pictures_direct + pictures_linked)}.values())
 
         logger.info(
             f"Found {len(pictures_direct)} direct PictureItems, {len(pictures_linked)} caption-linked pictures"

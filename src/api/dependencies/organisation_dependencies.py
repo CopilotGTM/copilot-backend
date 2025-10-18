@@ -7,18 +7,17 @@ variant that matches your endpoint/service.
 
 from __future__ import annotations
 
-from typing import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Iterator
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, status
-from sqlalchemy.orm import Session
-from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
-
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 from src.domain.models.authentication import Authentication
 from src.domain.models.master_tables import User
 from src.infra.auth.user_auth import user_auth
-from src.infra.database.factory import get_sync_provider, get_async_provider
+from src.infra.database.factory import get_async_provider, get_sync_provider
 
 auth = Authentication()
 

@@ -1,15 +1,13 @@
 from contextlib import contextmanager
 from uuid import UUID
-import json
 
 from socketio.exceptions import ConnectionRefusedError
 from sqlmodel import select
-
-from src.infra.utils.logger import get_logger
-from src.api.events.socket_app import sio
 from src.api.dependencies.master_dependencies import acquire_master_session
-from src.domain.models.master_tables import User
+from src.api.events.socket_app import sio
 from src.domain.models.authentication import Authentication
+from src.domain.models.master_tables import User
+from src.infra.utils.logger import get_logger
 
 logger = get_logger()
 auth_class = Authentication()

@@ -1,5 +1,5 @@
 import asyncio
-from typing import Dict, List
+
 from src.infra.utils.logger import get_logger
 from src.service.rfp.rfp_sheet_mapping.sheet_mapping_workflow import (
     SheetIdentificationWorkflow,
@@ -9,8 +9,8 @@ logger = get_logger()
 
 
 async def process_sheets_in_parallel(
-    sheets_data: Dict[str, List], session_id: str, system_message_id: str
-) -> List[Dict]:
+    sheets_data: dict[str, list], session_id: str, system_message_id: str
+) -> list[dict]:
     """
     Process multiple sheets in parallel using the SheetIdentificationWorkflow.
 
@@ -45,9 +45,7 @@ async def process_sheets_in_parallel(
         # Create tasks for each sheet
         tasks = []
         for temp in sheets_data:
-            task = workflow.run_workflow(
-                {"sheet_name": temp["sheetname"], "data": temp["data"]}
-            )
+            task = workflow.run_workflow({"sheet_name": temp["sheetname"], "data": temp["data"]})
             tasks.append(task)
 
         # Run all tasks concurrently

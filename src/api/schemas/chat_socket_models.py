@@ -1,6 +1,7 @@
-from typing import Optional, List, Dict, Any
-from uuid import UUID
 from datetime import datetime
+from typing import Any
+from uuid import UUID
+
 from pydantic import BaseModel, Field, HttpUrl
 
 
@@ -12,11 +13,9 @@ class AttachmentModel(BaseModel):
     filename: str = Field(..., description="Original filename")
     url: HttpUrl = Field(..., description="Publicly accessible URL")
     mimetype: str = Field(..., description="MIME type, e.g. 'image/png'")
-    size_bytes: Optional[int] = Field(None, description="File size in bytes")
+    size_bytes: int | None = Field(None, description="File size in bytes")
     uploaded_at: datetime = Field(..., description="Upload timestamp (ISO8601)")
-    metadata: Dict[str, Any] = Field(
-        default_factory=dict, description="Free-form metadata"
-    )
+    metadata: dict[str, Any] = Field(default_factory=dict, description="Free-form metadata")
 
 
 class ChatMessageReceived(BaseModel):
@@ -27,15 +26,13 @@ class ChatMessageReceived(BaseModel):
     session_id: UUID = Field(..., description="Conversation thread ID")
     role: str = Field(..., description="Sender's role (user, assistant, etc.)")
     message_id: UUID = Field(..., description="Unique message ID")
-    content: Optional[str] = Field(None, description="Text content of the message")
+    content: str | None = Field(None, description="Text content of the message")
     timestamp: datetime = Field(..., description="Message sent timestamp (ISO8601)")
-    attachments: List[AttachmentModel] = Field(
+    attachments: list[AttachmentModel] = Field(
         default_factory=list, description="Attached files/images/etc."
     )
-    is_edited: bool = Field(
-        False, description="True if the message was edited after sending"
-    )
-    message_type: Optional[str] = Field(
+    is_edited: bool = Field(False, description="True if the message was edited after sending")
+    message_type: str | None = Field(
         ..., description="Type of Message (e.g., 'general', 'private')"
     )
 

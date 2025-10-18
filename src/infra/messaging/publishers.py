@@ -6,8 +6,9 @@ Provides RedisPublisher with lazy connection and error management.
 from __future__ import annotations
 
 import json
-from src.infra.utils.app_state import fastapp
+
 from src.infra.messaging.redis_client import get_redis_client
+from src.infra.utils.app_state import fastapp
 
 
 class RedisPublisher:
@@ -47,8 +48,6 @@ class RedisPublisher:
                 )
         except Exception as exc:
             if context_id:
-                self.logger.warning(
-                    "Failed to publish for %s on %s: %s", context_id, channel, exc
-                )
+                self.logger.warning("Failed to publish for %s on %s: %s", context_id, channel, exc)
             else:
                 self.logger.warning("Failed to publish on %s: %s", channel, exc)

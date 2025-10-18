@@ -1,13 +1,12 @@
 import logging
 import os
-from typing import Optional
 
 
 def get_logger(
     logger_name: str = "auth_logger",
     log_level: int = logging.INFO,
     log_format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    log_file: Optional[str] = None,
+    log_file: str | None = None,
     rotate_logs: bool = False,
     max_bytes: int = 10 * 1024 * 1024,  # 10 MB
     backup_count: int = 5,

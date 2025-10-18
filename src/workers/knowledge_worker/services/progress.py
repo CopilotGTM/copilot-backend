@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
-from src.infra.messaging.knowledge_source_status_publish import publish_source_status
 from src.api.schemas.knowledge_upload_models import KnowledgeSourceEventUpdate
+from src.infra.messaging.knowledge_source_status_publish import publish_source_status
 from src.infra.utils.logger import get_logger
 
 logger = get_logger("kw_progress")
@@ -21,8 +20,8 @@ class ProgressPublisher:
 
     def __init__(
         self,
-        organisation_id: Optional[str] = None,
-        source_id: Optional[str] = None,
+        organisation_id: str | None = None,
+        source_id: str | None = None,
     ) -> None:
         self.organisation_id = organisation_id
         self.source_id = source_id
@@ -30,10 +29,10 @@ class ProgressPublisher:
     def publish(
         self,
         status: str,
-        progress: Optional[int] = None,
-        error_message: Optional[str] = None,
-        thumbnail_small_url: Optional[str] = None,
-        thumbnail_medium_url: Optional[str] = None,
+        progress: int | None = None,
+        error_message: str | None = None,
+        thumbnail_small_url: str | None = None,
+        thumbnail_medium_url: str | None = None,
     ) -> None:
         org = self.organisation_id
         src = self.source_id
@@ -43,7 +42,7 @@ class ProgressPublisher:
             event = KnowledgeSourceEventUpdate(
                 source_id=str(src),
                 status=status,
-                updated_at=datetime.now(timezone.utc).isoformat(),
+                updated_at=datetime.now(UTC).isoformat(),
                 error_message=error_message,
                 progress=progress,
                 thumbnail_small_url=thumbnail_small_url,

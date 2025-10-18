@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Any, Dict, List, Tuple
+from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
-
 from src.api.schemas.knowledge_upload_models import (
     KnowledgeBatchPresignRequest,
     KnowledgeFinalizeRequest,
@@ -67,22 +66,20 @@ class KnowledgeUploadService:
 
     async def presign_batch(
         self, payload: KnowledgeBatchPresignRequest, expiry_time: int = 15
-    ) -> Tuple[List[Tuple[OrganisationSource, str]], List[Dict[str, Any]]]:
+    ) -> tuple[list[tuple[OrganisationSource, str]], list[dict[str, Any]]]:
         """Create records and return upload SAS URLs for each requested file.
 
         Returns a tuple: (successes, errors). Each success entry is
         `(OrganisationSource, upload_url)`.
         """
-        successes: List[Tuple[OrganisationSource, str]] = []
-        errors: List[Dict[str, Any]] = []
+        successes: list[tuple[OrganisationSource, str]] = []
+        errors: list[dict[str, Any]] = []
 
         for idx, file in enumerate(payload.files):
             source_id = uuid4()
             blob_path = self._plan_blob_path(self.user_id, source_id, file.filename)
             try:
-                upload_url = await self.storage.generate_write_sas(
-                    blob_path, minutes=expiry_time
-                )
+                upload_url = await self.storage.generate_write_sas(blob_path, minutes=expiry_time)
             except Exception as exc:  # Broad: network / credential / azure errors
                 logger.error(
                     "Failed generating write SAS for source %s: %s",
@@ -161,9 +158,7 @@ class KnowledgeUploadService:
             or source.organisation_id != self.organisation_id
             or source.user_id != self.user_id
         ):
-            raise KnowledgeUploadServiceError(
-                "Source not found or access denied", status_code=404
-            )
+            raise KnowledgeUploadServiceError("Source not found or access denied", status_code=404)
 
         # Normalize status to enum if deserialized as plain string
         if isinstance(source.status, str):
@@ -226,8 +221,6 @@ class KnowledgeUploadService:
             or source.organisation_id != self.organisation_id
             or source.user_id != self.user_id
         ):
-            raise KnowledgeUploadServiceError(
-                "Source not found or access denied", status_code=404
-            )
+            raise KnowledgeUploadServiceError("Source not found or access denied", status_code=404)
         await self.org_session.refresh(source)
         return source

@@ -1,17 +1,14 @@
 from __future__ import annotations
 
-from uuid import UUID
 from datetime import datetime
-from typing import Optional, List, Dict, Any, Generic, TypeVar
+from typing import Any, Generic, TypeVar
+from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic.generics import GenericModel as _Base
-
-from src.domain.models.organisation_tables.chat_session_models import ChatType
 from src.domain.models.organisation_tables.chat_message_models import (
     ChatMessageRole,
     ChatMessageType,
-    AttachmentStatus,
 )
 
 T = TypeVar("T")
@@ -21,7 +18,7 @@ class ChatSessionCreate(BaseModel):
     """Create payload for a chat session."""
 
     title: str = Field(..., description="The title of the chat session")
-    tags: Optional[List[str]] = None
+    tags: list[str] | None = None
 
 
 class ChatSessionOut(BaseModel):
@@ -31,7 +28,7 @@ class ChatSessionOut(BaseModel):
     title: str
     chat_type: str
     is_favorite: bool = False
-    tags: List[str] = []
+    tags: list[str] = []
     created_at: datetime
     updated_at: datetime
 
@@ -60,18 +57,18 @@ ChatSessionResponse = ChatSessionOut
 
 # Legacy pagination helpers kept for compatibility with older handlers
 class Pagination(_Base, Generic[T]):
-    chats: List[ChatSessionOut]
-    cursor: Optional[str] = None
+    chats: list[ChatSessionOut]
+    cursor: str | None = None
 
 
 class PaginationChatMessages(_Base, Generic[T]):
-    chat: Dict[str, Any]
-    cursor: Optional[str] = None
+    chat: dict[str, Any]
+    cursor: str | None = None
 
 
 class ChatSessionsPage(BaseModel):
-    items: List[ChatSessionOut]
-    cursor: Optional[str] = None
+    items: list[ChatSessionOut]
+    cursor: str | None = None
 
 
 # Chat messages (API layer)
@@ -80,13 +77,14 @@ class SendMessageRequest(BaseModel):
 
     session_id: UUID
     content: str
-    attachments: Optional[List[UUID]] = None
-    message_type: Optional[ChatMessageType] = ChatMessageType.GENERAL_MESSAGE
+    attachments: list[UUID] | None = None
+    message_type: ChatMessageType | None = ChatMessageType.GENERAL_MESSAGE
     role: ChatMessageRole = ChatMessageRole.USER
     is_edited: bool = False
-    edited_message_id: Optional[UUID] = None
+    edited_message_id: UUID | None = None
 
     @field_validator("content")
+    @classmethod
     def content_must_not_be_empty(cls, v: str) -> str:
         stripped_v = v.strip()
         if not stripped_v:
@@ -94,13 +92,14 @@ class SendMessageRequest(BaseModel):
         return stripped_v
 
     @field_validator("role")
+    @classmethod
     def role_must_be_user(cls, v: ChatMessageRole) -> ChatMessageRole:
         if v != ChatMessageRole.USER:
             raise ValueError("role must be USER")
         return v
 
     @model_validator(mode="after")
-    def check_edited_message_id_required(self) -> "SendMessageRequest":
+    def check_edited_message_id_required(self) -> SendMessageRequest:
         if self.is_edited and not self.edited_message_id:
             raise ValueError("edited_message_id is required when is_edited is True")
         return self
@@ -128,19 +127,19 @@ class ChatMessageListItem(BaseModel):
     created_at: datetime
     updated_at: datetime
     # Enriched fields
-    attachments: List["ChatAttachmentView"] = []
-    confidence_score: Optional[str] = None
-    sources: Optional[List[Dict[str, Any]]] = None
-    suggestions: Optional[List[str]] = None
+    attachments: list[ChatAttachmentView] = []
+    confidence_score: str | None = None
+    sources: list[dict[str, Any]] | None = None
+    suggestions: list[str] | None = None
 
 
 class ChatMessagesPage(BaseModel):
-    items: List[ChatMessageListItem]
-    cursor: Optional[str] = None
+    items: list[ChatMessageListItem]
+    cursor: str | None = None
 
 
 class ChatAttachmentView(BaseModel):
     attachment_id: UUID
     filename: str
     mimetype: str
-    thumbnail_small_url: Optional[str] = None
+    thumbnail_small_url: str | None = None

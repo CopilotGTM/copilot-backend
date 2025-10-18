@@ -97,7 +97,9 @@ class UserAuthErrors:
     UPDATE_METADATA_FAILED = "Failed to update user metadata"
     UPDATE_USER_DATA_FAILED = "Error updating user data after password reset."
     PASSWORD_RESET_FAILED = "First-time password change failed"
-    REFRESH_TOKEN_INVALID = "Invalid or expired refresh token. User has been logged out. Please log in again."
+    REFRESH_TOKEN_INVALID = (
+        "Invalid or expired refresh token. User has been logged out. Please log in again."
+    )
     REFRESH_TOKEN_FAILED = "Token refresh failed. Please log in again."
     FORGOT_PASSWORD_FAILED = "Forgot password request failed"
     RESET_LINK_FAILED = "Failed to generate password reset link"
@@ -108,6 +110,7 @@ class UserAuthErrors:
     INVALID_TOKEN_NO_ID = "Invalid token: missing user ID"
     ACCOUNT_INACTIVE = "User account is not active or not approved"
     AUTHENTICATION_FAILED = "Authentication failed"
+    LOGOUT_FAILED = "An unexpected error occurred during logout."
 
 
 class SupabaseErrors:

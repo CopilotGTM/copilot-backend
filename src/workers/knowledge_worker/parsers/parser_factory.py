@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from typing import Dict, List, Type, Optional, Any
 from pathlib import Path
+from typing import Any
+
+from src.infra.utils.logger import get_logger
 
 from .base_parser import BaseParser
 from .pdf_parser import PDFParser
-from src.infra.utils.logger import get_logger
 
 logger = get_logger("parser_factory")
 
@@ -15,7 +16,7 @@ class ParserFactory:
 
     def __init__(self):
         """Initialize the parser factory with available parsers."""
-        self._parsers: Dict[str, Type[BaseParser]] = {}
+        self._parsers: dict[str, type[BaseParser]] = {}
         self._register_default_parsers()
 
     def _register_default_parsers(self):
@@ -23,7 +24,7 @@ class ParserFactory:
         parsers = [PDFParser]
 
         for parser_class in parsers:
-            supported_types: List[str] = []
+            supported_types: list[str] = []
             # Prefer lightweight classmethod if provided
             try:
                 cls_method = getattr(parser_class, "supported_mimetypes", None)
@@ -53,17 +54,15 @@ class ParserFactory:
 
             for mime_type in supported_types:
                 self._parsers[mime_type.lower()] = parser_class
-                logger.info(
-                    f"Registered parser {parser_class.__name__} for MIME type: {mime_type}"
-                )
+                logger.info(f"Registered parser {parser_class.__name__} for MIME type: {mime_type}")
 
-    def get_supported_mimetypes(self) -> List[str]:
+    def get_supported_mimetypes(self) -> list[str]:
         """Get list of all supported MIME types."""
         return list(self._parsers.keys())
 
     def get_parser(
         self, mimetype: str, organisation_id: str, user_id: str, storage_backend: Any
-    ) -> Optional[BaseParser]:
+    ) -> BaseParser | None:
         """
         Get a parser instance for the given MIME type.
 
@@ -93,9 +92,7 @@ class ParserFactory:
                 user_id=user_id,
                 storage_backend=storage_backend,
             )
-            logger.info(
-                f"Created parser {parser_class.__name__} for MIME type: {mimetype}"
-            )
+            logger.info(f"Created parser {parser_class.__name__} for MIME type: {mimetype}")
             return parser_instance
 
         except Exception as e:
@@ -109,12 +106,12 @@ class ParserFactory:
         organisation_id: str,
         user_id: str,
         storage_backend: Any,
-        document_url: Optional[str] = None,
-        source_id: Optional[str] = None,
-        source_blob_path: Optional[str] = None,
-        original_filename: Optional[str] = None,
-        source_size_bytes: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
+        document_url: str | None = None,
+        source_id: str | None = None,
+        source_blob_path: str | None = None,
+        original_filename: str | None = None,
+        source_size_bytes: int | None = None,
+    ) -> list[dict[str, Any]]:
         """
         Parse a document using the appropriate parser.
 
@@ -132,9 +129,7 @@ class ParserFactory:
         parser = self.get_parser(mimetype, organisation_id, user_id, storage_backend)
 
         if not parser:
-            logger.error(
-                f"Cannot parse document: no parser available for MIME type {mimetype}"
-            )
+            logger.error(f"Cannot parse document: no parser available for MIME type {mimetype}")
             return []
 
         try:
@@ -150,7 +145,7 @@ class ParserFactory:
             logger.error(f"Error parsing document {file_path}: {str(e)}")
             return []
 
-    def register_parser(self, parser_class: Type[BaseParser], mimetypes: List[str]):
+    def register_parser(self, parser_class: type[BaseParser], mimetypes: list[str]):
         """
         Register a custom parser for specific MIME types.
 

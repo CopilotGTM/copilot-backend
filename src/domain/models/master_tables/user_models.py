@@ -1,7 +1,7 @@
-from uuid import UUID, uuid4
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from datetime import datetime
 from enum import Enum
+from typing import TYPE_CHECKING, Any
+from uuid import UUID, uuid4
 
 from pydantic import EmailStr
 from sqlalchemy import (
@@ -14,11 +14,10 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlmodel import Field, Relationship, SQLModel
+from sqlmodel import Field, Relationship
 
 from .base_mixins import CreatedAtMixin, TimestampMixin
 from .super_admin_models import AdminUserStatus
-
 
 if TYPE_CHECKING:
     from .organisation_models import Organisation
@@ -64,7 +63,7 @@ class User(TimestampMixin, table=True):
         primary_key=True,
         description="Unique UUID for the user record.",
     )
-    supabase_user_id: Optional[str] = Field(
+    supabase_user_id: str | None = Field(
         default=None,
         unique=True,
         index=True,
@@ -92,7 +91,7 @@ class User(TimestampMixin, table=True):
         max_length=100,
         description="User's job designation within the organisation (e.g., Senior Software Engineer).",
     )
-    job_title: Optional[str] = Field(
+    job_title: str | None = Field(
         default=None, max_length=100, description="Optional job title for the user."
     )
     status: SupabaseUserStatus = Field(
@@ -110,18 +109,18 @@ class User(TimestampMixin, table=True):
         nullable=False,
         description="Indicates if the user's email address has been verified.",
     )
-    last_login_at: Optional[datetime] = Field(
+    last_login_at: datetime | None = Field(
         default=None,
         sa_column=Column(DateTime(timezone=True), nullable=True),
         description="Timestamp of the user's most recent login. Null if never logged in.",
     )
-    created_by_auth_user_id: Optional[str] = Field(
+    created_by_auth_user_id: str | None = Field(
         default=None,
         nullable=True,
         index=True,
         description="Supabase auth.users.id of the admin who created the user.",
     )
-    approved_by: Optional[UUID] = Field(
+    approved_by: UUID | None = Field(
         default=None,
         sa_column=Column(
             "approved_by",
@@ -130,7 +129,7 @@ class User(TimestampMixin, table=True):
         ),
         description="UUID of the admin who approved the user, if applicable.",
     )
-    approved_at: Optional[datetime] = Field(
+    approved_at: datetime | None = Field(
         default=None,
         sa_column=Column(DateTime(timezone=True), nullable=True),
         description="Timestamp when the user was approved by an admin.",
@@ -138,7 +137,7 @@ class User(TimestampMixin, table=True):
 
     # Relationships
     organisation: "Organisation" = Relationship(back_populates="users")
-    action_history: List["UserActionHistory"] = Relationship(back_populates="user")
+    action_history: list["UserActionHistory"] = Relationship(back_populates="user")
 
 
 class UserActionHistory(CreatedAtMixin, table=True):
@@ -162,14 +161,14 @@ class UserActionHistory(CreatedAtMixin, table=True):
         index=True,
         description="User UUID this action is associated with.",
     )
-    actor_admin_id: Optional[UUID] = Field(
+    actor_admin_id: UUID | None = Field(
         default=None,
         sa_column=Column(
             ForeignKey("public.super_admins.admin_id", ondelete="SET NULL"), index=True
         ),
         description="UUID of the admin who performed (or initiated) the action.",
     )
-    request_id: Optional[str] = Field(
+    request_id: str | None = Field(
         default=None,
         sa_column=Column(String(64), index=True),
         description="Client request ID for idempotency/debugging.",
@@ -179,12 +178,12 @@ class UserActionHistory(CreatedAtMixin, table=True):
         index=True,
         description="Type of user action/event recorded (created, updated, etc.).",
     )
-    note: Optional[str] = Field(
+    note: str | None = Field(
         default=None,
         sa_column=Column(Text),
         description="Optional human-readable note for this action event.",
     )
-    details: Optional[Dict[str, Any]] = Field(
+    details: dict[str, Any] | None = Field(
         default=None,
         sa_column=Column(JSON),
         description="Arbitrary structured data or metadata about the action (JSON).",
