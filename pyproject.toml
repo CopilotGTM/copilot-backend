@@ -125,6 +125,13 @@ docs = [
     "mkdocs-material>=9.5.0",
 ]
 
+[dependency-groups]
+dev = [
+    "bandit>=1.8.6",
+    "detect-secrets>=1.5.0",
+    "pre-commit>=4.3.0",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -134,11 +141,6 @@ packages = ["src"]
 
 [tool.uv]
 # UV-specific configuration for production builds
-dev-dependencies = [
-    "bandit>=1.8.6",
-    "detect-secrets>=1.5.0",
-    "pre-commit>=4.3.0",
-]
 
 [tool.uv.sources]
 # Configure trusted hosts or private registries if needed

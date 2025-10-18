@@ -87,26 +87,49 @@ stages:
             displayName: 'Install Python $(PYTHON_VERSION)'
 
           - script: |
-              uv sync --frozen
-            displayName: 'Install Dependencies with UV'
+              uv sync --frozen --extra test
+            displayName: 'Install Dependencies with UV (including test dependencies)'
 
           - script: |
-              uv run pytest tests/ -v --cov=src --cov-report=xml --cov-report=term --cov-report=html
+              uv run pytest tests/ -v --cov=src --cov-report=xml --cov-report=term --cov-report=html --junitxml=test-results.xml
             displayName: 'Run Tests with Coverage'
 
           - task: PublishTestResults@2
             displayName: 'Publish Test Results'
             inputs:
               testResultsFormat: 'JUnit'
-              testResultsFiles: '**/test-*.xml'
+              testResultsFiles: '**/test-results.xml'
               failTaskOnFailedTests: true
             condition: succeededOrFailed()
 
+          - script: |
+              echo "##[section]📊 Coverage Summary"
+              if [ -f coverage.xml ]; then
+                echo "✅ Coverage XML report generated"
+                # Extract coverage percentage if available
+                if command -v coverage &> /dev/null; then
+                  uv run coverage report || echo "Coverage report command not available"
+                fi
+              else
+                echo "⚠️ Coverage XML not found"
+              fi
+            displayName: 'Display Coverage Summary'
+            condition: succeededOrFailed()
+
           - task: PublishPipelineArtifact@1
-            displayName: 'Publish Coverage Report'
+            displayName: 'Publish Coverage XML Report'
+            inputs:
+              targetPath: '$(System.DefaultWorkingDirectory)/coverage.xml'
+              artifact: 'coverage-xml'
+            continueOnError: true
+            condition: succeededOrFailed()
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish Coverage HTML Report'
             inputs:
               targetPath: '$(System.DefaultWorkingDirectory)/htmlcov'
-              artifact: 'coverage-report'
+              artifact: 'coverage-html'
+            continueOnError: true
             condition: succeededOrFailed()
 
       - job: SecurityScan
@@ -127,7 +150,6 @@ stages:
             displayName: 'Setup Environment'
 
           - script: |
-              uv add --dev bandit
               uv run bandit -r src/ -f json -o bandit-report.json || true
             displayName: 'Run Bandit Security Scan'
 
