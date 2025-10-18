@@ -1,14 +1,14 @@
-from typing import Optional, List, Type, TypeVar, Generic
-from uuid import UUID
 from datetime import datetime
+from typing import Generic, TypeVar
+from uuid import UUID
+
 from pydantic import BaseModel, EmailStr
 from pydantic.generics import GenericModel as _Base
-
 from src.domain.models.master_tables import (
     AdminUserStatus,
+    SupabaseUserStatus,
     User,
     UserAppRole,
-    SupabaseUserStatus,
 )
 
 T = TypeVar("T")
@@ -20,16 +20,16 @@ class CreateUserRequest(BaseModel):
     email: EmailStr
     organisation_id: UUID
     user_role: UserAppRole
-    job_title: Optional[str] = None
+    job_title: str | None = None
     organisation_role: str
 
 
 class UpdateUserRequest(BaseModel):
-    first_name: Optional[str] = None
-    last_name: Optional[str] = None
-    job_title: Optional[str] = None
-    organisation_role: Optional[str] = None
-    user_role: Optional[UserAppRole] = None
+    first_name: str | None = None
+    last_name: str | None = None
+    job_title: str | None = None
+    organisation_role: str | None = None
+    user_role: UserAppRole | None = None
 
     class Config:
         extra = "forbid"
@@ -42,7 +42,7 @@ class UserResponse(BaseModel):
     email: EmailStr
     organisation_id: UUID
     organisation_role: str
-    job_title: Optional[str] = None
+    job_title: str | None = None
     status: SupabaseUserStatus
     admin_status: AdminUserStatus
     created_at: datetime
@@ -52,7 +52,7 @@ class UserResponse(BaseModel):
         from_attributes = True
 
     @classmethod
-    def from_orm(cls: Type["UserResponse"], user: User) -> "UserResponse":
+    def from_orm(cls: type["UserResponse"], user: User) -> "UserResponse":
         return cls(
             user_id=user.user_id,
             first_name=user.first_name,
@@ -75,13 +75,13 @@ class CreateUserResponse(BaseModel):
 
 
 class PaginatedUsers(_Base, Generic[T]):
-    users: List[UserResponse]
-    cursor: Optional[str] = None
+    users: list[UserResponse]
+    cursor: str | None = None
 
 
 class UpdateUserStatusRequest(BaseModel):
     admin_status: AdminUserStatus
-    note: Optional[str] = None
+    note: str | None = None
 
 
 class UpdateUserStatusResponse(BaseModel):
@@ -89,18 +89,18 @@ class UpdateUserStatusResponse(BaseModel):
     status: SupabaseUserStatus
     admin_status: AdminUserStatus
     updated_at: datetime
-    approved_at: Optional[datetime] = None
-    approved_by: Optional[UUID] = None
+    approved_at: datetime | None = None
+    approved_by: UUID | None = None
 
 
 class UserActionHistoryResponse(BaseModel):
     id: UUID
     user_id: UUID
     action: str
-    note: Optional[str] = None
-    details: Optional[dict] = None
+    note: str | None = None
+    details: dict | None = None
     created_at: datetime
-    actor_admin_id: Optional[UUID] = None
+    actor_admin_id: UUID | None = None
 
     class Config:
         from_attributes = True

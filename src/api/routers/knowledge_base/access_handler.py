@@ -1,17 +1,16 @@
 from __future__ import annotations
 
 import asyncio
-from typing import List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
-
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
     get_current_user,
     get_org_async_session,
 )
+from src.api.dependencies.rate_limit import rate_limit_user_read
 from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.knowledge_access_models import (
     KnowledgeDeleteResponse,
@@ -33,7 +32,6 @@ from src.service.knowledge_base.knowledge_access_service import (
     KnowledgeAccessServiceError,
 )
 from src.workers.knowledge_worker.celery_app import app as knowledge_app
-from src.api.dependencies.rate_limit import rate_limit_user_read
 
 logger = get_logger("knowledge_access_handler")
 
@@ -58,9 +56,7 @@ async def get_knowledge_access_service(
     Dependency yielding a KnowledgeAccessService instance for the current org/user.
     Cleanly disposes the service on exit, sync/async safe.
     """
-    service = KnowledgeAccessService(
-        org_session, user_ids.organisation_id, user_ids.user_id
-    )
+    service = KnowledgeAccessService(org_session, user_ids.organisation_id, user_ids.user_id)
     try:
         yield service
     finally:
@@ -78,18 +74,16 @@ async def get_knowledge_access_service(
 )
 async def list_sources(
     limit: int = Query(20, ge=1, le=100),
-    cursor: Optional[str] = Query(
+    cursor: str | None = Query(
         None, description="Opaque cursor returned by previous page (omit for first)"
     ),
-    statuses: Optional[List[OrganisationSourceStatus]] = Query(
+    statuses: list[OrganisationSourceStatus] | None = Query(
         None, description="Optional list of statuses to filter"
     ),
-    source_types: Optional[List[SourceType]] = Query(
+    source_types: list[SourceType] | None = Query(
         None, description="Optional list of source types (e.g. file, integration)"
     ),
-    q: Optional[str] = Query(
-        None, description="Case-insensitive filename search fragment"
-    ),
+    q: str | None = Query(None, description="Case-insensitive filename search fragment"),
     include_urls: bool = Query(
         False,
         description="If true include read + thumbnail SAS URLs (extra storage calls).",
@@ -106,7 +100,7 @@ async def list_sources(
             q=q,
         )
         # Build item dicts with optional URLs concurrently
-        items: List[KnowledgeSourceListItem] = []
+        items: list[KnowledgeSourceListItem] = []
         if include_urls:
             # Generate SAS URLs concurrently for better latency across the page
             tasks = [service.build_item_dict(src, include_urls=True) for src in sources]
@@ -137,9 +131,7 @@ async def list_sources(
         return Response.error_response(status_code=e.status_code, message=e.message)
     except Exception as e:  # pragma: no cover - broad safety
         logger.error("Unexpected error listing sources: %s", e, exc_info=True)
-        return Response.internal_server_error_response(
-            KnowledgeBaseErrors.UNEXPECTED_ERROR
-        )
+        return Response.internal_server_error_response(KnowledgeBaseErrors.UNEXPECTED_ERROR)
 
 
 @access_router.get(
@@ -166,9 +158,7 @@ async def download_source(
         return Response.error_response(status_code=e.status_code, message=e.message)
     except Exception as e:  # pragma: no cover
         logger.error("Unexpected error generating download URL: %s", e, exc_info=True)
-        return Response.internal_server_error_response(
-            KnowledgeBaseErrors.UNEXPECTED_ERROR
-        )
+        return Response.internal_server_error_response(KnowledgeBaseErrors.UNEXPECTED_ERROR)
 
 
 @access_router.get(
@@ -183,16 +173,12 @@ async def sources_stats(
 ):
     try:
         stats = await service.get_stats()
-        return Response.success_response(
-            "Source stats retrieved", KnowledgeSourcesStats(**stats)
-        )
+        return Response.success_response("Source stats retrieved", KnowledgeSourcesStats(**stats))
     except KnowledgeAccessServiceError as e:
         return Response.error_response(status_code=e.status_code, message=e.message)
     except Exception as e:  # pragma: no cover
         logger.error("Unexpected error getting source stats: %s", e, exc_info=True)
-        return Response.internal_server_error_response(
-            KnowledgeBaseErrors.UNEXPECTED_ERROR
-        )
+        return Response.internal_server_error_response(KnowledgeBaseErrors.UNEXPECTED_ERROR)
 
 
 @access_router.delete(
@@ -222,9 +208,7 @@ async def delete_source(
             or src.organisation_id != service.organisation_id
             or src.user_id != service.user_id
         ):
-            return Response.not_found_error_response(
-                "Source not found or access denied"
-            )
+            return Response.not_found_error_response("Source not found or access denied")
 
         # Idempotent check: if already soft-deleted, return an accepted response
         if getattr(src, "is_deleted", False):
@@ -240,12 +224,8 @@ async def delete_source(
                 service.session.add(src)
             except Exception:
                 await service.session.rollback()
-                logger.error(
-                    "Soft delete commit failed for %s", source_id, exc_info=True
-                )
-                return Response.internal_server_error_response(
-                    "Failed to update source status"
-                )
+                logger.error("Soft delete commit failed for %s", source_id, exc_info=True)
+                return Response.internal_server_error_response("Failed to update source status")
 
         # Enqueue deletion task in knowledge worker (fast lane queue)
         try:
@@ -256,12 +236,8 @@ async def delete_source(
                 routing_key="knowledge_upload",
             )
         except Exception as task_err:
-            logger.error(
-                "Failed to enqueue deletion for source %s: %s", source_id, task_err
-            )
-            return Response.internal_server_error_response(
-                "Failed to enqueue delete request"
-            )
+            logger.error("Failed to enqueue deletion for source %s: %s", source_id, task_err)
+            return Response.internal_server_error_response("Failed to enqueue delete request")
 
         delete_resp = KnowledgeDeleteResponse(
             source_id=source_id,
@@ -270,6 +246,4 @@ async def delete_source(
         return Response.accepted_response("Deletion enqueued", delete_resp)
     except Exception as e:  # pragma: no cover
         logger.error("Unexpected error enqueuing deletion: %s", e, exc_info=True)
-        return Response.internal_server_error_response(
-            KnowledgeBaseErrors.UNEXPECTED_ERROR
-        )
+        return Response.internal_server_error_response(KnowledgeBaseErrors.UNEXPECTED_ERROR)

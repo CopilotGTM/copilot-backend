@@ -7,12 +7,9 @@ consume-once support using Redis consumer groups to prevent duplicate message de
 """
 import asyncio
 import json
-from typing import AsyncGenerator, Optional, Dict
+from collections.abc import AsyncGenerator
 from uuid import UUID
 
-from src.infra.messaging.redis_channels import channel_for_chat_job
-from src.infra.messaging.redis_streams import AsyncRedisStreams
-from src.infra.utils.logger import get_logger
 from src.api.dependencies.organisation_dependencies import (
     acquire_org_async_session,
 )
@@ -20,6 +17,9 @@ from src.domain.models.organisation_tables.job_models import (
     ChatMessageJob,
     JobStatus,
 )
+from src.infra.messaging.redis_channels import channel_for_chat_job
+from src.infra.messaging.redis_streams import AsyncRedisStreams
+from src.infra.utils.logger import get_logger
 
 logger = get_logger("chat_message_sse_service")
 
@@ -32,7 +32,7 @@ class ChatMessageSSEService:
         self.stream_key = channel_for_chat_job(self.organisation_id, self.job_id)
         self.consumer_group = f"sse_consumers_{self.job_id}"
         self.consumer_name = f"user_{self.user_id}"
-        self._streams: Optional[AsyncRedisStreams] = None
+        self._streams: AsyncRedisStreams | None = None
 
     async def close(self) -> None:
         try:
@@ -44,11 +44,11 @@ class ChatMessageSSEService:
     async def stream_events(
         self,
         *,
-        timeout_seconds: Optional[int] = 900,
+        timeout_seconds: int | None = 900,
         heartbeat_interval: float = 25.0,
         consume_once: bool = True,
-        resume_from_id: Optional[str] = None,
-    ) -> AsyncGenerator[Dict, None]:
+        resume_from_id: str | None = None,
+    ) -> AsyncGenerator[dict, None]:
         """
         Yield SSE events for a chat job from Redis Stream.
 
@@ -95,9 +95,7 @@ class ChatMessageSSEService:
             logger.error("Chat SSE stream error: %s", e, exc_info=True)
             yield {
                 "event": "error",
-                "data": json.dumps(
-                    {"message": "Internal stream error", "reconnect": True}
-                ),
+                "data": json.dumps({"message": "Internal stream error", "reconnect": True}),
             }
         finally:
             await self.close()
@@ -107,9 +105,7 @@ class ChatMessageSSEService:
         if self._streams is None:
             self._streams = AsyncRedisStreams()
 
-    def _log_connection_details(
-        self, consume_once: bool, resume_from_id: Optional[str]
-    ) -> None:
+    def _log_connection_details(self, consume_once: bool, resume_from_id: str | None) -> None:
         """Log connection details for debugging."""
         logger.info(
             "Chat SSE connect org=%s job=%s stream=%s user=%s consume_once=%s resume_from=%s",
@@ -123,10 +119,10 @@ class ChatMessageSSEService:
 
     async def _stream_with_consumer_group(
         self,
-        timeout_seconds: Optional[int],
+        timeout_seconds: int | None,
         heartbeat_interval: float,
-        resume_from_id: Optional[str],
-    ) -> AsyncGenerator[Dict, None]:
+        resume_from_id: str | None,
+    ) -> AsyncGenerator[dict, None]:
         """Stream events using consumer groups for one-time delivery."""
         loop = asyncio.get_event_loop()
         start_time = loop.time()
@@ -154,9 +150,7 @@ class ChatMessageSSEService:
                 return
 
             # Send heartbeat if needed
-            heartbeat_event = self._check_heartbeat(
-                loop, last_heartbeat, heartbeat_interval
-            )
+            heartbeat_event = self._check_heartbeat(loop, last_heartbeat, heartbeat_interval)
             if heartbeat_event:
                 last_heartbeat = loop.time()
                 yield heartbeat_event
@@ -172,10 +166,10 @@ class ChatMessageSSEService:
 
     async def _stream_legacy_mode(
         self,
-        timeout_seconds: Optional[int],
+        timeout_seconds: int | None,
         heartbeat_interval: float,
-        resume_from_id: Optional[str],
-    ) -> AsyncGenerator[Dict, None]:
+        resume_from_id: str | None,
+    ) -> AsyncGenerator[dict, None]:
         """Stream events in legacy mode with replay support."""
         loop = asyncio.get_event_loop()
         start_time = loop.time()
@@ -192,9 +186,7 @@ class ChatMessageSSEService:
                 return
 
             # Send heartbeat if needed
-            heartbeat_event = self._check_heartbeat(
-                loop, last_heartbeat, heartbeat_interval
-            )
+            heartbeat_event = self._check_heartbeat(loop, last_heartbeat, heartbeat_interval)
             if heartbeat_event:
                 last_heartbeat = loop.time()
                 yield heartbeat_event
@@ -217,9 +209,7 @@ class ChatMessageSSEService:
                     }
                     return
 
-    def _check_timeout(
-        self, loop, start_time: float, timeout_seconds: Optional[int]
-    ) -> Optional[Dict]:
+    def _check_timeout(self, loop, start_time: float, timeout_seconds: int | None) -> dict | None:
         """Check if stream has timed out. Returns timeout event if timed out."""
         if timeout_seconds and (loop.time() - start_time) > timeout_seconds:
             return {
@@ -236,7 +226,7 @@ class ChatMessageSSEService:
 
     def _check_heartbeat(
         self, loop, last_heartbeat: float, heartbeat_interval: float
-    ) -> Optional[Dict]:
+    ) -> dict | None:
         """Check if heartbeat should be sent. Returns heartbeat event if needed."""
         now = loop.time()
         if (now - last_heartbeat) >= heartbeat_interval:
@@ -261,9 +251,7 @@ class ChatMessageSSEService:
                 job = await session.get(ChatMessageJob, UUID(self.job_id))
                 if not job:
                     # If job not found, allow streaming (could be transient)
-                    logger.debug(
-                        "Chat SSE: job %s not found; proceeding to stream", self.job_id
-                    )
+                    logger.debug("Chat SSE: job %s not found; proceeding to stream", self.job_id)
                     completed = False
                 else:
                     completed = job.status == JobStatus.COMPLETED
@@ -271,7 +259,5 @@ class ChatMessageSSEService:
             return completed
         except Exception:
             # On any failure to check, default to streaming to avoid false negatives
-            logger.debug(
-                "Chat SSE: failed to check job completion status", exc_info=True
-            )
+            logger.debug("Chat SSE: failed to check job completion status", exc_info=True)
             return False

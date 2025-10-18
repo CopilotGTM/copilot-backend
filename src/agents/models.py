@@ -1,18 +1,19 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Literal
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
 class ChatAgentSource(BaseModel):
-    name: Optional[str] = None
-    url: Optional[str] = None
-    mimetype: Optional[str] = None
-    snippet: Optional[str] = None
+    name: str | None = None
+    url: str | None = None
+    mimetype: str | None = None
+    snippet: str | None = None
 
 
 class ChatAgentOutput(BaseModel):
     answer: str = Field(default="")
-    confidence_score: Optional[Literal["high", "medium", "low"]] = None
-    sources: Optional[List[ChatAgentSource]] = Field(default=None)
-    suggested_questions: Optional[List[str]] = Field(default=None)
+    confidence_score: Literal["high", "medium", "low"] | None = None
+    sources: list[ChatAgentSource] | None = Field(default=None)
+    suggested_questions: list[str] | None = Field(default=None)

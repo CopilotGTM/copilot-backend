@@ -71,7 +71,7 @@ internalIngress:
   enabled: true
   className: "nginx"
   annotations:
-    # Additional security headers for internal endpoints  
+    # Additional security headers for internal endpoints
     nginx.ingress.kubernetes.io/rewrite-target: /$1
   hosts:
     - host: "internal.copilotgtm.local"  # Use internal cluster DNS

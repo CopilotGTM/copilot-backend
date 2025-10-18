@@ -1,24 +1,21 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
-from datetime import datetime, timezone
-from typing import Dict, Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
-
-from src.infra.utils.logger import get_logger
+from src.api.schemas.upload_models import (
+    AttachmentBatchFinalizeRequest,
+    AttachmentBatchPresignRequest,
+    FinalizeRequest,
+    PresignRequest,
+)
 from src.domain.models.organisation_tables.chat_message_models import (
     Attachment,
     AttachmentStatus,
 )
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
-from src.api.schemas.upload_models import (
-    PresignRequest,
-    FinalizeRequest,
-    AttachmentBatchPresignRequest,
-    AttachmentBatchFinalizeRequest,
-)
-
+from src.infra.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -63,9 +60,7 @@ class UploadService:
 
         try:
             # Container now per‑org; path retains logical grouping
-            upload_url = await self.storage.generate_write_sas(
-                blob_path, minutes=expiry_minutes
-            )
+            upload_url = await self.storage.generate_write_sas(blob_path, minutes=expiry_minutes)
         except Exception as e:
             logger.error(
                 "Failed generating write SAS for user %s: %s",
@@ -133,9 +128,7 @@ class UploadService:
             props = await self.storage.get_blob_properties(attachment.storage_path)
 
             if not props:
-                raise UploadServiceError(
-                    "Uploaded file not found in storage.", status_code=404
-                )
+                raise UploadServiceError("Uploaded file not found in storage.", status_code=404)
 
             actual_size = props.get("size")
             if actual_size is None:
@@ -145,9 +138,7 @@ class UploadService:
 
             # Mark as finalized, checksum will be set by async task
             attachment.attachment_metadata["finalized"] = True
-            attachment.attachment_metadata["finalized_at"] = datetime.now(
-                timezone.utc
-            ).isoformat()
+            attachment.attachment_metadata["finalized_at"] = datetime.now(UTC).isoformat()
             attachment.status = AttachmentStatus.PROCESSING
 
             self.org_session.add(attachment)
@@ -171,9 +162,7 @@ class UploadService:
 
     async def get_attachment_details(self, attachment_id: UUID) -> Attachment:
         """Retrieve attachment details by ID, ensuring user has access."""
-        attachment: Attachment | None = await self.org_session.get(
-            Attachment, attachment_id
-        )
+        attachment: Attachment | None = await self.org_session.get(Attachment, attachment_id)
         if (
             not attachment
             or attachment.organisation_id != self.organisation_id
@@ -195,9 +184,7 @@ class UploadService:
         download_filename: str | None = None,
     ) -> str:
         """Generate a short‑lived read SAS URL for an attachment ensuring ownership."""
-        attachment: Attachment | None = await self.org_session.get(
-            Attachment, attachment_id
-        )
+        attachment: Attachment | None = await self.org_session.get(Attachment, attachment_id)
 
         # Check ownership and status
         if (
@@ -230,9 +217,7 @@ class UploadService:
             )
             raise UploadServiceError("Could not generate download URL") from e
 
-    async def presign_batch(
-        self, payload: AttachmentBatchPresignRequest, expiry_minutes: int = 15
-    ):
+    async def presign_batch(self, payload: AttachmentBatchPresignRequest, expiry_minutes: int = 15):
         """Batch variant of presign: returns ([(Attachment, url)], [error_dict])."""
         successes: list[tuple[Attachment, str]] = []
         errors: list[dict] = []

@@ -1,9 +1,8 @@
-from uuid import UUID, uuid4
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from datetime import datetime
 from enum import Enum
+from typing import TYPE_CHECKING, Any
+from uuid import UUID, uuid4
 
-from pydantic import EmailStr
 from sqlalchemy import (
     JSON,
     Column,
@@ -13,12 +12,13 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+)
+from sqlalchemy import (
     Enum as SAEnum,
 )
-from sqlmodel import Field, Relationship, SQLModel
+from sqlmodel import Field, Relationship
 
 from .base_mixins import CreatedAtMixin, TimestampMixin
-
 
 if TYPE_CHECKING:
     from .super_admin_models import SuperAdmin
@@ -70,31 +70,31 @@ class Organisation(TimestampMixin, table=True):
         unique=True,
         description="Organisation/company name. Unique.",
     )
-    sales_team_size: Optional[int] = Field(
+    sales_team_size: int | None = Field(
         default=None,
         ge=0,
         le=1_000_000,
         description="Integer headcount for the organisation's sales team.",
     )
-    country: Optional[str] = Field(
+    country: str | None = Field(
         default=None,
         description="Primary country of registration or operation for the organisation.",
     )
-    company_address: Optional[str] = Field(
+    company_address: str | None = Field(
         default=None,
         description="Physical or mailing address for the company/organisation.",
     )
-    linked_urls: Optional[List[str]] = Field(
+    linked_urls: list[str] | None = Field(
         default=None,
         sa_column=Column(JSON),
         description="List of linked URLs related to the organisation (JSON format).",
     )
-    website_urls: Optional[List[str]] = Field(
+    website_urls: list[str] | None = Field(
         default=None,
         sa_column=Column(JSON),
         description="List of primary website URLs for the organisation (JSON format).",
     )
-    summary: Optional[str] = Field(
+    summary: str | None = Field(
         default=None,
         sa_column=Column(Text),
         description="Freeform summary or overview about the organisation.",
@@ -103,7 +103,7 @@ class Organisation(TimestampMixin, table=True):
         default=True,
         description="Status flag. True if the organisation is considered active.",
     )
-    logo_url: Optional[str] = Field(
+    logo_url: str | None = Field(
         default=None,
         max_length=500,
         description="URL pointing to the organisation's logo (if set).",
@@ -116,13 +116,13 @@ class Organisation(TimestampMixin, table=True):
         ),
         description="Lifecycle status for the organisation (provisioning, pending, approved, etc.).",
     )
-    created_by_auth_user_id: Optional[str] = Field(
+    created_by_auth_user_id: str | None = Field(
         default=None,
         nullable=True,
         index=True,
         description="Supabase auth.users.id of the user who created the organisation.",
     )
-    approved_by: Optional[UUID] = Field(
+    approved_by: UUID | None = Field(
         default=None,
         sa_column=Column(
             "approved_by",
@@ -131,19 +131,15 @@ class Organisation(TimestampMixin, table=True):
         ),
         description="UUID of the admin who approved the organisation.",
     )
-    approved_at: Optional[datetime] = Field(
+    approved_at: datetime | None = Field(
         default=None,
         sa_column=Column(DateTime(timezone=True), nullable=True),
         description="Timestamp when the organisation was approved.",
     )
 
     # Relationships
-    users: List["User"] = Relationship(
-        back_populates="organisation", cascade_delete=True
-    )
-    action_history: List["OrganisationActionHistory"] = Relationship(
-        back_populates="organisation"
-    )
+    users: list["User"] = Relationship(back_populates="organisation", cascade_delete=True)
+    action_history: list["OrganisationActionHistory"] = Relationship(back_populates="organisation")
 
 
 class OrganisationActionHistory(CreatedAtMixin, table=True):
@@ -167,14 +163,14 @@ class OrganisationActionHistory(CreatedAtMixin, table=True):
         index=True,
         description="UUID of the organisation this action references.",
     )
-    actor_admin_id: Optional[UUID] = Field(
+    actor_admin_id: UUID | None = Field(
         default=None,
         sa_column=Column(
             ForeignKey("public.super_admins.admin_id", ondelete="SET NULL"), index=True
         ),
         description="UUID of admin who performed this organisation action.",
     )
-    request_id: Optional[str] = Field(
+    request_id: str | None = Field(
         default=None,
         sa_column=Column(String(64), index=True),
         description="Client request ID for this action (idempotency/debug).",
@@ -184,12 +180,12 @@ class OrganisationActionHistory(CreatedAtMixin, table=True):
         index=True,
         description="Type of organisation event recorded (created, approved, suspended, etc.).",
     )
-    note: Optional[str] = Field(
+    note: str | None = Field(
         default=None,
         sa_column=Column(Text),
         description="Optional comment or note for this action.",
     )
-    details: Optional[Dict[str, Any]] = Field(
+    details: dict[str, Any] | None = Field(
         default=None,
         sa_column=Column(JSON),
         description="Additional structured data or metadata for the action (JSON format).",

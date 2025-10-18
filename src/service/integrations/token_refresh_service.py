@@ -12,19 +12,18 @@ Key Features:
 - Email notifications for failed refreshes
 """
 
-from typing import List, Dict, Any, Optional
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import UUID
-from sqlalchemy.orm import Session
-from sqlalchemy import select, and_
 
+from sqlalchemy import and_, select
+from sqlalchemy.orm import Session
 from src.domain.models.organisation_tables.knowledge_models import (
     KnowledgeIntegration,
-    IntegrationType,
 )
-from src.service.integrations.nango_client import NangoClient
-from src.infra.utils.logger import get_logger
 from src.infra.config.configs import nango_integration_config
+from src.infra.utils.logger import get_logger
+from src.service.integrations.nango_client import NangoClient
 
 logger = get_logger(__name__)
 
@@ -50,13 +49,9 @@ class TokenRefreshService:
         """
         self.db = db_session
         self.nango = nango_client
-        self.buffer_minutes = (
-            nango_integration_config.INTEGRATION_TOKEN_REFRESH_BUFFER_MINUTES
-        )
+        self.buffer_minutes = nango_integration_config.INTEGRATION_TOKEN_REFRESH_BUFFER_MINUTES
 
-    async def get_expiring_integrations(
-        self, buffer_hours: int = 2
-    ) -> List[KnowledgeIntegration]:
+    async def get_expiring_integrations(self, buffer_hours: int = 2) -> list[KnowledgeIntegration]:
         """
         Get all active integrations with tokens expiring within the buffer period.
 
@@ -67,13 +62,11 @@ class TokenRefreshService:
             List of integrations that need token refresh
         """
         try:
-            expiry_threshold = datetime.now(timezone.utc) + timedelta(
-                hours=buffer_hours
-            )
+            expiry_threshold = datetime.now(UTC) + timedelta(hours=buffer_hours)
 
             stmt = select(KnowledgeIntegration).where(
                 and_(
-                    KnowledgeIntegration.is_active == True,
+                    KnowledgeIntegration.is_active,
                     KnowledgeIntegration.access_token_expires_at.isnot(None),
                     KnowledgeIntegration.access_token_expires_at <= expiry_threshold,
                 )
@@ -90,14 +83,10 @@ class TokenRefreshService:
             return list(integrations)
 
         except Exception as e:
-            logger.error(
-                f"Failed to query expiring integrations: {str(e)}", exc_info=True
-            )
+            logger.error(f"Failed to query expiring integrations: {str(e)}", exc_info=True)
             return []
 
-    async def refresh_integration_token(
-        self, integration: KnowledgeIntegration
-    ) -> Dict[str, Any]:
+    async def refresh_integration_token(self, integration: KnowledgeIntegration) -> dict[str, Any]:
         """
         Refresh token for a single integration.
 
@@ -137,7 +126,7 @@ class TokenRefreshService:
             # Update database with new expiry times
             if new_expiry:
                 integration.access_token_expires_at = new_expiry
-                integration.updated_at = datetime.now(timezone.utc)
+                integration.updated_at = datetime.now(UTC)
                 self.db.commit()
 
                 logger.info(
@@ -172,7 +161,7 @@ class TokenRefreshService:
                 "new_expiry": None,
             }
 
-    async def refresh_expiring_tokens(self, buffer_hours: int = 2) -> Dict[str, Any]:
+    async def refresh_expiring_tokens(self, buffer_hours: int = 2) -> dict[str, Any]:
         """
         Batch refresh all expiring tokens.
 
@@ -219,9 +208,7 @@ class TokenRefreshService:
             else:
                 failed += 1
                 # Deactivate integration on failure
-                deactivated_count = await self._handle_refresh_failure(
-                    integration, result["error"]
-                )
+                deactivated_count = await self._handle_refresh_failure(integration, result["error"])
                 deactivated += deactivated_count
 
         summary = {
@@ -256,7 +243,7 @@ class TokenRefreshService:
             integration.is_active = False
             integration.last_sync_status = "FAILED"
             integration.last_sync_error = f"Token refresh failed: {error_message}"
-            integration.updated_at = datetime.now(timezone.utc)
+            integration.updated_at = datetime.now(UTC)
 
             self.db.commit()
 
@@ -317,7 +304,7 @@ class TokenRefreshService:
         self,
         integration_id: UUID,
         organisation_id: UUID,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Check health of a specific integration's tokens.
 
@@ -360,7 +347,7 @@ class TokenRefreshService:
                     "time_until_expiry": "No expiry",
                 }
 
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             expires_at = integration.access_token_expires_at
             time_until_expiry = expires_at - now
 
@@ -391,9 +378,7 @@ class TokenRefreshService:
 
 
 # Convenience function for use in Celery tasks
-async def refresh_all_expiring_tokens(
-    db_session: Session, buffer_hours: int = 2
-) -> Dict[str, Any]:
+async def refresh_all_expiring_tokens(db_session: Session, buffer_hours: int = 2) -> dict[str, Any]:
     """
     Convenience function to refresh all expiring tokens.
 

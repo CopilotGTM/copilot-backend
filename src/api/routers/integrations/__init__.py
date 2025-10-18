@@ -8,8 +8,9 @@ This package contains all API endpoints for integration management:
 """
 
 from fastapi import APIRouter
-from .oauth_routes import router as oauth_router
+
 from .integration_routes import router as integration_router
+from .oauth_routes import router as oauth_router
 
 # Main router that combines all integration routes
 integrations_router = APIRouter(tags=["integrations"])

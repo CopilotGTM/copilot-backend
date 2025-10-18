@@ -1,7 +1,8 @@
 # app_layer/main.py
 
-from .api.fastapi_app import create_fastapi_app
 from dotenv import load_dotenv
+
+from .api.fastapi_app import create_fastapi_app
 
 load_dotenv(override=True)
 

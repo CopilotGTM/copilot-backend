@@ -1,31 +1,30 @@
 from __future__ import annotations
 
-from typing import List, Optional, Dict
-from uuid import UUID
 from datetime import datetime
+from uuid import UUID
 
-from pydantic import BaseModel, HttpUrl, Field
+from pydantic import BaseModel, Field, HttpUrl
 
 
 class KnowledgeSourceListItem(BaseModel):
     source_id: UUID
-    filename: Optional[str]
-    mimetype: Optional[str]
-    size_bytes: Optional[int]
+    filename: str | None
+    mimetype: str | None
+    size_bytes: int | None
     status: str
     created_at: datetime
     updated_at: datetime
-    error_message: Optional[str] = None
-    checksum: Optional[str] = None
-    thumbnail_small_url: Optional[HttpUrl] = None
-    thumbnail_medium_url: Optional[HttpUrl] = None
+    error_message: str | None = None
+    checksum: str | None = None
+    thumbnail_small_url: HttpUrl | None = None
+    thumbnail_medium_url: HttpUrl | None = None
 
     model_config = {"from_attributes": True}
 
 
 class KnowledgeSourcesPage(BaseModel):
-    items: List[KnowledgeSourceListItem]
-    cursor: Optional[str] = None
+    items: list[KnowledgeSourceListItem]
+    cursor: str | None = None
 
 
 class KnowledgeDownloadResponse(BaseModel):
@@ -36,8 +35,8 @@ class KnowledgeDownloadResponse(BaseModel):
 
 class KnowledgeSourcesStats(BaseModel):
     total: int
-    by_status: Dict[str, int]
-    by_type: Dict[str, int]
+    by_status: dict[str, int]
+    by_type: dict[str, int]
 
 
 class KnowledgeDeleteResponse(BaseModel):

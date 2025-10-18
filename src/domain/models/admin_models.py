@@ -1,16 +1,12 @@
-import uuid
-from uuid import UUID, uuid4
-from typing import Optional, Literal
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 
-from sqlmodel import SQLModel, Field
-from pydantic import EmailStr
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
+from sqlmodel import SQLModel
 
 
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class AdminLoginRequest(SQLModel):
@@ -20,8 +16,8 @@ class AdminLoginRequest(SQLModel):
 
 class AdminPasswordChangeRequest(BaseModel):
     new_password: str
-    confirm_password: Optional[str] = None
-    session_token: Optional[str] = None
+    confirm_password: str | None = None
+    session_token: str | None = None
 
 
 class AdminChangePasswordRequest(BaseModel):
@@ -38,7 +34,7 @@ class AdminLogoutRequest(BaseModel):
     """
 
     global_logout: bool = False
-    email: Optional[EmailStr] = None
+    email: EmailStr | None = None
 
 
 class AdminForgotPasswordRequest(BaseModel):
@@ -95,9 +91,9 @@ class AdminCreateRequest(SQLModel):
 
 
 class AdminUpdateRequest(SQLModel):
-    first_name: Optional[str] = None
-    last_name: Optional[str] = None
-    status: Optional[AdminStatus] = None
+    first_name: str | None = None
+    last_name: str | None = None
+    status: AdminStatus | None = None
 
 
 class Tokens(SQLModel):
@@ -112,16 +108,16 @@ class AdminLoginState(str, Enum):
 
 
 class AdminLoginResponse(SQLModel):
-    email: Optional[EmailStr] = None
-    first_name: Optional[str] = None
-    last_name: Optional[str] = None
-    role: Optional[AdminRole] = None
+    email: EmailStr | None = None
+    first_name: str | None = None
+    last_name: str | None = None
+    role: AdminRole | None = None
     state: str
-    last_login_at: Optional[datetime] = None
-    created_at: Optional[datetime] = None
-    email_verified: Optional[bool] = None
-    tokens: Optional[Tokens] = None
-    password_reset_link: Optional[str] = None  # For PENDING_SETUP state
+    last_login_at: datetime | None = None
+    created_at: datetime | None = None
+    email_verified: bool | None = None
+    tokens: Tokens | None = None
+    password_reset_link: str | None = None  # For PENDING_SETUP state
 
 
 class AdminRefreshTokenResponse(BaseModel):

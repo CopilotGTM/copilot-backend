@@ -1,19 +1,22 @@
-from src.workers.content_worker.celery_app import app
-import json
 import asyncio
-from src.infra.messaging.redis_client import get_redis_client
+import json
 
-from src.infra.utils.logger import get_logger
 from sqlmodel import select
-from src.infra.utils.database import get_master_session
+
 from src.domain.models.organisation_tables import ChatMessage
+from src.infra.messaging.redis_client import get_redis_client
+from src.infra.utils.database import get_master_session
+from src.infra.utils.logger import get_logger
 from src.service.technical_deck.generate_slide_outline.slide_outline_workflow import (
     SlideContentGenerator,
 )
+from src.workers.content_worker.celery_app import app
 
 logger = get_logger()
 WEBSOCKET_NAMESPACE = "/websocket/v1"
-RESPONSE_EVENT = "recieve_slide_content"  # Keep as is for compatibility (matches event in websocket handler)
+RESPONSE_EVENT = (
+    "recieve_slide_content"  # Keep as is for compatibility (matches event in websocket handler)
+)
 REDIS_CHANNEL = "websocket_messages"
 
 
@@ -33,8 +36,8 @@ def generate_slide_outline_task(self, sid, data_json):
     data = json.loads(data_json)
     session_id = data.get("session_id")
     message_id = data.get("message_id")
-    user_id = data.get("user_id")
-    organisation_id = data.get("organisation_id")
+    data.get("user_id")
+    data.get("organisation_id")
     logger.info(
         f"Celery task generate_slide_outline_task started: sid={sid}, session_id={session_id}, message_id={message_id}"
     )
@@ -43,8 +46,7 @@ def generate_slide_outline_task(self, sid, data_json):
     try:
         chat_message = master_session.exec(
             select(ChatMessage).where(
-                (ChatMessage.session_id == session_id)
-                & (ChatMessage.message_id == message_id)
+                (ChatMessage.session_id == session_id) & (ChatMessage.message_id == message_id)
             )
         ).first()
         if not chat_message:
@@ -75,7 +77,7 @@ def generate_slide_outline_task(self, sid, data_json):
                         publish_websocket_message(sid, RESPONSE_EVENT, response_data)
                 elif chunk.content_type == "SOLUTION_NARRATION":
                     solution_narration = chunk.content
-                    logger.info(f"Solution Narration Generated")
+                    logger.info("Solution Narration Generated")
             return full_response, solution_narration
 
         full_response, solution_narration = asyncio.run(_run_workflow())

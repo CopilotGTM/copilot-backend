@@ -1,11 +1,9 @@
-from uuid import UUID
 from datetime import datetime
-from typing import Optional, Dict, Any
-from pydantic import BaseModel, EmailStr, Field
-
-from src.domain.models.master_tables import UserAppRole
-from src.domain.models.admin_models import AdminLoginState
 from enum import Enum
+from typing import Any
+
+from pydantic import BaseModel, EmailStr
+from src.domain.models.master_tables import UserAppRole
 
 
 class UserLoginState(str, Enum):
@@ -25,16 +23,16 @@ class UserLoginRequest(BaseModel):
 class UserLoginResponse(BaseModel):
     """Response model for successful user login."""
 
-    email: Optional[EmailStr] = None
-    first_name: Optional[str] = None
-    last_name: Optional[str] = None
-    role: Optional[UserAppRole] = None
+    email: EmailStr | None = None
+    first_name: str | None = None
+    last_name: str | None = None
+    role: UserAppRole | None = None
     state: UserLoginState
-    created_at: Optional[datetime] = None
-    email_verified: Optional[bool] = None
-    last_login_at: Optional[datetime] = None
-    tokens: Optional[Dict[str, Any]] = None
-    password_reset_link: Optional[str] = None
+    created_at: datetime | None = None
+    email_verified: bool | None = None
+    last_login_at: datetime | None = None
+    tokens: dict[str, Any] | None = None
+    password_reset_link: str | None = None
 
 
 class UserChangePasswordRequest(BaseModel):
@@ -55,7 +53,7 @@ class UserResetPasswordRequest(BaseModel):
 
     token_hash: str
     new_password: str
-    confirm_password: Optional[str] = None
+    confirm_password: str | None = None
     action: str  # 'force_change' or 'forgot'
 
 
@@ -76,4 +74,4 @@ class UserLogoutRequest(BaseModel):
     """Request model for user logout."""
 
     global_logout: bool = False
-    email: Optional[EmailStr] = None
+    email: EmailStr | None = None

@@ -1,4 +1,5 @@
 from kombu import Queue
+
 from src.workers.base.worker_config import BaseWorkerConfig
 
 

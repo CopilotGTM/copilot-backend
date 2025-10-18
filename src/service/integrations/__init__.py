@@ -8,8 +8,8 @@ This module provides services for:
 - Data synchronization from external platforms
 """
 
-from .nango_client import NangoClient
 from .integration_service import IntegrationService
+from .nango_client import NangoClient
 from .token_refresh_service import TokenRefreshService
 
 __all__ = ["NangoClient", "IntegrationService", "TokenRefreshService"]

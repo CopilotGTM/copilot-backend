@@ -23,10 +23,10 @@ scenarios. Additional recommended future test stubs:
 """
 
 import logging
-from fastapi.testclient import TestClient
 
-from src.domain.models.organisation_tables.chat_message_models import AttachmentStatus
+from fastapi.testclient import TestClient
 from src.api.schemas.upload_models import ALLOWED_MIMETYPES
+from src.domain.models.organisation_tables.chat_message_models import AttachmentStatus
 
 logger = logging.getLogger("test.chat_attachments.presign")
 

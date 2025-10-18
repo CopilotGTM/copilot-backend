@@ -1,5 +1,4 @@
-from typing import Any, Optional, Dict, List
-from socketio import AsyncServer
+from typing import Any
 
 # from src.api.schemas.chat_socket_models import ChatMessageReceived
 from src.api.events.socket_app import sio as InputSio
@@ -20,10 +19,10 @@ class WebSocketResponse:
         is_complete: bool = False,
         is_line_complete: bool = False,
         is_error: bool = False,
-        error_response: Optional[str] = None,
+        error_response: str | None = None,
         is_first_message: bool = False,
         message_type: str = "GENERAL_CHAT",
-        additional_data: Optional[Dict[str, Any]] = None,
+        additional_data: dict[str, Any] | None = None,
     ):
         """
         Emit a WebSocket response with standardized structure
@@ -70,7 +69,7 @@ class WebSocketResponse:
         message_id: str,
         message_type: str = "GENERAL_CHAT",
         response: any = "",
-        additional_data: Optional[Dict[str, Any]] = None,
+        additional_data: dict[str, Any] | None = None,
     ):
         """
         Emit the first message to share message ID with the client
@@ -105,7 +104,7 @@ class WebSocketResponse:
         is_complete: bool = False,
         is_line_complete: bool = False,
         message_type: str = "GENERAL_CHAT",
-        additional_data: Optional[Dict[str, Any]] = None,
+        additional_data: dict[str, Any] | None = None,
     ):
         """
         Emit a response chunk
@@ -143,7 +142,7 @@ class WebSocketResponse:
         error_message: str,
         is_complete: bool = True,
         message_type: str = "GENERAL_CHAT",
-        additional_data: Optional[Dict[str, Any]] = None,
+        additional_data: dict[str, Any] | None = None,
     ):
         """
         Emit an error response
@@ -178,7 +177,7 @@ class WebSocketResponse:
         chat_id: str,
         message_id: str,
         message_type: str = "GENERAL_CHAT",
-        additional_data: Optional[Dict[str, Any]] = None,
+        additional_data: dict[str, Any] | None = None,
     ):
         """
         Emit a completion message

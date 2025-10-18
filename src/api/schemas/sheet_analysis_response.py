@@ -1,18 +1,18 @@
-from typing import List, Optional
-from pydantic import BaseModel, Field
 from uuid import UUID
+
+from pydantic import BaseModel, Field
 
 
 class Column(BaseModel):
     name: str
-    is_question_column: Optional[bool] = Field(default=False)
-    is_answer_column: Optional[bool] = Field(default=False)
+    is_question_column: bool | None = Field(default=False)
+    is_answer_column: bool | None = Field(default=False)
 
 
 class SheetDetail(BaseModel):
     sheet_name: str
     is_sheet_selected: bool = False
-    columns: List[Column]
+    columns: list[Column]
     column_row_number: int
 
 
@@ -25,7 +25,7 @@ class SheetSelection(BaseModel):
 class SheetSelectionInput(BaseModel):
     session_id: UUID = Field(..., description="Conversation thread ID")
     system_message_id: UUID = Field(..., description="Unique message ID")
-    sheets_details: List[SheetSelection] = Field(
+    sheets_details: list[SheetSelection] = Field(
         ..., description="List of sheet details with question and answer columns"
     )
 

@@ -1,6 +1,7 @@
 # workflows/utils/get_master_db_url.py
 import os
 import urllib.parse
+
 from dotenv import load_dotenv
 
 load_dotenv()

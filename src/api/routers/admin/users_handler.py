@@ -1,35 +1,31 @@
-from typing import Optional, List
 from uuid import UUID
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-
-from src.domain.models.master_tables import (
-    SuperAdmin,
-    AdminRole,
-    User,
-    AdminUserStatus,
-    SupabaseUserStatus,
-    AdminUserStatus,
-    UserAppRole,
-)
+from src.api.dependencies.master_dependencies import get_master_async_session
+from src.api.schemas.base_models import GenericResponse
+from src.api.utils.http_response import Response
 from src.domain.models.admin_user_models import (
     CreateUserRequest,
     CreateUserResponse,
     PaginatedUsers,
-    UserResponse,
+    UpdateUserRequest,
     UpdateUserStatusRequest,
     UpdateUserStatusResponse,
     UserActionHistoryResponse,
-    UpdateUserRequest,
+    UserResponse,
 )
-from src.api.dependencies.master_dependencies import get_master_async_session
-from src.infra.utils.logger import get_logger
-from src.infra.utils.cursor import encode_cursor
-from src.service.orgnisation.user_management import user_management_service
-from src.api.utils.http_response import Response
+from src.domain.models.master_tables import (
+    AdminRole,
+    AdminUserStatus,
+    SuperAdmin,
+    UserAppRole,
+)
 from src.infra.auth.admin_auth import admin_auth
-from src.api.schemas.base_models import GenericResponse
 from src.infra.config.constant import AdminUserErrors
+from src.infra.utils.cursor import encode_cursor
+from src.infra.utils.logger import get_logger
+from src.service.orgnisation.user_management import user_management_service
 
 logger = get_logger("admin_users_handler")
 router = APIRouter()
@@ -55,30 +51,18 @@ async def create_user(
         )
 
         if current_admin.role not in [AdminRole.SUPER_ADMIN, AdminRole.ADMIN]:
-            logger.warning(
-                f"Unauthorized attempt to create user by: {current_admin.email}."
-            )
-            return Response.forbidden_error_response(
-                AdminUserErrors.ADMIN_ACCESS_REQUIRED
-            )
+            logger.warning(f"Unauthorized attempt to create user by: {current_admin.email}.")
+            return Response.forbidden_error_response(AdminUserErrors.ADMIN_ACCESS_REQUIRED)
         # Validate request data
         if not request.email or not request.first_name or not request.last_name:
             logger.warning("Invalid user creation request: Missing required fields.")
-            return Response.bad_request_error_response(
-                AdminUserErrors.CREATE_USER_MISSING_FIELDS
-            )
+            return Response.bad_request_error_response(AdminUserErrors.CREATE_USER_MISSING_FIELDS)
         if request.organisation_id is None:
             logger.warning("Invalid user creation request: Missing organisation ID.")
-            return Response.bad_request_error_response(
-                AdminUserErrors.CREATE_USER_MISSING_ORG_ID
-            )
+            return Response.bad_request_error_response(AdminUserErrors.CREATE_USER_MISSING_ORG_ID)
         if request.user_role not in [UserAppRole.MEMBER, UserAppRole.ADMIN]:
-            logger.warning(
-                f"Invalid user role '{request.user_role}' in user creation request."
-            )
-            return Response.bad_request_error_response(
-                AdminUserErrors.CREATE_USER_INVALID_ROLE
-            )
+            logger.warning(f"Invalid user role '{request.user_role}' in user creation request.")
+            return Response.bad_request_error_response(AdminUserErrors.CREATE_USER_INVALID_ROLE)
 
         new_user = await user_management_service.create_user(
             session=master_session,
@@ -92,12 +76,8 @@ async def create_user(
             created_at=new_user.created_at,
         )
 
-        logger.info(
-            f"Successfully created user: {new_user.email} with ID: {new_user.user_id}"
-        )
-        return Response.success_response(
-            message="User created successfully", data=response_data
-        )
+        logger.info(f"Successfully created user: {new_user.email} with ID: {new_user.user_id}")
+        return Response.success_response(message="User created successfully", data=response_data)
 
     except ValueError as ve:
         logger.warning(f"Value error while creating user: {ve}")
@@ -131,16 +111,10 @@ async def get_user(
         logger.info(f"Request to get user '{user_id}' by admin: {current_admin.email}")
 
         if current_admin.role not in [AdminRole.SUPER_ADMIN, AdminRole.ADMIN]:
-            logger.warning(
-                f"Unauthorized attempt to get user by: {current_admin.email}."
-            )
-            return Response.forbidden_error_response(
-                AdminUserErrors.ADMIN_ACCESS_REQUIRED
-            )
+            logger.warning(f"Unauthorized attempt to get user by: {current_admin.email}.")
+            return Response.forbidden_error_response(AdminUserErrors.ADMIN_ACCESS_REQUIRED)
 
-        user = await user_management_service.get_user(
-            session=master_session, user_id=user_id
-        )
+        user = await user_management_service.get_user(session=master_session, user_id=user_id)
 
         if not user:
             logger.warning(f"User with ID '{user_id}' not found.")
@@ -154,12 +128,8 @@ async def get_user(
 
         response_data = UserResponse.from_orm(user)
 
-        logger.info(
-            f"Successfully retrieved user: {user.email} with ID: {user.user_id}"
-        )
-        return Response.success_response(
-            message="User retrieved successfully", data=response_data
-        )
+        logger.info(f"Successfully retrieved user: {user.email} with ID: {user.user_id}")
+        return Response.success_response(message="User retrieved successfully", data=response_data)
 
     except Exception as e:
         logger.error(
@@ -178,10 +148,8 @@ async def get_user(
 )
 async def list_users(
     limit: int = Query(20, ge=1, le=100),
-    cursor: Optional[str] = Query(None),
-    organisation_id: Optional[UUID] = Query(
-        None, description="Filter users by organization ID"
-    ),
+    cursor: str | None = Query(None),
+    organisation_id: UUID | None = Query(None, description="Filter users by organization ID"),
     current_admin: SuperAdmin = Depends(admin_auth),
     master_session: AsyncSession = Depends(get_master_async_session),
 ):
@@ -194,12 +162,8 @@ async def list_users(
         logger.info(f"Request to list users by admin: {current_admin.email}")
 
         if current_admin.role not in [AdminRole.SUPER_ADMIN, AdminRole.ADMIN]:
-            logger.warning(
-                f"Unauthorized attempt to list users by: {current_admin.email}."
-            )
-            return Response.forbidden_error_response(
-                AdminUserErrors.ADMIN_ACCESS_REQUIRED
-            )
+            logger.warning(f"Unauthorized attempt to list users by: {current_admin.email}.")
+            return Response.forbidden_error_response(AdminUserErrors.ADMIN_ACCESS_REQUIRED)
 
         users = await user_management_service.list_users(
             session=master_session,
@@ -213,16 +177,12 @@ async def list_users(
 
         user_responses = [UserResponse.from_orm(user) for user in items]
 
-        next_cursor = (
-            encode_cursor(items[-1].created_at, items[-1].user_id) if has_more else None
-        )
+        next_cursor = encode_cursor(items[-1].created_at, items[-1].user_id) if has_more else None
 
         response_data = PaginatedUsers(users=user_responses, cursor=next_cursor)
 
         logger.info(f"Successfully retrieved {len(items)} users.")
-        return Response.success_response(
-            message="Users retrieved successfully", data=response_data
-        )
+        return Response.success_response(message="Users retrieved successfully", data=response_data)
 
     except Exception as e:
         logger.error(
@@ -258,9 +218,7 @@ async def update_user_admin_status(
             logger.warning(
                 f"Unauthorized attempt to update user admin status by user: {current_admin.admin_id}."
             )
-            return Response.forbidden_error_response(
-                AdminUserErrors.ADMIN_ACCESS_REQUIRED
-            )
+            return Response.forbidden_error_response(AdminUserErrors.ADMIN_ACCESS_REQUIRED)
 
         updated_user = await user_management_service.update_user_admin_status(
             session=master_session,
@@ -302,13 +260,13 @@ async def update_user_admin_status(
 
 @router.get(
     "/history/organisation/{organisation_id}",
-    response_model=GenericResponse[List[UserActionHistoryResponse]],
+    response_model=GenericResponse[list[UserActionHistoryResponse]],
     tags=["admin_users"],
 )
 async def list_user_action_history(
     organisation_id: UUID,
     limit: int = Query(20, ge=1, le=100),
-    cursor: Optional[str] = Query(None),
+    cursor: str | None = Query(None),
     current_admin: SuperAdmin = Depends(admin_auth),
     master_session: AsyncSession = Depends(get_master_async_session),
 ):
@@ -324,17 +282,13 @@ async def list_user_action_history(
             logger.warning(
                 f"Unauthorized attempt to list user action history by: {current_admin.email}."
             )
-            return Response.forbidden_error_response(
-                AdminUserErrors.ADMIN_ACCESS_REQUIRED
-            )
+            return Response.forbidden_error_response(AdminUserErrors.ADMIN_ACCESS_REQUIRED)
 
-        history = (
-            await user_management_service.list_user_action_history_for_organisation(
-                session=master_session,
-                organisation_id=organisation_id,
-                limit=limit,
-                cursor=cursor,
-            )
+        history = await user_management_service.list_user_action_history_for_organisation(
+            session=master_session,
+            organisation_id=organisation_id,
+            limit=limit,
+            cursor=cursor,
         )
 
         has_more = len(history) == limit + 1
@@ -342,9 +296,7 @@ async def list_user_action_history(
 
         history_responses = [UserActionHistoryResponse.from_orm(h) for h in items]
 
-        next_cursor = (
-            encode_cursor(items[-1].created_at, items[-1].id) if has_more else None
-        )
+        next_cursor = encode_cursor(items[-1].created_at, items[-1].id) if has_more else None
 
         response_data = {
             "history": history_responses,
@@ -381,17 +333,11 @@ async def update_user(
     Update a user's details.
     """
     try:
-        logger.info(
-            f"Request to update user '{user_id}' by admin: {current_admin.email}"
-        )
+        logger.info(f"Request to update user '{user_id}' by admin: {current_admin.email}")
 
         if current_admin.role not in [AdminRole.SUPER_ADMIN, AdminRole.ADMIN]:
-            logger.warning(
-                f"Unauthorized attempt to update user by: {current_admin.email}."
-            )
-            return Response.forbidden_error_response(
-                AdminUserErrors.ADMIN_ACCESS_REQUIRED
-            )
+            logger.warning(f"Unauthorized attempt to update user by: {current_admin.email}.")
+            return Response.forbidden_error_response(AdminUserErrors.ADMIN_ACCESS_REQUIRED)
 
         updated_user = await user_management_service.update_user(
             session=master_session,
@@ -405,9 +351,7 @@ async def update_user(
         logger.info(
             f"Successfully updated user: {updated_user.email} with ID: {updated_user.user_id}"
         )
-        return Response.success_response(
-            message="User updated successfully", data=response_data
-        )
+        return Response.success_response(message="User updated successfully", data=response_data)
 
     except ValueError as ve:
         logger.warning(f"Value error while updating user: {ve}")

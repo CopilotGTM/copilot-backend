@@ -1,4 +1,5 @@
-from kombu import Queue, Exchange
+from kombu import Exchange, Queue
+
 from src.workers.base.worker_config import BaseWorkerConfig
 
 

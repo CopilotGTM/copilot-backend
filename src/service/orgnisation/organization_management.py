@@ -1,44 +1,43 @@
+import contextlib
+import os
 import secrets
 import time
-from typing import Dict, Any, List, Optional, Tuple, Callable
-from uuid import uuid4
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import text, select
-from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy import or_, and_
+from collections.abc import Callable
+from typing import Any
+from uuid import UUID, uuid4
 
+from azure.identity import (
+    DefaultAzureCredential,
+    ManagedIdentityCredential,
+    WorkloadIdentityCredential,
+)
+from azure.keyvault.secrets import SecretClient
+from azure.storage.blob import BlobServiceClient
+from migrations.migration_manager import migration_manager
+from sqlalchemy import and_, or_, select, text
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession
+from src.api.dependencies.master_dependencies import acquire_master_session
 from src.domain.models.master_tables import (
     Organisation,
     OrganisationActionHistory,
     OrganisationEventType,
     OrganisationStatus,
 )
-from src.infra.utils.logger import get_logger
-from src.api.dependencies.master_dependencies import acquire_master_session
 from src.infra.config.configs import (
-    database_config,
-    secret_manager_config,
     cloud_infra_config,
     cloud_storage_config,
+    database_config,
+    secret_manager_config,
 )
-from migrations.migration_manager import migration_manager
-import os
-from azure.identity import (
-    ManagedIdentityCredential,
-    WorkloadIdentityCredential,
-    DefaultAzureCredential,
-)
-from azure.keyvault.secrets import SecretClient
 from src.infra.utils.cursor import decode_cursor, encode_cursor
+from src.infra.utils.logger import get_logger
 from src.infra.utils.resource_naming import (
     get_key_vault_secret_name,
-    get_schema_name,
-    get_role_name,
     get_org_container_name,
+    get_role_name,
+    get_schema_name,
 )
-from azure.storage.blob import BlobServiceClient
-
-from uuid import UUID
 
 logger = get_logger("organization_management_service")
 
@@ -72,7 +71,7 @@ class OrganizationManagementService:
         organisation_name: str,
         session: AsyncSession,
         **org_details,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Creates a new organization with a dedicated schema, role, and runs migrations.
 
@@ -92,9 +91,7 @@ class OrganizationManagementService:
 
         # Check for an existing organization
         result = await session.execute(
-            select(Organisation).where(
-                Organisation.organisation_name == organisation_name
-            )
+            select(Organisation).where(Organisation.organisation_name == organisation_name)
         )
         existing_org = result.scalars().first()
 
@@ -141,7 +138,7 @@ class OrganizationManagementService:
 
         try:
             # 2. Provision all resources with timing metrics
-            provision_metrics: Dict[str, float] = {}
+            provision_metrics: dict[str, float] = {}
 
             def time_step(label: str, fn: Callable[[], None]):
                 start = time.perf_counter()
@@ -155,18 +152,14 @@ class OrganizationManagementService:
                     schema_name, role_name, role_password
                 ),
             )
-            time_step(
-                "migrations", lambda: self._run_organization_migrations(schema_name)
-            )
+            time_step("migrations", lambda: self._run_organization_migrations(schema_name))
             time_step(
                 "storage_container",
                 lambda: self._provision_org_storage_container(organisation_id),
             )
             time_step(
                 "store_secret",
-                lambda: self._store_password_in_key_vault(
-                    organisation_id, role_password
-                ),
+                lambda: self._store_password_in_key_vault(organisation_id, role_password),
             )
 
             # 3. If successful, update status to PENDING
@@ -219,18 +212,14 @@ class OrganizationManagementService:
             await session.commit()
             raise ProvisioningError(str(e), organisation_id=organisation_id)
 
-    def _create_database_role_and_schema(
-        self, schema_name: str, role_name: str, password: str
-    ):
+    def _create_database_role_and_schema(self, schema_name: str, role_name: str, password: str):
         """
         Creates or updates the database role and schema for an organization idempotently.
         This operation is transactional; it will roll back on any failure.
         """
         self._validate_identifier(schema_name, "schema_name")
         self._validate_identifier(role_name, "role_name")
-        logger.info(
-            f"Ensuring database role '{role_name}' and schema '{schema_name}' exist."
-        )
+        logger.info(f"Ensuring database role '{role_name}' and schema '{schema_name}' exist.")
         try:
             # On first use, ensure vector extension availability is checked once
             if not self._vector_extension_checked:
@@ -248,9 +237,7 @@ class OrganizationManagementService:
                     ).scalar_one_or_none()
 
                     if role_exists:
-                        logger.warning(
-                            f"Role '{role_name}' already exists. Updating password."
-                        )
+                        logger.warning(f"Role '{role_name}' already exists. Updating password.")
                         session.execute(
                             text(f"ALTER ROLE {role_name} WITH PASSWORD :pwd"),
                             {"pwd": password},
@@ -258,29 +245,21 @@ class OrganizationManagementService:
                     else:
                         logger.info(f"Role '{role_name}' not found. Creating new role.")
                         session.execute(
-                            text(
-                                f"CREATE ROLE {role_name} LOGIN PASSWORD :pwd NOINHERIT"
-                            ),
+                            text(f"CREATE ROLE {role_name} LOGIN PASSWORD :pwd NOINHERIT"),
                             {"pwd": password},
                         )
 
                     # Create schema if it doesn't exist and set authorization
                     session.execute(
-                        text(
-                            f"CREATE SCHEMA IF NOT EXISTS {schema_name} AUTHORIZATION {role_name}"
-                        )
+                        text(f"CREATE SCHEMA IF NOT EXISTS {schema_name} AUTHORIZATION {role_name}")
                     )
 
                     # Grant necessary permissions
                     session.execute(
-                        text(
-                            f"GRANT USAGE, CREATE ON SCHEMA {schema_name} TO {role_name}"
-                        )
+                        text(f"GRANT USAGE, CREATE ON SCHEMA {schema_name} TO {role_name}")
                     )
                     session.execute(
-                        text(
-                            f"GRANT ALL PRIVILEGES ON SCHEMA {schema_name} TO {role_name}"
-                        )
+                        text(f"GRANT ALL PRIVILEGES ON SCHEMA {schema_name} TO {role_name}")
                     )
 
                     # Set default privileges for future objects created by the role
@@ -316,27 +295,19 @@ class OrganizationManagementService:
                     # Attempt to create vector extension within the schema, failing gracefully
                     try:
                         session.execute(
-                            text(
-                                f"CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA {schema_name}"
-                            )
+                            text(f"CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA {schema_name}")
                         )
-                        logger.info(
-                            f"Enabled 'vector' extension in schema '{schema_name}'."
-                        )
+                        logger.info(f"Enabled 'vector' extension in schema '{schema_name}'.")
                     except SQLAlchemyError as vector_error:
                         logger.warning(
                             f"Could not create vector extension in schema '{schema_name}': {vector_error}. "
                             "Vector operations may be affected."
                         )
             finally:
-                try:
+                with contextlib.suppress(Exception):
                     session.close()
-                except Exception:
-                    pass
-                try:
+                with contextlib.suppress(Exception):
                     session_gen.close()
-                except Exception:
-                    pass
 
             logger.info(
                 f"Successfully created and configured role '{role_name}' and schema '{schema_name}'."
@@ -348,13 +319,9 @@ class OrganizationManagementService:
             )
             raise ProvisioningError(f"Failed to create database role/schema: {e}")
 
-    def _run_organization_migrations(
-        self, schema_name: str, target_version: str = "head"
-    ):
+    def _run_organization_migrations(self, schema_name: str, target_version: str = "head"):
         """Runs Alembic migrations for a specific organization's schema."""
-        logger.info(
-            f"Running migrations for schema '{schema_name}' to version '{target_version}'."
-        )
+        logger.info(f"Running migrations for schema '{schema_name}' to version '{target_version}'.")
         try:
             result = migration_manager.run_organization_migration(
                 schema_name=schema_name,
@@ -374,9 +341,7 @@ class OrganizationManagementService:
                 f"Migration execution failed for schema '{schema_name}': {e}",
                 exc_info=True,
             )
-            raise ProvisioningError(
-                f"An unexpected error occurred during migration: {e}"
-            )
+            raise ProvisioningError(f"An unexpected error occurred during migration: {e}")
 
     def _provision_org_storage_container(self, organisation_id: UUID):
         """Ensure the per-organisation container exists in the shared storage account (idempotent)."""
@@ -402,9 +367,7 @@ class OrganizationManagementService:
             if "ContainerAlreadyExists" in str(e):
                 logger.info(f"Container '{container}' already exists (idempotent).")
             else:
-                logger.error(
-                    f"Failed to create container '{container}' in '{account}': {e}"
-                )
+                logger.error(f"Failed to create container '{container}' in '{account}': {e}")
                 raise ProvisioningError(f"Container provisioning failed: {e}")
 
     def _store_password_in_key_vault(self, organisation_id: UUID, password: str):
@@ -420,18 +383,14 @@ class OrganizationManagementService:
 
         key_vault_url = secret_manager_config.AZURE_KEY_VAULT_URL
         if not key_vault_url:
-            logger.warning(
-                "AZURE_KEY_VAULT_URL not configured. Skipping Key Vault operation."
-            )
+            logger.warning("AZURE_KEY_VAULT_URL not configured. Skipping Key Vault operation.")
             return
 
         try:
             credential = self._get_azure_credential()
             client = SecretClient(vault_url=key_vault_url, credential=credential)
             client.set_secret(secret_name, password)
-            logger.info(
-                f"Successfully stored secret '{secret_name}' in Azure Key Vault."
-            )
+            logger.info(f"Successfully stored secret '{secret_name}' in Azure Key Vault.")
         except Exception as e:
             # Do not block provisioning if Key Vault fails. Log a strong warning.
             logger.warning(
@@ -446,15 +405,11 @@ class OrganizationManagementService:
         This operation is non-critical; failures are logged as warnings.
         """
         secret_name = get_key_vault_secret_name(organisation_id)
-        logger.info(
-            f"Attempting to delete secret '{secret_name}' from Azure Key Vault."
-        )
+        logger.info(f"Attempting to delete secret '{secret_name}' from Azure Key Vault.")
 
         key_vault_url = secret_manager_config.AZURE_KEY_VAULT_URL
         if not key_vault_url:
-            logger.warning(
-                "AZURE_KEY_VAULT_URL not configured. Skipping Key Vault deletion."
-            )
+            logger.warning("AZURE_KEY_VAULT_URL not configured. Skipping Key Vault deletion.")
             return
 
         try:
@@ -483,9 +438,7 @@ class OrganizationManagementService:
                 with session.begin():
                     # Check if vector extension is available
                     result = session.execute(
-                        text(
-                            "SELECT 1 FROM pg_available_extensions WHERE name = 'vector'"
-                        )
+                        text("SELECT 1 FROM pg_available_extensions WHERE name = 'vector'")
                     ).fetchone()
 
                     if result:
@@ -500,14 +453,10 @@ class OrganizationManagementService:
                             "Vector operations may not work. Consider using pgvector/pgvector Docker image"
                         )
             finally:
-                try:
+                with contextlib.suppress(Exception):
                     session.close()
-                except Exception:
-                    pass
-                try:
+                with contextlib.suppress(Exception):
                     session_gen.close()
-                except Exception:
-                    pass
         except SQLAlchemyError as e:
             logger.warning(f"Could not check/create vector extension: {e}")
             logger.warning("Continuing without vector extension verification")
@@ -532,9 +481,7 @@ class OrganizationManagementService:
             raise ValueError(f"Organization with ID {organisation_id} not found.")
 
         if organisation.status == new_status:
-            logger.warning(
-                f"Organization {organisation_id} is already in state '{new_status}'."
-            )
+            logger.warning(f"Organization {organisation_id} is already in state '{new_status}'.")
             return organisation
 
         # State transition logic
@@ -575,9 +522,7 @@ class OrganizationManagementService:
         session.add(history_entry)
         await session.commit()
         await session.refresh(organisation)
-        logger.info(
-            f"Successfully updated organization {organisation_id} status to '{new_status}'"
-        )
+        logger.info(f"Successfully updated organization {organisation_id} status to '{new_status}'")
         return organisation
 
     async def update_organization(
@@ -585,7 +530,7 @@ class OrganizationManagementService:
         session: AsyncSession,
         admin_id: UUID,
         organisation_id: UUID,
-        update_data: Dict[str, Any],
+        update_data: dict[str, Any],
     ) -> Organisation:
         """
         Updates an existing organization's details.
@@ -600,9 +545,7 @@ class OrganizationManagementService:
             OrganisationStatus.APPROVED,
             OrganisationStatus.PENDING,
         ]:
-            raise ValueError(
-                f"Organization with status '{organisation.status}' cannot be updated."
-            )
+            raise ValueError(f"Organization with status '{organisation.status}' cannot be updated.")
 
         updated_fields = []
         for key, value in update_data.items():
@@ -654,8 +597,8 @@ class OrganizationManagementService:
         session: AsyncSession,
         organisation_id: UUID,
         limit: int,
-        cursor: Optional[str] = None,
-    ) -> List[OrganisationActionHistory]:
+        cursor: str | None = None,
+    ) -> list[OrganisationActionHistory]:
         """
         Retrieves the action history for a specific organization with pagination.
         """
@@ -692,8 +635,8 @@ class OrganizationManagementService:
         self,
         session: AsyncSession,
         limit: int,
-        cursor: Optional[str] = None,
-    ) -> List[OrganisationActionHistory]:
+        cursor: str | None = None,
+    ) -> list[OrganisationActionHistory]:
         """
         Retrieves the action history for all organizations with pagination.
         """
@@ -762,9 +705,7 @@ class OrganizationManagementService:
         session.delete(organisation)
         await session.commit()
 
-        logger.info(
-            f"Deleted organization record for '{organisation.organisation_name}'"
-        )
+        logger.info(f"Deleted organization record for '{organisation.organisation_name}'")
 
         # Use the master connection to drop schema and role
         try:
@@ -772,25 +713,17 @@ class OrganizationManagementService:
             master_sess = next(session_gen)
             try:
                 with master_sess.begin():
-                    logger.info(
-                        f"Dropping schema '{schema_name}' and role '{role_name}'."
-                    )
-                    master_sess.execute(
-                        text(f"DROP SCHEMA IF EXISTS {schema_name} CASCADE")
-                    )
+                    logger.info(f"Dropping schema '{schema_name}' and role '{role_name}'.")
+                    master_sess.execute(text(f"DROP SCHEMA IF EXISTS {schema_name} CASCADE"))
                     master_sess.execute(text(f"DROP ROLE IF EXISTS {role_name}"))
                     logger.info(
                         f"Successfully dropped schema and role for organization {organisation_id}."
                     )
             finally:
-                try:
+                with contextlib.suppress(Exception):
                     master_sess.close()
-                except Exception:
-                    pass
-                try:
+                with contextlib.suppress(Exception):
                     session_gen.close()
-                except Exception:
-                    pass
         except SQLAlchemyError as e:
             logger.error(
                 f"Failed to drop schema/role for organization {organisation_id}: {e}",
@@ -829,9 +762,7 @@ class OrganizationManagementService:
             logger.info("Auth strategy: Workload Identity (federated token)")
             allowed_tenants = [
                 t.strip()
-                for t in (
-                    cloud_infra_config.AZURE_ADDITIONALLY_ALLOWED_TENANTS or ""
-                ).split(",")
+                for t in (cloud_infra_config.AZURE_ADDITIONALLY_ALLOWED_TENANTS or "").split(",")
                 if t.strip()
             ] or None
             return WorkloadIdentityCredential(
@@ -859,7 +790,7 @@ class OrganizationManagementService:
 
     async def rotate_organization_password(
         self, organisation_id: UUID, session: AsyncSession, admin_id: UUID
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Rotates the database role password and updates Key Vault.
         Returns metadata including new secret name.
         """
@@ -877,14 +808,10 @@ class OrganizationManagementService:
                         {"pwd": new_password},
                     )
             finally:
-                try:
+                with contextlib.suppress(Exception):
                     master_sess.close()
-                except Exception:
-                    pass
-                try:
+                with contextlib.suppress(Exception):
                     session_gen.close()
-                except Exception:
-                    pass
             self._store_password_in_key_vault(organisation_id, new_password)
             session.add(
                 OrganisationActionHistory(
@@ -901,9 +828,7 @@ class OrganizationManagementService:
             return {"role_name": role_name, "schema_name": schema_name}
         except Exception as e:
             await session.rollback()
-            logger.error(
-                f"Failed to rotate password for organization {organisation_id}: {e}"
-            )
+            logger.error(f"Failed to rotate password for organization {organisation_id}: {e}")
             raise ProvisioningError(f"Failed to rotate password: {e}")
 
     # Override history fetchers to return cursor metadata without breaking original callers
@@ -912,17 +837,13 @@ class OrganizationManagementService:
         session: AsyncSession,
         organisation_id: UUID,
         limit: int,
-        cursor: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        items = await self.get_organization_history(
-            session, organisation_id, limit, cursor
-        )
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        items = await self.get_organization_history(session, organisation_id, limit, cursor)
         has_more = len(items) > limit
         page_items = items[:limit]
         next_cursor = (
-            encode_cursor(page_items[-1].created_at, page_items[-1].id)
-            if has_more
-            else None
+            encode_cursor(page_items[-1].created_at, page_items[-1].id) if has_more else None
         )
         return {"items": page_items, "next_cursor": next_cursor, "has_more": has_more}
 
@@ -930,15 +851,13 @@ class OrganizationManagementService:
         self,
         session: AsyncSession,
         limit: int,
-        cursor: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
         items = await self.get_all_organization_history(session, limit, cursor)
         has_more = len(items) > limit
         page_items = items[:limit]
         next_cursor = (
-            encode_cursor(page_items[-1].created_at, page_items[-1].id)
-            if has_more
-            else None
+            encode_cursor(page_items[-1].created_at, page_items[-1].id) if has_more else None
         )
         return {"items": page_items, "next_cursor": next_cursor, "has_more": has_more}
 

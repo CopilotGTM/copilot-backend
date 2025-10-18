@@ -4,14 +4,14 @@ import os
 os.environ["MAX_TENANT_ENGINES"] = "1"
 os.environ["TENANT_POOL_MULTIPLIER"] = "1.0"
 
-from dotenv import load_dotenv
-from src.workers.base.celery_base import create_celery_app
-from src.workers.content_worker.config import ContentWorkerConfig
 from celery.signals import worker_ready, worker_shutdown
+from dotenv import load_dotenv
 
 # Redis connection pool management
 from src.infra.messaging.redis_client import close_redis_pool
 from src.infra.utils.logger import get_logger
+from src.workers.base.celery_base import create_celery_app
+from src.workers.content_worker.config import ContentWorkerConfig
 
 # Load environment variables first
 load_dotenv(override=True)

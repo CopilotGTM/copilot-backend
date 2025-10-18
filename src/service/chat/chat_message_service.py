@@ -1,31 +1,32 @@
 from __future__ import annotations
 
-from typing import Iterable, List, Optional, Dict, Any, Tuple
-from uuid import UUID, uuid4
+import contextlib
+from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor
 from functools import partial
+from typing import Any
+from uuid import UUID, uuid4
 
-from sqlmodel import select
 from sqlalchemy import and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
-
+from sqlmodel import select
 from src.domain.models.organisation_tables.chat_message_models import (
+    Attachment,
     ChatMessage,
+    ChatMessageAttachmentLink,
     ChatMessageRole,
     ChatMessageType,
-    Attachment,
-    ChatMessageAttachmentLink,
 )
 from src.domain.models.organisation_tables.chat_session_models import ChatSession
-from concurrent.futures import ThreadPoolExecutor
 from src.domain.models.organisation_tables.job_models import (
     ChatMessageJob,
     JobStatus,
 )
-from src.infra.utils.cursor import encode_cursor, decode_cursor
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
+from src.infra.utils.cursor import decode_cursor, encode_cursor
 
 
-def _to_confidence(val) -> Optional[str]:
+def _to_confidence(val) -> str | None:
     """Convert confidence value to string, handling both string labels and numeric values."""
     if val is None:
         return None
@@ -56,9 +57,7 @@ class ChatMessageService:
         self.organisation_id = organisation_id
         self.user_id = user_id
 
-    async def _resolve_attachments(
-        self, attachment_ids: Optional[Iterable[UUID]]
-    ) -> List[Attachment]:
+    async def _resolve_attachments(self, attachment_ids: Iterable[UUID] | None) -> list[Attachment]:
         if not attachment_ids:
             return []
         stmt = select(Attachment).where(
@@ -85,7 +84,7 @@ class ChatMessageService:
         *,
         session_id: UUID,
         content: str,
-        attachment_ids: Optional[Iterable[UUID]] = None,
+        attachment_ids: Iterable[UUID] | None = None,
         message_type: ChatMessageType = ChatMessageType.GENERAL_MESSAGE,
         role: ChatMessageRole = ChatMessageRole.USER,
         job_type: str = "general_message",
@@ -128,9 +127,7 @@ class ChatMessageService:
         if attachments:
             with ThreadPoolExecutor() as executor:
                 # Create a partial function that includes message_id
-                create_link_with_message_id = partial(
-                    self.create_link, message.message_id
-                )
+                create_link_with_message_id = partial(self.create_link, message.message_id)
                 executor.map(create_link_with_message_id, enumerate(attachments))
 
         # Create a pending job for processing this message (assistant reply generation)
@@ -157,10 +154,10 @@ class ChatMessageService:
         *,
         session_id: UUID,
         limit: int = 20,
-        cursor: Optional[str] = None,
-        role: Optional[ChatMessageRole] = None,
-        message_type: Optional[ChatMessageType] = None,
-    ) -> Tuple[List[ChatMessage], Optional[str]]:
+        cursor: str | None = None,
+        role: ChatMessageRole | None = None,
+        message_type: ChatMessageType | None = None,
+    ) -> tuple[list[ChatMessage], str | None]:
         """List messages for a session with stable cursor-based pagination.
 
         Orders by created_at desc, message_id desc to ensure a consistent keyset.
@@ -206,15 +203,13 @@ class ChatMessageService:
         has_more = len(rows) == limit + 1
         items = rows[:limit]
         next_cursor = (
-            encode_cursor(items[-1].created_at, items[-1].message_id)
-            if has_more
-            else None
+            encode_cursor(items[-1].created_at, items[-1].message_id) if has_more else None
         )
         return items, next_cursor
 
     async def get_message_attachments(
-        self, messages: List[ChatMessage]
-    ) -> Dict[UUID, List[Attachment]]:
+        self, messages: list[ChatMessage]
+    ) -> dict[UUID, list[Attachment]]:
         """Return attachments for messages keyed by message_id in attachment_order."""
         if not messages:
             return {}
@@ -240,7 +235,7 @@ class ChatMessageService:
                 ChatMessageAttachmentLink.attachment_order,
             )
         )
-        result_map: Dict[UUID, List[Attachment]] = {mid: [] for mid in msg_ids}
+        result_map: dict[UUID, list[Attachment]] = {mid: [] for mid in msg_ids}
         for mid, att, _ord in res.all():
             result_map[mid].append(att)
         return result_map
@@ -248,16 +243,16 @@ class ChatMessageService:
     async def build_attachment_urls(
         self,
         *,
-        attachments_by_msg: Dict[UUID, List[Attachment]],
+        attachments_by_msg: dict[UUID, list[Attachment]],
         minutes: int = 120,
-    ) -> Dict[UUID, List[Dict[str, Any]]]:
+    ) -> dict[UUID, list[dict[str, Any]]]:
         """Build thumbnail SAS URLs for attachments per message.
 
         Returns dict[message_id] -> list of dicts conforming to ChatAttachmentView.
         """
         storage = AzureOrganisationBlobStorage(self.organisation_id)
 
-        async def _sas(path: Optional[str]) -> Optional[str]:
+        async def _sas(path: str | None) -> str | None:
             if not path:
                 return None
             try:
@@ -265,9 +260,9 @@ class ChatMessageService:
             except Exception:
                 return None
 
-        out: Dict[UUID, List[Dict[str, Any]]] = {}
+        out: dict[UUID, list[dict[str, Any]]] = {}
         for mid, atts in attachments_by_msg.items():
-            enriched: List[Dict[str, Any]] = []
+            enriched: list[dict[str, Any]] = []
             for att in atts:
                 enriched.append(
                     {
@@ -280,17 +275,15 @@ class ChatMessageService:
                     }
                 )
             out[mid] = enriched
-        try:
+        with contextlib.suppress(Exception):
             await storage.close()
-        except Exception:
-            pass
         return out
 
     def build_message_list_items(
         self,
-        messages: List[ChatMessage],
-        attachments_urls: Dict[UUID, List[Dict[str, Any]]],
-    ) -> List[Dict[str, Any]]:
+        messages: list[ChatMessage],
+        attachments_urls: dict[UUID, list[dict[str, Any]]],
+    ) -> list[dict[str, Any]]:
         """Build list items with enriched metadata for message listing."""
         items = []
         for m in messages:
@@ -310,17 +303,11 @@ class ChatMessageService:
                     "updated_at": m.updated_at,
                     "attachments": attachments_urls.get(m.message_id, []),
                     "confidence_score": _to_confidence(
-                        extra.get("confidence_score")
-                        if isinstance(extra, dict)
-                        else None
+                        extra.get("confidence_score") if isinstance(extra, dict) else None
                     ),
-                    "sources": (
-                        agent.get("sources") if isinstance(agent, dict) else None
-                    ),
+                    "sources": (agent.get("sources") if isinstance(agent, dict) else None),
                     "suggestions": (
-                        agent.get("suggested_questions")
-                        if isinstance(agent, dict)
-                        else None
+                        agent.get("suggested_questions") if isinstance(agent, dict) else None
                     ),
                 }
             )

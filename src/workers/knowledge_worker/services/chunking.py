@@ -1,31 +1,29 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Optional
 
-from transformers import AutoTokenizer
 from docling.chunking import HybridChunker
-from docling.document_converter import DocumentConverter, PdfFormatOption
 from docling.datamodel.base_models import InputFormat
 from docling.datamodel.pipeline_options import (
     PdfPipelineOptions,
-    TableStructureOptions,
     TableFormerMode,
+    TableStructureOptions,
 )
-
+from docling.document_converter import DocumentConverter, PdfFormatOption
+from transformers import AutoTokenizer
 
 # Default embedding/tokenizer model for chunking/token counts
 DEFAULT_EMBED_MODEL_ID = "sentence-transformers/all-MiniLM-L6-v2"
 
 
 @lru_cache(maxsize=1)
-def get_tokenizer(model_id: Optional[str] = None):
+def get_tokenizer(model_id: str | None = None):
     mid = model_id or DEFAULT_EMBED_MODEL_ID
     return AutoTokenizer.from_pretrained(mid)
 
 
 @lru_cache(maxsize=1)
-def get_hybrid_chunker(model_id: Optional[str] = None) -> HybridChunker:
+def get_hybrid_chunker(model_id: str | None = None) -> HybridChunker:
     tok = get_tokenizer(model_id)
     return HybridChunker(
         tokenizer=tok,
@@ -56,9 +54,7 @@ def _default_pdf_pipeline_options() -> PdfPipelineOptions:
 def get_pdf_converter() -> DocumentConverter:
     return DocumentConverter(
         format_options={
-            InputFormat.PDF: PdfFormatOption(
-                pipeline_options=_default_pdf_pipeline_options()
-            ),
+            InputFormat.PDF: PdfFormatOption(pipeline_options=_default_pdf_pipeline_options()),
         }
     )
 

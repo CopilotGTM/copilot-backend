@@ -1,7 +1,9 @@
-from src.infra.config.configs import Config
-import ssl
 import os
+import ssl
+
 from dotenv import load_dotenv
+
+from src.infra.config.configs import Config
 
 
 class BaseWorkerConfig:
@@ -12,9 +14,7 @@ class BaseWorkerConfig:
         load_dotenv(override=True)
 
         self.config = Config()
-        self.redis_host, self.redis_port, self.redis_password = (
-            self.config.get_redis_client_details
-        )
+        self.redis_host, self.redis_port, self.redis_password = self.config.get_redis_client_details
         self.broker_url = self._get_broker_url()
         self.backend_url = self.broker_url
         self.ssl_config = self._get_ssl_config()
@@ -22,13 +22,9 @@ class BaseWorkerConfig:
     def _get_broker_url(self):
         # Use redis (non-SSL) for localhost, even in dev/prod env
         ssl_enabled = not (
-            self.redis_host in ["localhost", "127.0.0.1"]
-            or self.redis_host.startswith("192.168.")
+            self.redis_host in ["localhost", "127.0.0.1"] or self.redis_host.startswith("192.168.")
         )
-        if not ssl_enabled:
-            redis_scheme = "redis"
-        else:
-            redis_scheme = "rediss"
+        redis_scheme = "redis" if not ssl_enabled else "rediss"
 
         redis_password_part = f":{self.redis_password}@" if self.redis_password else ""
         broker_url = f"{redis_scheme}://{redis_password_part}{self.redis_host}:{self.redis_port}/0"
@@ -37,8 +33,7 @@ class BaseWorkerConfig:
     def _get_ssl_config(self):
         # Only use SSL for remote Redis, not localhost
         ssl_enabled = not (
-            self.redis_host in ["localhost", "127.0.0.1"]
-            or self.redis_host.startswith("192.168.")
+            self.redis_host in ["localhost", "127.0.0.1"] or self.redis_host.startswith("192.168.")
         )
         if ssl_enabled:
             # Default to CERT_REQUIRED for security (instead of CERT_NONE)

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
-from typing import Any, Dict, List, Optional
+from typing import Any
 from uuid import UUID
 
-from src.infra.utils.logger import get_logger
 from src.api.dependencies.organisation_dependencies import acquire_org_session
 from src.domain.models.organisation_tables.knowledge_models import OrganisationDocument
+from src.infra.utils.logger import get_logger
 
 logger = get_logger("document_store")
 
@@ -25,10 +26,10 @@ class DocumentStore:
 
     def store_documents(
         self,
-        documents: List[Dict[str, Any]],
+        documents: list[dict[str, Any]],
         source_id: str,
-        uploader_user_id: Optional[str] = None,
-    ) -> List[str]:
+        uploader_user_id: str | None = None,
+    ) -> list[str]:
         """
         Store parsed documents in the database.
 
@@ -50,9 +51,9 @@ class DocumentStore:
                     # Create OrganisationDocument instance only if content_hash is unique
                     uid = uploader_user_id
                     if not uid and isinstance(doc_data, dict):
-                        uid = doc_data.get("uploader_user_id") or doc_data.get(
-                            "meta_data", {}
-                        ).get("user_id")
+                        uid = doc_data.get("uploader_user_id") or doc_data.get("meta_data", {}).get(
+                            "user_id"
+                        )
 
                     computed_hash = doc_data.get(
                         "content_hash",
@@ -95,29 +96,21 @@ class DocumentStore:
 
             # Commit all documents
             session.commit()
-            logger.info(
-                f"Successfully stored {len(stored_ids)} documents for source {source_id}"
-            )
+            logger.info(f"Successfully stored {len(stored_ids)} documents for source {source_id}")
 
         except Exception as e:
             logger.error(f"Error storing documents: {str(e)}")
-            try:
+            with contextlib.suppress(Exception):
                 session.rollback()
-            except Exception:
-                pass
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 session.close()
-            except Exception:
-                pass
-            try:
+            with contextlib.suppress(Exception):
                 session_gen.close()
-            except Exception:
-                pass
 
         return stored_ids
 
-    def update_document(self, document_id: str, updates: Dict[str, Any]) -> bool:
+    def update_document(self, document_id: str, updates: dict[str, Any]) -> bool:
         """
         Update an existing document.
 
@@ -132,11 +125,7 @@ class DocumentStore:
             session_gen = acquire_org_session(self.organisation_id)
             session = next(session_gen)
 
-            doc = (
-                session.query(OrganisationDocument)
-                .filter_by(document_id=document_id)
-                .first()
-            )
+            doc = session.query(OrganisationDocument).filter_by(document_id=document_id).first()
             if not doc:
                 logger.warning(f"Document {document_id} not found for update")
                 return False
@@ -156,20 +145,14 @@ class DocumentStore:
 
         except Exception as e:
             logger.error(f"Error updating document {document_id}: {str(e)}")
-            try:
+            with contextlib.suppress(Exception):
                 session.rollback()
-            except Exception:
-                pass
             return False
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 session.close()
-            except Exception:
-                pass
-            try:
+            with contextlib.suppress(Exception):
                 session_gen.close()
-            except Exception:
-                pass
 
     def delete_documents_by_source(self, source_id: str) -> int:
         """
@@ -186,9 +169,7 @@ class DocumentStore:
             session = next(session_gen)
 
             deleted_count = (
-                session.query(OrganisationDocument)
-                .filter_by(source_id=UUID(source_id))
-                .delete()
+                session.query(OrganisationDocument).filter_by(source_id=UUID(source_id)).delete()
             )
             session.commit()
 
@@ -197,22 +178,16 @@ class DocumentStore:
 
         except Exception as e:
             logger.error(f"Error deleting documents for source {source_id}: {str(e)}")
-            try:
+            with contextlib.suppress(Exception):
                 session.rollback()
-            except Exception:
-                pass
             return 0
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 session.close()
-            except Exception:
-                pass
-            try:
+            with contextlib.suppress(Exception):
                 session_gen.close()
-            except Exception:
-                pass
 
-    def get_documents_by_source(self, source_id: str) -> List[OrganisationDocument]:
+    def get_documents_by_source(self, source_id: str) -> list[OrganisationDocument]:
         """
         Get all documents belonging to a source.
 
@@ -227,9 +202,7 @@ class DocumentStore:
             session = next(session_gen)
 
             documents = (
-                session.query(OrganisationDocument)
-                .filter_by(source_id=UUID(source_id))
-                .all()
+                session.query(OrganisationDocument).filter_by(source_id=UUID(source_id)).all()
             )
             logger.info(f"Retrieved {len(documents)} documents for source {source_id}")
             return documents
@@ -238,14 +211,10 @@ class DocumentStore:
             logger.error(f"Error retrieving documents for source {source_id}: {str(e)}")
             return []
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 session.close()
-            except Exception:
-                pass
-            try:
+            with contextlib.suppress(Exception):
                 session_gen.close()
-            except Exception:
-                pass
 
     def _generate_content_hash(self, content: str) -> str:
         """Generate SHA256 hash for content."""

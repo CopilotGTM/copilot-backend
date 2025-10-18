@@ -15,14 +15,13 @@ Usage (async):
 from __future__ import annotations
 
 import threading
-from typing import Optional
 
-from src.infra.database.provider_sync import SyncSqlAlchemyProvider
+from src.infra.database.interface import AsyncDatabaseProvider, SyncDatabaseProvider
 from src.infra.database.provider_async import AsyncSqlAlchemyProvider
-from src.infra.database.interface import SyncDatabaseProvider, AsyncDatabaseProvider
+from src.infra.database.provider_sync import SyncSqlAlchemyProvider
 
-_sync_instance: Optional[SyncDatabaseProvider] = None
-_async_instance: Optional[AsyncDatabaseProvider] = None
+_sync_instance: SyncDatabaseProvider | None = None
+_async_instance: AsyncDatabaseProvider | None = None
 _lock = threading.Lock()
 
 

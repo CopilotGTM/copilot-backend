@@ -7,10 +7,11 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any, AsyncIterator, Callable, Dict, Optional
+from collections.abc import Callable
+from typing import Any
 from uuid import uuid4
 
-from src.api.schemas.chat_stream_models import ToolUsage, ThinkingUpdate, ProgressUpdate
+from src.api.schemas.chat_stream_models import ProgressUpdate, ThinkingUpdate, ToolUsage
 
 
 class TransparentToolManager:
@@ -18,15 +19,15 @@ class TransparentToolManager:
 
     def __init__(self, message_id: str):
         self.message_id = message_id
-        self._active_tools: Dict[str, dict] = {}
+        self._active_tools: dict[str, dict] = {}
 
     async def use_tool(
         self,
         tool_name: str,
         tool_func: Callable,
-        parameters: Dict[str, Any],
-        description: Optional[str] = None,
-        frame_emitter: Optional[Callable] = None,
+        parameters: dict[str, Any],
+        description: str | None = None,
+        frame_emitter: Callable | None = None,
     ) -> Any:
         """Use a tool transparently with progress tracking."""
         tool_id = str(uuid4())
@@ -79,9 +80,7 @@ class TransparentToolManager:
                         tool_name=tool_name,
                         status="completed",
                         result_summary=(
-                            str(result)[:200] + "..."
-                            if len(str(result)) > 200
-                            else str(result)
+                            str(result)[:200] + "..." if len(str(result)) > 200 else str(result)
                         ),
                         duration_ms=duration_ms,
                     )
@@ -111,14 +110,12 @@ class TransparentToolManager:
     async def emit_thinking(
         self,
         thought: str,
-        stage: Optional[str] = None,
-        frame_emitter: Optional[Callable] = None,
+        stage: str | None = None,
+        frame_emitter: Callable | None = None,
     ):
         """Emit a thinking update."""
         if frame_emitter:
-            frame = ThinkingUpdate(
-                message_id=self.message_id, thought=thought, stage=stage
-            )
+            frame = ThinkingUpdate(message_id=self.message_id, thought=thought, stage=stage)
             if asyncio.iscoroutinefunction(frame_emitter):
                 await frame_emitter(frame)
             else:
@@ -127,10 +124,10 @@ class TransparentToolManager:
     async def emit_progress(
         self,
         message: str,
-        progress: Optional[float] = None,
-        stage: Optional[str] = None,
-        eta_seconds: Optional[int] = None,
-        frame_emitter: Optional[Callable] = None,
+        progress: float | None = None,
+        stage: str | None = None,
+        eta_seconds: int | None = None,
+        frame_emitter: Callable | None = None,
     ):
         """Emit a progress update."""
         if frame_emitter:
@@ -153,18 +150,16 @@ class AgentCapabilities:
     def __init__(self, message_id: str):
         self.message_id = message_id
         self.tool_manager = TransparentToolManager(message_id)
-        self._frame_emitter: Optional[Callable] = None
+        self._frame_emitter: Callable | None = None
 
     def set_frame_emitter(self, emitter: Callable):
         """Set the frame emitter for transparent operations."""
         self._frame_emitter = emitter
 
-    async def think_aloud(self, thought: str, stage: Optional[str] = None):
+    async def think_aloud(self, thought: str, stage: str | None = None):
         """Share agent thinking process."""
         if self._frame_emitter:
-            frame = ThinkingUpdate(
-                message_id=self.message_id, thought=thought, stage=stage
-            )
+            frame = ThinkingUpdate(message_id=self.message_id, thought=thought, stage=stage)
             if asyncio.iscoroutinefunction(self._frame_emitter):
                 await self._frame_emitter(frame)
             else:
@@ -173,9 +168,9 @@ class AgentCapabilities:
     async def update_progress(
         self,
         message: str,
-        progress: Optional[float] = None,
-        stage: Optional[str] = None,
-        eta_seconds: Optional[int] = None,
+        progress: float | None = None,
+        stage: str | None = None,
+        eta_seconds: int | None = None,
     ):
         """Update task progress."""
         if self._frame_emitter:
@@ -195,8 +190,8 @@ class AgentCapabilities:
         self,
         tool_name: str,
         tool_func: Callable,
-        parameters: Dict[str, Any],
-        description: Optional[str] = None,
+        parameters: dict[str, Any],
+        description: str | None = None,
     ) -> Any:
         """Use a tool with full transparency."""
         return await self.tool_manager.use_tool(

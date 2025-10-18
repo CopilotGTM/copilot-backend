@@ -1,24 +1,21 @@
 import importlib
-import pytest
-from fastapi.testclient import TestClient
-from sqlmodel import create_engine, Session, SQLModel
-from sqlalchemy.pool import StaticPool
-from sqlalchemy import inspect
-from sqlalchemy.schema import CreateTable
-from uuid import uuid4
 import os
+from uuid import uuid4
+
+import pytest
 from dotenv import load_dotenv
+from fastapi.testclient import TestClient
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Session, create_engine
 
 # Respect existing .env values; only set test ENV if not provided.
 # This avoids overriding your configured credentials during tests.
 load_dotenv(override=False)
 os.environ.setdefault("ENV", "local")
 
-from fastapi import FastAPI
 import fakeredis
-from src.api.dependencies.organisation_dependencies import get_org_session
-from src.infra.messaging.redis_client import get_redis_client
 from src.api.dependencies.organisation_dependencies import auth as auth_dependency
+from src.api.dependencies.organisation_dependencies import get_org_session
 
 # Use an in-memory SQLite database for testing
 DATABASE_URL = "sqlite:///:memory:"
@@ -62,16 +59,14 @@ def client(mocker):
     creating the ASGI app. This keeps changes test‑local and avoids touching src/.
     """
     # Reload app_state and fastapi_app to ensure a fresh FastAPI instance per test
-    import src.infra.utils.app_state as app_state
     import src.api.fastapi_app as fastapi_app
+    import src.infra.utils.app_state as app_state
 
     importlib.reload(app_state)
     importlib.reload(fastapi_app)
 
     # Patch Redis client used during app creation
-    mocker.patch(
-        "src.api.fastapi_app.get_redis_client", return_value=fakeredis.FakeRedis()
-    )
+    mocker.patch("src.api.fastapi_app.get_redis_client", return_value=fakeredis.FakeRedis())
 
     # Patch auth verification dependency (module path to the function used in router dependencies)
     mocker.patch(

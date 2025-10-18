@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from src.domain.models.organisation_tables.chat_message_models import AttachmentStatus
@@ -21,7 +21,7 @@ class FakeAttachment:
         self.mimetype = mimetype
         self.size_bytes = size_bytes
         self.storage_path = f"attachments/{user_id}/{attachment_id}/{filename}"
-        self.created_at = datetime.now(timezone.utc)
+        self.created_at = datetime.now(UTC)
         self.status = AttachmentStatus.PENDING_UPLOAD
 
 
@@ -42,9 +42,7 @@ class FakeUploadService:
             payload.size_bytes,
         )
         self._store[att_id] = att
-        upload_url = (
-            f"https://fake.blob.core.windows.net/container/{att.storage_path}?sastoken"
-        )
+        upload_url = f"https://fake.blob.core.windows.net/container/{att.storage_path}?sastoken"
         return att, upload_url
 
     async def finalize_upload(self, payload, user_id: UUID):
@@ -52,9 +50,7 @@ class FakeUploadService:
         if not att or att.user_id != user_id:
             from src.service.chat.chat_attachments_service import UploadServiceError
 
-            raise UploadServiceError(
-                "Attachment not found or access denied", status_code=404
-            )
+            raise UploadServiceError("Attachment not found or access denied", status_code=404)
         att.status = AttachmentStatus.PROCESSING
         return att
 
@@ -63,9 +59,7 @@ class FakeUploadService:
         if not att or att.user_id != user_id:
             from src.service.chat.chat_attachments_service import UploadServiceError
 
-            raise UploadServiceError(
-                "Attachment not found or access denied", status_code=404
-            )
+            raise UploadServiceError("Attachment not found or access denied", status_code=404)
         return att
 
     async def close(self):

@@ -18,7 +18,9 @@ The manager (`manager.py`) composes these.
 """
 
 from __future__ import annotations
-from typing import Protocol, Iterable, Optional, Dict
+
+from collections.abc import Iterable
+from typing import Protocol
 
 
 class SecretNotFound(Exception):
@@ -47,14 +49,14 @@ class SecretProvider(Protocol):
     - Avoid returning empty string for non-existent; use None or raise.
     """
 
-    async def get(self, name: str) -> Optional[str]: ...  # noqa: D401 (protocol stub)
-    async def get_many(self, names: Iterable[str]) -> Dict[str, Optional[str]]: ...
+    async def get(self, name: str) -> str | None: ...  # noqa: D401 (protocol stub)
+    async def get_many(self, names: Iterable[str]) -> dict[str, str | None]: ...
 
 
 class SecretCache(Protocol):
     """Cache contract (sync – lightweight & in memory)."""
 
-    def get(self, name: str) -> Optional[str]: ...
+    def get(self, name: str) -> str | None: ...
     def set(self, name: str, value: str): ...
     def invalidate(self, name: str): ...
     def clear(self): ...

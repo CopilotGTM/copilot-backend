@@ -25,8 +25,9 @@ Notes:
 
 from __future__ import annotations
 
-from typing import List, Tuple, Optional, AsyncGenerator, Dict, Any, TYPE_CHECKING
 import json
+from collections.abc import AsyncGenerator
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     import redis.asyncio as redis_async
@@ -36,8 +37,8 @@ else:
     except ImportError:  # pragma: no cover
         redis_async = None  # type: ignore
 
-from src.infra.messaging.redis_client import get_redis_client  # sync client
 from src.infra.config.configs import Config
+from src.infra.messaging.redis_client import get_redis_client  # sync client
 from src.infra.utils.logger import get_logger
 
 logger = get_logger("redis_streams")
@@ -59,12 +60,12 @@ DATA_FIELD = "data"
 class AsyncRedisConnectionManager:
     """Async Redis connection pool manager."""
 
-    _instance: Optional["AsyncRedisConnectionManager"] = None
-    _async_pool: Optional[object] = None
+    _instance: AsyncRedisConnectionManager | None = None
+    _async_pool: object | None = None
 
     def __new__(cls):
         if cls._instance is None:
-            cls._instance = super(AsyncRedisConnectionManager, cls).__new__(cls)
+            cls._instance = super().__new__(cls)
         return cls._instance
 
     async def get_client(self):
@@ -76,17 +77,14 @@ class AsyncRedisConnectionManager:
     async def _initialize_pool(self) -> None:
         """Initialize async Redis connection pool."""
         if redis_async is None:
-            raise RuntimeError(
-                "Async redis support not available. Install 'redis>=6.0.0'."
-            )
+            raise RuntimeError("Async redis support not available. Install 'redis>=6.0.0'.")
 
         config = Config()
         redis_host, redis_port, redis_password = config.get_redis_client_details
 
         # Determine if SSL should be used (enabled for non-local hosts)
         ssl_enabled = not (
-            redis_host in ["localhost", "127.0.0.1"]
-            or redis_host.startswith("192.168.")
+            redis_host in ["localhost", "127.0.0.1"] or redis_host.startswith("192.168.")
         )
 
         # Use rediss:// protocol for SSL, redis:// for non-SSL
@@ -141,17 +139,15 @@ class AsyncRedisStreams:
 
     async def xread(
         self, stream_key: str, last_id: str, *, block_ms: int = 5000, count: int = 50
-    ) -> List[Tuple[str, Dict[str, Any]]]:
+    ) -> list[tuple[str, dict[str, Any]]]:
         """Read entries > last_id (use '0-0' for from start). Returns list of (id, parsed_json)."""
         client = await self._client()
         try:
-            result = await client.xread(
-                {stream_key: last_id}, count=count, block=block_ms
-            )
+            result = await client.xread({stream_key: last_id}, count=count, block=block_ms)
         except Exception as e:
             logger.error("XREAD error on %s: %s", stream_key, e)
             raise
-        entries: List[Tuple[str, Dict[str, Any]]] = []
+        entries: list[tuple[str, dict[str, Any]]] = []
         for _stream, items in result:
             for entry_id, fields in items:
                 raw = fields.get(DATA_FIELD)
@@ -172,9 +168,7 @@ class AsyncRedisStreams:
         client = await self._client()
         try:
             await client.xgroup_create(stream_key, group_name, start_id, mkstream=True)
-            logger.info(
-                "Created consumer group %s for stream %s", group_name, stream_key
-            )
+            logger.info("Created consumer group %s for stream %s", group_name, stream_key)
             return True
         except Exception as e:
             if "BUSYGROUP" in str(e):
@@ -201,7 +195,7 @@ class AsyncRedisStreams:
         start_id: str = ">",
         block_ms: int = 5000,
         count: int = 50,
-    ) -> List[Tuple[str, Dict[str, Any]]]:
+    ) -> list[tuple[str, dict[str, Any]]]:
         """Read from stream using consumer group. Messages are delivered only once per group."""
         client = await self._client()
         try:
@@ -222,7 +216,7 @@ class AsyncRedisStreams:
             )
             raise
 
-        entries: List[Tuple[str, Dict[str, Any]]] = []
+        entries: list[tuple[str, dict[str, Any]]] = []
         for _stream, items in result:
             for entry_id, fields in items:
                 raw = fields.get(DATA_FIELD)
@@ -267,13 +261,11 @@ class AsyncRedisStreams:
         start_id: str = "0-0",
         block_ms: int = 5000,
         count: int = 50,
-    ) -> AsyncGenerator[Tuple[str, Dict[str, Any]], None]:
+    ) -> AsyncGenerator[tuple[str, dict[str, Any]], None]:
         """Yield (id, frame) continuously starting from start_id (inclusive semantics as per XREAD)."""
         last_id = start_id
         while True:
-            entries = await self.xread(
-                stream_key, last_id, block_ms=block_ms, count=count
-            )
+            entries = await self.xread(stream_key, last_id, block_ms=block_ms, count=count)
             if not entries:
                 continue
             for entry_id, frame in entries:
@@ -289,7 +281,7 @@ class AsyncRedisStreams:
         auto_ack: bool = True,
         block_ms: int = 5000,
         count: int = 50,
-    ) -> AsyncGenerator[Tuple[str, Dict[str, Any]], None]:
+    ) -> AsyncGenerator[tuple[str, dict[str, Any]], None]:
         """
         Yield (id, frame) continuously using consumer group.
         Messages are delivered only once per consumer group.
@@ -341,11 +333,11 @@ class AsyncRedisStreams:
 
 def xadd_json_frame(
     stream_key: str,
-    frame: Dict[str, Any],
+    frame: dict[str, Any],
     *,
     maxlen: int = 500,
     approximate: bool = True,
-) -> Optional[str]:
+) -> str | None:
     """Add a JSON frame to a Redis Stream using sync client.
 
     Returns the generated entry ID or None if failure.

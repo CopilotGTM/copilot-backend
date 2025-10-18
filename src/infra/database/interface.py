@@ -9,7 +9,9 @@ minimal to keep higher layers decoupled from SQLAlchemy specifics.
 """
 
 from __future__ import annotations
-from typing import Protocol, Iterator, AsyncIterator, Any
+
+from collections.abc import AsyncIterator, Iterator
+from typing import Any, Protocol
 
 
 class SyncDatabaseProvider(Protocol):

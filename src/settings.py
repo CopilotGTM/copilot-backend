@@ -6,11 +6,6 @@ This file is maintained for backward compatibility only.
 """
 
 # Import from the actual config location for backward compatibility
-from src.infra.config.configs import (
-    app_config,
-    database_config,
-    nango_integration_config,
-)
 
 
 # Legacy settings object for backward compatibility

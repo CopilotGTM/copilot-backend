@@ -1,9 +1,9 @@
-from typing import Optional, List, TypeVar, Generic
-from uuid import UUID
 from datetime import datetime
+from typing import Generic, TypeVar
+from uuid import UUID
+
 from pydantic import BaseModel, EmailStr
 from pydantic.generics import GenericModel as _Base
-
 from src.domain.models.master_tables import OrganisationStatus
 
 T = TypeVar("T")
@@ -12,12 +12,12 @@ T = TypeVar("T")
 class CreateOrganizationRequest(BaseModel):
     organisation_name: str
     country: str = None
-    sales_team_size: Optional[int] = None
-    company_address: Optional[str] = None
-    linked_urls: Optional[List[str]] = None
-    website_urls: Optional[List[str]] = None
-    summary: Optional[str] = None
-    logo_url: Optional[str] = None
+    sales_team_size: int | None = None
+    company_address: str | None = None
+    linked_urls: list[str] | None = None
+    website_urls: list[str] | None = None
+    summary: str | None = None
+    logo_url: str | None = None
 
     class Config:
         extra = "ignore"
@@ -27,13 +27,13 @@ class ListOrganizationResponse(BaseModel):
     organisation_id: UUID
     organisation_name: str
     is_active: bool
-    country: Optional[str] = None
-    sales_team_size: Optional[int] = None
-    company_address: Optional[str] = None
-    linked_urls: Optional[List[str]] = None
-    website_urls: Optional[List[str]] = None
-    summary: Optional[str] = None
-    logo_url: Optional[str] = None
+    country: str | None = None
+    sales_team_size: int | None = None
+    company_address: str | None = None
+    linked_urls: list[str] | None = None
+    website_urls: list[str] | None = None
+    summary: str | None = None
+    logo_url: str | None = None
     status: str
     created_at: datetime
     updated_at: datetime
@@ -59,20 +59,20 @@ class CreateOrganizationResponse(BaseModel):
 
 
 class PaginationOrganizations(_Base, Generic[T]):
-    organizations: List[ListOrganizationResponse]
-    cursor: Optional[str] = None
+    organizations: list[ListOrganizationResponse]
+    cursor: str | None = None
 
 
 class UpdateOrganizationRequest(BaseModel):
-    organisation_name: Optional[str] = None
-    country: Optional[str] = None
-    sales_team_size: Optional[int] = None
-    company_address: Optional[str] = None
-    linked_urls: Optional[str] = None
-    website_urls: Optional[str] = None
-    summary: Optional[str] = None
-    logo_url: Optional[str] = None
-    is_active: Optional[bool] = None
+    organisation_name: str | None = None
+    country: str | None = None
+    sales_team_size: int | None = None
+    company_address: str | None = None
+    linked_urls: str | None = None
+    website_urls: str | None = None
+    summary: str | None = None
+    logo_url: str | None = None
+    is_active: bool | None = None
 
     class Config:
         extra = "ignore"
@@ -81,7 +81,7 @@ class UpdateOrganizationRequest(BaseModel):
 class DeleteOrganizationResponse(BaseModel):
     organisation_id: UUID
     organisation_name: str
-    schema_name: Optional[str] = None
+    schema_name: str | None = None
 
 
 class RunMigrationsRequest(BaseModel):
@@ -101,30 +101,30 @@ class RunMasterMigrationsResponse(BaseModel):
 
 class UpdateOrganisationStatusRequest(BaseModel):
     status: OrganisationStatus
-    note: Optional[str] = None
+    note: str | None = None
 
 
 class UpdateOrganisationStatusResponse(BaseModel):
     organisation_id: UUID
     status: OrganisationStatus
     updated_at: datetime
-    approved_at: Optional[datetime] = None
-    approved_by: Optional[UUID] = None
+    approved_at: datetime | None = None
+    approved_by: UUID | None = None
 
 
 class OrganisationActionHistoryResponse(BaseModel):
     id: UUID
     organisation_id: UUID
     action: str
-    note: Optional[str] = None
-    details: Optional[dict] = None
+    note: str | None = None
+    details: dict | None = None
     created_at: datetime
-    actor_admin_id: Optional[UUID] = None
+    actor_admin_id: UUID | None = None
 
     class Config:
         from_attributes = True
 
 
 class PaginatedOrganisationActionHistoryResponse(BaseModel):
-    history: List[OrganisationActionHistoryResponse]
-    cursor: Optional[str] = None
+    history: list[OrganisationActionHistoryResponse]
+    cursor: str | None = None

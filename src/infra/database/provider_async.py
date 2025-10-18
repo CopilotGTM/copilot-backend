@@ -12,44 +12,40 @@ from __future__ import annotations
 import asyncio
 import threading
 import urllib.parse
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, Dict
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import (
-    create_async_engine,
     AsyncEngine,
-    async_sessionmaker,
     AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
 )
-
-from src.infra.database.interface import AsyncDatabaseProvider
 from src.infra.config.configs import database_config
+from src.infra.database.interface import AsyncDatabaseProvider
 from src.infra.secrets.manager import secrets_manager
+from src.infra.utils.logger import get_logger
 from src.infra.utils.resource_naming import (
     get_key_vault_secret_name,
     get_role_name,
     get_schema_name,
 )
-from src.infra.utils.logger import get_logger
 
 logger = get_logger("async_db_provider")
 
 
 class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
-    def __init__(
-        self, *, tenant_pool_max: int = 100, tenant_pool_multiplier: float = 1.0
-    ):
-
+    def __init__(self, *, tenant_pool_max: int = 100, tenant_pool_multiplier: float = 1.0):
         # Global and per-tenant locks
         self._lock = threading.RLock()
-        self._tenant_locks: Dict[UUID, asyncio.Lock] = {}
+        self._tenant_locks: dict[UUID, asyncio.Lock] = {}
 
         # Master and tenant engines
         self._master_engine: AsyncEngine | None = None
 
         # Inline minimal tenant engine cache (LRU)
-        self._tenant_engines: Dict[UUID, AsyncEngine] = {}
+        self._tenant_engines: dict[UUID, AsyncEngine] = {}
         self._tenant_pool_order: list[UUID] = []
         self._tenant_pool_max = tenant_pool_max
         self._pool_multiplier = tenant_pool_multiplier
@@ -77,11 +73,7 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
                     pool_size=database_config.DATABASE_POOL_SIZE,
                     max_overflow=database_config.DATABASE_MAX_OVERFLOW,
                     connect_args={
-                        "ssl": (
-                            False
-                            if database_config.DATABASE_HOST == "localhost"
-                            else True
-                        ),
+                        "ssl": (database_config.DATABASE_HOST != "localhost"),
                         "timeout": database_config.DATABASE_CONNECT_TIMEOUT_SEC,
                     },
                 )
@@ -123,9 +115,7 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
             with self._lock:
                 engine = self._tenant_engines.get(org_id)
                 if engine:
-                    logger.debug(
-                        f"Reusing existing engine after lock for org_id: {org_id}"
-                    )
+                    logger.debug(f"Reusing existing engine after lock for org_id: {org_id}")
                     if org_id in self._tenant_pool_order:
                         self._tenant_pool_order.remove(org_id)
                     self._tenant_pool_order.append(org_id)
@@ -142,9 +132,7 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
                 password = await secrets_manager.get(secret_name)
 
             if not password:
-                logger.error(
-                    f"Password secret '{secret_name}' unavailable for org_id {org_id}"
-                )
+                logger.error(f"Password secret '{secret_name}' unavailable for org_id {org_id}")
                 raise RuntimeError(f"Tenant secret '{secret_name}' unavailable")
 
             url = self._build_tenant_url(role_name, password)
@@ -163,9 +151,7 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
                 pool_size=pool_size,
                 max_overflow=max_overflow,
                 connect_args={
-                    "ssl": (
-                        False if database_config.DATABASE_HOST == "localhost" else True
-                    ),
+                    "ssl": (database_config.DATABASE_HOST != "localhost"),
                     "timeout": database_config.DATABASE_CONNECT_TIMEOUT_SEC,
                     "server_settings": {"search_path": f'"{schema}",public'},
                 },

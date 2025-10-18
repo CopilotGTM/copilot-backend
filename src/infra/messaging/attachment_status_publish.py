@@ -18,12 +18,11 @@ Lightweight (only core fields). API layer / SSE service may enrich further.
 from __future__ import annotations
 
 from uuid import UUID
-import json
 
 from src.api.schemas.upload_models import AttachmentEventUpdate
-from src.infra.utils.logger import get_logger
-from src.infra.messaging.redis_channels import channel_for_attachment_update_status
 from src.infra.messaging.publishers import RedisPublisher
+from src.infra.messaging.redis_channels import channel_for_attachment_update_status
+from src.infra.utils.logger import get_logger
 
 logger = get_logger("attachment_publish")
 _publisher = RedisPublisher(logger)

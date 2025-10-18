@@ -1,7 +1,7 @@
 """Test tasks for debugging worker connectivity."""
 
-from src.workers.knowledge_worker.celery_app import app
 from src.infra.utils.logger import get_logger
+from src.workers.knowledge_worker.celery_app import app
 
 logger = get_logger("knowledge_test_tasks")
 

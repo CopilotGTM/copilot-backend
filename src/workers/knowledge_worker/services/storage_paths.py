@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-from typing import Optional
-
 
 def plan_image_path_for_source(
     *,
     user_id: str,
-    source_id: Optional[str],
-    source_blob_path: Optional[str],
-    page_no: Optional[int],
+    source_id: str | None,
+    source_blob_path: str | None,
+    page_no: int | None,
     idx: str,
 ) -> str:
     """Plan a deterministic blob path for an extracted image.
@@ -40,9 +38,9 @@ def plan_image_path_for_source(
 def plan_table_image_path_for_source(
     *,
     user_id: str,
-    source_id: Optional[str],
-    source_blob_path: Optional[str],
-    page_no: Optional[int],
+    source_id: str | None,
+    source_blob_path: str | None,
+    page_no: int | None,
     table_idx: int,
 ) -> str:
     """Plan a deterministic blob path for an extracted table image.

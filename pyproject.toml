@@ -251,7 +251,15 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401", "F403"]
-"tests/**/*.py" = ["S101", "ARG", "S105", "S106"]
+"tests/**/*.py" = ["S101", "ARG", "S105", "S106", "E402"]
+# Celery workers need environment setup before imports
+"src/workers/**/celery_app.py" = ["E402", "ARG001", "S110"]
+# Celery tasks with bind=True need unused self parameter
+"src/workers/**/tasks/*.py" = ["ARG001", "E402", "S110"]
+# Signal handlers require specific unused parameters
+"src/workers/**/*_handler.py" = ["ARG001"]
+# Parser config and utilities
+"src/workers/knowledge_worker/parsers/*.py" = ["ARG002", "ARG003", "S110"]
 
 [tool.mypy]
 python_version = "3.11"

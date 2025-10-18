@@ -9,20 +9,18 @@ Usage: include as a router dependency on user-protected endpoints.
 """
 
 from __future__ import annotations
+
 import time
-from typing import Optional
 
-from fastapi import Depends, HTTPException, status
-
+from fastapi import Depends, HTTPException, Request, status
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
     get_current_user,
 )
-from fastapi import Request
-from src.infra.auth.admin_auth import admin_auth
 from src.domain.models.master_tables import SuperAdmin
-from src.infra.messaging.redis_client import get_redis_client
+from src.infra.auth.admin_auth import admin_auth
 from src.infra.config.configs import rate_limit_config
+from src.infra.messaging.redis_client import get_redis_client
 from src.infra.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -46,7 +44,7 @@ def _incr_with_ttl(key: str, ttl_seconds: int) -> int:
         return 0
 
 
-def _ttl_seconds(key: str) -> Optional[int]:
+def _ttl_seconds(key: str) -> int | None:
     """Get TTL in seconds for a key; returns None if unknown or no TTL."""
     try:
         client = get_redis_client()
@@ -59,7 +57,7 @@ def _ttl_seconds(key: str) -> Optional[int]:
         return None
 
 
-async def _get_email_from_request(req: Request) -> Optional[str]:
+async def _get_email_from_request(req: Request) -> str | None:
     """Best-effort extraction of email/username from the request body or headers."""
     # Try JSON body
     try:
@@ -99,9 +97,7 @@ def _enforce_rate_limit_for(subject_kind: str, subject_id: str, category: str) -
         per_minute_limit = getattr(
             rate_limit_config, "READ_PER_MINUTE", rate_limit_config.PER_MINUTE
         )
-        per_hour_limit = getattr(
-            rate_limit_config, "READ_PER_HOUR", rate_limit_config.PER_HOUR
-        )
+        per_hour_limit = getattr(rate_limit_config, "READ_PER_HOUR", rate_limit_config.PER_HOUR)
     else:
         per_minute_limit = rate_limit_config.PER_MINUTE
         per_hour_limit = rate_limit_config.PER_HOUR

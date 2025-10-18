@@ -1,10 +1,9 @@
-from fastapi import APIRouter, HTTPException, Depends, Request
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from typing import Dict, Any
 import os
 
-from src.infra.utils.logger import get_logger
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from src.infra.secrets.manager import secrets_manager
+from src.infra.utils.logger import get_logger
 
 logger = get_logger()
 
@@ -134,9 +133,7 @@ async def detailed_healthcheck(authorized: bool = Depends(verify_internal_access
             "status": "error",
             "error": str(e),
             "overall_healthy": False,
-            "recommendations": [
-                "Check application logs for detailed error information"
-            ],
+            "recommendations": ["Check application logs for detailed error information"],
         }
         raise HTTPException(status_code=503, detail=error_response)
 
@@ -172,8 +169,6 @@ async def secrets_healthcheck(authorized: bool = Depends(verify_internal_access)
             detail={
                 "status": "error",
                 "error": str(e),
-                "recommendations": [
-                    "Check secret management system configuration and logs"
-                ],
+                "recommendations": ["Check secret management system configuration and logs"],
             },
         )

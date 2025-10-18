@@ -2,42 +2,38 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Body, Depends, status, Query
+from fastapi import APIRouter, Body, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Optional, Set
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
+    acquire_org_async_session,
     get_current_user,
     get_org_async_session,
-    acquire_org_async_session,
 )
-from src.api.schemas.base_models import GenericResponse
 from src.api.dependencies.rate_limit import rate_limit_user_write
+from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.knowledge_upload_models import (
     KnowledgeBatchFinalizeRequest,
     KnowledgeBatchPresignRequest,
     KnowledgeBatchPresignResponse,
-    KnowledgeFinalizeRequest,
     KnowledgePresignFileResponse,
     KnowledgeSourceResponse,
 )
 from src.api.utils.http_response import Response
-from src.workers.knowledge_worker.celery_app import app as knowledge_app
-from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
+from src.domain.models.organisation_tables.job_models import (
+    JobStatus,
+    KnowledgeProcessingJob,
+)
+from src.infra.config.constant import KnowledgeBaseErrors
 from src.infra.utils.logger import get_logger
+from src.service.knowledge_base.knowledge_sse_service import (
+    KnowledgeSourceSSEService,
+)
 from src.service.knowledge_base.knowledge_upload_service import (
     KnowledgeUploadService,
     KnowledgeUploadServiceError,
 )
-from src.infra.config.constant import KnowledgeBaseErrors
-from src.service.knowledge_base.knowledge_sse_service import (
-    KnowledgeSSEError,
-    KnowledgeSourceSSEService,
-)
-from src.domain.models.organisation_tables.job_models import (
-    KnowledgeProcessingJob,
-    JobStatus,
-)
+from src.workers.knowledge_worker.celery_app import app as knowledge_app
 from sse_starlette.sse import EventSourceResponse
 
 logger = get_logger("knowledge_upload_handler")
@@ -84,9 +80,7 @@ async def get_knowledge_upload_service(
     Dependency yielding a KnowledgeUploadService instance for the current org.
     Cleanly disposes the service on exit, sync/async safe.
     """
-    service = KnowledgeUploadService(
-        org_session, user_ids.organisation_id, user_ids.user_id
-    )
+    service = KnowledgeUploadService(org_session, user_ids.organisation_id, user_ids.user_id)
     try:
         yield service
     finally:
@@ -146,9 +140,7 @@ async def presign_batch(
                     upload_url=None,
                     expires_in_seconds=0,
                     status="failed",
-                    error_message=error.get(
-                        "error_message", error.get("reason", "Unknown error")
-                    ),
+                    error_message=error.get("error_message", error.get("reason", "Unknown error")),
                     success=False,
                 )
             )
@@ -169,16 +161,10 @@ async def presign_batch(
 
         return Response.success_response(message=message, data=resp)
     except ValueError as e:
-        return Response.error_response(
-            status_code=status.HTTP_400_BAD_REQUEST, message=str(e)
-        )
+        return Response.error_response(status_code=status.HTTP_400_BAD_REQUEST, message=str(e))
     except Exception as e:
-        logger.error(
-            "Unexpected error in knowledge presign batch: %s", e, exc_info=True
-        )
-        return Response.internal_server_error_response(
-            KnowledgeBaseErrors.UNEXPECTED_ERROR
-        )
+        logger.error("Unexpected error in knowledge presign batch: %s", e, exc_info=True)
+        return Response.internal_server_error_response(KnowledgeBaseErrors.UNEXPECTED_ERROR)
 
 
 @upload_router.post(
@@ -236,9 +222,7 @@ async def finalize_batch(
         except KnowledgeUploadServiceError as e:
             errors.append({"source_id": str(item.source_id), "reason": e.message})
         except Exception:
-            errors.append(
-                {"source_id": str(item.source_id), "reason": "unexpected_error"}
-            )
+            errors.append({"source_id": str(item.source_id), "reason": "unexpected_error"})
 
     data = {"results": results, "errors": errors}
     if results:
@@ -296,9 +280,7 @@ async def get_source(
     except KnowledgeUploadServiceError as e:
         return Response.error_response(status_code=e.status_code, message=e.message)
     except Exception:
-        return Response.internal_server_error_response(
-            KnowledgeBaseErrors.UNEXPECTED_ERROR
-        )
+        return Response.internal_server_error_response(KnowledgeBaseErrors.UNEXPECTED_ERROR)
 
 
 @upload_router.get(
@@ -326,15 +308,13 @@ async def stream_sources(
         source_ids,
     )
 
-    explicit_ids: Optional[Set[UUID]] = set(source_ids) if source_ids else None
+    explicit_ids: set[UUID] | None = set(source_ids) if source_ids else None
 
     async def event_generator():
         # Long-lived stream: use imperative acquisition to control lifetime
         sess_gen = acquire_org_async_session(user_ids.organisation_id)
         session = await anext(sess_gen)
-        service = KnowledgeSourceSSEService(
-            session, user_ids.organisation_id, user_ids.user_id
-        )
+        service = KnowledgeSourceSSEService(session, user_ids.organisation_id, user_ids.user_id)
         try:
             async for evt in service.stream_events(
                 explicit_ids=explicit_ids,

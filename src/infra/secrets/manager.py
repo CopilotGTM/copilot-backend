@@ -1,11 +1,13 @@
 from __future__ import annotations
+
 import asyncio
 import time
-from typing import Optional, Iterable, Dict
+from collections.abc import Iterable
 
-from .interface import SecretProvider
-from .azure_key_vault import AzureKeyVaultSecretProvider
 from src.infra.utils.logger import get_logger
+
+from .azure_key_vault import AzureKeyVaultSecretProvider
+from .interface import SecretProvider
 
 logger = get_logger("secrets_manager")
 
@@ -28,9 +30,9 @@ class SecretsManager:
         # Minimal counters
         self._provider_calls = 0
         self._provider_failures = 0
-        self._last_failure_time: Optional[float] = None
+        self._last_failure_time: float | None = None
 
-    async def get(self, name: str) -> Optional[str]:
+    async def get(self, name: str) -> str | None:
         """Fetch secret from provider with a small retry window.
 
         Returns None if not found or on persistent/transient failure after retries.
@@ -44,21 +46,15 @@ class SecretsManager:
                 self._provider_failures += 1
                 self._last_failure_time = time.time()
                 if attempt < self.max_retries:
-                    delay = min(
-                        self.initial_retry_delay * (2**attempt), self.max_retry_delay
-                    )
-                    logger.warning(
-                        "Retrying secret '%s' in %.2fs after error: %s", name, delay, e
-                    )
+                    delay = min(self.initial_retry_delay * (2**attempt), self.max_retry_delay)
+                    logger.warning("Retrying secret '%s' in %.2fs after error: %s", name, delay, e)
                     await asyncio.sleep(delay)
                 else:
-                    logger.error(
-                        "Failed to fetch secret '%s' after retries: %s", name, e
-                    )
+                    logger.error("Failed to fetch secret '%s' after retries: %s", name, e)
         # If all attempts failed or provider returned None each time
         return None
 
-    async def get_with_fallback(self, name: str) -> Optional[str]:
+    async def get_with_fallback(self, name: str) -> str | None:
         """Compatibility alias; just calls get()."""
         return await self.get(name)
 
@@ -66,7 +62,7 @@ class SecretsManager:
         """Best-effort parallel prefetch (no cache retained)."""
         await asyncio.gather(*(self.get(n) for n in names), return_exceptions=True)
 
-    def get_metrics(self) -> Dict[str, any]:
+    def get_metrics(self) -> dict[str, any]:
         return {
             "provider_calls": self._provider_calls,
             "provider_failures": self._provider_failures,
@@ -76,7 +72,7 @@ class SecretsManager:
             "failed_secrets_count": 0,
         }
 
-    def health_check(self) -> Dict[str, any]:
+    def health_check(self) -> dict[str, any]:
         return {
             "healthy": True,
             "circuit_breaker_open": False,

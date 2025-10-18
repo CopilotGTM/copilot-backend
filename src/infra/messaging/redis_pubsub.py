@@ -10,7 +10,6 @@ Fix notes:
         raise a clear runtime error.
 """
 
-import asyncio
 import json
 
 try:  # redis >= 4.2 provides redis.asyncio; >=5 recommended
@@ -18,8 +17,8 @@ try:  # redis >= 4.2 provides redis.asyncio; >=5 recommended
 except ImportError:  # pragma: no cover - fallback path
     redis = None  # type: ignore
 
-from typing import AsyncGenerator, Dict, Any, Optional
-from uuid import UUID
+from collections.abc import AsyncGenerator
+from typing import Any
 
 from src.infra.config.configs import Config
 from src.infra.utils.logger import get_logger
@@ -32,8 +31,8 @@ class AsyncRedisPubSub:
 
     def __init__(self):
         self.config = Config()
-        self._redis: Optional[Any] = None
-        self._pubsub: Optional[Any] = None
+        self._redis: Any | None = None
+        self._pubsub: Any | None = None
 
     async def _get_redis_client(self) -> Any:
         """Get or create async Redis client."""
@@ -43,14 +42,11 @@ class AsyncRedisPubSub:
                     "Async redis support not available. Install/upgrade with: pip install 'redis>=6.0.0'"
                 )
 
-            redis_host, redis_port, redis_password = (
-                self.config.get_redis_client_details
-            )
+            redis_host, redis_port, redis_password = self.config.get_redis_client_details
 
             # Determine if SSL should be used (enabled for non-local hosts)
             ssl_enabled = not (
-                redis_host in ["localhost", "127.0.0.1"]
-                or redis_host.startswith("192.168.")
+                redis_host in ["localhost", "127.0.0.1"] or redis_host.startswith("192.168.")
             )
 
             # Use rediss:// protocol for SSL, redis:// for non-SSL
@@ -71,9 +67,7 @@ class AsyncRedisPubSub:
             await self._redis.ping()  # connectivity check
         return self._redis
 
-    async def subscribe_to_channel(
-        self, channel: str
-    ) -> AsyncGenerator[Dict[str, Any], None]:
+    async def subscribe_to_channel(self, channel: str) -> AsyncGenerator[dict[str, Any], None]:
         """Subscribe to a Redis channel and yield messages.
 
         Args:
@@ -102,7 +96,7 @@ class AsyncRedisPubSub:
             logger.error(f"Redis pub/sub error for channel {channel}: {e}")
             raise
 
-    async def publish_message(self, channel: str, data: Dict[str, Any]) -> None:
+    async def publish_message(self, channel: str, data: dict[str, Any]) -> None:
         """Publish a message to a Redis channel.
 
         Args:

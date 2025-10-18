@@ -1,8 +1,8 @@
 import concurrent.futures
-from typing import List, Dict, Any
+from typing import Any
 
 
-def process_sheet(sheet_name: str, sheet) -> Dict[str, Any]:
+def process_sheet(sheet_name: str, sheet) -> dict[str, Any]:
     """
     Process a single sheet and return its data.
 
@@ -20,9 +20,7 @@ def process_sheet(sheet_name: str, sheet) -> Dict[str, Any]:
     merged_cell_values = {}
     for merged_range in sheet.merged_cells.ranges:
         # Get the value from the top-left cell of the merged range
-        top_left_value = sheet.cell(
-            row=merged_range.min_row, column=merged_range.min_col
-        ).value
+        top_left_value = sheet.cell(row=merged_range.min_row, column=merged_range.min_col).value
         # Store this value for all cells in the merged range
         for row in range(merged_range.min_row, merged_range.max_row + 1):
             for col in range(merged_range.min_col, merged_range.max_col + 1):
@@ -33,7 +31,7 @@ def process_sheet(sheet_name: str, sheet) -> Dict[str, Any]:
     # Get data from remaining rows
     for row in sheet.iter_rows(min_row=2):
         row_data = {}
-        for header, cell in zip(headers, row):
+        for header, cell in zip(headers, row, strict=False):
             # Use the pre-computed merged cell value if it exists, otherwise use the cell's value
             row_data[header] = merged_cell_values.get(cell.coordinate, cell.value)
         data.append(row_data)

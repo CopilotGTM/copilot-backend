@@ -1,4 +1,3 @@
-from typing import Dict, Optional
 from src.infra.utils.logger import get_logger
 
 logger = get_logger()
@@ -6,11 +5,11 @@ logger = get_logger()
 
 def create_row_object(
     sheet_name: str,
-    row_data: Dict,
+    row_data: dict,
     row_index: int,
-    question_column: Optional[str],
-    answer_column: Optional[str],
-) -> Dict:
+    question_column: str | None,
+    answer_column: str | None,
+) -> dict:
     """
     Create a row object with sheet name, row number, and formatted input message.
 
@@ -40,22 +39,18 @@ def create_row_object(
 
     # Get values from other columns (excluding answer column)
     other_columns_data = {
-        col: row_data.get(col, "")
-        for col in row_data.keys()
-        if col != answer_column and row_data.get(col)
+        col: row_data.get(col, "") for col in row_data if col != answer_column and row_data.get(col)
     }
 
     # Create additional details string
-    additional_details = "\n".join(
-        f"\t{col}: {value}" for col, value in other_columns_data.items()
-    )
+    additional_details = "\n".join(f"\t{col}: {value}" for col, value in other_columns_data.items())
 
     # Create input message
     input_message = f"""
         user query: {description_value}
         =====================================
 
-        Additional details : 
+        Additional details :
         {additional_details}
     """
 

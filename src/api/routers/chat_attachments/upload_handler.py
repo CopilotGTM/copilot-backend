@@ -2,43 +2,37 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, status, Body
+from fastapi import APIRouter, Body, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
-
-from src.infra.utils.logger import get_logger
+from src.api.dependencies.organisation_dependencies import (
+    UserIDs,
+    acquire_org_async_session,
+    get_current_user,
+    get_org_async_session,
+)
+from src.api.dependencies.rate_limit import rate_limit_user_write
+from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.upload_models import (
+    AttachmentBatchFinalizeRequest,
+    AttachmentBatchFinalizeResponse,
+    AttachmentBatchFinalizeResult,
+    AttachmentBatchPresignRequest,
+    AttachmentBatchPresignResponse,
+    AttachmentPresignFileResponse,
     FinalizeRequest,
     PresignRequest,
     PresignResponse,
     UploadedAttachmentResponse,
-    AttachmentBatchPresignRequest,
-    AttachmentBatchPresignResponse,
-    AttachmentPresignFileResponse,
-    AttachmentBatchFinalizeRequest,
-    AttachmentBatchFinalizeResponse,
-    AttachmentBatchFinalizeResult,
 )
-from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
 from src.api.utils.http_response import Response
-from src.api.schemas.base_models import GenericResponse
-from src.api.dependencies.rate_limit import rate_limit_user_write
+from src.domain.models.organisation_tables.chat_message_models import AttachmentStatus
+from src.infra.utils.logger import get_logger
 from src.service.chat.chat_attachments_service import UploadService, UploadServiceError
-from sse_starlette.sse import EventSourceResponse
-from uuid import UUID
-from typing import Optional, Set
 from src.service.chat.chat_attachments_sse_service import (
     AttachmentSSEService,
-    AttachmentSSEError,
 )
-from src.api.dependencies.organisation_dependencies import (
-    UserIDs,
-    get_current_user,
-    get_org_async_session,
-    acquire_org_async_session,
-)
-from contextlib import contextmanager
 from src.workers.chat_worker.celery_app import app as chat_app
-from src.domain.models.organisation_tables.chat_message_models import AttachmentStatus
+from sse_starlette.sse import EventSourceResponse
 
 # Reused literals / constants
 UNEXPECTED_ERROR_MSG = "An unexpected error occurred"
@@ -134,9 +128,7 @@ async def presign_batch(
     except UploadServiceError as e:
         return Response.error_response(status_code=e.status_code, message=e.message)
     except ValueError as e:
-        return Response.error_response(
-            status_code=status.HTTP_400_BAD_REQUEST, message=str(e)
-        )
+        return Response.error_response(status_code=status.HTTP_400_BAD_REQUEST, message=str(e))
     except Exception:
         logger.error("Unexpected error in attachment batch presign", exc_info=True)
         return Response.internal_server_error_response(UNEXPECTED_ERROR_MSG)
@@ -178,16 +170,12 @@ async def finalize_batch(
                     attachment_id=att.attachment_id,
                     status=_get_status_str(getattr(att, "status", None)),
                     error=getattr(att, "processing_error", None),
-                    updated_at=getattr(
-                        att, "updated_at", getattr(att, "created_at", None)
-                    ),
+                    updated_at=getattr(att, "updated_at", getattr(att, "created_at", None)),
                 )
             )
         resp = AttachmentBatchFinalizeResponse(results=results, errors=errors)
         if results:
-            return Response.success_response(
-                message="Batch finalize completed", data=resp
-            )
+            return Response.success_response(message="Batch finalize completed", data=resp)
         return Response.error_response(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             message="All finalize operations failed",
@@ -217,16 +205,14 @@ async def stream_attachments(
         user_ids.user_id,
         attachment_ids,
     )
-    explicit_ids: Optional[Set[UUID]] = set(attachment_ids) if attachment_ids else None
+    explicit_ids: set[UUID] | None = set(attachment_ids) if attachment_ids else None
     logger.info("Attachment SSE explicit IDs: %s", explicit_ids)
 
     async def event_generator():
         # Manual control of session lifetime (mirror knowledge base SSE pattern)
         sess_gen = acquire_org_async_session(user_ids.organisation_id)
         session = await anext(sess_gen)
-        service = AttachmentSSEService(
-            session, user_ids.organisation_id, user_ids.user_id
-        )
+        service = AttachmentSSEService(session, user_ids.organisation_id, user_ids.user_id)
         try:
             async for evt in service.stream_events(
                 explicit_ids=explicit_ids,
@@ -278,18 +264,12 @@ async def presign_upload(
             success=True,
             error_message=None,
         )
-        return Response.success_response(
-            message="Presigned upload URL created", data=resp
-        )
+        return Response.success_response(message="Presigned upload URL created", data=resp)
     except UploadServiceError as e:
         return Response.error_response(status_code=e.status_code, message=e.message)
     except ValueError as e:
-        logger.warning(
-            "Presign request validation failed for user %s: %s", service.user_id, e
-        )
-        return Response.error_response(
-            status_code=status.HTTP_400_BAD_REQUEST, message=str(e)
-        )
+        logger.warning("Presign request validation failed for user %s: %s", service.user_id, e)
+        return Response.error_response(status_code=status.HTTP_400_BAD_REQUEST, message=str(e))
     except Exception as e:
         logger.error("Unexpected error in attachment presign: %s", e, exc_info=True)
         return Response.internal_server_error_response(UNEXPECTED_ERROR_MSG)
@@ -333,7 +313,7 @@ async def finalize_upload(
         return Response.success_response(message="Attachment finalized", data=resp)
     except UploadServiceError as e:
         return Response.error_response(status_code=e.status_code, message=e.message)
-    except Exception as e:
+    except Exception:
         logger.error(
             "Unexpected error finalizing attachment %s",
             payload.attachment_id,
@@ -371,13 +351,9 @@ async def get_attachment_status(
             uploaded_at=attachment.created_at,
             status=_get_status_str(getattr(attachment, "status", None)),
         )
-        return Response.success_response(
-            message="Attachment status retrieved", data=resp
-        )
+        return Response.success_response(message="Attachment status retrieved", data=resp)
     except UploadServiceError as e:
         return Response.error_response(status_code=e.status_code, message=e.message)
     except Exception:
-        logger.error(
-            "Unexpected error retrieving attachment %s", attachment_id, exc_info=True
-        )
+        logger.error("Unexpected error retrieving attachment %s", attachment_id, exc_info=True)
         return Response.internal_server_error_response(UNEXPECTED_ERROR_MSG)

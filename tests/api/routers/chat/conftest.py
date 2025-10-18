@@ -1,13 +1,11 @@
-import asyncio
-from uuid import uuid4, UUID
 from datetime import datetime
-from src.infra.utils.cursor import encode_cursor, decode_cursor
 from types import SimpleNamespace
-import pytest
+from uuid import UUID, uuid4
 
-from src.api.dependencies.organisation_dependencies import get_current_user, UserIDs
+import pytest
+from src.api.dependencies.organisation_dependencies import UserIDs, get_current_user
 from src.api.routers.chat.sessions_handler import get_chat_session_service
-from src.api.schemas.chat_models import ChatSessionOut
+from src.infra.utils.cursor import decode_cursor, encode_cursor
 
 
 class FakeChatSessionService:
@@ -21,14 +19,7 @@ class FakeChatSessionService:
 
     # Mimic the real service signature
     def create_session(
-        self,
-        *,
-        user_id,
-        organisation_id,
-        title,
-        chat_type=None,
-        properties=None,
-        tags=None
+        self, *, user_id, organisation_id, title, chat_type=None, properties=None, tags=None
     ):
         if not title or not str(title).strip():
             raise ValueError("Title cannot be null or empty")
@@ -55,9 +46,7 @@ class FakeChatSessionService:
         rec["is_deleted"] = True
         return SimpleNamespace(**rec)
 
-    def rename_session(
-        self, *, session_id: UUID, user_id: UUID, organisation_id: UUID, title: str
-    ):
+    def rename_session(self, *, session_id: UUID, user_id: UUID, organisation_id: UUID, title: str):
         if not title or not str(title).strip():
             raise ValueError("Title cannot be null or empty")
         sid = str(session_id)
@@ -68,12 +57,7 @@ class FakeChatSessionService:
         return SimpleNamespace(**rec)
 
     def list_sessions(
-        self,
-        *,
-        user_id: UUID,
-        organisation_id: UUID,
-        limit: int = 20,
-        cursor: str | None = None
+        self, *, user_id: UUID, organisation_id: UUID, limit: int = 20, cursor: str | None = None
     ):
         # Collect non-deleted sessions
         rows = [rec for rec in self.sessions.values() if not rec.get("is_deleted")]
@@ -100,9 +84,7 @@ class FakeChatSessionService:
         # Return records with attribute access (like domain model)
         return [SimpleNamespace(**r) for r in items], next_cursor
 
-    def search_sessions(
-        self, *, user_id: UUID, organisation_id: UUID, q: str, limit: int = 10
-    ):
+    def search_sessions(self, *, user_id: UUID, organisation_id: UUID, q: str, limit: int = 10):
         query = (q or "").strip().lower()
         if not query:
             return []

@@ -1,6 +1,6 @@
-import uuid
 import hashlib
 import os
+import uuid
 
 # A prefix for all resources to identify them as part of this application.
 # Can be configured via environment variables for different environments (e.g., "prod", "dev").
@@ -33,6 +33,6 @@ def get_org_container_name(organisation_id: uuid.UUID) -> str:
     Constraints: lowercase, numbers, dash, 3-63 chars. We use prefix + short hash.
     Format: <prefix>-org-<8chars>
     """
-    h = hashlib.sha1(str(organisation_id).encode("utf-8")).hexdigest()
+    h = hashlib.sha1(str(organisation_id).encode("utf-8"), usedforsecurity=False).hexdigest()
     base = f"{RESOURCE_PREFIX}-org-{h}"
     return base.lower()

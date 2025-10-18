@@ -1,11 +1,10 @@
+import logging
 from abc import ABC, abstractmethod
-from typing import Optional, BinaryIO
-from io import BytesIO
 
 # import boto3
 # from botocore.exceptions import ClientError
 from dataclasses import dataclass
-import logging
+from io import BytesIO
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +14,7 @@ class CloudConfig:
     """Configuration for cloud provider."""
 
     provider: str
-    region: Optional[str] = None
+    region: str | None = None
 
 
 class CloudFileReader(ABC):
@@ -30,7 +29,7 @@ class CloudFileReader(ABC):
 class AWSFileReader(CloudFileReader):
     """AWS S3 implementation for reading files."""
 
-    def __init__(self, region: Optional[str] = None):
+    def __init__(self, region: str | None = None):
         """
         Initialize AWS S3 reader.
 
@@ -77,9 +76,7 @@ class AWSFileReader(CloudFileReader):
             file_obj = BytesIO()
 
             # Download file to memory
-            self.s3_client.download_fileobj(
-                Bucket=bucket_name, Key=key, Fileobj=file_obj
-            )
+            self.s3_client.download_fileobj(Bucket=bucket_name, Key=key, Fileobj=file_obj)
 
             # Reset pointer to beginning of file
             file_obj.seek(0)
@@ -98,7 +95,7 @@ class AWSFileReader(CloudFileReader):
 class GCPFileReader(CloudFileReader):
     """Google Cloud Storage implementation for reading files."""
 
-    def __init__(self, region: Optional[str] = None):
+    def __init__(self, region: str | None = None):
         """
         Initialize GCP reader.
 

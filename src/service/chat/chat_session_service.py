@@ -1,18 +1,18 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Optional, Dict, Any, List
+import contextlib
+from typing import Any
 from uuid import UUID
 
-from sqlalchemy import or_, and_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from src.infra.utils.cursor import encode_cursor, decode_cursor
-from src.infra.utils.logger import get_logger
-
 from src.domain.models.organisation_tables.chat_session_models import (
     ChatSession,
     ChatType,
 )
+from src.infra.utils.cursor import decode_cursor, encode_cursor
+from src.infra.utils.logger import get_logger
 
 
 class ChatSessionService:
@@ -31,8 +31,8 @@ class ChatSessionService:
         *,
         title: str,
         chat_type: ChatType | str = ChatType.GENERAL_CHAT,
-        properties: Optional[Dict[str, Any]] = None,
-        tags: Optional[List[str]] = None,
+        properties: dict[str, Any] | None = None,
+        tags: list[str] | None = None,
     ) -> ChatSession:
         if not title or not title.strip():
             raise ValueError("Title cannot be null or empty")
@@ -119,8 +119,8 @@ class ChatSessionService:
         self,
         *,
         limit: int = 20,
-        cursor: Optional[str] = None,
-    ) -> tuple[list[ChatSession], Optional[str]]:
+        cursor: str | None = None,
+    ) -> tuple[list[ChatSession], str | None]:
         filters = [
             ChatSession.user_id == self.user_id,
             ChatSession.organisation_id == self.organisation_id,
@@ -150,9 +150,7 @@ class ChatSessionService:
         has_more = len(rows) == limit + 1
         items = rows[:limit]
         next_cursor = (
-            encode_cursor(items[-1].created_at, items[-1].session_id)
-            if has_more
-            else None
+            encode_cursor(items[-1].created_at, items[-1].session_id) if has_more else None
         )
         return items, next_cursor
 
@@ -240,8 +238,6 @@ class ChatSessionService:
                     attempt,
                     retries + 1,
                 )
-                try:
+                with contextlib.suppress(Exception):
                     await self.db.rollback()
-                except Exception:
-                    pass
                 await asyncio.sleep(0.05)

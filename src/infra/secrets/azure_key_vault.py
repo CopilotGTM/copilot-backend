@@ -1,23 +1,27 @@
 from __future__ import annotations
-import os
+
 import asyncio
+import contextlib
+import os
 import time
-from typing import Optional, Iterable, Dict
-from azure.keyvault.secrets.aio import SecretClient
+from collections.abc import Iterable
+
+from azure.core.exceptions import (
+    ClientAuthenticationError,
+    HttpResponseError,
+    ResourceNotFoundError,
+    ServiceRequestError,
+)
 from azure.identity.aio import (
     DefaultAzureCredential,
-    WorkloadIdentityCredential,
     ManagedIdentityCredential,
+    WorkloadIdentityCredential,
 )
-from azure.core.exceptions import (
-    ServiceRequestError,
-    ClientAuthenticationError,
-    ResourceNotFoundError,
-    HttpResponseError,
-)
-from .interface import SecretProvider
+from azure.keyvault.secrets.aio import SecretClient
 from src.infra.config.configs import cloud_infra_config, secret_manager_config
 from src.infra.utils.logger import get_logger
+
+from .interface import SecretProvider
 
 logger = get_logger("azure_key_vault_provider")
 
@@ -26,31 +30,26 @@ class AzureKeyVaultSecretProvider(SecretProvider):
     """Production-ready Azure Key Vault implementation of :class:`SecretProvider`."""
 
     def __init__(self):
-        self._client: Optional[SecretClient] = None
+        self._client: SecretClient | None = None
         self._credential = None
         self._lock = asyncio.Lock()
-        self._last_auth_failure: Optional[float] = None
+        self._last_auth_failure: float | None = None
         self._auth_failure_count = 0
-        self._client_creation_time: Optional[float] = None
+        self._client_creation_time: float | None = None
 
     async def _ensure_client(self):
         """Create the SecretClient once (lazy init) with automatic recreation on auth failures."""
         if self._client is not None:
             # Check if we need to recreate client due to auth failures
-            if (
-                self._last_auth_failure and time.time() - self._last_auth_failure < 300
-            ):  # 5 minutes
-                logger.info(
-                    "Recreating Azure Key Vault client due to recent auth failure"
-                )
+            if self._last_auth_failure and time.time() - self._last_auth_failure < 300:  # 5 minutes
+                logger.info("Recreating Azure Key Vault client due to recent auth failure")
                 await self._recreate_client()
             else:
                 return
 
         async with self._lock:
             if self._client is not None and (
-                not self._last_auth_failure
-                or time.time() - self._last_auth_failure >= 300
+                not self._last_auth_failure or time.time() - self._last_auth_failure >= 300
             ):
                 return
 
@@ -65,10 +64,8 @@ class AzureKeyVaultSecretProvider(SecretProvider):
         try:
             # Close existing client if any
             if self._client:
-                try:
+                with contextlib.suppress(Exception):
                     await self._client.close()
-                except Exception:
-                    pass
 
             # Create new credential based on environment
             if os.getenv("ENV") == "local":
@@ -99,14 +96,10 @@ class AzureKeyVaultSecretProvider(SecretProvider):
                     self._credential = ManagedIdentityCredential()
 
             # Create new client
-            self._client = SecretClient(
-                vault_url=key_vault_url, credential=self._credential
-            )
+            self._client = SecretClient(vault_url=key_vault_url, credential=self._credential)
             self._client_creation_time = time.time()
             self._auth_failure_count = 0
-            logger.info(
-                f"Azure Key Vault client created successfully for: {key_vault_url}"
-            )
+            logger.info(f"Azure Key Vault client created successfully for: {key_vault_url}")
 
         except Exception as e:
             logger.error(f"Failed to create Azure Key Vault client: {e}")
@@ -148,10 +141,7 @@ class AzureKeyVaultSecretProvider(SecretProvider):
                 return "http_error", False
         elif isinstance(exception, RuntimeError):
             error_msg = str(exception).lower()
-            if (
-                "event loop is closed" in error_msg
-                or "no running event loop" in error_msg
-            ):
+            if "event loop is closed" in error_msg or "no running event loop" in error_msg:
                 return (
                     "event_loop_error",
                     False,
@@ -161,7 +151,7 @@ class AzureKeyVaultSecretProvider(SecretProvider):
         else:
             return "unknown_error", True
 
-    async def get(self, name: str) -> Optional[str]:
+    async def get(self, name: str) -> str | None:
         """Retrieve a single secret value with enhanced error handling and categorization.
 
         Returns None for permanent errors (not found, auth) and raises for transient
@@ -232,27 +222,25 @@ class AzureKeyVaultSecretProvider(SecretProvider):
                 )
                 return None
 
-    async def get_many(self, names: Iterable[str]) -> Dict[str, Optional[str]]:
+    async def get_many(self, names: Iterable[str]) -> dict[str, str | None]:
         """Enhanced bulk retrieval with better error handling and parallelization.
 
         Uses controlled concurrency to avoid overwhelming Key Vault while still
         providing better performance than sequential calls.
         """
 
-        async def fetch_single(name: str) -> tuple[str, Optional[str]]:
+        async def fetch_single(name: str) -> tuple[str, str | None]:
             try:
                 value = await self.get(name)
                 return name, value
             except Exception as e:
-                logger.warning(
-                    f"Failed to fetch secret '{name}' in bulk operation: {e}"
-                )
+                logger.warning(f"Failed to fetch secret '{name}' in bulk operation: {e}")
                 return name, None
 
         # Use semaphore to limit concurrent requests to Key Vault
         semaphore = asyncio.Semaphore(5)  # Max 5 concurrent requests
 
-        async def limited_fetch(name: str) -> tuple[str, Optional[str]]:
+        async def limited_fetch(name: str) -> tuple[str, str | None]:
             async with semaphore:
                 return await fetch_single(name)
 
@@ -262,7 +250,7 @@ class AzureKeyVaultSecretProvider(SecretProvider):
         tasks = [limited_fetch(name) for name in names_list]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        final_results: Dict[str, Optional[str]] = {}
+        final_results: dict[str, str | None] = {}
         for result in results:
             if isinstance(result, Exception):
                 logger.error(f"Bulk fetch task failed: {result}")
@@ -271,9 +259,7 @@ class AzureKeyVaultSecretProvider(SecretProvider):
             final_results[name] = value
 
         success_count = sum(1 for v in final_results.values() if v is not None)
-        logger.info(
-            f"Bulk fetch completed: {success_count}/{len(names_list)} secrets retrieved"
-        )
+        logger.info(f"Bulk fetch completed: {success_count}/{len(names_list)} secrets retrieved")
 
         return final_results
 
@@ -301,19 +287,15 @@ class AzureKeyVaultSecretProvider(SecretProvider):
         self._client = None
         self._credential = None
 
-    def get_client_info(self) -> Dict[str, any]:
+    def get_client_info(self) -> dict[str, any]:
         """Get client information for debugging and monitoring."""
         return {
             "client_exists": self._client is not None,
-            "credential_type": (
-                type(self._credential).__name__ if self._credential else None
-            ),
+            "credential_type": (type(self._credential).__name__ if self._credential else None),
             "last_auth_failure": self._last_auth_failure,
             "auth_failure_count": self._auth_failure_count,
             "client_age_seconds": (
-                time.time() - self._client_creation_time
-                if self._client_creation_time
-                else None
+                time.time() - self._client_creation_time if self._client_creation_time else None
             ),
             "vault_url": secret_manager_config.AZURE_KEY_VAULT_URL,
         }

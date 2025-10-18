@@ -1,7 +1,6 @@
-import re
-from typing import Dict, List, Any, Optional, Tuple
-from datetime import datetime
 import logging
+import re
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -23,9 +22,7 @@ WANTED_SECTIONS = ["Outcome", "Next Steps", "Transcript", "Discussion"]
 # Regex patterns for various transcript formats
 PATTERNS = {
     # [10:15] John: Hello everyone
-    "timestamp_bracket": re.compile(
-        r"^\[(\d{1,2}:\d{2}(?::\d{2})?)\]\s*([^:]+):\s*(.+)"
-    ),
+    "timestamp_bracket": re.compile(r"^\[(\d{1,2}:\d{2}(?::\d{2})?)\]\s*([^:]+):\s*(.+)"),
     # 10:15 John: Hello everyone
     "timestamp_plain": re.compile(r"^(\d{1,2}:\d{2}(?::\d{2})?)\s+([^:]+):\s*(.+)"),
     # (10:15) John: Hello everyone
@@ -39,9 +36,7 @@ PATTERNS = {
 # Header detection patterns
 HEADER_MARKERS = [
     re.compile(r"^#+\s*(.+)$"),  # Markdown headers
-    re.compile(
-        rf"({'|'.join(re.escape(h) + r':?' for h in HEADERS)})", re.I
-    ),  # Standard headers
+    re.compile(rf"({'|'.join(re.escape(h) + r':?' for h in HEADERS)})", re.I),  # Standard headers
     re.compile(r"^[A-Z][A-Z\s]+:$"),  # ALL CAPS headers
     re.compile(r"^=+$"),  # Underline headers
     re.compile(r"^-+$"),  # Underline headers
@@ -52,7 +47,7 @@ class Speaker:
     def __init__(self, name: str):
         self.original_name = name
         self.normalized_name = self._normalize_name(name)
-        self.variations: List[str] = [self.normalized_name]
+        self.variations: list[str] = [self.normalized_name]
 
     @staticmethod
     def _normalize_name(name: str) -> str:
@@ -78,10 +73,10 @@ class Speaker:
 
 class TranscriptParser:
     def __init__(self):
-        self.speakers: List[Speaker] = []
+        self.speakers: list[Speaker] = []
         self.last_timestamp = ""
         self.current_section = "Transcript"
-        self.sections: Dict[str, List[Dict[str, str]]] = {"Transcript": []}
+        self.sections: dict[str, list[dict[str, str]]] = {"Transcript": []}
 
     def _parse_timestamp(self, ts: str) -> str:
         """Normalize and validate timestamp format."""
@@ -113,7 +108,7 @@ class TranscriptParser:
         self.speakers.append(new_speaker)
         return new_speaker
 
-    def _parse_line(self, line: str) -> Optional[Dict[str, str]]:
+    def _parse_line(self, line: str) -> dict[str, str] | None:
         """Parse a single line of transcript."""
         line = line.strip()
         if not line:
@@ -129,9 +124,7 @@ class TranscriptParser:
                     "timestamp_paren",
                 ]:
                     timestamp, speaker_name, content = match.groups()
-                    self.last_timestamp = (
-                        self._parse_timestamp(timestamp) or self.last_timestamp
-                    )
+                    self.last_timestamp = self._parse_timestamp(timestamp) or self.last_timestamp
                 elif pattern_name == "no_timestamp":
                     speaker_name, content = match.groups()
                 else:  # dash_format
@@ -163,7 +156,7 @@ class TranscriptParser:
         # If still no match, add as system note
         return {"speaker": "System", "content": line, "timestamp": self.last_timestamp}
 
-    def parse_transcript(self, text: str) -> Dict[str, Any]:
+    def parse_transcript(self, text: str) -> dict[str, Any]:
         """
         Parse transcript text into structured format.
 
@@ -205,22 +198,20 @@ class TranscriptParser:
         # Add other sections
         for section_name, dialogues in self.sections.items():
             if section_name != "Transcript" and dialogues:
-                result["sections"].append(
-                    {"section_name": section_name, "dialogues": dialogues}
-                )
+                result["sections"].append({"section_name": section_name, "dialogues": dialogues})
 
         return result
 
 
 # Create functions to maintain backward compatibility
-def parse_transcript_dialog(block: str) -> List[Dict[str, str]]:
+def parse_transcript_dialog(block: str) -> list[dict[str, str]]:
     """Backward compatibility function."""
     parser = TranscriptParser()
     result = parser.parse_transcript(block)
     return result["sections"][0]["dialogues"] if result["sections"] else []
 
 
-def build_transcript_json(text: str) -> Dict[str, Any]:
+def build_transcript_json(text: str) -> dict[str, Any]:
     """Backward compatibility function."""
     parser = TranscriptParser()
     return parser.parse_transcript(text)

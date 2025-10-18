@@ -27,8 +27,8 @@ from .organisation_models import (
 from .super_admin_models import (
     AdminRole,
     AdminUserStatus,
-    SuperAdmin,
     SupabaseAdminStatus,
+    SuperAdmin,
 )
 from .user_models import (
     SupabaseUserStatus,

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-from typing import List, Optional
 from functools import lru_cache
 
 from agno.embedder.azure_openai import AzureOpenAIEmbedder
@@ -15,7 +13,7 @@ class EmbeddingService:
 
     def __init__(self):
         """Initialize the embedding service with Azure OpenAI embedder."""
-        self._embedder: Optional[AzureOpenAIEmbedder] = None
+        self._embedder: AzureOpenAIEmbedder | None = None
 
     @property
     def embedder(self) -> AzureOpenAIEmbedder:
@@ -29,7 +27,7 @@ class EmbeddingService:
                 raise
         return self._embedder
 
-    def get_embedding(self, text: str) -> List[float]:
+    def get_embedding(self, text: str) -> list[float]:
         """
         Generate embedding for the given text.
 
@@ -48,9 +46,7 @@ class EmbeddingService:
             max_length = 8000  # Conservative limit for token count
             if len(text) > max_length:
                 text = text[:max_length]
-                logger.warning(
-                    f"Text truncated to {max_length} characters for embedding"
-                )
+                logger.warning(f"Text truncated to {max_length} characters for embedding")
 
             embedding = self.embedder.get_embedding(text)
             logger.debug(
@@ -63,7 +59,7 @@ class EmbeddingService:
             # Return zero vector as fallback
             return [0.0] * 1536
 
-    def get_embeddings_batch(self, texts: List[str]) -> List[List[float]]:
+    def get_embeddings_batch(self, texts: list[str]) -> list[list[float]]:
         """
         Generate embeddings for multiple texts.
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import Dict, Any
+from typing import Any
 
 
 class ParserConfig:
@@ -22,7 +22,7 @@ class ParserConfig:
     MAX_PARSER_RETRIES = int(os.getenv("MAX_PARSER_RETRIES", "3"))
 
     @classmethod
-    def get_parser_settings(cls, parser_type: str) -> Dict[str, Any]:
+    def get_parser_settings(cls, parser_type: str) -> dict[str, Any]:
         """Return common settings (PDF is the only active parser)."""
         return {
             "max_chunk_size": cls.MAX_CHUNK_SIZE,

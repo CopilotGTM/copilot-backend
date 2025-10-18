@@ -10,46 +10,43 @@ Schema selection is applied at connection creation time via search_path.
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import urllib.parse
-import asyncio
-from contextlib import contextmanager
-from typing import Iterator, Dict
+import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from uuid import UUID
-from sqlalchemy.engine import Engine
-from sqlalchemy import text
-from sqlalchemy.orm import sessionmaker, Session as SASession
-from sqlalchemy import create_engine
 
-from src.infra.database.interface import SyncDatabaseProvider
+from sqlalchemy import create_engine
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session as SASession
+from sqlalchemy.orm import sessionmaker
 from src.infra.config.configs import database_config
+from src.infra.database.interface import SyncDatabaseProvider
 from src.infra.secrets.manager import secrets_manager
+from src.infra.utils.logger import get_logger
 from src.infra.utils.resource_naming import (
     get_key_vault_secret_name,
     get_role_name,
     get_schema_name,
 )
-from src.infra.utils.logger import get_logger
-import uuid
 
 logger = get_logger("sync_db_provider")
 
 
 class SyncSqlAlchemyProvider(SyncDatabaseProvider):
-    def __init__(
-        self, *, tenant_pool_max: int = 100, tenant_pool_multiplier: float = 5.0
-    ):
-
+    def __init__(self, *, tenant_pool_max: int = 100, tenant_pool_multiplier: float = 5.0):
         # Global lock for master and tenant engine management
         self._lock = threading.RLock()
-        self._tenant_locks: Dict[UUID, threading.Lock] = {}
+        self._tenant_locks: dict[UUID, threading.Lock] = {}
 
         # Master and tenant engines
         self._master_engine: Engine | None = None
         self._SessionFactory: sessionmaker | None = None
 
         # Inline minimal tenant engine cache (LRU)
-        self._tenant_engines: Dict[UUID, Engine] = {}
+        self._tenant_engines: dict[UUID, Engine] = {}
         self._tenant_pool_order: list[UUID] = []
         self._tenant_pool_max = tenant_pool_max
         self._pool_multiplier = tenant_pool_multiplier
@@ -131,9 +128,7 @@ class SyncSqlAlchemyProvider(SyncDatabaseProvider):
                 password = None
 
             if not password:
-                logger.error(
-                    f"Password secret '{secret_name}' unavailable for org_id {org_id}"
-                )
+                logger.error(f"Password secret '{secret_name}' unavailable for org_id {org_id}")
                 raise RuntimeError(f"Tenant secret '{secret_name}' unavailable")
 
             eng_new = self._build_tenant_engine(org_id, role_name, password)
@@ -154,9 +149,7 @@ class SyncSqlAlchemyProvider(SyncDatabaseProvider):
                         pass
             return eng_new
 
-    def _build_tenant_engine(
-        self, org_uuid: UUID, role_name: str, password: str
-    ) -> Engine:
+    def _build_tenant_engine(self, org_uuid: UUID, role_name: str, password: str) -> Engine:
         host = database_config.DATABASE_HOST
         port = database_config.DATABASE_PORT
         db_name = database_config.DATABASE_NAME
@@ -171,9 +164,7 @@ class SyncSqlAlchemyProvider(SyncDatabaseProvider):
         max_overflow = max(0, int(overflow * self._pool_multiplier))
 
         schema = get_schema_name(org_uuid)
-        options_parts = [
-            f"-c statement_timeout={database_config.DATABASE_STATEMENT_TIMEOUT_MS}"
-        ]
+        options_parts = [f"-c statement_timeout={database_config.DATABASE_STATEMENT_TIMEOUT_MS}"]
         if schema:
             options_parts.insert(0, f'-c search_path="{schema}",public ')
         options_str = "".join(options_parts)
@@ -223,9 +214,7 @@ class SyncSqlAlchemyProvider(SyncDatabaseProvider):
     @contextmanager
     def master_session(self) -> Iterator[SASession]:
         master_engine = self._get_master_engine()
-        session_local = sessionmaker(
-            bind=master_engine, expire_on_commit=False, class_=SASession
-        )
+        session_local = sessionmaker(bind=master_engine, expire_on_commit=False, class_=SASession)
         session: SASession = session_local()
         try:
             yield session
@@ -239,9 +228,7 @@ class SyncSqlAlchemyProvider(SyncDatabaseProvider):
     @contextmanager
     def tenant_session(self, org_id: UUID) -> Iterator[SASession]:
         engine = self._get_tenant_engine(org_id)
-        session_local = sessionmaker(
-            bind=engine, expire_on_commit=False, class_=SASession
-        )
+        session_local = sessionmaker(bind=engine, expire_on_commit=False, class_=SASession)
         session: SASession = session_local()
         try:
             yield session
@@ -262,10 +249,8 @@ class SyncSqlAlchemyProvider(SyncDatabaseProvider):
             if org_uuid in self._tenant_pool_order:
                 self._tenant_pool_order.remove(org_uuid)
         if eng:
-            try:
+            with suppress(Exception):
                 eng.dispose()
-            except Exception:
-                pass
 
 
 __all__ = ["SyncSqlAlchemyProvider"]

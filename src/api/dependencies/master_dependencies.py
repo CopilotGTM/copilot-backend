@@ -7,11 +7,10 @@ variant that matches your endpoint/service.
 
 from __future__ import annotations
 
-from typing import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Iterator
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
-
 from src.infra.database.factory import get_async_provider, get_sync_provider
 
 

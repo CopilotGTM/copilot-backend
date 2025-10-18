@@ -1,9 +1,10 @@
-from typing import Dict, Any, Optional
 import re
-from supabase import create_client, Client
+from typing import Any
+
 from src.infra.config.configs import supabase_config
-from src.infra.utils.logger import get_logger
 from src.infra.config.constant import SupabaseErrors
+from src.infra.utils.logger import get_logger
+from supabase import Client, create_client
 
 logger = get_logger()
 
@@ -22,7 +23,7 @@ class SupabaseAuthError(Exception):
         self,
         message: str,
         status_code: int = 500,
-        details: Optional[Dict[str, Any]] = None,
+        details: dict[str, Any] | None = None,
     ):
         self.message = message
         self.status_code = status_code
@@ -44,9 +45,7 @@ class SupabaseUserClient:
         self._validate_config()
 
         self.client: Client = create_client(self.supabase_url, self.supabase_anon_key)
-        self.admin_client: Client = create_client(
-            self.supabase_url, self.supabase_service_role_key
-        )
+        self.admin_client: Client = create_client(self.supabase_url, self.supabase_service_role_key)
 
         logger.info("Supabase User client initialized")
 
@@ -97,9 +96,7 @@ class SupabaseUserClient:
         if not password or not isinstance(password, str):
             return False
         # Minimum 6 characters
-        if len(password) < 6:
-            return False
-        return True
+        return not len(password) < 6
 
     def _validate_user_id(self, user_id: str) -> bool:
         """
@@ -154,7 +151,7 @@ class SupabaseUserClient:
         # Just check if it's a non-empty string
         return len(hashed_token.strip()) > 0
 
-    def sign_in_with_password(self, email: str, password: str) -> Dict[str, Any]:
+    def sign_in_with_password(self, email: str, password: str) -> dict[str, Any]:
         """
         Sign in user with email and password.
 
@@ -170,9 +167,7 @@ class SupabaseUserClient:
             if not self._validate_email(email):
                 raise SupabaseAuthError(SupabaseErrors.INVALID_EMAIL, status_code=400)
             if not self._validate_password(password):
-                raise SupabaseAuthError(
-                    SupabaseErrors.INVALID_PASSWORD, status_code=400
-                )
+                raise SupabaseAuthError(SupabaseErrors.INVALID_PASSWORD, status_code=400)
 
             response = self.client.auth.sign_in_with_password(
                 {"email": email, "password": password}
@@ -181,9 +176,7 @@ class SupabaseUserClient:
             return response.model_dump()
         except Exception as e:
             logger.error(f"Sign in failed for {email}: {str(e)}")
-            raise SupabaseAuthError(
-                SupabaseErrors.SIGN_IN_FAILED.format(str(e)), status_code=401
-            )
+            raise SupabaseAuthError(SupabaseErrors.SIGN_IN_FAILED.format(str(e)), status_code=401)
 
     def generate_password_reset_link(self, email: str) -> str:
         """
@@ -228,16 +221,14 @@ class SupabaseUserClient:
             return f"{redirect_url}?token_hash={hashed_token}"
 
         except Exception as e:
-            logger.error(
-                f"Failed to generate password reset link for {email}: {str(e)}"
-            )
+            logger.error(f"Failed to generate password reset link for {email}: {str(e)}")
             raise SupabaseAuthError(
                 SupabaseErrors.RESET_LINK_FAILED.format(str(e)), status_code=500
             )
 
     def create_user(
-        self, email: str, password: str, metadata: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+        self, email: str, password: str, metadata: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         """
         Create a new user using admin client.
 
@@ -254,9 +245,7 @@ class SupabaseUserClient:
             if not self._validate_email(email):
                 raise SupabaseAuthError(SupabaseErrors.INVALID_EMAIL, status_code=400)
             if not self._validate_password(password):
-                raise SupabaseAuthError(
-                    SupabaseErrors.INVALID_PASSWORD, status_code=400
-                )
+                raise SupabaseAuthError(SupabaseErrors.INVALID_PASSWORD, status_code=400)
 
             user_data = {
                 "email": email,
@@ -307,11 +296,9 @@ class SupabaseUserClient:
 
         except Exception as e:
             logger.error(f"Sign out failed for user {user_id}: {str(e)}")
-            raise SupabaseAuthError(
-                SupabaseErrors.SIGN_OUT_FAILED.format(str(e)), status_code=500
-            )
+            raise SupabaseAuthError(SupabaseErrors.SIGN_OUT_FAILED.format(str(e)), status_code=500)
 
-    def verify_token(self, token: str) -> Dict[str, Any]:
+    def verify_token(self, token: str) -> dict[str, Any]:
         """
         Verify a JWT token and return user information.
 
@@ -335,7 +322,7 @@ class SupabaseUserClient:
                 SupabaseErrors.TOKEN_VERIFICATION_FAILED.format(str(e)), status_code=401
             )
 
-    def refresh_access_token(self, refresh_token: str) -> Dict[str, Any]:
+    def refresh_access_token(self, refresh_token: str) -> dict[str, Any]:
         """
         Refresh access token using refresh token.
 
@@ -376,18 +363,12 @@ class SupabaseUserClient:
         try:
             # Input validation
             if not self._validate_hashed_token(token_hash):
-                raise SupabaseAuthError(
-                    SupabaseErrors.INVALID_HASHED_TOKEN, status_code=400
-                )
+                raise SupabaseAuthError(SupabaseErrors.INVALID_HASHED_TOKEN, status_code=400)
             if not self._validate_password(new_password):
-                raise SupabaseAuthError(
-                    SupabaseErrors.INVALID_PASSWORD, status_code=400
-                )
+                raise SupabaseAuthError(SupabaseErrors.INVALID_PASSWORD, status_code=400)
 
             # Use the recovery token_hash to verify and reset password
-            response = self.client.auth.verify_otp(
-                {"token_hash": token_hash, "type": "recovery"}
-            )
+            response = self.client.auth.verify_otp({"token_hash": token_hash, "type": "recovery"})
 
             # If verification is successful, update the password
             if response:
@@ -418,9 +399,7 @@ class SupabaseUserClient:
                 SupabaseErrors.PASSWORD_RESET_FAILED.format(str(e)), status_code=500
             )
 
-    def update_user_metadata(
-        self, user_id: str, metadata: Dict[str, Any]
-    ) -> Dict[str, Any]:
+    def update_user_metadata(self, user_id: str, metadata: dict[str, Any]) -> dict[str, Any]:
         """
         Update user metadata using admin client.
 
@@ -447,7 +426,7 @@ class SupabaseUserClient:
                 SupabaseErrors.METADATA_UPDATE_FAILED.format(str(e)), status_code=500
             )
 
-    def get_user_from_token(self, token: str, session) -> Optional[Any]:
+    def get_user_from_token(self, token: str, session) -> Any | None:
         """
         Get user from token and database session.
 

@@ -1,8 +1,8 @@
 # Utility modules for knowledge worker
-from .document_store import DocumentStore
 from .content_processor import ContentProcessor
-from .status_events import publish_knowledge_source_status
+from .document_store import DocumentStore
 from .job_utils import mark_job_in_progress, set_job_status
+from .status_events import publish_knowledge_source_status
 from .storage import download_blob_to_temp
 
 __all__ = [

@@ -2,8 +2,10 @@
 
 import os
 import ssl as ssl_mod
-import redis
 from typing import Optional
+
+import redis
+
 from ..config.configs import Config
 from ..utils.logger import get_logger
 
@@ -14,11 +16,11 @@ class RedisConnectionManager:
     """Singleton Redis connection pool manager."""
 
     _instance: Optional["RedisConnectionManager"] = None
-    _sync_pool: Optional[redis.ConnectionPool] = None
+    _sync_pool: redis.ConnectionPool | None = None
 
     def __new__(cls):
         if cls._instance is None:
-            cls._instance = super(RedisConnectionManager, cls).__new__(cls)
+            cls._instance = super().__new__(cls)
         return cls._instance
 
     def __init__(self):
@@ -30,7 +32,7 @@ class RedisConnectionManager:
         """Initialize Redis connection pool."""
         config = Config()
         redis_host, redis_port, redis_password = config.get_redis_client_details
-        ssl_enabled = False if config.env == "local" else True
+        ssl_enabled = config.env != "local"
 
         # Base connection parameters (compatible across redis-py versions)
         connection_params: dict = {
@@ -100,7 +102,7 @@ class RedisConnectionManager:
 
 
 # Lazy, module-level singleton (do not initialize at import time)
-_redis_manager: Optional[RedisConnectionManager] = None
+_redis_manager: RedisConnectionManager | None = None
 
 
 def get_redis_client() -> redis.Redis:

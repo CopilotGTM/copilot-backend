@@ -16,13 +16,11 @@ Lightweight (only core fields). API layer can enrich on snapshot if needed.
 
 from __future__ import annotations
 
-from typing import Any
 from uuid import UUID
-import json
 
 from src.api.schemas.knowledge_upload_models import KnowledgeSourceEventUpdate
-from src.infra.utils.logger import get_logger
 from src.infra.messaging.publishers import RedisPublisher
+from src.infra.utils.logger import get_logger
 
 logger = get_logger("knowledge_publish")
 _publisher = RedisPublisher(logger)

@@ -1,12 +1,12 @@
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
-from sqlalchemy import Column, DateTime, func
+from sqlalchemy import DateTime, func
 from sqlmodel import Field, SQLModel
 
 
 def utcnow() -> datetime:
     """Return timezone-aware UTC datetime"""
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def today() -> date:

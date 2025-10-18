@@ -16,6 +16,7 @@ repos:
       - id: check-yaml
         args: ['--unsafe']
         files: \.(yaml|yml)$
+        exclude: ^charts/
       - id: check-added-large-files
         args: ['--maxkb=1000']
       - id: check-json

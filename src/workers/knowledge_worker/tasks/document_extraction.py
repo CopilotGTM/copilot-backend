@@ -3,32 +3,33 @@ from __future__ import annotations
 """Heavy document extraction task (PDF/DOC extraction).
 """
 import asyncio
+import contextlib
 import os
-
 from uuid import UUID
-from celery.exceptions import SoftTimeLimitExceeded
-from billiard.exceptions import TimeLimitExceeded
 
-from src.workers.knowledge_worker.celery_app import app
-from src.infra.utils.logger import get_logger
+from billiard.exceptions import TimeLimitExceeded
+from celery.exceptions import SoftTimeLimitExceeded
+
 from src.api.dependencies.organisation_dependencies import acquire_org_session
+from src.domain.models.organisation_tables.job_models import (
+    JobStatus,
+    KnowledgeProcessingJob,
+)
 from src.domain.models.organisation_tables.knowledge_models import (
     OrganisationSource,
     OrganisationSourceStatus,
 )
-from src.domain.models.organisation_tables.job_models import (
-    KnowledgeProcessingJob,
-    JobStatus,
-)
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
+from src.infra.utils.logger import get_logger
+from src.workers.knowledge_worker.celery_app import app
 from src.workers.knowledge_worker.parsers import parser_factory
+from src.workers.knowledge_worker.services.progress import ProgressPublisher
 from src.workers.knowledge_worker.utils import (
     DocumentStore,
+    download_blob_to_temp,
     mark_job_in_progress,
     set_job_status,
-    download_blob_to_temp,
 )
-from src.workers.knowledge_worker.services.progress import ProgressPublisher
 
 logger = get_logger("knowledge_document_extraction")
 
@@ -217,9 +218,7 @@ def _parse_store_finalize(
         source_id=str(source.source_id),
         source_blob_path=source.storage_path,
         original_filename=source.filename,
-        source_size_bytes=(
-            source.size_bytes if hasattr(source, "size_bytes") else None
-        ),
+        source_size_bytes=(source.size_bytes if hasattr(source, "size_bytes") else None),
     )
 
     if not parsed_documents:
@@ -246,9 +245,7 @@ def _parse_store_finalize(
     document_store = DocumentStore(organisation_id)
     try:
         deleted = document_store.delete_documents_by_source(str(source.source_id))
-        logger.info(
-            "Deleted %s existing chunks for source %s", deleted, source.source_id
-        )
+        logger.info("Deleted %s existing chunks for source %s", deleted, source.source_id)
     except Exception as e:
         logger.warning(
             "Failed to delete existing chunks for source %s: %s",
@@ -309,9 +306,7 @@ def _parse_store_finalize(
 )
 def document_extraction(self, organisation_id: UUID, source_id: UUID):
     """Heavy extraction task (PDF/DOC etc.)."""
-    logger.info(
-        f"Starting document extraction for source {source_id} in org {organisation_id}"
-    )
+    logger.info(f"Starting document extraction for source {source_id} in org {organisation_id}")
 
     session_gen = acquire_org_session(organisation_id)
     session = next(session_gen)
@@ -321,9 +316,7 @@ def document_extraction(self, organisation_id: UUID, source_id: UUID):
 
     try:
         source_id, organisation_id = str(source_id), str(organisation_id)
-        publisher = ProgressPublisher(
-            organisation_id=organisation_id, source_id=source_id
-        )
+        publisher = ProgressPublisher(organisation_id=organisation_id, source_id=source_id)
         source, job = _load_source_and_job(session, source_id)
         if not source or not job:
             return
@@ -359,9 +352,7 @@ def document_extraction(self, organisation_id: UUID, source_id: UUID):
                     )
 
     except (SoftTimeLimitExceeded, TimeLimitExceeded) as e:
-        logger.error(
-            "Document extraction timed out for source %s: %s", source_id, str(e)
-        )
+        logger.error("Document extraction timed out for source %s: %s", source_id, str(e))
         _finalize_failure_by_ids(
             session,
             publisher,
@@ -370,9 +361,7 @@ def document_extraction(self, organisation_id: UUID, source_id: UUID):
         )
         return
     except Exception as e:
-        logger.error(
-            "Error during document extraction for source %s: %s", source_id, str(e)
-        )
+        logger.error("Error during document extraction for source %s: %s", source_id, str(e))
         _finalize_failure_by_ids(
             session,
             publisher,
@@ -382,14 +371,10 @@ def document_extraction(self, organisation_id: UUID, source_id: UUID):
         raise
     finally:
         # Close database session
-        try:
+        with contextlib.suppress(Exception):
             session.close()
-        except Exception:
-            pass
-        try:
+        with contextlib.suppress(Exception):
             session_gen.close()
-        except Exception:
-            pass
 
         # Close storage connection
         try:

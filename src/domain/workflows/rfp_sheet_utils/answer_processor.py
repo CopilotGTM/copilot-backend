@@ -1,10 +1,10 @@
 import asyncio
-from typing import Dict, List
-from src.infra.utils.logger import get_logger
-from src.service.rfp.rfp_qna.rfp_qna_workflow import RfpAgent
 import time
 from concurrent.futures import ThreadPoolExecutor
+
 from src.api.events.socket_app import sio
+from src.infra.utils.logger import get_logger
+from src.service.rfp.rfp_qna.rfp_qna_workflow import RfpAgent
 
 logger = get_logger()
 
@@ -14,7 +14,7 @@ WEBSOCKET_NAMESPACE = "/websocket/v1"
 RESPONSE_EVENT = "recieve_sheet_answers"
 
 
-def process_single_answer_sync(workflow: RfpAgent, row_obj: Dict) -> Dict:
+def process_single_answer_sync(workflow: RfpAgent, row_obj: dict) -> dict:
     """Process a single row object synchronously and return the answer."""
     start_time = time.time()
     logger.info(
@@ -33,9 +33,7 @@ def process_single_answer_sync(workflow: RfpAgent, row_obj: Dict) -> Dict:
             "answer": answer.content["answer"],
             "confidence_score": answer.content["confidence_score"],
             "confidence_level": answer.content["confidence_level"],
-            "answer_column": row_obj.get(
-                "answer_column", ""
-            ),  # Add answer column to response
+            "answer_column": row_obj.get("answer_column", ""),  # Add answer column to response
         }
     except Exception as e:
         end_time = time.time()
@@ -46,8 +44,8 @@ def process_single_answer_sync(workflow: RfpAgent, row_obj: Dict) -> Dict:
 
 
 async def process_answers_in_parallel(
-    row_objects: List[Dict], session_id: str, system_message_id: str
-) -> List[Dict]:
+    row_objects: list[dict], session_id: str, system_message_id: str
+) -> list[dict]:
     """
     Process multiple row objects in parallel using the RfpAgent workflow.
     Limits concurrent processing to MAX_CONCURRENT_PROCESSES at a time.

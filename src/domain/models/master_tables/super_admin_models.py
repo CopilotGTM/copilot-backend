@@ -1,14 +1,13 @@
-from uuid import UUID, uuid4
-from typing import TYPE_CHECKING, List, Optional
 from datetime import datetime
 from enum import Enum
+from typing import TYPE_CHECKING
+from uuid import UUID, uuid4
 
 from pydantic import EmailStr
 from sqlalchemy import Column, DateTime
-from sqlmodel import Field, Relationship, SQLModel
+from sqlmodel import Field, Relationship
 
 from .base_mixins import TimestampMixin
-
 
 if TYPE_CHECKING:
     from .organisation_models import OrganisationActionHistory
@@ -63,9 +62,7 @@ class SuperAdmin(TimestampMixin, table=True):
         nullable=False,
         description="Super admin's email address (must be unique).",
     )
-    first_name: str = Field(
-        ..., max_length=100, description="Super admin's first name."
-    )
+    first_name: str = Field(..., max_length=100, description="Super admin's first name.")
     last_name: str = Field(..., max_length=100, description="Super admin's last name.")
     role: AdminRole = Field(
         default=AdminRole.SUPER_ADMIN,
@@ -80,7 +77,7 @@ class SuperAdmin(TimestampMixin, table=True):
         index=True,
         description="Admin approval status (pending/approved/rejected/suspended). Determines if the super admin has been approved by other admins.",
     )
-    last_login_at: Optional[datetime] = Field(
+    last_login_at: datetime | None = Field(
         default=None,
         sa_column=Column(DateTime(timezone=True), nullable=True),
         description="Timestamp of the super admin's most recent login. Null if never logged in.",
@@ -91,9 +88,5 @@ class SuperAdmin(TimestampMixin, table=True):
     )
 
     # Relationships
-    action_history: List["OrganisationActionHistory"] = Relationship(
-        back_populates="actor_admin"
-    )
-    user_action_history: List["UserActionHistory"] = Relationship(
-        back_populates="actor_admin"
-    )
+    action_history: list["OrganisationActionHistory"] = Relationship(back_populates="actor_admin")
+    user_action_history: list["UserActionHistory"] = Relationship(back_populates="actor_admin")
