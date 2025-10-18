@@ -1,4 +1,13 @@
-# Azure DevOps YAML Pipeline – Multi-environment Deployment (Static variable group assignment)
+# ============================================================================
+# Azure DevOps Production Pipeline with UV
+# ============================================================================
+# This pipeline:
+# 1. Runs code quality checks (linting, formatting, type checking)
+# 2. Runs security scans
+# 3. Executes tests with coverage
+# 4. Builds and pushes optimized Docker images using UV
+# 5. Deploys to AKS using Helm
+# ============================================================================
 
 trigger:
   branches:
@@ -19,10 +28,123 @@ variables:
     value: ./charts/application
   - name: KUBECONFIG_FILE
     value: $(Pipeline.Workspace)/kubeconfig.yaml
+  - name: PYTHON_VERSION
+    value: '3.11'
 
 stages:
+  # ==========================================================================
+  # Stage 1: Code Quality & Testing
+  # ==========================================================================
+  - stage: QualityCheck
+    displayName: Code Quality & Tests
+    jobs:
+      - job: CodeQuality
+        displayName: Lint, Format, Type Check
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - checkout: self
+
+          - script: |
+              curl -LsSf https://astral.sh/uv/install.sh | sh
+              echo "##vso[task.prependpath]$HOME/.cargo/bin"
+            displayName: 'Install UV'
+
+          - script: |
+              uv python install $(PYTHON_VERSION)
+            displayName: 'Install Python $(PYTHON_VERSION)'
+
+          - script: |
+              uv sync --frozen
+            displayName: 'Install Dependencies with UV'
+
+          - script: |
+              uv run black --check src/ tests/
+            displayName: 'Code Formatting Check (Black)'
+
+          - script: |
+              uv run ruff check src/ tests/
+            displayName: 'Linting (Ruff)'
+
+          - script: |
+              uv run mypy src/ || true
+            displayName: 'Type Checking (MyPy) - Advisory Only'
+
+      - job: Tests
+        displayName: Run Tests with Coverage
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - checkout: self
+
+          - script: |
+              curl -LsSf https://astral.sh/uv/install.sh | sh
+              echo "##vso[task.prependpath]$HOME/.cargo/bin"
+            displayName: 'Install UV'
+
+          - script: |
+              uv python install $(PYTHON_VERSION)
+            displayName: 'Install Python $(PYTHON_VERSION)'
+
+          - script: |
+              uv sync --frozen
+            displayName: 'Install Dependencies with UV'
+
+          - script: |
+              uv run pytest tests/ -v --cov=src --cov-report=xml --cov-report=term --cov-report=html
+            displayName: 'Run Tests with Coverage'
+
+          - task: PublishTestResults@2
+            displayName: 'Publish Test Results'
+            inputs:
+              testResultsFormat: 'JUnit'
+              testResultsFiles: '**/test-*.xml'
+              failTaskOnFailedTests: true
+            condition: succeededOrFailed()
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish Coverage Report'
+            inputs:
+              targetPath: '$(System.DefaultWorkingDirectory)/htmlcov'
+              artifact: 'coverage-report'
+            condition: succeededOrFailed()
+
+      - job: SecurityScan
+        displayName: Security Scanning
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - checkout: self
+
+          - script: |
+              curl -LsSf https://astral.sh/uv/install.sh | sh
+              echo "##vso[task.prependpath]$HOME/.cargo/bin"
+            displayName: 'Install UV'
+
+          - script: |
+              uv python install $(PYTHON_VERSION)
+              uv sync --frozen
+            displayName: 'Setup Environment'
+
+          - script: |
+              uv add --dev bandit
+              uv run bandit -r src/ -f json -o bandit-report.json || true
+            displayName: 'Run Bandit Security Scan'
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Upload Security Report'
+            inputs:
+              targetPath: 'bandit-report.json'
+              artifact: 'security-report'
+            condition: succeededOrFailed()
+
+  # ==========================================================================
+  # Stage 2: Build & Push Docker Image
+  # ==========================================================================
   - stage: BuildAndPush
     displayName: Build & Push Docker Image to ACR
+    dependsOn: QualityCheck
+    condition: succeeded()
     jobs:
       - job: dockerBuildPush
         displayName: Build and Push to ACR
@@ -37,11 +159,27 @@ stages:
               echo "ACR Login Server: $(ACR_LOGIN_SERVER)"
               echo "Helm Release Name: $(HELM_RELEASE_NAME)"
               echo "ACR Service Connection: $(ACR_SERVICE_CONNECTION)"
+              echo "Build ID: $(Build.BuildId)"
               echo "##[endgroup]"
             displayName: 'Echo Environment Variables'
 
           - task: Docker@2
-            displayName: Build Docker Image
+            displayName: 'Login to ACR'
+            inputs:
+              containerRegistry: '$(ACR_SERVICE_CONNECTION)'
+              command: 'login'
+
+          - script: |
+              echo "##[section]🚀 Pulling cache images from ACR for faster builds..."
+              docker pull $(ACR_LOGIN_SERVER)/copilot-backend:latest || echo "⚠️ No latest image found, building from scratch"
+              echo "##[section]✅ Cache pull complete"
+            displayName: 'Pull Cache Images from ACR'
+            env:
+              DOCKER_BUILDKIT: '1'
+            continueOnError: 'true'
+
+          - task: Docker@2
+            displayName: 'Build Docker Image with Cache'
             inputs:
               containerRegistry: '$(ACR_SERVICE_CONNECTION)'
               repository: 'copilot-backend'
@@ -50,10 +188,18 @@ stages:
               tags: |
                 $(Build.BuildId)
                 latest
+              arguments: |
+                --build-arg BUILDKIT_INLINE_CACHE=1
+                --cache-from=$(ACR_LOGIN_SERVER)/copilot-backend:latest
+            env:
+              DOCKER_BUILDKIT: 1
 
           - script: |
-              echo "Pushed image: $(ACR_LOGIN_SERVER)/copilot-backend:$(Build.BuildId)"
-            displayName: Print image info
+              echo "##[section]✅ Build Complete!"
+              echo "📦 Image: $(ACR_LOGIN_SERVER)/copilot-backend:$(Build.BuildId)"
+              echo "📦 Latest: $(ACR_LOGIN_SERVER)/copilot-backend:latest"
+              echo "⚡ Next build will reuse cached layers for faster builds"
+            displayName: 'Build Summary'
 
   - stage: Deploy
     displayName: Helm Deploy/Upgrade to AKS
@@ -216,7 +362,7 @@ stages:
                     kubectl rollout restart deployment copilot-backend-knowledge-upload-worker -n copilotgtm
                     kubectl rollout restart deployment copilot-backend-chat-worker -n copilotgtm
                     kubectl rollout restart deployment copilot-backend-organization-worker -n copilotgtm
-                    
+
                     # Wait for rollouts to complete
                     echo "Waiting for rollouts to complete..."
                     kubectl rollout status deployment copilot-backend-knowledge-extract-worker -n copilotgtm --timeout=300s

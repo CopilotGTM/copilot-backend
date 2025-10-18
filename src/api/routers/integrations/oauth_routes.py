@@ -7,48 +7,44 @@ Handles:
 - Connection setup and validation
 """
 
-from typing import Any, Dict, Optional
+from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request, Header
+from fastapi import APIRouter, Depends, Header, Request
 from sqlalchemy.ext.asyncio import AsyncSession
-
+from src.api.dependencies.master_dependencies import acquire_master_async_session
 from src.api.dependencies.organisation_dependencies import (
+    UserIDs,
+    acquire_org_async_session,
     get_current_user,
     get_org_async_session,
-    acquire_org_async_session,
-    UserIDs,
 )
-from src.api.dependencies.master_dependencies import acquire_master_async_session
 from src.api.schemas.base_models import GenericResponse
-from src.api.utils.http_response import Response
 from src.api.schemas.integrations import (
     OAuthInitiateRequest,
     OAuthInitiateResponse,
-    IntegrationResponse,
-    IntegrationError,
 )
-from src.service.integrations import NangoClient, IntegrationService
-from src.service.integrations.nango_client import NangoConnectionError
-from src.infra.auth.user_auth import user_auth
+from src.api.utils.http_response import Response
 from src.domain.models.master_tables import User, UserAppRole
-from src.infra.config.configs import nango_integration_config
-from src.infra.utils.logger import get_logger
-from src.infra.config.constant import IntegrationErrors
 from src.domain.models.organisation_tables.knowledge_models import (
-    IntegrationType,
     IntegrationScope,
+    IntegrationType,
 )
+from src.infra.auth.user_auth import user_auth
+from src.infra.config.constant import IntegrationErrors
 from src.infra.config.integrations_metadata import (
-    get_integration_metadata,
     AvailabilityStatus,
     IntegrationMetadata,
+    get_integration_metadata,
 )
 from src.infra.config.nango_provider_mapping import (
-    to_nango_provider_key,
-    to_nango_connect_integration_key,
     from_nango_provider_key,
+    to_nango_connect_integration_key,
+    to_nango_provider_key,
 )
+from src.infra.utils.logger import get_logger
+from src.service.integrations import IntegrationService, NangoClient
+from src.service.integrations.nango_client import NangoConnectionError
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/oauth", tags=["integrations-oauth"])
@@ -67,20 +63,20 @@ class IntegrationUnavailableError(Exception):
         self.status = status
 
 
-def _extract_string_message(value: Any) -> Optional[str]:
+def _extract_string_message(value: Any) -> str | None:
     """Extract and return a stripped string message if valid."""
     if isinstance(value, str) and value.strip():
         return value.strip()
     return None
 
 
-def _extract_message_from_dict(data: dict) -> Optional[str]:
+def _extract_message_from_dict(data: dict) -> str | None:
     """Extract message from a dictionary, checking 'message' key."""
     message = data.get("message")
     return _extract_string_message(message)
 
 
-def _extract_message_from_error_list(errors: list) -> Optional[str]:
+def _extract_message_from_error_list(errors: list) -> str | None:
     """Extract first valid message from a list of error entries."""
     for entry in errors:
         if isinstance(entry, dict):
@@ -94,7 +90,7 @@ def _extract_message_from_error_list(errors: list) -> Optional[str]:
     return None
 
 
-def _extract_message_from_error_block(error_block: dict) -> Optional[str]:
+def _extract_message_from_error_block(error_block: dict) -> str | None:
     """Extract message from error block, checking message and errors array."""
     # Try direct message first
     message = _extract_message_from_dict(error_block)
@@ -109,7 +105,7 @@ def _extract_message_from_error_block(error_block: dict) -> Optional[str]:
     return None
 
 
-def _extract_nango_error_message(payload: Any) -> Optional[str]:
+def _extract_nango_error_message(payload: Any) -> str | None:
     """
     Pull a user-friendly message from a Nango error payload.
     Handles dict, list, and string payloads with nested error structures.
@@ -156,19 +152,15 @@ def _should_include_stacktrace(error: NangoConnectionError) -> bool:
     return isinstance(error.status_code, int) and error.status_code >= 500
 
 
-def _extract_session_details(session_data: Dict[str, Any]) -> tuple[str, Optional[str]]:
+def _extract_session_details(session_data: dict[str, Any]) -> tuple[str, str | None]:
     raw = session_data.get("data") if isinstance(session_data, dict) else None
     payload = raw if isinstance(raw, dict) else session_data
 
     token = payload.get("token") or (payload.get("session") or {}).get("token")
-    expires_at = payload.get("expires_at") or (payload.get("session") or {}).get(
-        "expires_at"
-    )
+    expires_at = payload.get("expires_at") or (payload.get("session") or {}).get("expires_at")
 
     if not token:
-        logger.error(
-            f"Nango connect session created but token missing. Payload: {session_data}"
-        )
+        logger.error(f"Nango connect session created but token missing. Payload: {session_data}")
         raise ValueError("Failed to retrieve session token")
 
     return token, expires_at
@@ -181,7 +173,7 @@ async def _create_nango_connect_session(
     integration_key: str,
     provider_key: str,
     integration_type: IntegrationType,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     session_data = await nango.create_connect_session(
         end_user_id=str(user_ids.user_id),
         organization_id=str(user_ids.organisation_id),
@@ -209,7 +201,7 @@ async def _create_nango_connect_session(
     summary="Create Nango Connect Session for OAuth",
     description="""
     Creates a Nango Connect Session token for OAuth authorization (New Flow).
-    
+
     **New Flow (Post July 31, 2025):**
     1. Frontend calls this endpoint to get session token
     2. Frontend uses Nango Connect UI with the session token
@@ -238,9 +230,7 @@ async def initiate_oauth_flow(
         _ensure_integration_available(metadata)
 
         nango_provider_key = to_nango_provider_key(request.integration_type)
-        nango_integration_key = to_nango_connect_integration_key(
-            request.integration_type
-        )
+        nango_integration_key = to_nango_connect_integration_key(request.integration_type)
 
         nango = NangoClient()
         session_data = await _create_nango_connect_session(
@@ -287,9 +277,7 @@ async def initiate_oauth_flow(
             exc_info=should_log_stack,
         )
         if e.status_code == 400:
-            message = (
-                error_detail or IntegrationErrors.INTEGRATION_PROVIDER_NOT_CONFIGURED
-            )
+            message = error_detail or IntegrationErrors.INTEGRATION_PROVIDER_NOT_CONFIGURED
             return Response.bad_request_error_response(message=message)
         return Response.internal_server_error_response(
             message=IntegrationErrors.OAUTH_INITIATION_FAILED
@@ -309,8 +297,8 @@ async def initiate_oauth_flow(
 
 
 def _extract_integration_email(
-    integration_type: IntegrationType, connection_metadata: Dict[str, Any]
-) -> Optional[str]:
+    integration_type: IntegrationType, connection_metadata: dict[str, Any]
+) -> str | None:
     """
     Extract the integration account email from provider-specific metadata.
 
@@ -330,9 +318,7 @@ def _extract_integration_email(
         IntegrationType.GOOGLE_DRIVE,
         IntegrationType.GOOGLE_CALENDAR,
     ]:
-        email = connection_metadata.get("email") or connection_metadata.get(
-            "user_email"
-        )
+        email = connection_metadata.get("email") or connection_metadata.get("user_email")
         logger.info(f"Google service email extraction: {email}")
         return email
 
@@ -355,9 +341,7 @@ def _extract_integration_email(
         IntegrationType.ONEDRIVE,
         IntegrationType.OUTLOOK_CALENDAR,
     ]:
-        return connection_metadata.get("email") or connection_metadata.get(
-            "userPrincipalName"
-        )
+        return connection_metadata.get("email") or connection_metadata.get("userPrincipalName")
 
     # Calendly
     elif integration_type == IntegrationType.CALENDLY:
@@ -381,7 +365,7 @@ async def _get_integration_connection_details(
     integration_type: IntegrationType,
     connection_id: str,
     provider_config_key: str,
-) -> tuple[Dict[str, Any], Optional[str]]:
+) -> tuple[dict[str, Any], str | None]:
     """
     Fetch connection details from Nango and extract integration email.
 
@@ -407,9 +391,7 @@ async def _get_integration_connection_details(
 
         # Try to extract email from multiple possible locations in Nango response
         connection_metadata = (
-            nango_connection.get("connection_metadata")
-            or nango_connection.get("metadata")
-            or {}
+            nango_connection.get("connection_metadata") or nango_connection.get("metadata") or {}
         )
         end_user = nango_connection.get("end_user", {})
 
@@ -417,9 +399,7 @@ async def _get_integration_connection_details(
         logger.info(f"End user data: {end_user}")
 
         # First try extracting from connection_metadata (provider-specific)
-        integration_email = _extract_integration_email(
-            integration_type, connection_metadata
-        )
+        integration_email = _extract_integration_email(integration_type, connection_metadata)
 
         # If not found in metadata, check end_user object (Nango's standard location)
         if not integration_email and end_user:
@@ -447,7 +427,7 @@ async def _get_integration_connection_details(
     summary="Disconnect and delete an integration",
     description="""
     Revokes OAuth tokens and deletes the integration.
-    
+
     **Warning:** This action is irreversible. All sync history will be deleted.
     """,
 )
@@ -473,17 +453,13 @@ async def disconnect_integration(
         )
 
         # First, get the integration to check access
-        integration = await integration_service.get_integration(
-            integration_id=integration_id
-        )
+        integration = await integration_service.get_integration(integration_id=integration_id)
 
         if not integration:
             logger.warning(
                 f"Integration {integration_id} not found for org {user_ids.organisation_id}"
             )
-            return Response.not_found_response(
-                message=IntegrationErrors.INTEGRATION_NOT_FOUND
-            )
+            return Response.not_found_response(message=IntegrationErrors.INTEGRATION_NOT_FOUND)
 
         # Check access: user can only disconnect org-wide or their own user-scoped integrations
         if (
@@ -504,21 +480,16 @@ async def disconnect_integration(
         )
 
         logger.info(
-            f"Disconnected integration {integration_id} "
-            f"for org {user_ids.organisation_id}"
+            f"Disconnected integration {integration_id} " f"for org {user_ids.organisation_id}"
         )
 
-        return Response.success_response(
-            message="Integration disconnected successfully", data=None
-        )
+        return Response.success_response(message="Integration disconnected successfully", data=None)
 
     except ValueError as e:
         logger.warning(
             f"Integration {integration_id} not found for org {user_ids.organisation_id}: {str(e)}"
         )
-        return Response.not_found_response(
-            message=IntegrationErrors.INTEGRATION_NOT_FOUND
-        )
+        return Response.not_found_response(message=IntegrationErrors.INTEGRATION_NOT_FOUND)
     except Exception as e:
         logger.error(
             f"Failed to disconnect integration {integration_id} "
@@ -536,17 +507,17 @@ async def disconnect_integration(
     summary="Nango Webhook Handler",
     description="""
     Webhook endpoint for receiving notifications from Nango after OAuth authorization.
-    
+
     When a user completes OAuth authorization in Nango's UI:
     1. Nango sends POST request to this webhook with connection details and X-Nango-Signature header
     2. We verify the webhook signature for security
     3. We extract the connection_id and user metadata
     4. We create the integration record in our database
     5. We return 200 OK to acknowledge receipt
-    
+
     **Important**: This endpoint must be publicly accessible and does NOT require authentication.
     Instead, it uses Nango's webhook signature verification (X-Nango-Signature header).
-    
+
     For local development:
     - Use ngrok: `ngrok http 8000`
     - Configure webhook URL in Nango dashboard with ngrok URL
@@ -578,23 +549,19 @@ async def handle_nango_webhook(
         payload = await request.json()
 
         # Log full webhook payload for debugging
-        logger.info("=" * 80)
         logger.info("NANGO WEBHOOK RECEIVED")
-        logger.info("=" * 80)
-        logger.info(f"Webhook Type: {payload.get('type')}")
-        logger.info(f"Operation: {payload.get('operation')}")
-        logger.info(f"Connection ID: {payload.get('connectionId')}")
-        logger.info(f"Provider Config Key: {payload.get('providerConfigKey')}")
-        logger.info(f"Success: {payload.get('success')}")
+        logger.info(
+            f"Connection ID: {payload.get('connectionId')}, Webhook Type: {payload.get('type')}"
+        )
+        logger.info(
+            f"Connection ID: {payload.get('connectionId')}, Provider Config Key: {payload.get('providerConfigKey')}"
+        )
         logger.info(f"Full Payload: {payload}")
-        logger.info("=" * 80)
 
         # Verify webhook signature for security
         if not NangoClient.verify_webhook_signature(x_nango_signature, payload):
             logger.error(f"Invalid webhook signature. Header: {x_nango_signature}")
-            return Response.unauthorized_error_response(
-                message="Invalid webhook signature"
-            )
+            return Response.unauthorized_error_response(message="Invalid webhook signature")
 
         # Validate webhook payload
         if not payload.get("success"):
@@ -612,9 +579,7 @@ async def handle_nango_webhook(
                 connection_id,
                 provider_config_key,
             )
-            return Response.success_response(
-                message="Sync webhook acknowledged", data=None
-            )
+            return Response.success_response(message="Sync webhook acknowledged", data=None)
         # Extract required fields for auth webhooks
         end_user = payload.get("endUser", {})
 
@@ -669,9 +634,7 @@ async def handle_nango_webhook(
             # Logic: Admin creates org-wide, Member creates user-level
             created_by_admin = user.user_role == UserAppRole.ADMIN
             integration_scope = (
-                IntegrationScope.ORGANIZATION
-                if created_by_admin
-                else IntegrationScope.USER
+                IntegrationScope.ORGANIZATION if created_by_admin else IntegrationScope.USER
             )
 
             logger.info(
@@ -691,13 +654,9 @@ async def handle_nango_webhook(
             )
 
             # Get connection details from Nango to extract integration email
-            logger.info(
-                f"Fetching connection details from Nango for connection {connection_id}..."
-            )
-            connection_metadata, integration_email = (
-                await _get_integration_connection_details(
-                    nango, integration_type, connection_id, provider_config_key
-                )
+            logger.info(f"Fetching connection details from Nango for connection {connection_id}...")
+            connection_metadata, integration_email = await _get_integration_connection_details(
+                nango, integration_type, connection_id, provider_config_key
             )
 
             logger.info(
@@ -736,7 +695,14 @@ async def handle_nango_webhook(
             )
 
     except Exception as e:
-        logger.error(f"Failed to process Nango webhook: {str(e)}", exc_info=True)
+        logger.info("=" * 80)
+        logger.info("WEBHOOK PROCESSING FAILED")
+        logger.info("=" * 80)
+        logger.info(f"Exception Type: {type(e).__name__}")
+        logger.info(f"Exception Message: {str(e)}")
+        logger.info("Full Traceback:")
+        logger.info(exc_info=True)
+        logger.info("=" * 80)
         # Return 200 OK even on error to prevent Nango retries
         # Log the error for investigation
         return Response.success_response(
