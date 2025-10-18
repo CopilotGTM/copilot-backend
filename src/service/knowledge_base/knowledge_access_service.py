@@ -83,8 +83,8 @@ class KnowledgeAccessService:
         if cursor:
             try:
                 ts, sid = decode_cursor(cursor)
-            except Exception:
-                raise KnowledgeAccessServiceError("Invalid cursor", status_code=400)
+            except Exception as e:
+                raise KnowledgeAccessServiceError("Invalid cursor", status_code=400) from e
             stmt = stmt.where(
                 or_(
                     OrganisationSource.created_at < ts,

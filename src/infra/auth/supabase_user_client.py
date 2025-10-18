@@ -176,7 +176,9 @@ class SupabaseUserClient:
             return response.model_dump()
         except Exception as e:
             logger.error(f"Sign in failed for {email}: {str(e)}")
-            raise SupabaseAuthError(SupabaseErrors.SIGN_IN_FAILED.format(str(e)), status_code=401)
+            raise SupabaseAuthError(
+                SupabaseErrors.SIGN_IN_FAILED.format(str(e)), status_code=401
+            ) from e
 
     def generate_password_reset_link(self, email: str) -> str:
         """
@@ -224,7 +226,7 @@ class SupabaseUserClient:
             logger.error(f"Failed to generate password reset link for {email}: {str(e)}")
             raise SupabaseAuthError(
                 SupabaseErrors.RESET_LINK_FAILED.format(str(e)), status_code=500
-            )
+            ) from e
 
     def create_user(
         self, email: str, password: str, metadata: dict[str, Any] | None = None
@@ -262,7 +264,7 @@ class SupabaseUserClient:
             logger.error(f"User creation failed for {email}: {str(e)}")
             raise SupabaseAuthError(
                 SupabaseErrors.USER_CREATION_FAILED.format(str(e)), status_code=500
-            )
+            ) from e
 
     def sign_out_user(self, user_id: str, global_signout: bool = False) -> bool:
         """
@@ -296,7 +298,9 @@ class SupabaseUserClient:
 
         except Exception as e:
             logger.error(f"Sign out failed for user {user_id}: {str(e)}")
-            raise SupabaseAuthError(SupabaseErrors.SIGN_OUT_FAILED.format(str(e)), status_code=500)
+            raise SupabaseAuthError(
+                SupabaseErrors.SIGN_OUT_FAILED.format(str(e)), status_code=500
+            ) from e
 
     def verify_token(self, token: str) -> dict[str, Any]:
         """
@@ -320,7 +324,7 @@ class SupabaseUserClient:
             logger.error(f"Token verification failed: {str(e)}")
             raise SupabaseAuthError(
                 SupabaseErrors.TOKEN_VERIFICATION_FAILED.format(str(e)), status_code=401
-            )
+            ) from e
 
     def refresh_access_token(self, refresh_token: str) -> dict[str, Any]:
         """
@@ -344,7 +348,7 @@ class SupabaseUserClient:
             logger.error(f"Token refresh failed: {str(e)}")
             raise SupabaseAuthError(
                 SupabaseErrors.TOKEN_REFRESH_FAILED.format(str(e)), status_code=401
-            )
+            ) from e
 
     def reset_password_with_token(self, token_hash: str, new_password: str) -> bool:
         """
@@ -397,7 +401,7 @@ class SupabaseUserClient:
             logger.error(f"Password reset with token failed: {str(e)}")
             raise SupabaseAuthError(
                 SupabaseErrors.PASSWORD_RESET_FAILED.format(str(e)), status_code=500
-            )
+            ) from e
 
     def update_user_metadata(self, user_id: str, metadata: dict[str, Any]) -> dict[str, Any]:
         """
@@ -424,7 +428,7 @@ class SupabaseUserClient:
             logger.error(f"Metadata update failed for user {user_id}: {str(e)}")
             raise SupabaseAuthError(
                 SupabaseErrors.METADATA_UPDATE_FAILED.format(str(e)), status_code=500
-            )
+            ) from e
 
     def get_user_from_token(self, token: str, session) -> Any | None:
         """

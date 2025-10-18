@@ -29,16 +29,8 @@ repos:
       - id: mixed-line-ending
         files: \.py$
 
-  # Python code formatting - ONLY src/ and tests/
-  - repo: https://github.com/psf/black
-    rev: 25.1.0
-    hooks:
-      - id: black
-        language_version: python3.11
-        args: ['--config', 'pyproject.toml']
-        files: ^(src/|tests/).*\.py$
-
-  # Python linting - ONLY src/ and tests/
+  # Python formatting and linting - ONLY src/ and tests/
+  # Using Ruff for both - faster and more consistent than Black + Ruff
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.8.0
     hooks:
@@ -47,6 +39,15 @@ repos:
         files: ^(src/|tests/).*\.py$
       - id: ruff-format
         files: ^(src/|tests/).*\.py$
+
+  # Black removed - using Ruff format as single formatter (10-100x faster)
+  # - repo: https://github.com/psf/black
+  #   rev: 25.1.0
+  #   hooks:
+  #     - id: black
+  #       language_version: python3.11
+  #       args: ['--config', 'pyproject.toml']
+  #       files: ^(src/|tests/).*\.py$
 
   # Security checks - ONLY src/
   - repo: https://github.com/PyCQA/bandit

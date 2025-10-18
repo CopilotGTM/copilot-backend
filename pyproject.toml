@@ -221,6 +221,12 @@ exclude = [
     "*.egg-info",
 ]
 
+[tool.ruff.format]
+# Use Black-compatible formatting
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
+
 [tool.ruff.lint]
 select = [
     "E",   # pycodestyle errors
@@ -253,13 +259,50 @@ ignore = [
 "__init__.py" = ["F401", "F403"]
 "tests/**/*.py" = ["S101", "ARG", "S105", "S106", "E402"]
 # Celery workers need environment setup before imports
-"src/workers/**/celery_app.py" = ["E402", "ARG001", "S110"]
+"src/workers/**/celery_app.py" = ["E402", "ARG001", "S110", "SIM105"]
 # Celery tasks with bind=True need unused self parameter
 "src/workers/**/tasks/*.py" = ["ARG001", "E402", "S110"]
 # Signal handlers require specific unused parameters
 "src/workers/**/*_handler.py" = ["ARG001"]
 # Parser config and utilities
-"src/workers/knowledge_worker/parsers/*.py" = ["ARG002", "ARG003", "S110"]
+"src/workers/knowledge_worker/parsers/*.py" = ["ARG002", "ARG003", "S110", "S112"]
+# Config files need to load dotenv before imports
+"src/infra/config/*.py" = ["E402"]
+"src/api/fastapi_app.py" = ["E402", "ARG001", "N806"]  # lifespan, APP_ENV constant
+# Dependency injection - FastAPI automatically uses these parameters
+"src/api/routers/healthcheck.py" = ["SIM102", "ARG001"]
+"src/api/routers/admin/organizations_handler.py" = ["ARG001"]
+# Rate limiting - defensive exception handling
+"src/api/dependencies/rate_limit.py" = ["S110"]
+# Sentinel constants for agent protocol
+"src/agents/workflows/general/agent.py" = ["N806", "UP038"]
+# Chat service numeric type checking
+"src/service/chat/chat_message_service.py" = ["UP038"]
+# Websocket uses ConnectionRefusedError from socketio
+"src/api/events/connect_handler.py" = ["A004"]
+"src/domain/models/authentication.py" = ["A004"]
+# WebSocket utilities
+"src/api/utils/websocket_response.py" = ["N812"]
+# Database cleanup in error handling
+"src/infra/database/provider_sync.py" = ["S110"]
+# Secret interface - established exception naming
+"src/infra/secrets/interface.py" = ["N818"]
+# Azure blob storage - planning method, module initialization
+"src/infra/storage/azure_org_blob_storage.py" = ["E402", "ARG002"]
+# Media files with module-level initialization
+"src/infra/media/thumbnail_generator.py" = ["E402", "S112", "N806"]
+# Knowledge upload - cleanup exception handling
+"src/api/routers/knowledge_base/upload_handler.py" = ["S110"]
+# Service files with docstring imports
+"src/service/chat/chat_message_sse_service.py" = ["E402"]
+# Stub methods in interfaces
+"src/infra/storage/generate_presigned_url.py" = ["ARG002"]
+"src/service/integrations/nango_client.py" = ["ARG002"]
+"src/service/integrations/token_refresh_service.py" = ["ARG002"]
+# Type alias using Union for clarity with many types
+"src/api/schemas/chat_stream_models.py" = ["UP007"]
+# Redis cleanup in error handler
+"src/infra/messaging/redis_client.py" = ["SIM105", "S110"]
 
 [tool.mypy]
 python_version = "3.11"
@@ -303,6 +346,8 @@ exclude_lines = [
 [tool.bandit]
 targets = ["src"]
 exclude_dirs = ["tests", ".venv", "migrations"]
-skips = ["B101", "B104", "B105", "B106", "B107"]
+skips = ["B101", "B104", "B105", "B106", "B107", "B110", "B112"]
 # B101: assert_used (needed in tests)
 # B104-B107: hardcoded passwords (false positives)
+# B110: try_except_pass (defensive cleanup patterns in error handlers)
+# B112: try_except_continue (font loading fallback pattern)

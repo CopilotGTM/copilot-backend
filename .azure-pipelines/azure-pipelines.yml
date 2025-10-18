@@ -58,20 +58,20 @@ stages:
               uv sync --frozen --extra dev
             displayName: 'Install Dependencies with UV (including dev tools)'
 
-          # Black format check - must pass (matches pre-commit)
+          # Ruff format check - fast, Black-compatible formatting
           - script: |
-              uv run black --check --config pyproject.toml src/ tests/
-            displayName: 'Code Formatting Check (Black)'
+              uv run ruff format --check src/ tests/
+            displayName: 'Code Formatting Check (Ruff Format)'
 
           # Ruff linting - must pass (matches pre-commit check mode)
           - script: |
               uv run ruff check src/ tests/
             displayName: 'Linting Check (Ruff)'
 
-          # Ruff format check - must pass (matches pre-commit)
-          - script: |
-              uv run ruff format --check src/ tests/
-            displayName: 'Format Check (Ruff)'
+          # Black removed - using Ruff format as single formatter
+          # - script: |
+          #     uv run black --check --config pyproject.toml src/ tests/
+          #   displayName: 'Code Formatting Check (Black)'
 
           # Type checking - advisory only (not in pre-commit)
           - script: |

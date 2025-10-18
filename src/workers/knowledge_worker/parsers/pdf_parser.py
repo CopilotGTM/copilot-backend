@@ -419,13 +419,13 @@ class PDFParser(BaseParser):
 
         if table_summaries:
             table_context = "\n\n[TABLE CONTENT]\n" + "\n".join(
-                f"Table {i+1}: {summary}" for i, summary in enumerate(table_summaries)
+                f"Table {i + 1}: {summary}" for i, summary in enumerate(table_summaries)
             )
             sections.append(table_context)
 
         if image_summaries:
             image_context = "\n\n[VISUAL CONTENT]\n" + "\n".join(
-                f"Image {i+1}: {summary}" for i, summary in enumerate(image_summaries)
+                f"Image {i + 1}: {summary}" for i, summary in enumerate(image_summaries)
             )
             sections.append(image_context)
 

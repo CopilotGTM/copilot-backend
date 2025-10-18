@@ -61,7 +61,7 @@ class AdminAuth:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=SupabaseErrors.INVALID_TOKEN,
-            )
+            ) from e
 
     async def get_current_admin(self, request: Request, session: AsyncSession) -> SuperAdmin:
         """
@@ -126,7 +126,7 @@ class AdminAuth:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=SupabaseErrors.AUTHENTICATION_FAILED,
-            )
+            ) from e
 
     def generate_temp_password(self, length: int = 12) -> str:
         """

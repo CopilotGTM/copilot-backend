@@ -369,7 +369,7 @@ class NangoClient:
 
         except Exception as e:
             logger.error(f"Failed to verify connection after code exchange: {str(e)}")
-            raise NangoTokenError(f"Failed to exchange code: {str(e)}")
+            raise NangoTokenError(f"Failed to exchange code: {str(e)}") from e
 
     async def get_connection(
         self,
@@ -474,7 +474,7 @@ class NangoClient:
 
         except Exception as e:
             logger.error(f"Failed to refresh token: {str(e)}")
-            raise NangoTokenError(f"Failed to refresh token: {str(e)}")
+            raise NangoTokenError(f"Failed to refresh token: {str(e)}") from e
 
     async def delete_connection(
         self,
@@ -553,7 +553,7 @@ class NangoClient:
 
         except Exception as e:
             logger.error(f"Failed to get connection metadata: {str(e)}")
-            raise NangoConnectionError(f"Failed to get metadata: {str(e)}")
+            raise NangoConnectionError(f"Failed to get metadata: {str(e)}") from e
 
     async def proxy_request(
         self,
@@ -609,7 +609,7 @@ class NangoClient:
 
             result = response.json()
 
-            logger.info(f"Proxy request to {provider}:{endpoint} " f"(method={method}) succeeded")
+            logger.info(f"Proxy request to {provider}:{endpoint} (method={method}) succeeded")
             return result
 
         except httpx.HTTPStatusError as e:

@@ -159,8 +159,7 @@ def refresh_single_integration_task(self, organisation_id: str, integration_id: 
     from uuid import UUID
 
     logger.info(
-        f"Starting manual token refresh for integration {integration_id} "
-        f"in org {organisation_id}"
+        f"Starting manual token refresh for integration {integration_id} in org {organisation_id}"
     )
 
     db_provider = get_database_provider()

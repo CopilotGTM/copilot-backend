@@ -87,4 +87,4 @@ class DocumentReader:
             else:  # ext == ".pdf"
                 return self._read_pdf(file_obj)
         except Exception as e:
-            raise ValueError(f"Failed to read document: {str(e)}")
+            raise ValueError(f"Failed to read document: {str(e)}") from e

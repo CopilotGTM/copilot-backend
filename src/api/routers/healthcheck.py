@@ -135,7 +135,7 @@ async def detailed_healthcheck(authorized: bool = Depends(verify_internal_access
             "overall_healthy": False,
             "recommendations": ["Check application logs for detailed error information"],
         }
-        raise HTTPException(status_code=503, detail=error_response)
+        raise HTTPException(status_code=503, detail=error_response) from e
 
 
 @healthcheck_router.get("/health/secrets")
@@ -171,4 +171,4 @@ async def secrets_healthcheck(authorized: bool = Depends(verify_internal_access)
                 "error": str(e),
                 "recommendations": ["Check secret management system configuration and logs"],
             },
-        )
+        ) from e

@@ -210,7 +210,7 @@ class OrganizationManagementService:
                 )
             )
             await session.commit()
-            raise ProvisioningError(str(e), organisation_id=organisation_id)
+            raise ProvisioningError(str(e), organisation_id=organisation_id) from e
 
     def _create_database_role_and_schema(self, schema_name: str, role_name: str, password: str):
         """
@@ -317,7 +317,7 @@ class OrganizationManagementService:
                 f"Database role/schema creation failed for '{schema_name}': {e}",
                 exc_info=True,
             )
-            raise ProvisioningError(f"Failed to create database role/schema: {e}")
+            raise ProvisioningError(f"Failed to create database role/schema: {e}") from e
 
     def _run_organization_migrations(self, schema_name: str, target_version: str = "head"):
         """Runs Alembic migrations for a specific organization's schema."""
@@ -341,7 +341,7 @@ class OrganizationManagementService:
                 f"Migration execution failed for schema '{schema_name}': {e}",
                 exc_info=True,
             )
-            raise ProvisioningError(f"An unexpected error occurred during migration: {e}")
+            raise ProvisioningError(f"An unexpected error occurred during migration: {e}") from e
 
     def _provision_org_storage_container(self, organisation_id: UUID):
         """Ensure the per-organisation container exists in the shared storage account (idempotent)."""
@@ -368,7 +368,7 @@ class OrganizationManagementService:
                 logger.info(f"Container '{container}' already exists (idempotent).")
             else:
                 logger.error(f"Failed to create container '{container}' in '{account}': {e}")
-                raise ProvisioningError(f"Container provisioning failed: {e}")
+                raise ProvisioningError(f"Container provisioning failed: {e}") from e
 
     def _store_password_in_key_vault(self, organisation_id: UUID, password: str):
         """
@@ -731,7 +731,7 @@ class OrganizationManagementService:
             )
             raise DeletionError(
                 f"Failed to clean up database resources for organization {organisation_id}."
-            )
+            ) from e
 
         # Delete the password from Key Vault
         self._delete_password_from_key_vault(organisation_id)
@@ -829,7 +829,7 @@ class OrganizationManagementService:
         except Exception as e:
             await session.rollback()
             logger.error(f"Failed to rotate password for organization {organisation_id}: {e}")
-            raise ProvisioningError(f"Failed to rotate password: {e}")
+            raise ProvisioningError(f"Failed to rotate password: {e}") from e
 
     # Override history fetchers to return cursor metadata without breaking original callers
     async def get_organization_history_with_cursor(

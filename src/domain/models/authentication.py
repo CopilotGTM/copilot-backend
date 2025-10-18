@@ -46,7 +46,7 @@ class Authentication:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Invalid auth-storage format",
-                )
+                ) from e
 
             # Extract Supabase session token
             access_token = storage_data.get("state", {}).get("access_token")
@@ -82,7 +82,7 @@ class Authentication:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Authentication error",
-            )
+            ) from e
 
     def decode_for_ws(self, token: str) -> dict[str, Any]:
         """
@@ -109,7 +109,7 @@ class Authentication:
 
         except HTTPException as e:
             logger.error("WebSocket auth failed: %s", str(e))
-            raise ConnectionRefusedError("Unauthorized")
+            raise ConnectionRefusedError("Unauthorized") from e
         except Exception as e:
             logger.error("WebSocket auth token decode failed: %s", str(e))
-            raise ConnectionRefusedError("Unauthorized")
+            raise ConnectionRefusedError("Unauthorized") from e

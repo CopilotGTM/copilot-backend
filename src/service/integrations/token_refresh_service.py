@@ -248,8 +248,7 @@ class TokenRefreshService:
             self.db.commit()
 
             logger.warning(
-                f"Deactivated integration {integration.integration_id} "
-                f"due to token refresh failure"
+                f"Deactivated integration {integration.integration_id} due to token refresh failure"
             )
 
             # Queue email notification (implement separately)

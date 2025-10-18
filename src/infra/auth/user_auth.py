@@ -145,7 +145,7 @@ class UserAuth:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=UserAuthErrors.AUTHENTICATION_FAILED,
-            )
+            ) from e
 
     async def __call__(
         self,

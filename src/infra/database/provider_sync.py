@@ -192,8 +192,8 @@ class SyncSqlAlchemyProvider(SyncDatabaseProvider):
         """Parse org_id and generate tenant-specific names."""
         try:
             org_uuid = uuid.UUID(org_id)
-        except Exception:
-            raise ValueError(f"Invalid organisation id: {org_id}")
+        except Exception as e:
+            raise ValueError(f"Invalid organisation id: {org_id}") from e
 
         role_name = get_role_name(org_uuid)
         secret_name = get_key_vault_secret_name(org_uuid)

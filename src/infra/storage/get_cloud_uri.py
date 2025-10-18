@@ -54,7 +54,7 @@ class AWSProvider:
 
         except Exception as e:
             logger.error(f"Failed to convert URL '{https_url}': {str(e)}")
-            raise ValueError(f"Failed to convert URL: {str(e)}")
+            raise ValueError(f"Failed to convert URL: {str(e)}") from e
 
 
 class GCPProvider:
@@ -96,7 +96,7 @@ class GCPProvider:
 
         except Exception as e:
             logger.error(f"Failed to convert URL '{https_url}': {str(e)}")
-            raise ValueError(f"Failed to convert URL: {str(e)}")
+            raise ValueError(f"Failed to convert URL: {str(e)}") from e
 
 
 class CloudURIConverter:

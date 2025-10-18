@@ -161,7 +161,7 @@ class IntegrationService:
         except IntegrityError as e:
             await self.db.rollback()
             logger.error(f"Database integrity error creating integration: {str(e)}")
-            raise ValueError(f"Failed to create integration: {str(e)}")
+            raise ValueError(f"Failed to create integration: {str(e)}") from e
         except Exception as e:
             await self.db.rollback()
             logger.error(f"Unexpected error creating integration: {str(e)}")
@@ -347,8 +347,7 @@ class IntegrationService:
             logger.info(f"Successfully revoked Nango connection for integration {integration_id}")
         except NangoConnectionError as e:
             logger.warning(
-                f"Failed to delete Nango connection: {str(e)}. "
-                "Proceeding with database deletion."
+                f"Failed to delete Nango connection: {str(e)}. Proceeding with database deletion."
             )
 
         # Delete from database (cascade will handle sync history)

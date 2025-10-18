@@ -479,9 +479,7 @@ async def disconnect_integration(
             integration_id=integration_id,
         )
 
-        logger.info(
-            f"Disconnected integration {integration_id} " f"for org {user_ids.organisation_id}"
-        )
+        logger.info(f"Disconnected integration {integration_id} for org {user_ids.organisation_id}")
 
         return Response.success_response(message="Integration disconnected successfully", data=None)
 
