@@ -7,7 +7,7 @@ often use hyphens (e.g., "google-calendar"). HubSpot/Slack work because the keys
 
 from __future__ import annotations
 
-from src.domain.models.organisation_tables.knowledge_models import IntegrationType
+from src.domain.models.organisation_tables.sync import IntegrationType
 
 # Explicit mappings where Nango's provider key differs from our enum value
 _INTEGRATION_TO_NANGO: dict[IntegrationType, str] = {

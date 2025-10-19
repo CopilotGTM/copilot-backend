@@ -12,7 +12,7 @@ from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field
-from src.domain.models.organisation_tables.knowledge_models import (
+from src.domain.models.organisation_tables.sync import (
     IntegrationScope,
     IntegrationType,
 )

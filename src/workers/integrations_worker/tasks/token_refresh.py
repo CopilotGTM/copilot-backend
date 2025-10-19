@@ -7,7 +7,7 @@ continuous OAuth connectivity for integrations.
 
 from celery import Task
 
-from src.infra.database.provider_sync import get_database_provider
+from src.infra.database.factory import get_sync_provider
 from src.infra.utils.logger import get_logger
 from src.service.integrations.token_refresh_service import refresh_all_expiring_tokens
 from src.workers.integrations_worker.celery_app import app
@@ -49,7 +49,7 @@ def refresh_expiring_tokens_task(self, buffer_hours: int = 2):
     """
     logger.info(f"Starting scheduled token refresh task (buffer: {buffer_hours}h)")
 
-    db_provider = get_database_provider()
+    db_provider = get_sync_provider()
 
     try:
         # Get master session to iterate through organizations
@@ -162,7 +162,7 @@ def refresh_single_integration_task(self, organisation_id: str, integration_id: 
         f"Starting manual token refresh for integration {integration_id} in org {organisation_id}"
     )
 
-    db_provider = get_database_provider()
+    db_provider = get_sync_provider()
 
     try:
         org_uuid = UUID(organisation_id)
@@ -178,9 +178,7 @@ def refresh_single_integration_task(self, organisation_id: str, integration_id: 
                 # Get the integration
                 from sqlalchemy import and_, select
 
-                from src.domain.models.organisation_tables.knowledge_models import (
-                    KnowledgeIntegration,
-                )
+                from src.domain.models.organisation_tables.sync import KnowledgeIntegration
 
                 stmt = select(KnowledgeIntegration).where(
                     and_(

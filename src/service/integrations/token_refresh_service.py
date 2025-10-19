@@ -18,9 +18,7 @@ from uuid import UUID
 
 from sqlalchemy import and_, select
 from sqlalchemy.orm import Session
-from src.domain.models.organisation_tables.knowledge_models import (
-    KnowledgeIntegration,
-)
+from src.domain.models.organisation_tables.sync import KnowledgeIntegration
 from src.infra.config.configs import nango_integration_config
 from src.infra.utils.logger import get_logger
 from src.service.integrations.nango_client import NangoClient
@@ -51,7 +49,7 @@ class TokenRefreshService:
         self.nango = nango_client
         self.buffer_minutes = nango_integration_config.INTEGRATION_TOKEN_REFRESH_BUFFER_MINUTES
 
-    async def get_expiring_integrations(self, buffer_hours: int = 2) -> list[KnowledgeIntegration]:
+    def get_expiring_integrations(self, buffer_hours: int = 2) -> list[KnowledgeIntegration]:
         """
         Get all active integrations with tokens expiring within the buffer period.
 
@@ -208,7 +206,7 @@ class TokenRefreshService:
             else:
                 failed += 1
                 # Deactivate integration on failure
-                deactivated_count = await self._handle_refresh_failure(integration, result["error"])
+                deactivated_count = self._handle_refresh_failure(integration, result["error"])
                 deactivated += deactivated_count
 
         summary = {
@@ -226,9 +224,7 @@ class TokenRefreshService:
 
         return summary
 
-    async def _handle_refresh_failure(
-        self, integration: KnowledgeIntegration, error_message: str
-    ) -> int:
+    def _handle_refresh_failure(self, integration: KnowledgeIntegration, error_message: str) -> int:
         """
         Handle token refresh failure by deactivating integration.
 
@@ -251,8 +247,8 @@ class TokenRefreshService:
                 f"Deactivated integration {integration.integration_id} due to token refresh failure"
             )
 
-            # Queue email notification (implement separately)
-            await self._queue_refresh_failure_notification(integration, error_message)
+            # Log failure for monitoring
+            self._log_refresh_failure(integration)
 
             return 1
 
@@ -263,43 +259,43 @@ class TokenRefreshService:
             )
             return 0
 
-    async def _queue_refresh_failure_notification(
-        self, integration: KnowledgeIntegration, error_message: str
-    ) -> None:
+    def _log_refresh_failure(self, integration: KnowledgeIntegration) -> None:
         """
-        Queue email notification for token refresh failure.
+        Log token refresh failure for monitoring.
 
-        This notifies the user that their integration needs reauthorization.
+        This logs the failure so ops team can track integration health.
+        In production, this should trigger user notifications.
 
         Args:
             integration: Failed integration
-            error_message: Error message to include in notification
+
+        Note:
+            Email notifications should be implemented when email worker is available.
+            For now, logs are sufficient for monitoring via CloudWatch/DataDog.
         """
         try:
-            # TODO: Implement email notification via Celery task
-            # For now, just log it
-            logger.info(
-                f"Notification queued for integration {integration.integration_id} "
-                f"refresh failure. User should reauthorize {integration.integration_type.value}."
+            logger.warning(
+                "Token refresh failed for integration: "
+                "integration_id=%s type=%s org=%s - User may need to reauthorize",
+                integration.integration_id,
+                integration.integration_type.value,
+                integration.organisation_id,
+                extra={
+                    "integration_id": str(integration.integration_id),
+                    "integration_type": integration.integration_type.value,
+                    "organisation_id": str(integration.organisation_id),
+                    "action_required": "reauthorization",
+                },
             )
-
-            # In future implementation:
-            # from src.workers.email_worker.tasks import send_integration_failure_email
-            # send_integration_failure_email.delay(
-            #     organisation_id=str(integration.organisation_id),
-            #     integration_id=str(integration.integration_id),
-            #     integration_type=integration.integration_type.value,
-            #     integration_name=integration.name,
-            #     error_message=error_message,
-            # )
-
         except Exception as e:
             logger.error(
-                f"Failed to queue notification for integration {integration.integration_id}: {str(e)}",
+                "Failed to log refresh failure for integration %s: %s",
+                integration.integration_id,
+                str(e),
                 exc_info=True,
             )
 
-    async def check_integration_health(
+    def check_integration_health(
         self,
         integration_id: UUID,
         organisation_id: UUID,

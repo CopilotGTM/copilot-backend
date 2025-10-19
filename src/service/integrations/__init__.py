@@ -10,6 +10,13 @@ This module provides services for:
 
 from .integration_service import IntegrationService
 from .nango_client import NangoClient
+from .nango_webhook_service import NangoWebhookService, webhook_service
 from .token_refresh_service import TokenRefreshService
 
-__all__ = ["NangoClient", "IntegrationService", "TokenRefreshService"]
+__all__ = [
+    "NangoClient",
+    "IntegrationService",
+    "TokenRefreshService",
+    "NangoWebhookService",
+    "webhook_service",
+]

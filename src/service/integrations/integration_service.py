@@ -13,7 +13,9 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from src.domain.models.organisation_tables.knowledge_models import (
+from src.api.dependencies.master_dependencies import acquire_master_async_session
+from src.domain.models.master_tables import OrganisationIntegrationDetails
+from src.domain.models.organisation_tables.sync import (
     IntegrationScope,
     IntegrationType,
     KnowledgeIntegration,
@@ -150,6 +152,12 @@ class IntegrationService:
             await self.db.commit()
             await self.db.refresh(integration)
 
+            await self._record_connection_mapping(
+                connection_id=connection_id,
+                provider_key=provider,
+                integration=integration,
+            )
+
             logger.info(
                 f"Created integration: {integration.integration_id} "
                 f"({provider}) for org {self.organisation_id}, "
@@ -166,6 +174,53 @@ class IntegrationService:
             await self.db.rollback()
             logger.error(f"Unexpected error creating integration: {str(e)}")
             raise
+
+    async def _record_connection_mapping(
+        self,
+        *,
+        connection_id: str,
+        provider_key: str,
+        integration: KnowledgeIntegration,
+    ) -> None:
+        try:
+            connection_uuid = UUID(connection_id)
+        except ValueError:
+            logger.warning("Skipping master mapping for invalid connection_id %s", connection_id)
+            return
+
+        async for master_session in acquire_master_async_session():
+            stmt = select(OrganisationIntegrationDetails).where(
+                OrganisationIntegrationDetails.connection_id == connection_uuid
+            )
+            result = await master_session.execute(stmt)
+            mapping = result.scalar_one_or_none()
+
+            if mapping:
+                updated = False
+                if mapping.organisation_id != integration.organisation_id:
+                    mapping.organisation_id = integration.organisation_id
+                    updated = True
+                if mapping.integration_id != integration.integration_id:
+                    mapping.integration_id = integration.integration_id
+                    updated = True
+                if mapping.provider_config_key != provider_key:
+                    mapping.provider_config_key = provider_key
+                    updated = True
+                if updated:
+                    master_session.add(mapping)
+                    await master_session.commit()
+                return
+
+            master_session.add(
+                OrganisationIntegrationDetails(
+                    connection_id=connection_uuid,
+                    organisation_id=integration.organisation_id,
+                    integration_id=integration.integration_id,
+                    provider_config_key=provider_key,
+                )
+            )
+            await master_session.commit()
+            return
 
     async def get_integration(
         self,

@@ -50,6 +50,11 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
                 "queue": "integrations",
                 "routing_key": "integrations",
             },
+            # Generic data sync entry
+            "integrations.sync_integration_data": {
+                "queue": "integrations",
+                "routing_key": "integrations",
+            },
         }
 
         # Celery Beat schedule for periodic tasks

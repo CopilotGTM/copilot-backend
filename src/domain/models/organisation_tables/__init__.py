@@ -19,11 +19,17 @@ from .base_mixins import CreatedAtMixin, TimestampMixin
 from .chat_message_models import Attachment, ChatMessage, ChatMessageAttachmentLink
 from .chat_session_models import ChatSession
 from .job_models import ChatMessageJob, JobStatus, KnowledgeProcessingJob
-from .knowledge_models import (
+from .knowledge_models import OrganisationDocument, OrganisationSource
+from .sync import (
+    CalendarAttendee,
+    CalendarEvent,
+    IntegrationScope,
     IntegrationSyncHistory,
+    IntegrationType,
     KnowledgeIntegration,
-    OrganisationDocument,
-    OrganisationSource,
+    SyncCategory,
+    SyncedRecordMixin,
+    SyncStatus,
 )
 
 __all__ = [
@@ -40,6 +46,14 @@ __all__ = [
     "OrganisationSource",
     "KnowledgeIntegration",
     "IntegrationSyncHistory",
+    "IntegrationType",
+    "IntegrationScope",
+    "SyncStatus",
+    # Synced Data
+    "SyncCategory",
+    "SyncedRecordMixin",
+    "CalendarEvent",
+    "CalendarAttendee",
     # Job Models
     "JobStatus",
     "ChatMessageJob",
