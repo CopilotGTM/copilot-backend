@@ -89,7 +89,10 @@ def task_failure_handler(task_id=None, exception=None, traceback=None, einfo=Non
 
 
 # Explicitly import task modules to ensure registration
-from .tasks import token_refresh  # noqa: F401, E402
+from .tasks import (
+    sync_tasks,  # noqa: F401, E402
+    token_refresh,  # noqa: F401, E402
+)
 
 # Future imports (Step 5):
 # from .tasks import integration_sync  # noqa: F401, E402

@@ -26,9 +26,7 @@ from src.api.schemas.integrations import (
     IntegrationUpdate,
 )
 from src.api.utils.http_response import Response
-from src.domain.models.organisation_tables.knowledge_models import (
-    IntegrationScope,
-)
+from src.domain.models.organisation_tables.sync import IntegrationScope
 from src.infra.config.constant import IntegrationErrors
 from src.infra.config.integrations_metadata import get_all_integration_metadata
 from src.infra.utils.logger import get_logger

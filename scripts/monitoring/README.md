@@ -16,8 +16,9 @@ Files
 - `scripts/monitoring/db_pool_monitor.py`: Monitoring service and lifespan helpers
 
 Configuration
-- Defaults: interval=30s, long-running threshold=300s.
-- To adjust, change the call to `start_pool_monitor()` in `src/api/fastapi_app.py`.
+- Defaults: interval=300s (5 minutes), long-running threshold=300s.
+- Override via env: `DB_POOL_MONITOR_INTERVAL_SEC=300` (seconds).
+- You can also pass an explicit `interval_sec` to `start_pool_monitor()` if needed.
 
 Logs
 - Summary line at INFO, now with `size` (open DBAPI connections) and `idle`.

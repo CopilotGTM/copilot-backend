@@ -92,40 +92,64 @@ class NangoClient:
         Extract a human-readable error message from a Nango error payload.
         """
         if isinstance(payload, dict):
-            # Nango typically nests details under "error" and/or "errors"
-            error_block = payload.get("error") or payload
-            if isinstance(error_block, dict):
-                message = error_block.get("message")
-                if isinstance(message, str) and message.strip():
-                    return message.strip()
-
-                errors = error_block.get("errors")
-                if isinstance(errors, list) and errors:
-                    first = errors[0]
-                    if isinstance(first, dict):
-                        nested_message = first.get("message")
-                        if isinstance(nested_message, str) and nested_message.strip():
-                            return nested_message.strip()
-                    # Fallback: string representation of first error entry
-                    return str(first)
-
-            # Fallback to top-level message field if present
-            message = payload.get("message")
-            if isinstance(message, str) and message.strip():
-                return message.strip()
+            return NangoClient._extract_message_from_dict(payload)
 
         if isinstance(payload, list) and payload:
-            first = payload[0]
-            if isinstance(first, dict):
-                nested_message = first.get("message")
-                if isinstance(nested_message, str) and nested_message.strip():
-                    return nested_message.strip()
-            return str(first)
+            return NangoClient._extract_message_from_list(payload)
 
         if isinstance(payload, str):
             stripped = payload.strip()
             return stripped or None
 
+        return None
+
+    @staticmethod
+    def _extract_message_from_dict(payload: dict) -> str | None:
+        """Extract message from dictionary payload."""
+        # Try error block first
+        error_block = payload.get("error") or payload
+        if isinstance(error_block, dict):
+            message = NangoClient._get_string_message(error_block.get("message"))
+            if message:
+                return message
+
+            # Check errors array
+            message = NangoClient._extract_from_errors_array(error_block.get("errors"))
+            if message:
+                return message
+
+        # Fallback to top-level message
+        return NangoClient._get_string_message(payload.get("message"))
+
+    @staticmethod
+    def _extract_from_errors_array(errors: Any) -> str | None:
+        """Extract message from errors array."""
+        if not isinstance(errors, list) or not errors:
+            return None
+
+        first = errors[0]
+        if isinstance(first, dict):
+            message = NangoClient._get_string_message(first.get("message"))
+            if message:
+                return message
+
+        return str(first)
+
+    @staticmethod
+    def _extract_message_from_list(payload: list) -> str | None:
+        """Extract message from list payload."""
+        first = payload[0]
+        if isinstance(first, dict):
+            message = NangoClient._get_string_message(first.get("message"))
+            if message:
+                return message
+        return str(first)
+
+    @staticmethod
+    def _get_string_message(value: Any) -> str | None:
+        """Get string message if value is non-empty string."""
+        if isinstance(value, str) and value.strip():
+            return value.strip()
         return None
 
     @staticmethod
@@ -141,7 +165,7 @@ class NangoClient:
         status_code = response.status_code
         try:
             payload: Any = response.json()
-        except (ValueError, json.JSONDecodeError):
+        except json.JSONDecodeError:
             payload = response.text
 
         message = NangoClient._lookup_error_message(payload)
@@ -241,22 +265,10 @@ class NangoClient:
             NangoConnectionError: If session creation fails
         """
         try:
-            # Build end_user object without null fields (Nango rejects null strings)
-            end_user: dict[str, Any] = {
-                "id": end_user_id,
-                "tags": {"organizationId": organization_id},
-            }
-            if end_user_email is not None:
-                end_user["email"] = end_user_email
-            if end_user_display_name is not None:
-                end_user["display_name"] = end_user_display_name
+            payload = self._build_connect_session_payload(
+                end_user_id, organization_id, integration_id, end_user_email, end_user_display_name
+            )
 
-            payload = {
-                "end_user": end_user,
-                "allowed_integrations": [integration_id],
-            }
-
-            # Debug: high-level payload details (no secrets)
             logger.debug(
                 "Creating Nango Connect session: end_user_id=%s org_id=%s integration=%s has_email=%s has_display_name=%s",
                 end_user_id,
@@ -270,34 +282,7 @@ class NangoClient:
             response.raise_for_status()
 
             result = response.json()
-
-            # Normalize response to expose token and expires_at at top-level
-            if isinstance(result, dict):
-                envelope = result.get("data") if isinstance(result.get("data"), dict) else None
-                body = envelope if envelope is not None else result
-                token = (
-                    body.get("token")
-                    or body.get("session_token")
-                    or body.get("connect_token")
-                    or (body.get("session") or {}).get("token")
-                )
-                expires_at = body.get("expires_at") or (body.get("session") or {}).get("expires_at")
-                # Attach normalized fields for consumers
-                result["token"] = token
-                result["expires_at"] = expires_at
-
-                # Debug with masked token
-                masked = (
-                    f"{str(token)[:6]}...{str(token)[-4:]}"
-                    if isinstance(token, str) and len(token) > 12
-                    else "***masked***"
-                )
-                logger.debug(
-                    "Nango Connect session response normalized: has_envelope=%s token=%s expires_at=%s",
-                    str(envelope is not None),
-                    masked,
-                    expires_at,
-                )
+            result = self._normalize_connect_session_response(result)
 
             logger.info(
                 f"Created Connect Session for user={end_user_id}, "
@@ -307,35 +292,105 @@ class NangoClient:
             return result
 
         except httpx.HTTPStatusError as e:
-            status_code, payload, detail = self._extract_error_details(e.response)
-            context = {
+            self._handle_connect_session_http_error(e, end_user_id, organization_id, integration_id)
+        except Exception as e:
+            self._handle_connect_session_error(e, end_user_id, organization_id, integration_id)
+
+    def _build_connect_session_payload(
+        self,
+        end_user_id: str,
+        organization_id: str,
+        integration_id: str,
+        end_user_email: str | None,
+        end_user_display_name: str | None,
+    ) -> dict[str, Any]:
+        """Build payload for connect session creation (excluding null fields)."""
+        end_user: dict[str, Any] = {
+            "id": end_user_id,
+            "tags": {"organizationId": organization_id},
+        }
+        if end_user_email is not None:
+            end_user["email"] = end_user_email
+        if end_user_display_name is not None:
+            end_user["display_name"] = end_user_display_name
+
+        return {
+            "end_user": end_user,
+            "allowed_integrations": [integration_id],
+        }
+
+    def _normalize_connect_session_response(self, result: dict[str, Any]) -> dict[str, Any]:
+        """Normalize Nango Connect session response to expose token and expires_at at top-level."""
+        if not isinstance(result, dict):
+            return result
+
+        envelope = result.get("data") if isinstance(result.get("data"), dict) else None
+        body = envelope if envelope is not None else result
+
+        token = (
+            body.get("token")
+            or body.get("session_token")
+            or body.get("connect_token")
+            or (body.get("session") or {}).get("token")
+        )
+        expires_at = body.get("expires_at") or (body.get("session") or {}).get("expires_at")
+
+        # Attach normalized fields for consumers
+        result["token"] = token
+        result["expires_at"] = expires_at
+
+        # Debug with masked token
+        masked = (
+            f"{str(token)[:6]}...{str(token)[-4:]}"
+            if isinstance(token, str) and len(token) > 12
+            else "***masked***"
+        )
+        logger.debug(
+            "Nango Connect session response normalized: has_envelope=%s token=%s expires_at=%s",
+            str(envelope is not None),
+            masked,
+            expires_at,
+        )
+
+        return result
+
+    def _handle_connect_session_http_error(
+        self, e: httpx.HTTPStatusError, end_user_id: str, organization_id: str, integration_id: str
+    ) -> None:
+        """Handle HTTP errors during connect session creation."""
+        status_code, payload, detail = self._extract_error_details(e.response)
+        context = {
+            "end_user_id": end_user_id,
+            "organization_id": organization_id,
+            "integration_id": integration_id,
+        }
+        logger.error(
+            "HTTP error creating connect session (status=%s, context=%s): %s",
+            status_code,
+            context,
+            payload,
+        )
+        message = detail or f"Failed to create connect session: {str(e)}"
+        raise NangoConnectionError(
+            message,
+            status_code=status_code,
+            payload=payload,
+        ) from None
+
+    def _handle_connect_session_error(
+        self, e: Exception, end_user_id: str, organization_id: str, integration_id: str
+    ) -> None:
+        """Handle general errors during connect session creation."""
+        logger.error(
+            "Failed to create connect session for context=%s: %s",
+            {
                 "end_user_id": end_user_id,
                 "organization_id": organization_id,
                 "integration_id": integration_id,
-            }
-            logger.error(
-                "HTTP error creating connect session (status=%s, context=%s): %s",
-                status_code,
-                context,
-                payload,
-            )
-            message = detail or f"Failed to create connect session: {str(e)}"
-            raise NangoConnectionError(
-                message,
-                status_code=status_code,
-                payload=payload,
-            ) from None
-        except Exception as e:
-            logger.error(
-                "Failed to create connect session for context=%s: %s",
-                {
-                    "end_user_id": end_user_id,
-                    "organization_id": organization_id,
-                    "integration_id": integration_id,
-                },
-                str(e),
-            )
-            raise NangoConnectionError(f"Failed to create connect session: {str(e)}") from None
+            },
+            str(e),
+        )
+        raise NangoConnectionError(f"Failed to create connect session: {str(e)}") from None
 
     async def exchange_code_for_token(
         self,
@@ -557,7 +612,7 @@ class NangoClient:
 
     async def proxy_request(
         self,
-        provider: str,
+        provider_config_key: str,
         connection_id: str,
         endpoint: str,
         method: str = "GET",
@@ -574,7 +629,7 @@ class NangoClient:
         Docs: https://docs.nango.dev/reference/api/proxy/post
 
         Args:
-            provider: Integration provider
+            provider_config_key: Nango provider config key (e.g., 'google-calendar-getting-started')
             connection_id: Connection identifier
             endpoint: API endpoint to call (e.g., '/v1/contacts')
             method: HTTP method (GET, POST, PUT, DELETE, etc.)
@@ -588,28 +643,49 @@ class NangoClient:
             NangoConnectionError: If API request fails
         """
         try:
-            # Nango proxy endpoint
-            url = "/proxy"
+            # Nango proxy endpoint - path is proxied as-is to provider API
+            # Format: /proxy{endpoint}
+            # Docs: https://docs.nango.dev/reference/api/proxy/get
+            url = f"/proxy{endpoint}"
 
-            # Build proxy request payload
-            payload: dict[str, Any] = {
-                "provider_config_key": provider,
-                "connection_id": connection_id,
-                "endpoint": endpoint,
-                "method": method.upper(),
+            # Only pass through actual provider query params
+            proxy_params = dict(params or {})
+
+            # Required Nango headers (case-insensitive but use canonical casing)
+            headers = {
+                "Provider-Config-Key": provider_config_key,
+                "Connection-Id": connection_id,
             }
 
-            if params:
-                payload["params"] = params
-            if data:
-                payload["data"] = data
-
-            response = await self.client.post(url, json=payload)
+            # Make the request using the specified HTTP method
+            if method.upper() == "GET":
+                response = await self.client.get(url, params=proxy_params, headers=headers)
+            elif method.upper() == "POST":
+                response = await self.client.post(
+                    url, params=proxy_params, json=data or {}, headers=headers
+                )
+            elif method.upper() == "PUT":
+                response = await self.client.put(
+                    url, params=proxy_params, json=data or {}, headers=headers
+                )
+            elif method.upper() == "DELETE":
+                response = await self.client.delete(url, params=proxy_params, headers=headers)
+            elif method.upper() == "PATCH":
+                response = await self.client.patch(
+                    url, params=proxy_params, json=data or {}, headers=headers
+                )
+            else:
+                raise ValueError(f"Unsupported HTTP method: {method}")
             response.raise_for_status()
 
             result = response.json()
 
-            logger.info(f"Proxy request to {provider}:{endpoint} (method={method}) succeeded")
+            logger.info(
+                "Proxy request to %s:%s (method=%s) succeeded",
+                provider_config_key,
+                endpoint,
+                method,
+            )
             return result
 
         except httpx.HTTPStatusError as e:
@@ -617,7 +693,7 @@ class NangoClient:
             logger.error(
                 "HTTP error in proxy request (status=%s, provider=%s, endpoint=%s, method=%s): %s",
                 status_code,
-                provider,
+                provider_config_key,
                 endpoint,
                 method.upper(),
                 error_payload,

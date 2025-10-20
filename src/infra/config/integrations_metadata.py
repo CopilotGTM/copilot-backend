@@ -8,7 +8,7 @@ Update this file when adding new integration types or changing display informati
 from dataclasses import dataclass
 
 from ...domain.models.master_tables import UserAppRole
-from ...domain.models.organisation_tables.knowledge_models import (
+from ...domain.models.organisation_tables.sync import (
     IntegrationScope,
     IntegrationType,
 )

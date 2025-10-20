@@ -297,8 +297,8 @@ class PoolMonitorConfig:
     Env vars still override when present.
     """
 
-    # Tick interval in seconds
-    MONITOR_INTERVAL_SEC: float = float(os.getenv("DB_POOL_MONITOR_INTERVAL_SEC", "30"))
+    # Tick interval in seconds (default: 300s = 5 minutes)
+    MONITOR_INTERVAL_SEC: float = float(os.getenv("DB_POOL_MONITOR_INTERVAL_SEC", "300"))
 
     # App vs Worker max checkout age (seconds)
     APP_MAX_CHECKOUT_SEC: int = int(os.getenv("APP_DB_CONN_MAX_CHECKOUT_SEC", "900"))  # 15 minutes

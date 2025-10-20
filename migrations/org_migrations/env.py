@@ -18,6 +18,8 @@ from src.domain.models.organisation_tables import (
     ChatMessageJob,
     KnowledgeProcessingJob,
     ChatMessageAttachmentLink,
+    CalendarEvent,
+    CalendarAttendee,
 )
 
 load_dotenv()
@@ -64,6 +66,8 @@ all_org_models = [
     ChatMessageJob,
     KnowledgeProcessingJob,
     ChatMessageAttachmentLink,
+    CalendarEvent,
+    CalendarAttendee,
 ]
 
 for model in all_org_models:

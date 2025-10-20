@@ -4,11 +4,18 @@
 
 This document provides the **overall architecture** for the webhook-based integration data synchronization system, focusing on **CRM (HubSpot)** and **Calendar (Google Calendar)** integrations using Nango as the OAuth proxy and data provider.
 
+> 📘 **For detailed end-to-end sync flow**, see: [Data Sync Flow](./data-sync-flow.md)
+
 ### Key Principles
 1. **Webhook-Driven**: Data sync is triggered by Nango webhooks when provider data changes
 2. **Worker-Based**: All heavy sync operations are handled asynchronously by Celery workers
 3. **Multi-Category Support**: Extensible architecture supporting CRM and Calendar categories (Email service placeholder for future)
 4. **Cached Reads**: API serves cached data from PostgreSQL for fast response times
+
+### Related Documentation
+- **[Data Sync Flow](./data-sync-flow.md)** - Complete step-by-step sync process with timings and examples
+- **[Integrations Worker README](../../../src/workers/integrations_worker/README.md)** - Worker setup and configuration
+- **[OAuth Data Flow](../../API%20Documentation/oauth-data-flow.md)** - OAuth connection establishment
 
 ---
 
@@ -1372,3 +1379,34 @@ This architecture provides:
 ✅ **Secure**: Webhook verification, data isolation
 
 The system is designed to start with HubSpot (CRM) and Google Calendar, with clear patterns for adding more providers in each category.
+
+---
+
+## Quick Reference
+
+### Key Documents
+| Document | Purpose | Audience |
+|----------|---------|----------|
+| [Data Sync Flow](./data-sync-flow.md) | Complete end-to-end sync process with timings, examples, and troubleshooting | Developers, DevOps |
+| [Integration Data Sync Architecture](./Integration-data-sync-architecture.md) | Overall system architecture and design patterns | Architects, Team Leads |
+| [Integrations Worker README](../../../src/workers/integrations_worker/README.md) | Worker setup, configuration, and commands | Developers, DevOps |
+| [Integrations Worker Fixes](../integrations-worker-fixes.md) | Recent production improvements and bug fixes | Developers |
+| [OAuth Data Flow](../../API%20Documentation/oauth-data-flow.md) | OAuth connection establishment | API Developers |
+
+### Common Tasks
+| Task | See Document | Section |
+|------|--------------|---------|
+| Understand sync flow | [Data Sync Flow](./data-sync-flow.md) | Complete Flow Diagram |
+| Set up worker | [Worker README](../../../src/workers/integrations_worker/README.md) | Usage |
+| Add new provider | This document | Provider Registry |
+| Debug sync issues | [Data Sync Flow](./data-sync-flow.md) | Troubleshooting Guide |
+| Monitor performance | [Data Sync Flow](./data-sync-flow.md) | Monitoring & Observability |
+| Test sync | [Data Sync Flow](./data-sync-flow.md) | Testing the Flow |
+
+### Current Status (October 2025)
+- ✅ **Production Ready**: Comprehensive error handling, logging, and monitoring
+- ✅ **Google Calendar**: Fully implemented with incremental sync
+- ⏳ **HubSpot CRM**: Architecture ready, implementation pending
+- ⏳ **Email**: Reserved for future implementation
+- ✅ **Nango Proxy**: Fixed and working correctly
+- ✅ **Worker Infrastructure**: Celery workers with proper task routing
