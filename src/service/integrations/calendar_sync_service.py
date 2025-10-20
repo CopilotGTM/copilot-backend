@@ -25,6 +25,10 @@ from src.infra.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+ISO_UTC_SUFFIX = "+00:00"
+DEFAULT_EVENT_TITLE = "(No title)"
+
+
 def datetime_now_naive() -> datetime:
     """Return current UTC timestamp without timezone info for naive columns."""
     return datetime.now(UTC).replace(tzinfo=None)
@@ -257,7 +261,7 @@ class CalendarSyncService:
         )
 
         self.db.add(event)
-        await self.db.flush()
+        # No need to flush here; event creation/update already flushes attendees.
 
         # Add attendees if present
         await self._sync_attendees(event, event_data)
@@ -289,9 +293,12 @@ class CalendarSyncService:
         if not attendees_data:
             return
 
-        # Delete existing attendees (simple approach - could be optimized)
+        # Remove existing attendees so we can insert the fresh snapshot without violating the
+        # unique (event_id, email) constraint.
+        from sqlalchemy import delete
+
         await self.db.execute(
-            select(CalendarAttendee).where(CalendarAttendee.event_id == event.event_id)
+            delete(CalendarAttendee).where(CalendarAttendee.event_id == event.event_id)
         )
 
         # Create new attendees
@@ -311,6 +318,7 @@ class CalendarSyncService:
                 data_payload=attendee_data,
             )
             self.db.add(attendee)
+        await self.db.flush()
 
     @staticmethod
     def _extract_external_id(event_data: dict[str, Any], provider: str) -> str | None:
@@ -321,114 +329,157 @@ class CalendarSyncService:
             return event_data.get("id") or event_data.get("iCalUId")
         return event_data.get("id")
 
-    @staticmethod
-    def _extract_event_fields(event_data: dict[str, Any], provider: str) -> dict[str, Any]:
+    @classmethod
+    def _extract_event_fields(cls, event_data: dict[str, Any], provider: str) -> dict[str, Any]:
         """Extract event fields from provider data."""
-        fields = {}
-
-        # Google Calendar format
         if provider == "google":
-            fields["title"] = event_data.get("summary") or "(No title)"
-            fields["description"] = event_data.get("description")
-            fields["location"] = event_data.get("location")
-            fields["status"] = event_data.get("status")
-            fields["calendar_external_id"] = event_data.get("calendarId")
+            return cls._extract_google_event_fields(event_data)
+        if provider == "microsoft":
+            return cls._extract_microsoft_event_fields(event_data)
+        return cls._extract_generic_event_fields(event_data)
 
-            # Start time
-            start = event_data.get("start", {})
-            if isinstance(start, dict):
-                if "dateTime" in start:
-                    fields["start_at"] = datetime.fromisoformat(
-                        start["dateTime"].replace("Z", "+00:00")
-                    )
-                    fields["is_all_day"] = False
-                elif "date" in start:
-                    fields["start_at"] = datetime.fromisoformat(start["date"] + "T00:00:00+00:00")
-                    fields["is_all_day"] = True
-                fields["timezone"] = start.get("timeZone")
-
-            # End time
-            end = event_data.get("end", {})
-            if isinstance(end, dict):
-                if "dateTime" in end:
-                    fields["end_at"] = datetime.fromisoformat(
-                        end["dateTime"].replace("Z", "+00:00")
-                    )
-                elif "date" in end:
-                    fields["end_at"] = datetime.fromisoformat(end["date"] + "T00:00:00+00:00")
-
-            # Organizer
-            organizer = event_data.get("organizer", {})
-            if isinstance(organizer, dict):
-                fields["organiser_email"] = organizer.get("email")
-                fields["organiser_name"] = organizer.get("displayName")
-
-            # Conference data
-            conference_data = event_data.get("conferenceData", {})
-            if isinstance(conference_data, dict):
-                entry_points = conference_data.get("entryPoints", [])
-                for entry in entry_points:
-                    if entry.get("entryPointType") == "video":
-                        fields["conference_link"] = entry.get("uri")
-                        break
-
-            # Attendee count
-            attendees = event_data.get("attendees", [])
-            fields["attendee_count"] = len(attendees) if isinstance(attendees, list) else 0
-
-            # Source modified timestamp
-            if "updated" in event_data:
-                fields["source_modified_at"] = datetime.fromisoformat(
-                    event_data["updated"].replace("Z", "+00:00")
-                )
-
-        # Microsoft Outlook format
-        elif provider == "microsoft":
-            fields["title"] = event_data.get("subject") or "(No title)"
-            fields["description"] = event_data.get("bodyPreview") or event_data.get("body", {}).get(
-                "content"
-            )
-            fields["location"] = event_data.get("location", {}).get("displayName")
-            fields["status"] = event_data.get("status")
-
-            # Start/End times
-            if "start" in event_data:
-                start = event_data["start"]
-                if isinstance(start, dict):
-                    fields["start_at"] = datetime.fromisoformat(
-                        start["dateTime"].replace("Z", "+00:00")
-                    )
-                    fields["timezone"] = start.get("timeZone")
-                    fields["is_all_day"] = event_data.get("isAllDay", False)
-
-            if "end" in event_data:
-                end = event_data["end"]
-                if isinstance(end, dict):
-                    fields["end_at"] = datetime.fromisoformat(
-                        end["dateTime"].replace("Z", "+00:00")
-                    )
-
-            # Organizer
-            organizer = event_data.get("organizer", {}).get("emailAddress", {})
-            if organizer:
-                fields["organiser_email"] = organizer.get("address")
-                fields["organiser_name"] = organizer.get("name")
-
-            # Online meeting
-            if "onlineMeeting" in event_data:
-                fields["conference_link"] = event_data["onlineMeeting"].get("joinUrl")
-
-            # Attendees
-            attendees = event_data.get("attendees", [])
-            fields["attendee_count"] = len(attendees) if isinstance(attendees, list) else 0
-
-            # Modified timestamp
-            if "lastModifiedDateTime" in event_data:
-                fields["source_modified_at"] = datetime.fromisoformat(
-                    event_data["lastModifiedDateTime"].replace("Z", "+00:00")
-                )
-
+    @classmethod
+    def _extract_google_event_fields(cls, event_data: dict[str, Any]) -> dict[str, Any]:
+        fields = {
+            "title": event_data.get("summary") or DEFAULT_EVENT_TITLE,
+            "description": event_data.get("description"),
+            "location": event_data.get("location"),
+            "status": event_data.get("status"),
+            "calendar_external_id": event_data.get("calendarId"),
+        }
+        cls._apply_google_time_fields(fields, event_data)
+        cls._apply_google_conference(fields, event_data.get("conferenceData"))
+        cls._apply_google_organizer(fields, event_data.get("organizer"))
+        cls._apply_attendee_count(fields, event_data.get("attendees"))
+        cls._apply_google_source_modified(fields, event_data)
         return fields
+
+    @classmethod
+    def _apply_google_time_fields(cls, fields: dict[str, Any], event_data: dict[str, Any]) -> None:
+        start = event_data.get("start")
+        if isinstance(start, dict):
+            cls._set_google_start(fields, start)
+            fields["timezone"] = start.get("timeZone")
+
+        end = event_data.get("end")
+        if isinstance(end, dict):
+            cls._set_google_end(fields, end)
+
+    @classmethod
+    def _set_google_start(cls, fields: dict[str, Any], start: dict[str, Any]) -> None:
+        if "dateTime" in start:
+            fields["start_at"] = cls._parse_iso_datetime(start["dateTime"])
+            fields["is_all_day"] = False
+        elif "date" in start:
+            fields["start_at"] = cls._parse_iso_date(start["date"])
+            fields["is_all_day"] = True
+
+    @classmethod
+    def _set_google_end(cls, fields: dict[str, Any], end: dict[str, Any]) -> None:
+        if "dateTime" in end:
+            fields["end_at"] = cls._parse_iso_datetime(end["dateTime"])
+        elif "date" in end:
+            fields["end_at"] = cls._parse_iso_date(end["date"])
+
+    @staticmethod
+    def _apply_google_conference(fields: dict[str, Any], conference_data: Any) -> None:
+        if not isinstance(conference_data, dict):
+            return
+        for entry in conference_data.get("entryPoints", []):
+            if entry.get("entryPointType") == "video":
+                fields["conference_link"] = entry.get("uri")
+                break
+
+    @staticmethod
+    def _apply_google_organizer(fields: dict[str, Any], organizer: Any) -> None:
+        if isinstance(organizer, dict):
+            fields["organiser_email"] = organizer.get("email")
+            fields["organiser_name"] = organizer.get("displayName")
+
+    @classmethod
+    def _apply_google_source_modified(
+        cls, fields: dict[str, Any], event_data: dict[str, Any]
+    ) -> None:
+        updated = event_data.get("updated")
+        if updated:
+            fields["source_modified_at"] = cls._parse_iso_datetime(updated)
+
+    @classmethod
+    def _extract_microsoft_event_fields(cls, event_data: dict[str, Any]) -> dict[str, Any]:
+        fields = {
+            "title": event_data.get("subject") or DEFAULT_EVENT_TITLE,
+            "description": event_data.get("bodyPreview")
+            or event_data.get("body", {}).get("content"),
+            "location": event_data.get("location", {}).get("displayName"),
+            "status": event_data.get("status"),
+        }
+        cls._apply_microsoft_times(fields, event_data)
+        cls._apply_microsoft_organizer(fields, event_data)
+        cls._apply_microsoft_online_meeting(fields, event_data)
+        cls._apply_attendee_count(fields, event_data.get("attendees"))
+        cls._apply_microsoft_source_modified(fields, event_data)
+        return fields
+
+    @classmethod
+    def _apply_microsoft_times(cls, fields: dict[str, Any], event_data: dict[str, Any]) -> None:
+        start = event_data.get("start")
+        if isinstance(start, dict):
+            date_time = start.get("dateTime")
+            if date_time:
+                fields["start_at"] = cls._parse_iso_datetime(date_time)
+            fields["timezone"] = start.get("timeZone")
+            fields["is_all_day"] = event_data.get("isAllDay", False)
+
+        end = event_data.get("end")
+        if isinstance(end, dict):
+            date_time = end.get("dateTime")
+            if date_time:
+                fields["end_at"] = cls._parse_iso_datetime(date_time)
+
+    @staticmethod
+    def _apply_microsoft_organizer(fields: dict[str, Any], event_data: dict[str, Any]) -> None:
+        organizer = event_data.get("organizer", {}).get("emailAddress", {})
+        if organizer:
+            fields["organiser_email"] = organizer.get("address")
+            fields["organiser_name"] = organizer.get("name")
+
+    @staticmethod
+    def _apply_microsoft_online_meeting(fields: dict[str, Any], event_data: dict[str, Any]) -> None:
+        online_meeting = event_data.get("onlineMeeting")
+        if isinstance(online_meeting, dict):
+            fields["conference_link"] = online_meeting.get("joinUrl")
+
+    @classmethod
+    def _apply_microsoft_source_modified(
+        cls, fields: dict[str, Any], event_data: dict[str, Any]
+    ) -> None:
+        modified = event_data.get("lastModifiedDateTime")
+        if modified:
+            fields["source_modified_at"] = cls._parse_iso_datetime(modified)
+
+    @staticmethod
+    def _extract_generic_event_fields(event_data: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "title": event_data.get("summary") or event_data.get("subject") or DEFAULT_EVENT_TITLE,
+            "description": event_data.get("description"),
+            "location": event_data.get("location"),
+            "status": event_data.get("status"),
+        }
+
+    @staticmethod
+    def _apply_attendee_count(fields: dict[str, Any], attendees: Any) -> None:
+        if isinstance(attendees, list):
+            fields["attendee_count"] = len(attendees)
+        else:
+            fields["attendee_count"] = 0
+
+    @staticmethod
+    def _parse_iso_datetime(value: str) -> datetime:
+        return datetime.fromisoformat(value.replace("Z", ISO_UTC_SUFFIX))
+
+    @staticmethod
+    def _parse_iso_date(value: str) -> datetime:
+        return datetime.fromisoformat(f"{value}T00:00:00{ISO_UTC_SUFFIX}")
 
     @staticmethod
     def _normalize_response_status(status: str) -> str:
