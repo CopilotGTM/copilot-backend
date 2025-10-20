@@ -11,6 +11,7 @@ class SyncJobRequest:
     category: str
     provider: str
     data_types: list[str]
+    provider_config_key: str | None = None
     incremental: bool = True
     sync_name: str | None = None
 

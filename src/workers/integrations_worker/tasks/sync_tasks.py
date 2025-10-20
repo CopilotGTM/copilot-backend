@@ -17,11 +17,11 @@ Architecture:
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 from celery import Task
 
+from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.workers.integrations_worker.celery_app import app
 from src.workers.integrations_worker.models.sync_models import SyncJobRequest
@@ -45,6 +45,7 @@ def sync_integration_data_task(
     integration_id: str,
     category: str,
     provider: str,
+    provider_config_key: str | None = None,
     data_types: list[str],
     incremental: bool = True,
     sync_name: str | None = None,
@@ -63,6 +64,7 @@ def sync_integration_data_task(
         integration_id: Integration UUID
         category: Integration category (e.g., 'calendar', 'crm')
         provider: Provider name (e.g., 'google', 'microsoft')
+        provider_config_key: Provider config key from Nango webhook (if available)
         data_types: List of data types to sync (e.g., ['events', 'calendars'])
         incremental: Whether to do incremental sync (default: True)
         sync_name: Optional sync name from webhook
@@ -77,51 +79,54 @@ def sync_integration_data_task(
         integration_id,
     )
 
-    async def _run() -> dict[str, Any]:
-        try:
-            req = SyncJobRequest(
-                organisation_id=organisation_id,
-                integration_id=integration_id,
-                category=category,
-                provider=provider,
-                data_types=data_types,
-                incremental=incremental,
-                sync_name=sync_name,
-            )
-            result = await execute_sync(req)
-
-            logger.info(
-                "Task completed successfully: task_id=%s org=%s integration=%s status=%s",
-                self.request.id,
-                organisation_id,
-                integration_id,
-                result.get("status"),
-            )
-
-            return result
-
-        except Exception as e:
-            logger.error(
-                "Task execution error: task_id=%s org=%s integration=%s error=%s",
-                self.request.id,
-                organisation_id,
-                integration_id,
-                str(e),
-                exc_info=True,
-            )
-            # Return error dict instead of raising to avoid retry on unrecoverable errors
-            return {
-                "status": "failed",
-                "items": {},
-                "extra": {
-                    "error": str(e),
-                    "error_type": type(e).__name__,
-                    "task_id": self.request.id,
-                },
-            }
-
     try:
-        return asyncio.run(_run())
+
+        async def _run() -> dict[str, Any]:
+            try:
+                req = SyncJobRequest(
+                    organisation_id=organisation_id,
+                    integration_id=integration_id,
+                    category=category,
+                    provider=provider,
+                    data_types=data_types,
+                    provider_config_key=provider_config_key,
+                    incremental=incremental,
+                    sync_name=sync_name,
+                )
+                result = await execute_sync(req)
+
+                logger.info(
+                    "Task completed successfully: task_id=%s org=%s integration=%s status=%s",
+                    self.request.id,
+                    organisation_id,
+                    integration_id,
+                    result.get("status"),
+                )
+
+                return result
+
+            except Exception as e:
+                logger.error(
+                    "Task execution error: task_id=%s org=%s integration=%s error=%s",
+                    self.request.id,
+                    organisation_id,
+                    integration_id,
+                    str(e),
+                    exc_info=True,
+                )
+                # Return error dict instead of raising to avoid retry on unrecoverable errors
+                return {
+                    "status": "failed",
+                    "items": {},
+                    "extra": {
+                        "error": str(e),
+                        "error_type": type(e).__name__,
+                        "task_id": self.request.id,
+                    },
+                }
+
+        return run_async(_run())
+
     except Exception as e:
         logger.error(
             "Task asyncio error: task_id=%s org=%s integration=%s error=%s",

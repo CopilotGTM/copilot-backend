@@ -8,6 +8,7 @@ This module provides services for:
 - Data synchronization from external platforms
 """
 
+from .calendar_sync_service import CalendarSyncService
 from .integration_service import IntegrationService
 from .nango_client import NangoClient
 from .nango_webhook_service import NangoWebhookService, webhook_service
@@ -19,4 +20,5 @@ __all__ = [
     "TokenRefreshService",
     "NangoWebhookService",
     "webhook_service",
+    "CalendarSyncService",
 ]

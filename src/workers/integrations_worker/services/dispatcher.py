@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from contextlib import suppress
 from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
+from src.api.dependencies.organisation_dependencies import acquire_org_async_session
 from src.domain.models.organisation_tables.sync import KnowledgeIntegration
-from src.infra.database.provider_async import AsyncSqlAlchemyProvider
+from src.infra.config.nango_provider_mapping import to_nango_connect_integration_key
 from src.infra.utils.logger import get_logger
 from src.service.integrations import NangoClient
 
@@ -27,7 +29,6 @@ async def execute_sync(request: SyncJobRequest) -> dict[str, Any]:
     Returns:
         Dictionary with sync results including status and items synced
     """
-    db = AsyncSqlAlchemyProvider()
     org_id = UUID(request.organisation_id)
     int_id = UUID(request.integration_id)
 
@@ -41,7 +42,11 @@ async def execute_sync(request: SyncJobRequest) -> dict[str, Any]:
     )
 
     try:
-        async with db.tenant_session(org_id) as session:
+        # acquire_org_async_session returns an async generator, not a context manager
+        session_gen = acquire_org_async_session(org_id)
+        session = await anext(session_gen)
+
+        try:
             # Fetch integration record
             res = await session.execute(
                 select(KnowledgeIntegration).where(KnowledgeIntegration.integration_id == int_id)
@@ -64,6 +69,10 @@ async def execute_sync(request: SyncJobRequest) -> dict[str, Any]:
             result = SyncJobResult(status="success")
 
             # Process each data type
+            provider_key = request.provider_config_key or to_nango_connect_integration_key(
+                integration.integration_type
+            )
+
             for dt in request.data_types:
                 logger.info("Processing data type: %s", dt)
 
@@ -90,15 +99,26 @@ async def execute_sync(request: SyncJobRequest) -> dict[str, Any]:
                 try:
                     # Fetch records from provider
                     logger.info("Fetching records from provider for data_type=%s", dt)
+                    logger.info(
+                        "Fetch params: connection_id=%s, is_initial=%s, last_synced=%s",
+                        integration.connection_id,
+                        not request.incremental,
+                        integration.last_synced_at,
+                    )
                     records = await fetcher(
                         nango=nango,
                         connection_id=integration.connection_id,
                         is_initial=not request.incremental,
                         last_synced_at=integration.last_synced_at,
                         data_type=dt,
+                        provider_config_key=provider_key,
                     )
 
                     logger.info("Fetched %d records for data_type=%s", len(records), dt)
+                    if records:
+                        logger.debug(
+                            "Sample record keys: %s", list(records[0].keys()) if records else []
+                        )
 
                     # Process records based on category
                     if request.category == "calendar":
@@ -109,7 +129,11 @@ async def execute_sync(request: SyncJobRequest) -> dict[str, Any]:
                             provider=request.provider,
                             events=records,
                         )
-                        logger.info("Upserted %d calendar events for data_type=%s", count, dt)
+                        logger.info(
+                            "Calendar sync completed for data_type=%s: %d events processed",
+                            dt,
+                            count,
+                        )
                         result.items[dt] = SyncItemResult(status="success", records_synced=count)
                     else:
                         logger.warning("Unsupported category: %s", request.category)
@@ -147,6 +171,11 @@ async def execute_sync(request: SyncJobRequest) -> dict[str, Any]:
             )
 
             return result.to_dict()
+
+        finally:
+            # Close the async session generator
+            with suppress(StopAsyncIteration):
+                await anext(session_gen)
 
     except Exception as e:
         logger.error(

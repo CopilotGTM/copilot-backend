@@ -612,7 +612,7 @@ class NangoClient:
 
     async def proxy_request(
         self,
-        provider: str,
+        provider_config_key: str,
         connection_id: str,
         endpoint: str,
         method: str = "GET",
@@ -629,7 +629,7 @@ class NangoClient:
         Docs: https://docs.nango.dev/reference/api/proxy/post
 
         Args:
-            provider: Integration provider
+            provider_config_key: Nango provider config key (e.g., 'google-calendar-getting-started')
             connection_id: Connection identifier
             endpoint: API endpoint to call (e.g., '/v1/contacts')
             method: HTTP method (GET, POST, PUT, DELETE, etc.)
@@ -643,34 +643,36 @@ class NangoClient:
             NangoConnectionError: If API request fails
         """
         try:
-            # Nango proxy endpoint - use provider and endpoint in URL path
-            # Format: /proxy/{providerConfigKey}{endpoint}
+            # Nango proxy endpoint - path is proxied as-is to provider API
+            # Format: /proxy{endpoint}
             # Docs: https://docs.nango.dev/reference/api/proxy/get
-            url = f"/proxy/{provider}{endpoint}"
+            url = f"/proxy{endpoint}"
 
-            # Connection ID is passed as query parameter
-            proxy_params = {"connection_id": connection_id}
+            # Only pass through actual provider query params
+            proxy_params = dict(params or {})
 
-            # Add any additional query params
-            if params:
-                proxy_params.update(params)
+            # Required Nango headers (case-insensitive but use canonical casing)
+            headers = {
+                "Provider-Config-Key": provider_config_key,
+                "Connection-Id": connection_id,
+            }
 
             # Make the request using the specified HTTP method
             if method.upper() == "GET":
-                response = await self.client.get(url, params=proxy_params)
+                response = await self.client.get(url, params=proxy_params, headers=headers)
             elif method.upper() == "POST":
                 response = await self.client.post(
-                    url, params={"connection_id": connection_id}, json=data or {}
+                    url, params=proxy_params, json=data or {}, headers=headers
                 )
             elif method.upper() == "PUT":
                 response = await self.client.put(
-                    url, params={"connection_id": connection_id}, json=data or {}
+                    url, params=proxy_params, json=data or {}, headers=headers
                 )
             elif method.upper() == "DELETE":
-                response = await self.client.delete(url, params=proxy_params)
+                response = await self.client.delete(url, params=proxy_params, headers=headers)
             elif method.upper() == "PATCH":
                 response = await self.client.patch(
-                    url, params={"connection_id": connection_id}, json=data or {}
+                    url, params=proxy_params, json=data or {}, headers=headers
                 )
             else:
                 raise ValueError(f"Unsupported HTTP method: {method}")
@@ -678,7 +680,12 @@ class NangoClient:
 
             result = response.json()
 
-            logger.info(f"Proxy request to {provider}:{endpoint} (method={method}) succeeded")
+            logger.info(
+                "Proxy request to %s:%s (method=%s) succeeded",
+                provider_config_key,
+                endpoint,
+                method,
+            )
             return result
 
         except httpx.HTTPStatusError as e:
@@ -686,7 +693,7 @@ class NangoClient:
             logger.error(
                 "HTTP error in proxy request (status=%s, provider=%s, endpoint=%s, method=%s): %s",
                 status_code,
-                provider,
+                provider_config_key,
                 endpoint,
                 method.upper(),
                 error_payload,

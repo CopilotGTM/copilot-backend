@@ -446,7 +446,8 @@ class IntegrationService:
             expires_in = credentials.get("expires_in")
             integration.access_token_expires_at = self.nango.parse_token_expiry(expires_in)
 
-            integration.last_synced_at = datetime.now(UTC)
+            # Store naive UTC to match TIMESTAMP WITHOUT TIME ZONE in DB
+            integration.last_synced_at = datetime.now(UTC).replace(tzinfo=None)
 
             self.db.add(integration)
             await self.db.commit()

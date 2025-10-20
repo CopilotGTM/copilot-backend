@@ -5,9 +5,12 @@ These tasks handle automatic token refresh to maintain
 continuous OAuth connectivity for integrations.
 """
 
+from contextlib import suppress
+
 from celery import Task
 
-from src.infra.database.factory import get_sync_provider
+from src.api.dependencies.master_dependencies import acquire_master_session
+from src.api.dependencies.organisation_dependencies import acquire_org_session
 from src.infra.utils.logger import get_logger
 from src.service.integrations.token_refresh_service import refresh_all_expiring_tokens
 from src.workers.integrations_worker.celery_app import app
@@ -49,11 +52,12 @@ def refresh_expiring_tokens_task(self, buffer_hours: int = 2):
     """
     logger.info(f"Starting scheduled token refresh task (buffer: {buffer_hours}h)")
 
-    db_provider = get_sync_provider()
-
     try:
         # Get master session to iterate through organizations
-        with db_provider.master_session() as master_session:
+        master_session_gen = acquire_master_session()
+        master_session = next(master_session_gen)
+
+        try:
             # Query all organizations
             from src.domain.models.master_tables.organisation import Organisation
 
@@ -78,7 +82,10 @@ def refresh_expiring_tokens_task(self, buffer_hours: int = 2):
                     logger.info(f"Processing integrations for org {org_id}")
 
                     # Get tenant session for this org
-                    with db_provider.tenant_session(org_id) as tenant_session:
+                    tenant_session_gen = acquire_org_session(org_id)
+                    tenant_session = next(tenant_session_gen)
+
+                    try:
                         # Run refresh for this org
                         import asyncio
 
@@ -102,6 +109,11 @@ def refresh_expiring_tokens_task(self, buffer_hours: int = 2):
                             f"{summary['failed_refreshes']} failed"
                         )
 
+                    finally:
+                        # Close tenant session
+                        with suppress(StopIteration):
+                            next(tenant_session_gen)
+
                 except Exception as e:
                     logger.error(
                         f"Failed to process integrations for org {org.organisation_id}: {str(e)}",
@@ -118,6 +130,11 @@ def refresh_expiring_tokens_task(self, buffer_hours: int = 2):
             )
 
             return total_summary
+
+        finally:
+            # Close master session
+            with suppress(StopIteration):
+                next(master_session_gen)
 
     except Exception as e:
         logger.error(f"Token refresh task failed: {str(e)}", exc_info=True)
@@ -162,17 +179,18 @@ def refresh_single_integration_task(self, organisation_id: str, integration_id: 
         f"Starting manual token refresh for integration {integration_id} in org {organisation_id}"
     )
 
-    db_provider = get_sync_provider()
-
     try:
         org_uuid = UUID(organisation_id)
         int_uuid = UUID(integration_id)
 
-        with db_provider.tenant_session(org_uuid) as session:
+        tenant_session_gen = acquire_org_session(org_uuid)
+        tenant_session = next(tenant_session_gen)
+
+        try:
             from src.service.integrations import NangoClient, TokenRefreshService
 
             nango = NangoClient()
-            service = TokenRefreshService(db_session=session, nango_client=nango)
+            service = TokenRefreshService(db_session=tenant_session, nango_client=nango)
 
             try:
                 # Get the integration
@@ -187,7 +205,7 @@ def refresh_single_integration_task(self, organisation_id: str, integration_id: 
                     )
                 )
 
-                result = session.execute(stmt)
+                result = tenant_session.execute(stmt)
                 integration = result.scalar_one_or_none()
 
                 if not integration:
@@ -214,6 +232,11 @@ def refresh_single_integration_task(self, organisation_id: str, integration_id: 
                 import asyncio
 
                 asyncio.run(nango.close())
+
+        finally:
+            # Close tenant session
+            with suppress(StopIteration):
+                next(tenant_session_gen)
 
     except Exception as e:
         logger.error(

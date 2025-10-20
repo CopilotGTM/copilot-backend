@@ -229,6 +229,7 @@ class NangoWebhookService:
             integration_id=str(integration.integration_id),
             category=category,
             provider=provider,
+            provider_config_key=provider_config_key,
             data_types=data_types,
             incremental=True,
             sync_name=payload.get("syncName"),
