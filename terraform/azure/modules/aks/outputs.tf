@@ -56,3 +56,48 @@ output "workload_identity_enabled" {
   description = "Whether workload identity is enabled for the AKS cluster."
   value       = azurerm_kubernetes_cluster.this.workload_identity_enabled
 }
+
+# GPU Node Pool Outputs
+output "gpu_node_pool_enabled" {
+  description = "Whether the GPU node pool is enabled and configured."
+  value       = var.enable_gpu_worker_pool
+}
+
+output "gpu_node_pool_name" {
+  description = "Name of the GPU node pool for knowledge workers."
+  value       = var.enable_gpu_worker_pool ? azurerm_kubernetes_cluster_node_pool.gpu[0].name : null
+}
+
+output "gpu_node_pool_id" {
+  description = "Azure resource ID of the GPU node pool."
+  value       = var.enable_gpu_worker_pool ? azurerm_kubernetes_cluster_node_pool.gpu[0].id : null
+}
+
+output "gpu_vm_size" {
+  description = "VM size/SKU configured for GPU nodes."
+  value       = var.enable_gpu_worker_pool ? var.gpu_vm_size : null
+}
+
+output "gpu_scaling_config" {
+  description = "Autoscaling configuration for the GPU node pool."
+  value = var.enable_gpu_worker_pool ? {
+    min_count      = var.gpu_min_count
+    max_count      = var.gpu_max_count
+    scale_to_zero  = var.gpu_min_count == 0
+    estimated_cost = {
+      idle_per_hour   = var.gpu_min_count == 0 ? "$0.00" : "$${var.gpu_min_count * 0.526}"
+      active_per_hour = "$${var.gpu_max_count * 0.526}"
+      monthly_max     = "$${var.gpu_max_count * 0.526 * 24 * 30}"
+    }
+  } : null
+}
+
+output "gpu_node_labels" {
+  description = "Kubernetes labels applied to GPU nodes."
+  value       = var.enable_gpu_worker_pool ? var.gpu_node_labels : null
+}
+
+output "gpu_node_taints" {
+  description = "Kubernetes taints applied to GPU nodes for workload isolation."
+  value       = var.enable_gpu_worker_pool ? var.gpu_node_taints : null
+}

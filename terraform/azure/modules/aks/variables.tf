@@ -69,3 +69,50 @@ variable "oidc_issuer_enabled" {
   type        = bool
   default     = true
 }
+
+# -----------------------------------------------------------------------------
+# Optional GPU (knowledge worker) node pool
+# -----------------------------------------------------------------------------
+variable "enable_gpu_worker_pool" {
+  description = "Whether to create a GPU node pool dedicated to knowledge workers (autoscaling 0->N)."
+  type        = bool
+  default     = false
+}
+
+variable "gpu_node_pool_name" {
+  description = "Name of the GPU node pool (must be 1-12 chars, lowercase letters & numbers)."
+  type        = string
+  default     = "kgpu"
+}
+
+variable "gpu_vm_size" {
+  description = "Azure VM size/SKU for GPU nodes (must be available in region)."
+  type        = string
+  default     = "Standard_NC4as_T4_v3"
+}
+
+variable "gpu_min_count" {
+  description = "Minimum number of GPU nodes (0 enables scale-to-zero)."
+  type        = number
+  default     = 0
+}
+
+variable "gpu_max_count" {
+  description = "Maximum number of GPU nodes to autoscale to."
+  type        = number
+  default     = 1
+}
+
+variable "gpu_node_labels" {
+  description = "Map of Kubernetes node labels to apply to the GPU node pool."
+  type        = map(string)
+  default     = {
+    "workload" = "knowledge-gpu"
+  }
+}
+
+variable "gpu_node_taints" {
+  description = "List of taints to apply to the GPU node pool to restrict scheduling."
+  type        = list(string)
+  default     = ["dedicated=gpu:NoSchedule"]
+}

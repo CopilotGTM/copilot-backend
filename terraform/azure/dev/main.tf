@@ -164,6 +164,13 @@ module "aks" {
   service_cidr         = var.aks_service_cidr
   dns_service_ip       = var.aks_dns_service_ip
   env                  = var.env
+  enable_gpu_worker_pool = var.enable_gpu_worker_pool
+  gpu_node_pool_name     = var.gpu_node_pool_name
+  gpu_vm_size            = var.gpu_vm_size
+  gpu_min_count          = var.gpu_min_count
+  gpu_max_count          = var.gpu_max_count
+  gpu_node_labels        = var.gpu_node_labels
+  gpu_node_taints        = var.gpu_node_taints
   depends_on           = [
     module.vnet,
     module.acr
@@ -564,6 +571,12 @@ resource "azuredevops_variable_group" "secrets" {
   variable {
     name  = "WORKLOAD_IDENTITY_WORKERS_TENANT_ID"
     value = data.azuread_client_config.current.tenant_id
+  }
+
+  variable {
+    name  = "NANGO_SECRET_KEY"
+    secret_value = var.nango_secret
+    is_secret    = true
   }
 }
 

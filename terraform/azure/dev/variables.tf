@@ -559,3 +559,59 @@ variable "keda_cooldown_period" {
   type        = number
   default     = 300
 }
+
+# -----------------------------------------------------------------
+# GPU Knowledge Worker Node Pool (AKS optional)
+# -----------------------------------------------------------------
+variable "enable_gpu_worker_pool" {
+  description = "Whether to create a dedicated GPU node pool for knowledge workers"
+  type        = bool
+  default     = false
+}
+
+variable "gpu_node_pool_name" {
+  description = "Name for the GPU node pool (1-12 chars)"
+  type        = string
+  default     = "kgpu"
+}
+
+variable "gpu_vm_size" {
+  description = "VM size for GPU nodes"
+  type        = string
+  default     = "Standard_NC4as_T4_v3"
+}
+
+variable "gpu_min_count" {
+  description = "Minimum GPU node count (0 for scale to zero if autoscaling is later enabled)"
+  type        = number
+  default     = 0
+}
+
+variable "gpu_max_count" {
+  description = "Maximum GPU node count (used only if autoscaling enabled in future)"
+  type        = number
+  default     = 1
+}
+
+variable "gpu_node_labels" {
+  description = "Map of node labels for GPU pool"
+  type        = map(string)
+  default     = {
+    workload = "knowledge-gpu"
+  }
+}
+
+variable "gpu_node_taints" {
+  description = "List of taints applied to GPU nodes"
+  type        = list(string)
+  default     = ["dedicated=gpu:NoSchedule"]
+}
+
+# -----------------------------------------------------------------
+# Nango Config 
+# ----------------------------------------------------------------
+variable "nango_secret" {
+  description = "Nango Secret Key"
+  type        = string
+  default     = ""
+}
