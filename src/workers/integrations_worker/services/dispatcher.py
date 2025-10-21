@@ -6,12 +6,14 @@ from uuid import UUID
 
 from sqlalchemy import select
 from src.api.dependencies.organisation_dependencies import acquire_org_async_session
-from src.domain.models.organisation_tables.sync import KnowledgeIntegration
+from src.domain.models.organisation_tables.sync import KnowledgeIntegration, SyncStatus
 from src.infra.config.nango_provider_mapping import to_nango_connect_integration_key
 from src.infra.utils.logger import get_logger
 from src.service.integrations import NangoClient
+from src.service.integrations.crm_sync_service import CRMSyncService
 
 from ..adapters.calendar_adapter import upsert_calendar
+from ..adapters.crm_adapter import sync_crm_data
 from ..models.sync_models import SyncItemResult, SyncJobRequest, SyncJobResult
 from ..providers.registry import get_fetcher
 from ..utils.dedupe import acquire_sync_lock
@@ -40,6 +42,8 @@ async def execute_sync(request: SyncJobRequest) -> dict[str, Any]:
         request.provider,
         request.data_types,
     )
+
+    crm_service: CRMSyncService | None = None
 
     try:
         # acquire_org_async_session returns an async generator, not a context manager
@@ -135,6 +139,28 @@ async def execute_sync(request: SyncJobRequest) -> dict[str, Any]:
                             count,
                         )
                         result.items[dt] = SyncItemResult(status="success", records_synced=count)
+                    elif request.category == "crm":
+                        if crm_service is None:
+                            crm_service = CRMSyncService(session, org_id)
+                        metrics = await sync_crm_data(
+                            service=crm_service,
+                            integration=integration,
+                            data_type=dt,
+                            records=records,
+                            provider=request.provider,
+                        )
+                        records_synced = metrics.get("records_synced")
+                        if records_synced is None:
+                            records_synced = metrics.get("deals") or len(records)
+                        logger.info(
+                            "CRM sync completed for data_type=%s: %s",
+                            dt,
+                            metrics,
+                        )
+                        result.items[dt] = SyncItemResult(
+                            status="success", records_synced=records_synced
+                        )
+                        result.extra.setdefault("crm", {})[dt] = metrics
                     else:
                         logger.warning("Unsupported category: %s", request.category)
                         result.items[dt] = SyncItemResult(
@@ -153,6 +179,19 @@ async def execute_sync(request: SyncJobRequest) -> dict[str, Any]:
                         reason="sync_error",
                         error=str(e),
                     )
+
+            if crm_service:
+                await _finalize_crm_service(crm_service, result)
+
+            if any(item.status == "failed" for item in result.items.values()):
+                result.status = "failed"
+            elif any(
+                item.status not in {"success", "ignored", "skipped"}
+                for item in result.items.values()
+            ):
+                result.status = "partial"
+            elif result.items and all(item.status == "success" for item in result.items.values()):
+                result.status = "success"
 
             # Log summary
             success_count = sum(1 for item in result.items.values() if item.status == "success")
@@ -178,6 +217,10 @@ async def execute_sync(request: SyncJobRequest) -> dict[str, Any]:
                 await anext(session_gen)
 
     except Exception as e:
+        # If CRM service was initialized before failure, attempt to mark failed
+        if crm_service:
+            with suppress(Exception):
+                await crm_service.finalize_sync(SyncStatus.FAILED, str(e))
         logger.error(
             "Sync job failed: org=%s integration=%s error=%s",
             request.organisation_id,
@@ -188,3 +231,18 @@ async def execute_sync(request: SyncJobRequest) -> dict[str, Any]:
         return SyncJobResult(
             status="failed", extra={"error": str(e), "error_type": type(e).__name__}
         ).to_dict()
+
+
+async def _finalize_crm_service(service: CRMSyncService, result: SyncJobResult) -> None:
+    statuses = list(result.items.values())
+    failed = next((item for item in statuses if item.status == "failed"), None)
+    if failed:
+        await service.finalize_sync(SyncStatus.FAILED, failed.error or failed.reason)
+        return
+
+    partial = any(item.status not in {"success", "ignored", "skipped"} for item in statuses)
+    if partial:
+        await service.finalize_sync(SyncStatus.PARTIAL, None)
+        return
+
+    await service.finalize_sync(SyncStatus.SUCCESS, None)

@@ -36,7 +36,7 @@ class NangoWebhookService:
 
     async def handle_webhook(self, payload: dict[str, Any], signature: str | None) -> Response:
         try:
-            logger.info("NANGO WEBHOOK RECEIVED")
+            logger.info("********************* NANGO WEBHOOK RECEIVED *************************")
             logger.info(
                 "Connection ID: %s, Webhook Type: %s , Provider Config Key: %s",
                 payload.get("connectionId"),
@@ -82,6 +82,7 @@ class NangoWebhookService:
 
     @staticmethod
     def _is_valid_signature(signature: str | None, payload: dict[str, Any]) -> bool:
+        """Validate webhook signature using Nango client utility."""
         if NangoClient.verify_webhook_signature(signature, payload):
             return True
         logger.error("Invalid webhook signature. Header: %s", signature)
@@ -89,11 +90,13 @@ class NangoWebhookService:
 
     @staticmethod
     def _enum_value(value: Any) -> Any:
+        """Get the enum value or return the original value."""
         return value.value if isinstance(value, Enum) else value
 
     async def _get_connection_mapping(
         self, connection_uuid: UUID
     ) -> OrganisationIntegrationDetails | None:
+        """Get OrganisationIntegrationDetails mapping for a given connection UUID."""
         async for master_session in acquire_master_async_session():
             stmt = select(OrganisationIntegrationDetails).where(
                 OrganisationIntegrationDetails.connection_id == connection_uuid
@@ -261,7 +264,7 @@ class NangoWebhookService:
 
         org_id_nango = await self._fetch_org_id_from_nango(connection_id, provider_config_key)
 
-        if org_id_nango and org_id_str and org_id_nango != org_id_str:
+        if not org_id_nango or not org_id_str or org_id_nango != org_id_str:
             logger.warning(
                 "Organisation ID mismatch for connection %s: mapping=%s, nango=%s",
                 connection_id,
@@ -296,6 +299,8 @@ class NangoWebhookService:
     def _determine_sync_data_types(category: str, sync_name: Any) -> list[str]:
         if category == "calendar":
             return ["events"]
+        if category == "crm":
+            return ["pipelines", "deals"]
         if isinstance(sync_name, str) and sync_name.strip():
             return [sync_name]
         return []
@@ -599,24 +604,23 @@ class NangoWebhookService:
                 or nango_connection.get("metadata")
                 or {}
             )
-            end_user = nango_connection.get("end_user", {})
 
-            logger.info("Connection metadata: %s", connection_metadata)
-            logger.info("End user data: %s", end_user)
+            integration_email = self._extract_email_from_connection(nango_connection)
 
-            integration_email = self._extract_integration_email(
-                integration_type, connection_metadata
-            )
-
-            if not integration_email and isinstance(end_user, dict):
-                integration_email = end_user.get("email")
-                logger.info("Email extracted from end_user: %s", integration_email)
+            if not integration_email:
+                integration_email = await self._fetch_email_via_nango_proxy(
+                    nango=nango,
+                    provider_config_key=provider_config_key,
+                    connection_id=connection_id,
+                    nango_connection=nango_connection,
+                )
 
             type_key = self._enum_value(integration_type)
             logger.info(
-                "Final extracted integration_email='%s' from %s connection",
+                "Extracted integration_email='%s' from %s Nango connection (connection_id=%s)",
                 integration_email,
                 type_key,
+                connection_id,
             )
 
             return connection_metadata, integration_email
@@ -631,52 +635,151 @@ class NangoWebhookService:
             return {}, None
 
     @staticmethod
-    def _extract_integration_email(
-        integration_type: IntegrationType, connection_metadata: dict[str, Any]
-    ) -> str | None:
-        type_key = NangoWebhookService._enum_value(integration_type)
-        logger.info(
-            "Extracting email for %s from metadata keys: %s",
-            type_key,
-            list(connection_metadata.keys()),
+    def _extract_email_from_connection(nango_connection: dict[str, Any]) -> str | None:
+        """Extract email directly from Nango connection payload (metadata/account_id/credentials)."""
+        if not isinstance(nango_connection, dict):
+            return None
+
+        for end_user_key in ["end_user", "endUser"]:
+            end_user = nango_connection.get(end_user_key)
+            if isinstance(end_user, dict):
+                email = end_user.get("email") or end_user.get("user_email")
+                if isinstance(email, str) and "@" in email:
+                    return email
+                profile = end_user.get("profile")
+                if isinstance(profile, dict):
+                    profile_email = profile.get("email")
+                    if isinstance(profile_email, str) and "@" in profile_email:
+                        return profile_email
+
+        metadata = (
+            nango_connection.get("connection_metadata") or nango_connection.get("metadata") or {}
         )
+        if isinstance(metadata, dict):
+            for key in [
+                "email",
+                "user_email",
+                "userPrincipalName",
+                "username",
+                "login",
+                "user",
+            ]:
+                value = metadata.get(key)
+                if isinstance(value, str) and "@" in value:
+                    return value
 
-        if integration_type in [
-            IntegrationType.GOOGLE_DRIVE,
-            IntegrationType.GOOGLE_CALENDAR,
-        ]:
-            email = connection_metadata.get("email") or connection_metadata.get("user_email")
-            logger.info("Google service email extraction: %s", email)
-            return email
+            for nested_key in ["user", "profile", "owner"]:
+                nested = metadata.get(nested_key)
+                if isinstance(nested, dict):
+                    email = nested.get("email")
+                    if isinstance(email, str) and "@" in email:
+                        return email
 
-        if integration_type == IntegrationType.HUBSPOT:
-            return connection_metadata.get("user") or connection_metadata.get("hub_email")
+        account_id = nango_connection.get("account_id")
+        if isinstance(account_id, str) and "@" in account_id:
+            return account_id
 
-        if integration_type == IntegrationType.SLACK:
-            user_info = connection_metadata.get("user", {})
-            return user_info.get("email") if isinstance(user_info, dict) else None
+        credentials = nango_connection.get("credentials")
+        if isinstance(credentials, dict):
+            raw = credentials.get("raw")
+            if isinstance(raw, dict):
+                for key in ["email", "user", "user_email", "login"]:
+                    value = raw.get(key)
+                    if isinstance(value, str) and "@" in value:
+                        return value
 
-        if integration_type == IntegrationType.SALESFORCE:
-            return connection_metadata.get("email") or connection_metadata.get("username")
+                authed_user = raw.get("authed_user")
+                if isinstance(authed_user, dict):
+                    email = authed_user.get("email")
+                    if isinstance(email, str) and "@" in email:
+                        return email
 
-        if integration_type in [
-            IntegrationType.SHAREPOINT,
-            IntegrationType.ONEDRIVE,
-            IntegrationType.OUTLOOK_CALENDAR,
-        ]:
-            return connection_metadata.get("email") or connection_metadata.get("userPrincipalName")
+        return None
 
-        if integration_type == IntegrationType.CALENDLY:
-            user_info = connection_metadata.get("user", {})
-            return (
-                user_info.get("email")
-                if isinstance(user_info, dict)
-                else connection_metadata.get("email")
+    @staticmethod
+    async def _fetch_email_via_nango_proxy(
+        nango: NangoClient,
+        provider_config_key: str,
+        connection_id: str,
+        nango_connection: dict[str, Any],
+    ) -> str | None:
+        """Fetch provider account email via Nango proxy for providers that require an extra API call."""
+        try:
+            credentials = nango_connection.get("credentials", {})
+            access_token = credentials.get("access_token")
+
+            if not access_token:
+                logger.warning(
+                    "No access token available for %s email fetch via proxy",
+                    provider_config_key,
+                )
+                return None
+
+            provider_configs: dict[str, dict[str, Any]] = {
+                "hubspot": {
+                    "endpoint": f"/oauth/v1/access-tokens/{access_token}",
+                    "email_field": "user",
+                },
+                "google": {
+                    "endpoint": "/oauth2/v3/userinfo",
+                    "email_field": "email",
+                },
+                "slack": {
+                    "endpoint": "/api/users.identity",
+                    "email_field": "user.email",
+                },
+            }
+
+            config = provider_configs.get(provider_config_key)
+            if not config:
+                logger.debug("No email fetch endpoint configured for %s", provider_config_key)
+                return None
+
+            endpoint = config["endpoint"]
+            email_field = config["email_field"]
+            params = config.get("params")
+            method = config.get("method", "GET")
+
+            response = await nango.proxy_request(
+                provider_config_key=provider_config_key,
+                connection_id=connection_id,
+                endpoint=endpoint,
+                method=method,
+                params=params,
             )
 
-        email = connection_metadata.get("email")
-        logger.info("Generic fallback email extraction: %s", email)
-        return email
+            user_email: Any = response
+            for part in email_field.split("."):
+                if isinstance(user_email, dict):
+                    user_email = user_email.get(part)
+                else:
+                    user_email = None
+                    break
+
+            if isinstance(user_email, str) and "@" in user_email:
+                logger.info(
+                    "Fetched %s email via Nango proxy: %s",
+                    provider_config_key,
+                    user_email,
+                )
+                return user_email
+
+            logger.warning(
+                "%s proxy response missing '%s' field: %s",
+                provider_config_key,
+                email_field,
+                response,
+            )
+            return None
+
+        except Exception as exc:
+            logger.error(
+                "Failed to fetch %s email via Nango proxy: %s",
+                provider_config_key,
+                exc,
+                exc_info=True,
+            )
+            return None
 
 
 # Convenience singleton

@@ -4,6 +4,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import CheckConstraint, Column, DateTime, Index, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, Relationship, SQLModel
+from src.domain.models.organisation_tables.base_mixins import utcnow
 from src.domain.models.organisation_tables.sync.base import SyncedRecordMixin
 
 
@@ -16,6 +17,20 @@ class CalendarEvent(SyncedRecordMixin, table=True):
     )
 
     event_id: UUID = Field(default_factory=uuid4, primary_key=True)
+    external_id: str = Field(sa_column=Column(String(255), nullable=False))
+    data_payload: dict | None = Field(default=None, sa_column=Column(JSONB))
+    synced_at: datetime = Field(
+        default_factory=utcnow,
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+    source_modified_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
+    last_seen_at: datetime | None = Field(
+        default_factory=utcnow,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
     organiser_email: str | None = Field(default=None, index=True)
     organiser_name: str | None = Field(default=None)
     calendar_external_id: str | None = Field(default=None, index=True)

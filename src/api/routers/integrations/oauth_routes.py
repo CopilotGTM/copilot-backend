@@ -62,16 +62,6 @@ async def initiate_oauth_flow(
     user_ids: UserIDs = Depends(get_current_user),
     user: User = Depends(user_auth),
 ) -> GenericResponse[OAuthInitiateResponse]:
-    """
-    Create a Nango Connect Session for OAuth authorization.
-
-    New Flow (Post July 31, 2025):
-    1. Backend creates a Connect Session and returns session token
-    2. Frontend uses session token with Nango Connect UI
-    3. Nango sends webhook to backend with connection_id after successful auth
-
-    OAuth scopes are automatically determined from integration metadata configuration.
-    """
     try:
         response_data = await oauth_service.create_connect_session(
             user_ids=user_ids,
@@ -131,11 +121,12 @@ async def initiate_oauth_flow(
 @router.delete(
     "/disconnect/{integration_id}",
     response_model=GenericResponse[None],
-    summary="Disconnect and delete an integration",
+    summary="Disconnect and deactivate an integration",
     description="""
-    Revokes OAuth tokens and deletes the integration.
+    Revokes OAuth tokens and marks the integration as inactive.
 
-    **Warning:** This action is irreversible. All sync history will be deleted.
+    The integration will no longer appear in active integration lists or be used for syncing.
+    Historical sync data is preserved for audit purposes.
     """,
 )
 async def disconnect_integration(
@@ -143,14 +134,6 @@ async def disconnect_integration(
     session: AsyncSession = Depends(get_org_async_session),
     user_ids: UserIDs = Depends(get_current_user),
 ) -> GenericResponse[None]:
-    """
-    Disconnect integration and revoke tokens.
-
-    This will:
-    1. Delete the connection from Nango (revoke tokens)
-    2. Delete the integration record from database
-    3. Cascade delete all sync history
-    """
     try:
         nango = NangoClient()
         integration_service = IntegrationService(
@@ -186,9 +169,13 @@ async def disconnect_integration(
             integration_id=integration_id,
         )
 
-        logger.info(f"Disconnected integration {integration_id} for org {user_ids.organisation_id}")
+        logger.info(
+            f"Disconnected and deactivated integration {integration_id} for org {user_ids.organisation_id}"
+        )
 
-        return Response.success_response(message="Integration disconnected successfully", data=None)
+        return Response.success_response(
+            message="Integration disconnected and marked as inactive successfully", data=None
+        )
 
     except ValueError as e:
         logger.warning(
@@ -234,20 +221,5 @@ async def handle_nango_webhook(
     request: Request,
     x_nango_signature: str = Header(None, alias="X-Nango-Signature"),
 ) -> Response:
-    """
-    Handle webhook notifications from Nango after successful OAuth authorization.
-
-    This endpoint is called by Nango's servers (not by frontend) after a user
-    completes the OAuth flow. It creates the integration record in our database.
-
-    **Security**:
-    - Does NOT use our JWT authentication (Nango doesn't have our tokens)
-    - Instead verifies X-Nango-Signature header using HMAC-SHA256
-    - Webhook secret must be configured in environment variables
-
-    **Data Flow**:
-    - organization_id is extracted from the webhook payload (endUser.tags.organizationId)
-    - Database session is created using that organization_id
-    """
     payload = await request.json()
     return await webhook_service.handle_webhook(payload, x_nango_signature)

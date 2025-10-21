@@ -174,9 +174,11 @@ async def get_integration(
 
         response_data = IntegrationResponse.model_validate(integration)
 
-        return Response.success_response(
-            message="Integration details retrieved successfully", data=response_data
-        )
+        message = "Integration details retrieved successfully"
+        if not integration.is_active:
+            message = "Integration details retrieved (Note: Integration is inactive/disconnected)"
+
+        return Response.success_response(message=message, data=response_data)
 
     except Exception as e:
         logger.error(
@@ -238,15 +240,21 @@ async def check_integration_status(
             integration_id=integration.integration_id,
             name=integration.name,
             integration_type=integration.integration_type,
+            integration_scope=integration.integration_scope,
+            created_by_user_id=integration.created_by_user_id,
+            created_by_admin=integration.created_by_admin,
+            integration_email=integration.integration_email,
             is_active=integration.is_active,
             last_synced_at=integration.last_synced_at,
             last_sync_status=integration.last_sync_status,
             needs_reauthorization=needs_reauth,
         )
 
-        return Response.success_response(
-            message="Integration status retrieved successfully", data=response_data
-        )
+        message = "Integration status retrieved successfully"
+        if not integration.is_active:
+            message = "Integration status retrieved (Note: Integration is inactive/disconnected)"
+
+        return Response.success_response(message=message, data=response_data)
 
     except Exception as e:
         logger.error(

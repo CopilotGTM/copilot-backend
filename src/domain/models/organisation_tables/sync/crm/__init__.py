@@ -1,6 +1,21 @@
-"""CRM synced data tables placeholder.
+from .deals import (
+    CRMDeal,
+    CRMDealParticipant,
+    CRMDealStage,
+    CRMDealStageHistory,
+    CRMDealStatus,
+    CRMParticipantType,
+    CRMPipeline,
+    CRMStageState,
+)
 
-Detailed CRM models will be added in future iterations.
-"""
-
-__all__: list[str] = []
+__all__ = [
+    "CRMPipeline",
+    "CRMDealStage",
+    "CRMDeal",
+    "CRMDealParticipant",
+    "CRMDealStageHistory",
+    "CRMDealStatus",
+    "CRMParticipantType",
+    "CRMStageState",
+]

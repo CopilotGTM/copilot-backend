@@ -246,7 +246,7 @@ class IntegrationService:
     async def list_integrations(
         self,
         integration_type: IntegrationType | None = None,
-        is_active: bool | None = None,
+        is_active: bool | None = True,
         user_id: UUID | None = None,
         include_user_scoped: bool = True,
     ) -> list[KnowledgeIntegration]:
@@ -255,7 +255,7 @@ class IntegrationService:
 
         Args:
             integration_type: Optional filter by integration type
-            is_active: Optional filter by active status
+            is_active: Filter by active status (default: True = only active integrations)
             user_id: If provided, includes user-scoped integrations created by this user
             include_user_scoped: Whether to include user-scoped integrations
 
@@ -289,6 +289,7 @@ class IntegrationService:
         if integration_type:
             statement = statement.where(KnowledgeIntegration.integration_type == integration_type)
 
+        # Default to only active integrations unless explicitly requested otherwise
         if is_active is not None:
             statement = statement.where(KnowledgeIntegration.is_active == is_active)
 
@@ -372,13 +373,13 @@ class IntegrationService:
         integration_id: UUID,
     ) -> bool:
         """
-        Delete an integration and revoke Nango connection.
+        Soft-delete an integration by marking it as inactive and revoking Nango connection.
 
         Args:
             integration_id: Integration UUID
 
         Returns:
-            True if deletion was successful
+            True if soft deletion was successful
 
         Raises:
             ValueError: If integration not found
@@ -402,14 +403,18 @@ class IntegrationService:
             logger.info(f"Successfully revoked Nango connection for integration {integration_id}")
         except NangoConnectionError as e:
             logger.warning(
-                f"Failed to delete Nango connection: {str(e)}. Proceeding with database deletion."
+                f"Failed to delete Nango connection: {str(e)}. Proceeding with soft deletion."
             )
 
-        # Delete from database (cascade will handle sync history)
-        await self.db.delete(integration)
+        # Soft delete: mark as inactive
+        integration.is_active = False
+        integration.last_sync_error = "Integration disconnected by user"
+        self.db.add(integration)
         await self.db.commit()
 
-        logger.info(f"Deleted integration {integration_id} for org {self.organisation_id}")
+        logger.info(
+            f"Soft-deleted integration {integration_id} for org {self.organisation_id} (marked as inactive)"
+        )
         return True
 
     async def check_and_refresh_token(
