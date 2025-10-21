@@ -20,7 +20,7 @@ spec:
           name: {{ .Values.networkPolicy.monitoringNamespace | default "monitoring" }}
     ports:
     - protocol: TCP
-      port: 80
+      port: 8080
   # Allow health checks from same namespace (internal cluster services)
   - from:
     - namespaceSelector:
@@ -28,7 +28,7 @@ spec:
           name: {{ .Values.namespace }}
     ports:
     - protocol: TCP
-      port: 80
+      port: 8080
   # Allow health checks from ingress controller
   - from:
     - namespaceSelector:
@@ -36,5 +36,5 @@ spec:
           name: ingress-nginx
     ports:
     - protocol: TCP
-      port: 80
+      port: 8080
 {{- end }}

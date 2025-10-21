@@ -15,7 +15,7 @@ spec:
   type: {{ .Values.internalService.type }}
   ports:
     - port: {{ .Values.internalService.port }}
-      targetPort: 80
+      targetPort: 8080
       protocol: TCP
       name: internal-health
   selector:

@@ -16,7 +16,7 @@ api:
   annotations:
     prometheus.io/scrape: "true"
     prometheus.io/path: "/metrics"
-    prometheus.io/port: "80"
+    prometheus.io/port: "8080"
 
   # Add any custom labels for this specific service here
   labels:
@@ -33,7 +33,7 @@ api:
 
   service:
     type: ClusterIP
-    port: 80
+    port: 8080
 
   ingress:
     enabled: true
@@ -109,39 +109,38 @@ knowledge-extract-worker:
     queueName: "knowledge_extract"
     concurrency: 1
 
-  # GPU Node Pool Configuration
-  # Targets dedicated GPU node pool (kgpu) with NVIDIA Tesla T4 GPU
-  # Node pool specs: Standard_NC4as_T4_v3 (4 vCPU, 28GB RAM, 1x T4 GPU)
+  # High-Compute CPU Node Pool Configuration
+  # Targets dedicated CPU node pool (kgpu) with high-compute resources
+  # Node pool specs: Standard_D8s_v3 (8 vCPU, 32GB RAM)
+  # Note: Despite the name "kgpu", this is now a CPU-only node pool
   gpu:
     enabled: true
-    # Node selector to target GPU node pool
+    # Node selector to target dedicated node pool
     nodeSelector:
       workload: knowledge-gpu
-    # Tolerations to allow scheduling on tainted GPU nodes
+    # Tolerations to allow scheduling on tainted nodes
     tolerations:
     - key: dedicated
       operator: Equal
       value: gpu
       effect: NoSchedule
 
-  # GPU Resource Requests and Limits
+  # High-Compute CPU Resource Requests and Limits
   # Request most of the node's capacity to maximize utilization
   resources:
     requests:
-      nvidia.com/gpu: 1      # Request 1 Tesla T4 GPU
-      cpu: "2000m"           # Reserve 2 vCPU (of 4 available)
-      memory: "16Gi"         # Reserve 16GB RAM (of 28GB available)
+      cpu: "7"              # Reserve 7 vCPU (of 8 available)
+      memory: "28Gi"        # Reserve 28GB RAM (of 32GB available)
     limits:
-      nvidia.com/gpu: 1      # Request 1 Tesla T4 GPU
-      cpu: "3500m"           # Allow burst to 3.5 vCPU
-      memory: "24Gi"         # Allow burst to 24GB RAM
+      cpu: "8"              # Allow burst to full 8 vCPU
+      memory: "30Gi"        # Allow burst to full 30GB RAM
 
   # KEDA Autoscaling Configuration
-  # Note: Cold start from scale-to-zero takes 3-5 minutes for GPU node provisioning
+  # Note: Cold start from scale-to-zero takes 2-3 minutes for node provisioning
   autoscaling:
     enabled: true
     minReplicas: 0           # Scale to zero when idle (cost optimization)
-    maxReplicas: 1           # Single GPU node limit (can be increased if needed)
+    maxReplicas: 1           # Single node limit (can be increased if needed)
     queueLength: 1           # Scale up when 1+ tasks in queue
     scaleDownDelay: 600      # Wait 10 minutes before scaling down (node deprovisioning)
     scaleUpDelay: 10         # Check queue every 10 seconds
