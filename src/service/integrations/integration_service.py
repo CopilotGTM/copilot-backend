@@ -15,7 +15,9 @@ from src.domain.models.organisation_tables.sync import (
     IntegrationType,
     KnowledgeIntegration,
 )
-from src.infra.config.nango_provider_mapping import to_nango_provider_key
+from src.infra.config.nango_provider_mapping import (
+    to_nango_connect_integration_key,
+)
 
 from .nango_client import NangoClient, NangoConnectionError
 
@@ -98,18 +100,22 @@ class IntegrationService:
     @staticmethod
     def _provider_from_type(integration_type: IntegrationType | str) -> str:
         """
-        Convert IntegrationType enum or string to Nango provider key.
+        Convert IntegrationType enum or string to Nango provider key for connection operations.
+
+        For delete operations, we use the Connect integration key (not the provider key)
+        because that's what was used during connection creation.
 
         Args:
             integration_type: The integration type enum or string
 
         Returns:
-            Nango provider key string (e.g., 'hubspot', 'salesforce')
+            Nango provider config key string (e.g., 'google-calendar-getting-started', 'hubspot')
         """
         # Convert string to enum if needed
         if isinstance(integration_type, str):
             integration_type = IntegrationType(integration_type)
-        return to_nango_provider_key(integration_type)
+        # Use Connect integration key for connection operations (create/delete)
+        return to_nango_connect_integration_key(integration_type)
 
     async def delete_integration_from_nango(
         self,

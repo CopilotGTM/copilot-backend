@@ -264,7 +264,7 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
     IntegrationType.ONEDRIVE: IntegrationMetadata(
         name="OneDrive",
         description="Sync documents and files from Microsoft OneDrive",
-        logo_url="https://upload.wikimedia.org/wikipedia/commons/3/3c/Microsoft_Office_OneDrive_%282019%E2%80%93present%29.svg",
+        logo_url="https://img-prod-cms-rt-microsoft-com.akamaized.net/cms/api/am/imageFileData/RE1Mu3b?ver=5c31",
         category="storage",
         category_name=IntegrationCategory.STORAGE,
         availability_status=AvailabilityStatus.COMING_SOON,
