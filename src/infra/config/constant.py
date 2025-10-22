@@ -166,3 +166,5 @@ class IntegrationErrors:
     INVALID_CONNECTION_ID = "Invalid connection ID format"
     TOKEN_REFRESH_FAILED = "Failed to refresh integration token"
     SYNC_TRIGGER_FAILED = "Failed to trigger data sync"
+    INTEGRATION_ACCESS_DENIED = "You don't have permission to access this integration"
+    INTEGRATION_DATA_ACCESS_FAILED = "Failed to retrieve integration data"
