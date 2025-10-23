@@ -283,7 +283,33 @@ async def handle_nango_webhook(
             case "auth":
                 return await webhook_service._handle_authorization_webhook(payload)
             case "sync":
-                return await webhook_service._handle_sync_webhook(payload)
+                # Validate required fields
+                if not payload.get("connectionId") or not payload.get("providerConfigKey"):
+                    logger.error(
+                        "Sync webhook missing connectionId or providerConfigKey: %s", payload
+                    )
+                    return Response.bad_request_response(
+                        message="Missing connectionId or providerConfigKey in sync webhook."
+                    )
+
+                # Fetch mapping details
+                mapping_details = await webhook_service._get_connection_mapping(
+                    UUID(payload.get("connectionId"))
+                )
+                if not mapping_details:
+                    logger.error(
+                        "Sync webhook: mapping not found for connection %s",
+                        payload.get("connectionId"),
+                    )
+                    return Response.bad_request_response(
+                        message="Mapping not found for connection.", data=None
+                    )
+
+                return await webhook_service._handle_sync_webhook(
+                    payload,
+                    organisation_id=mapping_details.organisation_id,
+                    integration_id=mapping_details.integration_id,
+                )
             case _:
                 logger.error("Received unknown Nango webhook type: %s", webhook_type)
                 return Response.bad_request_response(message="Unknown webhook type.")

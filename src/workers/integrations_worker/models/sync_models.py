@@ -2,18 +2,20 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from typing import Any
+from uuid import UUID
 
 
 @dataclass
 class SyncJobRequest:
-    organisation_id: str
-    integration_id: str
+    organisation_id: UUID
+    integration_id: UUID
     category: str
     provider: str
-    data_types: list[str]
     provider_config_key: str | None = None
     incremental: bool = True
     sync_name: str | None = None
+    sync_type: str | None = None
+    sync_variant: str | None = None
 
 
 @dataclass

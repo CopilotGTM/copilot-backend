@@ -104,162 +104,75 @@ class NangoWebhookService:
             await master_session.commit()
             return
 
-    async def _fetch_org_id_from_nango(
-        self, connection_id: str, provider_config_key: str
-    ) -> str | None:
-        nango = NangoClient()
-        try:
-            nango_connection = await nango.get_connection(
-                provider=provider_config_key, connection_id=connection_id
-            )
-        finally:
-            await nango.close()
+    async def _handle_sync_webhook(
+        self, payload: dict[str, Any], organisation_id: UUID, integration_id: UUID
+    ) -> Response:
+        """
+        Handle sync webhook - triggers data sync for the given connection.
+        Args:
+            payload: The webhook payload containing connection details.
+        Returns:
+            Response indicating acceptance of the sync webhook.
+        """
 
-        if not isinstance(nango_connection, dict):
-            return None
-
-        end_user = nango_connection.get("end_user", {})
-        if not isinstance(end_user, dict):
-            return None
-
-        tags = end_user.get("tags", {})
-        if not isinstance(tags, dict):
-            return None
-
-        org_id_str = tags.get("organizationId") or tags.get("organisationId")
-        if org_id_str:
-            logger.info(
-                "Derived organisation %s from Nango connection %s via tags",
-                org_id_str,
-                connection_id,
-            )
-        return org_id_str
-
-    async def _handle_sync_webhook(self, payload: dict[str, Any]) -> Response:
+        # Extract necessary fields from payload
         connection_id = payload.get("connectionId")
         provider_config_key = payload.get("providerConfigKey")
+        logger.info("Processing sync webhook: %s", payload)
 
-        if not connection_id or not provider_config_key:
-            logger.error("Sync webhook missing required fields: %s", payload)
-            return Response.bad_request_error_response(
-                message="Missing required fields: connectionId or providerConfigKey"
+        # Validate required fields
+        integration: KnowledgeIntegration | None = None
+        async for org_session in acquire_org_async_session(organisation_id):
+            stmt = select(KnowledgeIntegration).where(
+                KnowledgeIntegration.connection_id == connection_id
             )
+            result = await org_session.execute(stmt)
+            integration = result.scalars().first()
+            if not integration:
+                logger.error(
+                    "No integration found for sync webhook: connection %s, integration %s",
+                    connection_id,
+                    integration_id,
+                )
+                return Response.bad_request_error_response(
+                    message="No matching integration found for sync webhook"
+                )
 
-        try:
-            org_id_str, integration = await self._resolve_integration_for_sync(
-                connection_id, provider_config_key
-            )
-        except Exception as exc:
-            logger.error(
-                "Sync webhook: failed to resolve integration for connection %s: %s",
-                connection_id,
-                str(exc),
-                exc_info=True,
-            )
-            return Response.success_response(message=SYNC_WEBHOOK_ACCEPTED_MSG, data=None)
-
-        if not org_id_str:
-            logger.error("Sync webhook: organisation not found for connection %s", connection_id)
-            return Response.success_response(message=SYNC_WEBHOOK_ACCEPTED_MSG, data=None)
-
-        if not integration:
-            logger.warning(
-                "Sync webhook: integration not found for connection %s (org=%s)",
-                connection_id,
-                org_id_str,
-            )
-            return Response.success_response(message=SYNC_WEBHOOK_ACCEPTED_MSG, data=None)
-
+        # Resolve Category and provider of the sync request
         category, provider = categorize_integration_type(integration.integration_type)
-        data_types = self._determine_sync_data_types(category, payload.get("syncName"))
+        logger.info(
+            "Sync webhook: resolved category=%s, provider=%s for integration %s",
+            category,
+            provider,
+            integration.integration_id,
+        )
 
-        if not data_types:
-            logger.info(
-                "Sync webhook: no data types determined for integration %s (category=%s)",
-                integration.integration_id,
-                category,
-            )
-            return Response.success_response(message=SYNC_WEBHOOK_ACCEPTED_MSG, data=None)
+        # Resolve organisation ID and validate mapping
+        sync_name = payload.get("syncName")
+        sync_type = payload.get("syncType")
+        sync_variant = payload.get("syncVariant")
+        logger.info(
+            "Sync webhook: determined data types %s for integration %s (category=%s)",
+            [sync_name, sync_type, sync_variant],
+            integration.integration_id,
+            category,
+        )
 
+        # Import here to avoid circular import
         from src.workers.integrations_worker.tasks.sync_tasks import sync_integration_data_task
 
         sync_integration_data_task.delay(
-            organisation_id=org_id_str,
+            organisation_id=str(organisation_id),
             integration_id=str(integration.integration_id),
             category=category,
             provider=provider,
             provider_config_key=provider_config_key,
-            data_types=data_types,
+            sync_name=sync_name,
+            sync_type=sync_type,
+            sync_variant=sync_variant,
             incremental=True,
-            sync_name=payload.get("syncName"),
-        )
-
-        logger.info(
-            "Sync webhook enqueued: org=%s int=%s cat=%s prov=%s types=%s",
-            org_id_str,
-            integration.integration_id,
-            category,
-            provider,
-            data_types,
         )
         return Response.success_response(message=SYNC_WEBHOOK_ACCEPTED_MSG, data=None)
-
-    async def _resolve_integration_for_sync(
-        self, connection_id: str, provider_config_key: str
-    ) -> tuple[str | None, KnowledgeIntegration | None]:
-        try:
-            connection_uuid = UUID(connection_id)
-        except ValueError:
-            logger.error("Invalid connection_id received: %s", connection_id)
-            return None, None
-
-        mapping = await self._get_connection_mapping(connection_uuid)
-
-        org_id_str = str(mapping.organisation_id) if mapping else None
-        mapped_integration_id = mapping.integration_id if mapping else None
-
-        org_id_nango = await self._fetch_org_id_from_nango(connection_id, provider_config_key)
-
-        if not org_id_nango or not org_id_str or org_id_nango != org_id_str:
-            logger.warning(
-                "Organisation ID mismatch for connection %s: mapping=%s, nango=%s",
-                connection_id,
-                org_id_str,
-                org_id_nango,
-            )
-            return None, None
-
-        integration: KnowledgeIntegration | None = None
-        async for org_session in acquire_org_async_session(UUID(org_id_str)):
-            stmt = select(KnowledgeIntegration).where(
-                KnowledgeIntegration.connection_id == connection_id
-            )
-            if mapped_integration_id:
-                stmt = stmt.where(KnowledgeIntegration.integration_id == mapped_integration_id)
-            result = await org_session.execute(stmt)
-            integration = result.scalars().first()
-            if integration:
-                break
-
-        if integration:
-            await self._upsert_connection_mapping(
-                connection_uuid,
-                integration.organisation_id,
-                integration.integration_id,
-                provider_config_key,
-            )
-
-        return org_id_str, integration
-
-    @staticmethod
-    def _determine_sync_data_types(category: str, sync_name: Any) -> list[str]:
-        if category == "calendar":
-            return ["events"]
-        if category == "crm":
-            return ["pipelines", "deals"]
-        if isinstance(sync_name, str) and sync_name.strip():
-            return [sync_name]
-        return []
 
     async def _handle_authorization_webhook(self, payload: dict[str, Any]) -> Response:
         """Handle authorization webhook - delegates to create or update flow."""

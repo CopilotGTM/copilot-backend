@@ -91,6 +91,7 @@ async def fetch_deals(
     data_type: str | None = None,
     provider_config_key: str | None = None,
 ) -> list[dict[str, Any]]:
+    """Fetch deals from HubSpot CRM via Nango proxy."""
     del data_type
     provider = _provider_key(provider_config_key)
     if not is_initial and last_synced_at:
@@ -115,7 +116,7 @@ async def _list_all_deals(
 ) -> list[dict[str, Any]]:
     endpoint = "/crm/v3/objects/deals"
     params = {
-        "limit": 100,
+        "limit": 50,
         "archived": "false",
         "properties": ",".join(HUBSPOT_DEAL_PROPERTIES),
         "associations": ",".join(HUBSPOT_DEAL_ASSOCIATIONS),
@@ -178,7 +179,7 @@ async def _search_deals_since(
             "properties": HUBSPOT_DEAL_PROPERTIES,
             "propertiesWithHistory": HUBSPOT_PROPERTIES_WITH_HISTORY,
             "associations": HUBSPOT_DEAL_ASSOCIATIONS,
-            "limit": 100,
+            "limit": 50,  # Max 50 when requesting propertiesWithHistory
             "sorts": [
                 {
                     "propertyName": "hs_lastmodifieddate",
