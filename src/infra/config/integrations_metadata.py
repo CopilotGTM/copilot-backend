@@ -119,7 +119,7 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
     IntegrationType.HUBSPOT: IntegrationMetadata(
         name="HubSpot",
         description="Sync contacts, deals, and sales activities from HubSpot CRM",
-        logo_url="https://www.hubspot.com/hubfs/HubSpot_Logos/HubSpot-Inversed-Favicon.png",
+        logo_url="https://cdn.simpleicons.org/hubspot",
         category="crm",
         category_name=IntegrationCategory.CRM_SALES,
         availability_status=AvailabilityStatus.AVAILABLE,
@@ -139,7 +139,7 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
     IntegrationType.SLACK: IntegrationMetadata(
         name="Slack",
         description="Sync messages, files, and channel data from Slack workspaces",
-        logo_url="https://a.slack-edge.com/80588/marketing/img/icons/icon_slack_hash_colored.png",
+        logo_url="https://cdn.simpleicons.org/slack",
         category="collaboration",
         category_name=IntegrationCategory.COLLABORATION,
         availability_status=AvailabilityStatus.AVAILABLE,
@@ -159,7 +159,7 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
     IntegrationType.GOOGLE_DRIVE: IntegrationMetadata(
         name="Google Drive",
         description="Sync documents, spreadsheets, and files from Google Drive",
-        logo_url="https://ssl.gstatic.com/images/branding/product/2x/drive_2020q4_48dp.png",
+        logo_url="https://cdn.simpleicons.org/googledrive",
         category="storage",
         category_name=IntegrationCategory.STORAGE,
         availability_status=AvailabilityStatus.COMING_SOON,  # Coming soon
@@ -190,7 +190,7 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
     IntegrationType.OUTLOOK_CALENDAR: IntegrationMetadata(
         name="Outlook Calendar",
         description="Sync events and availability from Microsoft Outlook/Office 365",
-        logo_url="https://static2.sharepointonline.com/files/fabric/assets/brand-icons/product/svg/outlook_48x1.svg",
+        logo_url="https://logo.clearbit.com/outlook.com",
         category="collaboration",
         category_name=IntegrationCategory.COLLABORATION,
         availability_status=AvailabilityStatus.COMING_SOON,
@@ -222,7 +222,7 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
     IntegrationType.SALESFORCE: IntegrationMetadata(
         name="Salesforce",
         description="Sync leads, opportunities, and sales data from Salesforce CRM",
-        logo_url="https://www.salesforce.com/content/dam/sfdc-docs/www/logos/logo-salesforce.svg",
+        logo_url="https://cdn.simpleicons.org/salesforce",
         category="crm",
         category_name=IntegrationCategory.CRM_SALES,
         availability_status=AvailabilityStatus.COMING_SOON,
@@ -233,10 +233,24 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
         can_be_created_by=[UserAppRole.ADMIN, UserAppRole.MEMBER],
         allow_multiple_connections=False,
     ),
+    IntegrationType.GONG: IntegrationMetadata(
+        name="Gong",
+        description="Ingest call recordings, transcripts, and deal insights from Gong",
+        logo_url="https://logo.clearbit.com/gong.io",
+        category="sales_enablement",
+        category_name=IntegrationCategory.SALES_ENABLEMENT,
+        availability_status=AvailabilityStatus.BETA,
+        documentation_url="https://docs.gong.io/docs",
+        default_sync_frequency="daily",
+        # Access Control - Conversation intelligence data is organisation-scoped
+        default_scope=IntegrationScope.ORGANIZATION,
+        can_be_created_by=[UserAppRole.ADMIN],
+        allow_multiple_connections=False,
+    ),
     IntegrationType.NOTION: IntegrationMetadata(
         name="Notion",
         description="Sync pages, databases, and documentation from Notion workspaces",
-        logo_url="https://www.notion.so/images/favicon.ico",
+        logo_url="https://cdn.simpleicons.org/notion",
         category="collaboration",
         category_name=IntegrationCategory.COLLABORATION,
         availability_status=AvailabilityStatus.COMING_SOON,
@@ -250,7 +264,7 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
     IntegrationType.CONFLUENCE: IntegrationMetadata(
         name="Confluence",
         description="Sync pages and documentation from Atlassian Confluence",
-        logo_url="https://cdn.iconscout.com/icon/free/png-256/free-confluence-logo-icon-download-in-svg-png-gif-file-formats--technology-social-media-company-brand-vol-5-pack-logos-icons-2945073.png",
+        logo_url="https://cdn.simpleicons.org/confluence",
         category="collaboration",
         category_name=IntegrationCategory.COLLABORATION,
         availability_status=AvailabilityStatus.COMING_SOON,
@@ -264,7 +278,7 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
     IntegrationType.ONEDRIVE: IntegrationMetadata(
         name="OneDrive",
         description="Sync documents and files from Microsoft OneDrive",
-        logo_url="https://img-prod-cms-rt-microsoft-com.akamaized.net/cms/api/am/imageFileData/RE1Mu3b?ver=5c31",
+        logo_url="https://logo.clearbit.com/onedrive.com",
         category="storage",
         category_name=IntegrationCategory.STORAGE,
         availability_status=AvailabilityStatus.COMING_SOON,

@@ -2,10 +2,22 @@
 
 This Helm umbrella chart deploys:
 * API (FastAPI webservice)
-* Celery workers (knowledge-extract, knowledge-upload, organization, chat)
+* Celery workers (knowledge-extract, knowledge-upload, organization, chat, integrations)
 * KEDA ScaledObjects for queue length–based autoscaling (Redis)
 * A startup Job (migrations + seeding)
 * GPU-enabled workers for image summarization and document processing
+
+## Worker Summary
+
+| Worker                | Queue(s)                                     | Purpose                                                | Default Concurrency |
+|-----------------------|----------------------------------------------|--------------------------------------------------------|---------------------|
+| knowledge-extract     | `knowledge_extract`                          | GPU-intensive document parsing & embeddings            | 1                   |
+| knowledge-upload      | `knowledge_upload`                           | Upload pipeline orchestration                          | 4                   |
+| organization          | `organization`                               | Organisation provisioning & maintenance tasks          | 6                   |
+| chat                  | `attachments`, `chat_processing`, `chat_messages` | Chat ingestion, processing, and messaging        | 5                   |
+| integrations          | `integrations`, `integrations_priority`      | Third-party CRM/OAuth sync flows                       | 4                   |
+
+The non-GPU workers now run higher concurrency because their tasks are short and I/O-bound; adjust CPU/memory requests in `charts/application/values.yaml` if you need to tune them further.
 
 ## GPU Node Pool Configuration
 
@@ -215,6 +227,8 @@ helm upgrade --install copilot-backend ./application `
   --set organization-worker.image.tag=$Env:TAG `
   --set chat-worker.image.repository=copilotgtmacrdev.azurecr.io/copilot-backend `
   --set chat-worker.image.tag=$Env:TAG `
+  --set integrations-worker.image.repository=copilotgtmacrdev.azurecr.io/copilot-backend `
+  --set integrations-worker.image.tag=$Env:TAG `
   --set global.redis.host=$Env:REDIS_HOST `
   --set global.redis.port=$Env:REDIS_PORT `
   --set global.redis.enableTLS=true `

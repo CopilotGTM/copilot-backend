@@ -160,13 +160,13 @@ knowledge-upload-worker:
   pullPolicy: IfNotPresent
   config:
     queueName: "knowledge_upload"
-    concurrency: 2
+    concurrency: 4
   resources:
     requests:
-      cpu: "250m"
+      cpu: "500m"
       memory: "1Gi"
     limits:
-      cpu: "750m"
+      cpu: "1500m"
       memory: "2Gi"
   autoscaling:
     enabled: true
@@ -189,7 +189,7 @@ organization-worker:
     concurrency: 5
   resources:
     requests:
-      cpu: "100m"
+      cpu: "250m"
       memory: "256Mi"
     limits:
       cpu: "500m"
@@ -213,14 +213,14 @@ chat-worker:
   config:
     queueName: "attachments"
     additionalQueues: ["chat_processing", "chat_messages"]
-    concurrency: 3
+    concurrency: 5
   resources:
     requests:
-      cpu: "250m"
-      memory: "1Gi"
+      cpu: "500m"
+      memory: "1.5Gi"
     limits:
-      cpu: "750m"
-      memory: "2Gi"
+      cpu: "1500m"
+      memory: "2.5Gi"
   autoscaling:
     enabled: true
     minReplicas: 1
@@ -228,3 +228,30 @@ chat-worker:
     queueLength: 2
     scaleDownDelay: 240
     scaleUpDelay: 5
+
+# Integrations Worker (handles CRM/third-party sync pipelines)
+integrations-worker:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: "copilotgtmacrdev.azurecr.io/copilot-backend"
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  config:
+    queueName: "integrations"
+    additionalQueues: ["integrations_priority"]
+    concurrency: 4
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "768Mi"
+    limits:
+      cpu: "2000m"
+      memory: "1.5Gi"
+  autoscaling:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 5
+    queueLength: 5
+    scaleDownDelay: 240
+    scaleUpDelay: 10
