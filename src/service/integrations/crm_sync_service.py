@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.domain.models.organisation_tables.base_mixins import utcnow
 from src.domain.models.organisation_tables.sync import KnowledgeIntegration
+from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDeal,
     CRMDealParticipant,
@@ -314,6 +315,8 @@ class CRMSyncService:
 
                 properties = deal.get("properties") or {}
                 associations = deal.get("associations") or {}
+                updated_at = self._parse_date(deal.get("updatedAt"))
+                created_at = self._parse_date(deal.get("createdAt"))
 
                 pipeline_external = properties.get("pipeline")
                 stage_external = properties.get("dealstage")
@@ -346,7 +349,9 @@ class CRMSyncService:
                 record.description = properties.get("description")
 
                 record.amount = self._safe_float(properties.get("amount"))
-                record.amount_home_currency = self._safe_float(properties.get("hs_forecast_amount"))
+                record.amount_home_currency = self._safe_float(
+                    properties.get("amount_in_home_currency")
+                )
                 record.currency = properties.get("deal_currency_code") or properties.get("currency")
 
                 probability = properties.get("hs_deal_stage_probability") or properties.get(
@@ -389,10 +394,18 @@ class CRMSyncService:
                 record.expected_close_date = self._parse_date(
                     properties.get("hs_expected_close_date")
                 )
-                record.last_activity_at = self._parse_date(properties.get("hs_lastmodifieddate"))
+                record.last_activity_at = (
+                    self._parse_date(properties.get("lastactivitydate"))
+                    or self._parse_date(properties.get("hs_lastmodifieddate"))
+                    or updated_at
+                )
                 record.stage_entered_at = None
-                record.stage_updated_at = None
-                record.source_created_at = self._parse_date(properties.get("createdate"))
+                record.stage_updated_at = updated_at or self._parse_date(
+                    properties.get("hs_lastmodifieddate")
+                )
+                record.source_created_at = (
+                    self._parse_date(properties.get("createdate")) or created_at
+                )
 
                 record.properties = {k: v for k, v in properties.items() if v is not None}
                 record.metrics = self._extract_metrics(properties)
@@ -400,7 +413,9 @@ class CRMSyncService:
 
                 record.synced_at = now
                 record.last_seen_at = now
-                record.source_modified_at = self._parse_date(properties.get("hs_lastmodifieddate"))
+                record.source_modified_at = updated_at or self._parse_date(
+                    properties.get("hs_lastmodifieddate")
+                )
                 record.data_payload = deal
                 record.is_deleted = False
 
@@ -409,7 +424,13 @@ class CRMSyncService:
                 self._increment_processed()
 
                 participants_to_upsert.extend(self._extract_participants(record, associations))
-                history_entries.extend(self._extract_stage_history(record, deal, stage_map))
+                deal_history_entries, latest_stage_entry = self._extract_stage_history(
+                    record, deal, stage_map
+                )
+                history_entries.extend(deal_history_entries)
+                if latest_stage_entry:
+                    record.stage_entered_at = latest_stage_entry["entered_at"]
+                    record.stage_updated_at = latest_stage_entry["entered_at"]
             except Exception as exc:  # pragma: no cover - defensive logging
                 logger.error(
                     "Failed to process HubSpot deal %s: %s",
@@ -430,6 +451,150 @@ class CRMSyncService:
             "deals": deals_processed,
             "participants": participants_processed,
             "stage_history": history_processed,
+            "records_synced": deals_processed,
+        }
+
+    async def sync_contacts(
+        self,
+        *,
+        integration: KnowledgeIntegration,
+        contacts: Iterable[dict[str, Any]],
+        provider: str,
+    ) -> dict[str, int]:
+        await self.begin_sync(integration)
+        contact_list = [c for c in contacts if isinstance(c, dict)]
+        if not contact_list:
+            return {"contacts": 0}
+
+        logger.info(
+            "CRM sync contacts: org=%s integration=%s provider=%s count=%d",
+            self.organisation_id,
+            integration.integration_id,
+            provider,
+            len(contact_list),
+        )
+
+        contact_external_ids = [c.get("id") for c in contact_list if c.get("id")]
+        existing: dict[str, CRMContact] = {}
+        if contact_external_ids:
+            stmt = select(CRMContact).where(
+                CRMContact.integration_id == integration.integration_id,
+                CRMContact.external_id.in_(contact_external_ids),
+            )
+            result = await self.db.execute(stmt)
+            existing = {row.external_id: row for row in result.scalars().all()}
+
+        now = _now()
+        contacts_processed = 0
+
+        for contact in contact_list:
+            try:
+                external_id = contact.get("id")
+                if not external_id:
+                    self._increment_failed()
+                    continue
+
+                record = existing.get(external_id)
+                if not record:
+                    record = CRMContact(
+                        organisation_id=self.organisation_id,
+                        integration_id=integration.integration_id,
+                        external_id=external_id,
+                    )
+                    existing[external_id] = record
+
+                properties = contact.get("properties") or {}
+                updated_at = (
+                    self._parse_date(contact.get("updatedAt"))
+                    or self._parse_date(properties.get("hs_lastmodifieddate"))
+                    or self._parse_date(properties.get("lastmodifieddate"))
+                )
+                created_at = self._parse_date(contact.get("createdAt")) or self._parse_date(
+                    properties.get("createdate")
+                )
+
+                record.email = properties.get("email")
+                record.additional_emails = self._parse_email_list(
+                    properties.get("hs_additional_emails") or properties.get("additional_emails")
+                )
+
+                first_name = properties.get("firstname")
+                last_name = properties.get("lastname")
+                record.first_name = first_name
+                record.last_name = last_name
+                record.full_name = properties.get("fullname") or self._combine_name(
+                    first_name, last_name, properties.get("company")
+                )
+                record.job_title = properties.get("jobtitle") or properties.get("title")
+                record.company_name = properties.get("company")
+
+                record.lifecycle_stage = properties.get("lifecyclestage")
+                record.lead_status = properties.get("hs_lead_status") or properties.get(
+                    "leadstatus"
+                )
+                record.marketing_status = properties.get("hs_marketable_status") or properties.get(
+                    "hs_content_membership_email_status"
+                )
+
+                owner_id = properties.get("hubspot_owner_id")
+                if owner_id is not None:
+                    record.owner_external_id = owner_id
+                owner_email = properties.get("hubspot_owner_email")
+                if isinstance(owner_email, str):
+                    record.owner_email = owner_email
+                owner_name = properties.get("hubspot_owner_name")
+                if isinstance(owner_name, str):
+                    record.owner_name = owner_name
+
+                record.phone = properties.get("phone")
+                record.mobile_phone = properties.get("mobilephone")
+                record.fax = properties.get("fax")
+                record.website = properties.get("website")
+
+                record.address = properties.get("address")
+                record.city = properties.get("city")
+                record.state = properties.get("state") or properties.get("state_region")
+                record.postal_code = properties.get("zip") or properties.get("postalcode")
+                record.country = properties.get("country")
+                record.timezone = properties.get("timezone")
+
+                record.last_contacted_at = self._parse_date(
+                    properties.get("last_contacted")
+                ) or self._parse_date(properties.get("hs_last_contacted"))
+                record.last_activity_at = (
+                    self._parse_date(properties.get("lastactivitydate"))
+                    or self._parse_date(properties.get("hs_lastactivitydate"))
+                    or self._parse_date(properties.get("recent_activity_date"))
+                    or updated_at
+                )
+
+                record.source_created_at = created_at
+                record.source_modified_at = updated_at
+                record.synced_at = now
+                record.last_seen_at = now
+
+                record.properties = {k: v for k, v in properties.items() if v is not None}
+                record.metrics = self._extract_contact_metrics(properties)
+                record.data_payload = contact
+                record.is_deleted = False
+
+                self.db.add(record)
+                contacts_processed += 1
+                self._increment_processed()
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.error(
+                    "Failed to process HubSpot contact %s: %s",
+                    contact.get("id"),
+                    exc,
+                    exc_info=True,
+                )
+                self._increment_failed()
+
+        await self.db.commit()
+
+        return {
+            "contacts": contacts_processed,
+            "records_synced": contacts_processed,
         }
 
     async def _load_pipeline_map(self, integration_id: UUID) -> dict[str, CRMPipeline]:
@@ -621,8 +786,54 @@ class CRMSyncService:
             "hs_annual_contract_value",
             "hs_deal_stage_probability",
             "hs_forecast_amount",
+            "hs_forecast_probability",
         ]
         return {key: properties[key] for key in keys if properties.get(key) is not None}
+
+    @staticmethod
+    def _extract_contact_metrics(properties: dict[str, Any]) -> dict[str, Any]:
+        keys = [
+            "hs_lead_score",
+            "hs_email_open_rate",
+            "hs_email_click_rate",
+            "hs_email_sends",
+            "hs_email_opens",
+            "hs_email_clicks",
+        ]
+        metrics: dict[str, Any] = {}
+        for key in keys:
+            value = properties.get(key)
+            if value is None or value == "":
+                continue
+            numeric = CRMSyncService._safe_float(value)
+            metrics[key] = numeric if numeric is not None else value
+        return metrics
+
+    @staticmethod
+    def _parse_email_list(value: Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        text = str(value).strip()
+        if not text:
+            return []
+        separators = [",", ";", "|"]
+        for sep in separators:
+            if sep in text:
+                return [part.strip() for part in text.split(sep) if part.strip()]
+        return [text]
+
+    @staticmethod
+    def _combine_name(
+        first: str | None,
+        last: str | None,
+        fallback: str | None = None,
+    ) -> str | None:
+        parts = [part for part in (first, last) if part]
+        if parts:
+            return " ".join(parts)
+        return fallback
 
     def _extract_participants(
         self,
@@ -685,11 +896,11 @@ class CRMSyncService:
         deal_record: CRMDeal,
         deal_payload: dict[str, Any],
         stage_map: dict[str, CRMDealStage],
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
         history_map = deal_payload.get("propertiesWithHistory") or {}
         stage_history = history_map.get("dealstage")
         if not isinstance(stage_history, list):
-            return []
+            return [], None
 
         events = []
         for entry in stage_history:
@@ -708,7 +919,7 @@ class CRMSyncService:
             )
 
         if not events:
-            return []
+            return [], None
 
         events.sort(key=lambda e: e["timestamp"])
         history_entries: list[dict[str, Any]] = []
@@ -740,4 +951,5 @@ class CRMSyncService:
                 }
             )
 
-        return history_entries
+        latest_entry = history_entries[-1] if history_entries else None
+        return history_entries, latest_entry

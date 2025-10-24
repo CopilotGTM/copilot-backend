@@ -1,3 +1,4 @@
+from .contacts import CRMContact
 from .deals import (
     CRMDeal,
     CRMDealParticipant,
@@ -10,6 +11,7 @@ from .deals import (
 )
 
 __all__ = [
+    "CRMContact",
     "CRMPipeline",
     "CRMDealStage",
     "CRMDeal",

@@ -170,7 +170,7 @@ class NangoWebhookService:
             sync_name=sync_name,
             sync_type=sync_type,
             sync_variant=sync_variant,
-            incremental=True,
+            incremental=str(sync_type).upper() != "INITIAL" if sync_type else True,
         )
         return Response.success_response(message=SYNC_WEBHOOK_ACCEPTED_MSG, data=None)
 

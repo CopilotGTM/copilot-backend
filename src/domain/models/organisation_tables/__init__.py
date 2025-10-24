@@ -23,6 +23,7 @@ from .knowledge_models import OrganisationDocument, OrganisationSource
 from .sync import (
     CalendarAttendee,
     CalendarEvent,
+    CRMContact,
     CRMDeal,
     CRMDealParticipant,
     CRMDealStage,
@@ -62,6 +63,7 @@ __all__ = [
     "SyncedRecordMixin",
     "CalendarEvent",
     "CalendarAttendee",
+    "CRMContact",
     "CRMPipeline",
     "CRMDealStage",
     "CRMDeal",

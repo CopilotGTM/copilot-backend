@@ -12,6 +12,9 @@ from collections.abc import Awaitable, Callable
 
 from .calendar.google_calendar import fetch_events as google_calendar_fetch
 from .crm.hubspot import (
+    fetch_contacts as hubspot_contacts_fetch,
+)
+from .crm.hubspot import (
     fetch_deals as hubspot_deals_fetch,
 )
 from .crm.hubspot import (
@@ -30,6 +33,7 @@ def _init_defaults() -> None:
     _REGISTRY[("crm", "hubspot")] = {
         "pipelines": hubspot_pipelines_fetch,
         "deals": hubspot_deals_fetch,
+        "contacts": hubspot_contacts_fetch,
     }
 
 

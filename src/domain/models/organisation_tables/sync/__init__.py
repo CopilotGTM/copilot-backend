@@ -3,6 +3,7 @@
 from .base import SyncCategory, SyncedRecordMixin
 from .calendar import CalendarAttendee, CalendarEvent
 from .crm import (
+    CRMContact,
     CRMDeal,
     CRMDealParticipant,
     CRMDealStage,
@@ -30,6 +31,7 @@ __all__ = [
     "KnowledgeIntegration",
     "IntegrationSyncHistory",
     "SyncStatus",
+    "CRMContact",
     "CRMPipeline",
     "CRMDealStage",
     "CRMDeal",
