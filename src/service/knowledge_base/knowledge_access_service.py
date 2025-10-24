@@ -62,10 +62,11 @@ class KnowledgeAccessService:
 
         Returns (items, next_cursor).
         """
+        # Base filters: organisation scope + exclude soft-deleted
         stmt = select(OrganisationSource).where(
             OrganisationSource.organisation_id == self.organisation_id,
             OrganisationSource.user_id == self.user_id,
-            not OrganisationSource.is_deleted,  # exclude soft-deleted
+            OrganisationSource.is_deleted.is_(False),  # exclude soft-deleted
         )
 
         if statuses:
@@ -181,12 +182,11 @@ class KnowledgeAccessService:
     async def get_stats(self) -> dict:
         """Return aggregated counts for dashboard usage.
 
-        Counts are restricted to current user + organisation (matching list logic).
+        Counts are restricted to the current organisation (matching list logic).
         """
         base_filters = [
             OrganisationSource.organisation_id == self.organisation_id,
-            OrganisationSource.user_id == self.user_id,
-            not getattr(OrganisationSource, "is_deleted", False),
+            OrganisationSource.is_deleted.is_(False),
         ]
 
         status_stmt = (

@@ -201,7 +201,12 @@ def _process_thinking_frame(data: dict, result_summary: dict) -> None:
 
 
 async def _consume_agent_stream(
-    chat_type, history, publisher: RedisPublisher, job: ChatMessageJob
+    chat_type,
+    history,
+    publisher: RedisPublisher,
+    job: ChatMessageJob,
+    organisation_id: UUID,
+    user_id: UUID | None = None,
 ) -> dict:
     """Run the async agent (async generator), stream frames, and return a summary.
 
@@ -225,49 +230,66 @@ async def _consume_agent_stream(
 
     sequence_counter = 0
 
-    async for frame in run_agent_for_chat(chat_type=chat_type, messages=history):  # type: ignore[arg-type]
-        try:
-            data = frame.model_dump()
-        except Exception:
-            # Create a closure to capture current frame value
-            def get_dict(current_frame=frame):
-                return getattr(current_frame, "dict", lambda: dict(current_frame))()
+    # Acquire async session for agent tools
+    from src.agents.context import AgentContext
+    from src.api.dependencies.organisation_dependencies import acquire_org_async_session
 
-            data = get_dict()
+    async for session in acquire_org_async_session(organisation_id):
+        # Build context once for the entire agent execution
+        context = AgentContext(
+            session=session,
+            organisation_id=organisation_id,
+            user_id=user_id,
+            message_id=str(assistant_message_id),
+        )
 
-        # Transform to production-level frame structure with job_id and assistant_message_id
-        production_frame = {
-            **data,  # Copy all frame data
-            "job_id": str(job.job_id),
-            "assistant_message_id": str(assistant_message_id),
-            "version": "1.0",
-            "timestamp": time.time(),
-            "sequence": sequence_counter,
+        async for frame in run_agent_for_chat(
+            chat_type=chat_type,
+            messages=history,  # type: ignore[arg-type]
+            context=context,
+        ):
+            try:
+                data = frame.model_dump()
+            except Exception:
+                # Create a closure to capture current frame value
+                def get_dict(current_frame=frame):
+                    return getattr(current_frame, "dict", lambda: dict(current_frame))()
+
+                data = get_dict()
+
+            # Transform to production-level frame structure with job_id and assistant_message_id
+            production_frame = {
+                **data,  # Copy all frame data
+                "job_id": str(job.job_id),
+                "assistant_message_id": str(assistant_message_id),
+                "version": "1.0",
+                "timestamp": time.time(),
+                "sequence": sequence_counter,
+            }
+
+            sequence_counter += 1
+
+            # Publish frame to Redis Stream
+            publisher.publish(production_frame)
+
+            # Process frame data for summary (using original data structure)
+            _process_frame_data(data, result_summary)
+
+        return {
+            "answer": (
+                "".join(result_summary["answer_parts"])
+                if result_summary["answer_parts"]
+                else result_summary["final_answer"]
+            ),
+            "confidence": result_summary["confidence"],
+            "suggestions": result_summary["suggestions"],
+            "sources": result_summary["sources"],
+            "agent_switch_request": result_summary["agent_switch_request"],
+            "user_questions": result_summary["user_questions"],
+            "progress_updates": result_summary["progress_updates"],
+            "tool_usage": result_summary["tool_usage"],
+            "thinking_updates": result_summary["thinking_updates"],
         }
-
-        sequence_counter += 1
-
-        # Publish frame to Redis Stream
-        publisher.publish(production_frame)
-
-        # Process frame data for summary (using original data structure)
-        _process_frame_data(data, result_summary)
-
-    return {
-        "answer": (
-            "".join(result_summary["answer_parts"])
-            if result_summary["answer_parts"]
-            else result_summary["final_answer"]
-        ),
-        "confidence": result_summary["confidence"],
-        "suggestions": result_summary["suggestions"],
-        "sources": result_summary["sources"],
-        "agent_switch_request": result_summary["agent_switch_request"],
-        "user_questions": result_summary["user_questions"],
-        "progress_updates": result_summary["progress_updates"],
-        "tool_usage": result_summary["tool_usage"],
-        "thinking_updates": result_summary["thinking_updates"],
-    }
 
 
 @app.task(name="chat.process_message", acks_late=True, max_retries=3)
@@ -288,8 +310,10 @@ def process_message(organisation_id: UUID, job_id: UUID):
             session, job
         )
 
-        # Execute agent and get results
-        result_summary = _execute_agent_workflow(chat_session, history, publisher, job)
+        # Execute agent and get results (pass organisation_id and user_id for tool access)
+        result_summary = _execute_agent_workflow(
+            chat_session, history, publisher, job, organisation_id, chat_session.user_id
+        )
 
         # Publish final frames and create assistant message with results
         _publish_final_frames(publisher, job, result_summary)
@@ -367,11 +391,18 @@ def _load_conversation_data(session, job: ChatMessageJob):
     return session_id, chat_session, history, user_message, assistant_message_id
 
 
-def _execute_agent_workflow(chat_session, history, publisher, job):
+def _execute_agent_workflow(chat_session, history, publisher, job, organisation_id, user_id=None):
     """Execute agent workflow and handle errors."""
     try:
         result_summary = asyncio.run(
-            _consume_agent_stream(chat_session.chat_type, history, publisher, job)
+            _consume_agent_stream(
+                chat_session.chat_type,
+                history,
+                publisher,
+                job,
+                organisation_id,
+                user_id,
+            )
         )
 
         # Ensure result_summary is never None

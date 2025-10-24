@@ -116,39 +116,83 @@ class CRMDealStage(SyncedRecordMixin, table=True):
         ),
     )
 
-    stage_id: UUID = Field(default_factory=uuid4, primary_key=True)
-    external_id: str = Field(sa_column=Column(String(255), nullable=False))
-    data_payload: dict | None = Field(default=None, sa_column=Column(JSONB))
+    # Identity
+    stage_id: UUID = Field(
+        default_factory=uuid4,
+        primary_key=True,
+        description="Internal UUID for the pipeline stage.",
+    )
+    external_id: str = Field(
+        sa_column=Column(String(255), nullable=False),
+        description="Provider-supplied unique identifier for the stage.",
+    )
+
+    # Labels
+    name: str = Field(
+        sa_column=Column(String(255), nullable=False, index=True),
+        description="Stage name as displayed in the provider UI.",
+    )
+    label: str | None = Field(default=None, description="Human-friendly stage label.")
+    stage_key: str | None = Field(
+        default=None,
+        sa_column=Column(String(128), nullable=True, index=True),
+        description="Provider stage key or API identifier distinct from display name.",
+    )
+
+    # State
+    stage_state: CRMStageState = Field(
+        default=CRMStageState.OPEN,
+        sa_column=Column(String(16), nullable=False, server_default=text("'open'")),
+        description="Normalised state for reporting (open/won/lost).",
+    )
+    probability: float | None = Field(
+        default=None,
+        description="Default win probability percentage (0-100) for this stage.",
+    )
+    forecast_category: str | None = Field(
+        default=None,
+        sa_column=Column(String(64)),
+        description="Provider forecast category for this stage.",
+    )
+    is_closed: bool = Field(
+        default=False,
+        sa_column=Column(Boolean, nullable=False, server_default=text("false")),
+        description="Whether the provider marks this stage as closed.",
+    )
+    display_order: int | None = Field(
+        default=None,
+        description="Numeric order for stage display within its pipeline.",
+    )
+
+    # Pipeline linkage
+    pipeline_id: UUID = Field(
+        foreign_key="crm_pipelines.pipeline_id",
+        index=True,
+        description="Owning pipeline ID (FK).",
+    )
+
+    # Sync meta
     synced_at: datetime = Field(
         default_factory=utcnow,
         sa_column=Column(DateTime(timezone=True), nullable=False),
+        description="Timestamp when this stage row was last synced.",
     )
     source_modified_at: datetime | None = Field(
         default=None,
         sa_column=Column(DateTime(timezone=True), nullable=True),
+        description="Last modified timestamp as reported by provider.",
     )
     last_seen_at: datetime | None = Field(
         default_factory=utcnow,
         sa_column=Column(DateTime(timezone=True), nullable=True),
+        description="Most recent time this stage was observed during sync.",
     )
-    pipeline_id: UUID = Field(foreign_key="crm_pipelines.pipeline_id", index=True)
-    name: str = Field(sa_column=Column(String(255), nullable=False, index=True))
-    label: str | None = Field(default=None)
-    stage_key: str | None = Field(
+
+    # Payload
+    data_payload: dict | None = Field(
         default=None,
-        sa_column=Column(String(128), nullable=True, index=True),
-        description="Provider stage identifier (e.g., probability bucket key)",
-    )
-    probability: float | None = Field(default=None)
-    stage_state: CRMStageState = Field(
-        default=CRMStageState.OPEN,
-        sa_column=Column(String(16), nullable=False, server_default=text("'open'")),
-    )
-    forecast_category: str | None = Field(default=None, sa_column=Column(String(64)))
-    display_order: int | None = Field(default=None)
-    is_closed: bool = Field(
-        default=False,
-        sa_column=Column(Boolean, nullable=False, server_default=text("false")),
+        sa_column=Column(JSONB),
+        description="Raw provider payload for the stage.",
     )
 
     pipeline: CRMPipeline | None = Relationship(back_populates="stages")
@@ -172,114 +216,209 @@ class CRMDeal(SyncedRecordMixin, table=True):
             name="ck_crm_deal_probability",
         ),
     )
+    # Identity
+    deal_id: UUID = Field(
+        default_factory=uuid4,
+        primary_key=True,
+        description="Internal UUID for the normalised deal record.",
+    )
+    external_id: str = Field(
+        sa_column=Column(String(255), nullable=False),
+        description="Provider-supplied unique identifier for the deal.",
+    )
 
-    deal_id: UUID = Field(default_factory=uuid4, primary_key=True)
-    external_id: str = Field(sa_column=Column(String(255), nullable=False))
-    data_payload: dict | None = Field(default=None, sa_column=Column(JSONB))
-    synced_at: datetime = Field(
-        default_factory=utcnow,
-        sa_column=Column(DateTime(timezone=True), nullable=False),
-    )
-    source_modified_at: datetime | None = Field(
+    # Core business context
+    name: str | None = Field(
         default=None,
-        sa_column=Column(DateTime(timezone=True), nullable=True),
+        sa_column=Column(String(500)),
+        description="Deal name or title as shown in the provider UI.",
     )
-    last_seen_at: datetime | None = Field(
-        default_factory=utcnow,
-        sa_column=Column(DateTime(timezone=True), nullable=True),
-    )
-    pipeline_id: UUID | None = Field(
-        default=None,
-        foreign_key="crm_pipelines.pipeline_id",
-        index=True,
-    )
-    stage_id: UUID | None = Field(
-        default=None,
-        foreign_key="crm_deal_stages.stage_id",
-        index=True,
-    )
-    pipeline_external_id: str | None = Field(default=None, index=True)
-    pipeline_name: str | None = Field(default=None)
-    pipeline_label: str | None = Field(default=None)
-    stage_external_id: str | None = Field(default=None, index=True)
-    stage_name: str | None = Field(default=None)
-    stage_label: str | None = Field(default=None)
-
-    name: str | None = Field(default=None, sa_column=Column(String(500)))
-    description: str | None = Field(default=None)
-
     amount: float | None = Field(
         default=None,
         sa_column=Column(Numeric(18, 2), nullable=True),
-    )
-    amount_home_currency: float | None = Field(
-        default=None,
-        sa_column=Column(Numeric(18, 2), nullable=True),
+        description="Deal amount in the provider currency (unconverted).",
     )
     currency: str | None = Field(
         default=None,
         sa_column=Column(String(3), nullable=True),
+        description="ISO 4217 currency code for the deal amount.",
     )
-    probability: float | None = Field(default=None)
+    amount_home_currency: float | None = Field(
+        default=None,
+        sa_column=Column(Numeric(18, 2), nullable=True),
+        description="Deal amount converted to the organisation home currency, if available.",
+    )
+    deal_status: CRMDealStatus = Field(
+        default=CRMDealStatus.OPEN,
+        sa_column=Column(String(16), nullable=False, server_default=text("'open'")),
+        description="Normalised lifecycle status derived from provider signals.",
+    )
+    probability: float | None = Field(
+        default=None,
+        description="Provider-supplied win probability percentage (0-100).",
+    )
     predicted_amount: float | None = Field(
         default=None,
         sa_column=Column(Numeric(18, 2), nullable=True),
         description="Forecasted amount (probability-weighted)",
     )
-    deal_status: CRMDealStatus = Field(
-        default=CRMDealStatus.OPEN,
-        sa_column=Column(String(16), nullable=False, server_default=text("'open'")),
-    )
-    forecast_category: str | None = Field(default=None, sa_column=Column(String(64)))
-    lead_source: str | None = Field(default=None, sa_column=Column(String(128)))
-    deal_type: str | None = Field(default=None, sa_column=Column(String(128)))
-    priority: str | None = Field(default=None, sa_column=Column(String(64)))
-
-    owner_external_id: str | None = Field(
-        default=None,
-        sa_column=Column(String(255), nullable=True, index=True),
-    )
-    owner_email: str | None = Field(default=None, sa_column=Column(String(255)))
-    owner_name: str | None = Field(default=None, sa_column=Column(String(255)))
-
-    company_external_id: str | None = Field(default=None, sa_column=Column(String(255)))
-    primary_contact_external_id: str | None = Field(default=None, sa_column=Column(String(255)))
-
     close_date: datetime | None = Field(
         default=None,
         sa_column=Column(DateTime(timezone=True), nullable=True),
+        description="Scheduled or actual close date for the deal.",
+    )
+    expected_close_date: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+        description="Provider-forecasted close date when the deal is expected to land.",
     )
     closed_won_at: datetime | None = Field(
         default=None,
         sa_column=Column(DateTime(timezone=True), nullable=True),
+        description="Timestamp when the deal was marked as won.",
     )
     closed_lost_at: datetime | None = Field(
         default=None,
         sa_column=Column(DateTime(timezone=True), nullable=True),
+        description="Timestamp when the deal was marked as lost.",
     )
-    closed_reason: str | None = Field(default=None, sa_column=Column(String(255)))
+    closed_reason: str | None = Field(
+        default=None,
+        sa_column=Column(String(255)),
+        description="Provider-supplied reason for closing the deal.",
+    )
 
-    expected_close_date: datetime | None = Field(
+    # Sales process snapshot
+    stage_external_id: str | None = Field(
+        default=None,
+        index=True,
+        description="Provider identifier for the stage the deal is currently in.",
+    )
+    stage_name: str | None = Field(
+        default=None,
+        description="Provider stage name captured at sync time.",
+    )
+    stage_label: str | None = Field(
+        default=None,
+        description="Human-friendly stage label from the provider.",
+    )
+    pipeline_external_id: str | None = Field(
+        default=None,
+        index=True,
+        description="Provider identifier for the pipeline the deal belongs to.",
+    )
+    pipeline_name: str | None = Field(
+        default=None,
+        description="Provider pipeline name captured at sync time.",
+    )
+    pipeline_label: str | None = Field(
+        default=None,
+        description="Human-friendly pipeline label from the provider.",
+    )
+    pipeline_id: UUID | None = Field(
+        default=None,
+        foreign_key="crm_pipelines.pipeline_id",
+        index=True,
+        description="Reference to the normalised pipeline row for this deal.",
+    )
+    stage_id: UUID | None = Field(
+        default=None,
+        foreign_key="crm_deal_stages.stage_id",
+        index=True,
+        description="Reference to the normalised current stage row for this deal.",
+    )
+    forecast_category: str | None = Field(
+        default=None,
+        sa_column=Column(String(64)),
+        description="Provider forecast category classification (e.g., pipeline stages).",
+    )
+    deal_type: str | None = Field(
+        default=None,
+        sa_column=Column(String(128)),
+        description="Provider-defined deal type or segment.",
+    )
+    priority: str | None = Field(
+        default=None,
+        sa_column=Column(String(64)),
+        description="Provider-defined prioritisation or SLA tier.",
+    )
+    lead_source: str | None = Field(
+        default=None,
+        sa_column=Column(String(128)),
+        description="Marketing or sales source attribution for the deal.",
+    )
+
+    # Ownership & associations
+    owner_external_id: str | None = Field(
+        default=None,
+        sa_column=Column(String(255), nullable=True, index=True),
+        description="Provider identifier for the user owning the deal.",
+    )
+    owner_name: str | None = Field(
+        default=None,
+        sa_column=Column(String(255)),
+        description="Display name for the deal owner.",
+    )
+    owner_email: str | None = Field(
+        default=None,
+        sa_column=Column(String(255)),
+        description="Email address for the deal owner, if supplied.",
+    )
+    company_external_id: str | None = Field(
+        default=None,
+        sa_column=Column(String(255)),
+        description="Associated company identifier provided by the CRM.",
+    )
+    primary_contact_external_id: str | None = Field(
+        default=None,
+        sa_column=Column(String(255)),
+        description="Primary contact identifier linked to the deal.",
+    )
+
+    # Activity & timing
+    source_created_at: datetime | None = Field(
         default=None,
         sa_column=Column(DateTime(timezone=True), nullable=True),
+        description="Original creation timestamp recorded in the provider.",
     )
     last_activity_at: datetime | None = Field(
         default=None,
         sa_column=Column(DateTime(timezone=True), nullable=True),
+        description="Most recent activity timestamp associated with the deal.",
     )
     stage_entered_at: datetime | None = Field(
         default=None,
         sa_column=Column(DateTime(timezone=True), nullable=True),
+        description="Timestamp when the deal entered the current stage.",
     )
     stage_updated_at: datetime | None = Field(
         default=None,
         sa_column=Column(DateTime(timezone=True), nullable=True),
+        description="Timestamp when the current stage details were last refreshed.",
     )
-    source_created_at: datetime | None = Field(
+    synced_at: datetime = Field(
+        default_factory=utcnow,
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+        description="Timestamp when this deal row was last synced into our system.",
+    )
+    source_modified_at: datetime | None = Field(
         default=None,
         sa_column=Column(DateTime(timezone=True), nullable=True),
+        description="Last modified timestamp reported by the provider.",
+    )
+    last_seen_at: datetime | None = Field(
+        default_factory=utcnow,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+        description="Most recent time this record was observed during sync.",
     )
 
+    # Freeform details
+    description: str | None = Field(
+        default=None,
+        description="Long-form description or notes stored with the deal.",
+    )
+
+    # Payloads & analytics
     properties: dict[str, Any] = Field(
         default_factory=dict,
         sa_column=Column(
@@ -287,6 +426,7 @@ class CRMDeal(SyncedRecordMixin, table=True):
             nullable=False,
             server_default=text(EMPTY_JSONB_SQL),
         ),
+        description="Flattened provider-specific deal properties we want indexed in JSON.",
     )
     metrics: dict[str, Any] = Field(
         default_factory=dict,
@@ -301,6 +441,11 @@ class CRMDeal(SyncedRecordMixin, table=True):
         default=None,
         sa_column=Column(JSONB, nullable=True),
         description="Raw associations block from provider",
+    )
+    data_payload: dict | None = Field(
+        default=None,
+        sa_column=Column(JSONB),
+        description="Raw provider payload used for troubleshooting and replay.",
     )
 
     participants: list["CRMDealParticipant"] = Relationship(back_populates="deal")
@@ -325,25 +470,26 @@ class CRMDealParticipant(SyncedRecordMixin, table=True):
         Index("ix_crm_deal_participant_org", "organisation_id", "participant_type"),
     )
 
-    participant_id: UUID = Field(default_factory=uuid4, primary_key=True)
-    external_id: str = Field(sa_column=Column(String(255), nullable=False))
-    data_payload: dict | None = Field(default=None, sa_column=Column(JSONB))
-    synced_at: datetime = Field(
-        default_factory=utcnow,
-        sa_column=Column(DateTime(timezone=True), nullable=False),
+    # Identity
+    participant_id: UUID = Field(
+        default_factory=uuid4,
+        primary_key=True,
+        description="Internal UUID for the deal participant record.",
     )
-    source_modified_at: datetime | None = Field(
-        default=None,
-        sa_column=Column(DateTime(timezone=True), nullable=True),
+    external_id: str = Field(
+        sa_column=Column(String(255), nullable=False),
+        description="Provider-supplied unique identifier for this participant link.",
     )
-    last_seen_at: datetime | None = Field(
-        default_factory=utcnow,
-        sa_column=Column(DateTime(timezone=True), nullable=True),
-    )
-    deal_id: UUID = Field(foreign_key="crm_deals.deal_id", index=True)
 
+    # Linkage
+    deal_id: UUID = Field(
+        foreign_key="crm_deals.deal_id",
+        index=True,
+        description="Deal ID (FK) this participant is associated with.",
+    )
     participant_type: CRMParticipantType = Field(
         sa_column=Column(String(32), nullable=False),
+        description="Type of related CRM entity (contact/company/user/etc).",
     )
     relationship_role: str | None = Field(
         default=None,
@@ -351,10 +497,50 @@ class CRMDealParticipant(SyncedRecordMixin, table=True):
         description="Role within the deal (e.g., primary_contact, decision_maker)",
     )
 
-    related_external_id: str = Field(sa_column=Column(String(255), nullable=False))
-    related_local_id: UUID | None = Field(default=None, index=True)
-    related_name: str | None = Field(default=None, sa_column=Column(String(255)))
-    related_email: str | None = Field(default=None, sa_column=Column(String(255)))
+    # Related entity identifiers
+    related_external_id: str = Field(
+        sa_column=Column(String(255), nullable=False),
+        description="Provider ID of the related entity (e.g., contact or company).",
+    )
+    related_local_id: UUID | None = Field(
+        default=None,
+        index=True,
+        description="Internal UUID of the related entity when resolved.",
+    )
+    related_name: str | None = Field(
+        default=None,
+        sa_column=Column(String(255)),
+        description="Display name of the related entity, if known.",
+    )
+    related_email: str | None = Field(
+        default=None,
+        sa_column=Column(String(255)),
+        description="Email of the related entity, if applicable.",
+    )
+
+    # Sync meta
+    synced_at: datetime = Field(
+        default_factory=utcnow,
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+        description="Timestamp when this participant row was last synced.",
+    )
+    source_modified_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+        description="Last modified timestamp from provider.",
+    )
+    last_seen_at: datetime | None = Field(
+        default_factory=utcnow,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+        description="Most recent time this link was observed during sync.",
+    )
+
+    # Payload
+    data_payload: dict | None = Field(
+        default=None,
+        sa_column=Column(JSONB),
+        description="Raw provider payload for the participant link.",
+    )
 
     deal: CRMDeal | None = Relationship(back_populates="participants")
 
@@ -370,30 +556,41 @@ class CRMDealStageHistory(SyncedRecordMixin, table=True):
         Index("ix_crm_stage_history_deal", "deal_id", "entered_at"),
     )
 
-    history_id: UUID = Field(default_factory=uuid4, primary_key=True)
-    external_id: str = Field(sa_column=Column(String(255), nullable=False))
-    data_payload: dict | None = Field(default=None, sa_column=Column(JSONB))
-    synced_at: datetime = Field(
-        default_factory=utcnow,
-        sa_column=Column(DateTime(timezone=True), nullable=False),
+    # Identity
+    history_id: UUID = Field(
+        default_factory=uuid4,
+        primary_key=True,
+        description="Internal UUID for the stage transition record.",
     )
-    source_modified_at: datetime | None = Field(
-        default=None,
-        sa_column=Column(DateTime(timezone=True), nullable=True),
+    external_id: str = Field(
+        sa_column=Column(String(255), nullable=False),
+        description="Provider unique identifier for the transition event, if any.",
     )
-    last_seen_at: datetime | None = Field(
-        default_factory=utcnow,
-        sa_column=Column(DateTime(timezone=True), nullable=True),
+
+    # Deal and stage linkage
+    deal_id: UUID = Field(
+        foreign_key="crm_deals.deal_id",
+        index=True,
+        description="Deal ID (FK) for which the transition occurred.",
     )
-    deal_id: UUID = Field(foreign_key="crm_deals.deal_id", index=True)
     stage_id: UUID | None = Field(
         default=None,
         foreign_key="crm_deal_stages.stage_id",
         index=True,
+        description="Internal stage ID (FK) after the transition, when resolved.",
     )
-    stage_external_id: str | None = Field(default=None, sa_column=Column(String(255)))
-    from_stage_external_id: str | None = Field(default=None, sa_column=Column(String(255)))
+    stage_external_id: str | None = Field(
+        default=None,
+        sa_column=Column(String(255)),
+        description="Provider stage ID the deal entered.",
+    )
+    from_stage_external_id: str | None = Field(
+        default=None,
+        sa_column=Column(String(255)),
+        description="Provider stage ID the deal exited.",
+    )
 
+    # Transition timing
     entered_at: datetime = Field(
         sa_column=Column(DateTime(timezone=True), nullable=False),
         description="Timestamp the deal entered this stage",
@@ -401,18 +598,53 @@ class CRMDealStageHistory(SyncedRecordMixin, table=True):
     exited_at: datetime | None = Field(
         default=None,
         sa_column=Column(DateTime(timezone=True), nullable=True),
+        description="Timestamp the deal exited this stage, if known.",
     )
-    elapsed_seconds: int | None = Field(default=None)
+    elapsed_seconds: int | None = Field(
+        default=None,
+        description="Computed seconds spent in the stage (if available).",
+    )
 
+    # Snapshot metrics
     amount_at_stage: float | None = Field(
         default=None,
         sa_column=Column(Numeric(18, 2), nullable=True),
+        description="Deal amount snapshot taken at the time of entry.",
     )
-    probability_at_stage: float | None = Field(default=None)
+    probability_at_stage: float | None = Field(
+        default=None,
+        description="Win probability snapshot (0-100) at the time of entry.",
+    )
+
+    # Origin
     source: str | None = Field(
         default=None,
         sa_column=Column(String(64), nullable=True),
         description="Origin of the change (api, workflow, user) when provided",
+    )
+
+    # Sync meta
+    synced_at: datetime = Field(
+        default_factory=utcnow,
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+        description="Timestamp when this history row was last synced.",
+    )
+    source_modified_at: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+        description="Last modified timestamp reported by the provider.",
+    )
+    last_seen_at: datetime | None = Field(
+        default_factory=utcnow,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+        description="Most recent time this transition was observed during sync.",
+    )
+
+    # Payload
+    data_payload: dict | None = Field(
+        default=None,
+        sa_column=Column(JSONB),
+        description="Raw provider payload for the transition event.",
     )
 
     deal: CRMDeal | None = Relationship(back_populates="stage_history")

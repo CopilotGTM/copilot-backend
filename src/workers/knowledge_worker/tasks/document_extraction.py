@@ -322,6 +322,7 @@ def document_extraction(self, organisation_id: UUID, source_id: UUID):
             return
 
         mark_job_in_progress(session, job, source_id)
+        publisher.publish(status=OrganisationSourceStatus.PROCESSING.value, progress=5)
 
         if not _validate_source_requirements(session, publisher, source, job):
             return

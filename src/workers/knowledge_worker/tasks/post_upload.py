@@ -77,7 +77,7 @@ def _handle_duplicate_if_any(
             .filter(
                 OrganisationSource.checksum == source.checksum,
                 OrganisationSource.source_id != source.source_id,
-                not OrganisationSource.is_deleted,
+                OrganisationSource.is_deleted.is_(False),
                 OrganisationSource.status != OrganisationSourceStatus.FAILED,
             )
             .first()

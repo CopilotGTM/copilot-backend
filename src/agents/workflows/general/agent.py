@@ -6,6 +6,9 @@ from agno.agent import Agent
 from agno.models.azure import AzureOpenAI
 from dotenv import load_dotenv
 from src.agents.base import Agent as BaseAgent
+from src.agents.context import AgentContext
+from src.agents.tools.internal_knowledge_base import internal_knowledge_base
+from src.agents.tools.internet_search import internet_search
 from src.agents.tools.transparent_tools import AgentCapabilities
 from src.agents.utils import prepare_messages
 from src.agents.workflows.general.prompts.general_prompt import GENERAL_PROMPT
@@ -30,15 +33,20 @@ logger = get_logger()
 class GeneralAgent(BaseAgent):
     """General agent for handling user queries with enhanced transparency."""
 
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        context: AgentContext,
+    ):
         self.general_agent = Agent(
-            model=AzureOpenAI(id="gpt-5-mini", api_version="2024-12-01-preview"),
+            model=AzureOpenAI(id="gpt-5", api_version="2024-12-01-preview"),
             description=GENERAL_PROMPT,
             structured_outputs=False,
             debug_mode=False,
             markdown=True,
         )
         self.capabilities: AgentCapabilities | None = None
+        self.context = context
 
     def _extract_json_str(self, text: str) -> str | None:
         """Extract a JSON object substring from text robustly."""
@@ -423,6 +431,42 @@ class GeneralAgent(BaseAgent):
 
         capabilities.set_frame_emitter(emit_frame)
         return capabilities
+
+    async def _search_internal_knowledge(self, query: str, limit: int = 5) -> list[dict[str, str]]:
+        """Search internal knowledge base using InternalKnowledgeBase tool."""
+        if not self.context.session or not self.context.organisation_id:
+            logger.warning("InternalKnowledgeBase unavailable: missing session or organisation_id")
+            return []
+
+        try:
+            return await self.capabilities.use_tool(
+                tool_name="InternalKnowledgeBase",
+                tool_func=internal_knowledge_base,
+                parameters={
+                    "session": self.context.session,
+                    "organisation_id": self.context.organisation_id,
+                    "query": query,
+                    "limit": limit,
+                    "user_id": self.context.user_id,
+                },
+                description=f"Searching internal documents for: {query}",
+            )
+        except Exception as e:
+            logger.error(f"InternalKnowledgeBase tool failed: {e}", exc_info=True)
+            return []
+
+    async def _search_internet(self, query: str, max_results: int = 5) -> list[dict[str, str]]:
+        """Search internet using InternetSearch tool."""
+        try:
+            return await self.capabilities.use_tool(
+                tool_name="InternetSearch",
+                tool_func=internet_search,
+                parameters={"query": query, "max_results": max_results},
+                description=f"Searching the web for: {query}",
+            )
+        except Exception as e:
+            logger.error(f"InternetSearch tool failed: {e}", exc_info=True)
+            return []
 
     async def _run_initial_setup(self, frame_queue: list):
         """Run initial setup and emit progress frames."""

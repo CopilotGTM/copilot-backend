@@ -39,6 +39,22 @@ class AzureKeyVaultSecretProvider(SecretProvider):
 
     async def _ensure_client(self):
         """Create the SecretClient once (lazy init) with automatic recreation on auth failures."""
+        # Check if current event loop matches the one client was created in
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+
+        # Force recreation if loop has changed (happens in Celery with asyncio.run())
+        if (
+            self._client is not None
+            and hasattr(self, "_client_loop")
+            and self._client_loop != current_loop
+        ):
+            logger.debug("Event loop changed, recreating Azure Key Vault client")
+            await self._close_client()
+            self._client = None
+
         if self._client is not None:
             # Check if we need to recreate client due to auth failures
             if self._last_auth_failure and time.time() - self._last_auth_failure < 300:  # 5 minutes
@@ -55,6 +71,17 @@ class AzureKeyVaultSecretProvider(SecretProvider):
 
             await self._create_client()
 
+    async def _close_client(self):
+        """Close existing client and credential properly."""
+        if self._client:
+            with contextlib.suppress(Exception):
+                await self._client.close()
+        if self._credential:
+            with contextlib.suppress(Exception):
+                await self._credential.close()
+        self._client = None
+        self._credential = None
+
     async def _create_client(self):
         """Create a new SecretClient with appropriate credential strategy."""
         key_vault_url = secret_manager_config.AZURE_KEY_VAULT_URL
@@ -63,9 +90,13 @@ class AzureKeyVaultSecretProvider(SecretProvider):
 
         try:
             # Close existing client if any
-            if self._client:
-                with contextlib.suppress(Exception):
-                    await self._client.close()
+            await self._close_client()
+
+            # Store current event loop
+            try:
+                self._client_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                self._client_loop = None
 
             # Create new credential based on environment
             if os.getenv("ENV") == "local":
