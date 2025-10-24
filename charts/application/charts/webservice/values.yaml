@@ -28,18 +28,18 @@ image:
 
 service:
   type: ClusterIP
-  port: 80
+  port: 8080
 
 # Internal service for health checks (cluster-internal only)
-# Note: Uses same port as main service since app runs on single port 80
+# Note: Uses same port as main service since app runs on single port 8080
 internalService:
   type: ClusterIP
-  port: 80  # Same port as application (80) - app serves both public and internal endpoints
+  port: 8080  # Same port as application (8080) - app serves both public and internal endpoints
   annotations:
     # Service mesh or monitoring tool annotations can go here
     prometheus.io/scrape: "true"
     prometheus.io/path: "/internal/health/detailed"
-    prometheus.io/port: "80"
+    prometheus.io/port: "8080"
 
 # Network policy configuration for enhanced security
 networkPolicy:

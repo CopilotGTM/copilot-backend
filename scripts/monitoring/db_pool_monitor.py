@@ -762,7 +762,7 @@ def _resolve_force_close(ctx: str, explicit: Optional[bool]) -> bool:
 
 
 async def start_pool_monitor(
-    interval_sec: float = 30.0,
+    interval_sec: float = 300.0,
     long_running_threshold_sec: float = 300.0,
     enforce_max_checkout_sec: Optional[float] = None,
     force_close: Optional[bool] = None,

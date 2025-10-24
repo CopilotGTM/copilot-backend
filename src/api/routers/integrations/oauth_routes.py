@@ -16,6 +16,7 @@ from src.api.dependencies.organisation_dependencies import (
     get_current_user,
     get_org_async_session,
 )
+from src.api.dependencies.rate_limit import rate_limit_user_write
 from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.integrations import (
     OAuthInitiateRequest,
@@ -23,14 +24,12 @@ from src.api.schemas.integrations import (
 )
 from src.api.utils.http_response import Response
 from src.domain.models.master_tables import User
-from src.domain.models.organisation_tables.sync import (
-    IntegrationScope,
-)
 from src.infra.auth.user_auth import user_auth
 from src.infra.config.constant import IntegrationErrors
 from src.infra.utils.logger import get_logger
-from src.service.integrations import IntegrationService, NangoClient, webhook_service
+from src.service.integrations import IntegrationService, NangoClient
 from src.service.integrations.nango_client import NangoConnectionError
+from src.service.integrations.nango_webhook_service import NangoWebhookService
 from src.service.integrations.oauth_service import (
     IntegrationUnavailableError,
     OAuthIntegrationService,
@@ -39,7 +38,42 @@ from src.service.integrations.oauth_service import (
 logger = get_logger(__name__)
 router = APIRouter(prefix="/oauth", tags=["integrations-oauth"])
 
-oauth_service = OAuthIntegrationService()
+
+async def get_integration_service(
+    user_ids: UserIDs = Depends(get_current_user),
+    session: AsyncSession = Depends(get_org_async_session),
+):
+    """Dependency to create IntegrationService instance with proper cleanup."""
+    nango = NangoClient()
+    service = IntegrationService(db_session=session, user_ids=user_ids, nango_client=nango)
+    try:
+        yield service
+    finally:
+        await nango.close()
+        if hasattr(service, "close") and callable(service.close):
+            await service.close()
+
+
+async def get_oauth_service():
+    """Dependency to create OAuthIntegrationService instance with proper cleanup."""
+    service = OAuthIntegrationService()
+    try:
+        yield service
+    finally:
+        # OAuthIntegrationService creates NangoClient internally
+        # Future: refactor to accept NangoClient in __init__ for better resource management
+        pass
+
+
+async def get_webhook_service():
+    """Dependency to create NangoWebhookService instance with proper cleanup."""
+    service = NangoWebhookService()
+    try:
+        yield service
+    finally:
+        # NangoWebhookService creates NangoClient internally
+        # Future: refactor to accept NangoClient in __init__ for better resource management
+        pass
 
 
 @router.post(
@@ -59,20 +93,20 @@ oauth_service = OAuthIntegrationService()
 )
 async def initiate_oauth_flow(
     request: OAuthInitiateRequest,
-    user_ids: UserIDs = Depends(get_current_user),
     user: User = Depends(user_auth),
+    oauth_service: OAuthIntegrationService = Depends(get_oauth_service),
+    _rl: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[OAuthInitiateResponse]:
     """
-    Create a Nango Connect Session for OAuth authorization.
+    Initiate OAuth flow by creating a Nango Connect Session.
 
-    New Flow (Post July 31, 2025):
-    1. Backend creates a Connect Session and returns session token
-    2. Frontend uses session token with Nango Connect UI
-    3. Nango sends webhook to backend with connection_id after successful auth
-
-    OAuth scopes are automatically determined from integration metadata configuration.
+    Returns a session token that the frontend uses with Nango Connect UI
+    to complete the OAuth authorization flow.
     """
     try:
+        # Extract user_ids from the authenticated user
+        user_ids = UserIDs(user_id=user.user_id, organisation_id=user.organisation_id)
+
         response_data = await oauth_service.create_connect_session(
             user_ids=user_ids,
             user=user,
@@ -131,74 +165,70 @@ async def initiate_oauth_flow(
 @router.delete(
     "/disconnect/{integration_id}",
     response_model=GenericResponse[None],
-    summary="Disconnect and delete an integration",
+    summary="Disconnect and deactivate an integration",
     description="""
-    Revokes OAuth tokens and deletes the integration.
+    Revokes OAuth tokens and marks the integration as inactive.
 
-    **Warning:** This action is irreversible. All sync history will be deleted.
+    The integration will no longer appear in active integration lists or be used for syncing.
+    Historical sync data is preserved for audit purposes.
     """,
 )
 async def disconnect_integration(
     integration_id: UUID,
-    session: AsyncSession = Depends(get_org_async_session),
-    user_ids: UserIDs = Depends(get_current_user),
+    service: IntegrationService = Depends(get_integration_service),
+    _rl: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[None]:
     """
-    Disconnect integration and revoke tokens.
+    Disconnect and deactivate an integration.
 
-    This will:
-    1. Delete the connection from Nango (revoke tokens)
-    2. Delete the integration record from database
-    3. Cascade delete all sync history
+    Revokes OAuth connection in Nango and marks the integration as inactive locally.
+    Users can only disconnect organization-wide integrations or their own user-scoped ones.
     """
     try:
-        nango = NangoClient()
-        integration_service = IntegrationService(
-            db_session=session,
-            organisation_id=user_ids.organisation_id,
-            nango_client=nango,
-        )
-
         # First, get the integration to check access
-        integration = await integration_service.get_integration(integration_id=integration_id)
+        integration = await service.get_integration(integration_id=integration_id)
 
         if not integration:
             logger.warning(
-                f"Integration {integration_id} not found for org {user_ids.organisation_id}"
+                f"Integration {integration_id} not found for org {service.user_ids.organisation_id}"
             )
             return Response.not_found_response(message=IntegrationErrors.INTEGRATION_NOT_FOUND)
 
-        # Check access: user can only disconnect org-wide or their own user-scoped integrations
-        if (
-            integration.integration_scope == IntegrationScope.USER
-            and integration.created_by_user_id != user_ids.user_id
-        ):
-            logger.warning(
-                f"User {user_ids.user_id} attempted to disconnect user-scoped integration "
-                f"{integration_id} created by {integration.created_by_user_id}"
-            )
-            return Response.forbidden_error_response(
-                message="You don't have permission to disconnect this integration"
+        if integration.is_active is False:
+            logger.warning(f"Integration {integration_id} is does not exist or is already inactive")
+            return Response.bad_request_error_response(
+                message=IntegrationErrors.INTEGRATION_ALREADY_INACTIVE
             )
 
         # Delete integration (includes Nango cleanup)
-        await integration_service.delete_integration(
-            integration_id=integration_id,
+        await service.delete_integration_from_nango(
+            connection_id=integration.connection_id,
+            integration_type=integration.integration_type,
         )
 
-        logger.info(f"Disconnected integration {integration_id} for org {user_ids.organisation_id}")
+        # Soft delete: mark as inactive
+        integration.is_active = False
+        integration.last_sync_error = "Integration disconnected by user"
+        service.db.add(integration)
+        await service.db.commit()
 
-        return Response.success_response(message="Integration disconnected successfully", data=None)
+        # Log disconnection
+        logger.info(
+            f"Disconnected and deactivated integration {integration_id} for org {service.user_ids.organisation_id}"
+        )
+        return Response.success_response(
+            message="Integration disconnected and marked as inactive successfully", data=None
+        )
 
     except ValueError as e:
         logger.warning(
-            f"Integration {integration_id} not found for org {user_ids.organisation_id}: {str(e)}"
+            f"Integration {integration_id} not found for org {service.user_ids.organisation_id}: {str(e)}"
         )
         return Response.not_found_response(message=IntegrationErrors.INTEGRATION_NOT_FOUND)
     except Exception as e:
         logger.error(
             f"Failed to disconnect integration {integration_id} "
-            f"for org {user_ids.organisation_id}: {str(e)}",
+            f"for org {service.user_ids.organisation_id}: {str(e)}",
             exc_info=True,
         )
         return Response.internal_server_error_response(
@@ -233,21 +263,56 @@ async def disconnect_integration(
 async def handle_nango_webhook(
     request: Request,
     x_nango_signature: str = Header(None, alias="X-Nango-Signature"),
+    webhook_service: NangoWebhookService = Depends(get_webhook_service),
 ) -> Response:
-    """
-    Handle webhook notifications from Nango after successful OAuth authorization.
+    try:
+        # Extract JSON payload
+        payload = await request.json()
+        if not webhook_service._is_valid_signature(x_nango_signature, payload):
+            logger.error("Unauthorized Nango webhook attempt detected.")
+            return Response.unauthorized_response(message="Invalid webhook signature.")
 
-    This endpoint is called by Nango's servers (not by frontend) after a user
-    completes the OAuth flow. It creates the integration record in our database.
+        # Check success flag
+        if not payload.get("success"):
+            logger.error("Received unsuccessful Nango webhook: %s", payload)
+            return Response.bad_request_response(message="Unsuccessful webhook payload.")
 
-    **Security**:
-    - Does NOT use our JWT authentication (Nango doesn't have our tokens)
-    - Instead verifies X-Nango-Signature header using HMAC-SHA256
-    - Webhook secret must be configured in environment variables
+        # Determine webhook type and process accordingly
+        webhook_type = payload.get("type")
+        match webhook_type:
+            case "auth":
+                return await webhook_service._handle_authorization_webhook(payload)
+            case "sync":
+                # Validate required fields
+                if not payload.get("connectionId") or not payload.get("providerConfigKey"):
+                    logger.error(
+                        "Sync webhook missing connectionId or providerConfigKey: %s", payload
+                    )
+                    return Response.bad_request_response(
+                        message="Missing connectionId or providerConfigKey in sync webhook."
+                    )
 
-    **Data Flow**:
-    - organization_id is extracted from the webhook payload (endUser.tags.organizationId)
-    - Database session is created using that organization_id
-    """
-    payload = await request.json()
-    return await webhook_service.handle_webhook(payload, x_nango_signature)
+                # Fetch mapping details
+                mapping_details = await webhook_service._get_connection_mapping(
+                    UUID(payload.get("connectionId"))
+                )
+                if not mapping_details:
+                    logger.error(
+                        "Sync webhook: mapping not found for connection %s",
+                        payload.get("connectionId"),
+                    )
+                    return Response.bad_request_response(
+                        message="Mapping not found for connection.", data=None
+                    )
+
+                return await webhook_service._handle_sync_webhook(
+                    payload,
+                    organisation_id=mapping_details.organisation_id,
+                    integration_id=mapping_details.integration_id,
+                )
+            case _:
+                logger.error("Received unknown Nango webhook type: %s", webhook_type)
+                return Response.bad_request_response(message="Unknown webhook type.")
+    except Exception as e:
+        logger.error("Failed to process Nango webhook: %s", str(e), exc_info=True)
+        return Response.internal_server_error_response(message="Failed to process webhook.")

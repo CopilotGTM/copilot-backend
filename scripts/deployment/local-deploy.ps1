@@ -228,6 +228,8 @@ function Get-AzureKeyVaultSecrets {
     $env:SUPABASE_ANON_KEY = Get-SecretSafely $KEY_VAULT_NAME "supabase-anon-key"
     $env:SUPABASE_JWT_SECRET = Get-SecretSafely $KEY_VAULT_NAME "supabase-jwt-secret"
     $env:SUPABASE_SERVICE_ROLE_KEY = Get-SecretSafely $KEY_VAULT_NAME "supabase-service-role-key"
+    $env:NANGO_BASE_URL = "https://api.nango.dev"
+    $env:NANGO_SECRET_KEY = Get-SecretSafely $KEY_VAULT_NAME "nango-secret-key"
 
     Write-Success "Secrets retrieved from Key Vault and configuration set"
 }
@@ -276,6 +278,15 @@ function Deploy-WithHelm {
         "--set", "knowledge-upload-worker.image.repository=$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY",
         "--set", "knowledge-upload-worker.image.tag=$IMAGE_TAG",
         "--set", "knowledge-upload-worker.autoscaling.enabled=true",
+        "--set", "organization-worker.image.repository=$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY",
+        "--set", "organization-worker.image.tag=$IMAGE_TAG",
+        "--set", "organization-worker.autoscaling.enabled=true",
+        "--set", "chat-worker.image.repository=$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY",
+        "--set", "chat-worker.image.tag=$IMAGE_TAG",
+        "--set", "integrations-worker.image.repository=$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY",
+        "--set", "integrations-worker.image.tag=$IMAGE_TAG",
+        "--set", "integrations-worker.autoscaling.enabled=true",
+        "--set", "chat-worker.autoscaling.enabled=true",
         "--set", "api.secrets.DATABASE_HOST=$($env:DATABASE_HOST)",
         "--set", "api.secrets.DATABASE_USER=$($env:DATABASE_USER)",
         "--set", "api.secrets.DATABASE_PORT=$($env:DATABASE_PORT)",
@@ -311,14 +322,18 @@ function Deploy-WithHelm {
         "--set", "api.secrets.AZURE_EMBEDDER_OPENAI_ENDPOINT=$($env:AZURE_EMBEDDER_OPENAI_ENDPOINT)",
         "--set", "api.secrets.AZURE_EMBEDDER_DEPLOYMENT=$($env:AZURE_EMBEDDER_DEPLOYMENT)",
         "--set", "api.secrets.AZURE_SUBSCRIPTION=$($env:AZURE_SUBSCRIPTION)",
+        "--set", "api.secrets.NANGO_SECRET_KEY=$($env:NANGO_SECRET_KEY)",
+        "--set", "api.secrets.NANGO_BASE_URL=$($env:NANGO_BASE_URL)",
         "--set", "knowledge-extract-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
         "--set", "knowledge-upload-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
         "--set", "organization-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
         "--set", "chat-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
+        "--set", "integrations-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
         "--set", "knowledge-extract-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
         "--set", "knowledge-upload-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
         "--set", "organization-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
-        "--set", "chat-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)"
+        "--set", "chat-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
+        "--set", "integrations-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)"
     )
 
     # Execute Helm command and check for errors
@@ -344,12 +359,14 @@ function Deploy-WithHelm {
     kubectl rollout restart deployment copilot-backend-knowledge-upload-worker -n $NAMESPACE
     kubectl rollout restart deployment copilot-backend-chat-worker -n $NAMESPACE
     kubectl rollout restart deployment copilot-backend-organization-worker -n $NAMESPACE
+    kubectl rollout restart deployment copilot-backend-integrations-worker -n $NAMESPACE
     
     Write-Host "Waiting for rollouts to complete..."
     kubectl rollout status deployment copilot-backend-knowledge-extract-worker -n $NAMESPACE --timeout=300s
     kubectl rollout status deployment copilot-backend-knowledge-upload-worker -n $NAMESPACE --timeout=300s
     kubectl rollout status deployment copilot-backend-chat-worker -n $NAMESPACE --timeout=300s
     kubectl rollout status deployment copilot-backend-organization-worker -n $NAMESPACE --timeout=300s
+    kubectl rollout status deployment copilot-backend-integrations-worker -n $NAMESPACE --timeout=300s
     
     Write-Success "Worker restarts completed"
     
@@ -384,6 +401,13 @@ function Test-DeploymentStatus {
         $workers
     } else {
         Write-Host "No knowledge workers deployed yet"
+    }
+
+    $integrations = kubectl get deployments -n $NAMESPACE | Select-String "integrations"
+    if ($integrations) {
+        $integrations
+    } else {
+        Write-Host "No integrations workers deployed yet"
     }
 
     Write-Success "Deployment status checked"

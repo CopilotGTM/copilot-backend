@@ -1,4 +1,4 @@
-from logging.config import fileConfig
+﻿from logging.config import fileConfig
 import os
 import urllib.parse
 
@@ -20,6 +20,11 @@ from src.domain.models.organisation_tables import (
     ChatMessageAttachmentLink,
     CalendarEvent,
     CalendarAttendee,
+    CRMPipeline,
+    CRMDealStage,
+    CRMDeal,
+    CRMDealParticipant,
+    CRMDealStageHistory,
 )
 
 load_dotenv()
@@ -47,7 +52,6 @@ if config.config_file_name is not None:
 
 # Create org-specific metadata by importing only org models
 # This ensures we only track org-specific tables
-from sqlalchemy import MetaData
 
 # Create a fresh metadata instance
 org_metadata = MetaData()
@@ -68,6 +72,11 @@ all_org_models = [
     ChatMessageAttachmentLink,
     CalendarEvent,
     CalendarAttendee,
+    CRMPipeline,
+    CRMDealStage,
+    CRMDeal,
+    CRMDealParticipant,
+    CRMDealStageHistory,
 ]
 
 for model in all_org_models:

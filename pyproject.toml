@@ -89,9 +89,15 @@ dependencies = [
     "wikipedia==1.4.0",
     "duckduckgo-search~=8.1.1",
     "resend==2.11.0",
+    "huggingface-hub[hf_xet]==0.35.3",
     
     # Utilities
     "packaging==23.2",
+    
+    # PyTorch CPU-only (must be after other dependencies to avoid GPU versions)
+    "torch==2.5.1",
+    "torchvision==0.20.1",
+    "torchaudio==2.5.1",
 ]
 
 [project.optional-dependencies]
@@ -150,8 +156,20 @@ packages = ["src"]
 # UV-specific configuration for production builds
 
 [tool.uv.sources]
-# Configure trusted hosts or private registries if needed
-# Example: package-name = { index = "private-pypi" }
+torch = [
+    { index = "pytorch-cpu" },
+]
+torchvision = [
+    { index = "pytorch-cpu" },
+]
+torchaudio = [
+    { index = "pytorch-cpu" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

@@ -74,7 +74,11 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PATH="/app/.venv/bin:$PATH" \
     PYTHONPATH="/app:$PYTHONPATH" \
-    UV_LINK_MODE=copy
+    UV_LINK_MODE=copy \
+    HOME=/home/appuser \
+    HF_HOME=/app/.cache/huggingface \
+    TRANSFORMERS_CACHE=/app/.cache/huggingface/transformers \
+    SENTENCE_TRANSFORMERS_HOME=/app/.cache/sentence-transformers
 
 # Install only runtime system dependencies
 # Note: curl is only for healthcheck, ca-certificates for HTTPS
@@ -102,31 +106,22 @@ COPY --chown=appuser:appuser scripts/ ./scripts/
 # Convert Windows line endings to Unix (CRLF -> LF) for shell scripts
 RUN find ./scripts -type f -name "*.sh" -exec sed -i 's/\r$//' {} +
 
-# Remove any __pycache__ from source code
-RUN find ./src -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true \
-    && find ./src -type f -name "*.pyc" -delete
-
-# Create log directory with proper permissions
-RUN mkdir -p /var/log /tmp && \
-    chown -R appuser:appuser /var/log /tmp
+# Create directories with proper permissions
+# - /var/log: Application logs
+# - /tmp: Temporary files
+# - /app/.cache: HuggingFace model cache and other ML artifacts
+# - /home/appuser: User home directory for model downloads
+RUN mkdir -p /var/log /tmp /app/.cache /home/appuser && \
+    chown -R appuser:appuser /var/log /tmp /app/.cache /home/appuser
 
 # Switch to non-root user
 USER appuser
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD curl -f http://localhost:80/health || exit 1
-
-# Expose application port
-EXPOSE 80
+# Expose application port (using non-privileged port for non-root user)
+EXPOSE 8080
 
 # Start Uvicorn with production settings
 CMD uvicorn src.main:app \
     --host 0.0.0.0 \
-    --port 80 \
-    --workers ${WORKERS} \
-    --log-level info \
-    --access-log \
-    --proxy-headers \
-    --forwarded-allow-ips "*" \
-    --timeout-keep-alive 5
+    --port 8080 \
+    --workers 2

@@ -100,7 +100,7 @@ class KnowledgeSourceSSEService:
         base_filters = [
             OrganisationSource.organisation_id == self.organisation_id,
             OrganisationSource.user_id == self.user_id,
-            not OrganisationSource.is_deleted,  # exclude soft-deleted
+            OrganisationSource.is_deleted.is_(False),  # exclude soft-deleted
         ]
 
         stmt = select(OrganisationSource).where(*base_filters)

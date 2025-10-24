@@ -13,7 +13,6 @@ from src.infra.config.integrations_metadata import (
 )
 from src.infra.config.nango_provider_mapping import (
     to_nango_connect_integration_key,
-    to_nango_provider_key,
 )
 from src.infra.utils.logger import get_logger
 from src.service.integrations.nango_client import NangoClient
@@ -115,10 +114,31 @@ class OAuthIntegrationService:
         user: User,
         integration_type: IntegrationType,
     ) -> OAuthInitiateResponse:
+        """
+        Create and return a short-lived Nango Connect session for the given user and integration.
+        This coroutine validates the requested integration, ensures it is available, and then
+        initializes a Nango Connect session tied to the specified end user and organization.
+        It uses the user's email and display name for the session, logs the action, extracts the
+        session token and expiration, and returns them wrapped in an OAuthInitiateResponse.
+        Parameters:
+            user_ids (UserIDs): Identifiers for the end user and organization (user_id, organisation_id).
+            user (User): The user initiating the connection (used for email and display name).
+            integration_type (IntegrationType): The integration to connect (e.g., provider/application).
+        Returns:
+            OAuthInitiateResponse: Contains the short-lived session_token, the requested integration_type,
+            and the token's expires_at timestamp.
+        Raises:
+            Exception: Propagates exceptions from integration validation, availability checks, or the
+            underlying Nango client.
+            ValueError: If the session response is missing required fields or cannot be parsed.
+        Notes:
+            - This is an async method and must be awaited.
+            - This does not complete OAuth; it creates a Connect session that the client uses to start
+              the provider's authorization flow.
+        """
         metadata = self._get_validated_metadata(integration_type)
         self._ensure_integration_available(metadata)
 
-        nango_provider_key = to_nango_provider_key(integration_type)
         nango_integration_key = to_nango_connect_integration_key(integration_type)
 
         nango = NangoClient()
@@ -131,11 +151,10 @@ class OAuthIntegrationService:
         )
 
         logger.info(
-            "Created Connect Session for user %s, org %s, provider %s (nango_provider=%s, nango_integration=%s)",
+            "Created Connect Session for user %s, org %s, provider %s, integration_key=%s",
             user_ids.user_id,
             user_ids.organisation_id,
             integration_type.value,
-            nango_provider_key,
             nango_integration_key,
         )
 
