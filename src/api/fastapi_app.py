@@ -34,8 +34,11 @@ from src.api.routers.users.auth_handler import router as user_auth_router
 from starlette.middleware.sessions import SessionMiddleware
 
 from ..api.events.socket_app import sio
-from ..infra.messaging.redis_client import close_redis_pool
-from ..infra.messaging.redis_streams import close_async_redis_pool
+from ..infra.messaging.redis_client import close_redis_pool, initialize_redis_pool
+from ..infra.messaging.redis_streams import (
+    close_async_redis_pool,
+    initialize_async_redis_pool,
+)
 from ..infra.utils.logger import get_logger
 
 # Secret maintenance removed; no background task required
@@ -48,6 +51,12 @@ async def lifespan(app: FastAPI):
     """Lifespan event handler for FastAPI application."""
     # Startup
     logger.info("Starting application services...")
+
+    # Initialize Redis connection pools at startup
+    logger.info("Initializing Redis connection pools...")
+    initialize_redis_pool()  # Sync Redis pool
+    await initialize_async_redis_pool()  # Async Redis pool
+    logger.info("Redis connection pools initialized successfully")
 
     # Start DB pool monitor if available
     if start_pool_monitor is not None:

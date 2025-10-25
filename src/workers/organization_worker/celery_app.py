@@ -16,7 +16,7 @@ from celery.signals import (
 )
 
 # Redis connection pool management
-from src.infra.messaging.redis_client import close_redis_pool
+from src.infra.messaging.redis_client import close_redis_pool, initialize_redis_pool
 from src.infra.utils.logger import get_logger
 from src.workers.base.celery_base import create_celery_app
 from src.workers.organization_worker.config import OrganizationWorkerConfig
@@ -52,6 +52,8 @@ except Exception:
 @worker_ready.connect
 def worker_ready_handler(sender=None, **kwargs):
     """Initialize worker resources when worker is ready."""
+    logger.info("Organization worker starting. Initializing Redis connection pool...")
+    initialize_redis_pool()
     logger.info("Organization worker is ready. Redis connection pool initialized.")
 
 

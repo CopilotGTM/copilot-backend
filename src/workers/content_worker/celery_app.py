@@ -8,7 +8,7 @@ from celery.signals import worker_ready, worker_shutdown
 from dotenv import load_dotenv
 
 # Redis connection pool management
-from src.infra.messaging.redis_client import close_redis_pool
+from src.infra.messaging.redis_client import close_redis_pool, initialize_redis_pool
 from src.infra.utils.logger import get_logger
 from src.workers.base.celery_base import create_celery_app
 from src.workers.content_worker.config import ContentWorkerConfig
@@ -32,6 +32,8 @@ app = create_celery_app("content_worker", config, tasks_module)
 @worker_ready.connect
 def worker_ready_handler(sender=None, **kwargs):
     """Initialize worker resources when worker is ready."""
+    logger.info("Content worker starting. Initializing Redis connection pool...")
+    initialize_redis_pool()
     logger.info("Content worker is ready. Redis connection pool initialized.")
 
 

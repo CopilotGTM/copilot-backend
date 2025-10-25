@@ -46,6 +46,7 @@ logger = get_logger("redis_streams")
 __all__ = [
     "AsyncRedisStreams",
     "xadd_json_frame",
+    "initialize_async_redis_pool",
     "close_async_redis_pool",
 ]
 
@@ -62,16 +63,28 @@ class AsyncRedisConnectionManager:
 
     _instance: AsyncRedisConnectionManager | None = None
     _async_pool: object | None = None
+    _initialized: bool = False
 
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
 
+    async def initialize(self) -> None:
+        """
+        Explicitly initialize the async Redis connection pool.
+        Safe to call multiple times - will only initialize once.
+        Call this during application/worker startup.
+        """
+        if not self._initialized:
+            await self._initialize_pool()
+            self._initialized = True
+
     async def get_client(self):
         """Get async Redis client with connection pooling."""
         if self._async_pool is None:
             await self._initialize_pool()
+            self._initialized = True
         return redis_async.Redis(connection_pool=self._async_pool)
 
     async def _initialize_pool(self) -> None:
@@ -107,16 +120,25 @@ class AsyncRedisConnectionManager:
         test_client = redis_async.Redis(connection_pool=self._async_pool)
         try:
             await test_client.ping()
-            logger.info("Async Redis connection pool initialized successfully")
+            logger.info(
+                "Async Redis connection pool initialized successfully (host=%s, ssl=%s)",
+                redis_host,
+                ssl_enabled,
+            )
         except Exception as e:
             logger.error("Failed to initialize async Redis connection pool: %s", e)
+            self._async_pool = None
+            self._initialized = False
             raise
+        finally:
+            await test_client.close()
 
     async def close_pool(self) -> None:
         """Close the async connection pool."""
         if self._async_pool:
             await self._async_pool.disconnect()
             self._async_pool = None
+            self._initialized = False
             logger.info("Async Redis connection pool closed")
 
 
@@ -353,6 +375,14 @@ def xadd_json_frame(
     except Exception as e:  # pragma: no cover (network issues)
         logger.warning("Failed to XADD to %s: %s", stream_key, e)
         return None
+
+
+async def initialize_async_redis_pool() -> None:
+    """
+    Initialize the async Redis connection pool at application startup.
+    Safe to call multiple times - will only initialize once.
+    """
+    await _async_redis_manager.initialize()
 
 
 async def close_async_redis_pool() -> None:

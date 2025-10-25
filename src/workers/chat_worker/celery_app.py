@@ -17,7 +17,7 @@ from celery.signals import (
 from dotenv import load_dotenv
 
 # Redis connection pool management
-from src.infra.messaging.redis_client import close_redis_pool
+from src.infra.messaging.redis_client import close_redis_pool, initialize_redis_pool
 from src.infra.utils.logger import get_logger
 from src.workers.base.celery_base import create_celery_app
 from src.workers.chat_worker.config import ChatWorkerConfig
@@ -63,6 +63,8 @@ logger.info(f"Chat worker default queue: {config.task_default_queue}")
 @worker_ready.connect
 def worker_ready_handler(sender=None, **kwargs):
     """Initialize worker resources when worker is ready."""
+    logger.info("Chat worker starting. Initializing Redis connection pool...")
+    initialize_redis_pool()
     logger.info("Chat worker is ready. Redis connection pool initialized.")
 
 

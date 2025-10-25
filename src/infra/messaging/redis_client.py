@@ -17,6 +17,7 @@ class RedisConnectionManager:
 
     _instance: Optional["RedisConnectionManager"] = None
     _sync_pool: redis.ConnectionPool | None = None
+    _initialized: bool = False
 
     def __new__(cls):
         if cls._instance is None:
@@ -25,8 +26,18 @@ class RedisConnectionManager:
 
     def __init__(self):
         # Do not eagerly initialize the pool at import time.
-        # Initialize lazily on first use to avoid import-time failures.
+        # Initialize lazily on first use or explicitly via initialize().
         pass
+
+    def initialize(self) -> None:
+        """
+        Explicitly initialize the Redis connection pool.
+        Safe to call multiple times - will only initialize once.
+        Call this during application/worker startup.
+        """
+        if not self._initialized:
+            self._initialize_pool()
+            self._initialized = True
 
     def _initialize_pool(self) -> None:
         """Initialize Redis connection pool."""
@@ -76,7 +87,11 @@ class RedisConnectionManager:
         test_client = redis.Redis(connection_pool=self._sync_pool)
         try:
             test_client.ping()
-            logger.info("Redis connection pool initialized successfully")
+            logger.info(
+                "Redis connection pool initialized successfully (host=%s, ssl=%s)",
+                redis_host,
+                ssl_enabled,
+            )
         except Exception as e:
             logger.error("Failed to initialize Redis connection pool: %s", e)
             # Ensure we don't keep a broken pool around
@@ -85,12 +100,14 @@ class RedisConnectionManager:
             except Exception:
                 pass
             self._sync_pool = None
+            self._initialized = False
             raise
 
     def get_client(self) -> redis.Redis:
         """Get a Redis client from the connection pool."""
         if self._sync_pool is None:
             self._initialize_pool()
+            self._initialized = True
         return redis.Redis(connection_pool=self._sync_pool)
 
     def close_pool(self) -> None:
@@ -98,11 +115,23 @@ class RedisConnectionManager:
         if self._sync_pool:
             self._sync_pool.disconnect()
             self._sync_pool = None
+            self._initialized = False
             logger.info("Redis connection pool closed")
 
 
 # Lazy, module-level singleton (do not initialize at import time)
 _redis_manager: RedisConnectionManager | None = None
+
+
+def initialize_redis_pool() -> None:
+    """
+    Initialize the Redis connection pool at application startup.
+    Safe to call multiple times - will only initialize once.
+    """
+    global _redis_manager
+    if _redis_manager is None:
+        _redis_manager = RedisConnectionManager()
+    _redis_manager.initialize()
 
 
 def get_redis_client() -> redis.Redis:
@@ -122,3 +151,4 @@ def close_redis_pool() -> None:
     global _redis_manager
     if _redis_manager is not None:
         _redis_manager.close_pool()
+        _redis_manager = None
