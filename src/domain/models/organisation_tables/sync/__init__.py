@@ -3,6 +3,7 @@
 from .base import SyncCategory, SyncedRecordMixin
 from .calendar import CalendarAttendee, CalendarEvent
 from .crm import (
+    CRMCompany,
     CRMContact,
     CRMDeal,
     CRMDealParticipant,
@@ -12,6 +13,7 @@ from .crm import (
     CRMParticipantType,
     CRMPipeline,
     CRMStageState,
+    CRMUser,
 )
 from .integration_models import (
     IntegrationScope,
@@ -40,4 +42,6 @@ __all__ = [
     "CRMParticipantType",
     "CRMDealStatus",
     "CRMStageState",
+    "CRMUser",
+    "CRMCompany",
 ]

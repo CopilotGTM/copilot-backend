@@ -106,6 +106,52 @@ HUBSPOT_CONTACT_PROPERTIES = [
 HUBSPOT_CONTACT_ASSOCIATIONS = ["companies", "deals"]
 HUBSPOT_CONTACT_PROPERTIES_WITH_HISTORY = ["lifecyclestage"]
 
+HUBSPOT_COMPANY_PROPERTIES = [
+    # Identity & naming
+    "name",
+    "domain",
+    "website",
+    "description",
+    "industry",
+    "type",
+    # Business info
+    "numberofemployees",
+    "annualrevenue",
+    "lifecyclestage",
+    # Ownership & segmentation
+    "hubspot_owner_id",
+    "hubspot_owner_email",
+    "hubspot_owner_name",
+    "hs_lead_status",
+    # Contact methods
+    "phone",
+    "address",
+    "address2",
+    "city",
+    "state",
+    "zip",
+    "country",
+    "timezone",
+    # Social
+    "linkedin_company_page",
+    "linkedinbio",
+    "twitterhandle",
+    "facebook_company_page",
+    # Timing
+    "createdate",
+    "hs_lastmodifieddate",
+    "notes_last_updated",
+    "notes_last_contacted",
+    "recent_deal_close_date",
+    # Metrics
+    "hs_total_deal_value",
+    "total_revenue",
+    "total_money_raised",
+]
+
+HUBSPOT_COMPANY_ASSOCIATIONS = ["contacts", "deals"]
+HUBSPOT_COMPANY_PROPERTIES_WITH_HISTORY = ["lifecyclestage"]
+
 
 def _provider_key(provider_config_key: str | None) -> str:
     return provider_config_key or to_nango_connect_integration_key(IntegrationType.HUBSPOT)
@@ -409,4 +455,194 @@ async def _search_contacts_since(
     return contacts
 
 
-__all__ = ["fetch_pipelines", "fetch_deals", "fetch_contacts"]
+async def fetch_users(
+    *,
+    nango: NangoClient,
+    connection_id: str,
+    is_initial: bool,
+    last_synced_at: datetime | None,
+    data_type: str | None = None,
+    provider_config_key: str | None = None,
+) -> list[dict[str, Any]]:
+    """Fetch CRM owners (users) from HubSpot via Nango proxy."""
+    del data_type
+    provider = _provider_key(provider_config_key)
+    return await _list_all_users(
+        nango=nango,
+        connection_id=connection_id,
+        provider=provider,
+        updated_after=None if is_initial or not last_synced_at else last_synced_at,
+    )
+
+
+async def _list_all_users(
+    *,
+    nango: NangoClient,
+    connection_id: str,
+    provider: str,
+    updated_after: datetime | None,
+) -> list[dict[str, Any]]:
+    endpoint = "/crm/v3/owners/"
+    params: dict[str, Any] = {
+        "limit": 100,
+        "archived": "false",
+    }
+    if updated_after:
+        params["updatedAfter"] = int(updated_after.timestamp() * 1000)
+
+    users: list[dict[str, Any]] = []
+    after: str | None = None
+
+    while True:
+        if after:
+            params["after"] = after
+        else:
+            params.pop("after", None)
+
+        response = await nango.proxy_request(
+            provider_config_key=provider,
+            connection_id=connection_id,
+            endpoint=endpoint,
+            params=params,
+        )
+
+        page_results = response.get("results") if isinstance(response, dict) else None
+        if isinstance(page_results, list):
+            users.extend(page_results)
+
+        after = _extract_after(response)
+        if not after:
+            break
+
+    return users
+
+
+async def fetch_companies(
+    *,
+    nango: NangoClient,
+    connection_id: str,
+    is_initial: bool,
+    last_synced_at: datetime | None,
+    data_type: str | None = None,
+    provider_config_key: str | None = None,
+) -> list[dict[str, Any]]:
+    """Fetch companies from HubSpot CRM via Nango proxy."""
+    del data_type
+    provider = _provider_key(provider_config_key)
+    if not is_initial and last_synced_at:
+        return await _search_companies_since(
+            nango=nango,
+            connection_id=connection_id,
+            provider=provider,
+            last_synced_at=last_synced_at,
+        )
+    return await _list_all_companies(
+        nango=nango,
+        connection_id=connection_id,
+        provider=provider,
+    )
+
+
+async def _list_all_companies(
+    *,
+    nango: NangoClient,
+    connection_id: str,
+    provider: str,
+) -> list[dict[str, Any]]:
+    endpoint = "/crm/v3/objects/companies"
+    params = {
+        "limit": 50,
+        "archived": "false",
+        "properties": ",".join(HUBSPOT_COMPANY_PROPERTIES),
+        "associations": ",".join(HUBSPOT_COMPANY_ASSOCIATIONS),
+        "propertiesWithHistory": ",".join(HUBSPOT_COMPANY_PROPERTIES_WITH_HISTORY),
+    }
+
+    companies: list[dict[str, Any]] = []
+    after: str | None = None
+
+    while True:
+        if after:
+            params["after"] = after
+        else:
+            params.pop("after", None)
+
+        response = await nango.proxy_request(
+            provider_config_key=provider,
+            connection_id=connection_id,
+            endpoint=endpoint,
+            params=params,
+        )
+
+        page_results = response.get("results") if isinstance(response, dict) else None
+        if isinstance(page_results, list):
+            companies.extend(page_results)
+
+        after = _extract_after(response)
+        if not after:
+            break
+
+    return companies
+
+
+async def _search_companies_since(
+    *,
+    nango: NangoClient,
+    connection_id: str,
+    provider: str,
+    last_synced_at: datetime,
+) -> list[dict[str, Any]]:
+    endpoint = "/crm/v3/objects/companies/search"
+    timestamp_ms = _format_timestamp_ms(last_synced_at)
+
+    companies: list[dict[str, Any]] = []
+    after: str | None = None
+
+    while True:
+        body: dict[str, Any] = {
+            "filterGroups": [
+                {
+                    "filters": [
+                        {
+                            "propertyName": "hs_lastmodifieddate",
+                            "operator": "GTE",
+                            "value": timestamp_ms,
+                        }
+                    ]
+                }
+            ],
+            "properties": HUBSPOT_COMPANY_PROPERTIES,
+            "propertiesWithHistory": HUBSPOT_COMPANY_PROPERTIES_WITH_HISTORY,
+            "associations": HUBSPOT_COMPANY_ASSOCIATIONS,
+            "limit": 50,
+            "sorts": [
+                {
+                    "propertyName": "hs_lastmodifieddate",
+                    "direction": "ASCENDING",
+                }
+            ],
+        }
+
+        if after:
+            body["after"] = after
+
+        response = await nango.proxy_request(
+            provider_config_key=provider,
+            connection_id=connection_id,
+            endpoint=endpoint,
+            method="POST",
+            data=body,
+        )
+
+        page_results = response.get("results") if isinstance(response, dict) else None
+        if isinstance(page_results, list):
+            companies.extend(page_results)
+
+        after = _extract_after(response)
+        if not after:
+            break
+
+    return companies
+
+
+__all__ = ["fetch_pipelines", "fetch_deals", "fetch_contacts", "fetch_users", "fetch_companies"]

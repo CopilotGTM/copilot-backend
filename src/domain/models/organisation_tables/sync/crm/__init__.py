@@ -1,3 +1,4 @@
+from .companies import CRMCompany
 from .contacts import CRMContact
 from .deals import (
     CRMDeal,
@@ -9,6 +10,7 @@ from .deals import (
     CRMPipeline,
     CRMStageState,
 )
+from .users import CRMUser
 
 __all__ = [
     "CRMContact",
@@ -20,4 +22,6 @@ __all__ = [
     "CRMDealStatus",
     "CRMParticipantType",
     "CRMStageState",
+    "CRMUser",
+    "CRMCompany",
 ]

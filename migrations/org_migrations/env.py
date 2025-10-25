@@ -26,6 +26,8 @@ from src.domain.models.organisation_tables import (
     CRMDealParticipant,
     CRMDealStageHistory,
     CRMContact,
+    CRMUser,
+    CRMCompany,
 )
 
 load_dotenv()
@@ -79,6 +81,8 @@ all_org_models = [
     CRMDealParticipant,
     CRMDealStageHistory,
     CRMContact,
+    CRMUser,
+    CRMCompany
 ]
 
 for model in all_org_models:

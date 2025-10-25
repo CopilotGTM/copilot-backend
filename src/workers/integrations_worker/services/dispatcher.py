@@ -24,7 +24,7 @@ from ..adapters.calendar_adapter import upsert_calendar
 from ..adapters.crm_adapter import sync_crm_data
 from ..models.sync_models import SyncItemResult, SyncJobRequest, SyncJobResult
 from ..providers.registry import get_fetcher
-from ..utils.dedupe import acquire_sync_lock
+from ..utils.dedupe import acquire_sync_lock, release_sync_lock
 
 logger = get_logger(__name__)
 
@@ -119,145 +119,152 @@ async def execute_sync(request: SyncJobRequest) -> dict[str, Any]:
             logger.info("Processing data type: %s", data_type)
 
             # Check sync lock
-            if not acquire_sync_lock(request.integration_id, data_type):
+            lock_acquired = acquire_sync_lock(request.integration_id, data_type)
+            if not lock_acquired:
                 result.items[data_type] = SyncItemResult(status="skipped", reason="locked")
                 continue
 
-            # Get appropriate fetcher
-            fetcher = get_fetcher(request.category, request.provider, data_type)
-            logger.info("Fetcher obtained: %s", fetcher.__name__ if fetcher else "None")
-            if not fetcher:
-                logger.warning(
-                    "No fetcher found for category=%s provider=%s data_type=%s",
-                    request.category,
-                    request.provider,
-                    data_type,
-                )
-                result.items[data_type] = SyncItemResult(status="ignored", reason="no_fetcher")
-                continue
-
             try:
-                logger.info("Starting Fetch for Connection ID: %s", integration_meta.connection_id)
-                logger.info("Last Synced At: %s", integration_meta.last_synced_at)
-                logger.info("Is Initial Sync: %s", not request.incremental)
-
-                # Fetch records from provider
-                records = await fetcher(
-                    nango=nango,
-                    connection_id=integration_meta.connection_id,
-                    is_initial=not request.incremental,
-                    last_synced_at=integration_meta.last_synced_at,
-                    data_type=data_type,
-                    provider_config_key=provider_key,
-                )
-                logger.info("Fetched %d records for data_type=%s", len(records), data_type)
-                if records:
-                    logger.info("Sample record for data_type=%s: %s", data_type, records[0])
-                else:
-                    logger.info(
-                        "No records returned for data_type=%s; skipping processing.",
+                # Get appropriate fetcher
+                fetcher = get_fetcher(request.category, request.provider, data_type)
+                logger.info("Fetcher obtained: %s", fetcher.__name__ if fetcher else "None")
+                if not fetcher:
+                    logger.warning(
+                        "No fetcher found for category=%s provider=%s data_type=%s",
+                        request.category,
+                        request.provider,
                         data_type,
                     )
-                    result.items[data_type] = SyncItemResult(
-                        status="success", records_synced=0, reason="no_records"
-                    )
+                    result.items[data_type] = SyncItemResult(status="ignored", reason="no_fetcher")
                     continue
 
-                # Process records based on category
-                match request.category:
-                    case "calendar":
-                        async with _integration_session(organisation_id) as session:
-                            integration_row = await _reload_integration(session, integration_id)
-                            if not integration_row:
-                                logger.warning(
-                                    "Integration %s missing when processing calendar data_type=%s",
-                                    integration_id,
-                                    data_type,
-                                )
-                                result.items[data_type] = SyncItemResult(
-                                    status="failed", reason="integration_missing"
-                                )
-                                continue
+                try:
+                    logger.info(
+                        "Starting Fetch for Connection ID: %s", integration_meta.connection_id
+                    )
+                    logger.info("Last Synced At: %s", integration_meta.last_synced_at)
+                    logger.info("Is Initial Sync: %s", not request.incremental)
 
-                            count = await upsert_calendar(
-                                session=session,
-                                organisation_id=organisation_id,
-                                integration=integration_row,
-                                provider=request.provider,
-                                events=records,
-                            )
-                            logger.info(
-                                "Calendar sync completed for data_type=%s: %d events processed",
-                                data_type,
-                                count,
-                            )
-                            result.items[data_type] = SyncItemResult(
-                                status="success", records_synced=count
-                            )
-                            await session.refresh(integration_row)
-                            integration_meta = _to_metadata(integration_row)
-                    case "crm":
-                        async with _integration_session(organisation_id) as session:
-                            integration_row = await _reload_integration(session, integration_id)
-                            if not integration_row:
-                                logger.warning(
-                                    "Integration %s missing when processing CRM data_type=%s",
-                                    integration_id,
-                                    data_type,
-                                )
-                                result.items[data_type] = SyncItemResult(
-                                    status="failed", reason="integration_missing"
-                                )
-                                continue
+                    # Fetch records from provider
+                    records = await fetcher(
+                        nango=nango,
+                        connection_id=integration_meta.connection_id,
+                        is_initial=not request.incremental,
+                        last_synced_at=integration_meta.last_synced_at,
+                        data_type=data_type,
+                        provider_config_key=provider_key,
+                    )
+                    logger.info("Fetched %d records for data_type=%s", len(records), data_type)
+                    if records:
+                        logger.info("Sample record for data_type=%s: %s", data_type, records[0])
+                    else:
+                        logger.info(
+                            "No records returned for data_type=%s; skipping processing.",
+                            data_type,
+                        )
+                        result.items[data_type] = SyncItemResult(
+                            status="success", records_synced=0, reason="no_records"
+                        )
+                        continue
 
-                            crm_service = CRMSyncService(session, organisation_id)
-                            try:
-                                metrics = await sync_crm_data(
-                                    service=crm_service,
+                    # Process records based on category
+                    match request.category:
+                        case "calendar":
+                            async with _integration_session(organisation_id) as session:
+                                integration_row = await _reload_integration(session, integration_id)
+                                if not integration_row:
+                                    logger.warning(
+                                        "Integration %s missing when processing calendar data_type=%s",
+                                        integration_id,
+                                        data_type,
+                                    )
+                                    result.items[data_type] = SyncItemResult(
+                                        status="failed", reason="integration_missing"
+                                    )
+                                    continue
+
+                                count = await upsert_calendar(
+                                    session=session,
+                                    organisation_id=organisation_id,
                                     integration=integration_row,
-                                    data_type=data_type,
-                                    records=records,
                                     provider=request.provider,
+                                    events=records,
                                 )
-                                records_synced = metrics.get("records_synced")
-                                if records_synced is None:
-                                    records_synced = metrics.get("deals") or len(records)
                                 logger.info(
-                                    "CRM sync completed for data_type=%s: %s",
+                                    "Calendar sync completed for data_type=%s: %d events processed",
                                     data_type,
-                                    metrics,
+                                    count,
                                 )
                                 result.items[data_type] = SyncItemResult(
-                                    status="success", records_synced=records_synced
+                                    status="success", records_synced=count
                                 )
-                                result.extra.setdefault("crm", {})[data_type] = metrics
-                                await _finalize_crm_service(crm_service, result)
                                 await session.refresh(integration_row)
                                 integration_meta = _to_metadata(integration_row)
-                            except Exception as crm_error:
-                                with suppress(Exception):
-                                    await crm_service.finalize_sync(
-                                        SyncStatus.FAILED, str(crm_error)
+                        case "crm":
+                            async with _integration_session(organisation_id) as session:
+                                integration_row = await _reload_integration(session, integration_id)
+                                if not integration_row:
+                                    logger.warning(
+                                        "Integration %s missing when processing CRM data_type=%s",
+                                        integration_id,
+                                        data_type,
                                     )
-                                raise
-                    case _:
-                        logger.warning("Unsupported category: %s", request.category)
-                        result.items[data_type] = SyncItemResult(
-                            status="ignored", reason="unsupported_category"
-                        )
+                                    result.items[data_type] = SyncItemResult(
+                                        status="failed", reason="integration_missing"
+                                    )
+                                    continue
 
-            except Exception as e:
-                logger.error(
-                    "Error syncing data_type=%s: %s",
-                    data_type,
-                    str(e),
-                    exc_info=True,
-                )
-                result.items[data_type] = SyncItemResult(
-                    status="failed",
-                    reason="sync_error",
-                    error=str(e),
-                )
+                                crm_service = CRMSyncService(session, organisation_id)
+                                try:
+                                    metrics = await sync_crm_data(
+                                        service=crm_service,
+                                        integration=integration_row,
+                                        data_type=data_type,
+                                        records=records,
+                                        provider=request.provider,
+                                    )
+                                    records_synced = metrics.get("records_synced")
+                                    if records_synced is None:
+                                        records_synced = metrics.get("deals") or len(records)
+                                    logger.info(
+                                        "CRM sync completed for data_type=%s: %s",
+                                        data_type,
+                                        metrics,
+                                    )
+                                    result.items[data_type] = SyncItemResult(
+                                        status="success", records_synced=records_synced
+                                    )
+                                    result.extra.setdefault("crm", {})[data_type] = metrics
+                                    await _finalize_crm_service(crm_service, result)
+                                    await session.refresh(integration_row)
+                                    integration_meta = _to_metadata(integration_row)
+                                except Exception as crm_error:
+                                    with suppress(Exception):
+                                        await crm_service.finalize_sync(
+                                            SyncStatus.FAILED, str(crm_error)
+                                        )
+                                    raise
+                        case _:
+                            logger.warning("Unsupported category: %s", request.category)
+                            result.items[data_type] = SyncItemResult(
+                                status="ignored", reason="unsupported_category"
+                            )
+
+                except Exception as e:
+                    logger.error(
+                        "Error syncing data_type=%s: %s",
+                        data_type,
+                        str(e),
+                        exc_info=True,
+                    )
+                    result.items[data_type] = SyncItemResult(
+                        status="failed",
+                        reason="sync_error",
+                        error=str(e),
+                    )
+            finally:
+                if lock_acquired:
+                    release_sync_lock(request.integration_id, data_type)
 
         # Determine overall status
         if any(item.status == "failed" for item in result.items.values()):

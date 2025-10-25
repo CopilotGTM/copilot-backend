@@ -19,3 +19,13 @@ def acquire_sync_lock(integration_id: str, data_type: str, ttl_seconds: int = 12
         logger.warning("Redis lock unavailable: %s", str(e))
         # Fail-open to keep sync running
         return True
+
+
+def release_sync_lock(integration_id: str, data_type: str) -> None:
+    """Release the Redis lock once processing completes."""
+    try:
+        redis = get_redis_client()
+        key = f"sync:lock:{integration_id}:{data_type}"
+        redis.delete(key)
+    except Exception as e:
+        logger.warning("Failed to release sync lock: %s", str(e))

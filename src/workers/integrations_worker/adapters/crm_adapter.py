@@ -41,4 +41,18 @@ async def sync_crm_data(
             provider=provider,
         )
 
+    if data_type == "users":
+        return await service.sync_users(
+            integration=integration,
+            users=records,
+            provider=provider,
+        )
+
+    if data_type == "companies":
+        return await service.sync_companies(
+            integration=integration,
+            companies=records,
+            provider=provider,
+        )
+
     raise ValueError(f"Unsupported CRM data_type: {data_type}")

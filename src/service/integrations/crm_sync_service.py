@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.domain.models.organisation_tables.base_mixins import utcnow
 from src.domain.models.organisation_tables.sync import KnowledgeIntegration
+from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDeal,
@@ -20,7 +21,9 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDealStatus,
     CRMParticipantType,
     CRMPipeline,
+    CRMStageState,
 )
+from src.domain.models.organisation_tables.sync.crm.users import CRMUser
 from src.domain.models.organisation_tables.sync.integration_models import (
     IntegrationSyncHistory,
     SyncStatus,
@@ -142,9 +145,10 @@ class CRMSyncService:
 
         existing: dict[str, CRMPipeline] = {}
         if external_ids:
-            stmt = select(CRMPipeline).where(
-                CRMPipeline.integration_id == integration.integration_id,
-                CRMPipeline.external_id.in_(external_ids),
+            stmt = (
+                select(CRMPipeline)
+                .where(CRMPipeline.integration_id == integration.integration_id)  # type: ignore[arg-type]
+                .where(CRMPipeline.external_id.in_(external_ids))  # type: ignore[attr-defined]
             )
             result = await self.db.execute(stmt)
             existing = {row.external_id: row for row in result.scalars().all()}
@@ -206,9 +210,10 @@ class CRMSyncService:
         ]
         existing: dict[str, CRMDealStage] = {}
         if external_ids:
-            stmt = select(CRMDealStage).where(
-                CRMDealStage.integration_id == integration.integration_id,
-                CRMDealStage.external_id.in_(external_ids),
+            stmt = (
+                select(CRMDealStage)
+                .where(CRMDealStage.integration_id == integration.integration_id)  # type: ignore[arg-type]
+                .where(CRMDealStage.external_id.in_(external_ids))  # type: ignore[attr-defined]
             )
             result = await self.db.execute(stmt)
             existing = {row.external_id: row for row in result.scalars().all()}
@@ -234,7 +239,8 @@ class CRMSyncService:
             record.name = stage.get("label") or stage.get("displayName") or stage_external_id
             record.label = stage.get("label")
             record.stage_key = stage.get("stageId") or stage.get("id")
-            metadata = stage.get("metadata") if isinstance(stage.get("metadata"), dict) else {}
+            metadata_raw = stage.get("metadata")
+            metadata = metadata_raw if isinstance(metadata_raw, dict) else {}
             probability = metadata.get("probability", stage.get("probability"))
             record.probability = self._normalize_probability(probability)
 
@@ -283,9 +289,10 @@ class CRMSyncService:
         deal_external_ids = [d.get("id") for d in deal_list if d.get("id")]
         existing: dict[str, CRMDeal] = {}
         if deal_external_ids:
-            stmt = select(CRMDeal).where(
-                CRMDeal.integration_id == integration.integration_id,
-                CRMDeal.external_id.in_(deal_external_ids),
+            stmt = (
+                select(CRMDeal)
+                .where(CRMDeal.integration_id == integration.integration_id)  # type: ignore[arg-type]
+                .where(CRMDeal.external_id.in_(deal_external_ids))  # type: ignore[attr-defined]
             )
             result = await self.db.execute(stmt)
             existing = {row.external_id: row for row in result.scalars().all()}
@@ -321,7 +328,9 @@ class CRMSyncService:
                 pipeline_external = properties.get("pipeline")
                 stage_external = properties.get("dealstage")
 
-                pipeline_record = pipeline_map.get(pipeline_external)
+                pipeline_record = (
+                    pipeline_map.get(str(pipeline_external)) if pipeline_external else None
+                )
                 if pipeline_record:
                     record.pipeline_id = pipeline_record.pipeline_id
                     record.pipeline_external_id = pipeline_record.external_id
@@ -333,7 +342,7 @@ class CRMSyncService:
                     record.pipeline_name = None
                     record.pipeline_label = None
 
-                stage_record = stage_map.get(stage_external)
+                stage_record = stage_map.get(str(stage_external)) if stage_external else None
                 if stage_record:
                     record.stage_id = stage_record.stage_id
                     record.stage_external_id = stage_record.external_id
@@ -464,7 +473,7 @@ class CRMSyncService:
         await self.begin_sync(integration)
         contact_list = [c for c in contacts if isinstance(c, dict)]
         if not contact_list:
-            return {"contacts": 0}
+            return {"contacts": 0, "records_synced": 0}
 
         logger.info(
             "CRM sync contacts: org=%s integration=%s provider=%s count=%d",
@@ -477,9 +486,10 @@ class CRMSyncService:
         contact_external_ids = [c.get("id") for c in contact_list if c.get("id")]
         existing: dict[str, CRMContact] = {}
         if contact_external_ids:
-            stmt = select(CRMContact).where(
-                CRMContact.integration_id == integration.integration_id,
-                CRMContact.external_id.in_(contact_external_ids),
+            stmt = (
+                select(CRMContact)
+                .where(CRMContact.integration_id == integration.integration_id)  # type: ignore[arg-type]
+                .where(CRMContact.external_id.in_(contact_external_ids))  # type: ignore[attr-defined]
             )
             result = await self.db.execute(stmt)
             existing = {row.external_id: row for row in result.scalars().all()}
@@ -597,18 +607,353 @@ class CRMSyncService:
             "records_synced": contacts_processed,
         }
 
+    async def sync_users(
+        self,
+        *,
+        integration: KnowledgeIntegration,
+        users: Iterable[dict[str, Any]],
+        provider: str,
+    ) -> dict[str, int]:
+        await self.begin_sync(integration)
+        user_list = [u for u in users if isinstance(u, dict)]
+        if not user_list:
+            return {"users": 0, "records_synced": 0}
+
+        logger.info(
+            "CRM sync users: org=%s integration=%s provider=%s count=%d",
+            self.organisation_id,
+            integration.integration_id,
+            provider,
+            len(user_list),
+        )
+
+        def _coerce_external(data: dict[str, Any]) -> str | None:
+            for key in ("id", "ownerId", "userId", "user_id"):
+                value = data.get(key)
+                if value not in (None, ""):
+                    return str(value)
+            properties_block = data.get("properties")
+            if isinstance(properties_block, dict):
+                for key in ("id", "ownerId", "userId", "user_id"):
+                    value = properties_block.get(key)
+                    if value not in (None, ""):
+                        return str(value)
+            return None
+
+        user_external_ids = [
+            ext for item in user_list if (_ext := _coerce_external(item)) for ext in [_ext]
+        ]
+        existing: dict[str, CRMUser] = {}
+        if user_external_ids:
+            stmt = (
+                select(CRMUser)
+                .where(CRMUser.integration_id == integration.integration_id)  # type: ignore[arg-type]
+                .where(CRMUser.external_id.in_(user_external_ids))  # type: ignore[attr-defined]
+            )
+            result = await self.db.execute(stmt)
+            existing = {row.external_id: row for row in result.scalars().all()}
+
+        now = _now()
+        users_processed = 0
+
+        for user in user_list:
+            try:
+                external_id = _coerce_external(user)
+                if not external_id:
+                    self._increment_failed()
+                    continue
+
+                record = existing.get(external_id)
+                if not record:
+                    record = CRMUser(
+                        organisation_id=self.organisation_id,
+                        integration_id=integration.integration_id,
+                        external_id=external_id,
+                    )
+                    existing[external_id] = record
+
+                prop_block = user.get("properties")
+                properties = prop_block if isinstance(prop_block, dict) else {}
+
+                def _pick(
+                    *keys: str, _user: dict[str, Any] = user, _props: dict[str, Any] = properties
+                ) -> Any:  # noqa: B023
+                    for key in keys:
+                        if key in _user and _user[key] not in (None, ""):
+                            return _user[key]
+                        if key in _props and _props[key] not in (None, ""):
+                            return _props[key]
+                    return None
+
+                first_name = _pick("firstName", "firstname", "first_name")
+                last_name = _pick("lastName", "lastname", "last_name")
+                record.first_name = first_name
+                record.last_name = last_name
+                record.full_name = _pick("fullName", "fullname", "full_name") or self._combine_name(
+                    first_name, last_name, _pick("displayName", "name")
+                )
+                record.email = _pick("email")
+                record.user_role = _pick("roleId", "role", "type")
+                record.job_title = _pick("jobTitle", "jobtitle", "title", "positionTitle")
+                record.time_zone = _pick("timeZone", "timezone")
+                record.locale = _pick("locale", "language")
+                primary_team = _pick("primaryTeamId", "primary_team_id", "teamId")
+                if primary_team is not None:
+                    record.primary_team_id = str(primary_team)
+
+                teams_payload = user.get("teams")
+                if not isinstance(teams_payload, list | str):
+                    teams_payload = properties.get("teams")
+                team_ids: list[str] = []
+                if isinstance(teams_payload, list):
+                    for team in teams_payload:
+                        if not isinstance(team, dict):
+                            continue
+                        team_id = team.get("id") or team.get("teamId")
+                        if team_id:
+                            team_ids.append(str(team_id))
+                elif isinstance(teams_payload, str):
+                    team_ids = [part.strip() for part in teams_payload.split(",") if part.strip()]
+                raw_team_ids = user.get("teamIds")
+                if isinstance(raw_team_ids, list):
+                    team_ids.extend(
+                        str(team_id) for team_id in raw_team_ids if team_id not in (None, "")
+                    )
+                if team_ids:
+                    # Deduplicate while preserving order
+                    seen: set[str] = set()
+                    ordered_ids: list[str] = []
+                    for team_id in team_ids:
+                        if team_id not in seen:
+                            seen.add(team_id)
+                            ordered_ids.append(team_id)
+                    team_ids = ordered_ids
+                record.team_ids = team_ids
+
+                archived_flag = self._as_bool(_pick("archived"))
+                active_flag = self._as_bool(_pick("active", "isActive", "hasAccess"))
+                if active_flag is not None:
+                    record.is_active = active_flag
+                elif archived_flag is not None:
+                    record.is_active = not archived_flag
+                record.is_deleted_remote = (
+                    bool(archived_flag) if archived_flag is not None else record.is_deleted_remote
+                )
+
+                record.last_login_at = self._parse_date(_pick("lastLoginAt", "last_login_at"))
+                record.source_created_at = self._parse_date(
+                    _pick("createdAt", "createdate", "created_at")
+                )
+                record.source_modified_at = self._parse_date(
+                    _pick("updatedAt", "updatedate", "updated_at")
+                )
+                record.synced_at = now
+                record.last_seen_at = now
+
+                combined_properties: dict[str, Any] = {
+                    k: v for k, v in user.items() if k != "properties"
+                }
+                if properties:
+                    combined_properties["properties"] = properties
+                record.properties = combined_properties
+                record.data_payload = user
+                record.is_deleted = False
+
+                self.db.add(record)
+                users_processed += 1
+                self._increment_processed()
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.error(
+                    "Failed to process HubSpot user %s: %s",
+                    user.get("id"),
+                    exc,
+                    exc_info=True,
+                )
+                self._increment_failed()
+
+        await self.db.commit()
+
+        return {
+            "users": users_processed,
+            "records_synced": users_processed,
+        }
+
+    async def sync_companies(
+        self,
+        *,
+        integration: KnowledgeIntegration,
+        companies: Iterable[dict[str, Any]],
+        provider: str,
+    ) -> dict[str, int]:
+        """
+        Sync CRM companies/accounts into the database.
+
+        Args:
+            integration: Integration record from KnowledgeIntegration
+            companies: Iterable of company dictionaries from the provider
+            provider: Provider name (e.g., 'hubspot')
+
+        Returns:
+            Dictionary with counts of companies synced
+        """
+        await self.begin_sync(integration)
+        company_list = [c for c in companies if isinstance(c, dict)]
+        if not company_list:
+            return {"companies": 0, "records_synced": 0}
+
+        logger.info(
+            "CRM sync companies: org=%s integration=%s provider=%s count=%d",
+            self.organisation_id,
+            integration.integration_id,
+            provider,
+            len(company_list),
+        )
+
+        # Load existing companies by external_id
+        company_external_ids = [c.get("id") for c in company_list if c.get("id")]
+        existing: dict[str, CRMCompany] = {}
+        if company_external_ids:
+            stmt = (
+                select(CRMCompany)
+                .where(CRMCompany.integration_id == integration.integration_id)  # type: ignore[arg-type]
+                .where(CRMCompany.external_id.in_(company_external_ids))  # type: ignore[attr-defined]
+            )
+            result = await self.db.execute(stmt)
+            existing = {row.external_id: row for row in result.scalars().all()}
+
+        now = _now()
+        companies_processed = 0
+
+        for company in company_list:
+            try:
+                external_id = company.get("id")
+                if not external_id:
+                    self._increment_failed()
+                    continue
+
+                record = existing.get(external_id)
+                if not record:
+                    record = CRMCompany(
+                        organisation_id=self.organisation_id,
+                        integration_id=integration.integration_id,
+                        external_id=external_id,
+                    )
+                    existing[external_id] = record
+
+                properties = company.get("properties") or {}
+                updated_at = self._parse_date(company.get("updatedAt")) or self._parse_date(
+                    properties.get("hs_lastmodifieddate")
+                )
+                created_at = self._parse_date(company.get("createdAt")) or self._parse_date(
+                    properties.get("createdate")
+                )
+
+                # Core company details
+                record.name = properties.get("name") or company.get("name")
+                record.domain = properties.get("domain")
+                record.website = properties.get("website")
+                record.description = properties.get("description")
+                record.industry = properties.get("industry")
+                record.company_type = properties.get("type")
+                record.lifecycle_stage = properties.get("lifecyclestage")
+
+                # Owner information
+                owner_id = properties.get("hubspot_owner_id")
+                if owner_id is not None:
+                    record.owner_external_id = str(owner_id)
+                owner_email = properties.get("hubspot_owner_email")
+                if isinstance(owner_email, str):
+                    record.owner_email = owner_email
+                owner_name = properties.get("hubspot_owner_name")
+                if isinstance(owner_name, str):
+                    record.owner_name = owner_name
+
+                # Business metrics
+                num_employees = properties.get("numberofemployees")
+                if num_employees is not None:
+                    try:
+                        record.number_of_employees = int(num_employees)
+                    except (ValueError, TypeError):
+                        record.number_of_employees = None
+
+                annual_rev = properties.get("annualrevenue")
+                if annual_rev is not None:
+                    try:
+                        record.annual_revenue = float(annual_rev)
+                    except (ValueError, TypeError):
+                        record.annual_revenue = None
+
+                # Contact information
+                record.phone = properties.get("phone")
+                record.address = properties.get("address") or properties.get("address2")
+                record.city = properties.get("city")
+                record.state = properties.get("state")
+                record.country = properties.get("country")
+                record.postal_code = properties.get("zip")
+                record.timezone = properties.get("timezone")
+
+                # Social links
+                linkedin = properties.get("linkedin_company_page") or properties.get("linkedinbio")
+                if isinstance(linkedin, str):
+                    record.linkedin_url = linkedin
+
+                # Timing
+                record.source_created_at = created_at
+                record.source_modified_at = updated_at
+                record.synced_at = now
+                record.last_seen_at = now
+
+                # Store raw data
+                record.properties = properties
+                record.data_payload = company
+
+                # Metrics (can be computed from deals, etc.)
+                metrics = {}
+                if properties.get("hs_total_deal_value"):
+                    metrics["total_deal_value"] = properties.get("hs_total_deal_value")
+                if properties.get("total_revenue"):
+                    metrics["total_revenue"] = properties.get("total_revenue")
+                if properties.get("total_money_raised"):
+                    metrics["total_money_raised"] = properties.get("total_money_raised")
+                record.metrics = metrics
+
+                record.is_active = True
+                record.is_deleted = False
+
+                self.db.add(record)
+                companies_processed += 1
+                self._increment_processed()
+
+            except Exception as exc:
+                logger.error(
+                    "Failed to process company %s: %s",
+                    company.get("id"),
+                    exc,
+                    exc_info=True,
+                )
+                self._increment_failed()
+
+        await self.db.commit()
+
+        return {
+            "companies": companies_processed,
+            "records_synced": companies_processed,
+        }
+
     async def _load_pipeline_map(self, integration_id: UUID) -> dict[str, CRMPipeline]:
-        stmt = select(CRMPipeline).where(
-            CRMPipeline.integration_id == integration_id,
-            CRMPipeline.is_deleted.is_(False),
+        stmt = (
+            select(CRMPipeline)
+            .where(CRMPipeline.integration_id == integration_id)  # type: ignore[arg-type]
+            .where(CRMPipeline.is_deleted.is_(False))  # type: ignore[attr-defined]
         )
         result = await self.db.execute(stmt)
         return {row.external_id: row for row in result.scalars().all()}
 
     async def _load_stage_map(self, integration_id: UUID) -> dict[str, CRMDealStage]:
-        stmt = select(CRMDealStage).where(
-            CRMDealStage.integration_id == integration_id,
-            CRMDealStage.is_deleted.is_(False),
+        stmt = (
+            select(CRMDealStage)
+            .where(CRMDealStage.integration_id == integration_id)  # type: ignore[arg-type]
+            .where(CRMDealStage.is_deleted.is_(False))  # type: ignore[attr-defined]
         )
         result = await self.db.execute(stmt)
         return {row.external_id: row for row in result.scalars().all()}
@@ -625,9 +970,10 @@ class CRMSyncService:
         ext_ids = [payload[1]["external_id"] for payload in participants]
         existing: dict[str, CRMDealParticipant] = {}
         if ext_ids:
-            stmt = select(CRMDealParticipant).where(
-                CRMDealParticipant.integration_id == integration.integration_id,
-                CRMDealParticipant.external_id.in_(ext_ids),
+            stmt = (
+                select(CRMDealParticipant)
+                .where(CRMDealParticipant.integration_id == integration.integration_id)  # type: ignore[arg-type]
+                .where(CRMDealParticipant.external_id.in_(ext_ids))  # type: ignore[attr-defined]
             )
             result = await self.db.execute(stmt)
             existing = {row.external_id: row for row in result.scalars().all()}
@@ -650,7 +996,8 @@ class CRMSyncService:
             record.deal_id = deal_record.deal_id
             record.participant_type = participant_type
             record.relationship_role = payload.get("relationship_role")
-            record.related_external_id = payload.get("related_external_id")
+            related_ext_id = payload.get("related_external_id")
+            record.related_external_id = str(related_ext_id) if related_ext_id else ""
             record.related_local_id = None
             record.related_name = payload.get("related_name")
             record.related_email = payload.get("related_email")
@@ -678,9 +1025,10 @@ class CRMSyncService:
         ext_ids = [entry["external_id"] for entry in history_entries if entry.get("external_id")]
         existing: dict[str, CRMDealStageHistory] = {}
         if ext_ids:
-            stmt = select(CRMDealStageHistory).where(
-                CRMDealStageHistory.integration_id == integration.integration_id,
-                CRMDealStageHistory.external_id.in_(ext_ids),
+            stmt = (
+                select(CRMDealStageHistory)
+                .where(CRMDealStageHistory.integration_id == integration.integration_id)  # type: ignore[arg-type]
+                .where(CRMDealStageHistory.external_id.in_(ext_ids))  # type: ignore[attr-defined]
             )
             result = await self.db.execute(stmt)
             existing = {row.external_id: row for row in result.scalars().all()}
@@ -703,8 +1051,16 @@ class CRMSyncService:
             record.stage_id = entry.get("stage_id")
             record.stage_external_id = entry.get("stage_external_id")
             record.from_stage_external_id = entry.get("from_stage_external_id")
-            record.entered_at = entry.get("entered_at")
-            record.exited_at = entry.get("exited_at")
+            entered_at_val = entry.get("entered_at")
+            if isinstance(entered_at_val, datetime):
+                record.entered_at = entered_at_val
+            elif entered_at_val:
+                # Fallback if it's not already a datetime
+                record.entered_at = _now()
+            else:
+                record.entered_at = _now()
+            exited_at_val = entry.get("exited_at")
+            record.exited_at = exited_at_val if isinstance(exited_at_val, datetime) else None
             record.elapsed_seconds = entry.get("elapsed_seconds")
             record.amount_at_stage = entry.get("amount_at_stage")
             record.probability_at_stage = entry.get("probability_at_stage")
@@ -730,17 +1086,15 @@ class CRMSyncService:
         return data.get("id") or data.get("stageId")
 
     @staticmethod
-    def _determine_stage_state(stage_external_id: str | None) -> str:
+    def _determine_stage_state(stage_external_id: str | None) -> CRMStageState:
         if not stage_external_id:
-            return "open"
+            return CRMStageState.OPEN
         slug = stage_external_id.lower()
         if "won" in slug:
-            return CRMDealStatus.WON.value
+            return CRMStageState.WON
         if "lost" in slug:
-            return CRMDealStatus.LOST.value
-        if "closed" in slug:
-            return CRMDealStatus.CLOSED.value
-        return CRMDealStatus.OPEN.value
+            return CRMStageState.LOST
+        return CRMStageState.OPEN
 
     @staticmethod
     def _determine_deal_status(stage_external_id: str | None) -> CRMDealStatus:
@@ -764,6 +1118,21 @@ class CRMSyncService:
         if 0 <= numeric <= 1:
             return numeric * 100
         return numeric
+
+    @staticmethod
+    def _as_bool(value: Any) -> bool | None:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, int | float):
+            return value != 0
+        text = str(value).strip().lower()
+        if text in {"true", "1", "yes", "y"}:
+            return True
+        if text in {"false", "0", "no", "n"}:
+            return False
+        return None
 
     @staticmethod
     def _parse_date(value: Any) -> datetime | None:

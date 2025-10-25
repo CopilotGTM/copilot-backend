@@ -12,6 +12,9 @@ from collections.abc import Awaitable, Callable
 
 from .calendar.google_calendar import fetch_events as google_calendar_fetch
 from .crm.hubspot import (
+    fetch_companies as hubspot_companies_fetch,
+)
+from .crm.hubspot import (
     fetch_contacts as hubspot_contacts_fetch,
 )
 from .crm.hubspot import (
@@ -19,6 +22,9 @@ from .crm.hubspot import (
 )
 from .crm.hubspot import (
     fetch_pipelines as hubspot_pipelines_fetch,
+)
+from .crm.hubspot import (
+    fetch_users as hubspot_users_fetch,
 )
 
 FetchFn = Callable[..., Awaitable[list[dict]]]
@@ -34,6 +40,8 @@ def _init_defaults() -> None:
         "pipelines": hubspot_pipelines_fetch,
         "deals": hubspot_deals_fetch,
         "contacts": hubspot_contacts_fetch,
+        "users": hubspot_users_fetch,
+        "companies": hubspot_companies_fetch,
     }
 
 

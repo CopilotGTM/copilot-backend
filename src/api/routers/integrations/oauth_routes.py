@@ -192,7 +192,9 @@ async def disconnect_integration(
             logger.warning(
                 f"Integration {integration_id} not found for org {service.user_ids.organisation_id}"
             )
-            return Response.not_found_response(message=IntegrationErrors.INTEGRATION_NOT_FOUND)
+            return Response.not_found_error_response(
+                message=IntegrationErrors.INTEGRATION_NOT_FOUND
+            )
 
         if integration.is_active is False:
             logger.warning(f"Integration {integration_id} is does not exist or is already inactive")
@@ -224,7 +226,7 @@ async def disconnect_integration(
         logger.warning(
             f"Integration {integration_id} not found for org {service.user_ids.organisation_id}: {str(e)}"
         )
-        return Response.not_found_response(message=IntegrationErrors.INTEGRATION_NOT_FOUND)
+        return Response.not_found_error_response(message=IntegrationErrors.INTEGRATION_NOT_FOUND)
     except Exception as e:
         logger.error(
             f"Failed to disconnect integration {integration_id} "
@@ -270,12 +272,12 @@ async def handle_nango_webhook(
         payload = await request.json()
         if not webhook_service._is_valid_signature(x_nango_signature, payload):
             logger.error("Unauthorized Nango webhook attempt detected.")
-            return Response.unauthorized_response(message="Invalid webhook signature.")
+            return Response.unauthorized_error_response(message="Invalid webhook signature.")
 
         # Check success flag
         if not payload.get("success"):
             logger.error("Received unsuccessful Nango webhook: %s", payload)
-            return Response.bad_request_response(message="Unsuccessful webhook payload.")
+            return Response.bad_request_error_response(message="Unsuccessful webhook payload.")
 
         # Determine webhook type and process accordingly
         webhook_type = payload.get("type")
@@ -288,7 +290,7 @@ async def handle_nango_webhook(
                     logger.error(
                         "Sync webhook missing connectionId or providerConfigKey: %s", payload
                     )
-                    return Response.bad_request_response(
+                    return Response.bad_request_error_response(
                         message="Missing connectionId or providerConfigKey in sync webhook."
                     )
 
@@ -301,7 +303,7 @@ async def handle_nango_webhook(
                         "Sync webhook: mapping not found for connection %s",
                         payload.get("connectionId"),
                     )
-                    return Response.bad_request_response(
+                    return Response.bad_request_error_response(
                         message="Mapping not found for connection.", data=None
                     )
 
@@ -312,7 +314,7 @@ async def handle_nango_webhook(
                 )
             case _:
                 logger.error("Received unknown Nango webhook type: %s", webhook_type)
-                return Response.bad_request_response(message="Unknown webhook type.")
+                return Response.bad_request_error_response(message="Unknown webhook type.")
     except Exception as e:
         logger.error("Failed to process Nango webhook: %s", str(e), exc_info=True)
         return Response.internal_server_error_response(message="Failed to process webhook.")

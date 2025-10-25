@@ -37,19 +37,11 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 ### 1. Clone and Setup Dependencies
 
 ```bash
-# Install WITH dev dependencies (black, ruff, pytest, etc.) - FOR DEVELOPMENT
+# Install dependencies
 uv sync --all-extras
-
-# Run common commands directly
-python -m pytest                    # Run tests
-python -m black src/ tests/         # Format code
-python -m ruff check src/ tests/    # Lint code
-python -m uvicorn src.api.fastapi_app:app --reload  # Run dev server
 ```
 
 **⚠️ IMPORTANT**: Always use `uv sync --all-extras` for development to get dev tools!
-
-📖 **See detailed UV commands and deployment guide**: `scripts/deployment/README.md`
 
 ### 2. Start Infrastructure Services
 
@@ -101,9 +93,10 @@ uv run python -m scripts.run_master_migrations
 # Deploy super admin (if SUPER_ADMIN_EMAIL is set)
 uv run python -m scripts.admin.deploy_with_super_admin
 
-# Initialize organization schema (for testing)
-# First create schema manually: CREATE SCHEMA test_org_schema;
-uv run python -m alembic -c migrations/org_migrations/alembic.ini -x schema=test_org_schema upgrade head
+# For development: Initialize organization schema (test_org_schema)
+# First create schema manually if no version file exists or making changes:
+python -m alembic -c migrations/org_migrations/alembic.ini -x schema=test_org_schema revision --autogenerate -m "initial setup"
+python -m alembic -c migrations/org_migrations/alembic.ini -x schema=test_org_schema upgrade head
 ```
 
 ### 5. Run the Application
@@ -141,17 +134,9 @@ docker run -p 8080:80 --env-file .env copilot-backend:latest
 ### Code Quality Checks
 
 ```bash
-# Format code with black
+# Format and lint code
 uv run black src/ tests/
-
-# Lint with ruff
 uv run ruff check src/ tests/
-
-# Type checking with mypy
-uv run mypy src/
-
-# Run all checks
-uv run black src/ tests/ && uv run ruff check src/ tests/ && uv run mypy src/
 ```
 
 ### Running Tests
@@ -161,44 +146,22 @@ uv run black src/ tests/ && uv run ruff check src/ tests/ && uv run mypy src/
 uv run pytest tests/ -v
 
 # Run with coverage
-uv run pytest tests/ -v --cov=src --cov-report=term-missing --cov-report=html
-
-# Run specific test markers
-uv run pytest tests/ -v -m unit
-uv run pytest tests/ -v -m integration
+uv run pytest tests/ -v --cov=src --cov-report=html
 ```
 
 ---
 
 ## 📚 Dependency Management
 
-### Update Dependencies
-
 ```bash
-# Update all dependencies
-uv lock --upgrade
-
-# Sync with updated lockfile
-uv sync
-```
-
-### Add New Dependencies
-
-```bash
-# Add production dependency
+# Add new dependency
 uv add package-name
 
 # Add dev dependency
 uv add --dev package-name
 
-# Regenerate lockfile
-uv lock
-```
-
-### View Dependency Tree
-
-```bash
-uv tree
+# Update all dependencies
+uv lock --upgrade && uv sync
 ```
 
 ---
@@ -242,18 +205,6 @@ helm upgrade --install copilot-backend ./charts/application \
 ### Issue: UV not found
 
 **Solution:** Ensure UV is installed and in your PATH. Restart your terminal after installation.
-
-### Issue: Python version mismatch
-
-**Solution:** This project requires Python 3.11+. UV will automatically use the correct version if available.
-
-```bash
-# Check Python version
-python --version
-
-# UV will handle version automatically
-uv python list
-```
 
 ### Issue: Database connection errors
 
