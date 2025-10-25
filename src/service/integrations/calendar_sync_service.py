@@ -270,8 +270,8 @@ class CalendarSyncService:
     ) -> CalendarEvent | None:
         """Get existing calendar event by external_id."""
         stmt = select(CalendarEvent).where(
-            CalendarEvent.integration_id == integration_id,
-            CalendarEvent.external_id == external_id,
+            CalendarEvent.integration_id == integration_id,  # type: ignore[arg-type]
+            CalendarEvent.external_id == external_id,  # type: ignore[arg-type]
         )
         result = await self.db.execute(stmt)
         return result.scalars().first()
@@ -331,7 +331,7 @@ class CalendarSyncService:
         from sqlalchemy import delete
 
         await self.db.execute(
-            delete(CalendarAttendee).where(CalendarAttendee.event_id == event.event_id)
+            delete(CalendarAttendee).where(CalendarAttendee.event_id == event.event_id)  # type: ignore[arg-type]
         )
 
         # Create new attendees

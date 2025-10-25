@@ -7,6 +7,8 @@ Handles:
 - Connection setup and validation
 """
 
+# mypy: disable-error-code="no-any-return"
+
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, Request
@@ -201,6 +203,13 @@ async def disconnect_integration(
             return Response.bad_request_error_response(
                 message=IntegrationErrors.INTEGRATION_ALREADY_INACTIVE
             )
+
+        # Validate connection_id exists before deletion
+        if not integration.connection_id:
+            logger.error(
+                f"Integration {integration_id} has no connection_id, cannot delete from Nango"  # noqa: S608  # nosec B608
+            )
+            return Response.bad_request_error_response(message="Integration has no connection ID")
 
         # Delete integration (includes Nango cleanup)
         await service.delete_integration_from_nango(
