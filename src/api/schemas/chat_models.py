@@ -5,7 +5,6 @@ from typing import Any, Generic, TypeVar
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
-from pydantic.generics import GenericModel as _Base
 from src.domain.models.organisation_tables.chat_message_models import (
     ChatMessageRole,
     ChatMessageType,
@@ -32,8 +31,8 @@ class ChatSessionOut(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    # Pydantic v2 config
+    model_config = {"from_attributes": True}
 
 
 class DeleteChat(BaseModel):
@@ -56,12 +55,12 @@ ChatSessionResponse = ChatSessionOut
 
 
 # Legacy pagination helpers kept for compatibility with older handlers
-class Pagination(_Base, Generic[T]):
+class Pagination(BaseModel, Generic[T]):
     chats: list[ChatSessionOut]
     cursor: str | None = None
 
 
-class PaginationChatMessages(_Base, Generic[T]):
+class PaginationChatMessages(BaseModel, Generic[T]):
     chat: dict[str, Any]
     cursor: str | None = None
 

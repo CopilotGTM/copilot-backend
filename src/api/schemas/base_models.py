@@ -1,15 +1,14 @@
 from typing import Generic, TypeVar
 
-from pydantic import Field
-from pydantic.generics import GenericModel
+from pydantic import BaseModel, Field
 
 T = TypeVar("T")
 
 
-class GenericResponse(GenericModel, Generic[T]):
+class GenericResponse(BaseModel, Generic[T]):
     status: str = Field(..., example="SUCCESS")
     message: str = Field(..., example="Request successful")
     data: T | None = None
 
-    class Config:
-        arbitrary_types_allowed = True
+    # Pydantic v2 config
+    model_config = {"arbitrary_types_allowed": True}

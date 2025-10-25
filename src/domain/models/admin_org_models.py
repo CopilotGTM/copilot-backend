@@ -3,7 +3,6 @@ from typing import Generic, TypeVar
 from uuid import UUID
 
 from pydantic import BaseModel, EmailStr
-from pydantic.generics import GenericModel as _Base
 from src.domain.models.master_tables import OrganisationStatus
 
 T = TypeVar("T")
@@ -58,7 +57,7 @@ class CreateOrganizationResponse(BaseModel):
     updated_at: datetime
 
 
-class PaginationOrganizations(_Base, Generic[T]):
+class PaginationOrganizations(BaseModel, Generic[T]):
     organizations: list[ListOrganizationResponse]
     cursor: str | None = None
 

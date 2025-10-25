@@ -3,7 +3,6 @@ from typing import Generic, TypeVar
 from uuid import UUID
 
 from pydantic import BaseModel, EmailStr
-from pydantic.generics import GenericModel as _Base
 from src.domain.models.master_tables import (
     AdminUserStatus,
     SupabaseUserStatus,
@@ -74,7 +73,7 @@ class CreateUserResponse(BaseModel):
     created_at: datetime
 
 
-class PaginatedUsers(_Base, Generic[T]):
+class PaginatedUsers(BaseModel, Generic[T]):
     users: list[UserResponse]
     cursor: str | None = None
 

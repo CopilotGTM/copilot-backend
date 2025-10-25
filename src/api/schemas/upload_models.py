@@ -180,5 +180,5 @@ class AttachmentEventUpdate(BaseModel):
     error_message: str | None = None
     thumbnail_small_url: str | None = None
 
-    class Config:
-        orm_mode = True
+    # Pydantic v2 config
+    model_config = {"from_attributes": True}
