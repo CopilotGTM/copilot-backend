@@ -21,6 +21,9 @@ from .crm.hubspot import (
     fetch_deals as hubspot_deals_fetch,
 )
 from .crm.hubspot import (
+    fetch_owners as hubspot_owners_fetch,
+)
+from .crm.hubspot import (
     fetch_pipelines as hubspot_pipelines_fetch,
 )
 from .crm.hubspot import (
@@ -42,6 +45,7 @@ def _init_defaults() -> None:
         "contacts": hubspot_contacts_fetch,
         "users": hubspot_users_fetch,
         "companies": hubspot_companies_fetch,
+        "owners": hubspot_owners_fetch,
     }
 
 
