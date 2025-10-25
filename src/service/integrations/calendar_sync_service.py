@@ -1,8 +1,13 @@
 """
 Calendar sync service for Google Calendar, Outlook Calendar, etc.
 
-Properly stores calendar events in the calendar_events table (NOT knowledge base).
-Tracks sync history in integration_sync_history.
+This service ONLY writes to:
+1. calendar_events - Event records
+2. calendar_attendees - Attendee records
+3. integration_sync_history - Sync tracking
+
+IMPORTANT: This service does NOT create OrganisationSource or OrganisationDocument records.
+Calendar data is stored in dedicated calendar tables, NOT in the knowledge base/embeddings system.
 """
 
 from __future__ import annotations
@@ -35,7 +40,19 @@ def datetime_now_naive() -> datetime:
 
 
 class CalendarSyncService:
-    """Service to sync calendar events from external providers into calendar_events table."""
+    """
+    Service to sync calendar events from external providers into calendar_events table.
+
+    Scope: This service ONLY modifies calendar-specific tables.
+    - calendar_events
+    - calendar_attendees
+    - integration_sync_history
+
+    This service does NOT touch:
+    - organisation_sources
+    - organisations_source_knowledge
+    - organisation_documents
+    """
 
     def __init__(self, session: AsyncSession, organisation_id: UUID) -> None:
         self.db = session
@@ -50,6 +67,17 @@ class CalendarSyncService:
     ) -> dict[str, Any]:
         """
         Sync calendar events from external provider.
+
+        Tables Modified:
+        - calendar_events (primary)
+        - calendar_attendees (via _sync_attendees)
+        - integration_sync_history (tracking)
+        - knowledge_integrations (last_synced_at update only)
+
+        Tables NOT Modified:
+        - organisation_sources (not used for calendar)
+        - organisations_source_knowledge (not used for calendar)
+        - organisation_documents (not used for calendar)
 
         Args:
             integration: The integration record
@@ -109,10 +137,10 @@ class CalendarSyncService:
 
                     records_processed += 1
 
-                    # Commit in batches of 50
-                    if records_processed % 50 == 0:
+                    # Commit in batches of 100 to reduce transaction overhead
+                    if records_processed % 100 == 0:
                         await self.db.commit()
-                        logger.info("Committed batch: %d events processed", records_processed)
+                        logger.debug("Batch commit: %d events processed", records_processed)
 
                 except Exception as e:
                     logger.error(
@@ -152,6 +180,11 @@ class CalendarSyncService:
                 created_count,
                 updated_count,
                 records_failed,
+            )
+
+            logger.info(
+                "Tables modified: calendar_events (events), calendar_attendees (attendees), "
+                "integration_sync_history (tracking), knowledge_integrations (metadata only)"
             )
 
             return {
