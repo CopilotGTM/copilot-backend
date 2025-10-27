@@ -32,6 +32,7 @@ HUBSPOT_DEAL_PROPERTIES = [
     "hs_closed_won_date",
     "hs_closed_lost_date",
     "closed_lost_reason",
+    "closed_won_reason",
     "hs_closed_reason",
     "hs_expected_close_date",
     "lastactivitydate",
@@ -41,10 +42,40 @@ HUBSPOT_DEAL_PROPERTIES = [
     "hs_mrr",
     "hs_tcv",
     "hs_acv",
+    # Useful additional defaults from HubSpot
+    "hs_is_closed_won",
+    "hs_is_closed_lost",
+    "hs_is_closed",
+    "days_to_close",
+    "hs_created_by_user_id",
+    "hs_updated_by_user_id",
+    "hs_recurring_revenue_amount",
+    "hs_recurring_revenue_deal_type",
+    "hs_recurring_revenue_inactive_reason",
+    "hs_recurring_revenue_end_date",
+    "closed_amount",
+    "hs_projected_amount",
+    "hs_projected_amount_in_home_currency",
+    "hs_exchange_rate",
+    "hs_time_in_current_stage",
+    # Association/count helper properties (if enabled in portal)
+    "num_associated_contacts",
+    "num_associated_companies",
+    "num_notes",
 ]
 
 # Associations to include with deals
 HUBSPOT_DEAL_ASSOCIATIONS = ["contacts", "companies", "line_items"]
+
+# Deal property history to request for richer stage change context
+HUBSPOT_DEAL_PROPERTY_HISTORY = [
+    "dealstage",
+    "pipeline",
+    "amount",
+    "closedate",
+    "hs_deal_stage_probability",
+    "hs_forecast_probability",
+]
 
 
 class HubSpotDealFetcher(BaseFetcher):
@@ -67,10 +98,13 @@ class HubSpotDealFetcher(BaseFetcher):
         Returns:
             List of deal records with properties and associations
         """
+        max_limit = min(limit, 50)  # HubSpot caps propertiesWithHistory requests to 50 rows
+
         params: dict[str, Any] = {
-            "limit": limit,
+            "limit": max_limit,
             "properties": HUBSPOT_DEAL_PROPERTIES,
             "associations": HUBSPOT_DEAL_ASSOCIATIONS,
+            "propertiesWithHistory": HUBSPOT_DEAL_PROPERTY_HISTORY,
         }
 
         if incremental and last_sync_time:
@@ -88,10 +122,21 @@ class HubSpotDealFetcher(BaseFetcher):
                 }
             ]
 
-        return await self._fetch_paginated(
+        # Fetch active deals first (default)
+        active = await self._fetch_paginated(
             endpoint="/crm/v3/objects/deals",
             params=params,
         )
+
+        # Then fetch archived deals, so we can propagate deletions
+        archived_params: dict[str, Any] = dict(params)
+        archived_params["archived"] = True
+        archived = await self._fetch_paginated(
+            endpoint="/crm/v3/objects/deals",
+            params=archived_params,
+        )
+
+        return [*active, *archived]
 
     async def fetch_by_ids(
         self,

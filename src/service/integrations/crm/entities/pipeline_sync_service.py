@@ -11,6 +11,7 @@ from sqlalchemy import select
 from src.domain.models.organisation_tables.base_mixins import utcnow
 from src.domain.models.organisation_tables.sync import KnowledgeIntegration
 from src.domain.models.organisation_tables.sync.crm import (
+    CRMDeal,
     CRMDealStage,
     CRMPipeline,
     CRMStageState,
@@ -137,6 +138,110 @@ class PipelineSyncService(BaseSyncService[CRMPipeline]):
             **result.to_dict(),
         }
 
+    async def enrich_deals_with_pipeline_metadata(
+        self,
+        integration_id: UUID,
+    ) -> int:
+        """Enrich deals with pipeline and stage names after pipeline sync.
+
+        Updates deals that have pipeline_external_id or stage_external_id
+        but are missing the denormalized name fields. This happens when
+        deals are synced before pipelines exist in the database.
+
+        Args:
+            integration_id: Integration UUID to scope the enrichment
+
+        Returns:
+            Number of deals updated with enriched metadata
+        """
+        logger.info(
+            "Enriching deals with pipeline/stage metadata for integration %s",
+            integration_id,
+        )
+
+        # Load all pipelines and stages for this integration
+        pipeline_map = await self._load_pipeline_map(integration_id)
+        stage_map = await self._load_stage_map(integration_id)
+
+        if not pipeline_map and not stage_map:
+            logger.info("No pipelines or stages found - skipping deal enrichment")
+            return 0
+
+        # Find deals that need enrichment
+        # We'll fetch deals with pipeline_external_id or stage_external_id set
+        # and filter in memory for those missing names (more reliable than complex SQLAlchemy)
+        stmt = (
+            select(CRMDeal)
+            .where(CRMDeal.organisation_id == self.organisation_id)  # type: ignore[arg-type]
+            .where(CRMDeal.integration_id == integration_id)  # type: ignore[arg-type]
+            .where(CRMDeal.is_deleted.is_(False))  # type: ignore[attr-defined]
+        )
+
+        result = await self.db.execute(stmt)
+        all_deals = list(result.scalars().all())
+
+        # Filter to deals that need enrichment
+        deals_to_enrich = [
+            deal
+            for deal in all_deals
+            if (deal.pipeline_external_id and not deal.pipeline_name)
+            or (deal.stage_external_id and not deal.stage_name)
+        ]
+
+        if not deals_to_enrich:
+            logger.info("No deals found needing pipeline/stage enrichment")
+            return 0
+
+        deals_updated = 0
+
+        for deal in deals_to_enrich:
+            updated = False
+
+            # Enrich pipeline metadata
+            if deal.pipeline_external_id and not deal.pipeline_name:
+                pipeline = pipeline_map.get(deal.pipeline_external_id)
+                if pipeline:
+                    deal.pipeline_id = pipeline.pipeline_id
+                    deal.pipeline_name = pipeline.name
+                    deal.pipeline_label = pipeline.label
+                    updated = True
+                    logger.debug(
+                        "Enriched deal %s with pipeline: %s",
+                        deal.deal_id,
+                        pipeline.name,
+                    )
+
+            # Enrich stage metadata
+            if deal.stage_external_id and not deal.stage_name:
+                stage = stage_map.get(deal.stage_external_id)
+                if stage:
+                    deal.stage_id = stage.stage_id
+                    deal.stage_name = stage.name
+                    deal.stage_label = stage.label
+                    # Also populate probability if not already set
+                    if stage.probability is not None and deal.probability is None:
+                        deal.probability = stage.probability
+                    updated = True
+                    logger.debug(
+                        "Enriched deal %s with stage: %s",
+                        deal.deal_id,
+                        stage.name,
+                    )
+
+            if updated:
+                self.db.add(deal)
+                deals_updated += 1
+
+        # Commit all enriched deals
+        if deals_updated > 0:
+            await self.db.commit()
+            logger.info(
+                "Successfully enriched %d deals with pipeline/stage metadata",
+                deals_updated,
+            )
+
+        return deals_updated
+
     def _transform_record(self, raw: dict[str, Any], _provider: str) -> CRMPipeline:
         """Transform provider-specific pipeline data to CRMPipeline model.
 
@@ -174,6 +279,13 @@ class PipelineSyncService(BaseSyncService[CRMPipeline]):
         # Basic fields
         record.name = raw.get("label") or raw.get("name") or record.external_id
         record.label = raw.get("label") or record.name
+
+        # Strip whitespace from labels
+        if record.name:
+            record.name = record.name.strip()
+        if record.label:
+            record.label = record.label.strip()
+
         record.object_type = raw.get("objectType") or "deals"
 
         # Status fields
@@ -306,6 +418,40 @@ class PipelineSyncService(BaseSyncService[CRMPipeline]):
         result = await self.db.execute(stmt)
         return {row.external_id: row for row in result.scalars().all()}
 
+    async def _load_pipeline_map(self, integration_id: UUID) -> dict[str, CRMPipeline]:
+        """Load pipeline mapping by external ID for enrichment.
+
+        Args:
+            integration_id: Integration ID
+
+        Returns:
+            Dictionary mapping external_id to CRMPipeline
+        """
+        stmt = (
+            select(CRMPipeline)
+            .where(CRMPipeline.integration_id == integration_id)  # type: ignore[arg-type]
+            .where(CRMPipeline.is_deleted.is_(False))  # type: ignore[attr-defined]
+        )
+        result = await self.db.execute(stmt)
+        return {row.external_id: row for row in result.scalars().all()}
+
+    async def _load_stage_map(self, integration_id: UUID) -> dict[str, CRMDealStage]:
+        """Load stage mapping by external ID for enrichment.
+
+        Args:
+            integration_id: Integration ID
+
+        Returns:
+            Dictionary mapping external_id to CRMDealStage
+        """
+        stmt = (
+            select(CRMDealStage)
+            .where(CRMDealStage.integration_id == integration_id)  # type: ignore[arg-type]
+            .where(CRMDealStage.is_deleted.is_(False))  # type: ignore[attr-defined]
+        )
+        result = await self.db.execute(stmt)
+        return {row.external_id: row for row in result.scalars().all()}
+
     def _update_stage_record(
         self,
         record: CRMDealStage,
@@ -326,6 +472,13 @@ class PipelineSyncService(BaseSyncService[CRMPipeline]):
         stage_external_id = self._extract_stage_external_id(raw)
         record.name = raw.get("label") or raw.get("displayName") or stage_external_id or ""
         record.label = raw.get("label")
+
+        # Strip whitespace from labels
+        if record.name:
+            record.name = record.name.strip()
+        if record.label:
+            record.label = record.label.strip()
+
         record.stage_key = raw.get("stageId") or raw.get("id")
 
         # Probability (can be in metadata or root)
@@ -334,15 +487,13 @@ class PipelineSyncService(BaseSyncService[CRMPipeline]):
         probability = metadata.get("probability", raw.get("probability"))
         record.probability = self._normalize_probability(probability)
 
-        # Stage state (open, won, lost)
-        record.stage_state = self._determine_stage_state(stage_external_id)
-        record.is_closed = record.stage_state != CRMStageState.OPEN
+        # Stage state (open, won, lost) - check metadata.isClosed first
+        self._set_stage_state_from_metadata(record, metadata, stage_external_id)
 
         # Forecast category
-        if isinstance(raw.get("metadata"), dict):
-            record.forecast_category = raw["metadata"].get("forecastCategory")
-        else:
-            record.forecast_category = raw.get("forecastCategory")
+        record.forecast_category = (
+            metadata.get("forecastCategory") if metadata else raw.get("forecastCategory")
+        )
 
         # Display order
         display_order = raw.get("displayOrder")
@@ -400,6 +551,52 @@ class PipelineSyncService(BaseSyncService[CRMPipeline]):
 
         return CRMStageState.OPEN
 
+    def _set_stage_state_from_metadata(
+        self,
+        record: CRMDealStage,
+        metadata: dict[str, Any],
+        stage_external_id: str | None,
+    ) -> None:
+        """Set stage state and is_closed from metadata or fallback to slug matching.
+
+        Args:
+            record: Stage record to update
+            metadata: Metadata dictionary from provider
+            stage_external_id: Stage external ID for fallback matching
+        """
+        is_closed_str = metadata.get("isClosed")
+        if is_closed_str is not None:
+            # HubSpot returns "true"/"false" strings
+            record.is_closed = self._is_truthy(is_closed_str)
+            if record.is_closed:
+                # Use probability to distinguish won vs lost
+                prob = record.probability or 0
+                record.stage_state = CRMStageState.WON if prob >= 50 else CRMStageState.LOST
+            else:
+                record.stage_state = CRMStageState.OPEN
+        else:
+            # Fallback to stage ID slug matching
+            record.stage_state = self._determine_stage_state(stage_external_id)
+            record.is_closed = record.stage_state != CRMStageState.OPEN
+
+    def _is_truthy(self, value: Any) -> bool:
+        """Interpret provider boolean-like values consistently.
+
+        Args:
+            value: Value to interpret as boolean
+
+        Returns:
+            True if value represents a truthy value
+        """
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return False
+        if isinstance(value, int | float):
+            return value != 0
+        s = str(value).strip().lower()
+        return s in {"true", "yes", "1", "y", "t"}
+
     def _normalize_probability(self, value: Any) -> float | None:
         """Normalize probability to 0-100 scale.
 
@@ -437,7 +634,13 @@ class PipelineSyncService(BaseSyncService[CRMPipeline]):
             return None
 
     def _parse_date(self, value: Any) -> datetime | None:
-        """Parse datetime value.
+        """Parse datetime value from various formats.
+
+        Handles:
+        - None/empty values
+        - datetime objects
+        - Unix timestamps (milliseconds)
+        - ISO 8601 strings (e.g., "2025-10-03T13:37:32.290Z")
 
         Args:
             value: Date value (datetime, timestamp, or string)
@@ -445,7 +648,7 @@ class PipelineSyncService(BaseSyncService[CRMPipeline]):
         Returns:
             Parsed datetime or None
         """
-        if value is None:
+        if value is None or value == "":
             return None
         if isinstance(value, datetime):
             return value
@@ -454,6 +657,15 @@ class PipelineSyncService(BaseSyncService[CRMPipeline]):
                 from datetime import UTC
 
                 return datetime.fromtimestamp(float(value) / 1000, tz=UTC)
+            except Exception:
+                return None
+        if isinstance(value, str):
+            try:
+                from typing import cast
+
+                from dateutil import parser as date_parser  # type: ignore[import-untyped]
+
+                return cast(datetime | None, date_parser.isoparse(value))
             except Exception:
                 return None
 
