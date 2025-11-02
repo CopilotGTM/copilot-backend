@@ -17,7 +17,7 @@ import hmac
 import json
 import logging
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, NoReturn, cast
 
 import httpx
 from src.infra.config.configs import nango_integration_config
@@ -281,8 +281,8 @@ class NangoClient:
             response = await self.client.post("/connect/sessions", json=payload)
             response.raise_for_status()
 
-            result = response.json()
-            result = self._normalize_connect_session_response(result)
+            raw = response.json()
+            result = self._normalize_connect_session_response(cast(dict[str, Any], raw))
 
             logger.info(
                 f"Created Connect Session for user={end_user_id}, "
@@ -356,7 +356,7 @@ class NangoClient:
 
     def _handle_connect_session_http_error(
         self, e: httpx.HTTPStatusError, end_user_id: str, organization_id: str, integration_id: str
-    ) -> None:
+    ) -> NoReturn:
         """Handle HTTP errors during connect session creation."""
         status_code, payload, detail = self._extract_error_details(e.response)
         context = {
@@ -379,7 +379,7 @@ class NangoClient:
 
     def _handle_connect_session_error(
         self, e: Exception, end_user_id: str, organization_id: str, integration_id: str
-    ) -> None:
+    ) -> NoReturn:
         """Handle general errors during connect session creation."""
         logger.error(
             "Failed to create connect session for context=%s: %s",
@@ -465,7 +465,7 @@ class NangoClient:
             response = await self.client.get(url, params=params)
             response.raise_for_status()
 
-            connection = response.json()
+            connection: dict[str, Any] = cast(dict[str, Any], response.json())
 
             logger.info(f"Retrieved connection for provider={provider}, id={connection_id}")
             return connection
@@ -604,11 +604,104 @@ class NangoClient:
         """
         try:
             connection = await self.get_connection(provider, connection_id)
-            return connection.get("metadata", {})
+            metadata: dict[str, Any] = cast(dict[str, Any], connection.get("metadata", {}))
+            return metadata
 
         except Exception as e:
             logger.error(f"Failed to get connection metadata: {str(e)}")
             raise NangoConnectionError(f"Failed to get metadata: {str(e)}") from e
+
+    async def action(
+        self,
+        provider_config_key: str,
+        connection_id: str,
+        action_name: str,
+        input_data: dict | None = None,
+    ) -> dict[str, Any]:
+        """
+        Trigger a Nango action (workflow).
+
+        Actions are server-side workflows that can fetch data or perform operations
+        that don't fit the sync model (e.g., one-time data fetches, complex operations).
+
+        API: POST /action/trigger
+        Docs: https://docs.nango.dev/integrate/guides/perform-workflows-with-an-api
+
+        Args:
+            provider_config_key: Nango provider config key (e.g., 'hubspot')
+            connection_id: Connection identifier
+            action_name: Name of the action to trigger (e.g., 'fetch-pipelines')
+            input_data: Optional input data for the action
+
+        Returns:
+            Action result data
+
+        Raises:
+            NangoConnectionError: If action fails
+
+        Example:
+            result = await nango.action(
+                provider_config_key="hubspot",
+                connection_id="org_123",
+                action_name="fetch-pipelines"
+            )
+        """
+        try:
+            # Build headers (Nango requires these as headers, not body)
+            headers = {
+                "Provider-Config-Key": provider_config_key,
+                "Connection-Id": connection_id,
+            }
+
+            # Build request payload
+            payload: dict[str, Any] = {
+                "action_name": action_name,
+            }
+            if input_data:
+                payload["input"] = input_data
+
+            logger.debug(
+                "Triggering Nango action: provider=%s, connection=%s, action=%s",
+                provider_config_key,
+                connection_id,
+                action_name,
+            )
+
+            response = await self.client.post("/action/trigger", json=payload, headers=headers)
+            response.raise_for_status()
+
+            result: dict[str, Any] = cast(dict[str, Any], response.json())
+
+            logger.info(
+                "Nango action completed: provider=%s, action=%s",
+                provider_config_key,
+                action_name,
+            )
+            return result
+
+        except httpx.HTTPStatusError as e:
+            status_code, error_payload, detail = self._extract_error_details(e.response)
+            logger.error(
+                "HTTP error triggering action (status=%s, provider=%s, action=%s): %s",
+                status_code,
+                provider_config_key,
+                action_name,
+                error_payload,
+            )
+            message = detail or f"Action {action_name} failed: {str(e)}"
+            raise NangoConnectionError(
+                message,
+                status_code=status_code,
+                payload=error_payload,
+            ) from None
+        except Exception as e:
+            logger.error(
+                "Failed to trigger action (provider=%s, action=%s): %s",
+                provider_config_key,
+                action_name,
+                str(e),
+            )
+            raise NangoConnectionError(f"Action {action_name} failed: {str(e)}") from None
 
     async def proxy_request(
         self,
@@ -678,7 +771,7 @@ class NangoClient:
                 raise ValueError(f"Unsupported HTTP method: {method}")
             response.raise_for_status()
 
-            result = response.json()
+            result: dict[str, Any] = cast(dict[str, Any], response.json())
 
             logger.info(
                 "Proxy request to %s:%s (method=%s) succeeded",

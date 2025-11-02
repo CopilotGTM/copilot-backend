@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Iterable
+from typing import Any
 
 from src.infra.utils.logger import get_logger
 
@@ -62,7 +63,7 @@ class SecretsManager:
         """Best-effort parallel prefetch (no cache retained)."""
         await asyncio.gather(*(self.get(n) for n in names), return_exceptions=True)
 
-    def get_metrics(self) -> dict[str, any]:
+    def get_metrics(self) -> dict[str, Any]:
         return {
             "provider_calls": self._provider_calls,
             "provider_failures": self._provider_failures,
@@ -72,7 +73,7 @@ class SecretsManager:
             "failed_secrets_count": 0,
         }
 
-    def health_check(self) -> dict[str, any]:
+    def health_check(self) -> dict[str, Any]:
         return {
             "healthy": True,
             "circuit_breaker_open": False,

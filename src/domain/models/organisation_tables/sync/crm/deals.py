@@ -285,9 +285,13 @@ class CRMDeal(SyncedRecordMixin, table=True):
     closed_reason: str | None = Field(
         default=None,
         sa_column=Column(String(255)),
-        description="Provider-supplied reason for closing the deal.",
+        description="Provider-supplied reason for closing the deal (won or lost).",
     )
-
+    crm_url: str | None = Field(
+        default=None,
+        sa_column=Column(String(500)),
+        description="Direct URL to the deal in the CRM provider portal.",
+    )
     # Sales process snapshot
     stage_external_id: str | None = Field(
         default=None,
@@ -364,15 +368,45 @@ class CRMDeal(SyncedRecordMixin, table=True):
         sa_column=Column(String(255)),
         description="Email address for the deal owner, if supplied.",
     )
+    created_by_user_external_id: str | None = Field(
+        default=None,
+        sa_column=Column(String(255)),
+        description="Provider identifier for the user that originally created the deal.",
+    )
+    updated_by_user_external_id: str | None = Field(
+        default=None,
+        sa_column=Column(String(255)),
+        description="Provider identifier for the user that last updated the deal.",
+    )
     company_external_id: str | None = Field(
         default=None,
         sa_column=Column(String(255)),
         description="Associated company identifier provided by the CRM.",
     )
+    company_name: str | None = Field(
+        default=None,
+        sa_column=Column(String(255)),
+        description="Display name of the associated company, if available.",
+    )
+    company_domain: str | None = Field(
+        default=None,
+        sa_column=Column(String(255)),
+        description="Domain/website of the associated company, if available.",
+    )
     primary_contact_external_id: str | None = Field(
         default=None,
         sa_column=Column(String(255)),
         description="Primary contact identifier linked to the deal.",
+    )
+    primary_contact_name: str | None = Field(
+        default=None,
+        sa_column=Column(String(255)),
+        description="Display name of the primary contact linked to the deal.",
+    )
+    primary_contact_email: str | None = Field(
+        default=None,
+        sa_column=Column(String(255)),
+        description="Email address of the primary contact linked to the deal.",
     )
 
     # Activity & timing
@@ -385,6 +419,10 @@ class CRMDeal(SyncedRecordMixin, table=True):
         default=None,
         sa_column=Column(DateTime(timezone=True), nullable=True),
         description="Most recent activity timestamp associated with the deal.",
+    )
+    days_to_close: int | None = Field(
+        default=None,
+        description="HubSpot-computed days between creation and close dates.",
     )
     stage_entered_at: datetime | None = Field(
         default=None,
@@ -436,6 +474,18 @@ class CRMDeal(SyncedRecordMixin, table=True):
             server_default=text(EMPTY_JSONB_SQL),
         ),
         description="Cached analytics metrics (e.g., ARR, ACV segments)",
+    )
+    associated_contact_count: int | None = Field(
+        default=None,
+        description="Number of contacts associated with the deal reported by the provider.",
+    )
+    associated_company_count: int | None = Field(
+        default=None,
+        description="Number of companies associated with the deal reported by the provider.",
+    )
+    note_count: int | None = Field(
+        default=None,
+        description="Number of notes logged on the deal as reported by the provider.",
     )
     associations_payload: dict[str, Any] | None = Field(
         default=None,

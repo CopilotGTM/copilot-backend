@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy import select
@@ -21,6 +21,8 @@ from src.domain.models.organisation_tables.sync.crm import (
 )
 from src.infra.utils.logger import get_logger
 from src.service.integrations.core import BaseSyncService
+
+from .deal_enrichment_service import DealEnrichmentService
 
 logger = get_logger(__name__)
 
@@ -80,6 +82,7 @@ class DealSyncService(BaseSyncService[CRMDeal]):
         participants_to_upsert: list[tuple[CRMDeal, dict[str, Any], CRMParticipantType]] = []
         history_entries: list[dict[str, Any]] = []
         deals_processed = 0
+        deals_to_enrich: list[CRMDeal] = []
 
         for deal in deal_list:
             try:
@@ -106,9 +109,10 @@ class DealSyncService(BaseSyncService[CRMDeal]):
                 # Update metadata
                 record.synced_at = now
                 record.last_seen_at = now
-                record.is_deleted = False
+                record.is_deleted = bool(deal.get("archived"))
 
                 self.db.add(record)
+                deals_to_enrich.append(record)
                 deals_processed += 1
                 result.increment_processed()
 
@@ -134,6 +138,10 @@ class DealSyncService(BaseSyncService[CRMDeal]):
                 self._log_error("deal", deal.get("id"), exc)
                 result.increment_failed()
                 result.add_error(str(exc))
+
+        if deals_to_enrich:
+            enricher = DealEnrichmentService(db=self.db, organisation_id=self.organisation_id)
+            await enricher.enrich_deals(deals_to_enrich)
 
         # Commit deals
         await self.db.commit()
@@ -205,6 +213,7 @@ class DealSyncService(BaseSyncService[CRMDeal]):
         self._update_financial_fields(record, properties)
         self._update_forecasting_fields(record, properties)
         self._update_owner_fields(record, properties)
+        self._update_audit_fields(record, properties)
         self._update_associations(record, associations)
         self._update_date_fields(record, properties, updated_at, created_at)
         self._update_raw_data(record, raw, properties, associations, updated_at)
@@ -256,11 +265,24 @@ class DealSyncService(BaseSyncService[CRMDeal]):
         record.deal_type = properties.get("dealtype")
         record.priority = properties.get("hs_priority")
 
+        # Extract CRM URL from top-level raw data (provider-agnostic)
+        crm_url = raw.get("url")
+        if crm_url and isinstance(crm_url, str):
+            record.crm_url = crm_url
+
     def _update_financial_fields(self, record: CRMDeal, properties: dict[str, Any]) -> None:
         """Update financial fields."""
         record.amount = self._safe_float(properties.get("amount"))
         record.amount_home_currency = self._safe_float(properties.get("amount_in_home_currency"))
-        record.currency = properties.get("deal_currency_code") or properties.get("currency")
+        # Extract currency from multiple possible fields
+        currency = (
+            properties.get("deal_currency_code")
+            or properties.get("currency")
+            or properties.get("hs_deal_currency_code")
+        )
+        # Only set if we have a non-empty value
+        if currency and isinstance(currency, str) and len(currency.strip()) > 0:
+            record.currency = currency.strip().upper()  # Normalize to uppercase ISO codes
 
     def _update_forecasting_fields(self, record: CRMDeal, properties: dict[str, Any]) -> None:
         """Update forecasting and probability fields."""
@@ -269,8 +291,17 @@ class DealSyncService(BaseSyncService[CRMDeal]):
         )
         record.probability = self._normalize_probability(probability)
         record.predicted_amount = self._safe_float(properties.get("hs_forecast_amount"))
+        # Start with stage-derived status
         record.deal_status = self._determine_deal_status(properties.get("dealstage"))
         record.forecast_category = properties.get("hs_forecast_category")
+
+        # Prefer explicit HubSpot closed flags when available
+        if self._is_truthy(properties.get("hs_is_closed_won")):
+            record.deal_status = CRMDealStatus.WON
+        elif self._is_truthy(properties.get("hs_is_closed_lost")):
+            record.deal_status = CRMDealStatus.LOST
+        elif self._is_truthy(properties.get("hs_is_closed")):
+            record.deal_status = CRMDealStatus.CLOSED
 
     def _update_owner_fields(self, record: CRMDeal, properties: dict[str, Any]) -> None:
         """Update owner information fields."""
@@ -286,12 +317,56 @@ class DealSyncService(BaseSyncService[CRMDeal]):
         if isinstance(owner_name, str):
             record.owner_name = owner_name
 
+    def _update_audit_fields(self, record: CRMDeal, properties: dict[str, Any]) -> None:
+        """Update audit and count-oriented fields."""
+        created_by = properties.get("hs_created_by_user_id")
+        if created_by is not None:
+            record.created_by_user_external_id = str(created_by)
+
+        updated_by = properties.get("hs_updated_by_user_id")
+        if updated_by is not None:
+            record.updated_by_user_external_id = str(updated_by)
+
+        record.days_to_close = self._safe_int(properties.get("days_to_close"))
+        record.associated_contact_count = self._safe_int(properties.get("num_associated_contacts"))
+        record.associated_company_count = self._safe_int(properties.get("num_associated_companies"))
+        record.note_count = self._safe_int(properties.get("num_notes"))
+
     def _update_associations(self, record: CRMDeal, associations: dict[str, Any]) -> None:
-        """Update association references."""
-        record.company_external_id = self._first_association_id(associations.get("companies"))
-        record.primary_contact_external_id = self._first_association_id(
-            associations.get("contacts")
-        )
+        """Update association references and counts from HubSpot associations.
+
+        HubSpot sends associations as:
+        {
+            "companies": {"results": [{"id": "123", ...}, ...]},
+            "contacts": {"results": [{"id": "456", ...}, ...]}
+        }
+        """
+        # Extract company associations
+        companies_data = associations.get("companies", {})
+        if isinstance(companies_data, dict):
+            companies_list = companies_data.get("results", [])
+        else:
+            companies_list = []
+
+        company_id = self._first_association_id(companies_list)
+        record.company_external_id = company_id
+        if company_id is None:
+            record.company_name = None
+            record.company_domain = None
+
+        # Set company count from associations if we have them
+        if companies_list:
+            record.associated_company_count = len(companies_list)
+
+        # Extract contact associations
+        contacts_data = associations.get("contacts", {})
+        contacts_list = contacts_data.get("results", []) if isinstance(contacts_data, dict) else []
+
+        contact_id = self._first_association_id(contacts_list)
+        record.primary_contact_external_id = contact_id
+        if contact_id is None:
+            record.primary_contact_name = None
+            record.primary_contact_email = None
 
     def _update_date_fields(
         self,
@@ -301,13 +376,26 @@ class DealSyncService(BaseSyncService[CRMDeal]):
         created_at: datetime | None,
     ) -> None:
         """Update date-related fields."""
-        record.close_date = self._parse_date(properties.get("closedate"))
-        record.closed_won_at = self._parse_date(properties.get("hs_closed_won_date"))
-        record.closed_lost_at = self._parse_date(properties.get("hs_closed_lost_date"))
-        record.closed_reason = properties.get("closed_lost_reason") or properties.get(
-            "hs_closed_reason"
+        # Parse all date fields from properties
+        close_date = self._parse_date(properties.get("closedate"))
+        closed_won_date = self._parse_date(properties.get("hs_closed_won_date"))
+        closed_lost_date = self._parse_date(properties.get("hs_closed_lost_date"))
+        expected_close = self._parse_date(properties.get("hs_expected_close_date"))
+
+        # Set the parsed values
+        record.close_date = close_date
+        record.closed_won_at = closed_won_date
+        record.closed_lost_at = closed_lost_date
+        record.expected_close_date = expected_close
+
+        # Set closed reason (prefer won reason, then lost reason, then generic)
+        record.closed_reason = (
+            properties.get("closed_won_reason")
+            or properties.get("closed_lost_reason")
+            or properties.get("hs_closed_reason")
         )
-        record.expected_close_date = self._parse_date(properties.get("hs_expected_close_date"))
+
+        # Activity and modification dates
         record.last_activity_at = (
             self._parse_date(properties.get("lastactivitydate"))
             or self._parse_date(properties.get("hs_lastmodifieddate"))
@@ -317,6 +405,12 @@ class DealSyncService(BaseSyncService[CRMDeal]):
             properties.get("hs_lastmodifieddate")
         )
         record.source_created_at = self._parse_date(properties.get("createdate")) or created_at
+        record.source_modified_at = updated_at or self._parse_date(
+            properties.get("hs_lastmodifieddate")
+        )
+
+        # Ensure consistency: for WON/LOST deals, fill in missing dates
+        self._ensure_closed_date_consistency(record)
 
     def _update_raw_data(
         self,
@@ -334,6 +428,32 @@ class DealSyncService(BaseSyncService[CRMDeal]):
             properties.get("hs_lastmodifieddate")
         )
         record.data_payload = raw
+
+    def _ensure_closed_date_consistency(self, record: CRMDeal) -> None:
+        """Ensure consistency between close_date and closed_won_at/closed_lost_at.
+
+        For closed deals, if one date is missing but the other exists, copy it.
+        This handles cases where HubSpot provides partial date information.
+        """
+        status = record.deal_status
+
+        if status == CRMDealStatus.WON:
+            # For won deals, sync close_date and closed_won_at
+            if record.close_date is None and record.closed_won_at is not None:
+                record.close_date = record.closed_won_at
+            elif record.closed_won_at is None and record.close_date is not None:
+                record.closed_won_at = record.close_date
+
+        elif status == CRMDealStatus.LOST:
+            # For lost deals, sync close_date and closed_lost_at
+            if record.close_date is None and record.closed_lost_at is not None:
+                record.close_date = record.closed_lost_at
+            elif record.closed_lost_at is None and record.close_date is not None:
+                record.closed_lost_at = record.close_date
+
+        elif status == CRMDealStatus.CLOSED and record.close_date is None:
+            # For generic closed status, try to infer from available dates
+            record.close_date = record.closed_won_at or record.closed_lost_at
 
     async def _load_pipeline_map(self, integration_id: UUID) -> dict[str, CRMPipeline]:
         """Load pipeline mapping by external ID."""
@@ -567,31 +687,211 @@ class DealSyncService(BaseSyncService[CRMDeal]):
         _raw: dict[str, Any],
         _stage_map: dict[str, CRMDealStage],
     ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
-        """Extract stage history from deal data.
+        """Extract stage history events using HubSpot property history."""
 
-        Args:
-            _deal_record: Deal record (unused, kept for interface compatibility)
-            _raw: Raw deal data (unused, kept for interface compatibility)
-            _stage_map: Stage mapping (unused, kept for interface compatibility)
+        history_map = _raw.get("propertiesWithHistory") or {}
+        stage_events = self._parse_property_history(
+            history_map.get("dealstage"), self._sanitize_stage
+        )
 
-        Returns:
-            Tuple of (history_entries, latest_entry)
+        if not stage_events:
+            return [], None
 
-        Note:
-            Simplified placeholder - full implementation needs deal stage change events
-        """
-        # Simplified - original implementation is complex
-        # Returns (history_entries, latest_entry)
-        return [], None
+        amount_history = self._parse_property_history(history_map.get("amount"), self._safe_float)
+        probability_history = self._parse_property_history(
+            history_map.get("hs_deal_stage_probability"), self._normalize_probability
+        )
+        forecast_prob_history = self._parse_property_history(
+            history_map.get("hs_forecast_probability"), self._normalize_probability
+        )
+
+        history_entries: list[dict[str, Any]] = []
+        for idx, (entered_at, stage_value, raw_entry) in enumerate(stage_events):
+            if stage_value is None:
+                continue
+
+            stage_row = _stage_map.get(stage_value)
+            exited_at = stage_events[idx + 1][0] if idx + 1 < len(stage_events) else None
+            from_stage = stage_events[idx - 1][1] if idx > 0 else None
+
+            history_entries.append(
+                self._build_stage_history_entry(
+                    deal_record=_deal_record,
+                    stage_value=stage_value,
+                    entered_at=entered_at,
+                    exited_at=exited_at,
+                    from_stage=from_stage,
+                    stage_row=stage_row,
+                    raw_entry=raw_entry,
+                    amount_history=amount_history,
+                    probability_history=probability_history,
+                    forecast_history=forecast_prob_history,
+                )
+            )
+
+        latest_entry = history_entries[-1] if history_entries else None
+        return history_entries, latest_entry
+
+    def _build_stage_history_entry(
+        self,
+        *,
+        deal_record: CRMDeal,
+        stage_value: str,
+        entered_at: datetime,
+        exited_at: datetime | None,
+        from_stage: str | None,
+        stage_row: CRMDealStage | None,
+        raw_entry: Any,
+        amount_history: list[tuple[datetime, Any, dict[str, Any]]],
+        probability_history: list[tuple[datetime, Any, dict[str, Any]]],
+        forecast_history: list[tuple[datetime, Any, dict[str, Any]]],
+    ) -> dict[str, Any]:
+        elapsed_seconds = None
+        if exited_at:
+            elapsed_seconds = int((exited_at - entered_at).total_seconds())
+
+        amount_at_stage = self._value_from_history(amount_history, entered_at)
+        if amount_at_stage is None:
+            amount_at_stage = deal_record.amount
+
+        probability_at_stage = self._value_from_history(probability_history, entered_at)
+        if probability_at_stage is None:
+            probability_at_stage = self._value_from_history(forecast_history, entered_at)
+        if probability_at_stage is None:
+            probability_at_stage = deal_record.probability
+
+        source_type = raw_entry.get("sourceType") if isinstance(raw_entry, dict) else None
+        external_id = f"{deal_record.external_id}:{stage_value}:{int(entered_at.timestamp())}"
+
+        return {
+            "external_id": external_id,
+            "deal_id": deal_record.deal_id,
+            "stage_id": stage_row.stage_id if stage_row else None,
+            "stage_external_id": stage_value,
+            "from_stage_external_id": from_stage,
+            "entered_at": entered_at,
+            "exited_at": exited_at,
+            "elapsed_seconds": elapsed_seconds,
+            "amount_at_stage": amount_at_stage,
+            "probability_at_stage": probability_at_stage,
+            "source": source_type,
+            "raw": raw_entry,
+            "source_modified_at": entered_at,
+        }
+
+    def _parse_property_history(
+        self,
+        history_entries: Any,
+        transform: Callable[[Any], Any | None] | None = None,
+    ) -> list[tuple[datetime, Any, dict[str, Any]]]:
+        """Parse HubSpot property history into sorted tuples."""
+
+        parsed: list[tuple[datetime, Any, dict[str, Any]]] = []
+        if not isinstance(history_entries, list):
+            return parsed
+
+        for entry in history_entries:
+            if not isinstance(entry, dict):
+                continue
+            timestamp = self._parse_date(entry.get("timestamp") or entry.get("timestampMillis"))
+            if not timestamp:
+                continue
+            value = entry.get("value")
+            if transform:
+                try:
+                    value = transform(value)
+                except Exception:
+                    value = None
+            parsed.append((timestamp, value, entry))
+
+        parsed.sort(key=lambda item: item[0])
+        return parsed
+
+    def _value_from_history(
+        self,
+        history_entries: list[tuple[datetime, Any, dict[str, Any]]],
+        reference_time: datetime,
+    ) -> Any:
+        """Return last value from history before or at the reference time."""
+
+        result: Any = None
+        for timestamp, value, _ in history_entries:
+            if timestamp <= reference_time:
+                result = value
+            else:
+                break
+        return result
+
+    def _sanitize_stage(self, value: Any) -> str | None:
+        if value is None:
+            return None
+        return str(value).strip() or None
 
     def _extract_metrics(self, properties: dict[str, Any]) -> dict[str, Any]:
         """Extract metric fields."""
-        metrics = {}
-        metric_keys = ["hs_arr", "hs_mrr", "hs_tcv", "hs_acv"]
-        for key in metric_keys:
-            if key in properties and properties[key]:
-                metrics[key] = properties[key]
+        metrics: dict[str, Any] = {}
+
+        monetary_keys = (
+            "hs_arr",
+            "hs_mrr",
+            "hs_tcv",
+            "hs_acv",
+            "hs_projected_amount",
+            "hs_projected_amount_in_home_currency",
+            "closed_amount",
+        )
+        for key in monetary_keys:
+            self._store_metric(metrics, key, properties.get(key))
+
+        self._store_metric(
+            metrics, "days_to_close", properties.get("days_to_close"), self._safe_int
+        )
+
+        for counter_key in ("num_associated_contacts", "num_associated_companies", "num_notes"):
+            self._store_metric(metrics, counter_key, properties.get(counter_key), self._safe_int)
+
+        self._store_metric(
+            metrics, "hs_exchange_rate", properties.get("hs_exchange_rate"), self._safe_float
+        )
+        self._store_metric(
+            metrics,
+            "hs_time_in_current_stage",
+            properties.get("hs_time_in_current_stage"),
+            self._safe_int,
+        )
+        self._store_metric(
+            metrics,
+            "hs_recurring_revenue_amount",
+            properties.get("hs_recurring_revenue_amount"),
+            self._safe_float,
+        )
+        self._store_metric(
+            metrics,
+            "hs_recurring_revenue_end_date",
+            properties.get("hs_recurring_revenue_end_date"),
+        )
+
+        for key in ("hs_recurring_revenue_deal_type", "hs_recurring_revenue_inactive_reason"):
+            self._store_metric(metrics, key, properties.get(key))
+
         return metrics
+
+    def _store_metric(
+        self,
+        metrics: dict[str, Any],
+        key: str,
+        value: Any,
+        converter: Callable[[Any], Any | None] | None = None,
+    ) -> None:
+        """Store metric if value is present, applying optional conversion."""
+        if value in (None, ""):
+            return
+        if converter:
+            converted = converter(value)
+            if converted is not None:
+                metrics[key] = converted
+                return
+        metrics[key] = value
 
     def _first_association_id(self, associations: Any) -> str | None:
         """Get first association ID from list."""
@@ -603,8 +903,15 @@ class DealSyncService(BaseSyncService[CRMDeal]):
         return None
 
     def _parse_date(self, value: Any) -> datetime | None:
-        """Parse datetime value."""
-        if value is None:
+        """Parse datetime value from various formats.
+
+        Handles:
+        - None/empty values
+        - datetime objects
+        - Unix timestamps (milliseconds)
+        - ISO 8601 strings (e.g., "2025-08-28T04:00:00Z")
+        """
+        if value is None or value == "":
             return None
         if isinstance(value, datetime):
             return value
@@ -613,6 +920,13 @@ class DealSyncService(BaseSyncService[CRMDeal]):
                 from datetime import UTC
 
                 return datetime.fromtimestamp(float(value) / 1000, tz=UTC)
+            except Exception:
+                return None
+        if isinstance(value, str):
+            try:
+                from dateutil import parser as date_parser  # type: ignore[import-untyped]
+
+                return cast(datetime | None, date_parser.isoparse(value))
             except Exception:
                 return None
         return None
@@ -625,6 +939,26 @@ class DealSyncService(BaseSyncService[CRMDeal]):
             return float(value)
         except (TypeError, ValueError):
             return None
+
+    def _safe_int(self, value: Any) -> int | None:
+        """Safely convert value to int."""
+        if value is None or value == "":
+            return None
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return None
+
+    def _is_truthy(self, value: Any) -> bool:
+        """Interpret provider boolean-like values consistently."""
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return False
+        if isinstance(value, int | float):
+            return value != 0
+        s = str(value).strip().lower()
+        return s in {"true", "yes", "1", "y", "t"}
 
     def _normalize_probability(self, value: Any) -> float | None:
         """Normalize probability to 0-100 scale."""
