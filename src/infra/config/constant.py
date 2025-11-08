@@ -62,6 +62,8 @@ class AdminAuthErrors:
     LOGOUT_FAILED = "An unexpected error occurred during logout."
     INCORRECT_CURRENT_PASSWORD = "Incorrect current password"
     PASSWORD_CHANGE_FAILED = "Password change failed"
+    ACCOUNT_NOT_ACTIVE = "Admin account is not active"
+    ACCOUNT_NOT_APPROVED = "Admin account has not been approved"
 
 
 class AdminOrganizationErrors:
@@ -143,6 +145,7 @@ class SupabaseErrors:
     AUTHENTICATION_FAILED = "Authentication failed"
     ADMIN_EMAIL_ALREADY_EXISTS = "Admin with this email already exists"
     FAILED_TO_CREATE_SUPABASE_USER = "Failed to create Supabase user"
+    ADMIN_ACCOUNT_NOT_APPROVED = "Admin account has not been approved"
 
 
 class KnowledgeBaseErrors:

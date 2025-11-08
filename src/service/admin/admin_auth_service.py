@@ -1,12 +1,16 @@
 from datetime import UTC, datetime
 from typing import Any
+from typing import cast as typing_cast
 
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 from src.api.utils.http_response import Response
 from src.domain.models.admin_models import AdminLoginState
 from src.domain.models.master_tables import SuperAdmin
 from src.infra.auth.supabase_admin_client import supabase_admin_client
+from src.infra.security.token_revocation import token_revocation_service
 from src.infra.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -19,11 +23,13 @@ class AdminAuthService:
         self, session: AsyncSession, email: str
     ) -> SuperAdmin | None:
         """Fetches a super admin from the database by email."""
-        statement = select(SuperAdmin).where(SuperAdmin.email == email)
+        statement = select(SuperAdmin).where(
+            typing_cast(ColumnElement[bool], SuperAdmin.email == email)
+        )
         result = await session.execute(statement)
         return result.scalars().first()
 
-    def handle_pending_setup_login(self, email: str) -> Response:
+    def handle_pending_setup_login(self, email: str) -> JSONResponse:
         """Handles the login flow for a user who needs to set their password."""
         try:
             password_reset_link = supabase_admin_client.generate_password_reset_link(email)
@@ -44,7 +50,7 @@ class AdminAuthService:
         super_admin: SuperAdmin,
         tokens: dict[str, Any],
         email_verified: bool,
-    ) -> Response:
+    ) -> JSONResponse:
         """Handles the login flow for an active user."""
         logger.info("Updating last_login_at for super_admin: %s", super_admin.email)
         super_admin.last_login_at = datetime.now(UTC)
@@ -64,7 +70,42 @@ class AdminAuthService:
             "last_login_at": super_admin.last_login_at,
             "tokens": tokens,
         }
+        token_revocation_service.clear_user_revocation(super_admin.supabase_user_id)
         return Response.success_response(message="Login successful", data=response_data)
+
+    def invalidate_admin_sessions(
+        self,
+        super_admin: SuperAdmin,
+        *,
+        token: str | None = None,
+    ) -> None:
+        if not super_admin.supabase_user_id:
+            return
+        try:
+            supabase_admin_client.sign_out_user(
+                user_id=super_admin.supabase_user_id,
+                global_signout=True,
+            )
+        except Exception as exc:  # noqa: BLE001 - Supabase SDK may raise multiple exceptions
+            logger.warning(
+                "Global sign-out failed for admin %s: %s",
+                super_admin.email,
+                exc,
+            )
+        if token:
+            token_revocation_service.revoke_token(token)
+        token_revocation_service.revoke_user(super_admin.supabase_user_id)
+
+    def invalidate_admin_sessions_by_user_id(self, user_id: str) -> None:
+        try:
+            supabase_admin_client.sign_out_user(user_id=user_id, global_signout=True)
+        except Exception as exc:  # noqa: BLE001 - Supabase SDK may raise multiple exceptions
+            logger.warning(
+                "Global sign-out failed for admin %s: %s",
+                user_id,
+                exc,
+            )
+        token_revocation_service.revoke_user(user_id)
 
 
 admin_auth_service = AdminAuthService()

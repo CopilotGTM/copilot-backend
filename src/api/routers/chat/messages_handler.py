@@ -59,12 +59,18 @@ async def send_message(
         # Map attachments to IDs, respecting order if provided
         attach_ids: list[UUID] | None = payload.attachments
 
+        message_type: ChatMessageType
+        if payload.message_type is None:
+            message_type = ChatMessageType.GENERAL_MESSAGE
+        else:
+            message_type = payload.message_type
+
         # Create user message (this also creates and saves the job)
         user_message, job, assistant_message_id = await service.create_user_message(
             session_id=payload.session_id,
             content=payload.content,
             attachment_ids=attach_ids,
-            message_type=payload.message_type,
+            message_type=message_type,
             role=payload.role,
         )
 

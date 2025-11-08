@@ -1,5 +1,5 @@
 import re
-from typing import Any
+from typing import Any, TypedDict, cast
 
 from src.infra.config.configs import supabase_config
 from src.infra.config.constant import SupabaseErrors
@@ -7,6 +7,13 @@ from src.infra.utils.logger import get_logger
 from supabase import Client, create_client
 
 logger = get_logger()
+
+
+class AdminUserAttributes(TypedDict, total=False):
+    email: str
+    password: str
+    email_confirm: bool
+    user_metadata: dict[str, Any]
 
 
 class SupabaseAuthError(Exception):
@@ -96,7 +103,7 @@ class SupabaseUserClient:
         if not password or not isinstance(password, str):
             return False
         # Minimum 6 characters
-        return not len(password) < 6
+        return len(password) >= 6
 
     def _validate_user_id(self, user_id: str) -> bool:
         """
@@ -249,7 +256,7 @@ class SupabaseUserClient:
             if not self._validate_password(password):
                 raise SupabaseAuthError(SupabaseErrors.INVALID_PASSWORD, status_code=400)
 
-            user_data = {
+            user_data: AdminUserAttributes = {
                 "email": email,
                 "password": password,
                 "email_confirm": True,
@@ -257,7 +264,7 @@ class SupabaseUserClient:
             if metadata:
                 user_data["user_metadata"] = metadata
 
-            response = self.admin_client.auth.admin.create_user(user_data)
+            response = self.admin_client.auth.admin.create_user(cast(Any, user_data))
             logger.info(f"User created: {email}")
             return response.model_dump()
         except Exception as e:
@@ -318,6 +325,11 @@ class SupabaseUserClient:
                 raise SupabaseAuthError(SupabaseErrors.INVALID_TOKEN, status_code=400)
 
             response = self.client.auth.get_user(token)
+            if response is None:
+                raise SupabaseAuthError(
+                    SupabaseErrors.TOKEN_VERIFICATION_FAILED.format("No user returned"),
+                    status_code=401,
+                )
             logger.info("Token verified successfully")
             return response.model_dump()
         except Exception as e:
@@ -342,6 +354,11 @@ class SupabaseUserClient:
                 raise SupabaseAuthError(SupabaseErrors.INVALID_TOKEN, status_code=400)
 
             response = self.client.auth.refresh_session(refresh_token)
+            if response is None:
+                raise SupabaseAuthError(
+                    SupabaseErrors.TOKEN_REFRESH_FAILED.format("No session returned"),
+                    status_code=401,
+                )
             logger.info("Access token refreshed successfully")
             return response.model_dump()
         except Exception as e:
@@ -350,7 +367,7 @@ class SupabaseUserClient:
                 SupabaseErrors.TOKEN_REFRESH_FAILED.format(str(e)), status_code=401
             ) from e
 
-    def reset_password_with_token(self, token_hash: str, new_password: str) -> bool:
+    def reset_password_with_token(self, token_hash: str, new_password: str) -> str:
         """
         Reset password using a recovery token_hash.
 
@@ -359,7 +376,7 @@ class SupabaseUserClient:
             new_password: New password
 
         Returns:
-            True if password reset was successful
+            Supabase user ID for which the password was reset
 
         Raises:
             SupabaseAuthError: If password reset fails
@@ -377,10 +394,11 @@ class SupabaseUserClient:
             # If verification is successful, update the password
             if response:
                 # Get user from the response
-                user_data = response.model_dump()
-                user_id = user_data.get("user", {}).get("id")
+                user_data = cast(dict[str, object], response.model_dump())
+                user_info = cast(dict[str, object], user_data.get("user", {}))
+                user_id = user_info.get("id")
 
-                if user_id:
+                if isinstance(user_id, str) and self._validate_user_id(user_id):
                     # Update password using admin client
                     self.admin_client.auth.admin.update_user_by_id(
                         user_id, {"password": new_password}
