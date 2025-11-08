@@ -18,6 +18,9 @@ from .crm.hubspot import (
     fetch_contacts as hubspot_contacts_fetch,
 )
 from .crm.hubspot import (
+    fetch_deal_tasks as hubspot_deal_tasks_fetch,
+)
+from .crm.hubspot import (
     fetch_deals as hubspot_deals_fetch,
 )
 from .crm.hubspot import (
@@ -42,6 +45,7 @@ def _init_defaults() -> None:
     _REGISTRY[("crm", "hubspot")] = {
         "pipelines": hubspot_pipelines_fetch,
         "deals": hubspot_deals_fetch,
+        "deal_tasks": hubspot_deal_tasks_fetch,
         "contacts": hubspot_contacts_fetch,
         "users": hubspot_users_fetch,
         "companies": hubspot_companies_fetch,
@@ -55,7 +59,18 @@ def get_fetcher(category: str, provider: str, data_type: str) -> FetchFn | None:
     entry = _REGISTRY.get((category, provider))
     if not entry:
         return None
-    return entry.get(data_type)
+
+    # Try direct lookup first
+    fetcher = entry.get(data_type)
+    if fetcher:
+        return fetcher
+
+    # Handle aliases for backward compatibility
+    # Map 'tasks' to 'deal_tasks' for CRM providers
+    if category == "crm" and data_type == "tasks":
+        return entry.get("deal_tasks")
+
+    return None
 
 
 __all__ = ["get_fetcher"]

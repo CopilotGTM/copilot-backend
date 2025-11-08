@@ -10,6 +10,7 @@ from src.service.integrations.crm.entities import (
     CompanySyncService,
     ContactSyncService,
     DealSyncService,
+    DealTaskSyncService,
     OwnerSyncService,
     PipelineSyncService,
     UserSyncService,
@@ -18,6 +19,7 @@ from src.service.integrations.crm_sync_service import CRMSyncService
 from src.workers.integrations_worker.adapters.crm.entity_adapters import (
     sync_companies,
     sync_contacts,
+    sync_deal_tasks,
     sync_deals,
     sync_owners,
     sync_pipelines,
@@ -118,12 +120,29 @@ async def _sync_pipelines(
     )
 
 
+async def _sync_deal_tasks(
+    service: DealTaskSyncService,
+    integration: KnowledgeIntegration,
+    records: Iterable[dict[str, Any]],
+    provider: str,
+) -> dict[str, Any]:
+    """Sync deal tasks using new entity pattern."""
+    return await sync_deal_tasks(
+        db=service.db,
+        organisation_id=str(service.organisation_id),
+        integration=integration,
+        records=list(records),
+        provider=provider,
+    )
+
+
 async def sync_crm_data(
     *,
     service: (
         CRMSyncService
         | OwnerSyncService
         | DealSyncService
+        | DealTaskSyncService
         | ContactSyncService
         | CompanySyncService
         | UserSyncService
@@ -140,6 +159,8 @@ async def sync_crm_data(
     entity_handlers = {
         ("owners", OwnerSyncService): _sync_owners,
         ("deals", DealSyncService): _sync_deals,
+        ("deal_tasks", DealTaskSyncService): _sync_deal_tasks,
+        ("tasks", DealTaskSyncService): _sync_deal_tasks,  # Alias for backward compatibility
         ("contacts", ContactSyncService): _sync_contacts,
         ("companies", CompanySyncService): _sync_companies,
         ("users", UserSyncService): _sync_users,

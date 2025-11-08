@@ -1,5 +1,6 @@
 from .companies import CRMCompany
 from .contacts import CRMContact
+from .deal_tasks import CRMDealTask, CRMTaskPriority, CRMTaskStatus, CRMTaskType
 from .deals import (
     CRMDeal,
     CRMDealParticipant,
@@ -24,4 +25,8 @@ __all__ = [
     "CRMStageState",
     "CRMUser",
     "CRMCompany",
+    "CRMDealTask",
+    "CRMTaskStatus",
+    "CRMTaskType",
+    "CRMTaskPriority",
 ]

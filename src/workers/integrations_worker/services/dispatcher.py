@@ -21,6 +21,7 @@ from src.service.integrations.crm.entities import (
     CompanySyncService,
     ContactSyncService,
     DealSyncService,
+    DealTaskSyncService,
     OwnerSyncService,
     PipelineSyncService,
     UserSyncService,
@@ -41,6 +42,7 @@ def _create_crm_service(
     organisation_id: UUID,
 ) -> (
     DealSyncService
+    | DealTaskSyncService
     | ContactSyncService
     | CompanySyncService
     | OwnerSyncService
@@ -52,6 +54,7 @@ def _create_crm_service(
         str,
         type[
             DealSyncService
+            | DealTaskSyncService
             | ContactSyncService
             | CompanySyncService
             | OwnerSyncService
@@ -60,6 +63,8 @@ def _create_crm_service(
         ],
     ] = {
         "deals": DealSyncService,
+        "deal_tasks": DealTaskSyncService,
+        "tasks": DealTaskSyncService,  # Alias for backward compatibility
         "contacts": ContactSyncService,
         "companies": CompanySyncService,
         "owners": OwnerSyncService,

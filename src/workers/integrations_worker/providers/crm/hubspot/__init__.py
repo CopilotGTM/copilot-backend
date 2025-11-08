@@ -10,6 +10,7 @@ from .fetchers import (
     HubSpotCompanyFetcher,
     HubSpotContactFetcher,
     HubSpotDealFetcher,
+    HubSpotDealTaskFetcher,
     HubSpotOwnerFetcher,
     HubSpotPipelineFetcher,
     HubSpotUserFetcher,
@@ -19,12 +20,14 @@ __all__ = [
     "HubSpotCompanyFetcher",
     "HubSpotContactFetcher",
     "HubSpotDealFetcher",
+    "HubSpotDealTaskFetcher",
     "HubSpotOwnerFetcher",
     "HubSpotPipelineFetcher",
     "HubSpotUserFetcher",
     "fetch_companies",
     "fetch_contacts",
     "fetch_deals",
+    "fetch_deal_tasks",
     "fetch_owners",
     "fetch_pipelines",
     "fetch_users",
@@ -115,4 +118,18 @@ async def fetch_users(
     """Fetch users from HubSpot."""
     _ = last_synced_at, data_type
     fetcher = HubSpotUserFetcher(nango, provider_config_key, connection_id)
+    return await fetcher.fetch_all(incremental=not is_initial)
+
+
+async def fetch_deal_tasks(
+    nango: NangoClient,
+    connection_id: str,
+    is_initial: bool,
+    last_synced_at: Any,  # noqa: ARG001
+    data_type: str | None,  # noqa: ARG001
+    provider_config_key: str,
+) -> list[dict[str, Any]]:
+    """Fetch deal tasks from HubSpot."""
+    _ = last_synced_at, data_type
+    fetcher = HubSpotDealTaskFetcher(nango, provider_config_key, connection_id)
     return await fetcher.fetch_all(incremental=not is_initial)
