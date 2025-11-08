@@ -1,10 +1,12 @@
 import secrets
 import string
 from typing import Any
+from typing import cast as typing_cast
 
 from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 from src.api.dependencies.master_dependencies import get_master_async_session
 from src.domain.models.master_tables import (
     AdminRole,
@@ -14,6 +16,7 @@ from src.domain.models.master_tables import (
 )
 from src.infra.auth.supabase_admin_client import supabase_admin_client
 from src.infra.config.constant import SupabaseErrors
+from src.infra.security.token_revocation import token_revocation_service
 from src.infra.utils.logger import get_logger
 
 logger = get_logger("admin_auth")
@@ -99,8 +102,16 @@ class AdminAuth:
                     detail=SupabaseErrors.MISSING_USER_ID_IN_TOKEN,
                 )
 
+            if token_revocation_service.is_token_revoked(token, user_id):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail=SupabaseErrors.INVALID_TOKEN,
+                )
+
             # Find admin in database
-            statement = select(SuperAdmin).where(SuperAdmin.supabase_user_id == user_id)
+            statement = select(SuperAdmin).where(
+                typing_cast(ColumnElement[bool], SuperAdmin.supabase_user_id == user_id)
+            )
             result = await session.execute(statement)
             admin = result.scalars().first()
 
@@ -112,9 +123,17 @@ class AdminAuth:
 
             # Check if admin is active (unless allow_pending_setup is True)
             if admin.status != SupabaseAdminStatus.ACTIVE:
+                token_revocation_service.revoke_user(admin.supabase_user_id)
                 raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    status_code=status.HTTP_403_FORBIDDEN,
                     detail=SupabaseErrors.ADMIN_ACCOUNT_NOT_ACTIVE,
+                )
+
+            if admin.admin_status != AdminUserStatus.APPROVED:
+                token_revocation_service.revoke_user(admin.supabase_user_id)
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=SupabaseErrors.ADMIN_ACCOUNT_NOT_APPROVED,
                 )
 
             return admin
@@ -170,7 +189,12 @@ class AdminAuth:
                 email=email, password=password, metadata=user_metadata
             )
 
-            user_id = response.get("user", {}).get("id")
+            user = response.get("user")
+            user_id: str | None = None
+            if isinstance(user, dict):
+                possible_id = user.get("id")
+                if isinstance(possible_id, str):
+                    user_id = possible_id
             return user_id
 
         except Exception as e:
@@ -215,7 +239,9 @@ class AdminAuth:
         Raises:
             HTTPException: If admin already exists
         """
-        result = await session.execute(select(SuperAdmin).where(SuperAdmin.email == email))
+        result = await session.execute(
+            select(SuperAdmin).where(typing_cast(ColumnElement[bool], SuperAdmin.email == email))
+        )
         existing_admin = result.scalars().one_or_none()
 
         if existing_admin:
@@ -263,7 +289,9 @@ class AdminAuth:
             SuperAdmin object if found, None otherwise
         """
         result = await session.execute(
-            select(SuperAdmin).where(SuperAdmin.supabase_user_id == supabase_user_id)
+            select(SuperAdmin).where(
+                typing_cast(ColumnElement[bool], SuperAdmin.supabase_user_id == supabase_user_id)
+            )
         )
         return result.scalars().one_or_none()
 
@@ -278,7 +306,9 @@ class AdminAuth:
         Returns:
             SuperAdmin object if found, None otherwise
         """
-        result = await session.execute(select(SuperAdmin).where(SuperAdmin.email == email))
+        result = await session.execute(
+            select(SuperAdmin).where(typing_cast(ColumnElement[bool], SuperAdmin.email == email))
+        )
         return result.scalars().one_or_none()
 
     def check_requires_password_change(self, supabase_user_id: str) -> bool:
@@ -294,7 +324,7 @@ class AdminAuth:
         try:
             user_info = supabase_admin_client.get_user_by_id(supabase_user_id)
             user_metadata = user_info.get("user", {}).get("user_metadata", {})
-            return user_metadata.get("requires_password_change", False)
+            return bool(user_metadata.get("requires_password_change", False))
         except Exception as e:
             logger.error(f"Error checking password change requirement: {str(e)}")
             return False

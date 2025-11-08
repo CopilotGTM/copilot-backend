@@ -11,6 +11,7 @@ Usage: include as a router dependency on user-protected endpoints.
 from __future__ import annotations
 
 import time
+from typing import cast
 
 from fastapi import Depends, HTTPException, Request, status
 from src.api.dependencies.organisation_dependencies import (
@@ -33,11 +34,12 @@ def _incr_with_ttl(key: str, ttl_seconds: int) -> int:
     """
     client = get_redis_client()
     try:
-        count = client.incr(key)
+        count_raw = client.incr(key)
+        count = cast(int, count_raw)
         if count == 1:
             # Set TTL only on first creation
             client.expire(key, ttl_seconds)
-        return int(count)
+        return count
     except Exception as e:
         # Fail-open: if Redis is unavailable, log and allow the request
         logger.warning("Rate limiter Redis error for key %s: %s", key, e)
@@ -48,11 +50,14 @@ def _ttl_seconds(key: str) -> int | None:
     """Get TTL in seconds for a key; returns None if unknown or no TTL."""
     try:
         client = get_redis_client()
-        ttl = client.ttl(key)
+        ttl_raw = client.ttl(key)
+        ttl_value = cast(int | None, ttl_raw)
         # -2: key does not exist, -1: key exists but has no associated expire
-        if ttl is None or ttl < 0:
+        if ttl_value is None:
             return None
-        return int(ttl)
+        if ttl_value < 0:
+            return None
+        return ttl_value
     except Exception:
         return None
 
@@ -217,10 +222,115 @@ async def rate_limit_login(request: Request) -> None:
         )
 
 
+async def rate_limit_admin_login(request: Request) -> None:
+    """Limit admin login attempts by a combination of email and client IP.
+
+    This targets admin login endpoints with stricter limits than regular user login
+    to protect privileged admin accounts from brute-force attacks.
+    """
+    # Identify admin email from request body
+    email = await _get_email_from_request(request)
+
+    # Client IP (behind proxy you may want X-Forwarded-For)
+    ip = request.client.host if request.client else "unknown"
+
+    now = int(time.time())
+    minute_window = 60
+    hour_window = 3600
+    minute_bucket = now // minute_window
+    hour_bucket = now // hour_window
+
+    # Use separate namespace for admin logins
+    base = f"rl:admin_login:ip:{ip}"
+    if email:
+        base += f":email:{email.lower()}"
+
+    minute_key = f"{base}:m:{minute_bucket}"
+    hour_key = f"{base}:h:{hour_bucket}"
+
+    minute_count = _incr_with_ttl(minute_key, minute_window)
+    hour_count = _incr_with_ttl(hour_key, hour_window)
+
+    # Stricter limits for admin login (3 per minute, 20 per hour)
+    per_min = getattr(rate_limit_config, "ADMIN_LOGIN_PER_MINUTE", 3)
+    per_hr = getattr(rate_limit_config, "ADMIN_LOGIN_PER_HOUR", 20)
+
+    if minute_count and minute_count > per_min:
+        retry_after = _ttl_seconds(minute_key) or minute_window
+        logger.warning(f"Admin login rate limit exceeded (per-minute) for email={email}, ip={ip}")
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many admin login attempts. Please try again later.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+    if hour_count and hour_count > per_hr:
+        retry_after = _ttl_seconds(hour_key) or hour_window
+        logger.warning(f"Admin login rate limit exceeded (per-hour) for email={email}, ip={ip}")
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many admin login attempts. Please try again later.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+
+async def rate_limit_password_reset(request: Request) -> None:
+    """Limit password reset requests to prevent abuse and email bombing.
+
+    Applies to both user and admin forgot-password endpoints.
+    Uses IP-based rate limiting (3 per 15 minutes, 10 per hour).
+    """
+    # Client IP (behind proxy you may want X-Forwarded-For)
+    ip = request.client.host if request.client else "unknown"
+
+    # Get email if present (for more granular limiting)
+    email = await _get_email_from_request(request)
+
+    now = int(time.time())
+    fifteen_min_window = 900  # 15 minutes
+    hour_window = 3600
+    fifteen_min_bucket = now // fifteen_min_window
+    hour_bucket = now // hour_window
+
+    base = f"rl:pwd_reset:ip:{ip}"
+    if email:
+        base += f":email:{email.lower()}"
+
+    fifteen_min_key = f"{base}:15m:{fifteen_min_bucket}"
+    hour_key = f"{base}:h:{hour_bucket}"
+
+    fifteen_min_count = _incr_with_ttl(fifteen_min_key, fifteen_min_window)
+    hour_count = _incr_with_ttl(hour_key, hour_window)
+
+    # Conservative limits: 3 per 15 min, 10 per hour
+    per_15min = getattr(rate_limit_config, "PASSWORD_RESET_PER_15MIN", 3)
+    per_hr = getattr(rate_limit_config, "PASSWORD_RESET_PER_HOUR", 10)
+
+    if fifteen_min_count and fifteen_min_count > per_15min:
+        retry_after = _ttl_seconds(fifteen_min_key) or fifteen_min_window
+        logger.warning(f"Password reset rate limit exceeded (15-min) for email={email}, ip={ip}")
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many password reset requests. Please try again later.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+    if hour_count and hour_count > per_hr:
+        retry_after = _ttl_seconds(hour_key) or hour_window
+        logger.warning(f"Password reset rate limit exceeded (hourly) for email={email}, ip={ip}")
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many password reset requests. Please try again later.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+
 __all__ = [
     "rate_limit_user_request",
     "rate_limit_user_write",
     "rate_limit_login",
+    "rate_limit_admin_login",
+    "rate_limit_password_reset",
     "rate_limit_user_read",
     "rate_limit_admin_read",
 ]

@@ -1,6 +1,7 @@
 import re
 from typing import Any
 
+import requests
 from src.infra.config.configs import supabase_config
 from src.infra.config.constant import SupabaseErrors
 from src.infra.utils.logger import get_logger
@@ -107,7 +108,7 @@ class SupabaseAdminClient:
         if not password or not isinstance(password, str):
             return False
         # Minimum 6 characters
-        return not len(password) < 6
+        return len(password) >= 6
 
     def _validate_user_id(self, user_id: str) -> bool:
         """
@@ -380,9 +381,12 @@ class SupabaseAdminClient:
                 raise SupabaseAuthError(SupabaseErrors.INVALID_USER_ID, status_code=400)
 
             if global_signout:
-                # Sign out from all sessions globally
-                self.client.auth.sign_out({"scope": "global"})
-                logger.info(f"User {user_id} signed out globally from all sessions")
+                if self._admin_sign_out(user_id):
+                    logger.info("User %s signed out globally from all sessions", user_id)
+                else:
+                    # Fallback to client-level sign out if admin API fails
+                    self.client.auth.sign_out({"scope": "global"})
+                    logger.info("Fallback global sign-out executed locally for user %s", user_id)
             else:
                 # Sign out from current session only
                 self.client.auth.sign_out({"scope": "local"})
@@ -395,6 +399,28 @@ class SupabaseAdminClient:
             raise SupabaseAuthError(
                 SupabaseErrors.SIGN_OUT_FAILED.format(str(e)), status_code=500
             ) from e
+
+    def _admin_sign_out(self, user_id: str) -> bool:
+        """Call the Supabase admin sign-out endpoint to invalidate all sessions."""
+        try:
+            response = requests.post(
+                f"{self.supabase_url}/auth/v1/admin/signout",
+                headers={
+                    "Authorization": f"Bearer {self.supabase_service_role_key}",
+                    "apikey": self.supabase_service_role_key,
+                    "Content-Type": "application/json",
+                },
+                json={"user_id": user_id},
+                timeout=10,
+            )
+            if response.status_code in (200, 204):
+                return True
+            logger.warning(
+                "Supabase admin sign-out returned %s for user %s", response.status_code, user_id
+            )
+        except Exception as exc:  # noqa: BLE001 - supabase requests may raise various errors
+            logger.warning("Supabase admin sign-out failed for user %s: %s", user_id, exc)
+        return False
 
     def create_user(
         self, email: str, password: str, metadata: dict[str, Any] | None = None
@@ -421,7 +447,10 @@ class SupabaseAdminClient:
             if metadata:
                 user_data["user_metadata"] = metadata
 
-            response = self.admin_client.auth.admin.create_user(user_data)
+            # mypy: supabase stubs expect AdminUserAttributes, but runtime accepts dict
+            from typing import cast as typing_cast
+
+            response = self.admin_client.auth.admin.create_user(typing_cast(Any, user_data))
             logger.info(f"User created: {email}")
             return response.model_dump()
         except Exception as e:
@@ -446,6 +475,10 @@ class SupabaseAdminClient:
                 raise SupabaseAuthError(SupabaseErrors.INVALID_TOKEN, status_code=400)
 
             response = self.client.auth.get_user(token)
+            if response is None:
+                raise SupabaseAuthError(
+                    SupabaseErrors.TOKEN_VERIFICATION_FAILED_GENERIC, status_code=401
+                )
             logger.info("Token verified successfully")
             return response.model_dump()
         except Exception as e:
@@ -478,7 +511,7 @@ class SupabaseAdminClient:
                 SupabaseErrors.TOKEN_REFRESH_FAILED.format(str(e)), status_code=401
             ) from e
 
-    def reset_password_with_token(self, token_hash: str, new_password: str) -> bool:
+    def reset_password_with_token(self, token_hash: str, new_password: str) -> str:
         """
         Reset password using a recovery token_hash.
 
@@ -487,7 +520,7 @@ class SupabaseAdminClient:
             new_password: New password
 
         Returns:
-            True if password reset was successful
+            Supabase user ID whose password was reset
 
         Raises:
             SupabaseAuthError: If password reset fails
@@ -513,14 +546,15 @@ class SupabaseAdminClient:
                 user_data = response.model_dump()
                 user_id = user_data.get("user", {}).get("id")
 
-                if user_id:
+                if isinstance(user_id, str):
+                    user_id_str = user_id
                     # Update password using admin client
                     self.admin_client.auth.admin.update_user_by_id(
-                        user_id, {"password": new_password}
+                        user_id_str, {"password": new_password}
                     )
 
-                    logger.info(f"Password reset successful for user ID: {user_id}")
-                    return user_id
+                    logger.info(f"Password reset successful for user ID: {user_id_str}")
+                    return user_id_str
                 else:
                     raise SupabaseAuthError(
                         SupabaseErrors.TOKEN_VERIFICATION_FAILED_NO_ID, status_code=500

@@ -1,10 +1,11 @@
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING, cast
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.master_dependencies import get_master_async_session
-from src.api.dependencies.rate_limit import rate_limit_login
+from src.api.dependencies.rate_limit import rate_limit_login, rate_limit_password_reset
 from src.api.schemas.base_models import GenericResponse
 from src.api.utils.http_response import Response
 from src.domain.models.admin_models import PasswordResetAction
@@ -28,6 +29,14 @@ from src.infra.utils.logger import get_logger
 logger = get_logger("user_auth_handler")
 router = APIRouter()
 
+if TYPE_CHECKING:
+    from sqlalchemy.sql.schema import Table
+
+_user_table = getattr(User, "__table__", None)
+if _user_table is None:
+    raise RuntimeError("User table metadata is not initialized")
+UserTable = cast("Table", _user_table)
+
 
 @router.post("/login", response_model=GenericResponse[UserLoginResponse], tags=["user_auth"])
 async def user_login(
@@ -39,7 +48,7 @@ async def user_login(
     User login endpoint.
     """
     try:
-        statement = select(User).where(User.email == login_request.email)
+        statement = select(User).where(UserTable.c.email == login_request.email)
         result = await master_session.execute(statement)
         user = result.scalars().first()
         logger.info(f"User found in database: {user.email if user else 'None'}")
@@ -77,10 +86,10 @@ async def user_login(
                     email=login_request.email
                 )
 
-                response_data = {
-                    "state": UserLoginState.PENDING_SETUP,
-                    "password_reset_link": password_reset_link,
-                }
+                response_data = UserLoginResponse(
+                    state=UserLoginState.PENDING_SETUP,
+                    password_reset_link=password_reset_link,
+                )
                 return Response.success_response(
                     message="Login successful, password change required",
                     data=response_data,
@@ -96,20 +105,20 @@ async def user_login(
             master_session.add(user)
             await master_session.commit()
             await master_session.refresh(user)
-            response_data = {
-                "email": user.email,
-                "first_name": user.first_name,
-                "last_name": user.last_name,
-                "role": user.user_role,
-                "state": UserLoginState.ACTIVE,
-                "created_at": user.created_at,
-                "email_verified": email_verified,
-                "last_login_at": user.last_login_at,
-                "tokens": {
+            response_data = UserLoginResponse(
+                email=user.email,
+                first_name=user.first_name,
+                last_name=user.last_name,
+                role=user.user_role,
+                state=UserLoginState.ACTIVE,
+                created_at=user.created_at,
+                email_verified=email_verified,
+                last_login_at=user.last_login_at,
+                tokens={
                     "access_token": access_token,
                     "refresh_token": refresh_token,
                 },
-            }
+            )
             return Response.success_response(message="Login successful", data=response_data)
 
     except Exception as e:
@@ -149,64 +158,63 @@ async def reset_password(
             return Response.bad_request_error_response(UserAuthErrors.INVALID_ACTION)
 
         try:
-            try:
-                user_id = supabase_user_client.reset_password_with_token(
-                    token_hash=password_request.token_hash,
-                    new_password=password_request.new_password,
-                )
-            except Exception as e:
-                logger.error(f"Failed to reset password with recovery token: {str(e)}")
-                return Response.bad_request_error_response(UserAuthErrors.INVALID_RECOVERY_TOKEN)
-
-            if password_request.action == PasswordResetAction.FORCE_CHANGE:
-                statement = select(User).where(User.supabase_user_id == user_id)
-                result = await master_session.execute(statement)
-                current_user = result.scalars().first()
-
-                if not current_user:
-                    logger.warning(f"User not found for user_id: {user_id}")
-                    return Response.unauthorized_error_response(UserAuthErrors.UNAUTHORIZED)
-
-                updated_metadata = {
-                    "requires_password_change": False,
-                    "email_verified": True,
-                    "first_name": current_user.first_name,
-                    "last_name": current_user.last_name,
-                    "role": current_user.user_role,
-                }
-
-                try:
-                    supabase_user_client.update_user_metadata(
-                        user_id=current_user.supabase_user_id,
-                        metadata=updated_metadata,
-                    )
-                except Exception:
-                    logger.error(
-                        f"Failed to update user metadata in Supabase for user: {current_user.email}"
-                    )
-                    return Response.internal_server_error_response(
-                        message=UserAuthErrors.UPDATE_METADATA_FAILED, data=None
-                    )
-
-                logger.info(f"Updating local DB for user_id: {user_id}")
-                current_user.email_verified = True
-                current_user.status = SupabaseUserStatus.ACTIVE
-                # Use timezone-aware UTC timestamp (Sonar rule S6903)
-                current_user.last_login_at = datetime.now(UTC)
-                master_session.add(current_user)
-                await master_session.commit()
-                await master_session.refresh(current_user)
-                logger.info(f"Local DB updated for user_id: {user_id}")
-            else:
-                logger.info(
-                    f"Password reset completed for user: {user_id} (forgot action - no metadata update)"
-                )
-
-        except Exception as e:
-            logger.error(f"Error updating user data after password reset: {str(e)}")
-            return Response.internal_server_error_response(
-                message=UserAuthErrors.UPDATE_USER_DATA_FAILED, data=None
+            user_id = supabase_user_client.reset_password_with_token(
+                token_hash=password_request.token_hash,
+                new_password=password_request.new_password,
             )
+        except Exception as e:
+            logger.error(f"Failed to reset password with recovery token: {str(e)}")
+            return Response.bad_request_error_response(UserAuthErrors.INVALID_RECOVERY_TOKEN)
+
+        if password_request.action != PasswordResetAction.FORCE_CHANGE:
+            logger.info(
+                "Password reset completed for user_id %s (forgot action - no metadata update)",
+                user_id,
+            )
+            return Response.success_response(
+                message="Password changed successfully. You can now log in with your new password."
+            )
+
+        statement = select(User).where(UserTable.c.supabase_user_id == user_id)
+        result = await master_session.execute(statement)
+        current_user = result.scalars().first()
+
+        if not current_user:
+            logger.warning(f"User not found for user_id: {user_id}")
+            return Response.unauthorized_error_response(UserAuthErrors.UNAUTHORIZED)
+
+        updated_metadata = {
+            "requires_password_change": False,
+            "email_verified": True,
+            "first_name": current_user.first_name,
+            "last_name": current_user.last_name,
+            "role": current_user.user_role,
+        }
+
+        if current_user.supabase_user_id:
+            try:
+                supabase_user_client.update_user_metadata(
+                    user_id=current_user.supabase_user_id,
+                    metadata=updated_metadata,
+                )
+            except Exception:
+                logger.error(
+                    "Failed to update user metadata in Supabase for user: %s",
+                    current_user.email,
+                )
+                return Response.internal_server_error_response(
+                    message=UserAuthErrors.UPDATE_METADATA_FAILED, data=None
+                )
+
+        logger.info(f"Updating local DB for user_id: {user_id}")
+        current_user.email_verified = True
+        current_user.status = SupabaseUserStatus.ACTIVE
+        # Use timezone-aware UTC timestamp (Sonar rule S6903)
+        current_user.last_login_at = datetime.now(UTC)
+        master_session.add(current_user)
+        await master_session.commit()
+        await master_session.refresh(current_user)
+        logger.info(f"Local DB updated for user_id: {user_id}")
 
         return Response.success_response(
             message="Password changed successfully. You can now log in with your new password."
@@ -271,9 +279,14 @@ async def refresh_token(refresh_request: UserRefreshTokenRequest):
 async def forgot_password(
     forgot_password_request: UserForgotPasswordRequest,
     master_session: AsyncSession = Depends(get_master_async_session),
+    _rl_password_reset: None = Depends(rate_limit_password_reset),
 ):
+    """
+    Initiate password reset for a user.
+    Rate limited to 3 requests per 15 minutes, 10 per hour.
+    """
     try:
-        statement = select(User).where(User.email == forgot_password_request.email)
+        statement = select(User).where(UserTable.c.email == forgot_password_request.email)
         result = await master_session.execute(statement)
         user = result.scalars().first()
 
@@ -333,10 +346,11 @@ async def user_logout(
 ):
     """Logout the current user. If `global_logout` is true, sign out from all sessions."""
     try:
-        supabase_user_client.sign_out_user(
-            user_id=current_user.supabase_user_id,
-            global_signout=logout_request.global_logout,
-        )
+        if current_user.supabase_user_id:
+            supabase_user_client.sign_out_user(
+                user_id=current_user.supabase_user_id,
+                global_signout=logout_request.global_logout,
+            )
 
         message = (
             "Successfully logged out from all sessions."

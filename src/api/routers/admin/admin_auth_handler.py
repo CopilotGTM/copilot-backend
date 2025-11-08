@@ -1,9 +1,11 @@
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING, cast
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.master_dependencies import get_master_async_session
+from src.api.dependencies.rate_limit import rate_limit_admin_login, rate_limit_password_reset
 from src.api.schemas.base_models import GenericResponse
 from src.api.utils.http_response import Response
 from src.domain.models.admin_models import (
@@ -15,10 +17,9 @@ from src.domain.models.admin_models import (
     AdminRefreshTokenRequest,
     AdminRefreshTokenResponse,
     AdminResetPasswordRequest,
-    AdminStatus,
     PasswordResetAction,
 )
-from src.domain.models.master_tables import SuperAdmin
+from src.domain.models.master_tables import AdminUserStatus, SupabaseAdminStatus, SuperAdmin
 from src.infra.auth.admin_auth import admin_auth
 from src.infra.auth.email_service import email_service
 from src.infra.auth.supabase_admin_client import (
@@ -26,6 +27,7 @@ from src.infra.auth.supabase_admin_client import (
     supabase_admin_client,
 )
 from src.infra.config.constant import AdminAuthErrors
+from src.infra.security.token_revocation import token_revocation_service
 from src.infra.utils.logger import get_logger
 from src.service.admin.admin_auth_service import admin_auth_service
 
@@ -33,14 +35,32 @@ logger = get_logger("admin_auth_handler")
 router = APIRouter()
 
 
+def _extract_bearer_token(request: Request) -> str | None:
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        return None
+    return auth_header.split(" ", 1)[1].strip() or None
+
+
+if TYPE_CHECKING:
+    from sqlalchemy.sql.schema import Table
+
+_super_admin_table = getattr(SuperAdmin, "__table__", None)
+if _super_admin_table is None:
+    raise RuntimeError("SuperAdmin table metadata is not initialized")
+SuperAdminTable = cast("Table", _super_admin_table)
+
+
 @router.post("/login", response_model=GenericResponse[AdminLoginResponse], tags=["admin_auth"])
 async def admin_login(
     login_request: AdminLoginRequest,
     master_session: AsyncSession = Depends(get_master_async_session),
+    _rl_admin_login: None = Depends(rate_limit_admin_login),
 ):
     """
     Super Admin login endpoint.
     Verifies credentials and returns admin details and session tokens.
+    Rate limited to 3 attempts per minute, 20 per hour.
     """
     try:
         super_admin = await admin_auth_service.get_super_admin_by_email(
@@ -49,6 +69,23 @@ async def admin_login(
         if not super_admin:
             logger.warning(f"Super admin not found for email: {login_request.email}")
             return Response.unauthorized_error_response(AdminAuthErrors.USER_NOT_FOUND)
+
+        if super_admin.admin_status != AdminUserStatus.APPROVED:
+            logger.warning(
+                "Login blocked for %s: admin_status=%s",
+                super_admin.email,
+                super_admin.admin_status,
+            )
+            token_revocation_service.revoke_user(super_admin.supabase_user_id)
+            return Response.forbidden_error_response(AdminAuthErrors.ACCOUNT_NOT_APPROVED)
+
+        if super_admin.status == SupabaseAdminStatus.INACTIVE:
+            logger.warning(
+                "Login blocked for %s: supabase status inactive",
+                super_admin.email,
+            )
+            token_revocation_service.revoke_user(super_admin.supabase_user_id)
+            return Response.forbidden_error_response(AdminAuthErrors.ACCOUNT_NOT_ACTIVE)
 
         try:
             supabase_response = supabase_admin_client.sign_in_with_password(
@@ -69,6 +106,15 @@ async def admin_login(
 
         if requires_password_change:
             return admin_auth_service.handle_pending_setup_login(super_admin.email)
+
+        if super_admin.status != SupabaseAdminStatus.ACTIVE:
+            logger.warning(
+                "Login blocked for %s: supabase status %s",
+                super_admin.email,
+                super_admin.status,
+            )
+            token_revocation_service.revoke_user(super_admin.supabase_user_id)
+            return Response.forbidden_error_response(AdminAuthErrors.ACCOUNT_NOT_ACTIVE)
 
         tokens = {
             "access_token": session_data.get("access_token"),
@@ -118,8 +164,8 @@ async def reset_password(
             logger.error(f"Failed to reset password with recovery token: {str(e)}")
             return Response.bad_request_error_response(AdminAuthErrors.INVALID_RECOVERY_TOKEN)
 
-        if password_request.action == PasswordResetAction.FORCE_CHANGE:
-            statement = select(SuperAdmin).where(SuperAdmin.supabase_user_id == user_id)
+        if password_request.action == PasswordResetAction.FORCE_CHANGE and user_id:
+            statement = select(SuperAdmin).where(SuperAdminTable.c.supabase_user_id == user_id)
             result = await master_session.execute(statement)
             current_admin = result.scalars().first()
 
@@ -135,15 +181,33 @@ async def reset_password(
                 "last_name": current_admin.last_name,
                 "role": current_admin.role,
             }
-            supabase_admin_client.update_user_metadata(
-                user_id=current_admin.supabase_user_id, metadata=updated_metadata
-            )
+            if current_admin.supabase_user_id:
+                supabase_admin_client.update_user_metadata(
+                    user_id=current_admin.supabase_user_id, metadata=updated_metadata
+                )
 
-            current_admin.status = AdminStatus.ACTIVE
+            current_admin.status = SupabaseAdminStatus.ACTIVE
             current_admin.email_verified = True
             current_admin.last_login_at = datetime.now(UTC)
             master_session.add(current_admin)
             await master_session.commit()
+            logger.info("Local DB updated for user_id: %s", user_id)
+        else:
+            logger.info(
+                "Password reset completed for user_id %s (forgot action - no metadata update)",
+                user_id,
+            )
+
+        if user_id:
+            try:
+                supabase_admin_client.sign_out_user(user_id=user_id, global_signout=True)
+            except Exception as exc:  # noqa: BLE001 - suppressing broad exception per Supabase SDK
+                logger.warning(
+                    "Global sign-out failed for admin %s after password reset: %s",
+                    user_id,
+                    exc,
+                )
+            token_revocation_service.revoke_user(user_id)
 
         return Response.success_response(
             message="Password changed successfully. You can now log in."
@@ -198,8 +262,11 @@ async def refresh_token(refresh_request: AdminRefreshTokenRequest):
 async def forgot_password(
     forgot_password_request: AdminForgotPasswordRequest,
     master_session: AsyncSession = Depends(get_master_async_session),
+    _rl_password_reset: None = Depends(rate_limit_password_reset),
 ):
-    """Triggers a password reset email for a super admin."""
+    """Triggers a password reset email for a super admin.
+    Rate limited to 3 requests per 15 minutes, 10 per hour.
+    """
     try:
         super_admin = await admin_auth_service.get_super_admin_by_email(
             master_session, forgot_password_request.email
@@ -241,12 +308,13 @@ async def forgot_password(
 @router.post("/logout", tags=["admin_auth"])
 async def admin_logout(
     logout_request: AdminLogoutRequest,
+    request: Request,
     current_admin: SuperAdmin = Depends(admin_auth),
     master_session: AsyncSession = Depends(get_master_async_session),
 ):
     """Unified logout endpoint for super admin."""
     try:
-        user_to_logout = current_admin
+        user_to_logout: SuperAdmin | None = current_admin
         if logout_request.global_logout:
             if not logout_request.email:
                 return Response.bad_request_error_response(
@@ -258,16 +326,24 @@ async def admin_logout(
             if not user_to_logout:
                 return Response.not_found_error_response(AdminAuthErrors.USER_NOT_FOUND)
 
-        supabase_admin_client.sign_out_user(
-            user_id=user_to_logout.supabase_user_id,
-            global_signout=logout_request.global_logout,
-        )
+        if user_to_logout and user_to_logout.supabase_user_id:
+            supabase_admin_client.sign_out_user(
+                user_id=user_to_logout.supabase_user_id,
+                global_signout=logout_request.global_logout,
+            )
+            if logout_request.global_logout:
+                token_revocation_service.revoke_user(user_to_logout.supabase_user_id)
+        else:
+            return Response.unauthorized_error_response(AdminAuthErrors.UNAUTHORIZED)
 
         message = (
             f"Successfully logged out user {user_to_logout.email} from all sessions."
             if logout_request.global_logout
             else "Successfully logged out."
         )
+        token = _extract_bearer_token(request)
+        if token:
+            token_revocation_service.revoke_token(token)
         return Response.success_response(message=message)
 
     except Exception as e:
@@ -278,6 +354,7 @@ async def admin_logout(
 @router.post("/change-password", tags=["admin_auth"])
 async def change_password(
     password_request: AdminChangePasswordRequest,
+    request: Request,
     current_admin: SuperAdmin = Depends(admin_auth),
 ):
     """Change password for an active, logged-in Super Admin."""
@@ -298,8 +375,13 @@ async def change_password(
             new_password=password_request.new_password,
         )
 
-        logger.info("Password changed successfully for user: %s", current_admin.email)
-        return Response.success_response(message="Password changed successfully.")
+        token = _extract_bearer_token(request)
+        admin_auth_service.invalidate_admin_sessions(current_admin, token=token)
+
+        logger.info("Password changed for %s and existing sessions revoked", current_admin.email)
+        return Response.success_response(
+            message="Password changed successfully. Please sign in again."
+        )
 
     except Exception as e:
         logger.error(
