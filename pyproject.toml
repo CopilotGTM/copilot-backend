@@ -115,6 +115,7 @@ dev = [
     "mypy>=1.8.0",
     "pre-commit>=3.5.0",
     "bandit>=1.7.5",
+    "pyngrok>=6.0.0",
 ]
 
 test = [

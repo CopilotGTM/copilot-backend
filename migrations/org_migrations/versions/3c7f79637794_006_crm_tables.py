@@ -1,8 +1,8 @@
-"""crm_tables
+"""006_crm_tables
 
 Revision ID: 3c7f79637794
 Revises: 3c7f79637795
-Create Date: 2025-10-25 15:55:10.533262
+Create Date: 2025-11-05 07:49:20.889775
 
 """
 from typing import Sequence, Union
@@ -245,6 +245,7 @@ def upgrade() -> None:
     sa.Column('closed_won_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('closed_lost_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('closed_reason', sa.String(length=255), nullable=True),
+    sa.Column('crm_url', sa.String(length=500), nullable=True),
     sa.Column('stage_external_id', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
     sa.Column('stage_name', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
     sa.Column('stage_label', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
@@ -260,10 +261,17 @@ def upgrade() -> None:
     sa.Column('owner_external_id', sa.String(length=255), nullable=True),
     sa.Column('owner_name', sa.String(length=255), nullable=True),
     sa.Column('owner_email', sa.String(length=255), nullable=True),
+    sa.Column('created_by_user_external_id', sa.String(length=255), nullable=True),
+    sa.Column('updated_by_user_external_id', sa.String(length=255), nullable=True),
     sa.Column('company_external_id', sa.String(length=255), nullable=True),
+    sa.Column('company_name', sa.String(length=255), nullable=True),
+    sa.Column('company_domain', sa.String(length=255), nullable=True),
     sa.Column('primary_contact_external_id', sa.String(length=255), nullable=True),
+    sa.Column('primary_contact_name', sa.String(length=255), nullable=True),
+    sa.Column('primary_contact_email', sa.String(length=255), nullable=True),
     sa.Column('source_created_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('last_activity_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('days_to_close', sa.Integer(), nullable=True),
     sa.Column('stage_entered_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('stage_updated_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('synced_at', sa.DateTime(timezone=True), nullable=False),
@@ -272,6 +280,9 @@ def upgrade() -> None:
     sa.Column('description', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
     sa.Column('properties', postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'{}'::jsonb"), nullable=False),
     sa.Column('metrics', postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'{}'::jsonb"), nullable=False),
+    sa.Column('associated_contact_count', sa.Integer(), nullable=True),
+    sa.Column('associated_company_count', sa.Integer(), nullable=True),
+    sa.Column('note_count', sa.Integer(), nullable=True),
     sa.Column('associations_payload', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
     sa.Column('data_payload', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
     sa.CheckConstraint('(probability IS NULL) OR (probability >= 0 AND probability <= 100)', name='ck_crm_deal_probability'),
@@ -367,12 +378,77 @@ def upgrade() -> None:
     op.create_index(op.f('ix_crm_deal_stage_history_stage_id'), 'crm_deal_stage_history', ['stage_id'], unique=False)
     op.create_index(op.f('ix_crm_deal_stage_history_updated_at'), 'crm_deal_stage_history', ['updated_at'], unique=False)
     op.create_index('ix_crm_stage_history_deal', 'crm_deal_stage_history', ['deal_id', 'entered_at'], unique=False)
+    op.create_table('crm_deal_tasks',
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('organisation_id', sa.Uuid(), nullable=False),
+    sa.Column('integration_id', sa.Uuid(), nullable=False),
+    sa.Column('is_deleted', sa.Boolean(), nullable=False),
+    sa.Column('task_id', sa.Uuid(), nullable=False),
+    sa.Column('external_id', sa.String(length=255), nullable=False),
+    sa.Column('deal_id', sa.Uuid(), nullable=True),
+    sa.Column('deal_external_id', sa.String(length=255), nullable=True),
+    sa.Column('subject', sa.String(length=500), nullable=True),
+    sa.Column('body', sqlmodel.sql.sqltypes.AutoString(), nullable=True),
+    sa.Column('status', sa.String(length=32), nullable=True),
+    sa.Column('task_type', sa.String(length=32), nullable=True),
+    sa.Column('priority', sa.String(length=32), nullable=True),
+    sa.Column('owner_external_id', sa.String(length=255), nullable=True),
+    sa.Column('owner_name', sa.String(length=255), nullable=True),
+    sa.Column('owner_email', sa.String(length=255), nullable=True),
+    sa.Column('due_date', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('completed_date', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('reminder_date', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('source_created_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('source_modified_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('synced_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('last_seen_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('is_deleted_remote', sa.Boolean(), server_default=sa.text('false'), nullable=False),
+    sa.Column('properties', postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'{}'::jsonb"), nullable=False),
+    sa.Column('metrics', postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'{}'::jsonb"), nullable=False),
+    sa.Column('data_payload', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+    sa.ForeignKeyConstraint(['deal_id'], ['crm_deals.deal_id'], ),
+    sa.ForeignKeyConstraint(['integration_id'], ['knowledge_integrations.integration_id'], ),
+    sa.PrimaryKeyConstraint('task_id'),
+    sa.UniqueConstraint('integration_id', 'external_id', name='uq_crm_deal_task_external')
+    )
+    op.create_index('ix_crm_deal_task_deal', 'crm_deal_tasks', ['deal_id'], unique=False)
+    op.create_index('ix_crm_deal_task_due_date', 'crm_deal_tasks', ['due_date'], unique=False)
+    op.create_index('ix_crm_deal_task_org_due', 'crm_deal_tasks', ['organisation_id', 'due_date'], unique=False)
+    op.create_index('ix_crm_deal_task_org_priority', 'crm_deal_tasks', ['organisation_id', 'priority'], unique=False)
+    op.create_index('ix_crm_deal_task_org_status', 'crm_deal_tasks', ['organisation_id', 'status'], unique=False)
+    op.create_index('ix_crm_deal_task_org_type', 'crm_deal_tasks', ['organisation_id', 'task_type'], unique=False)
+    op.create_index('ix_crm_deal_task_owner', 'crm_deal_tasks', ['owner_external_id'], unique=False)
+    op.create_index('ix_crm_deal_task_status_due', 'crm_deal_tasks', ['status', 'due_date'], unique=False)
+    op.create_index('ix_crm_deal_task_synced', 'crm_deal_tasks', ['organisation_id', 'synced_at'], unique=False)
+    op.create_index(op.f('ix_crm_deal_tasks_created_at'), 'crm_deal_tasks', ['created_at'], unique=False)
+    op.create_index(op.f('ix_crm_deal_tasks_deal_id'), 'crm_deal_tasks', ['deal_id'], unique=False)
+    op.create_index(op.f('ix_crm_deal_tasks_integration_id'), 'crm_deal_tasks', ['integration_id'], unique=False)
+    op.create_index(op.f('ix_crm_deal_tasks_organisation_id'), 'crm_deal_tasks', ['organisation_id'], unique=False)
+    op.create_index(op.f('ix_crm_deal_tasks_owner_external_id'), 'crm_deal_tasks', ['owner_external_id'], unique=False)
+    op.create_index(op.f('ix_crm_deal_tasks_updated_at'), 'crm_deal_tasks', ['updated_at'], unique=False)
     # ### end Alembic commands ###
 
 
 def downgrade() -> None:
     """Downgrade schema."""
     # ### commands auto generated by Alembic - please adjust! ###
+    op.drop_index(op.f('ix_crm_deal_tasks_updated_at'), table_name='crm_deal_tasks')
+    op.drop_index(op.f('ix_crm_deal_tasks_owner_external_id'), table_name='crm_deal_tasks')
+    op.drop_index(op.f('ix_crm_deal_tasks_organisation_id'), table_name='crm_deal_tasks')
+    op.drop_index(op.f('ix_crm_deal_tasks_integration_id'), table_name='crm_deal_tasks')
+    op.drop_index(op.f('ix_crm_deal_tasks_deal_id'), table_name='crm_deal_tasks')
+    op.drop_index(op.f('ix_crm_deal_tasks_created_at'), table_name='crm_deal_tasks')
+    op.drop_index('ix_crm_deal_task_synced', table_name='crm_deal_tasks')
+    op.drop_index('ix_crm_deal_task_status_due', table_name='crm_deal_tasks')
+    op.drop_index('ix_crm_deal_task_owner', table_name='crm_deal_tasks')
+    op.drop_index('ix_crm_deal_task_org_type', table_name='crm_deal_tasks')
+    op.drop_index('ix_crm_deal_task_org_status', table_name='crm_deal_tasks')
+    op.drop_index('ix_crm_deal_task_org_priority', table_name='crm_deal_tasks')
+    op.drop_index('ix_crm_deal_task_org_due', table_name='crm_deal_tasks')
+    op.drop_index('ix_crm_deal_task_due_date', table_name='crm_deal_tasks')
+    op.drop_index('ix_crm_deal_task_deal', table_name='crm_deal_tasks')
+    op.drop_table('crm_deal_tasks')
     op.drop_index('ix_crm_stage_history_deal', table_name='crm_deal_stage_history')
     op.drop_index(op.f('ix_crm_deal_stage_history_updated_at'), table_name='crm_deal_stage_history')
     op.drop_index(op.f('ix_crm_deal_stage_history_stage_id'), table_name='crm_deal_stage_history')

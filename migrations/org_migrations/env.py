@@ -1,10 +1,10 @@
 ﻿from logging.config import fileConfig
 import os
 import urllib.parse
+from typing import Any
 
 from sqlalchemy import engine_from_config, pool, text, MetaData
 from alembic import context
-from sqlmodel import SQLModel
 from dotenv import load_dotenv
 
 from src.domain.models.organisation_tables import (
@@ -25,6 +25,7 @@ from src.domain.models.organisation_tables import (
     CRMDeal,
     CRMDealParticipant,
     CRMDealStageHistory,
+    CRMDealTask,
     CRMContact,
     CRMUser,
     CRMCompany,
@@ -62,7 +63,7 @@ org_metadata = MetaData()
 
 # Manually register only the org-specific tables
 # Manually register all the org-specific tables
-all_org_models = [
+all_org_models: list[type[Any]] = [
     ChatSession,
     ChatMessage,
     OrganisationDocument,
@@ -80,18 +81,28 @@ all_org_models = [
     CRMDeal,
     CRMDealParticipant,
     CRMDealStageHistory,
+    CRMDealTask,
     CRMContact,
     CRMUser,
     CRMCompany
 ]
 
 for model in all_org_models:
-    model.metadata = org_metadata
+    # At runtime, SQLModel classes expose a SQLAlchemy "metadata" attribute.
+    # We avoid static type complaints by not asserting the attribute at type level.
+    try:
+        setattr(model, "metadata", org_metadata)
+    except Exception:
+        # Best-effort only; we'll still copy tables into target metadata below.
+        pass
 
 # Recreate the tables in the new metadata
 # Recreate the tables in the new metadata
 for model in all_org_models:
-    model.__table__.tometadata(org_metadata)
+    # Mypy/Pylance may not see __table__ on SQLModel metaclass, so use getattr safely.
+    table = getattr(model, "__table__", None)
+    if table is not None:
+        table.tometadata(org_metadata)
 
 target_metadata = org_metadata
 
@@ -128,12 +139,15 @@ def run_migrations_offline() -> None:
 
 def run_migrations_online() -> None:
     """Run migrations in 'online' mode (with DB connection)."""
+    configuration = config.get_section(config.config_ini_section)
+    if configuration is None:
+        configuration = {}
+    
     connectable = engine_from_config(
-        config.get_section(config.config_ini_section),
+        configuration,
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
-
     with connectable.connect() as connection:
         # Use the connection's transaction context manager.
         # This will automatically commit on success or rollback on error.

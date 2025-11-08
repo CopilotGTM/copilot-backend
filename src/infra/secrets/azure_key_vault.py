@@ -5,7 +5,9 @@ import contextlib
 import os
 import time
 from collections.abc import Iterable
+from typing import Any
 
+from azure.core.credentials_async import AsyncTokenCredential
 from azure.core.exceptions import (
     ClientAuthenticationError,
     HttpResponseError,
@@ -31,11 +33,12 @@ class AzureKeyVaultSecretProvider(SecretProvider):
 
     def __init__(self):
         self._client: SecretClient | None = None
-        self._credential = None
+        self._credential: AsyncTokenCredential | None = None
         self._lock = asyncio.Lock()
         self._last_auth_failure: float | None = None
         self._auth_failure_count = 0
         self._client_creation_time: float | None = None
+        self._client_loop: asyncio.AbstractEventLoop | None = None
 
     async def _ensure_client(self):
         """Create the SecretClient once (lazy init) with automatic recreation on auth failures."""
@@ -99,9 +102,10 @@ class AzureKeyVaultSecretProvider(SecretProvider):
                 self._client_loop = None
 
             # Create new credential based on environment
+            credential: AsyncTokenCredential
             if os.getenv("ENV") == "local":
                 logger.info("Auth strategy (secrets): DefaultAzureCredential (local)")
-                self._credential = DefaultAzureCredential(
+                credential = DefaultAzureCredential(
                     exclude_interactive_browser_credential=True,
                     exclude_visual_studio_code_credential=False,
                 )
@@ -117,17 +121,18 @@ class AzureKeyVaultSecretProvider(SecretProvider):
                         ).split(",")
                         if t.strip()
                     ] or None
-                    self._credential = WorkloadIdentityCredential(
+                    credential = WorkloadIdentityCredential(
                         tenant_id=tenant_id,
                         client_id=client_id,
                         additionally_allowed_tenants=allowed_tenants or ["*"],
                     )
                 else:
                     logger.info("Auth strategy (secrets): Managed Identity fallback")
-                    self._credential = ManagedIdentityCredential()
+                    credential = ManagedIdentityCredential()
 
             # Create new client
-            self._client = SecretClient(vault_url=key_vault_url, credential=self._credential)
+            self._credential = credential
+            self._client = SecretClient(vault_url=key_vault_url, credential=credential)
             self._client_creation_time = time.time()
             self._auth_failure_count = 0
             logger.info(f"Azure Key Vault client created successfully for: {key_vault_url}")
@@ -283,7 +288,7 @@ class AzureKeyVaultSecretProvider(SecretProvider):
 
         final_results: dict[str, str | None] = {}
         for result in results:
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 logger.error(f"Bulk fetch task failed: {result}")
                 continue
             name, value = result
@@ -318,7 +323,7 @@ class AzureKeyVaultSecretProvider(SecretProvider):
         self._client = None
         self._credential = None
 
-    def get_client_info(self) -> dict[str, any]:
+    def get_client_info(self) -> dict[str, Any]:
         """Get client information for debugging and monitoring."""
         return {
             "client_exists": self._client is not None,
