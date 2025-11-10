@@ -1,6 +1,6 @@
 from datetime import UTC, date, datetime
 
-from sqlalchemy import Column, DateTime, func
+from sqlalchemy import DateTime, func
 from sqlmodel import Field, SQLModel
 
 
@@ -15,12 +15,11 @@ def today() -> date:
 
 class CreatedAtMixin(SQLModel):
     created_at: datetime = Field(
-        sa_column=Column(
-            DateTime(timezone=True),
-            nullable=False,
-            index=True,
-            server_default=func.now(),
-        ),
+        default_factory=utcnow,
+        nullable=False,
+        index=True,
+        sa_type=DateTime(timezone=True),
+        sa_column_kwargs={"server_default": func.now()},
     )
 
 
@@ -28,11 +27,9 @@ class TimestampMixin(CreatedAtMixin):
     """For main entities where you want updated_at as well."""
 
     updated_at: datetime = Field(
-        sa_column=Column(
-            DateTime(timezone=True),
-            nullable=False,
-            index=True,
-            server_default=func.now(),
-            onupdate=func.now(),
-        ),
+        default_factory=utcnow,
+        nullable=False,
+        index=True,
+        sa_type=DateTime(timezone=True),
+        sa_column_kwargs={"server_default": func.now(), "onupdate": func.now()},
     )
