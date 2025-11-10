@@ -244,7 +244,7 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
         default_sync_frequency="daily",
         # Access Control - Conversation intelligence data is organisation-scoped
         default_scope=IntegrationScope.ORGANIZATION,
-        can_be_created_by=[UserAppRole.ADMIN],
+        can_be_created_by=[UserAppRole.ADMIN, UserAppRole.MEMBER],
         allow_multiple_connections=False,
     ),
     IntegrationType.NOTION: IntegrationMetadata(

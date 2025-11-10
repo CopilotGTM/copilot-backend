@@ -28,6 +28,11 @@ def categorize_integration_type(int_type: IntegrationType) -> tuple[str, str]:
         return ("crm", "zoho")
     if int_type == IntegrationType.PIPEDRIVE:
         return ("crm", "pipedrive")
+    # Conversation intelligence
+    if int_type == IntegrationType.GONG:
+        return ("conversation_intelligence", "gong")
+    if int_type == IntegrationType.CHORUS:
+        return ("conversation_intelligence", "chorus")
     # Default bucket
     return ("other", int_type.value)
 

@@ -46,7 +46,7 @@ _INTEGRATION_TO_NANGO: dict[IntegrationType, str] = {
     IntegrationType.SHOWPAD: "showpad",
     IntegrationType.OUTREACH: "outreach",
     IntegrationType.SALESLOFT: "salesloft",
-    IntegrationType.GONG: "gong",
+    IntegrationType.GONG: "gong-oauth",
     IntegrationType.CHORUS: "chorus",
 }
 
@@ -99,7 +99,7 @@ _NANGO_CONNECT_KEYS: dict[IntegrationType, str] = {
     IntegrationType.SHOWPAD: "showpad",
     IntegrationType.OUTREACH: "outreach",
     IntegrationType.SALESLOFT: "salesloft",
-    IntegrationType.GONG: "gong",
+    IntegrationType.GONG: "gong-oauth",
     IntegrationType.CHORUS: "chorus",
 }
 
