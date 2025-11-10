@@ -11,6 +11,18 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 
 from .calendar.google_calendar import fetch_events as google_calendar_fetch
+from .conversation_intelligence.gong import (
+    fetch_analytics as gong_analytics_fetch,
+)
+from .conversation_intelligence.gong import (
+    fetch_calls as gong_calls_fetch,
+)
+from .conversation_intelligence.gong import (
+    fetch_speakers as gong_speakers_fetch,
+)
+from .conversation_intelligence.gong import (
+    fetch_transcript_segments as gong_segments_fetch,
+)
 from .crm.hubspot import (
     fetch_companies as hubspot_companies_fetch,
 )
@@ -50,6 +62,16 @@ def _init_defaults() -> None:
         "users": hubspot_users_fetch,
         "companies": hubspot_companies_fetch,
         "owners": hubspot_owners_fetch,
+    }
+    # Conversation Intelligence: Gong
+    _REGISTRY[("conversation_intelligence", "gong")] = {
+        "calls": gong_calls_fetch,
+        "call_speakers": gong_speakers_fetch,
+        "speakers": gong_speakers_fetch,
+        "transcript_segments": gong_segments_fetch,
+        "call_transcript_segments": gong_segments_fetch,
+        "call_analytics": gong_analytics_fetch,
+        "analytics": gong_analytics_fetch,
     }
 
 

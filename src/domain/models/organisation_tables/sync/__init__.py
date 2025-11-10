@@ -2,6 +2,17 @@
 
 from .base import SyncCategory, SyncedRecordMixin
 from .calendar import CalendarAttendee, CalendarEvent
+from .conversation_intelligence import (
+    CICall,
+    CICallAnalyticsSnapshot,
+    CICallDealLink,
+    CICallMedium,
+    CICallRecordingStatus,
+    CICallSpeaker,
+    CICallTranscriptSegment,
+    CISpeakerRole,
+    TranscriptContentFormat,
+)
 from .crm import (
     CRMCompany,
     CRMContact,
@@ -23,6 +34,7 @@ from .integration_models import (
     KnowledgeIntegration,
     SyncStatus,
 )
+from .participant_models import IntegrationParticipant, IntegrationParticipantIdentity
 
 __all__ = [
     "SyncCategory",
@@ -46,4 +58,15 @@ __all__ = [
     "CRMStageState",
     "CRMUser",
     "CRMCompany",
+    "CICall",
+    "CICallDealLink",
+    "CICallSpeaker",
+    "CICallTranscriptSegment",
+    "CICallAnalyticsSnapshot",
+    "CICallMedium",
+    "CICallRecordingStatus",
+    "CISpeakerRole",
+    "TranscriptContentFormat",
+    "IntegrationParticipant",
+    "IntegrationParticipantIdentity",
 ]

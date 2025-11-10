@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager, suppress
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -28,6 +28,7 @@ from src.service.integrations.crm.entities import (
 )
 
 from ..adapters.calendar_adapter import upsert_calendar
+from ..adapters.conversation_intelligence_adapter import sync_conversation_intelligence_data
 from ..adapters.crm_adapter import sync_crm_data
 from ..models.sync_models import SyncItemResult, SyncJobRequest, SyncJobResult
 from ..providers.registry import get_fetcher
@@ -87,6 +88,14 @@ class IntegrationMetadata:
     last_synced_at: datetime | None
 
 
+@dataclass(slots=True)
+class CategoryHandlerOutcome:
+    item_result: SyncItemResult
+    extra: dict[str, Any] | None = None
+    should_stop: bool = False
+    integration_meta: IntegrationMetadata | None = None
+
+
 def _to_metadata(integration: KnowledgeIntegration) -> IntegrationMetadata:
     if not integration.connection_id:
         raise ValueError(f"Integration {integration.integration_id} has no connection_id")
@@ -133,6 +142,279 @@ async def _reload_integration(
     return res.scalars().first()
 
 
+_CI_ALIAS_MAP = {
+    "call_speakers": "speakers",
+    "speakers": "speakers",
+    "transcript_segments": "segments",
+    "call_transcript_segments": "segments",
+    "segments": "segments",
+    "call_analytics": "analytics",
+    "analytics": "analytics",
+}
+
+
+async def _handle_calendar(
+    organisation_id: UUID,
+    integration_id: UUID,
+    data_type: str,
+    records: list[dict[str, Any]],
+    provider: str,
+) -> CategoryHandlerOutcome:
+    async with _integration_session(organisation_id) as session:
+        integration_row = await _reload_integration(session, integration_id)
+        if not integration_row:
+            logger.warning(
+                "Integration %s missing when processing calendar data_type=%s",
+                integration_id,
+                data_type,
+            )
+            return CategoryHandlerOutcome(
+                item_result=SyncItemResult(status="failed", reason="integration_missing"),
+                should_stop=True,
+            )
+
+        count = await upsert_calendar(
+            session=session,
+            organisation_id=organisation_id,
+            integration=integration_row,
+            provider=provider,
+            events=records,
+        )
+        logger.info(
+            "Calendar sync completed for data_type=%s: %d events processed",
+            data_type,
+            count,
+        )
+        await session.refresh(integration_row)
+        return CategoryHandlerOutcome(
+            item_result=SyncItemResult(status="success", records_synced=count),
+            integration_meta=_to_metadata(integration_row),
+        )
+
+
+async def _handle_crm(
+    organisation_id: UUID,
+    integration_id: UUID,
+    data_type: str,
+    records: list[dict[str, Any]],
+    provider: str,
+) -> CategoryHandlerOutcome:
+    async with _integration_session(organisation_id) as session:
+        integration_row = await _reload_integration(session, integration_id)
+        if not integration_row:
+            logger.warning(
+                "Integration %s missing when processing CRM data_type=%s",
+                integration_id,
+                data_type,
+            )
+            return CategoryHandlerOutcome(
+                item_result=SyncItemResult(status="failed", reason="integration_missing"),
+                should_stop=True,
+            )
+
+        crm_service = _create_crm_service(data_type, session, organisation_id)
+        metrics = await sync_crm_data(
+            service=crm_service,
+            integration=integration_row,
+            data_type=data_type,
+            records=records,
+            provider=provider,
+        )
+        records_synced = metrics.get("records_synced")
+        if records_synced is None:
+            records_synced = metrics.get("deals") or len(records)
+
+        try:
+            synced_count = int(records_synced or 0)
+        except (TypeError, ValueError):
+            synced_count = len(records)
+
+        logger.info(
+            "CRM sync completed for data_type=%s: %s",
+            data_type,
+            metrics,
+        )
+        await session.refresh(integration_row)
+        return CategoryHandlerOutcome(
+            item_result=SyncItemResult(status="success", records_synced=synced_count),
+            extra={"crm": {data_type: metrics}},
+            integration_meta=_to_metadata(integration_row),
+        )
+
+
+async def _sync_conversation_intelligence(
+    organisation_id: UUID,
+    integration_id: UUID,
+    data_type: str,
+    records: list[dict[str, Any]],
+    provider: str,
+) -> CategoryHandlerOutcome:
+    async with _integration_session(organisation_id) as session:
+        integration_row = await _reload_integration(session, integration_id)
+        if not integration_row:
+            logger.warning(
+                "Integration %s missing when processing CI data_type=%s",
+                integration_id,
+                data_type,
+            )
+            return CategoryHandlerOutcome(
+                item_result=SyncItemResult(status="failed", reason="integration_missing"),
+                should_stop=True,
+            )
+
+        metrics = await sync_conversation_intelligence_data(
+            session=session,
+            integration=integration_row,
+            data_type=data_type,
+            records=records,
+            provider=provider,
+        )
+
+        if metrics.get("status") == "ignored":
+            reason = str(metrics.get("reason") or "ignored")
+            return CategoryHandlerOutcome(
+                item_result=SyncItemResult(status="ignored", reason=reason),
+                should_stop=True,
+            )
+
+        normalized = data_type.lower()
+        metric_key = _CI_ALIAS_MAP.get(normalized, normalized)
+        records_synced = metrics.get(metric_key)
+        if records_synced is None:
+            records_synced = metrics.get("records_processed", 0)
+
+        try:
+            synced_count = int(records_synced or 0)
+        except (TypeError, ValueError):
+            synced_count = 0
+
+        logger.info(
+            "Conversation intelligence sync completed for data_type=%s: %s",
+            data_type,
+            metrics,
+        )
+
+        return CategoryHandlerOutcome(
+            item_result=SyncItemResult(status="success", records_synced=synced_count),
+            extra={"conversation_intelligence": {data_type: metrics}},
+        )
+
+
+async def _dispatch_category(
+    category: str,
+    organisation_id: UUID,
+    integration_id: UUID,
+    data_type: str,
+    records: list[dict[str, Any]],
+    provider: str,
+) -> CategoryHandlerOutcome:
+    handler_map = {
+        "calendar": _handle_calendar,
+        "crm": _handle_crm,
+        "conversation_intelligence": _sync_conversation_intelligence,
+    }
+
+    handler = handler_map.get(category)
+    if not handler:
+        logger.warning("Unsupported category: %s", category)
+        return CategoryHandlerOutcome(
+            item_result=SyncItemResult(status="ignored", reason="unsupported_category"),
+            should_stop=True,
+        )
+
+    return await handler(
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        data_type=data_type,
+        records=records,
+        provider=provider,
+    )
+
+
+@contextmanager
+def _sync_lock_guard(integration_id: str, data_type: str) -> Iterator[bool]:
+    lock_acquired = acquire_sync_lock(integration_id, data_type)
+    try:
+        yield lock_acquired
+    finally:
+        if lock_acquired:
+            release_sync_lock(integration_id, data_type)
+
+
+def _apply_outcome(
+    result: SyncJobResult,
+    outcome: CategoryHandlerOutcome,
+) -> tuple[IntegrationMetadata | None, bool]:
+    if outcome.extra:
+        for key, value in outcome.extra.items():
+            if isinstance(value, dict):
+                result.extra.setdefault(key, {}).update(value)
+            else:
+                result.extra[key] = value
+    return outcome.integration_meta, outcome.should_stop
+
+
+async def _execute_category_sync(
+    *,
+    request: SyncJobRequest,
+    nango: NangoClient,
+    integration_meta: IntegrationMetadata,
+    provider_key: str,
+    result: SyncJobResult,
+    organisation_id: UUID,
+    integration_id: UUID,
+    sync_data_type: str,
+) -> tuple[IntegrationMetadata | None, bool]:
+    fetcher = get_fetcher(request.category, request.provider, sync_data_type)
+    logger.info("Fetcher obtained: %s", fetcher.__name__ if fetcher else "None")
+    if not fetcher:
+        logger.warning(
+            "No fetcher found for category=%s provider=%s data_type=%s",
+            request.category,
+            request.provider,
+            sync_data_type,
+        )
+        result.items[sync_data_type] = SyncItemResult(status="ignored", reason="no_fetcher")
+        return None, True
+
+    logger.info("Starting Fetch for Connection ID: %s", integration_meta.connection_id)
+    logger.info("Last Synced At: %s", integration_meta.last_synced_at)
+    logger.info("Is Initial Sync: %s", not request.incremental)
+
+    records = await fetcher(
+        nango=nango,
+        connection_id=integration_meta.connection_id,
+        is_initial=not request.incremental,
+        last_synced_at=integration_meta.last_synced_at,
+        data_type=sync_data_type,
+        provider_config_key=provider_key,
+    )
+    logger.info("Fetched %d records for data_type=%s", len(records), sync_data_type)
+    if not records:
+        logger.info(
+            "No records returned for data_type=%s; skipping processing.",
+            sync_data_type,
+        )
+        result.items[sync_data_type] = SyncItemResult(
+            status="success", records_synced=0, reason="no_records"
+        )
+        return None, True
+
+    logger.info("Sample record for data_type=%s: %s", sync_data_type, records[0])
+
+    outcome = await _dispatch_category(
+        category=request.category,
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+        data_type=sync_data_type,
+        records=records,
+        provider=request.provider,
+    )
+
+    result.items[sync_data_type] = outcome.item_result
+    return _apply_outcome(result, outcome)
+
+
 async def execute_sync(request: SyncJobRequest) -> dict[str, Any]:
     """
     Execute a sync job for a specific integration.
@@ -150,14 +432,6 @@ async def execute_sync(request: SyncJobRequest) -> dict[str, Any]:
     # Initialize variables
     organisation_id: UUID = UUID(str(request.organisation_id))
     integration_id: UUID = UUID(str(request.integration_id))
-
-    # Validate required fields
-    if not request.sync_name:
-        return {
-            "status": "failed",
-            "error": "sync_name is required",
-            "items": {},
-        }
 
     # Validate required fields
     if not request.sync_name:
@@ -188,138 +462,25 @@ async def execute_sync(request: SyncJobRequest) -> dict[str, Any]:
         logger.info("Processing data type: %s", sync_data_type)
 
         # Check sync lock
-        lock_acquired = acquire_sync_lock(str(request.integration_id), sync_data_type)
-        if not lock_acquired:
-            result.items[sync_data_type] = SyncItemResult(status="skipped", reason="locked")
-            return result.to_dict()
-
-        try:
-            # Get appropriate fetcher
-            fetcher = get_fetcher(request.category, request.provider, sync_data_type)
-            logger.info("Fetcher obtained: %s", fetcher.__name__ if fetcher else "None")
-            if not fetcher:
-                logger.warning(
-                    "No fetcher found for category=%s provider=%s data_type=%s",
-                    request.category,
-                    request.provider,
-                    sync_data_type,
-                )
-                result.items[sync_data_type] = SyncItemResult(status="ignored", reason="no_fetcher")
+        with _sync_lock_guard(str(request.integration_id), sync_data_type) as lock_acquired:
+            if not lock_acquired:
+                result.items[sync_data_type] = SyncItemResult(status="skipped", reason="locked")
                 return result.to_dict()
 
             try:
-                logger.info("Starting Fetch for Connection ID: %s", integration_meta.connection_id)
-                logger.info("Last Synced At: %s", integration_meta.last_synced_at)
-                logger.info("Is Initial Sync: %s", not request.incremental)
-
-                # Fetch records from provider
-                records = await fetcher(
+                integration_update, should_stop = await _execute_category_sync(
+                    request=request,
                     nango=nango,
-                    connection_id=integration_meta.connection_id,
-                    is_initial=not request.incremental,
-                    last_synced_at=integration_meta.last_synced_at,
-                    data_type=sync_data_type,
-                    provider_config_key=provider_key,
+                    integration_meta=integration_meta,
+                    provider_key=provider_key,
+                    result=result,
+                    organisation_id=organisation_id,
+                    integration_id=integration_id,
+                    sync_data_type=sync_data_type,
                 )
-                logger.info("Fetched %d records for data_type=%s", len(records), sync_data_type)
-                if records:
-                    logger.info("Sample record for data_type=%s: %s", sync_data_type, records[0])
-                else:
-                    logger.info(
-                        "No records returned for data_type=%s; skipping processing.",
-                        sync_data_type,
-                    )
-                    result.items[sync_data_type] = SyncItemResult(
-                        status="success", records_synced=0, reason="no_records"
-                    )
+                integration_meta = integration_update or integration_meta
+                if should_stop:
                     return result.to_dict()
-
-                # Process records based on category
-                match request.category:
-                    case "calendar":
-                        async with _integration_session(organisation_id) as session:
-                            integration_row = await _reload_integration(session, integration_id)
-                            if not integration_row:
-                                logger.warning(
-                                    "Integration %s missing when processing calendar data_type=%s",
-                                    integration_id,
-                                    sync_data_type,
-                                )
-                                result.items[sync_data_type] = SyncItemResult(
-                                    status="failed", reason="integration_missing"
-                                )
-                                return result.to_dict()
-
-                            count = await upsert_calendar(
-                                session=session,
-                                organisation_id=organisation_id,
-                                integration=integration_row,
-                                provider=request.provider,
-                                events=records,
-                            )
-                            logger.info(
-                                "Calendar sync completed for data_type=%s: %d events processed",
-                                sync_data_type,
-                                count,
-                            )
-                            result.items[sync_data_type] = SyncItemResult(
-                                status="success", records_synced=count
-                            )
-                            await session.refresh(integration_row)
-                            integration_meta = _to_metadata(integration_row)
-                    case "crm":
-                        async with _integration_session(organisation_id) as session:
-                            integration_row = await _reload_integration(session, integration_id)
-                            if not integration_row:
-                                logger.warning(
-                                    "Integration %s missing when processing CRM data_type=%s",
-                                    integration_id,
-                                    sync_data_type,
-                                )
-                                result.items[sync_data_type] = SyncItemResult(
-                                    status="failed", reason="integration_missing"
-                                )
-                                return result.to_dict()
-
-                            crm_service = _create_crm_service(
-                                sync_data_type, session, organisation_id
-                            )
-                            try:
-                                metrics = await sync_crm_data(
-                                    service=crm_service,
-                                    integration=integration_row,
-                                    data_type=sync_data_type,
-                                    records=records,
-                                    provider=request.provider,
-                                )
-                                records_synced = metrics.get("records_synced")
-                                if records_synced is None:
-                                    records_synced = metrics.get("deals") or len(records)
-                                logger.info(
-                                    "CRM sync completed for data_type=%s: %s",
-                                    sync_data_type,
-                                    metrics,
-                                )
-                                result.items[sync_data_type] = SyncItemResult(
-                                    status="success", records_synced=records_synced
-                                )
-                                result.extra.setdefault("crm", {})[sync_data_type] = metrics
-                                # Note: New entity services don't need finalize_sync
-                                await session.refresh(integration_row)
-                                integration_meta = _to_metadata(integration_row)
-                            except Exception as crm_error:
-                                logger.error(
-                                    "CRM sync failed for data_type=%s: %s",
-                                    sync_data_type,
-                                    crm_error,
-                                    exc_info=True,
-                                )
-                                raise
-                    case _:
-                        logger.warning("Unsupported category: %s", request.category)
-                        result.items[sync_data_type] = SyncItemResult(
-                            status="ignored", reason="unsupported_category"
-                        )
 
             except Exception as e:
                 logger.error(
@@ -333,9 +494,6 @@ async def execute_sync(request: SyncJobRequest) -> dict[str, Any]:
                     reason="sync_error",
                     error=str(e),
                 )
-        finally:
-            if lock_acquired:
-                release_sync_lock(str(request.integration_id), sync_data_type)
 
         # Determine overall status
         if any(item.status == "failed" for item in result.items.values()):
@@ -357,7 +515,7 @@ async def execute_sync(request: SyncJobRequest) -> dict[str, Any]:
             request.organisation_id,
             request.integration_id,
             success_count,
-            1,  # Processing one data_type at a time
+            1,
             total_records,
         )
 
