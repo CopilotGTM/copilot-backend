@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 
 from .calendar.google_calendar import fetch_events as google_calendar_fetch
+from .calendar.outlook_calendar import fetch_events as outlook_calendar_fetch
 from .conversation_intelligence.gong import (
     fetch_analytics as gong_analytics_fetch,
 )
@@ -52,7 +53,15 @@ _REGISTRY: dict[tuple[str, str], dict[str, FetchFn]] = {}
 
 def _init_defaults() -> None:
     # Calendar: Google
-    _REGISTRY[("calendar", "google")] = {"events": google_calendar_fetch}
+    _REGISTRY[("calendar", "google")] = {
+        "events": google_calendar_fetch,
+        "calendars": google_calendar_fetch,
+    }
+    # Calendar: Outlook
+    _REGISTRY[("calendar", "outlook")] = {
+        "events": outlook_calendar_fetch,
+        "calendars": outlook_calendar_fetch,
+    }
     # CRM: HubSpot
     _REGISTRY[("crm", "hubspot")] = {
         "pipelines": hubspot_pipelines_fetch,

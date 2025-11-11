@@ -334,31 +334,106 @@ class CalendarSyncService:
             delete(CalendarAttendee).where(CalendarAttendee.event_id == event.event_id)  # type: ignore[arg-type]
         )
 
+        # Get organizer email to identify who is the organizer in attendees
+        organizer_email = self._extract_organizer_email(event_data)
+
         # Create new attendees
         for attendee_data in attendees_data:
-            email = attendee_data.get("email")
+            email = self._extract_attendee_email(attendee_data)
             if not email:
                 continue
+
+            display_name = self._extract_attendee_name(attendee_data)
+            response_status = self._extract_attendee_response(attendee_data)
+
+            # Check if this attendee is the organizer
+            # Google: has "organizer": true in attendee data
+            # Microsoft: match email with top-level organizer.emailAddress.address
+            is_organiser = attendee_data.get("organizer", False) or (
+                organizer_email and email.lower() == organizer_email.lower()
+            )
 
             attendee = CalendarAttendee(
                 event_id=event.event_id,
                 email=email,
-                display_name=attendee_data.get("displayName"),
-                response_status=self._normalize_response_status(
-                    attendee_data.get("responseStatus", "none")
-                ),
-                is_organiser=attendee_data.get("organizer", False),
+                display_name=display_name,
+                response_status=self._normalize_response_status(response_status),
+                is_organiser=is_organiser,
                 data_payload=attendee_data,
             )
             self.db.add(attendee)
         await self.db.flush()
 
     @staticmethod
+    def _extract_attendee_email(attendee_data: dict[str, Any]) -> str | None:
+        """Extract email from attendee data (handles Google and Microsoft formats)."""
+        # Google format: email at top level
+        email = attendee_data.get("email")
+        if email:
+            return email
+
+        # Microsoft/Outlook format: nested in emailAddress
+        email_obj = attendee_data.get("emailAddress")
+        if isinstance(email_obj, dict):
+            return email_obj.get("address")
+
+        return None
+
+    @staticmethod
+    def _extract_attendee_name(attendee_data: dict[str, Any]) -> str | None:
+        """Extract display name from attendee data (handles Google and Microsoft formats)."""
+        # Google format: displayName at top level
+        display_name = attendee_data.get("displayName")
+        if display_name:
+            return display_name
+
+        # Microsoft/Outlook format: nested in emailAddress
+        email_obj = attendee_data.get("emailAddress")
+        if isinstance(email_obj, dict):
+            return email_obj.get("name")
+
+        return None
+
+    @staticmethod
+    def _extract_attendee_response(attendee_data: dict[str, Any]) -> str:
+        """Extract response status from attendee data (handles Google and Microsoft formats)."""
+        # Google format: responseStatus as string at top level
+        response_status = attendee_data.get("responseStatus")
+        if isinstance(response_status, str):
+            return response_status
+
+        # Microsoft format: status object with response field
+        status_obj = attendee_data.get("status")
+        if isinstance(status_obj, dict):
+            return status_obj.get("response", "none")
+
+        return "none"
+
+    @staticmethod
+    def _extract_organizer_email(event_data: dict[str, Any]) -> str | None:
+        """Extract organizer email from event data (handles Google and Microsoft formats)."""
+        organizer = event_data.get("organizer")
+        if not organizer:
+            return None
+
+        # Google format: organizer.email
+        email = organizer.get("email")
+        if email:
+            return email
+
+        # Microsoft/Outlook format: organizer.emailAddress.address
+        email_obj = organizer.get("emailAddress")
+        if isinstance(email_obj, dict):
+            return email_obj.get("address")
+
+        return None
+
+    @staticmethod
     def _extract_external_id(event_data: dict[str, Any], provider: str) -> str | None:
         """Extract external ID from event data."""
         if provider == "google":
             return event_data.get("id") or event_data.get("eventId")
-        elif provider == "microsoft":
+        elif provider in ("microsoft", "outlook"):
             return event_data.get("id") or event_data.get("iCalUId")
         return event_data.get("id")
 
@@ -367,7 +442,7 @@ class CalendarSyncService:
         """Extract event fields from provider data."""
         if provider == "google":
             return cls._extract_google_event_fields(event_data)
-        if provider == "microsoft":
+        if provider in ("microsoft", "outlook"):
             return cls._extract_microsoft_event_fields(event_data)
         return cls._extract_generic_event_fields(event_data)
 
@@ -492,10 +567,15 @@ class CalendarSyncService:
 
     @staticmethod
     def _extract_generic_event_fields(event_data: dict[str, Any]) -> dict[str, Any]:
+        location = event_data.get("location")
+        # Handle location as either string or dict
+        if isinstance(location, dict):
+            location = location.get("displayName")
+
         return {
             "title": event_data.get("summary") or event_data.get("subject") or DEFAULT_EVENT_TITLE,
             "description": event_data.get("description"),
-            "location": event_data.get("location"),
+            "location": location,
             "status": event_data.get("status"),
         }
 
