@@ -8,12 +8,19 @@ from __future__ import annotations
 from src.domain.models.organisation_tables.sync import IntegrationType
 
 
-def categorize_integration_type(int_type: IntegrationType) -> tuple[str, str]:
+def categorize_integration_type(int_type: IntegrationType | str) -> tuple[str, str]:
     """Return (category, provider) for a given IntegrationType.
 
     category: 'calendar' | 'crm' | 'email' (future)
     provider: short provider key used by registry ('google', 'outlook', 'hubspot', ...)
     """
+    # Handle string input by converting to enum
+    if isinstance(int_type, str):
+        try:
+            int_type = IntegrationType(int_type)
+        except ValueError:
+            return ("other", int_type)
+
     # Calendar
     if int_type == IntegrationType.GOOGLE_CALENDAR:
         return ("calendar", "google")

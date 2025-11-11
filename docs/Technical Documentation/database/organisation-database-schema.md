@@ -16,6 +16,7 @@ Practical guidance for designing tenant‑scoped (organisation) tables. Use thes
 Principle: Stable columns as typed fields; evolving/optional data in JSONB. Visibility and retention are explicit flags.
 
 Typical columns:
+
 - `entity_id` (UUID PK)
 - `organisation_id` (UUID, indexed)
 - Optional `user_id` (owner/actor)
@@ -29,6 +30,7 @@ Typical columns:
 Principle: A session anchors scope; messages are append‑only with optional parent for threads; attachments via many‑to‑many link table; jobs are async processors tied to messages.
 
 Tables involved:
+
 - Sessions: `session_id`, `organisation_id`, `user_id`, metadata, soft delete
 - Messages: `message_id`, `session_id` FK, optional `parent_message_id`, role/type, content JSONB
 - Attachments: central `attachments` + junction table for message ↔ attachment
@@ -41,6 +43,7 @@ Use this pattern for any conversational or event‑stream use case.
 Principle: Separate original “sources” from chunked “documents”. Chunks carry embeddings and visibility; jobs orchestrate processing.
 
 Tables involved:
+
 - Sources: `source_id`, `organisation_id`, `user_id`, type (`file`/`integration`), status, storage or integration FK
 - Documents (chunks): `document_id`, `source_id`, `is_org_wide` vs `uploader_user_id`, `embedding` (pgvector), metadata/filters
 - Jobs: extraction/chunking/embedding pipeline
@@ -52,6 +55,7 @@ Use this for any content you want to search semantically.
 Principle: A connection owns sync history and downstream synced rows. All synced rows must be uniquely identified by `(integration_id, external_id)` and carry `organisation_id`.
 
 Tables/mixins:
+
 - `knowledge_integrations` (connection): credentials, scope/type, state
 - `integration_sync_history`: runs/counters/status
 - `SyncedRecordMixin`: common columns for synced tables → `organisation_id`, `integration_id`, `external_id`, `data_payload`, `synced_at`, `source_modified_at`, `last_seen_at`, `is_deleted`
@@ -112,4 +116,3 @@ class SyncedEntity(SyncedRecordMixin, table=True):
 - Calendar/CRM: concrete examples of the sync pattern; avoid domain‑specific columns unless essential.
 
 See `database-architecture.md` for big‑picture context.
-

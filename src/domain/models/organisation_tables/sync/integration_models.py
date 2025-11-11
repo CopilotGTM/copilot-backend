@@ -21,6 +21,8 @@ class IntegrationType(str, Enum):
     GOOGLE_DRIVE = "google_drive"
     GOOGLE_CALENDAR = "google_calendar"
     OUTLOOK_CALENDAR = "outlook_calendar"
+    GMAIL = "gmail"
+    OUTLOOK = "outlook"
     SHAREPOINT = "sharepoint"
     ONEDRIVE = "onedrive"
     BOX = "box"
@@ -96,6 +98,13 @@ class KnowledgeIntegration(TimestampMixin, table=True):
 
     integration_type: IntegrationType = Field(sa_column=Column(String(50)))
     name: str = Field(description="User-defined name for the integration")
+
+    # deal_id: UUID | None = Field(
+    #     default=None,
+    #     foreign_key="crm_deals.deal_id",
+    #     index=True,
+    #     description="Optional deal context for deal-specific integrations (e.g., Slack channel for a deal)",
+    # )
     credentials: dict[str, Any] = Field(
         sa_column=Column(JSONB), description="Encrypted credentials for the integration"
     )

@@ -13,12 +13,14 @@ from src.domain.models.organisation_tables.sync import IntegrationType
 _INTEGRATION_TO_NANGO: dict[IntegrationType, str] = {
     # Collaboration & Communication
     IntegrationType.SLACK: "slack",
-    IntegrationType.TEAMS: "teams",
+    IntegrationType.TEAMS: "microsoft-teams",
+    IntegrationType.GMAIL: "gmail",
+    IntegrationType.OUTLOOK: "outlook",
     IntegrationType.GOOGLE_CHAT: "google-chat",
     IntegrationType.ZOOM: "zoom",
     IntegrationType.GOOGLE_DRIVE: "google-drive",
     IntegrationType.GOOGLE_CALENDAR: "google-calendar",
-    IntegrationType.OUTLOOK_CALENDAR: "outlook-calendar",
+    IntegrationType.OUTLOOK_CALENDAR: "outlook-bflm",
     IntegrationType.SHAREPOINT: "sharepoint",
     IntegrationType.ONEDRIVE: "onedrive",
     IntegrationType.BOX: "box",
@@ -66,12 +68,14 @@ _NANGO_TO_INTEGRATION: dict[str, IntegrationType] = _build_reverse_map(_INTEGRAT
 _NANGO_CONNECT_KEYS: dict[IntegrationType, str] = {
     # Collaboration & Communication
     IntegrationType.SLACK: "slack",
-    IntegrationType.TEAMS: "teams",
+    IntegrationType.TEAMS: "microsoft-teams",
+    IntegrationType.GMAIL: "gmail",
+    IntegrationType.OUTLOOK: "outlook",
     IntegrationType.GOOGLE_CHAT: "google-chat",
     IntegrationType.ZOOM: "zoom",
     IntegrationType.GOOGLE_DRIVE: "google-drive",
     IntegrationType.GOOGLE_CALENDAR: "google-calendar-getting-started",
-    IntegrationType.OUTLOOK_CALENDAR: "outlook-calendar",
+    IntegrationType.OUTLOOK_CALENDAR: "outlook-bflm",
     IntegrationType.SHAREPOINT: "sharepoint",
     IntegrationType.ONEDRIVE: "onedrive",
     IntegrationType.BOX: "box",
