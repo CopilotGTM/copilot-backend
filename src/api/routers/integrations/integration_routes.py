@@ -6,7 +6,10 @@ Handles:
 - Getting integration details
 - Updating integration settings
 - Checking integration status
+- Triggering manual syncs (refresh button)
 """
+
+from uuid import UUID
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -120,5 +123,74 @@ async def list_available_integrations(
             exc_info=True,
         )
         return Response.internal_server_error_response(
-            message=IntegrationErrors.AVAILABLE_INTEGRATIONS_FAILED
+            message=IntegrationErrors.INTEGRATION_LIST_FAILED
         )
+
+
+@router.post(
+    "/{integration_id}/teams/sync-channels",
+    response_model=GenericResponse[dict],
+    summary="Sync Teams channels (Refresh)",
+    description="""
+    Manually trigger a Teams channels sync for a specific Teams integration.
+
+    This endpoint is called when the user clicks the "Refresh" button
+    in the frontend to immediately sync their Teams channels instead of
+    waiting for the scheduled sync (which runs every 3 hours).
+
+    Only works for Teams integrations. Returns task ID for tracking.
+    """,
+)
+async def sync_teams_channels(
+    integration_id: UUID,
+    user_ids: UserIDs = Depends(get_current_user),
+) -> GenericResponse[dict]:
+    """
+    Trigger immediate Teams channels sync for a specific integration.
+
+    Args:
+        integration_id: UUID of the Teams integration to sync
+        user_ids: Current authenticated user context
+
+    Returns:
+        Task ID and status for tracking the sync job
+    """
+    try:
+        from src.workers.integrations_worker.tasks.teams_sync_tasks import (
+            sync_teams_channels_task,
+        )
+
+        # Trigger the sync task for this specific integration
+        task_result = sync_teams_channels_task.apply_async(
+            kwargs={
+                "organisation_id": str(user_ids.organisation_id),
+                "integration_id": str(integration_id),
+            }
+        )
+
+        logger.info(
+            "Channels sync triggered: org=%s integration=%s user=%s task=%s",
+            user_ids.organisation_id,
+            integration_id,
+            user_ids.user_id,
+            task_result.id,
+        )
+
+        return Response.success_response(
+            message="Channels sync triggered successfully",
+            data={
+                "task_id": task_result.id,
+                "integration_id": str(integration_id),
+                "status": "submitted",
+            },
+        )
+
+    except Exception as e:
+        logger.error(
+            "Failed to trigger channels sync: org=%s integration=%s error=%s",
+            user_ids.organisation_id,
+            integration_id,
+            str(e),
+            exc_info=True,
+        )
+        return Response.internal_server_error_response(message="Failed to trigger channels sync")

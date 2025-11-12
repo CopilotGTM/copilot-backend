@@ -55,6 +55,11 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
                 "queue": "integrations",
                 "routing_key": "integrations",
             },
+            # Teams channels periodic sync
+            "integrations.sync_teams_channels": {
+                "queue": "integrations",
+                "routing_key": "integrations",
+            },
         }
 
         # Celery Beat schedule for periodic tasks
@@ -63,6 +68,15 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
                 "task": "integrations.refresh_expiring_tokens",
                 "schedule": crontab(minute=0),  # Run every hour at minute 0
                 "kwargs": {"buffer_hours": 2},  # Refresh tokens expiring within 2 hours
+                "options": {
+                    "queue": "integrations",
+                    "routing_key": "integrations",
+                },
+            },
+            "sync-teams-channels-all-orgs": {
+                "task": "integrations.sync_teams_channels",
+                "schedule": crontab(minute=0, hour="*/3"),  # Run every 3 hours
+                "kwargs": {},  # No args = sync all organizations
                 "options": {
                     "queue": "integrations",
                     "routing_key": "integrations",

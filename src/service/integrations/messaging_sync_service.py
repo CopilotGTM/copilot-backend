@@ -585,7 +585,8 @@ class MessagingSyncService:
     ) -> str | None:
         """Extract provider-specific channel identifier from message payload."""
         if provider in ("microsoft", "teams"):
-            return message_data.get("channelId")
+            # Teams messages can have either channelId (for team channels) or chatId (for chats)
+            return message_data.get("channelId") or message_data.get("chatId")
         if provider == "slack":
             return message_data.get("channel")
         return message_data.get("channelId")
@@ -599,28 +600,52 @@ class MessagingSyncService:
 
     @classmethod
     def _extract_teams_channel_fields(cls, channel_data: dict[str, Any]) -> dict[str, Any]:
-        """Extract channel fields from Microsoft Teams data."""
-        membership_type = channel_data.get("membershipType", "standard")
+        """
+        Extract channel fields from Microsoft Teams data.
 
-        # Map Teams membership types to our ChannelType
-        channel_type = ChannelType.PUBLIC
-        if membership_type == "private":
+        Handles both Team channels and chats (1:1, group, meeting).
+        """
+        # Determine if this is a Team channel or a chat
+        chat_type = channel_data.get("chatType")  # group, meeting (oneOnOne excluded)
+        membership_type = channel_data.get("membershipType", "standard")  # standard, private
+
+        # Map to provider-agnostic ChannelType
+        # Note: oneOnOne chats are filtered out in fetch_chats()
+        if chat_type == "group":
+            channel_type = ChannelType.GROUP_MESSAGE
+        elif chat_type == "meeting":
+            channel_type = ChannelType.MEETING
+        elif membership_type == "private":
             channel_type = ChannelType.PRIVATE
+        else:
+            channel_type = ChannelType.PUBLIC
+
+        # Get display name (different field for chats vs channels)
+        display_name = channel_data.get("displayName") or channel_data.get("topic") or "Unnamed"
 
         return {
-            "channel_name": channel_data.get("displayName", "Unnamed Channel"),
+            "channel_name": display_name,
             "channel_type": channel_type,
             "channel_description": channel_data.get("description"),
             "is_monitored": "false",  # Default; user configures later (stored as string in DB)
             "participant_count": 0,  # Would need separate API call to get member count
             "is_archived": "false",  # Teams doesn't expose this in basic channel info
             "channel_metadata": {
+                "provider": "teams",  # Identify the source platform
+                # Team channel fields
                 "team_id": channel_data.get("teamId"),
                 "team_name": channel_data.get("teamName"),
+                "membership_type": membership_type,
                 "email": channel_data.get("email"),
                 "web_url": channel_data.get("webUrl"),
-                "membership_type": membership_type,
+                # Chat fields
+                "chat_type": chat_type,
+                "topic": channel_data.get("topic"),
+                "tenant_id": channel_data.get("tenantId"),
+                "online_meeting_info": channel_data.get("onlineMeetingInfo"),
+                # Common fields
                 "created_date_time": channel_data.get("createdDateTime"),
+                "last_updated_date_time": channel_data.get("lastUpdatedDateTime"),
             },
         }
 
@@ -634,7 +659,9 @@ class MessagingSyncService:
             "is_monitored": "false",  # Stored as string in DB
             "participant_count": 0,
             "is_archived": "false",
-            "channel_metadata": {},
+            "channel_metadata": {
+                "provider": "unknown",  # Should be set by specific provider
+            },
         }
 
     @classmethod
@@ -674,12 +701,16 @@ class MessagingSyncService:
             "is_bot_message": "false",  # Would need to check user identity type
             "is_important": "true" if message_data.get("importance") == "urgent" else "false",
             "message_metadata": {
+                "provider": "teams",
                 "importance": message_data.get("importance"),
                 "message_type": msg_type_str,
                 "subject": message_data.get("subject"),
                 "locale": message_data.get("locale"),
+                # Team channel fields
                 "team_id": message_data.get("teamId"),
                 "channel_id": message_data.get("channelId"),
+                # Chat fields
+                "chat_id": message_data.get("chatId"),
             },
         }
 
