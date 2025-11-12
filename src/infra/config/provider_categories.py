@@ -31,6 +31,11 @@ def categorize_integration_type(int_type: IntegrationType | str) -> tuple[str, s
         return ("email", "outlook")
     if int_type == IntegrationType.GMAIL:
         return ("email", "gmail")
+    # Messaging
+    if int_type == IntegrationType.TEAMS:
+        return ("messaging", "teams")
+    if int_type == IntegrationType.SLACK:
+        return ("messaging", "slack")
     # CRM
     if int_type == IntegrationType.HUBSPOT:
         return ("crm", "hubspot")

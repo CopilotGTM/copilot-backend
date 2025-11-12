@@ -47,6 +47,8 @@ from .crm.hubspot import (
 )
 from .email.outlook_email import fetch_folders as outlook_email_fetch_folders
 from .email.outlook_email import fetch_messages as outlook_email_fetch_messages
+from .messaging.teams import fetch_channels as teams_fetch_channels
+from .messaging.teams import fetch_messages as teams_fetch_messages
 
 FetchFn = Callable[..., Awaitable[list[dict]]]
 
@@ -89,6 +91,11 @@ def _init_defaults() -> None:
         "folders": outlook_email_fetch_folders,
         "messages": outlook_email_fetch_messages,
         "emails": outlook_email_fetch_messages,  # Alias
+    }
+    # Messaging: Teams
+    _REGISTRY[("messaging", "teams")] = {
+        "channels": teams_fetch_channels,
+        "messages": teams_fetch_messages,
     }
 
 

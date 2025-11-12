@@ -2,7 +2,7 @@
 
 Revision ID: 3c7f79637793
 Revises: 3c7f79637794
-Create Date: 2025-11-12 07:29:26.322212
+Create Date: 2025-11-12 10:29:45.519703
 
 """
 from typing import Sequence, Union
@@ -56,6 +56,50 @@ def upgrade() -> None:
     op.create_index(op.f('ix_email_folders_is_monitored'), 'email_folders', ['is_monitored'], unique=False)
     op.create_index(op.f('ix_email_folders_organisation_id'), 'email_folders', ['organisation_id'], unique=False)
     op.create_index(op.f('ix_email_folders_updated_at'), 'email_folders', ['updated_at'], unique=False)
+    op.create_table('email_thread_summaries',
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('organisation_id', sa.Uuid(), nullable=False),
+    sa.Column('integration_id', sa.Uuid(), nullable=False),
+    sa.Column('is_deleted', sa.Boolean(), nullable=False),
+    sa.Column('summary_id', sa.Uuid(), nullable=False),
+    sa.Column('folder_id', sa.Uuid(), nullable=False),
+    sa.Column('thread_id', sa.String(length=255), nullable=False),
+    sa.Column('subject', sa.String(length=512), nullable=True),
+    sa.Column('deal_id', sa.Uuid(), nullable=True),
+    sa.Column('summary_text', sa.Text(), nullable=False),
+    sa.Column('key_points', postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'[]'::jsonb"), nullable=False),
+    sa.Column('action_items', postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'[]'::jsonb"), nullable=False),
+    sa.Column('participants_summary', postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'{}'::jsonb"), nullable=False),
+    sa.Column('email_count', sa.Integer(), nullable=False),
+    sa.Column('time_range_start', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('time_range_end', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('sentiment_score', sa.Float(), nullable=True),
+    sa.Column('urgency_level', sa.String(length=32), nullable=True),
+    sa.Column('topics', postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'[]'::jsonb"), nullable=False),
+    sa.Column('summary_embedding', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+    sa.Column('source_email_ids', postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'[]'::jsonb"), nullable=False),
+    sa.Column('generated_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('generated_by', sa.String(length=64), nullable=True),
+    sa.Column('exported_to_kb', sa.String(), server_default=sa.text('false'), nullable=False),
+    sa.Column('kb_source_id', sa.Uuid(), nullable=True),
+    sa.Column('summary_metadata', postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'{}'::jsonb"), nullable=False),
+    sa.ForeignKeyConstraint(['deal_id'], ['crm_deals.deal_id'], ),
+    sa.ForeignKeyConstraint(['folder_id'], ['email_folders.folder_id'], ),
+    sa.ForeignKeyConstraint(['integration_id'], ['knowledge_integrations.integration_id'], ),
+    sa.PrimaryKeyConstraint('summary_id')
+    )
+    op.create_index('ix_email_summary_deal', 'email_thread_summaries', ['deal_id'], unique=False)
+    op.create_index('ix_email_summary_folder_time', 'email_thread_summaries', ['folder_id', 'time_range_start'], unique=False)
+    op.create_index('ix_email_summary_thread', 'email_thread_summaries', ['thread_id'], unique=False)
+    op.create_index(op.f('ix_email_thread_summaries_created_at'), 'email_thread_summaries', ['created_at'], unique=False)
+    op.create_index(op.f('ix_email_thread_summaries_deal_id'), 'email_thread_summaries', ['deal_id'], unique=False)
+    op.create_index(op.f('ix_email_thread_summaries_exported_to_kb'), 'email_thread_summaries', ['exported_to_kb'], unique=False)
+    op.create_index(op.f('ix_email_thread_summaries_folder_id'), 'email_thread_summaries', ['folder_id'], unique=False)
+    op.create_index(op.f('ix_email_thread_summaries_integration_id'), 'email_thread_summaries', ['integration_id'], unique=False)
+    op.create_index(op.f('ix_email_thread_summaries_kb_source_id'), 'email_thread_summaries', ['kb_source_id'], unique=False)
+    op.create_index(op.f('ix_email_thread_summaries_organisation_id'), 'email_thread_summaries', ['organisation_id'], unique=False)
+    op.create_index(op.f('ix_email_thread_summaries_updated_at'), 'email_thread_summaries', ['updated_at'], unique=False)
     op.create_table('integration_participants',
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
@@ -89,6 +133,66 @@ def upgrade() -> None:
     op.create_index(op.f('ix_integration_participants_integration_id'), 'integration_participants', ['integration_id'], unique=False)
     op.create_index(op.f('ix_integration_participants_organisation_id'), 'integration_participants', ['organisation_id'], unique=False)
     op.create_index(op.f('ix_integration_participants_updated_at'), 'integration_participants', ['updated_at'], unique=False)
+    op.create_table('emails',
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('organisation_id', sa.Uuid(), nullable=False),
+    sa.Column('integration_id', sa.Uuid(), nullable=False),
+    sa.Column('is_deleted', sa.Boolean(), nullable=False),
+    sa.Column('email_id', sa.Uuid(), nullable=False),
+    sa.Column('folder_id', sa.Uuid(), nullable=False),
+    sa.Column('external_message_id', sa.String(length=255), nullable=False),
+    sa.Column('thread_id', sa.String(length=255), nullable=True),
+    sa.Column('in_reply_to', sa.String(length=255), nullable=True),
+    sa.Column('references', postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'[]'::jsonb"), nullable=False),
+    sa.Column('from_participant_id', sa.Uuid(), nullable=True),
+    sa.Column('from_email', sa.String(length=320), nullable=False),
+    sa.Column('from_name', sa.String(length=255), nullable=True),
+    sa.Column('to_emails', postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'[]'::jsonb"), nullable=False),
+    sa.Column('to_participants', postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'[]'::jsonb"), nullable=False),
+    sa.Column('cc_emails', postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'[]'::jsonb"), nullable=False),
+    sa.Column('bcc_emails', postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'[]'::jsonb"), nullable=False),
+    sa.Column('subject', sa.String(length=512), nullable=True),
+    sa.Column('body_text', sa.Text(), nullable=True),
+    sa.Column('body_html', sa.Text(), nullable=True),
+    sa.Column('snippet', sa.String(length=512), nullable=True),
+    sa.Column('received_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('sent_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('direction', sa.String(length=32), server_default=sa.text("'inbound'"), nullable=False),
+    sa.Column('priority', sa.String(length=32), server_default=sa.text("'normal'"), nullable=False),
+    sa.Column('is_read', sa.String(), server_default=sa.text('false'), nullable=False),
+    sa.Column('is_starred', sa.String(), server_default=sa.text('false'), nullable=False),
+    sa.Column('is_important', sa.String(), server_default=sa.text('false'), nullable=False),
+    sa.Column('is_draft', sa.String(), server_default=sa.text('false'), nullable=False),
+    sa.Column('has_attachments', sa.String(), server_default=sa.text('false'), nullable=False),
+    sa.Column('attachments', postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'[]'::jsonb"), nullable=False),
+    sa.Column('labels', postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'[]'::jsonb"), nullable=False),
+    sa.Column('deal_id', sa.Uuid(), nullable=True),
+    sa.Column('email_embedding', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+    sa.Column('email_metadata', postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'{}'::jsonb"), nullable=False),
+    sa.Column('synced_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('last_seen_at', sa.DateTime(timezone=True), nullable=True),
+    sa.ForeignKeyConstraint(['deal_id'], ['crm_deals.deal_id'], ),
+    sa.ForeignKeyConstraint(['folder_id'], ['email_folders.folder_id'], ),
+    sa.ForeignKeyConstraint(['from_participant_id'], ['integration_participants.participant_id'], ),
+    sa.ForeignKeyConstraint(['integration_id'], ['knowledge_integrations.integration_id'], ),
+    sa.PrimaryKeyConstraint('email_id'),
+    sa.UniqueConstraint('integration_id', 'external_message_id', name='uq_email_external')
+    )
+    op.create_index('ix_email_deal', 'emails', ['deal_id'], unique=False)
+    op.create_index('ix_email_folder_received', 'emails', ['folder_id', 'received_at'], unique=False)
+    op.create_index('ix_email_from_participant', 'emails', ['from_participant_id'], unique=False)
+    op.create_index('ix_email_thread', 'emails', ['thread_id'], unique=False)
+    op.create_index(op.f('ix_emails_created_at'), 'emails', ['created_at'], unique=False)
+    op.create_index(op.f('ix_emails_deal_id'), 'emails', ['deal_id'], unique=False)
+    op.create_index(op.f('ix_emails_folder_id'), 'emails', ['folder_id'], unique=False)
+    op.create_index(op.f('ix_emails_from_email'), 'emails', ['from_email'], unique=False)
+    op.create_index(op.f('ix_emails_from_participant_id'), 'emails', ['from_participant_id'], unique=False)
+    op.create_index(op.f('ix_emails_integration_id'), 'emails', ['integration_id'], unique=False)
+    op.create_index(op.f('ix_emails_is_important'), 'emails', ['is_important'], unique=False)
+    op.create_index(op.f('ix_emails_organisation_id'), 'emails', ['organisation_id'], unique=False)
+    op.create_index(op.f('ix_emails_thread_id'), 'emails', ['thread_id'], unique=False)
+    op.create_index(op.f('ix_emails_updated_at'), 'emails', ['updated_at'], unique=False)
     op.create_table('integration_participant_identities',
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
@@ -153,110 +257,6 @@ def upgrade() -> None:
     op.create_index(op.f('ix_messaging_channels_is_monitored'), 'messaging_channels', ['is_monitored'], unique=False)
     op.create_index(op.f('ix_messaging_channels_organisation_id'), 'messaging_channels', ['organisation_id'], unique=False)
     op.create_index(op.f('ix_messaging_channels_updated_at'), 'messaging_channels', ['updated_at'], unique=False)
-    op.create_table('email_thread_summaries',
-    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-    sa.Column('organisation_id', sa.Uuid(), nullable=False),
-    sa.Column('integration_id', sa.Uuid(), nullable=False),
-    sa.Column('is_deleted', sa.Boolean(), nullable=False),
-    sa.Column('summary_id', sa.Uuid(), nullable=False),
-    sa.Column('folder_id', sa.Uuid(), nullable=False),
-    sa.Column('thread_id', sa.String(length=255), nullable=False),
-    sa.Column('subject', sa.String(length=512), nullable=True),
-    sa.Column('deal_id', sa.Uuid(), nullable=True),
-    sa.Column('summary_text', sa.Text(), nullable=False),
-    sa.Column('key_points', postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'[]'::jsonb"), nullable=False),
-    sa.Column('action_items', postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'[]'::jsonb"), nullable=False),
-    sa.Column('participants_summary', postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'{}'::jsonb"), nullable=False),
-    sa.Column('email_count', sa.Integer(), nullable=False),
-    sa.Column('time_range_start', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('time_range_end', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('sentiment_score', sa.Float(), nullable=True),
-    sa.Column('urgency_level', sa.String(length=32), nullable=True),
-    sa.Column('topics', postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'[]'::jsonb"), nullable=False),
-    sa.Column('summary_embedding', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
-    sa.Column('source_email_ids', postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'[]'::jsonb"), nullable=False),
-    sa.Column('generated_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('generated_by', sa.String(length=64), nullable=True),
-    sa.Column('exported_to_kb', sa.String(), server_default=sa.text('false'), nullable=False),
-    sa.Column('kb_source_id', sa.Uuid(), nullable=True),
-    sa.Column('summary_metadata', postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'{}'::jsonb"), nullable=False),
-    sa.ForeignKeyConstraint(['deal_id'], ['crm_deals.deal_id'], ),
-    sa.ForeignKeyConstraint(['folder_id'], ['email_folders.folder_id'], ),
-    sa.ForeignKeyConstraint(['integration_id'], ['knowledge_integrations.integration_id'], ),
-    sa.PrimaryKeyConstraint('summary_id')
-    )
-    op.create_index('ix_email_summary_deal', 'email_thread_summaries', ['deal_id'], unique=False)
-    op.create_index('ix_email_summary_folder_time', 'email_thread_summaries', ['folder_id', 'time_range_start'], unique=False)
-    op.create_index('ix_email_summary_thread', 'email_thread_summaries', ['thread_id'], unique=False)
-    op.create_index(op.f('ix_email_thread_summaries_created_at'), 'email_thread_summaries', ['created_at'], unique=False)
-    op.create_index(op.f('ix_email_thread_summaries_deal_id'), 'email_thread_summaries', ['deal_id'], unique=False)
-    op.create_index(op.f('ix_email_thread_summaries_exported_to_kb'), 'email_thread_summaries', ['exported_to_kb'], unique=False)
-    op.create_index(op.f('ix_email_thread_summaries_folder_id'), 'email_thread_summaries', ['folder_id'], unique=False)
-    op.create_index(op.f('ix_email_thread_summaries_integration_id'), 'email_thread_summaries', ['integration_id'], unique=False)
-    op.create_index(op.f('ix_email_thread_summaries_kb_source_id'), 'email_thread_summaries', ['kb_source_id'], unique=False)
-    op.create_index(op.f('ix_email_thread_summaries_organisation_id'), 'email_thread_summaries', ['organisation_id'], unique=False)
-    op.create_index(op.f('ix_email_thread_summaries_updated_at'), 'email_thread_summaries', ['updated_at'], unique=False)
-    op.create_table('emails',
-    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-    sa.Column('organisation_id', sa.Uuid(), nullable=False),
-    sa.Column('integration_id', sa.Uuid(), nullable=False),
-    sa.Column('is_deleted', sa.Boolean(), nullable=False),
-    sa.Column('email_id', sa.Uuid(), nullable=False),
-    sa.Column('folder_id', sa.Uuid(), nullable=False),
-    sa.Column('external_message_id', sa.String(length=255), nullable=False),
-    sa.Column('thread_id', sa.String(length=255), nullable=True),
-    sa.Column('in_reply_to', sa.String(length=255), nullable=True),
-    sa.Column('references', postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'[]'::jsonb"), nullable=False),
-    sa.Column('from_participant_id', sa.Uuid(), nullable=True),
-    sa.Column('from_email', sa.String(length=320), nullable=False),
-    sa.Column('from_name', sa.String(length=255), nullable=True),
-    sa.Column('to_emails', postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'[]'::jsonb"), nullable=False),
-    sa.Column('to_participants', postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'[]'::jsonb"), nullable=False),
-    sa.Column('cc_emails', postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'[]'::jsonb"), nullable=False),
-    sa.Column('bcc_emails', postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'[]'::jsonb"), nullable=False),
-    sa.Column('subject', sa.String(length=512), nullable=True),
-    sa.Column('body_text', sa.Text(), nullable=True),
-    sa.Column('body_html', sa.Text(), nullable=True),
-    sa.Column('snippet', sa.String(length=512), nullable=True),
-    sa.Column('received_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('sent_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('direction', sa.String(length=32), server_default=sa.text("'inbound'"), nullable=False),
-    sa.Column('priority', sa.String(length=32), server_default=sa.text("'normal'"), nullable=False),
-    sa.Column('is_read', sa.String(), server_default=sa.text('false'), nullable=False),
-    sa.Column('is_starred', sa.String(), server_default=sa.text('false'), nullable=False),
-    sa.Column('is_important', sa.String(), server_default=sa.text('false'), nullable=False),
-    sa.Column('is_draft', sa.String(), server_default=sa.text('false'), nullable=False),
-    sa.Column('has_attachments', sa.String(), server_default=sa.text('false'), nullable=False),
-    sa.Column('attachments', postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'[]'::jsonb"), nullable=False),
-    sa.Column('labels', postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'[]'::jsonb"), nullable=False),
-    sa.Column('deal_id', sa.Uuid(), nullable=True),
-    sa.Column('email_embedding', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
-    sa.Column('email_metadata', postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'{}'::jsonb"), nullable=False),
-    sa.Column('synced_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('last_seen_at', sa.DateTime(timezone=True), nullable=True),
-    sa.ForeignKeyConstraint(['deal_id'], ['crm_deals.deal_id'], ),
-    sa.ForeignKeyConstraint(['folder_id'], ['email_folders.folder_id'], ),
-    sa.ForeignKeyConstraint(['from_participant_id'], ['integration_participants.participant_id'], ),
-    sa.ForeignKeyConstraint(['integration_id'], ['knowledge_integrations.integration_id'], ),
-    sa.PrimaryKeyConstraint('email_id'),
-    sa.UniqueConstraint('integration_id', 'external_message_id', name='uq_email_external')
-    )
-    op.create_index('ix_email_deal', 'emails', ['deal_id'], unique=False)
-    op.create_index('ix_email_folder_received', 'emails', ['folder_id', 'received_at'], unique=False)
-    op.create_index('ix_email_from_participant', 'emails', ['from_participant_id'], unique=False)
-    op.create_index('ix_email_thread', 'emails', ['thread_id'], unique=False)
-    op.create_index(op.f('ix_emails_created_at'), 'emails', ['created_at'], unique=False)
-    op.create_index(op.f('ix_emails_deal_id'), 'emails', ['deal_id'], unique=False)
-    op.create_index(op.f('ix_emails_folder_id'), 'emails', ['folder_id'], unique=False)
-    op.create_index(op.f('ix_emails_from_email'), 'emails', ['from_email'], unique=False)
-    op.create_index(op.f('ix_emails_from_participant_id'), 'emails', ['from_participant_id'], unique=False)
-    op.create_index(op.f('ix_emails_integration_id'), 'emails', ['integration_id'], unique=False)
-    op.create_index(op.f('ix_emails_is_important'), 'emails', ['is_important'], unique=False)
-    op.create_index(op.f('ix_emails_organisation_id'), 'emails', ['organisation_id'], unique=False)
-    op.create_index(op.f('ix_emails_thread_id'), 'emails', ['thread_id'], unique=False)
-    op.create_index(op.f('ix_emails_updated_at'), 'emails', ['updated_at'], unique=False)
     op.create_table('messaging_channel_members',
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
@@ -411,12 +411,18 @@ def upgrade() -> None:
     op.create_index(op.f('ix_messaging_deal_links_message_id'), 'messaging_deal_links', ['message_id'], unique=False)
     op.create_index(op.f('ix_messaging_deal_links_organisation_id'), 'messaging_deal_links', ['organisation_id'], unique=False)
     op.create_index(op.f('ix_messaging_deal_links_updated_at'), 'messaging_deal_links', ['updated_at'], unique=False)
+    op.add_column('knowledge_integrations', sa.Column('deal_id', sa.Uuid(), nullable=True))
+    op.create_index(op.f('ix_knowledge_integrations_deal_id'), 'knowledge_integrations', ['deal_id'], unique=False)
+    op.create_foreign_key(None, 'knowledge_integrations', 'crm_deals', ['deal_id'], ['deal_id'])
     # ### end Alembic commands ###
 
 
 def downgrade() -> None:
     """Downgrade schema."""
     # ### commands auto generated by Alembic - please adjust! ###
+    op.drop_constraint(None, 'knowledge_integrations', type_='foreignkey')
+    op.drop_index(op.f('ix_knowledge_integrations_deal_id'), table_name='knowledge_integrations')
+    op.drop_column('knowledge_integrations', 'deal_id')
     op.drop_index(op.f('ix_messaging_deal_links_updated_at'), table_name='messaging_deal_links')
     op.drop_index(op.f('ix_messaging_deal_links_organisation_id'), table_name='messaging_deal_links')
     op.drop_index(op.f('ix_messaging_deal_links_message_id'), table_name='messaging_deal_links')
@@ -464,33 +470,6 @@ def downgrade() -> None:
     op.drop_index('ix_channel_member_channel', table_name='messaging_channel_members')
     op.drop_index('ix_channel_member_active', table_name='messaging_channel_members')
     op.drop_table('messaging_channel_members')
-    op.drop_index(op.f('ix_emails_updated_at'), table_name='emails')
-    op.drop_index(op.f('ix_emails_thread_id'), table_name='emails')
-    op.drop_index(op.f('ix_emails_organisation_id'), table_name='emails')
-    op.drop_index(op.f('ix_emails_is_important'), table_name='emails')
-    op.drop_index(op.f('ix_emails_integration_id'), table_name='emails')
-    op.drop_index(op.f('ix_emails_from_participant_id'), table_name='emails')
-    op.drop_index(op.f('ix_emails_from_email'), table_name='emails')
-    op.drop_index(op.f('ix_emails_folder_id'), table_name='emails')
-    op.drop_index(op.f('ix_emails_deal_id'), table_name='emails')
-    op.drop_index(op.f('ix_emails_created_at'), table_name='emails')
-    op.drop_index('ix_email_thread', table_name='emails')
-    op.drop_index('ix_email_from_participant', table_name='emails')
-    op.drop_index('ix_email_folder_received', table_name='emails')
-    op.drop_index('ix_email_deal', table_name='emails')
-    op.drop_table('emails')
-    op.drop_index(op.f('ix_email_thread_summaries_updated_at'), table_name='email_thread_summaries')
-    op.drop_index(op.f('ix_email_thread_summaries_organisation_id'), table_name='email_thread_summaries')
-    op.drop_index(op.f('ix_email_thread_summaries_kb_source_id'), table_name='email_thread_summaries')
-    op.drop_index(op.f('ix_email_thread_summaries_integration_id'), table_name='email_thread_summaries')
-    op.drop_index(op.f('ix_email_thread_summaries_folder_id'), table_name='email_thread_summaries')
-    op.drop_index(op.f('ix_email_thread_summaries_exported_to_kb'), table_name='email_thread_summaries')
-    op.drop_index(op.f('ix_email_thread_summaries_deal_id'), table_name='email_thread_summaries')
-    op.drop_index(op.f('ix_email_thread_summaries_created_at'), table_name='email_thread_summaries')
-    op.drop_index('ix_email_summary_thread', table_name='email_thread_summaries')
-    op.drop_index('ix_email_summary_folder_time', table_name='email_thread_summaries')
-    op.drop_index('ix_email_summary_deal', table_name='email_thread_summaries')
-    op.drop_table('email_thread_summaries')
     op.drop_index(op.f('ix_messaging_channels_updated_at'), table_name='messaging_channels')
     op.drop_index(op.f('ix_messaging_channels_organisation_id'), table_name='messaging_channels')
     op.drop_index(op.f('ix_messaging_channels_is_monitored'), table_name='messaging_channels')
@@ -507,6 +486,21 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_integration_participant_identities_created_at'), table_name='integration_participant_identities')
     op.drop_index('ix_integration_part_identity_email', table_name='integration_participant_identities')
     op.drop_table('integration_participant_identities')
+    op.drop_index(op.f('ix_emails_updated_at'), table_name='emails')
+    op.drop_index(op.f('ix_emails_thread_id'), table_name='emails')
+    op.drop_index(op.f('ix_emails_organisation_id'), table_name='emails')
+    op.drop_index(op.f('ix_emails_is_important'), table_name='emails')
+    op.drop_index(op.f('ix_emails_integration_id'), table_name='emails')
+    op.drop_index(op.f('ix_emails_from_participant_id'), table_name='emails')
+    op.drop_index(op.f('ix_emails_from_email'), table_name='emails')
+    op.drop_index(op.f('ix_emails_folder_id'), table_name='emails')
+    op.drop_index(op.f('ix_emails_deal_id'), table_name='emails')
+    op.drop_index(op.f('ix_emails_created_at'), table_name='emails')
+    op.drop_index('ix_email_thread', table_name='emails')
+    op.drop_index('ix_email_from_participant', table_name='emails')
+    op.drop_index('ix_email_folder_received', table_name='emails')
+    op.drop_index('ix_email_deal', table_name='emails')
+    op.drop_table('emails')
     op.drop_index(op.f('ix_integration_participants_updated_at'), table_name='integration_participants')
     op.drop_index(op.f('ix_integration_participants_organisation_id'), table_name='integration_participants')
     op.drop_index(op.f('ix_integration_participants_integration_id'), table_name='integration_participants')
@@ -515,6 +509,18 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_integration_participants_created_at'), table_name='integration_participants')
     op.drop_index('ix_integration_participant_email', table_name='integration_participants')
     op.drop_table('integration_participants')
+    op.drop_index(op.f('ix_email_thread_summaries_updated_at'), table_name='email_thread_summaries')
+    op.drop_index(op.f('ix_email_thread_summaries_organisation_id'), table_name='email_thread_summaries')
+    op.drop_index(op.f('ix_email_thread_summaries_kb_source_id'), table_name='email_thread_summaries')
+    op.drop_index(op.f('ix_email_thread_summaries_integration_id'), table_name='email_thread_summaries')
+    op.drop_index(op.f('ix_email_thread_summaries_folder_id'), table_name='email_thread_summaries')
+    op.drop_index(op.f('ix_email_thread_summaries_exported_to_kb'), table_name='email_thread_summaries')
+    op.drop_index(op.f('ix_email_thread_summaries_deal_id'), table_name='email_thread_summaries')
+    op.drop_index(op.f('ix_email_thread_summaries_created_at'), table_name='email_thread_summaries')
+    op.drop_index('ix_email_summary_thread', table_name='email_thread_summaries')
+    op.drop_index('ix_email_summary_folder_time', table_name='email_thread_summaries')
+    op.drop_index('ix_email_summary_deal', table_name='email_thread_summaries')
+    op.drop_table('email_thread_summaries')
     op.drop_index(op.f('ix_email_folders_updated_at'), table_name='email_folders')
     op.drop_index(op.f('ix_email_folders_organisation_id'), table_name='email_folders')
     op.drop_index(op.f('ix_email_folders_is_monitored'), table_name='email_folders')
