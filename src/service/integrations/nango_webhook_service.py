@@ -22,7 +22,6 @@ from src.domain.models.organisation_tables.sync import (
     IntegrationType,
     KnowledgeIntegration,
 )
-from src.infra.config.nango_provider_mapping import from_nango_provider_key
 from src.infra.config.provider_categories import categorize_integration_type
 from src.infra.utils.logger import get_logger
 from src.service.integrations import NangoClient
@@ -103,6 +102,39 @@ class NangoWebhookService:
             )
             await master_session.commit()
             return
+
+    def _determine_integration_type(
+        self, connection_id: str, provider_config_key: str
+    ) -> IntegrationType:
+        """
+        Determine the correct IntegrationType based on provider_config_key.
+
+        Handles the two separate Outlook integrations:
+        - "outlook" → OUTLOOK_EMAIL (emails and folders syncs)
+        - "outlook-bflm" → OUTLOOK_CALENDAR (events and calendars syncs)
+        """
+        from src.infra.config.nango_provider_mapping import from_nango_provider_key
+
+        provider_key_lower = provider_config_key.lower()
+
+        # Direct mapping for Outlook integrations
+        if provider_key_lower == "outlook":
+            logger.info(
+                "Detected 'outlook' provider, mapping to OUTLOOK_EMAIL. " "Connection ID: %s",
+                connection_id,
+            )
+            return IntegrationType.OUTLOOK_EMAIL
+
+        if provider_key_lower == "outlook-bflm":
+            logger.info(
+                "Detected 'outlook-bflm' provider, mapping to OUTLOOK_CALENDAR. "
+                "Connection ID: %s",
+                connection_id,
+            )
+            return IntegrationType.OUTLOOK_CALENDAR
+
+        # For all other providers, use the standard mapping
+        return from_nango_provider_key(provider_config_key)
 
     async def _handle_sync_webhook(
         self, payload: dict[str, Any], organisation_id: UUID, integration_id: UUID
@@ -228,7 +260,9 @@ class NangoWebhookService:
     ) -> Response:
         """Handle authorization webhook for new integration creation."""
         try:
-            integration_type = from_nango_provider_key(provider_config_key)
+            # Special handling for outlook-bflm which is used for both calendar and email
+            # We need to determine which type based on the provider config key
+            integration_type = self._determine_integration_type(connection_id, provider_config_key)
             user = await self._fetch_user_from_master(user_id)
 
             if not user:

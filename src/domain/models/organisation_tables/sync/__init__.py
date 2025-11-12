@@ -27,12 +27,28 @@ from .crm import (
     CRMStageState,
     CRMUser,
 )
+from .email_models import (
+    Email,
+    EmailDirection,
+    EmailFolder,
+    EmailPriority,
+    EmailThreadSummary,
+)
 from .integration_models import (
     IntegrationScope,
     IntegrationSyncHistory,
     IntegrationType,
     KnowledgeIntegration,
     SyncStatus,
+)
+from .messaging_models import (
+    ChannelType,
+    MessageType,
+    MessagingChannel,
+    MessagingChannelMember,
+    MessagingDealLink,
+    MessagingMessage,
+    MessagingThreadSummary,
 )
 from .participant_models import IntegrationParticipant, IntegrationParticipantIdentity
 
@@ -69,4 +85,16 @@ __all__ = [
     "TranscriptContentFormat",
     "IntegrationParticipant",
     "IntegrationParticipantIdentity",
+    "ChannelType",
+    "MessageType",
+    "MessagingChannel",
+    "MessagingChannelMember",
+    "MessagingDealLink",
+    "MessagingMessage",
+    "MessagingThreadSummary",
+    "EmailDirection",
+    "EmailPriority",
+    "EmailFolder",
+    "Email",
+    "EmailThreadSummary",
 ]

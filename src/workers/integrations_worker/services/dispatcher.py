@@ -26,12 +26,14 @@ from src.service.integrations.crm.entities import (
     PipelineSyncService,
     UserSyncService,
 )
+from src.service.integrations.email_sync_service import EmailSyncService
+from src.service.integrations.messaging_sync_service import MessagingSyncService
 
 from ..adapters.calendar_adapter import upsert_calendar
 from ..adapters.conversation_intelligence_adapter import sync_conversation_intelligence_data
 from ..adapters.crm_adapter import sync_crm_data
 from ..models.sync_models import SyncItemResult, SyncJobRequest, SyncJobResult
-from ..providers.registry import get_fetcher
+from ..providers.registry import FetchFn, get_fetcher
 from ..utils.dedupe import acquire_sync_lock, release_sync_lock
 
 logger = get_logger(__name__)
@@ -89,6 +91,23 @@ class IntegrationMetadata:
 
 
 @dataclass(slots=True)
+class MonitoredChannelContext:
+    channel_id: UUID
+    external_channel_id: str
+    channel_name: str | None
+    team_id: str | None
+    team_name: str | None
+    sync_from_date: datetime | None
+    last_synced_at: datetime | None
+
+
+@dataclass(slots=True)
+class MonitoredMessagesFetchResult:
+    messages: list[dict[str, Any]]
+    monitored_channel_count: int
+
+
+@dataclass(slots=True)
 class CategoryHandlerOutcome:
     item_result: SyncItemResult
     extra: dict[str, Any] | None = None
@@ -131,6 +150,34 @@ async def _load_integration_metadata(
         if not integration:
             raise ValueError("Integration not found")
         return _to_metadata(integration)
+
+
+async def _load_monitored_channel_contexts(
+    *,
+    organisation_id: UUID,
+    integration_id: UUID,
+) -> list[MonitoredChannelContext]:
+    """Return lightweight metadata for channels currently marked as monitored."""
+    async with _integration_session(organisation_id) as session:
+        messaging_service = MessagingSyncService(session=session, organisation_id=organisation_id)
+        channels = await messaging_service.get_monitored_channels(integration_id)
+
+        contexts: list[MonitoredChannelContext] = []
+        for channel in channels:
+            metadata = dict(channel.channel_metadata or {})
+            contexts.append(
+                MonitoredChannelContext(
+                    channel_id=channel.channel_id,
+                    external_channel_id=channel.external_channel_id,
+                    channel_name=channel.channel_name,
+                    team_id=metadata.get("team_id"),
+                    team_name=metadata.get("team_name"),
+                    sync_from_date=channel.sync_from_date,
+                    last_synced_at=channel.last_synced_at,
+                )
+            )
+
+        return contexts
 
 
 async def _reload_integration(
@@ -188,6 +235,136 @@ async def _handle_calendar(
         await session.refresh(integration_row)
         return CategoryHandlerOutcome(
             item_result=SyncItemResult(status="success", records_synced=count),
+            integration_meta=_to_metadata(integration_row),
+        )
+
+
+async def _handle_email(
+    organisation_id: UUID,
+    integration_id: UUID,
+    data_type: str,
+    records: list[dict[str, Any]],
+    provider: str,
+) -> CategoryHandlerOutcome:
+    """
+    Handle email folder and message sync.
+
+    Supported data_types:
+    - folders: Email folder/label sync
+    - messages: Email message sync
+    - emails: Alias for messages
+    """
+    async with _integration_session(organisation_id) as session:
+        integration_row = await _reload_integration(session, integration_id)
+        if not integration_row:
+            logger.warning(
+                "Integration %s missing when processing email data_type=%s",
+                integration_id,
+                data_type,
+            )
+            return CategoryHandlerOutcome(
+                item_result=SyncItemResult(status="failed", reason="integration_missing"),
+                should_stop=True,
+            )
+
+        email_service = EmailSyncService(session=session, organisation_id=organisation_id)
+
+        # Route to appropriate sync method based on data_type
+        if data_type in ("folders",):
+            metrics = await email_service.sync_folders(
+                integration=integration_row,
+                folders=records,
+                provider=provider,
+            )
+        elif data_type in ("messages", "emails"):
+            metrics = await email_service.sync_messages(
+                integration=integration_row,
+                messages=records,
+                provider=provider,
+            )
+        else:
+            logger.warning("Unknown email data_type: %s", data_type)
+            return CategoryHandlerOutcome(
+                item_result=SyncItemResult(status="ignored", reason="unknown_data_type"),
+                should_stop=True,
+            )
+
+        records_synced = metrics.get("records_processed", 0)
+
+        logger.info(
+            "Email sync completed for data_type=%s: %s",
+            data_type,
+            metrics,
+        )
+        await session.refresh(integration_row)
+        return CategoryHandlerOutcome(
+            item_result=SyncItemResult(status="success", records_synced=records_synced),
+            extra={"email": {data_type: metrics}},
+            integration_meta=_to_metadata(integration_row),
+        )
+
+
+async def _handle_messaging(
+    organisation_id: UUID,
+    integration_id: UUID,
+    data_type: str,
+    records: list[dict[str, Any]],
+    provider: str,
+) -> CategoryHandlerOutcome:
+    """
+    Handle messaging channel and message sync (Teams, Slack, etc.).
+
+    Supported data_types:
+    - channels: Messaging channel/team sync (pulls all available channels)
+    - messages: Messaging message sync (syncs only monitored channels)
+    """
+    async with _integration_session(organisation_id) as session:
+        integration_row = await _reload_integration(session, integration_id)
+        if not integration_row:
+            logger.warning(
+                "Integration %s missing when processing messaging data_type=%s",
+                integration_id,
+                data_type,
+            )
+            return CategoryHandlerOutcome(
+                item_result=SyncItemResult(status="failed", reason="integration_missing"),
+                should_stop=True,
+            )
+
+        messaging_service = MessagingSyncService(session=session, organisation_id=organisation_id)
+
+        # Route to appropriate sync method based on data_type
+        if data_type in ("channels",):
+            metrics = await messaging_service.sync_channels(
+                integration=integration_row,
+                channels=records,
+                provider=provider,
+            )
+        elif data_type in ("messages",):
+            # For message sync, only process monitored channels
+            metrics = await messaging_service.sync_messages(
+                integration=integration_row,
+                messages=records,
+                provider=provider,
+            )
+        else:
+            logger.warning("Unknown messaging data_type: %s", data_type)
+            return CategoryHandlerOutcome(
+                item_result=SyncItemResult(status="ignored", reason="unknown_data_type"),
+                should_stop=True,
+            )
+
+        records_synced = metrics.get("records_processed", 0)
+
+        logger.info(
+            "Messaging sync completed for data_type=%s: %s",
+            data_type,
+            metrics,
+        )
+        await session.refresh(integration_row)
+        return CategoryHandlerOutcome(
+            item_result=SyncItemResult(status="success", records_synced=records_synced),
+            extra={"messaging": {data_type: metrics}},
             integration_meta=_to_metadata(integration_row),
         )
 
@@ -310,6 +487,8 @@ async def _dispatch_category(
 ) -> CategoryHandlerOutcome:
     handler_map = {
         "calendar": _handle_calendar,
+        "email": _handle_email,
+        "messaging": _handle_messaging,
         "crm": _handle_crm,
         "conversation_intelligence": _sync_conversation_intelligence,
     }
@@ -354,6 +533,82 @@ def _apply_outcome(
     return outcome.integration_meta, outcome.should_stop
 
 
+async def _fetch_monitored_messages(
+    *,
+    fetcher: FetchFn,
+    nango: NangoClient,
+    integration_meta: IntegrationMetadata,
+    provider_key: str,
+    organisation_id: UUID,
+    integration_id: UUID,
+    sync_data_type: str,
+    is_initial: bool,
+) -> MonitoredMessagesFetchResult:
+    """Collect Teams messages only for channels flagged as monitored."""
+    channel_contexts = await _load_monitored_channel_contexts(
+        organisation_id=organisation_id,
+        integration_id=integration_id,
+    )
+
+    if not channel_contexts:
+        logger.info(
+            "No monitored messaging channels found for integration=%s; skipping fetch.",
+            integration_id,
+        )
+        return MonitoredMessagesFetchResult(messages=[], monitored_channel_count=0)
+
+    aggregated_messages: list[dict[str, Any]] = []
+
+    for channel in channel_contexts:
+        if not channel.team_id:
+            logger.warning(
+                "Skipping monitored channel without team context: integration=%s channel_id=%s",
+                integration_id,
+                channel.external_channel_id,
+            )
+            continue
+
+        channel_is_initial = is_initial or channel.last_synced_at is None
+        last_synced_at = channel.last_synced_at or integration_meta.last_synced_at
+        if last_synced_at is None:
+            last_synced_at = channel.sync_from_date
+
+        try:
+            messages = await fetcher(
+                nango=nango,
+                connection_id=integration_meta.connection_id,
+                is_initial=channel_is_initial,
+                last_synced_at=last_synced_at,
+                data_type=sync_data_type,
+                provider_config_key=provider_key,
+                team_id=channel.team_id,
+                channel_id=channel.external_channel_id,
+            )
+        except Exception:  # pragma: no cover - defensive logging for external API errors
+            logger.exception(
+                "Failed to fetch messages: integration=%s team_id=%s channel_id=%s",
+                integration_id,
+                channel.team_id,
+                channel.external_channel_id,
+            )
+            continue
+
+        if not messages:
+            continue
+
+        for message in messages:
+            message.setdefault("teamId", channel.team_id)
+            message.setdefault("channelId", channel.external_channel_id)
+            message["_copilot_channel_internal_id"] = str(channel.channel_id)
+
+        aggregated_messages.extend(messages)
+
+    return MonitoredMessagesFetchResult(
+        messages=aggregated_messages,
+        monitored_channel_count=len(channel_contexts),
+    )
+
+
 async def _execute_category_sync(
     *,
     request: SyncJobRequest,
@@ -381,22 +636,44 @@ async def _execute_category_sync(
     logger.info("Last Synced At: %s", integration_meta.last_synced_at)
     logger.info("Is Initial Sync: %s", not request.incremental)
 
-    records = await fetcher(
-        nango=nango,
-        connection_id=integration_meta.connection_id,
-        is_initial=not request.incremental,
-        last_synced_at=integration_meta.last_synced_at,
-        data_type=sync_data_type,
-        provider_config_key=provider_key,
-    )
-    logger.info("Fetched %d records for data_type=%s", len(records), sync_data_type)
+    monitored_fetch: MonitoredMessagesFetchResult | None = None
+    if request.category == "messaging" and sync_data_type == "messages":
+        monitored_fetch = await _fetch_monitored_messages(
+            fetcher=fetcher,
+            nango=nango,
+            integration_meta=integration_meta,
+            provider_key=provider_key,
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            sync_data_type=sync_data_type,
+            is_initial=not request.incremental,
+        )
+        records = monitored_fetch.messages
+        logger.info(
+            "Fetched %d messages across %d monitored channels",
+            len(records),
+            monitored_fetch.monitored_channel_count,
+        )
+    else:
+        records = await fetcher(
+            nango=nango,
+            connection_id=integration_meta.connection_id,
+            is_initial=not request.incremental,
+            last_synced_at=integration_meta.last_synced_at,
+            data_type=sync_data_type,
+            provider_config_key=provider_key,
+        )
+        logger.info("Fetched %d records for data_type=%s", len(records), sync_data_type)
     if not records:
         logger.info(
             "No records returned for data_type=%s; skipping processing.",
             sync_data_type,
         )
+        reason = "no_records"
+        if monitored_fetch and monitored_fetch.monitored_channel_count == 0:
+            reason = "no_monitored_channels"
         result.items[sync_data_type] = SyncItemResult(
-            status="success", records_synced=0, reason="no_records"
+            status="success", records_synced=0, reason=reason
         )
         return None, True
 
