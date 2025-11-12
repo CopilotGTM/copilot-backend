@@ -26,6 +26,7 @@ from src.service.integrations.crm.entities import (
     PipelineSyncService,
     UserSyncService,
 )
+from src.service.integrations.email_sync_service import EmailSyncService
 
 from ..adapters.calendar_adapter import upsert_calendar
 from ..adapters.conversation_intelligence_adapter import sync_conversation_intelligence_data
@@ -192,6 +193,71 @@ async def _handle_calendar(
         )
 
 
+async def _handle_email(
+    organisation_id: UUID,
+    integration_id: UUID,
+    data_type: str,
+    records: list[dict[str, Any]],
+    provider: str,
+) -> CategoryHandlerOutcome:
+    """
+    Handle email folder and message sync.
+
+    Supported data_types:
+    - folders: Email folder/label sync
+    - messages: Email message sync
+    - emails: Alias for messages
+    """
+    async with _integration_session(organisation_id) as session:
+        integration_row = await _reload_integration(session, integration_id)
+        if not integration_row:
+            logger.warning(
+                "Integration %s missing when processing email data_type=%s",
+                integration_id,
+                data_type,
+            )
+            return CategoryHandlerOutcome(
+                item_result=SyncItemResult(status="failed", reason="integration_missing"),
+                should_stop=True,
+            )
+
+        email_service = EmailSyncService(session=session, organisation_id=organisation_id)
+
+        # Route to appropriate sync method based on data_type
+        if data_type in ("folders",):
+            metrics = await email_service.sync_folders(
+                integration=integration_row,
+                folders=records,
+                provider=provider,
+            )
+        elif data_type in ("messages", "emails"):
+            metrics = await email_service.sync_messages(
+                integration=integration_row,
+                messages=records,
+                provider=provider,
+            )
+        else:
+            logger.warning("Unknown email data_type: %s", data_type)
+            return CategoryHandlerOutcome(
+                item_result=SyncItemResult(status="ignored", reason="unknown_data_type"),
+                should_stop=True,
+            )
+
+        records_synced = metrics.get("records_processed", 0)
+
+        logger.info(
+            "Email sync completed for data_type=%s: %s",
+            data_type,
+            metrics,
+        )
+        await session.refresh(integration_row)
+        return CategoryHandlerOutcome(
+            item_result=SyncItemResult(status="success", records_synced=records_synced),
+            extra={"email": {data_type: metrics}},
+            integration_meta=_to_metadata(integration_row),
+        )
+
+
 async def _handle_crm(
     organisation_id: UUID,
     integration_id: UUID,
@@ -310,6 +376,7 @@ async def _dispatch_category(
 ) -> CategoryHandlerOutcome:
     handler_map = {
         "calendar": _handle_calendar,
+        "email": _handle_email,
         "crm": _handle_crm,
         "conversation_intelligence": _sync_conversation_intelligence,
     }

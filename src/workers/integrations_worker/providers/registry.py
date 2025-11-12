@@ -45,6 +45,8 @@ from .crm.hubspot import (
 from .crm.hubspot import (
     fetch_users as hubspot_users_fetch,
 )
+from .email.outlook_email import fetch_folders as outlook_email_fetch_folders
+from .email.outlook_email import fetch_messages as outlook_email_fetch_messages
 
 FetchFn = Callable[..., Awaitable[list[dict]]]
 
@@ -81,6 +83,12 @@ def _init_defaults() -> None:
         "call_transcript_segments": gong_segments_fetch,
         "call_analytics": gong_analytics_fetch,
         "analytics": gong_analytics_fetch,
+    }
+    # Email: Outlook
+    _REGISTRY[("email", "outlook")] = {
+        "folders": outlook_email_fetch_folders,
+        "messages": outlook_email_fetch_messages,
+        "emails": outlook_email_fetch_messages,  # Alias
     }
 
 

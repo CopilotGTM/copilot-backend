@@ -194,7 +194,7 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
         can_be_created_by=[UserAppRole.MEMBER, UserAppRole.ADMIN],
         allow_multiple_connections=True,
     ),
-    IntegrationType.OUTLOOK: IntegrationMetadata(
+    IntegrationType.OUTLOOK_EMAIL: IntegrationMetadata(
         name="Outlook (Email)",
         description="Sync emails, threads, and folders from Outlook/Office 365 mailbox",
         logo_url="https://cdn.simpleicons.org/microsoftoutlook",
