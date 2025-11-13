@@ -179,7 +179,7 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
     IntegrationType.GMAIL: IntegrationMetadata(
         name="Gmail",
         description="Sync emails, threads, and folders from Gmail",
-        logo_url="https://api.nango.dev/images/template-logos/gmail.svg",
+        logo_url="https://app.nango.dev/images/template-logos/google-mail.svg",
         category="collaboration",
         category_name=IntegrationCategory.COLLABORATION,
         availability_status=AvailabilityStatus.AVAILABLE,
@@ -197,7 +197,7 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
     IntegrationType.OUTLOOK_EMAIL: IntegrationMetadata(
         name="Outlook (Email)",
         description="Sync emails, threads, and folders from Outlook/Office 365 mailbox",
-        logo_url="https://api.nango.dev/images/template-logos/outlook.svg",
+        logo_url="https://app.nango.dev/images/template-logos/outlook.svg",
         category="collaboration",
         category_name=IntegrationCategory.COLLABORATION,
         availability_status=AvailabilityStatus.AVAILABLE,
@@ -246,7 +246,7 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
     IntegrationType.OUTLOOK_CALENDAR: IntegrationMetadata(
         name="Outlook Calendar",
         description="Sync calendar events and availability from Microsoft Outlook/Office 365",
-        logo_url="https://api.nango.dev/images/template-logos/outlook-calendar.svg",
+        logo_url="https://app.nango.dev/images/template-logos/outlook.svg",
         category="collaboration",
         category_name=IntegrationCategory.COLLABORATION,
         availability_status=AvailabilityStatus.AVAILABLE,
@@ -334,7 +334,7 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
     IntegrationType.ONEDRIVE: IntegrationMetadata(
         name="OneDrive",
         description="Sync documents and files from Microsoft OneDrive",
-        logo_url="https://api.nango.dev/images/template-logos/onedrive.svg",
+        logo_url="https://api.nango.dev/images/template-logos/one-drive.svg",
         category="storage",
         category_name=IntegrationCategory.STORAGE,
         availability_status=AvailabilityStatus.COMING_SOON,
