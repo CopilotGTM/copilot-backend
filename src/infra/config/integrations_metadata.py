@@ -119,7 +119,7 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
     IntegrationType.HUBSPOT: IntegrationMetadata(
         name="HubSpot",
         description="Sync contacts, deals, and sales activities from HubSpot CRM",
-        logo_url="https://cdn.simpleicons.org/hubspot",
+        logo_url="https://api.nango.dev/images/template-logos/hubspot.svg",
         category="crm",
         category_name=IntegrationCategory.CRM_SALES,
         availability_status=AvailabilityStatus.AVAILABLE,
@@ -139,7 +139,7 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
     IntegrationType.SLACK: IntegrationMetadata(
         name="Slack",
         description="Sync messages, files, and channel data from Slack workspaces",
-        logo_url="https://cdn.simpleicons.org/slack",
+        logo_url="https://api.nango.dev/images/template-logos/slack.svg",
         category="collaboration",
         category_name=IntegrationCategory.COLLABORATION,
         availability_status=AvailabilityStatus.AVAILABLE,
@@ -159,7 +159,7 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
     IntegrationType.TEAMS: IntegrationMetadata(
         name="Microsoft Teams",
         description="Sync messages, channels, and files from Microsoft Teams",
-        logo_url="https://cdn.simpleicons.org/microsoftteams",
+        logo_url="https://api.nango.dev/images/template-logos/microsoft-teams.svg",
         category="collaboration",
         category_name=IntegrationCategory.COLLABORATION,
         availability_status=AvailabilityStatus.AVAILABLE,
@@ -179,7 +179,7 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
     IntegrationType.GMAIL: IntegrationMetadata(
         name="Gmail",
         description="Sync emails, threads, and folders from Gmail",
-        logo_url="https://cdn.simpleicons.org/gmail",
+        logo_url="https://app.nango.dev/images/template-logos/google-mail.svg",
         category="collaboration",
         category_name=IntegrationCategory.COLLABORATION,
         availability_status=AvailabilityStatus.AVAILABLE,
@@ -197,7 +197,7 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
     IntegrationType.OUTLOOK_EMAIL: IntegrationMetadata(
         name="Outlook (Email)",
         description="Sync emails, threads, and folders from Outlook/Office 365 mailbox",
-        logo_url="https://cdn.simpleicons.org/microsoftoutlook",
+        logo_url="https://app.nango.dev/images/template-logos/outlook.svg",
         category="collaboration",
         category_name=IntegrationCategory.COLLABORATION,
         availability_status=AvailabilityStatus.AVAILABLE,
@@ -215,7 +215,7 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
     IntegrationType.GOOGLE_DRIVE: IntegrationMetadata(
         name="Google Drive",
         description="Sync documents, spreadsheets, and files from Google Drive",
-        logo_url="https://cdn.simpleicons.org/googledrive",
+        logo_url="https://api.nango.dev/images/template-logos/google-drive.svg",
         category="storage",
         category_name=IntegrationCategory.STORAGE,
         availability_status=AvailabilityStatus.COMING_SOON,  # Coming soon
@@ -229,7 +229,7 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
     IntegrationType.GOOGLE_CALENDAR: IntegrationMetadata(
         name="Google Calendar",
         description="Sync events and availability from Google Calendar",
-        logo_url="https://cdn.simpleicons.org/googlecalendar",
+        logo_url="https://api.nango.dev/images/template-logos/google-calendar.svg",
         category="collaboration",
         category_name=IntegrationCategory.COLLABORATION,
         availability_status=AvailabilityStatus.BETA,
@@ -246,7 +246,7 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
     IntegrationType.OUTLOOK_CALENDAR: IntegrationMetadata(
         name="Outlook Calendar",
         description="Sync calendar events and availability from Microsoft Outlook/Office 365",
-        logo_url="https://cdn.simpleicons.org/microsoftoutlook",
+        logo_url="https://app.nango.dev/images/template-logos/outlook.svg",
         category="collaboration",
         category_name=IntegrationCategory.COLLABORATION,
         availability_status=AvailabilityStatus.AVAILABLE,
@@ -263,7 +263,7 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
     IntegrationType.CALENDLY: IntegrationMetadata(
         name="Calendly",
         description="Ingest scheduled meetings and invitee details from Calendly",
-        logo_url="https://cdn.simpleicons.org/calendly",
+        logo_url="https://api.nango.dev/images/template-logos/calendly.svg",
         category="collaboration",
         category_name=IntegrationCategory.COLLABORATION,
         availability_status=AvailabilityStatus.COMING_SOON,
@@ -278,7 +278,7 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
     IntegrationType.SALESFORCE: IntegrationMetadata(
         name="Salesforce",
         description="Sync leads, opportunities, and sales data from Salesforce CRM",
-        logo_url="https://cdn.simpleicons.org/salesforce",
+        logo_url="https://api.nango.dev/images/template-logos/salesforce.svg",
         category="crm",
         category_name=IntegrationCategory.CRM_SALES,
         availability_status=AvailabilityStatus.COMING_SOON,
@@ -292,7 +292,7 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
     IntegrationType.GONG: IntegrationMetadata(
         name="Gong",
         description="Ingest call recordings, transcripts, and deal insights from Gong",
-        logo_url="https://cdn.simpleicons.org/gong",
+        logo_url="https://api.nango.dev/images/template-logos/gong-oauth.svg",
         category="sales_enablement",
         category_name=IntegrationCategory.SALES_ENABLEMENT,
         availability_status=AvailabilityStatus.BETA,
@@ -306,7 +306,7 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
     IntegrationType.NOTION: IntegrationMetadata(
         name="Notion",
         description="Sync pages, databases, and documentation from Notion workspaces",
-        logo_url="https://cdn.simpleicons.org/notion",
+        logo_url="https://api.nango.dev/images/template-logos/notion.svg",
         category="collaboration",
         category_name=IntegrationCategory.COLLABORATION,
         availability_status=AvailabilityStatus.COMING_SOON,
@@ -334,7 +334,7 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
     IntegrationType.ONEDRIVE: IntegrationMetadata(
         name="OneDrive",
         description="Sync documents and files from Microsoft OneDrive",
-        logo_url="https://cdn.simpleicons.org/microsoftonedrive",
+        logo_url="https://api.nango.dev/images/template-logos/one-drive.svg",
         category="storage",
         category_name=IntegrationCategory.STORAGE,
         availability_status=AvailabilityStatus.COMING_SOON,

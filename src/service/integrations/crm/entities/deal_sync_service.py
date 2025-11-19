@@ -617,6 +617,66 @@ class DealSyncService(BaseSyncService[CRMDeal]):
         companies = associations.get("companies") or []
         participants.extend(self._extract_company_participants(deal_record, companies))
 
+        # Extract standard HubSpot collaborators and split owners
+        participants.extend(self._extract_hubspot_owner_participants(deal_record))
+
+        return participants
+
+    def _extract_hubspot_owner_participants(
+        self, deal_record: CRMDeal
+    ) -> list[tuple[CRMDeal, dict[str, Any], CRMParticipantType]]:
+        """Extract standard HubSpot collaborators and split owners from properties."""
+        participants: list[tuple[CRMDeal, dict[str, Any], CRMParticipantType]] = []
+        props = deal_record.properties or {}
+
+        # Process Collaborators
+        collaborators_str = props.get("hs_all_collaborator_owner_ids")
+        if collaborators_str and isinstance(collaborators_str, str):
+            for owner_id in collaborators_str.split(";"):
+                owner_id = owner_id.strip()
+                if not owner_id:
+                    continue
+
+                participants.append(
+                    (
+                        deal_record,
+                        {
+                            "external_id": f"deal_{deal_record.external_id}_collab_{owner_id}",
+                            "related_external_id": owner_id,
+                            "relationship_role": "collaborator",
+                            "raw": {
+                                "id": owner_id,
+                                "source": "hs_all_collaborator_owner_ids",
+                            },
+                        },
+                        CRMParticipantType.USER,
+                    )
+                )
+
+        # Process Deal Splits
+        splits_str = props.get("hs_all_deal_split_owner_ids")
+        if splits_str and isinstance(splits_str, str):
+            for owner_id in splits_str.split(";"):
+                owner_id = owner_id.strip()
+                if not owner_id:
+                    continue
+
+                participants.append(
+                    (
+                        deal_record,
+                        {
+                            "external_id": f"deal_{deal_record.external_id}_split_{owner_id}",
+                            "related_external_id": owner_id,
+                            "relationship_role": "split_owner",
+                            "raw": {
+                                "id": owner_id,
+                                "source": "hs_all_deal_split_owner_ids",
+                            },
+                        },
+                        CRMParticipantType.USER,
+                    )
+                )
+
         return participants
 
     def _extract_contact_participants(

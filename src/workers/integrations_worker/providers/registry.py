@@ -48,6 +48,8 @@ from .crm.hubspot import (
 from .email.outlook_email import fetch_folders as outlook_email_fetch_folders
 from .email.outlook_email import fetch_messages as outlook_email_fetch_messages
 from .messaging.teams import fetch_channels as teams_fetch_channels
+from .messaging.teams import fetch_chat_messages as teams_fetch_chat_messages
+from .messaging.teams import fetch_chats as teams_fetch_chats
 from .messaging.teams import fetch_messages as teams_fetch_messages
 
 FetchFn = Callable[..., Awaitable[list[dict]]]
@@ -95,7 +97,9 @@ def _init_defaults() -> None:
     # Messaging: Teams
     _REGISTRY[("messaging", "teams")] = {
         "channels": teams_fetch_channels,
-        "messages": teams_fetch_messages,
+        "chats": teams_fetch_chats,  # 1:1, group, meeting chats
+        "messages": teams_fetch_messages,  # Channel messages
+        "chat_messages": teams_fetch_chat_messages,  # Chat messages
     }
 
 

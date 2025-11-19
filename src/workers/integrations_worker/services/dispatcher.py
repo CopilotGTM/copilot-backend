@@ -92,11 +92,21 @@ class IntegrationMetadata:
 
 @dataclass(slots=True)
 class MonitoredChannelContext:
+    """
+    Metadata for monitored channels/chats.
+
+    Supports both Team channels and chats (1:1, group, meeting).
+    """
+
     channel_id: UUID
-    external_channel_id: str
+    external_channel_id: str  # Can be channel_id or chat_id
     channel_name: str | None
+    channel_type: str | None  # public, private, direct_message, group_message, meeting
+    # Team channel fields
     team_id: str | None
     team_name: str | None
+    # Chat fields (chat_id is in external_channel_id)
+    chat_type: str | None  # oneOnOne, group, meeting
     sync_from_date: datetime | None
     last_synced_at: datetime | None
 
@@ -170,8 +180,12 @@ async def _load_monitored_channel_contexts(
                     channel_id=channel.channel_id,
                     external_channel_id=channel.external_channel_id,
                     channel_name=channel.channel_name,
+                    channel_type=channel.channel_type.value if channel.channel_type else None,
+                    # Team channel fields
                     team_id=metadata.get("team_id"),
                     team_name=metadata.get("team_name"),
+                    # Chat fields
+                    chat_type=metadata.get("chat_type"),
                     sync_from_date=channel.sync_from_date,
                     last_synced_at=channel.last_synced_at,
                 )
@@ -334,14 +348,16 @@ async def _handle_messaging(
         messaging_service = MessagingSyncService(session=session, organisation_id=organisation_id)
 
         # Route to appropriate sync method based on data_type
-        if data_type in ("channels",):
+        if data_type in ("channels", "chats"):
+            # Both Team channels and chats use the same sync method
+            # The service handles them differently based on channel_metadata.provider
             metrics = await messaging_service.sync_channels(
                 integration=integration_row,
                 channels=records,
                 provider=provider,
             )
-        elif data_type in ("messages",):
-            # For message sync, only process monitored channels
+        elif data_type in ("messages", "chat_messages"):
+            # For message sync, only process monitored channels/chats
             metrics = await messaging_service.sync_messages(
                 integration=integration_row,
                 messages=records,
@@ -560,9 +576,14 @@ async def _fetch_monitored_messages(
     aggregated_messages: list[dict[str, Any]] = []
 
     for channel in channel_contexts:
-        if not channel.team_id:
+        # Determine if this is a Team channel or a chat
+        is_chat = channel.chat_type is not None  # Has chat_type = it's a chat
+        is_team_channel = channel.team_id is not None  # Has team_id = it's a Team channel
+
+        # Skip if neither (shouldn't happen)
+        if not is_chat and not is_team_channel:
             logger.warning(
-                "Skipping monitored channel without team context: integration=%s channel_id=%s",
+                "Skipping monitored channel without team or chat context: integration=%s channel_id=%s",
                 integration_id,
                 channel.external_channel_id,
             )
@@ -574,21 +595,31 @@ async def _fetch_monitored_messages(
             last_synced_at = channel.sync_from_date
 
         try:
-            messages = await fetcher(
-                nango=nango,
-                connection_id=integration_meta.connection_id,
-                is_initial=channel_is_initial,
-                last_synced_at=last_synced_at,
-                data_type=sync_data_type,
-                provider_config_key=provider_key,
-                team_id=channel.team_id,
-                channel_id=channel.external_channel_id,
-            )
+            # Build fetch parameters based on type
+            fetch_params: dict[str, Any] = {
+                "nango": nango,
+                "connection_id": integration_meta.connection_id,
+                "is_initial": channel_is_initial,
+                "last_synced_at": last_synced_at,
+                "data_type": sync_data_type,
+                "provider_config_key": provider_key,
+            }
+
+            # Add type-specific parameters
+            if is_team_channel:
+                # Team channel: needs team_id and channel_id
+                fetch_params["team_id"] = channel.team_id
+                fetch_params["channel_id"] = channel.external_channel_id
+            else:
+                # Chat: needs chat_id
+                fetch_params["chat_id"] = channel.external_channel_id
+
+            messages = await fetcher(**fetch_params)
         except Exception:  # pragma: no cover - defensive logging for external API errors
             logger.exception(
-                "Failed to fetch messages: integration=%s team_id=%s channel_id=%s",
+                "Failed to fetch messages: integration=%s type=%s id=%s",
                 integration_id,
-                channel.team_id,
+                "chat" if is_chat else "channel",
                 channel.external_channel_id,
             )
             continue
@@ -596,9 +627,13 @@ async def _fetch_monitored_messages(
         if not messages:
             continue
 
+        # Enrich messages with context
         for message in messages:
-            message.setdefault("teamId", channel.team_id)
-            message.setdefault("channelId", channel.external_channel_id)
+            if is_team_channel:
+                message.setdefault("teamId", channel.team_id)
+                message.setdefault("channelId", channel.external_channel_id)
+            else:
+                message.setdefault("chatId", channel.external_channel_id)
             message["_copilot_channel_internal_id"] = str(channel.channel_id)
 
         aggregated_messages.extend(messages)

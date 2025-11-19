@@ -17,13 +17,36 @@ EMPTY_JSONB_ARRAY = "'[]'::jsonb"
 
 
 class ChannelType(str, Enum):
-    """Type of messaging channel."""
+    """
+    Type of messaging channel - provider-agnostic.
 
+    Supports Teams, Slack, Google Chat, Discord, etc.
+    Use channel_metadata to store provider-specific details.
+    """
+
+    # Workspace/Team-based channels (public within workspace)
+    # Teams: Standard channels, Slack: Public channels, Google Chat: Spaces
     PUBLIC = "public"
+
+    # Private channels (restricted membership within workspace)
+    # Teams: Private channels, Slack: Private channels, Google Chat: Private spaces
     PRIVATE = "private"
+
+    # 1:1 direct messages
+    # Teams: 1:1 chats, Slack: DMs, Google Chat: DMs
     DIRECT_MESSAGE = "direct_message"
+
+    # Ad-hoc group chats (not tied to a workspace/team structure)
+    # Teams: Group chats, Slack: Group DMs, Google Chat: Group messages
     GROUP_MESSAGE = "group_message"
+
+    # Thread-based conversations (replies within channels)
+    # All platforms: Thread replies
     THREAD = "thread"
+
+    # Meeting-associated chats
+    # Teams: Meeting chats, Google Meet: Meeting chats
+    MEETING = "meeting"
 
 
 class MessageType(str, Enum):
@@ -115,7 +138,13 @@ class MessagingChannel(SyncedRecordMixin, table=True):
     channel_metadata: dict[str, Any] = Field(
         default_factory=dict,
         sa_column=Column(JSONB, nullable=False, server_default=text(EMPTY_JSONB_SQL)),
-        description="Provider-specific channel metadata.",
+        description=(
+            "Provider-specific channel metadata. "
+            "Should include 'provider' key (teams/slack/google_chat). "
+            "Teams: team_id, team_name, membership_type, chat_type. "
+            "Slack: workspace_id, is_im, is_mpim. "
+            "Google Chat: space_type, space_threading_state."
+        ),
     )
 
     # Application-level sync state (Nango handles OAuth tokens)

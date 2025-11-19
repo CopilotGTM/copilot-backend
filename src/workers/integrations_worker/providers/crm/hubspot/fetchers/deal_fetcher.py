@@ -42,6 +42,10 @@ HUBSPOT_DEAL_PROPERTIES = [
     "hs_mrr",
     "hs_tcv",
     "hs_acv",
+    # Standard HubSpot Ownership & Collaboration
+    "hubspot_team_id",
+    "hs_all_collaborator_owner_ids",  # Standard field for deal collaborators
+    "hs_all_deal_split_owner_ids",  # Standard field for deal splits
     # Useful additional defaults from HubSpot
     "hs_is_closed_won",
     "hs_is_closed_lost",
