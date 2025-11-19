@@ -1,6 +1,7 @@
 # CRM Deals API Documentation
 
 ## Base URL
+
 ```
 /users/crm
 ```
@@ -8,11 +9,15 @@
 ---
 
 ## Response Envelope
+
 All endpoints return the shared `GenericResponse` envelope.
+
 ```json
 {
   "status": "SUCCESS | ERROR",
+
   "message": "Human-readable message",
+
   "data": { ... } | null
 }
 ```
@@ -20,24 +25,31 @@ All endpoints return the shared `GenericResponse` envelope.
 ---
 
 ## Authentication
+
 - Required: Bearer token (`Authorization: Bearer <access_token>`)
 - User identity (organisation, user, role) resolved from the token; clients never pass these explicitly
 
 ---
 
 ## Rate Limiting (defaults)
+
 - Write endpoints (`POST`, `DELETE`): ~15/min, 100/hour per user
 - Read endpoints (`GET`): ~60/min, 1000/hour per user
+
 - On limit breach: `429 Too Many Requests` with `Retry-After`
 
 ---
 
 ## Deal Status Values
+
 | Status   | Meaning                                     | UI Guidance                     |
+
 |----------|---------------------------------------------|---------------------------------|
 | `open`   | Deal is active and in progress              | Show as active pipeline item    |
 | `won`    | Deal has been closed successfully           | Display with success indicator  |
+
 | `lost`   | Deal has been closed unsuccessfully         | Show as closed/lost             |
+
 | `closed` | Deal has been closed (generic)              | Mark as completed               |
 
 ---
@@ -45,62 +57,88 @@ All endpoints return the shared `GenericResponse` envelope.
 ## Data Types
 
 ### Enums
+
 - `CRMDealStatus`: `"open" | "won" | "lost" | "closed"`
 
 ### Request Query Parameters (TypeScript)
+
 ```ts
+
 type UUID = string;
+
 
 export interface ListDealsParams {
   limit?: number;           // 1..100, default 20
   cursor?: string;          // opaque pagination cursor
+
   statuses?: CRMDealStatus[];  // filter by deal status
   pipeline_ids?: UUID[];    // filter by pipeline UUIDs
   owner_external_ids?: string[];  // filter by owner external IDs
+
+  min_amount?: number;      // filter by minimum deal amount
+  max_amount?: number;      // filter by maximum deal amount
+  min_close_date?: string;  // filter by minimum close date (ISO8601)
+  max_close_date?: string;  // filter by maximum close date (ISO8601)
+
   q?: string;              // case-insensitive search on deal name
 }
 ```
 
 ### Response Models (TypeScript)
+
 ```ts
 export interface DealListItem {
   deal_id: UUID;
+
   external_id: string;
+
   name: string | null;
   amount: number | null;
   currency: string | null;
   deal_status: CRMDealStatus;
+
   probability: number | null;
+
   close_date: string | null;  // ISO8601
   stage_name: string | null;
   stage_label: string | null;
   pipeline_name: string | null;
+
   pipeline_label: string | null;
+
   owner_name: string | null;
   owner_email: string | null;
   company_external_id: string | null;
   company_name: string | null;
+
   company_domain: string | null;
+
   primary_contact_external_id: string | null;
   primary_contact_name: string | null;
   primary_contact_email: string | null;
   created_at: string;  // ISO8601
+
   updated_at: string;  // ISO8601
+
   synced_at: string;   // ISO8601
 }
 
 export interface DealsPage {
+
   items: DealListItem[];
   cursor: string | null;  // null if no more results
 }
+
 
 export interface DealDetail {
   // Identity
   deal_id: UUID;
   external_id: string;
+
   
   // Core business context
   name: string | null;
+
   amount: number | null;
   currency: string | null;
   amount_home_currency: number | null;
@@ -111,6 +149,7 @@ export interface DealDetail {
   expected_close_date: string | null;  // ISO8601
   closed_won_at: string | null;  // ISO8601
   closed_lost_at: string | null;  // ISO8601
+
   closed_reason: string | null;
   
   // Sales process snapshot
@@ -145,6 +184,7 @@ export interface DealDetail {
   stage_updated_at: string | null;  // ISO8601
   synced_at: string;  // ISO8601
   source_modified_at: string | null;  // ISO8601
+
   last_seen_at: string | null;  // ISO8601
   
   // Freeform details
@@ -152,11 +192,95 @@ export interface DealDetail {
   
   // Integration metadata
   integration_id: UUID;
+
   organisation_id: UUID;
   
   // Timestamps
   created_at: string;  // ISO8601
   updated_at: string;  // ISO8601
+  context: DealContext | null;
+}
+
+export interface DealContext {
+  pipeline: DealPipelineContext | null;
+  timeline: DealTimelineContext | null;
+  financials: DealFinancialContext | null;
+  associations: DealAssociationsContext | null;
+  stage_history: DealStageHistoryItem[] | null;
+  metrics: Record<string, unknown> | null;
+  properties: Record<string, unknown> | null;
+}
+
+export interface DealPipelineContext {
+  pipeline_id: UUID | null;
+  pipeline_external_id: string | null;
+  pipeline_name: string | null;
+  pipeline_label: string | null;
+
+  stage_id: UUID | null;
+  stage_external_id: string | null;
+  stage_name: string | null;
+  stage_label: string | null;
+  forecast_category: string | null;
+  deal_type: string | null;
+  priority: string | null;
+
+  lead_source: string | null;
+}
+
+export interface DealTimelineContext {
+  source_created_at: string | null;
+  close_date: string | null;
+  expected_close_date: string | null;
+  closed_won_at: string | null;
+  closed_lost_at: string | null;
+  last_activity_at: string | null;
+  stage_entered_at: string | null;
+  stage_updated_at: string | null;
+  synced_at: string | null;
+  source_modified_at: string | null;
+  last_seen_at: string | null;
+  days_to_close: number | null;
+}
+
+export interface DealFinancialContext {
+  amount: number | null;
+  currency: string | null;
+  amount_home_currency: number | null;
+  predicted_amount: number | null;
+  probability: number | null;
+
+}
+
+export interface DealStageHistoryItem {
+  history_id: UUID;
+  stage_external_id: string | null;
+  stage_name: string | null;
+  stage_label: string | null;
+  from_stage_external_id: string | null;
+  entered_at: string;           // ISO8601
+  exited_at: string | null;     // ISO8601, null if still in this stage
+  duration_days: number | null; // Whole days spent in this stage (approx.)
+  amount_at_stage: number | null;
+  probability_at_stage: number | null;
+  source: string | null;        // e.g. "hubspot", "system"
+}
+
+export interface DealAssociationsContext {
+  owner_external_id: string | null;
+  owner_name: string | null;
+  owner_email: string | null;
+  technical_owner_external_id: string | null;
+  technical_owner_name: string | null;
+  technical_owner_email: string | null;
+  company_external_id: string | null;
+  company_name: string | null;
+  company_domain: string | null;
+  primary_contact_external_id: string | null;
+
+  primary_contact_name: string | null;
+
+  primary_contact_email: string | null;
 }
 
 export interface DealsStats {
@@ -179,35 +303,43 @@ export interface ApiEnvelope<T> {
 
 ## Production Conventions
 
-### Authentication
+### Authentication Requirements
+
 - Bearer JWT in `Authorization: Bearer <token>`
 - All operations are scoped to the authenticated user's organisation
 
 ### Content Type
+
 - Request: `Content-Type: application/json`
 - Response: `Content-Type: application/json`
 
 ### Pagination
+
 - Cursor-based keyset pagination for efficient traversal of large datasets
 - Treat `cursor` as opaque and pass back verbatim
 - Cursors encode `(created_at, deal_id)` for consistent ordering
 
 ### Enrichment & Optional Fields
+
 - `owner_name`/`owner_email` are denormalized from the users directory when available; otherwise null.
 - `company_name`/`company_domain` and `primary_contact_name`/`primary_contact_email` are populated via enrichment after deal sync; they may be null on the first read and appear after enrichment completes.
 - Stage IDs (`stage_external_id`) reflect HubSpot's internal slugs (e.g., `qualifiedtobuy`, `appointmentscheduled`). Use `stage_label` for display text.
 
 ### Soft Deletes
+
 - The API excludes soft-deleted (archived) deals by default (`is_deleted = false`). Deleted/archived deals are still ingested for internal lineage and history.
 
 ### Stage History
+
 - Stage transitions are derived from HubSpot `propertiesWithHistory` and stored internally for analytics. A public endpoint for stage history may be added later; contact us if you need it.
 
 ### Time & Timestamps
+
 - ISO 8601 UTC with `Z` suffix
 - Example: `2025-10-25T10:30:00Z`
 
 ### Error Model
+
 - Envelope always present with HTTP status aligned to error:
   - 400: invalid input (bad cursor, invalid filter)
   - 401: missing/invalid token
@@ -225,11 +357,13 @@ export interface ApiEnvelope<T> {
 ```
 
 ### Security & Tenancy
+
 - All operations are evaluated against the authenticated `organisation_id`
 - Queries exclude soft-deleted items (`is_deleted = false`)
 - No cross-organisation access is permitted
 
 ### Retry & Backoff Recommendations
+
 - Reads (list/get): retry with exponential backoff (200ms → 400ms → 800ms; jitter) up to 3 attempts
 - On `429`: respect `Retry-After` header
 - On `5xx`: retry with backoff, cap at 3 attempts
@@ -239,36 +373,43 @@ export interface ApiEnvelope<T> {
 ## Security & Compliance (SOC 2 Alignment)
 
 ### Transport Security
+
 - Enforce TLS 1.2+; recommend HSTS at the edge
 - All API access over HTTPS only
 - CORS: restrict in production to trusted origins
 
 ### Authentication & Authorization
+
 - Bearer JWT on every call
 - Endpoints enforce organisation scoping for all reads
 - Future: role-based authorization for admin vs user scopes
 
 ### Input Validation & Integrity
+
 - Pydantic validation rejects invalid UUIDs, negative limits, malformed cursors
 - Cursor-based pagination guards against numeric enumeration
 - Query string filters validated for correct enum values
 
 ### Logging & Auditability
+
 - Log request outcomes and resource IDs (deal_id, organisation_id)
 - Redact potentially sensitive fields; apply log retention and access controls
 - Track access patterns for security monitoring
 
 ### Availability & Resilience
+
 - Per-user rate limiting (read budgets) with `429` + `Retry-After`
 - Graceful degradation on database connection issues
 - Connection pooling and timeouts prevent resource exhaustion
 
 ### Privacy & Data Handling
+
 - Deal data is confidential business information
 - Avoid logging deal content or amounts
 - Support future purge/retention policies at the org level
 
 ### Change Management & Versioning
+
 - Document non-breaking additions
 - Coordinate breaking changes with clients
 - Maintain backward compatibility for response schemas
@@ -278,14 +419,19 @@ export interface ApiEnvelope<T> {
 ## 1. List Deals (Paginated)
 
 ### Endpoint
+
 ```http
 GET /users/crm/deals?limit=20&cursor=<opaque>&statuses=open&statuses=won&pipeline_ids=<uuid>&owner_external_ids=<id>&q=enterprise
 ```
 
+> **Note:** Always call `/users/crm/deals` with no trailing slash. FastAPI normalizes routes and will respond with a `307 Temporary Redirect` when the request includes an extra `/`, so use the canonical path to avoid the extra hop.
+
 ### Description
+
 Returns a cursor-paginated list of CRM deals for the current organisation with optional filters. Ordered by `created_at DESC, deal_id DESC` for consistent pagination.
 
 ### Query Parameters
+
 | Parameter            | Type           | Required | Description                                                       |
 |---------------------|----------------|----------|-------------------------------------------------------------------|
 | `limit`             | integer        | No       | Items per page (1..100, default 20)                               |
@@ -293,9 +439,14 @@ Returns a cursor-paginated list of CRM deals for the current organisation with o
 | `statuses`          | array<string>  | No       | Filter by status (`open`, `won`, `lost`, `closed`; repeat param) |
 | `pipeline_ids`      | array<UUID>    | No       | Filter by pipeline UUIDs (repeat parameter)                       |
 | `owner_external_ids`| array<string>  | No       | Filter by owner external IDs from CRM (repeat parameter)          |
+| `min_amount`        | number         | No       | Filter by minimum deal amount                                     |
+| `max_amount`        | number         | No       | Filter by maximum deal amount                                     |
+| `min_close_date`    | string         | No       | Filter by minimum close date (ISO8601)                            |
+| `max_close_date`    | string         | No       | Filter by maximum close date (ISO8601)                            |
 | `q`                 | string         | No       | Case-insensitive substring match on deal name                     |
 
 ### Success Response (200)
+
 ```json
 {
   "status": "SUCCESS",
@@ -330,6 +481,7 @@ Returns a cursor-paginated list of CRM deals for the current organisation with o
 ```
 
 ### Notes
+
 - Empty `items` array with `cursor: null` indicates no results
 - Cursor is `null` when no more pages exist
 - Pass `cursor` from previous response to fetch next page
@@ -337,7 +489,9 @@ Returns a cursor-paginated list of CRM deals for the current organisation with o
 - Multiple values for the same filter (e.g., multiple statuses) are ORed
 
 ### Error Responses
+
 - `400 Bad Request` — invalid cursor or filter values
+
   ```json
   {
     "status": "ERROR",
@@ -345,8 +499,10 @@ Returns a cursor-paginated list of CRM deals for the current organisation with o
     "data": null
   }
   ```
+
 - `429 Too Many Requests` — rate limit exceeded
 - `500 Internal Server Error` — unexpected error
+
   ```json
   {
     "status": "ERROR",
@@ -356,6 +512,7 @@ Returns a cursor-paginated list of CRM deals for the current organisation with o
   ```
 
 ### Example cURL
+
 ```bash
 curl -X GET "$BASE_URL/users/crm/deals?limit=20&statuses=open&statuses=won&q=enterprise" \
   -H "Authorization: Bearer $TOKEN" \
@@ -363,6 +520,7 @@ curl -X GET "$BASE_URL/users/crm/deals?limit=20&statuses=open&statuses=won&q=ent
 ```
 
 ### Example TypeScript
+
 ```typescript
 async function listDeals(params: ListDealsParams): Promise<DealsPage> {
   const queryParams = new URLSearchParams();
@@ -391,17 +549,21 @@ async function listDeals(params: ListDealsParams): Promise<DealsPage> {
 ## 2. Get Deal Statistics
 
 ### Endpoint
+
 ```http
 GET /users/crm/deals/stats
 ```
 
 ### Description
+
 Returns aggregate statistics for all CRM deals in the organisation. Useful for dashboard widgets and overview cards.
 
 ### Authentication
+
 Required
 
 ### Success Response (200)
+
 ```json
 {
   "status": "SUCCESS",
@@ -426,6 +588,7 @@ Required
 ```
 
 ### Response Fields
+
 | Field            | Type                  | Description                                          |
 |------------------|-----------------------|------------------------------------------------------|
 | `total`          | integer               | Total count of active deals (excludes soft-deleted)  |
@@ -435,16 +598,19 @@ Required
 | `average_amount` | number \| null        | Average deal amount (null if no amounts)             |
 
 ### Notes
+
 - Amounts are calculated from deals with non-null `amount` values
 - Pipelines without names are excluded from `by_pipeline`
 - Statistics exclude soft-deleted deals
 - Currency is not normalized; `total_amount` and `average_amount` mix currencies
 
 ### Error Responses
+
 - `429 Too Many Requests` — rate limit exceeded
 - `500 Internal Server Error` — unexpected error
 
 ### Example cURL
+
 ```bash
 curl -X GET "$BASE_URL/users/crm/deals/stats" \
   -H "Authorization: Bearer $TOKEN" \
@@ -452,6 +618,7 @@ curl -X GET "$BASE_URL/users/crm/deals/stats" \
 ```
 
 ### Example TypeScript
+
 ```typescript
 async function getDealsStats(): Promise<DealsStats> {
   const response = await fetch(`${BASE_URL}/users/crm/deals/stats`, {
@@ -472,22 +639,27 @@ async function getDealsStats(): Promise<DealsStats> {
 ## 3. Get Deal Details
 
 ### Endpoint
+
 ```http
 GET /users/crm/deals/{deal_id}
 ```
 
 ### Description
+
 Retrieves full details for a specific CRM deal by its internal UUID. Returns all available fields including metadata, associations, and activity timeline.
 
 ### Authentication
+
 Required
 
 ### Path Parameters
+
 | Parameter | Type | Required | Description                 |
 |-----------|------|----------|-----------------------------|
 | `deal_id` | UUID | Yes      | Internal deal UUID          |
 
 ### Success Response (200)
+
 ```json
 {
   "status": "SUCCESS",
@@ -535,13 +707,62 @@ Required
     "integration_id": "c3d4e5f6-a7b8-4c5d-9e0f-1a2b3c4d5e6f",
     "organisation_id": "d4e5f6a7-b8c9-4d5e-0f1a-2b3c4d5e6f7a",
     "created_at": "2025-10-01T08:00:00Z",
-    "updated_at": "2025-10-24T15:30:00Z"
+    "updated_at": "2025-10-24T15:30:00Z",
+    "context": {
+      "pipeline": {
+        "pipeline_id": "a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d",
+        "pipeline_label": "Standard Sales Process",
+        "stage_label": "Contract Review"
+      },
+      "timeline": {
+        "source_created_at": "2025-09-15T10:00:00Z",
+        "last_activity_at": "2025-10-24T15:30:00Z",
+        "days_to_close": 13
+      },
+      "financials": {
+        "amount": 250000.00,
+        "currency": "USD",
+        "probability": 75.0
+      },
+      "associations": {
+        "owner_name": "Alex Fin",
+        "owner_email": "alex.fin@example.com",
+        "technical_owner_name": "Mrinmoy N",
+        "technical_owner_email": null,
+        "company_name": "Acme Corp"
+      },
+      "stage_history": [
+        {
+          "history_id": "h1",
+          "stage_label": "Discovery",
+          "entered_at": "2025-05-12T00:00:00Z",
+          "exited_at": "2025-05-24T00:00:00Z",
+          "duration_days": 12
+        },
+        {
+          "history_id": "h2",
+          "stage_label": "Technical Validation",
+          "entered_at": "2025-05-24T00:00:00Z",
+          "exited_at": null,
+          "duration_days": 25
+        }
+      ],
+      "metrics": {
+        "health_status": "STALLED",
+        "time_tracked_hours": 47
+      },
+      "properties": {
+        "industry": "Cyber Security"
+      }
+    }
   }
 }
 ```
 
 ### Error Responses
+
 - `404 Not Found` — deal does not exist or access denied
+
   ```json
   {
     "status": "ERROR",
@@ -549,10 +770,12 @@ Required
     "data": null
   }
   ```
+
 - `429 Too Many Requests` — rate limit exceeded
 - `500 Internal Server Error` — unexpected error
 
 ### Example cURL
+
 ```bash
 curl -X GET "$BASE_URL/users/crm/deals/f47ac10b-58cc-4372-a567-0e02b2c3d479" \
   -H "Authorization: Bearer $TOKEN" \
@@ -560,6 +783,7 @@ curl -X GET "$BASE_URL/users/crm/deals/f47ac10b-58cc-4372-a567-0e02b2c3d479" \
 ```
 
 ### Example TypeScript
+
 ```typescript
 async function getDealById(dealId: string): Promise<DealDetail> {
   const response = await fetch(`${BASE_URL}/users/crm/deals/${dealId}`, {
@@ -582,6 +806,7 @@ async function getDealById(dealId: string): Promise<DealDetail> {
 ---
 
 ## Error Codes Summary
+
 | HTTP Code | Reason                                              | Suggested Action                         |
 |-----------|------------------------------------------------------|------------------------------------------|
 | 400       | Validation failure (invalid cursor, bad filter)      | Fix request parameters                   |
@@ -596,36 +821,40 @@ async function getDealById(dealId: string): Promise<DealDetail> {
 ## Frontend Integration Notes
 
 ### Typical Flow
+
 1. **Dashboard Overview**
    - Call `GET /users/crm/deals/stats` to populate dashboard cards (total deals, by status, etc.)
-   
+
 2. **List View**
    - Call `GET /users/crm/deals` with filters to show paginated table
    - Apply filters from UI (status dropdown, search box, pipeline filter)
    - Implement infinite scroll or "Load More" button using `cursor`
-   
+
 3. **Detail View**
    - Call `GET /users/crm/deals/{deal_id}` when user clicks a deal row
    - Display all fields in a detail panel or modal
-   
+
 4. **Search & Filter**
    - Debounce search input (q parameter) to avoid excessive API calls
    - Combine multiple filters (status + pipeline + search)
    - Reset cursor when filters change
 
 ### Pagination Best Practices
+
 - Store `cursor` from last successful response
 - Show loading state while fetching next page
 - Disable "Load More" button when `cursor` is null
 - Handle network errors gracefully (show retry button)
 
 ### Performance Optimization
+
 - Cache `stats` response for 30-60 seconds
 - Implement request deduplication for rapid filter changes
 - Consider virtual scrolling for large deal lists
 - Batch status badge rendering in list view
 
 ### Error Handling
+
 ```typescript
 try {
   const deals = await listDeals({ limit: 20, statuses: ['open'] });
@@ -645,6 +874,7 @@ try {
 ```
 
 ### Real-time Updates
+
 - Deals data is synced from CRM systems periodically (not real-time)
 - Implement manual refresh button for users who need latest data
 - Consider polling `stats` endpoint every 5-10 minutes for dashboard
@@ -652,7 +882,206 @@ try {
 
 ---
 
+## 4. List Deal Tasks
+
+### Endpoint
+
+```http
+GET /users/crm/deals/{deal_id}/tasks
+```
+
+### Description
+
+Returns a cursor-paginated list of all tasks linked to the specified deal. Use this for the full Tasks tab or when you need filters beyond the right-rail widget (status, priority, type).
+
+### Query Parameters
+
+| Parameter   | Type         | Required | Description                                     |
+|-------------|--------------|----------|-------------------------------------------------|
+| `limit`     | integer      | No       | Items per page (1..100, default 50)             |
+| `cursor`    | string       | No       | Opaque cursor from previous response            |
+| `statuses`  | array<string> | No      | Filter by task status (repeat parameter)        |
+| `priorities`| array<string> | No      | Filter by priority (repeat parameter)           |
+| `task_types`| array<string> | No      | Filter by task type/category (repeat parameter) |
+
+### Success Response (200)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Tasks retrieved successfully",
+  "data": {
+    "items": [
+      {
+        "task_id": "83fb2504-1d18-4cf6-a8db-0bb1370df5b0",
+        "external_id": "task_10001",
+        "subject": "Follow up on data migration timeline concerns",
+        "status": "IN_PROGRESS",
+        "task_type": "AI",
+        "priority": "HIGH",
+        "due_date": "2025-05-02T17:00:00Z",
+        "owner_name": "Mrinmoy N",
+        "owner_email": "mrinmoy@example.com",
+        "deal_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+        "deal_external_id": "deal_12345",
+        "is_overdue": false,
+        "created_at": "2025-04-18T10:00:00Z",
+        "updated_at": "2025-04-19T12:00:00Z",
+        "synced_at": "2025-04-19T12:05:00Z"
+      }
+    ],
+    "cursor": null
+  }
+}
+```
+
+### Notes
+
+- `is_overdue` is computed server-side to avoid timezone drift on the client.
+- Ordering is `created_at DESC, task_id DESC` for stable pagination.
+
+---
+
+## 5. Get Deal Tasks Grouped
+
+### Endpoint
+
+```http
+GET /users/crm/deals/{deal_id}/tasks/grouped
+```
+
+### Description
+
+Groups tasks for a deal into `new`, `pending`, and `completed` buckets and returns a `progress_percentage`. This powers the right-hand widget in the UI mock (NEW / PENDING / COMPLETED lists plus completion bar).
+
+### Success Response (200)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Grouped tasks retrieved successfully",
+  "data": {
+    "new": [/* TaskListItem objects */],
+    "pending": [/* TaskListItem objects */],
+    "completed": [/* TaskListItem objects */],
+    "progress_percentage": 60.0
+  }
+}
+```
+
+### Notes
+
+- `progress_percentage` is `(completed / total) * 100`, rounded to one decimal place.
+- Each list item carries the same shape as `TaskListItem` from the list endpoint, so you can reuse the same renderer.
+- Use `len(new)` / `len(pending)` / `len(completed)` for the count badges shown in the UI mock.
+
+---
+
+## 6. Get Deal Tasks Stats
+
+### Endpoint
+
+```http
+GET /users/crm/deals/{deal_id}/tasks/stats
+```
+
+### Description
+
+Returns aggregate counts (by status/priority/type) plus overdue and upcoming summaries. Useful for dashboards or highlighting “Due Today / Due This Week” numbers without pulling entire task objects.
+
+### Success Response (200)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Task statistics retrieved successfully",
+  "data": {
+    "total": 8,
+    "by_status": {
+      "NOT_STARTED": 2,
+      "IN_PROGRESS": 3,
+      "COMPLETED": 3
+    },
+    "by_priority": {
+      "HIGH": 4,
+      "MEDIUM": 2,
+      "LOW": 2
+    },
+    "by_type": {
+      "AI": 5,
+      "CALL": 3
+    },
+    "overdue_count": 1,
+    "due_today_count": 2,
+    "due_this_week_count": 4,
+    "completed_percentage": 60.0
+  }
+}
+```
+
+### Notes
+
+- All counts exclude soft-deleted/remote-deleted tasks.
+- `completed_percentage` mirrors the grouped endpoint so you can choose either response depending on whether you need the actual task rows.
+
+---
+
+## 7. Get Task Detail
+
+### Endpoint
+
+```http
+GET /users/crm/tasks/{task_id}
+```
+
+### Description
+
+Returns the full payload for a single task (body, reminders, metadata). Use when clicking a task card to open the drawer/editor.
+
+### Success Response (200)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Task retrieved successfully",
+  "data": {
+    "task_id": "83fb2504-1d18-4cf6-a8db-0bb1370df5b0",
+    "external_id": "task_10001",
+    "subject": "Follow up on data migration timeline concerns",
+    "body": "Confirm migration blockers with Kai by EOD.",
+    "status": "IN_PROGRESS",
+    "task_type": "AI",
+    "priority": "HIGH",
+    "owner_name": "Mrinmoy N",
+    "owner_email": "mrinmoy@example.com",
+    "due_date": "2025-05-02T17:00:00Z",
+    "completed_date": null,
+    "reminder_date": "2025-05-02T13:00:00Z",
+    "source_created_at": "2025-04-18T10:00:00Z",
+    "source_modified_at": "2025-04-19T12:00:00Z",
+    "properties": {
+      "playbook": "Discovery call follow-up"
+    },
+    "metrics": null,
+    "integration_id": "c3d4e5f6-a7b8-4c5d-9e0f-1a2b3c4d5e6f",
+    "organisation_id": "d4e5f6a7-b8c9-4d5e-0f1a-2b3c4d5e6f7a",
+    "synced_at": "2025-04-19T12:05:00Z",
+    "created_at": "2025-04-18T10:00:00Z",
+    "updated_at": "2025-04-19T12:00:00Z",
+    "is_overdue": false
+  }
+}
+```
+
+### Notes
+
+- Returns `404` if the task does not belong to the authenticated organisation.
+- `properties` and `metrics` echo any CRM-specific custom payloads for advanced use cases.
+
+---
+
 ## Related References
+
 - CRM Sync Architecture: `docs/Technical Documentation/integration-architecture-proposal.md`
 - Integration Management: `docs/API Documentation/integrations-api.md`
 - OAuth Flow: `docs/API Documentation/oauth-data-flow.md`

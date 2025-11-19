@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal, CRMDealStatus
+from sqlalchemy.orm import joinedload
+from src.domain.models.organisation_tables.sync.crm.deals import (
+    CRMDeal,
+    CRMDealStage,
+    CRMDealStageHistory,
+    CRMDealStatus,
+)
 from src.infra.utils.cursor import decode_cursor, encode_cursor
 from src.infra.utils.logger import get_logger
 
@@ -57,6 +64,10 @@ class DealsAccessService:
         statuses: Iterable[CRMDealStatus | str] | None = None,
         pipeline_ids: Iterable[UUID] | None = None,
         owner_external_ids: Iterable[str] | None = None,
+        min_amount: float | None = None,
+        max_amount: float | None = None,
+        min_close_date: datetime | None = None,
+        max_close_date: datetime | None = None,
         q: str | None = None,
     ) -> tuple[list[CRMDeal], str | None]:
         """List deals with pagination and filters.
@@ -67,6 +78,10 @@ class DealsAccessService:
             statuses: Optional list of deal statuses to filter (OPEN, WON, LOST, CLOSED)
             pipeline_ids: Optional list of pipeline UUIDs to filter
             owner_external_ids: Optional list of owner external IDs to filter
+            min_amount: Optional minimum deal amount
+            max_amount: Optional maximum deal amount
+            min_close_date: Optional minimum close date
+            max_close_date: Optional maximum close date
             q: Optional search query for deal name (case-insensitive)
 
         Returns:
@@ -94,6 +109,18 @@ class DealsAccessService:
 
         if owner_external_ids:
             stmt = stmt.where(c.owner_external_id.in_(list(owner_external_ids)))
+
+        if min_amount is not None:
+            stmt = stmt.where(c.amount >= min_amount)
+
+        if max_amount is not None:
+            stmt = stmt.where(c.amount <= max_amount)
+
+        if min_close_date:
+            stmt = stmt.where(c.close_date >= min_close_date)
+
+        if max_close_date:
+            stmt = stmt.where(c.close_date <= max_close_date)
 
         if q:
             # Case-insensitive search on deal name
@@ -153,16 +180,105 @@ class DealsAccessService:
         """
         try:
             c = cast(Any, CRMDeal).__table__.c
-            stmt = select(CRMDeal).where(
-                c.deal_id == deal_id,
-                c.organisation_id == self.organisation_id,
-                c.is_deleted.is_(False),
+            stmt = (
+                select(CRMDeal)
+                .options(joinedload(CRMDeal.participants))  # type: ignore[arg-type]
+                .where(
+                    c.deal_id == deal_id,
+                    c.organisation_id == self.organisation_id,
+                    c.is_deleted.is_(False),
+                )
             )
             res = await self.org_session.execute(stmt)
-            return res.scalar_one_or_none()
+            return res.unique().scalar_one_or_none()
         except Exception as e:
             logger.error("Failed to get deal %s: %s", deal_id, e, exc_info=True)
             raise DealsAccessServiceError("Failed to retrieve deal") from e
+
+    async def get_deal_stage_history(self, deal_id: UUID) -> list[dict[str, Any]]:
+        """Retrieve stage transition history for a deal with stage details.
+
+        Args:
+            deal_id: UUID of the deal
+
+        Returns:
+            List of stage history items with computed duration_days and stage labels
+
+        Raises:
+            DealsAccessServiceError: If database error occurs
+        """
+        try:
+            # Join stage history with stage table to get stage names/labels
+            h_c = cast(Any, CRMDealStageHistory).__table__.c
+            s_c = cast(Any, CRMDealStage).__table__.c
+
+            stmt = (
+                select(
+                    h_c.history_id,
+                    h_c.stage_external_id,
+                    h_c.from_stage_external_id,
+                    h_c.entered_at,
+                    h_c.exited_at,
+                    h_c.amount_at_stage,
+                    h_c.probability_at_stage,
+                    h_c.source,
+                    s_c.name.label("stage_name"),
+                    s_c.label.label("stage_label"),
+                )
+                .outerjoin(
+                    cast(Any, CRMDealStage).__table__,
+                    and_(
+                        h_c.stage_id == s_c.stage_id,
+                        s_c.organisation_id == self.organisation_id,
+                    ),
+                )
+                .where(
+                    h_c.organisation_id == self.organisation_id,
+                    h_c.deal_id == deal_id,
+                    h_c.is_deleted.is_(False),
+                )
+                .order_by(h_c.entered_at.asc())
+            )
+
+            res = await self.org_session.execute(stmt)
+            rows = res.all()
+
+            history_items = []
+            for row in rows:
+                # Calculate duration in days
+                duration_days = None
+                if row.entered_at:
+                    end_time = row.exited_at or datetime.now(UTC)
+                    start_time = (
+                        row.entered_at
+                        if row.entered_at.tzinfo
+                        else row.entered_at.replace(tzinfo=UTC)
+                    )
+                    end_time = end_time if end_time.tzinfo else end_time.replace(tzinfo=UTC)
+                    duration_days = (end_time - start_time).days
+
+                history_items.append(
+                    {
+                        "history_id": row.history_id,
+                        "stage_external_id": row.stage_external_id,
+                        "stage_name": row.stage_name,
+                        "stage_label": row.stage_label,
+                        "from_stage_external_id": row.from_stage_external_id,
+                        "entered_at": row.entered_at,
+                        "exited_at": row.exited_at,
+                        "duration_days": duration_days,
+                        "amount_at_stage": float(row.amount_at_stage)
+                        if row.amount_at_stage
+                        else None,
+                        "probability_at_stage": row.probability_at_stage,
+                        "source": row.source,
+                    }
+                )
+
+            return history_items
+        except Exception as e:
+            logger.error("Failed to get stage history for deal %s: %s", deal_id, e, exc_info=True)
+            raise DealsAccessServiceError("Failed to retrieve stage history") from e
 
     async def get_deals_stats(self) -> dict:
         """Calculate aggregate statistics for deals.
