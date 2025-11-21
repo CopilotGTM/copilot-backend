@@ -6,6 +6,10 @@ from .integration_schemas import (
     # Available integrations
     AvailableIntegration,
     AvailableIntegrationsResponse,
+    # Channels
+    ChannelItem,
+    ChannelLinkRequest,
+    ChannelListResponse,
     # Integration CRUD
     IntegrationCreate,
     # Errors
@@ -14,6 +18,7 @@ from .integration_schemas import (
     IntegrationResponse,
     IntegrationStatusResponse,
     IntegrationUpdate,
+    LinkedChannel,
     OAuthCallbackRequest,
     # OAuth
     OAuthInitiateRequest,

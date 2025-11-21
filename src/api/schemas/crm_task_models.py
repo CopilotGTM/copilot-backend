@@ -94,25 +94,3 @@ class TaskDetail(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
-
-
-class TasksStats(BaseModel):
-    """Aggregate statistics for tasks."""
-
-    total: int
-    by_status: dict[str, int]
-    by_priority: dict[str, int]
-    by_type: dict[str, int]
-    overdue_count: int = 0
-    due_today_count: int = 0
-    due_this_week_count: int = 0
-    completed_percentage: float = Field(description="Percentage of tasks marked completed")
-
-
-class TasksGroupedByStatus(BaseModel):
-    """Tasks grouped by status for UI display."""
-
-    new: list[TaskListItem] = Field(default_factory=list)
-    pending: list[TaskListItem] = Field(default_factory=list)
-    completed: list[TaskListItem] = Field(default_factory=list)
-    progress_percentage: float = 0.0

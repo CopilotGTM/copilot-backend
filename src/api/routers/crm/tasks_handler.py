@@ -17,9 +17,7 @@ from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.crm_task_models import (
     TaskDetail,
     TaskListItem,
-    TasksGroupedByStatus,
     TasksPage,
-    TasksStats,
 )
 from src.api.utils.http_response import Response
 from src.infra.utils.logger import get_logger
@@ -107,81 +105,6 @@ async def list_deal_tasks(
         return Response.error_response(message=exc.message, status_code=exc.status_code)
     except Exception as exc:
         logger.error("Unexpected error listing tasks for deal %s: %s", deal_id, exc, exc_info=True)
-        return Response.error_response(message=_UNEXPECTED_ERR_MSG, status_code=500)
-
-
-@tasks_router.get(
-    "/deals/{deal_id}/tasks/grouped",
-    response_model=GenericResponse[TasksGroupedByStatus],
-    tags=["crm", "tasks"],
-    summary="Get tasks grouped by status",
-    description="Group deal tasks into NEW, PENDING, COMPLETED buckets and return completion progress.",
-)
-async def get_deal_tasks_grouped(
-    deal_id: UUID,
-    service: TasksAccessService = Depends(get_tasks_access_service),
-    _rl_read: None = Depends(rate_limit_user_read),
-):
-    """Return tasks grouped by status for a deal."""
-
-    try:
-        grouped = await service.get_tasks_grouped_by_status(deal_id)
-
-        def build_items(task_list):
-            return [
-                TaskListItem.model_validate(task, from_attributes=True).model_copy(
-                    update={"is_overdue": _compute_is_overdue(task.due_date, task.status)}
-                )
-                for task in task_list
-            ]
-
-        payload = TasksGroupedByStatus(
-            new=build_items(grouped["new"]),
-            pending=build_items(grouped["pending"]),
-            completed=build_items(grouped["completed"]),
-            progress_percentage=grouped["progress_percentage"],
-        )
-
-        return Response.success_response(
-            message="Grouped tasks retrieved successfully", data=payload
-        )
-
-    except TasksAccessServiceError as exc:
-        logger.warning("Grouped tasks error: %s", exc.message, exc_info=True)
-        return Response.error_response(message=exc.message, status_code=exc.status_code)
-    except Exception as exc:
-        logger.error("Unexpected error grouping tasks for deal %s: %s", deal_id, exc, exc_info=True)
-        return Response.error_response(message=_UNEXPECTED_ERR_MSG, status_code=500)
-
-
-@tasks_router.get(
-    "/deals/{deal_id}/tasks/stats",
-    response_model=GenericResponse[TasksStats],
-    tags=["crm", "tasks"],
-    summary="Get aggregate statistics for deal tasks",
-    description="Return aggregated counts (status, priority, type) and overdue metrics for a deal's tasks.",
-)
-async def get_deal_tasks_stats(
-    deal_id: UUID,
-    service: TasksAccessService = Depends(get_tasks_access_service),
-    _rl_read: None = Depends(rate_limit_user_read),
-):
-    """Return aggregate statistics for tasks associated with a deal."""
-
-    try:
-        stats = await service.get_tasks_stats(deal_id)
-        stats_model = TasksStats(**stats)
-        return Response.success_response(
-            message="Task statistics retrieved successfully", data=stats_model
-        )
-
-    except TasksAccessServiceError as exc:
-        logger.warning("Task statistics error: %s", exc.message, exc_info=True)
-        return Response.error_response(message=exc.message, status_code=exc.status_code)
-    except Exception as exc:
-        logger.error(
-            "Unexpected error calculating task stats for deal %s: %s", deal_id, exc, exc_info=True
-        )
         return Response.error_response(message=_UNEXPECTED_ERR_MSG, status_code=500)
 
 

@@ -9,6 +9,26 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 
+class PipelineStage(BaseModel):
+    """Definition of a stage within a pipeline."""
+
+    stage_id: UUID
+    external_id: str
+    name: str
+    label: str | None = None
+    display_order: int | None = None
+    probability: float | None = None
+    is_closed: bool = False
+
+    # Merged history context
+    status: str = "upcoming"  # upcoming, active, completed, skipped
+    entered_at: datetime | None = None
+    exited_at: datetime | None = None
+    duration_days: int | None = None
+
+    model_config = {"from_attributes": True}
+
+
 class DealPipelineContext(BaseModel):
     """Snapshot of the pipeline and stage for a deal."""
 
@@ -24,6 +44,7 @@ class DealPipelineContext(BaseModel):
     deal_type: str | None = None
     priority: str | None = None
     lead_source: str | None = None
+    stages: list[PipelineStage] | None = None
 
     model_config = {"from_attributes": True}
 
@@ -43,6 +64,7 @@ class DealTimelineContext(BaseModel):
     source_modified_at: datetime | None = None
     last_seen_at: datetime | None = None
     days_to_close: int | None = None
+    deal_age_days: int | None = None
 
     model_config = {"from_attributes": True}
 
@@ -71,6 +93,7 @@ class DealAssociationsContext(BaseModel):
     company_external_id: str | None = None
     company_name: str | None = None
     company_domain: str | None = None
+    company_industry: str | None = None
     primary_contact_external_id: str | None = None
     primary_contact_name: str | None = None
     primary_contact_email: str | None = None
@@ -106,6 +129,8 @@ class DealContext(BaseModel):
     stage_history: list[DealStageHistoryItem] | None = None
     metrics: dict[str, Any] | None = None
     properties: dict[str, Any] | None = None
+    health: str | None = None
+    time_tracked: str | None = None
 
     model_config = {"from_attributes": True}
 

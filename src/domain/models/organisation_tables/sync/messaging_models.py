@@ -98,8 +98,8 @@ class MessagingChannel(SyncedRecordMixin, table=True):
         description="Channel topic or description.",
     )
 
-    is_monitored: bool = Field(
-        default=True,
+    is_monitored: str = Field(
+        default="true",
         sa_column=Column(String, nullable=False, server_default=text("true"), index=True),
         description="Whether to actively sync messages from this channel.",
     )
@@ -123,8 +123,8 @@ class MessagingChannel(SyncedRecordMixin, table=True):
         description="Timestamp of the most recent message.",
     )
 
-    is_archived: bool = Field(
-        default=False,
+    is_archived: str = Field(
+        default="false",
         sa_column=Column(String, nullable=False, server_default=text("false")),
         description="Whether the channel is archived.",
     )
@@ -283,8 +283,8 @@ class MessagingDealLink(SyncedRecordMixin, table=True):
         description="User who created manual link (NULL for auto-detected).",
     )
 
-    is_verified: bool = Field(
-        default=False,
+    is_verified: str = Field(
+        default="false",
         sa_column=Column(String, nullable=False, server_default=text("false")),
         description="Whether a user has verified this auto-detected link.",
     )
