@@ -200,6 +200,18 @@ class SyncHistoryListResponse(BaseModel):
 # ==================== Available Integrations ====================
 
 
+class LinkedChannel(BaseModel):
+    """Schema for a channel linked to a deal."""
+
+    channel_id: UUID = Field(..., description="Internal Channel UUID")
+    external_channel_id: str = Field(..., description="Provider's Channel ID")
+    name: str = Field(..., description="Channel Name")
+    type: str = Field(..., description="Channel Type")
+    integration_id: UUID = Field(..., description="Integration ID")
+    integration_name: str = Field(..., description="Name of the integration connection")
+    parent_name: str | None = Field(default=None, description="Parent Name (e.g. Team Name)")
+
+
 class AvailableIntegration(BaseModel):
     """Information about an available integration type."""
 
@@ -219,6 +231,10 @@ class AvailableIntegration(BaseModel):
     connected_integrations: list[IntegrationResponse] = Field(
         default_factory=list,
         description="List of user's connected instances of this integration type",
+    )
+    linked_channels: list[LinkedChannel] = Field(
+        default_factory=list,
+        description="List of channels linked to the current deal context",
     )
 
 
@@ -241,3 +257,36 @@ class IntegrationError(BaseModel):
     error: str = Field(..., description="Error type or code")
     message: str = Field(..., description="Human-readable error message")
     details: dict[str, Any] | None = Field(default=None, description="Additional error details")
+
+
+# ==================== Channel Schemas ====================
+
+
+class ChannelItem(BaseModel):
+    """Schema for a messaging channel/team."""
+
+    id: str = Field(..., description="Channel ID or Team ID")
+    name: str = Field(..., description="Channel name or Team name")
+    type: str = Field(..., description="Type of channel (public, private, group, team, etc.)")
+    parent_id: str | None = Field(
+        default=None, description="Parent ID (e.g., Team ID for a channel)"
+    )
+    parent_name: str | None = Field(default=None, description="Parent name (e.g., Team name)")
+
+
+class ChannelListResponse(BaseModel):
+    """Response for listing channels."""
+
+    channels: list[ChannelItem]
+    total: int
+
+
+class ChannelLinkRequest(BaseModel):
+    """Request schema for linking a channel to a deal."""
+
+    id: str = Field(..., description="Channel ID")
+    name: str = Field(..., description="Channel Name")
+    type: str = Field(..., description="Channel Type")
+    integration_id: UUID = Field(..., description="Integration ID")
+    parent_id: str | None = Field(default=None, description="Parent ID (e.g. Team ID)")
+    parent_name: str | None = Field(default=None, description="Parent Name")

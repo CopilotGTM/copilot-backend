@@ -10,6 +10,7 @@ from uuid import UUID
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
+from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDeal,
     CRMDealStage,
@@ -182,7 +183,10 @@ class DealsAccessService:
             c = cast(Any, CRMDeal).__table__.c
             stmt = (
                 select(CRMDeal)
-                .options(joinedload(CRMDeal.participants))  # type: ignore[arg-type]
+                .options(
+                    joinedload(CRMDeal.participants),  # type: ignore[arg-type]
+                    joinedload(CRMDeal.stage).joinedload(CRMDealStage.pipeline),  # type: ignore[arg-type]
+                )
                 .where(
                     c.deal_id == deal_id,
                     c.organisation_id == self.organisation_id,
@@ -257,28 +261,75 @@ class DealsAccessService:
                     end_time = end_time if end_time.tzinfo else end_time.replace(tzinfo=UTC)
                     duration_days = (end_time - start_time).days
 
-                history_items.append(
-                    {
-                        "history_id": row.history_id,
-                        "stage_external_id": row.stage_external_id,
-                        "stage_name": row.stage_name,
-                        "stage_label": row.stage_label,
-                        "from_stage_external_id": row.from_stage_external_id,
-                        "entered_at": row.entered_at,
-                        "exited_at": row.exited_at,
-                        "duration_days": duration_days,
-                        "amount_at_stage": float(row.amount_at_stage)
-                        if row.amount_at_stage
-                        else None,
-                        "probability_at_stage": row.probability_at_stage,
-                        "source": row.source,
-                    }
-                )
+                item = {
+                    "history_id": row.history_id,
+                    "stage_external_id": row.stage_external_id,
+                    "stage_name": row.stage_name,
+                    "stage_label": row.stage_label,
+                    "from_stage_external_id": row.from_stage_external_id,
+                    "entered_at": row.entered_at,
+                    "exited_at": row.exited_at,
+                    "duration_days": duration_days,
+                    "amount_at_stage": float(row.amount_at_stage) if row.amount_at_stage else None,
+                    "probability_at_stage": row.probability_at_stage,
+                    "source": row.source,
+                }
+                history_items.append(item)
 
             return history_items
         except Exception as e:
             logger.error("Failed to get stage history for deal %s: %s", deal_id, e, exc_info=True)
             raise DealsAccessServiceError("Failed to retrieve stage history") from e
+
+    async def get_pipeline_stages(self, pipeline_id: UUID) -> list[CRMDealStage]:
+        """Retrieve all stages for a given pipeline, ordered by display order.
+
+        Args:
+            pipeline_id: UUID of the pipeline
+
+        Returns:
+            List of CRMDealStage objects
+        """
+        try:
+            # Use cast(Any, ...) to avoid Mypy errors with SQLModel fields in expressions
+            s_model = cast(Any, CRMDealStage)
+            stmt = (
+                select(CRMDealStage)
+                .where(
+                    s_model.pipeline_id == pipeline_id,
+                    s_model.organisation_id == self.organisation_id,
+                )
+                .order_by(s_model.display_order.asc().nulls_last())
+            )
+            res = await self.org_session.execute(stmt)
+            return list(res.scalars().all())
+        except Exception as e:
+            logger.error("Failed to get pipeline stages for %s: %s", pipeline_id, e, exc_info=True)
+            return []
+
+    async def get_company_by_external_id(self, external_id: str) -> CRMCompany | None:
+        """Retrieve a company by its external ID.
+
+        Args:
+            external_id: The external ID of the company
+
+        Returns:
+            CRMCompany object or None if not found
+        """
+        try:
+            # Use cast(Any, ...) to avoid Mypy errors with SQLModel fields in expressions
+            c_model = cast(Any, CRMCompany)
+            stmt = select(CRMCompany).where(
+                c_model.external_id == external_id,
+                c_model.organisation_id == self.organisation_id,
+            )
+            res = await self.org_session.execute(stmt)
+            return res.scalar_one_or_none()
+        except Exception as e:
+            logger.error(
+                "Failed to get company by external_id %s: %s", external_id, e, exc_info=True
+            )
+            return None
 
     async def get_deals_stats(self) -> dict:
         """Calculate aggregate statistics for deals.

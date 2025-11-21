@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Optional
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
@@ -500,6 +500,9 @@ class CRMDeal(SyncedRecordMixin, table=True):
 
     participants: list["CRMDealParticipant"] = Relationship(back_populates="deal")
     stage_history: list["CRMDealStageHistory"] = Relationship(back_populates="deal")
+
+    stage: Optional["CRMDealStage"] = Relationship()
+    pipeline: Optional["CRMPipeline"] = Relationship()
 
 
 class CRMDealParticipant(SyncedRecordMixin, table=True):

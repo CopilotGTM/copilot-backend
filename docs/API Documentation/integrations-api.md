@@ -1,108 +1,20 @@
 # Integrations API Documentation
 
 ## Base URL
+
 ```
 /users/integrations
 ```
 
 ---
 
-## 1. List Available Integrations
+## 1. List Available Integrations (General)
 
 ### Endpoint
+
 ```http
 GET /users/integrations/available
 ```
-
-### Description
-Returns all available integration types with their connection status. Shows which integrations the user has already connected.
-
-### Authentication
-Required - Bearer token
-
-### Request
-No request body or query parameters required.
-
-### Response (200 OK)
-```json
-{
-  "status": "success",
-  "message": "Available integrations retrieved successfully",
-  "data": {
-    "integrations": [
-      {
-        "integration_type": "hubspot",
-        "name": "HubSpot",
-        "description": "Sync contacts, deals, and sales activities from HubSpot CRM",
-        "logo_url": "https://www.hubspot.com/hubfs/HubSpot_Logos/HubSpot-Inversed-Favicon.png",
-        "category": "crm",
-        "category_name": "CRM & Sales",
-        "availability_status": "available",
-        "is_connected": true,
-        "connected_integrations": [
-          {
-            "integration_id": "123e4567-e89b-12d3-a456-426614174000",
-            "organisation_id": "org-uuid",
-            "integration_type": "hubspot",
-            "name": "My HubSpot Account",
-            "created_by_user_id": "user-123-uuid",
-            "created_by_admin": true,
-            "integration_email": "sales@acme.com",
-            "integration_scope": "organization",
-            "sync_frequency": "daily",
-            "auto_sync_enabled": true,
-            "is_active": true,
-            "last_synced_at": "2025-10-05T10:30:00Z",
-            "last_sync_status": "success",
-            "last_sync_error": null,
-            "access_token_expires_at": "2025-11-05T10:30:00Z",
-            "connection_metadata": {},
-            "created_at": "2025-10-01T08:00:00Z",
-            "updated_at": "2025-10-05T10:30:00Z"
-          }
-        ]
-      },
-      {
-        "integration_type": "slack",
-        "name": "Slack",
-        "description": "Sync messages, files, and channel data from Slack workspaces",
-        "logo_url": "https://a.slack-edge.com/80588/marketing/img/icons/icon_slack_hash_colored.png",
-        "category": "collaboration",
-        "category_name": "Collaboration & Communication",
-        "availability_status": "available",
-        "is_connected": false,
-        "connected_integrations": []
-      },
-      {
-        "integration_type": "google_drive",
-        "name": "Google Drive",
-        "description": "Sync documents, spreadsheets, and files from Google Drive",
-        "logo_url": "https://ssl.gstatic.com/images/branding/product/2x/drive_2020q4_48dp.png",
-        "category": "storage",
-        "category_name": "Cloud Storage",
-        "availability_status": "coming_soon",
-        "is_connected": false,
-        "connected_integrations": []
-      }
-    ],
-    "total_available": 7,
-    "total_connected": 1
-  }
-}
-```
-
-### Response Fields
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `integration_type` | string | Unique identifier for the integration type |
-| `name` | string | Display name of the integration |
-| `description` | string | Brief description of what the integration does |
-| `logo_url` | string | URL to integration provider's logo |
-| `category` | string | Category slug (crm, collaboration, storage) |
-| `category_name` | string | Human-readable category name |
-| `availability_status` | string | `available`, `coming_soon`, `beta`, `deprecated` |
-| `is_connected` | boolean | Whether user has connected this integration |
 | `connected_integrations` | array | List of user's connected instances (see Connected Integration Fields below) |
 | `total_available` | integer | Total number of integration types |
 | `total_connected` | integer | Total connected integrations |
@@ -116,7 +28,7 @@ Each item in `connected_integrations` array includes:
 | `integration_id` | UUID | Unique identifier for this integration connection |
 | `created_by_user_id` | UUID | User who created/connected this integration |
 | `created_by_admin` | boolean | Whether this was created by an admin user |
-| `integration_email` | string\|null | Email/username of the connected account (e.g., 'sales@acme.com' for HubSpot, 'john@company.com' for Google Drive) |
+| `integration_email` | string\|null | Email/username of the connected account (e.g., '<sales@acme.com>' for HubSpot, '<john@company.com>' for Google Drive) |
 | `integration_scope` | string | Access scope: `organization` (all users), `user` (creator only), `team`, or `role_based` |
 | `name` | string | User-defined name for this connection |
 | `is_active` | boolean | Whether the integration is currently active |
@@ -136,6 +48,7 @@ Each item in `connected_integrations` array includes:
 | `deprecated` | Integration being phased out | Show warning message |
 
 ### Error Response (500)
+
 ```json
 {
   "status": "error",
@@ -147,15 +60,17 @@ Each item in `connected_integrations` array includes:
 ### Implementation Notes
 
 **Frontend Display:**
+
 1. **Group by category** - Use `category_name` to group integrations
 2. **Connection status** - Use `is_connected` to show badges or different UI states
 3. **Connected instances** - Display list of connected accounts if `is_connected` is true
 4. **Availability** - Disable connect button if `availability_status` is `coming_soon`
 5. **Access scope indicators** - Show badges for `organization` vs `user` scoped integrations
-6. **Connected account email** - Display `integration_email` to show which account is connected (e.g., "Connected as: sales@acme.com")
+6. **Connected account email** - Display `integration_email` to show which account is connected (e.g., "Connected as: <sales@acme.com>")
 7. **Creator information** - Show who created the integration using `created_by_user_id` and `created_by_admin`
 
 **Example UI Logic:**
+
 ```typescript
 // Check if integration can be connected
 const canConnect = integration.availability_status === 'available' || 
@@ -183,11 +98,13 @@ const getConnectionDisplay = (conn: ConnectedIntegration) => {
 ```
 
 **Performance:**
+
 - Single API call gets all data (available types + connections)
 - No need for separate requests
 - Cache response for 5 minutes
 
 **Error Handling:**
+
 ```typescript
 try {
   const response = await fetch('/users/integrations/available', {
@@ -209,6 +126,7 @@ try {
 ```
 
 ### Example cURL
+
 ```bash
 curl -X GET "https://api.example.com/users/integrations/available" \
   -H "Authorization: Bearer YOUR_TOKEN_HERE" \
@@ -224,16 +142,19 @@ curl -X GET "https://api.example.com/users/integrations/available" \
 Starting from the latest version, all integrations include access control fields that determine who can see and use each integration:
 
 #### 1. `created_by_user_id` (UUID)
+
 - **What it is:** The ID of the user who connected this integration
 - **Use case:** Track who created the integration for audit purposes
 - **Example:** `"123e4567-e89b-12d3-a456-426614174000"`
 
 #### 2. `created_by_admin` (boolean)
+
 - **What it is:** Whether the integration was created by an admin user
 - **Use case:** Differentiate between admin-created (org-wide) and member-created (personal) integrations
 - **Example:** `true` for HubSpot connected by admin, `false` for personal Google Drive
 
 #### 3. `integration_email` (string | null)
+
 - **What it is:** The email/username of the **connected external account** (not your user's email)
 - **Use case:** Show which external account is connected; helps with multiple accounts of same type
 - **Examples:**
@@ -243,6 +164,7 @@ Starting from the latest version, all integrations include access control fields
   - Can be `null` if provider doesn't share email
 
 #### 4. `integration_scope` (string)
+
 - **What it is:** Access level for the integration data
 - **Possible values:**
   - `"organization"` - All users in org can see this data (e.g., HubSpot, Salesforce)
@@ -253,6 +175,7 @@ Starting from the latest version, all integrations include access control fields
 ### Access Scope Examples
 
 **Organization-Wide (HubSpot, Salesforce, Slack):**
+
 ```json
 {
   "integration_type": "hubspot",
@@ -266,6 +189,7 @@ Starting from the latest version, all integrations include access control fields
 ```
 
 **User-Level (Google Drive, Personal Dropbox):**
+
 ```json
 {
   "integration_type": "google_drive",
@@ -281,6 +205,7 @@ Starting from the latest version, all integrations include access control fields
 ### Frontend Implementation Guidelines
 
 **Displaying Integration Email:**
+
 ```typescript
 const IntegrationCard = ({ integration }) => {
   return (
@@ -309,6 +234,7 @@ const IntegrationCard = ({ integration }) => {
 ```
 
 **Filtering Integrations by Scope:**
+
 ```typescript
 // Show only user's personal integrations
 const personalIntegrations = allIntegrations.filter(
@@ -327,14 +253,17 @@ const orgIntegrations = allIntegrations.filter(
 ## 2. Initiate OAuth Flow (Create Nango Connect Session)
 
 ### Endpoint
+
 ```http
 POST /users/integrations/oauth/authorize
 ```
 
 ### Description
-Creates a Nango Connect Session for the selected integration and returns a `session_token` that the frontend uses with the Nango Connect UI. 
+
+Creates a Nango Connect Session for the selected integration and returns a `session_token` that the frontend uses with the Nango Connect UI.
 
 **New Flow (Post July 31, 2025):**
+
 1. Frontend calls this endpoint to get session token
 2. Frontend uses Nango Connect UI with the session token
 3. User authorizes on provider's site via Nango UI
@@ -344,9 +273,11 @@ Creates a Nango Connect Session for the selected integration and returns a `sess
 **Note:** This is the modern Nango Connect flow - no callback endpoint is involved.
 
 ### Authentication
+
 Required - Bearer token
 
 **What Backend Extracts Automatically from JWT:**
+
 - `user_id` - Your internal user ID
 - `organisation_id` - Your internal organization ID
 - `user_role` - User's role (ADMIN or MEMBER) - determines `created_by_admin`
@@ -356,10 +287,12 @@ Required - Bearer token
 These are automatically sent to Nango and will be returned in the webhook.
 
 **What Backend Determines from Integration Metadata:**
+
 - `integration_scope` - Set based on integration type (ORGANIZATION for HubSpot/Salesforce, USER for Google Drive)
 - `integration_email` - Extracted from OAuth provider's response (e.g., connected account email)
 
 ### Request Body
+
 ```json
 {
   "integration_type": "hubspot",
@@ -375,12 +308,14 @@ These are automatically sent to Nango and will be returned in the webhook.
 | `integration_name` | string | No | Custom name for this connection (auto-generated if not provided) |
 
 **Frontend Does NOT Need to Send:**
+
 - ❌ `user_id` - Extracted from JWT automatically
 - ❌ `organisation_id` - Extracted from JWT automatically
 - ❌ `email` - Retrieved from User model automatically
 - ❌ `display_name` - Generated from User model automatically
 
 ### Response (200 OK)
+
 ```json
 {
   "status": "success",
@@ -402,6 +337,7 @@ These are automatically sent to Nango and will be returned in the webhook.
 | `expires_at` | string | ISO 8601 timestamp when session token expires |
 
 ### Error Responses
+
 ```json
 {
   "status": "error",
@@ -413,6 +349,7 @@ These are automatically sent to Nango and will be returned in the webhook.
 ### Frontend Implementation (Nango Connect UI)
 
 **Step 1: Request session token from backend**
+
 ```typescript
 const initiateOAuth = async (integrationType: string) => {
   try {
@@ -439,6 +376,7 @@ const initiateOAuth = async (integrationType: string) => {
 ```
 
 **Step 2: Use Nango Connect UI**
+
 ```typescript
 import Nango from '@nangohq/frontend';
 
@@ -464,6 +402,7 @@ const openNangoConnect = (sessionToken: string) => {
 ```
 
 **Step 3: Handle completion**
+
 ```typescript
 const refreshIntegrations = async () => {
   // Reload the integrations list to show the newly connected integration
@@ -490,6 +429,7 @@ const refreshIntegrations = async () => {
    - `email`, `first_name`, `last_name` (from User model)
 
 3. **Backend sends to Nango**:
+
    ```json
    {
      "end_user": {
@@ -502,6 +442,7 @@ const refreshIntegrations = async () => {
    ```
 
 4. **Nango returns in webhook** (to backend):
+
    ```json
    {
      "endUser": {
@@ -514,6 +455,7 @@ const refreshIntegrations = async () => {
 5. **Backend creates integration** for the correct user/organization
 
 **Frontend developers do NOT need to:**
+
 - ❌ Send `user_id` or `organisation_id` explicitly
 - ❌ Extract these from JWT themselves
 - ❌ Handle webhook responses
@@ -525,9 +467,11 @@ const refreshIntegrations = async () => {
 OAuth scopes are managed server-side based on integration requirements; the frontend does not pass scopes.
 
 **Why backend manages scopes:**
+
 - Security, consistency, simplicity, and maintenance.
 
 **Examples:**
+
 - HubSpot: `crm.objects.contacts.read`, `crm.objects.deals.read`, `crm.objects.companies.read`, `files`
 - Slack: `channels:read`, `channels:history`, `files:read`, `users:read`
 
@@ -587,11 +531,13 @@ interface OAuthInitiateResponse {
 ## 3. OAuth Callback (Automatic - Provider Calls This)
 
 ### Endpoint
+
 ```http
 GET /users/integrations/oauth/callback
 ```
 
 ### Description
+
 **⚠️ This endpoint is NOT called by the frontend.** It's called automatically by the OAuth provider (HubSpot, Slack, etc.) after the user authorizes your application. This is part of the standard OAuth 2.0 flow.
 
 ### How It Works
@@ -605,6 +551,7 @@ GET /users/integrations/oauth/callback
 ```
 
 ### Authentication
+
 OAuth provider validates this request using registered callback URL and state parameter.
 
 ### Query Parameters (Sent by OAuth Provider)
@@ -616,6 +563,7 @@ OAuth provider validates this request using registered callback URL and state pa
 | `connection_id` | string | Yes | Connection identifier (format: `org_{org_id}_{type}_{timestamp}`) |
 
 ### Example Request (Called by HubSpot)
+
 ```
 GET /users/integrations/oauth/callback
   ?code=abc123xyz789
@@ -624,9 +572,11 @@ GET /users/integrations/oauth/callback
 ```
 
 ### Response
+
 Redirects user to frontend with status:
 
 **Success Redirect:**
+
 ```
 https://yourfrontend.com/settings/integrations
   ?status=success
@@ -634,6 +584,7 @@ https://yourfrontend.com/settings/integrations
 ```
 
 **Error Redirect:**
+
 ```
 https://yourfrontend.com/settings/integrations
   ?status=error
@@ -643,6 +594,7 @@ https://yourfrontend.com/settings/integrations
 ### Frontend Implementation
 
 **Listen for OAuth completion:**
+
 ```typescript
 // In your integrations settings page
 useEffect(() => {
@@ -724,6 +676,7 @@ Development: http://localhost:8000/users/integrations/oauth/callback
 ```
 
 **Environment Variable:**
+
 ```bash
 OAUTH_CALLBACK_BASE_URL=https://yourfrontend.com
 ```
@@ -761,14 +714,17 @@ This tells the backend where to redirect users after OAuth completion.
 ## 4. Disconnect Integration
 
 ### Endpoint
+
 ```http
 DELETE /users/integrations/oauth/disconnect/{integration_id}
 ```
 
 ### Description
+
 Disconnects and deletes an integration, revoking OAuth tokens and removing all associated data.
 
 ### Authentication
+
 Required - Bearer token
 
 ### Path Parameters
@@ -778,6 +734,7 @@ Required - Bearer token
 | `integration_id` | UUID | Yes | ID of the integration to disconnect |
 
 ### Response (200 OK)
+
 ```json
 {
   "status": "success",
@@ -789,6 +746,7 @@ Required - Bearer token
 ### Error Responses
 
 **404 Not Found:**
+
 ```json
 {
   "status": "error",
@@ -798,6 +756,7 @@ Required - Bearer token
 ```
 
 **500 Internal Server Error:**
+
 ```json
 {
   "status": "error",
@@ -809,6 +768,7 @@ Required - Bearer token
 ### What Gets Deleted
 
 When you disconnect an integration:
+
 1. ✅ **Nango Connection** - OAuth tokens revoked with provider
 2. ✅ **Integration Record** - Deleted from database
 3. ✅ **Sync History** - All sync records cascade deleted
@@ -891,12 +851,14 @@ sequenceDiagram
 ### Key Differences from Old Flow
 
 **Old Flow (Deprecated):**
+
 - Backend provides authorization URL
 - User redirects through provider
 - Provider calls backend callback endpoint
 - Backend redirects user back to frontend
 
 **New Flow (Current - Nango Connect UI):**
+
 - Backend provides session token ✅
 - Frontend opens Nango Connect UI ✅
 - Nango handles entire OAuth flow ✅
@@ -904,6 +866,7 @@ sequenceDiagram
 - Frontend receives success via Nango SDK ✅
 
 **Benefits:**
+
 - 🎯 Better UX - Modal UI instead of full redirects
 - 🔒 More secure - Tokens never touch your backend
 - ⚡ Faster - No page reloads

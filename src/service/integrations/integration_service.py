@@ -6,14 +6,18 @@ between the database and Nango client.
 """
 
 import logging
+from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.organisation_dependencies import UserIDs
 from src.domain.models.organisation_tables.sync import (
+    IntegrationScope,
     IntegrationType,
     KnowledgeIntegration,
+    MessagingChannel,
+    MessagingDealLink,
 )
 from src.infra.config.nango_provider_mapping import (
     to_nango_connect_integration_key,
@@ -75,24 +79,39 @@ class IntegrationService:
         result = await self.db.execute(statement)
         return result.scalars().first()
 
-    async def list_all_active_integrations(self) -> list[KnowledgeIntegration]:
+    async def list_all_active_integrations(
+        self, user_id: UUID | None = None
+    ) -> list[KnowledgeIntegration]:
         """
         List all active integrations for the organization (excluding admin-only integrations).
 
         Returns only ORGANIZATION-scoped and USER-scoped integrations that are currently active.
         This is useful for showing all available connections without user-specific filtering.
 
+        Args:
+            user_id: Optional user ID to filter USER-scoped integrations.
+                     If provided, returns ORG integrations + USER integrations owned by this user.
+
         Returns:
             List of active KnowledgeIntegration instances, ordered by created_at DESC
         """
-        statement = (
-            select(KnowledgeIntegration)
-            .where(
-                KnowledgeIntegration.organisation_id == self.user_ids.organisation_id,
-                KnowledgeIntegration.is_active,
-            )
-            .order_by(KnowledgeIntegration.created_at.desc())
+        statement = select(KnowledgeIntegration).where(
+            KnowledgeIntegration.organisation_id == self.user_ids.organisation_id,
+            KnowledgeIntegration.is_active,
         )
+
+        if user_id:
+            statement = statement.where(
+                or_(
+                    KnowledgeIntegration.integration_scope == IntegrationScope.ORGANIZATION,
+                    and_(
+                        KnowledgeIntegration.integration_scope == IntegrationScope.USER,
+                        KnowledgeIntegration.created_by_user_id == user_id,
+                    ),
+                )
+            )
+
+        statement = statement.order_by(KnowledgeIntegration.created_at.desc())
 
         result = await self.db.execute(statement)
         return list(result.scalars().all())
@@ -147,3 +166,213 @@ class IntegrationService:
                 f"Failed to delete Nango connection: {str(e)}. Proceeding with soft deletion."
             )
         return True
+
+    async def list_integration_channels(
+        self, integration_id: UUID, deal_id: UUID | None = None
+    ) -> list[dict[str, Any]]:
+        """
+        List available channels for a specific integration from the database.
+
+        Args:
+            integration_id: UUID of the integration
+            deal_id: Optional UUID of the deal to filter out already linked channels
+
+        Returns:
+            List of channel dictionaries
+        """
+        # Verify integration exists
+        integration = await self.get_integration(integration_id)
+        if not integration:
+            raise ValueError("Integration not found")
+
+        # Query MessagingChannel table
+        stmt = select(MessagingChannel).where(
+            MessagingChannel.integration_id == integration_id,
+            MessagingChannel.is_archived == "false",  # Only active channels
+        )
+
+        if deal_id:
+            # Exclude channels already linked to this deal
+            subquery = select(MessagingDealLink.channel_id).where(
+                MessagingDealLink.deal_id == deal_id
+            )
+            stmt = stmt.where(MessagingChannel.channel_id.not_in(subquery))
+
+        result = await self.db.execute(stmt)
+        db_channels = result.scalars().all()
+
+        channels = []
+        for ch in db_channels:
+            # Extract parent info from metadata
+            parent_id = None
+            parent_name = None
+
+            if ch.channel_metadata:
+                parent_id = ch.channel_metadata.get("parent_id") or ch.channel_metadata.get(
+                    "team_id"
+                )
+                parent_name = ch.channel_metadata.get("parent_name") or ch.channel_metadata.get(
+                    "team_name"
+                )
+
+            channels.append(
+                {
+                    "id": ch.external_channel_id,
+                    "name": ch.channel_name,
+                    "type": str(ch.channel_type.value)
+                    if hasattr(ch.channel_type, "value")
+                    else str(ch.channel_type),
+                    "parent_id": parent_id,
+                    "parent_name": parent_name,
+                }
+            )
+
+        return channels
+
+    async def get_deal_linked_channels(self, deal_id: UUID) -> list[dict]:
+        """
+        Get all channels linked to a specific deal.
+        """
+        stmt = (
+            select(
+                MessagingChannel.channel_id,
+                MessagingChannel.external_channel_id,
+                MessagingChannel.channel_name,
+                MessagingChannel.channel_type,
+                MessagingChannel.integration_id,
+                KnowledgeIntegration.name.label("integration_name"),
+                KnowledgeIntegration.integration_type,
+                MessagingChannel.channel_metadata,
+            )
+            .join(MessagingDealLink, MessagingDealLink.channel_id == MessagingChannel.channel_id)
+            .join(
+                KnowledgeIntegration,
+                KnowledgeIntegration.integration_id == MessagingChannel.integration_id,
+            )
+            .where(MessagingDealLink.deal_id == deal_id)
+        )
+
+        result = await self.db.execute(stmt)
+        rows = result.all()
+
+        channels = []
+        for row in rows:
+            # Extract parent name from metadata if available (for Teams)
+            parent_name = None
+            if row.channel_metadata:
+                parent_name = row.channel_metadata.get("team_name")
+
+            channels.append(
+                {
+                    "channel_id": row.channel_id,
+                    "external_channel_id": row.external_channel_id,
+                    "name": row.channel_name,
+                    "type": row.channel_type,
+                    "integration_id": row.integration_id,
+                    "integration_name": row.integration_name,
+                    "integration_type": row.integration_type,  # Helper for grouping
+                    "parent_name": parent_name,
+                }
+            )
+
+        return channels
+
+    async def remove_channel_from_deal(self, deal_id: UUID, channel_id: UUID) -> bool:
+        """
+        Remove a channel link from a deal.
+        """
+        stmt = select(MessagingDealLink).where(
+            MessagingDealLink.deal_id == deal_id,
+            MessagingDealLink.channel_id == channel_id,
+        )
+        result = await self.db.execute(stmt)
+        link = result.scalars().first()
+
+        if link:
+            await self.db.delete(link)
+            await self.db.commit()
+            return True
+        return False
+
+    async def link_channel_to_deal(
+        self,
+        deal_id: UUID,
+        channel_data: Any,  # ChannelLinkRequest
+    ) -> dict:
+        """
+        Link a messaging channel to a deal.
+
+        Args:
+            deal_id: UUID of the deal
+            channel_data: ChannelLinkRequest object containing channel details
+
+        Returns:
+            Dictionary with linked channel details
+        """
+        integration_id = channel_data.integration_id
+        external_channel_id = channel_data.id
+
+        # 1. Verify integration exists
+        integration = await self.get_integration(integration_id)
+        if not integration:
+            raise ValueError(f"Integration {integration_id} not found")
+
+        # 2. Find or Create MessagingChannel
+        stmt = select(MessagingChannel).where(
+            MessagingChannel.integration_id == integration_id,
+            MessagingChannel.external_channel_id == external_channel_id,
+        )
+        result = await self.db.execute(stmt)
+        channel = result.scalars().first()
+
+        if not channel:
+            channel = MessagingChannel(
+                organisation_id=self.user_ids.organisation_id,
+                integration_id=integration_id,
+                external_channel_id=external_channel_id,
+                channel_name=channel_data.name,
+                channel_type=channel_data.type,
+                channel_metadata={
+                    "parent_id": channel_data.parent_id,
+                    "parent_name": channel_data.parent_name,
+                },
+            )
+            self.db.add(channel)
+            await self.db.flush()  # Flush to get channel.channel_id
+        else:
+            # Update details if changed
+            channel.channel_name = channel_data.name
+            channel.channel_type = channel_data.type
+            channel.channel_metadata = {
+                "parent_id": channel_data.parent_id,
+                "parent_name": channel_data.parent_name,
+            }
+            await self.db.flush()
+
+        # 3. Create Link if not exists
+        link_stmt = select(MessagingDealLink).where(
+            MessagingDealLink.deal_id == deal_id,
+            MessagingDealLink.channel_id == channel.channel_id,
+        )
+        link_result = await self.db.execute(link_stmt)
+        link = link_result.scalars().first()
+
+        if not link:
+            link = MessagingDealLink(
+                organisation_id=self.user_ids.organisation_id,
+                integration_id=integration_id,
+                deal_id=deal_id,
+                channel_id=channel.channel_id,
+                created_by=self.user_ids.user_id,
+                detection_method="manual",
+                is_verified="true",
+            )
+            self.db.add(link)
+            await self.db.commit()
+
+        return {
+            "deal_id": str(deal_id),
+            "channel_id": str(channel.channel_id),
+            "external_channel_id": channel.external_channel_id,
+            "name": channel.channel_name,
+        }

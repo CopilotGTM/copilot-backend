@@ -209,6 +209,24 @@ export interface DealContext {
   stage_history: DealStageHistoryItem[] | null;
   metrics: Record<string, unknown> | null;
   properties: Record<string, unknown> | null;
+  health: string | null;
+  time_tracked: string | null;
+}
+
+export interface PipelineStage {
+  stage_id: UUID;
+  external_id: string;
+  name: string;
+  label: string | null;
+  display_order: number | null;
+  probability: number | null;
+  is_closed: boolean;
+  
+  // Merged history fields
+  status: "upcoming" | "active" | "completed" | "skipped";
+  entered_at: string | null;    // ISO8601
+  exited_at: string | null;     // ISO8601
+  duration_days: number | null;
 }
 
 export interface DealPipelineContext {
@@ -226,6 +244,7 @@ export interface DealPipelineContext {
   priority: string | null;
 
   lead_source: string | null;
+  stages: PipelineStage[] | null;
 }
 
 export interface DealTimelineContext {
@@ -241,6 +260,7 @@ export interface DealTimelineContext {
   source_modified_at: string | null;
   last_seen_at: string | null;
   days_to_close: number | null;
+  deal_age_days: number | null;
 }
 
 export interface DealFinancialContext {
@@ -276,6 +296,7 @@ export interface DealAssociationsContext {
   company_external_id: string | null;
   company_name: string | null;
   company_domain: string | null;
+  company_industry: string | null;
   primary_contact_external_id: string | null;
 
   primary_contact_name: string | null;
@@ -712,12 +733,41 @@ Required
       "pipeline": {
         "pipeline_id": "a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d",
         "pipeline_label": "Standard Sales Process",
-        "stage_label": "Contract Review"
+        "stage_label": "Contract Review",
+        "stages": [
+          {
+            "stage_id": "b2c3d4e5-f6a7-4b5c-9d0e-1f2a3b4c5d6e",
+            "external_id": "stage_001",
+            "name": "Discovery",
+            "label": "Discovery",
+            "display_order": 0,
+            "probability": 0.1,
+            "is_closed": false,
+            "status": "completed",
+            "entered_at": "2025-05-12T00:00:00Z",
+            "exited_at": "2025-05-24T00:00:00Z",
+            "duration_days": 12
+          },
+          {
+            "stage_id": "c3d4e5f6-a7b8-4c5d-9e0f-1a2b3c4d5e6f",
+            "external_id": "stage_002",
+            "name": "Technical Validation",
+            "label": "Technical Validation",
+            "display_order": 1,
+            "probability": 0.4,
+            "is_closed": false,
+            "status": "active",
+            "entered_at": "2025-05-24T00:00:00Z",
+            "exited_at": null,
+            "duration_days": 25
+          }
+        ]
       },
       "timeline": {
         "source_created_at": "2025-09-15T10:00:00Z",
         "last_activity_at": "2025-10-24T15:30:00Z",
-        "days_to_close": 13
+        "days_to_close": 13,
+        "deal_age_days": 40
       },
       "financials": {
         "amount": 250000.00,
@@ -729,7 +779,8 @@ Required
         "owner_email": "alex.fin@example.com",
         "technical_owner_name": "Mrinmoy N",
         "technical_owner_email": null,
-        "company_name": "Acme Corp"
+        "company_name": "Acme Corp",
+        "company_industry": "Cyber Security"
       },
       "stage_history": [
         {
@@ -753,7 +804,9 @@ Required
       },
       "properties": {
         "industry": "Cyber Security"
-      }
+      },
+      "health": "STALLED",
+      "time_tracked": "47 hours"
     }
   }
 }
@@ -942,91 +995,7 @@ Returns a cursor-paginated list of all tasks linked to the specified deal. Use t
 
 ---
 
-## 5. Get Deal Tasks Grouped
-
-### Endpoint
-
-```http
-GET /users/crm/deals/{deal_id}/tasks/grouped
-```
-
-### Description
-
-Groups tasks for a deal into `new`, `pending`, and `completed` buckets and returns a `progress_percentage`. This powers the right-hand widget in the UI mock (NEW / PENDING / COMPLETED lists plus completion bar).
-
-### Success Response (200)
-
-```json
-{
-  "status": "SUCCESS",
-  "message": "Grouped tasks retrieved successfully",
-  "data": {
-    "new": [/* TaskListItem objects */],
-    "pending": [/* TaskListItem objects */],
-    "completed": [/* TaskListItem objects */],
-    "progress_percentage": 60.0
-  }
-}
-```
-
-### Notes
-
-- `progress_percentage` is `(completed / total) * 100`, rounded to one decimal place.
-- Each list item carries the same shape as `TaskListItem` from the list endpoint, so you can reuse the same renderer.
-- Use `len(new)` / `len(pending)` / `len(completed)` for the count badges shown in the UI mock.
-
----
-
-## 6. Get Deal Tasks Stats
-
-### Endpoint
-
-```http
-GET /users/crm/deals/{deal_id}/tasks/stats
-```
-
-### Description
-
-Returns aggregate counts (by status/priority/type) plus overdue and upcoming summaries. Useful for dashboards or highlighting “Due Today / Due This Week” numbers without pulling entire task objects.
-
-### Success Response (200)
-
-```json
-{
-  "status": "SUCCESS",
-  "message": "Task statistics retrieved successfully",
-  "data": {
-    "total": 8,
-    "by_status": {
-      "NOT_STARTED": 2,
-      "IN_PROGRESS": 3,
-      "COMPLETED": 3
-    },
-    "by_priority": {
-      "HIGH": 4,
-      "MEDIUM": 2,
-      "LOW": 2
-    },
-    "by_type": {
-      "AI": 5,
-      "CALL": 3
-    },
-    "overdue_count": 1,
-    "due_today_count": 2,
-    "due_this_week_count": 4,
-    "completed_percentage": 60.0
-  }
-}
-```
-
-### Notes
-
-- All counts exclude soft-deleted/remote-deleted tasks.
-- `completed_percentage` mirrors the grouped endpoint so you can choose either response depending on whether you need the actual task rows.
-
----
-
-## 7. Get Task Detail
+## 5. Get Task Detail
 
 ### Endpoint
 
