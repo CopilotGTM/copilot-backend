@@ -1,14 +1,16 @@
-Chat Sessions, Messages & SSE (Technical)
+# Chat Sessions, Messages & SSE (Technical)
 
 Scope: src/api/routers/chats, src/service/chat, src/api/schemas/chat_models.py, src/api/schemas/chat_stream_models.py
 
 Overview
+
 - Session management: create, rename, favorite, delete (soft), list, search.
 - Messaging: persist user messages (with optional attachments) and enqueue background jobs for assistant responses.
 - Streaming: Server-Sent Events (SSE) frames provide real-time answer updates, suggestions, sources, progress.
 - Tenancy: all reads/writes scoped to the authenticated user and organisation.
 
 API Surface (mounted under `/users/chats`)
+
 - POST `/create_chat`, DELETE `/delete_chat`, PATCH `/rename_chat`, PATCH `/favorite_chat`
 - GET `/list_chats`, GET `/search_chats?q=...`
 - POST `/send_message`
@@ -16,9 +18,11 @@ API Surface (mounted under `/users/chats`)
 - GET `/messages/list?session_id=...&limit=...&cursor=...` (cursor pagination)
 
 Response Envelope
+
 - All endpoints respond with `GenericResponse[T]` (see `src/api/schemas/base_models.py`).
 
 Pydantic Schemas (Requests/Responses)
+
 - Source of truth: `src/api/schemas/chat_models.py`
 - Optional fields are declared as `Optional[...]` or have defaults; all others are required.
 
@@ -94,11 +98,13 @@ class ChatMessagesPage(BaseModel):
 ```
 
 Validation Notes
+
 - `SendMessageRequest.content` is trimmed and must be non-empty.
 - `SendMessageRequest.role` must be `user`.
 - If `is_edited` is true, `edited_message_id` is required.
 
 SSE Frames (Streaming)
+
 - Source of truth: `src/api/schemas/chat_stream_models.py`
 - Representative frames (frontend should switch on `type`):
 
@@ -140,11 +146,12 @@ class Finalize(BaseModel):
 ```
 
 Frontend Handling
+
 - Use `answer.delta` to append and `answer.replace` to overwrite.
 - Update confidence, suggestions, sources, and progress on corresponding frames.
 - Stop on SSE `complete` event; reconnect with backoff on `timeout`/transient errors.
 
 Tenancy & Security
+
 - All operations scoped to authenticated `user_id` and `organisation_id`.
 - Soft-deleted sessions are filtered from list/search by default.
-

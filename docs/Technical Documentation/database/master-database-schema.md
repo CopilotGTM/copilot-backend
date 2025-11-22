@@ -48,12 +48,12 @@ Pattern: User record with both application role (`user_role`) and auth provider 
 
 ```python
 class MasterEntity(TimestampMixin, table=True):
-	__tablename__ = "master_entities"
-	__table_args__ = {"schema": "public", "comment": "Global master entity."}
+    __tablename__ = "master_entities"
+    __table_args__ = {"schema": "public", "comment": "Global master entity."}
 
-	entity_id: UUID = Field(default_factory=uuid4, primary_key=True)
-	name: str = Field(max_length=255, index=True)
-	meta: dict[str, Any] = Field(sa_column=Column(JSONB, server_default=text("'{}'::jsonb")), default_factory=dict)
+    entity_id: UUID = Field(default_factory=uuid4, primary_key=True)
+    name: str = Field(max_length=255, index=True)
+    meta: dict[str, Any] = Field(sa_column=Column(JSONB, server_default=text("'{}'::jsonb")), default_factory=dict)
 ```
 
 ## Design Checklist (Master)
@@ -64,4 +64,3 @@ class MasterEntity(TimestampMixin, table=True):
 - Are deletes reversible? Prefer “status” fields and histories over hard deletes.
 
 For tenant‑scoped data (chat, knowledge, integrations, synced entities, jobs), see `organisation-database-schema.md` and the consolidated `database-architecture.md`.
-

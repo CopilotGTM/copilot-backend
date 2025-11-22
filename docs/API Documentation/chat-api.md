@@ -1,7 +1,8 @@
 # Chat API Documentation
 
 ## Base URL
-```
+
+```text
 /users/chats
 ```
 
@@ -10,6 +11,7 @@
 ## Response Envelope
 
 - All endpoints return a consistent envelope:
+
 ```json
 {
   "status": "SUCCESS | ERROR",
@@ -17,13 +19,16 @@
   "data": { ... } | null
 }
 ```
+
 - Timestamps use ISO 8601 with `Z` suffix (UTC), e.g. `2025-10-05T10:30:00Z`.
 
 ## Authentication
+
 - Required — Bearer token
 - Header: `Authorization: Bearer <access_token>`
 
 ## Rate Limiting (defaults)
+
 - Write endpoints (POST/PATCH/DELETE): ~15/min, 100/hour per user
 - Read endpoints (GET): ~60/min, 1000/hour per user
 - On limit breach: `429 Too Many Requests` with `Retry-After` header
@@ -46,11 +51,13 @@
 - Time & Timestamps: ISO 8601 UTC with `Z` suffix.
 
 ### Rate Limits
+
 - Write: ~15/min, 100/hour per user (configurable)
 - Read: ~60/min, 1000/hour per user (configurable)
 - Exceeding returns `429 Too Many Requests` with `Retry-After` header (seconds)
 
 ### Error Model
+
 - Envelope always present with HTTP status aligned to error:
   - 400: invalid input (empty content/title, bad filters)
   - 401: missing/invalid token
@@ -69,10 +76,12 @@
 ```
 
 ### Security & Tenancy
+
 - All operations are evaluated against the authenticated `user_id` and `organisation_id`.
 - Queries exclude soft-deleted items; writes are scoped to the caller.
 
 ### SSE Guidance (Message Events)
+
 - Transport: Server-Sent Events; events: `ready`, `frame`, `ping`, `complete`, `timeout`, `error`.
 - Timeouts/Heartbeats: timeout ~15 minutes; heartbeats ~25s. Reconnect with backoff on `timeout` or transient `error`.
 - Resume: Provide `Last-Event-ID` header to resume (legacy replay mode supported).
@@ -84,10 +93,12 @@
 ## Data Types
 
 ### Enums
+
 - `ChatMessageRole`: `"user" | "assistant" | "system"`
 - `ChatMessageType`: `"GENERAL_MESSAGE" | "TECHNICAL_DECK" | "RFP_SHEET"`
 
 ### Request Models (TypeScript)
+
 ```ts
 type UUID = string;
 
@@ -122,6 +133,7 @@ export interface SendMessageRequest {
 ```
 
 ### Response Models (TypeScript)
+
 ```ts
 export interface ChatSessionOut {
   session_id: UUID;
@@ -180,8 +192,10 @@ export interface ApiEnvelope<T> {
 ```
 
 ### SSE Event Frames (Message Events)
+
 - Events: `ready`, `frame`, `ping`, `complete`, `timeout`, `error`
 - `frame.data` examples:
+
 ```json
 { "type": "answer.delta", "content": "partial markdown ...", "format": "markdown", "sequence": 3 }
 { "type": "answer.replace", "content": "full answer ...", "format": "markdown" }
@@ -195,6 +209,7 @@ export interface ApiEnvelope<T> {
 ```
 
 ### Retry & Backoff Recommendations
+
 - Non-idempotent writes (create_chat, send_message): do not auto-retry without user confirmation; prefer manual retry to avoid duplicates.
 - Reads (list/search): retry with exponential backoff (200ms → 400ms → 800ms; jitter) up to a small cap.
 - SSE: on `timeout`/network errors, reconnect with backoff (1s → 5s → 10s; cap 30s). Stop on `complete`.
@@ -202,6 +217,7 @@ export interface ApiEnvelope<T> {
 ---
 
 ## Security & Compliance (SOC 2 Alignment)
+
 - Transport Security
   - Enforce TLS 1.2+; recommend HSTS at the edge. All API access over HTTPS only.
   - CORS: restrict in production to trusted origins.
@@ -225,15 +241,16 @@ export interface ApiEnvelope<T> {
 
 ## 1) Create Chat
 
-### Endpoint
+### Create Chat Endpoint
+
 ```http
 POST /users/chats/create_chat
 ```
 
-### Description
+### Create Chat Description
+
 Creates a new chat session owned by the current user in their organisation.
 
-### Request Body
 ```json
 {
   "title": "My First Chat",
@@ -241,7 +258,8 @@ Creates a new chat session owned by the current user in their organisation.
 }
 ```
 
-### Success Response (200)
+### Create Chat Success Response (200)
+
 ```json
 {
   "status": "SUCCESS",
@@ -258,11 +276,13 @@ Creates a new chat session owned by the current user in their organisation.
 }
 ```
 
-### Error Responses
+### Create Chat Error Responses
+
 - 400 Bad Request — "Title cannot be null or empty", "Title cannot exceed 100 characters"
 - 500 Internal Server Error — "Unable to create chat session"
 
-### Example cURL
+### Create Chat Example cURL
+
 ```bash
 curl -X POST "$BASE_URL/users/chats/create_chat" \
   -H "Authorization: Bearer $TOKEN" \
@@ -274,20 +294,22 @@ curl -X POST "$BASE_URL/users/chats/create_chat" \
 
 ## 2) Delete Chat (soft delete)
 
-### Endpoint
+### Delete Chat Endpoint
+
 ```http
 DELETE /users/chats/delete_chat
 ```
 
-### Description
+### Delete Chat Description
+
 Soft-deletes a chat session owned by the current user.
 
-### Request Body
 ```json
 { "session_id": "f3c8c3f2-1f5a-4a6f-94e4-7a7f0e05e2a0" }
 ```
 
-### Success Response (200)
+### Delete Chat Success Response (200)
+
 ```json
 {
   "status": "SUCCESS",
@@ -304,7 +326,8 @@ Soft-deletes a chat session owned by the current user.
 }
 ```
 
-### Error Responses
+### Delete Chat Error Responses
+
 - 404 Not Found — "Chat session not found"
 - 500 Internal Server Error — "Unable to delete chat session"
 
@@ -312,17 +335,18 @@ Soft-deletes a chat session owned by the current user.
 
 ## 3) Rename Chat
 
-### Endpoint
+### Rename Chat Endpoint
+
 ```http
 PATCH /users/chats/rename_chat
 ```
 
-### Request Body
 ```json
 { "session_id": "<UUID>", "title": "New Title" }
 ```
 
-### Success Response (200)
+### Rename Chat Success Response (200)
+
 ```json
 {
   "status": "SUCCESS",
@@ -339,7 +363,8 @@ PATCH /users/chats/rename_chat
 }
 ```
 
-### Error Responses
+### Rename Chat Error Responses
+
 - 400 Bad Request — invalid title
 - 404 Not Found — "Chat session not found"
 - 500 Internal Server Error — "Unable to rename chat session"
@@ -348,15 +373,18 @@ PATCH /users/chats/rename_chat
 
 ## 4) List Chats (paginated)
 
-### Endpoint
+### List Chats Endpoint
+
 ```http
 GET /users/chats/list_chats?limit=20&cursor=<opaque>
 ```
 
-### Description
+### List Chats Description
+
 Returns your chat sessions ordered by recency. Use `cursor` from the previous response to fetch the next page.
 
-### Success Response (200)
+### List Chats Success Response (200)
+
 ```json
 {
   "status": "SUCCESS",
@@ -378,42 +406,48 @@ Returns your chat sessions ordered by recency. Use `cursor` from the previous re
 }
 ```
 
-### Error Responses
+### List Chats Error Responses
+
 - 500 Internal Server Error — "Unable to list chat sessions"
 
 ---
 
 ## 5) Search Chats (typeahead)
 
-### Endpoint
+### Search Chats Endpoint
+
 ```http
 GET /users/chats/search_chats?q=<text>&limit=10
 ```
 
-### Description
+### Search Chats Description
+
 Searches chat sessions by title. Best-effort, not paginated; intended for typeahead.
 
-### Success Response (200)
+### Search Chats Success Response (200)
+
 Same shape as List Chats, with `cursor: null`.
 
-### Error Responses
+### Search Chats Error Responses
+
 - 500 Internal Server Error — "Unable to search chat sessions"
 
 ---
 
 ## 6) Toggle Favorite
 
-### Endpoint
+### Toggle Favorite Endpoint
+
 ```http
 PATCH /users/chats/favorite_chat
 ```
 
-### Request Body
 ```json
 { "session_id": "<UUID>", "favorite": true }
 ```
 
-### Success Response (200)
+### Toggle Favorite Success Response (200)
+
 ```json
 {
   "status": "SUCCESS",
@@ -430,7 +464,8 @@ PATCH /users/chats/favorite_chat
 }
 ```
 
-### Error Responses
+### Toggle Favorite Error Responses
+
 - 404 Not Found — "Chat session not found"
 - 400 Bad Request — validation issues
 - 500 Internal Server Error — "Unable to update favorite state"
@@ -439,15 +474,16 @@ PATCH /users/chats/favorite_chat
 
 ## 7) Send Message
 
-### Endpoint
+### Send Message Endpoint
+
 ```http
 POST /users/chats/send_message
 ```
 
-### Description
+### Send Message Description
+
 Persists a user message (with optional attachments) and enqueues a background job to generate the assistant reply.
 
-### Request Body
 ```json
 {
   "session_id": "<UUID>",
@@ -459,11 +495,14 @@ Persists a user message (with optional attachments) and enqueues a background jo
   "edited_message_id": null
 }
 ```
+
 Notes
+
 - `role` must be `user`.
 - `attachments` are IDs from the Chat Attachments API once uploaded/finalized.
 
-### Success Response (200)
+### Send Message Success Response (200)
+
 ```json
 {
   "status": "SUCCESS",
@@ -475,16 +514,20 @@ Notes
   }
 }
 ```
+
 Notes
+
 - `job_id`: Use this to connect to the SSE stream at `/message_events`
 - `user_message_id`: The persisted ID of the user's message
 - `assistant_message_id`: Pre-generated ID for the assistant's response (message will be created by worker)
 
-### Error Responses
+### Send Message Error Responses
+
 - 400 Bad Request — invalid content, role not `user`, or session not found
 - 500 Internal Server Error — scheduling/processing issue
 
-### Example cURL
+### Send Message Example cURL
+
 ```bash
 curl -X POST "$BASE_URL/users/chats/send_message" \
   -H "Authorization: Bearer $TOKEN" \
@@ -502,15 +545,18 @@ curl -X POST "$BASE_URL/users/chats/send_message" \
 
 ## 8) Message Events (SSE)
 
-### Endpoint
+### Message Events Endpoint
+
 ```http
 GET /users/chats/message_events?job_id=<UUID>
 ```
 
-### Description
+### Message Events Description
+
 Streams Server-Sent Events for a specific message job. Includes reconnection support via `Last-Event-ID`.
 
 ### Event Types
+
 - `ready` — stream initialized
 - `frame` — data payload (see `type` field below)
 - `ping` — heartbeat
@@ -519,6 +565,7 @@ Streams Server-Sent Events for a specific message job. Includes reconnection sup
 - `error` — internal stream error; reconnect allowed
 
 ### Frame `data` (representative examples)
+
 ```json
 { "type": "answer.delta", "content": "partial markdown ...", "format": "markdown", "sequence": 3 }
 { "type": "answer.replace", "content": "full answer ...", "format": "markdown" }
@@ -532,6 +579,7 @@ Streams Server-Sent Events for a specific message job. Includes reconnection sup
 ```
 
 ### SSE Semantics (Worker, Delta, Ordering)
+
 - Producer and delivery
   - Frames originate from the chat worker processing the job. The worker publishes structured frames to a per-job Redis Stream; the API's SSE endpoint relays those frames to the client.
   - Delivery uses Redis consumer groups for consume-once semantics by default, minimizing duplicates. Legacy replay mode is used when consumer groups are unavailable.
@@ -570,11 +618,13 @@ Streams Server-Sent Events for a specific message job. Includes reconnection sup
   - After completion, call `GET /users/chats/messages/list` for the session to render the stored assistant message and any enriched metadata.
 
 ### Frontend Handling Tips
+
 - Use `answer.delta` to append and `answer.replace` to overwrite the current answer.
 - Update confidence, suggestions, sources, and progress bars from corresponding frames.
 - Stop streaming when you receive an `event: complete` (or a `finalize` frame followed by `complete`).
 
 ### Minimal Browser Example
+
 ```js
 // After sending message, you receive: { job_id, user_message_id, assistant_message_id }
 // Create assistant message placeholder in UI with assistant_message_id
@@ -620,15 +670,18 @@ src.addEventListener('complete', () => src.close());
 
 ## 9) List Messages (cursor-based)
 
-### Endpoint
+### List Messages Endpoint
+
 ```http
 GET /users/chats/messages/list?session_id=<UUID>&limit=20&cursor=<opaque>&role=<role>&message_type=<type>
 ```
 
-### Description
+### List Messages Description
+
 Returns chat messages for a session with lightweight enrichment (attachments, sources, suggestions, confidence).
 
-### Success Response (200)
+### List Messages Success Response (200)
+
 ```json
 {
   "status": "SUCCESS",
@@ -662,13 +715,15 @@ Returns chat messages for a session with lightweight enrichment (attachments, so
 }
 ```
 
-### Error Responses
+### List Messages Error Responses
+
 - 400 Bad Request — invalid session or filters
 - 500 Internal Server Error — "Unable to list messages"
 
 ---
 
 ## Implementation Notes (Frontend)
+
 - Always include the Bearer token header.
 - Typical flow:
   1) `POST /create_chat`

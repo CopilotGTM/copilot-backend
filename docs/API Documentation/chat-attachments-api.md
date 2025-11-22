@@ -1,7 +1,8 @@
 # Chat Attachments API Documentation
 
 ## Base URL
-```
+
+```text
 /users/chats/upload
 ```
 
@@ -10,6 +11,7 @@
 ## Response Envelope
 
 - All endpoints return a consistent envelope:
+
 ```json
 {
   "status": "SUCCESS | ERROR",
@@ -19,10 +21,12 @@
 ```
 
 ## Authentication
+
 - Required — Bearer token
 - Header: `Authorization: Bearer <access_token>`
 
 ## Rate Limiting (defaults)
+
 - Write endpoints (POST): ~15/min, 100/hour per user
 - Read endpoints (GET): ~60/min, 1000/hour per user
 - On limit breach: `429 Too Many Requests` with `Retry-After` header
@@ -44,16 +48,19 @@
 - Timestamps: ISO 8601 UTC with `Z` suffix.
 
 ### Lifecycle & States
+
 - `pending_upload` → `uploaded` → `processing` → `completed | failed`
 - `finalize` transitions from `pending_upload` to `processing` and enqueues background work.
 - `download` allowed only when `status = completed`.
 
 ### Rate Limits
+
 - Write: ~15/min, 100/hour per user (configurable)
 - Read: ~60/min, 1000/hour per user (configurable)
 - Exceeding returns `429 Too Many Requests` with `Retry-After` header
 
 ### Error Model
+
 - 400: invalid mimetype/size, invalid state (e.g., download before `completed`)
 - 401: missing/invalid token
 - 404: not found or not owned by user/org
@@ -69,21 +76,25 @@
 ```
 
 ### SSE Guidance (Attachment Stream)
+
 - Events: `status` (array of attachments), `ping`, `complete`, `timeout`, `error`.
 - Scope: If `attachment_ids` omitted, server streams all non-terminal attachments for the user.
 - Timeouts/Heartbeats: default timeout ~30 minutes; heartbeats ~25s; reconnect with backoff on `timeout`/transient `error`.
 - Auth caveat: Native `EventSource` cannot attach headers; use a polyfill, reverse proxy that injects the header from a cookie, or an app-layer bridge.
 
 ### Retry & Backoff Recommendations
+
 - Presign/Finalize: do not auto-retry blindly; prompt the user and re-issue once.
 - Download URL: safe to retry on network errors with exponential backoff.
 - SSE: reconnect on `timeout`/network errors with capped backoff (1s → 5s → 10s; max 30s).
 
 ### Security & Tenancy
+
 - All attachment operations are validated against the authenticated `user_id` and `organisation_id`.
 - Batch operations keep partial successes when possible; failures are reported per item.
 
 ### Security & Compliance (SOC 2 Alignment)
+
 - Transport Security
   - Enforce TLS 1.2+; recommend HSTS at the edge. Never serve over plaintext HTTP.
   - CORS restricted to trusted origins in deployment (dev uses wide-open for local).
@@ -113,9 +124,11 @@
 ## Data Types
 
 ### Enums
+
 - `AttachmentStatus`: `"pending_upload" | "uploaded" | "processing" | "completed" | "failed"`
 
 ### Request/Response Models (TypeScript)
+
 ```ts
 type UUID = string;
 
@@ -206,8 +219,10 @@ export interface ApiEnvelope<T> {
 ```
 
 ### SSE Event Frames (Attachment Stream)
+
 - Events: `status`, `ping`, `complete`, `timeout`, `error`
 - `status.data` payload shapes:
+
 ```json
 [
   {
@@ -224,15 +239,18 @@ export interface ApiEnvelope<T> {
 
 ## 1) Presign Single Upload
 
-### Endpoint
+### Presign Single Upload Endpoint
+
 ```http
 POST /users/chats/upload/presign
 ```
 
-### Description
+### Presign Single Upload Description
+
 Creates an attachment record and returns a short‑lived SAS URL for direct browser upload to storage.
 
-### Request Body
+### Presign Single Upload Request Body
+
 ```json
 {
   "filename": "report.pdf",
@@ -242,10 +260,12 @@ Creates an attachment record and returns a short‑lived SAS URL for direct brow
 ```
 
 Validation
+
 - Allowed types are configured via environment `ALLOWED_MIMETYPES`.
 - Max size is configured via `MAX_UPLOAD_FILE_SIZE_BYTES` (default: 52428800 ~ 50MB).
 
-### Success Response (200)
+### Presign Single Upload Success Response (200)
+
 ```json
 {
   "status": "SUCCESS",
@@ -264,11 +284,13 @@ Validation
 }
 ```
 
-### Error Responses
+### Presign Single Upload Error Responses
+
 - 400 Bad Request — invalid/unsupported mimetype or size exceeds limit
 - 500 Internal Server Error — failure to create record or generate URL
 
 ### Example cURL
+
 ```bash
 curl -X POST "$BASE_URL/users/chats/upload/presign" \
   -H "Authorization: Bearer $TOKEN" \
@@ -297,20 +319,24 @@ async function uploadToSAS(file, uploadUrl){
 
 ## 3) Finalize Single Upload
 
-### Endpoint
+### Finalize Single Upload Endpoint
+
 ```http
 POST /users/chats/upload/finalize
 ```
 
-### Description
+### Finalize Single Upload Description
+
 Signals the server that the upload completed; verifies blob and enqueues background processing (checksum, thumbnails when applicable).
 
-### Request Body
+### Finalize Single Upload Request Body
+
 ```json
 { "attachment_id": "2b5a4d8e-...", "checksum": null }
 ```
 
-### Success Response (200)
+### Finalize Single Upload Success Response (200)
+
 ```json
 {
   "status": "SUCCESS",
@@ -323,7 +349,8 @@ Signals the server that the upload completed; verifies blob and enqueues backgro
 }
 ```
 
-### Error Responses
+### Finalize Single Upload Error Responses
+
 - 404 Not Found — attachment not found or not owned by user
 - 400 Bad Request — invalid state (e.g., not in `pending_upload`)
 - 500 Internal Server Error — finalize failure
@@ -332,15 +359,18 @@ Signals the server that the upload completed; verifies blob and enqueues backgro
 
 ## 4) Get Attachment Status
 
-### Endpoint
+### Get Attachment Status Endpoint
+
 ```http
 GET /users/chats/upload/attachment/{attachment_id}
 ```
 
-### Description
+### Get Attachment Status Description
+
 Polls the current status of an attachment.
 
-### Success Response (200)
+### Get Attachment Status Success Response (200)
+
 ```json
 {
   "status": "SUCCESS",
@@ -353,7 +383,8 @@ Polls the current status of an attachment.
 }
 ```
 
-### Error Responses
+### Get Attachment Status Error Responses
+
 - 404 Not Found — not found or not accessible
 - 500 Internal Server Error — retrieval error
 
@@ -361,15 +392,18 @@ Polls the current status of an attachment.
 
 ## 5) Generate Download URL (SAS)
 
-### Endpoint
+### Generate Download URL Endpoint
+
 ```http
 GET /users/chats/upload/attachment/{attachment_id}/download?expires_minutes=30
 ```
 
-### Description
+### Generate Download URL Description
+
 Returns a short‑lived read SAS URL for the original attachment. Only available when `status` is `completed`.
 
-### Success Response (200)
+### Generate Download URL Success Response (200)
+
 ```json
 {
   "status": "SUCCESS",
@@ -382,7 +416,8 @@ Returns a short‑lived read SAS URL for the original attachment. Only available
 }
 ```
 
-### Error Responses
+### Generate Download URL Error Responses
+
 - 400 Bad Request — "Attachment is not ready" (not `completed`)
 - 404 Not Found — not found or not accessible
 - 500 Internal Server Error — URL generation failure
@@ -391,15 +426,18 @@ Returns a short‑lived read SAS URL for the original attachment. Only available
 
 ## 6) Stream Attachment Status (SSE)
 
-### Endpoint
+### Stream Attachment Status Endpoint
+
 ```http
 GET /users/chats/upload/attachments/stream?attachment_ids=<UUID>&attachment_ids=<UUID>
 ```
 
-### Description
+### Stream Attachment Status Description
+
 Streams real‑time status updates for specific attachments (if `attachment_ids` provided) or all non‑terminal attachments owned by the user.
 
 ### Event Types
+
 - `status` — array of attachments with fields: `attachment_id`, `status`, `updated_at`, `error_message`, `thumbnail_small_url` (when available)
 - `ping` — heartbeat
 - `complete` — all watched attachments reached `completed` or `failed`
@@ -407,6 +445,7 @@ Streams real‑time status updates for specific attachments (if `attachment_ids`
 - `error` — internal stream error; reconnect allowed
 
 ### Minimal Browser Example
+
 ```js
 const params = new URLSearchParams();
 attachmentIds.forEach(id => params.append('attachment_ids', id));
@@ -422,12 +461,14 @@ es.addEventListener('complete', () => es.close());
 
 ## 7) Presign Batch
 
-### Endpoint
+### Presign Batch Endpoint
+
 ```http
 POST /users/chats/upload/presign/batch
 ```
 
-### Request Body
+### Presign Batch Request Body
+
 ```json
 {
   "files": [
@@ -437,7 +478,8 @@ POST /users/chats/upload/presign/batch
 }
 ```
 
-### Success Response (200)
+### Presign Batch Success Response (200)
+
 ```json
 {
   "status": "SUCCESS",
@@ -476,17 +518,20 @@ POST /users/chats/upload/presign/batch
 
 ## 8) Finalize Batch
 
-### Endpoint
+### Finalize Batch Endpoint
+
 ```http
 POST /users/chats/upload/finalize/batch
 ```
 
-### Request Body
+### Finalize Batch Request Body
+
 ```json
 { "files": [ { "attachment_id": "...", "checksum": null } ] }
 ```
 
-### Success Response (200)
+### Finalize Batch Success Response (200)
+
 ```json
 {
   "status": "SUCCESS",
@@ -506,11 +551,13 @@ POST /users/chats/upload/finalize/batch
 ```
 
 ### Error Responses
+
 - 500 Internal Server Error — "All finalize operations failed" (if none succeeded)
 
 ---
 
 ## Configuration & Limits
+
 - Allowed MIME types (default): `application/pdf`, `text/plain`, `text/csv`, `text/tab-separated-values`, `text/tsv`, `text/markdown`, `text/x-markdown`, `application/x-ndjson`, `application/ndjson`, `application/jsonl`, `application/json`.
 - Max file size (default): `52428800` bytes (~50MB).
 - Environment variables:
@@ -520,6 +567,7 @@ POST /users/chats/upload/finalize/batch
 ---
 
 ## Suggested Frontend Flow
+
 1) Call `POST /presign` (or `/presign/batch`) for selected file(s).
 2) `PUT` file bytes to each `upload_url` (direct to storage).
 3) Call `POST /finalize` (or `/finalize/batch`).

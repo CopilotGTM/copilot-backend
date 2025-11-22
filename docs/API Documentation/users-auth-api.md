@@ -1,7 +1,8 @@
 # Users Auth API Documentation
 
 ## Base URL
-```
+
+```text
 /users/auth
 ```
 
@@ -10,6 +11,7 @@
 ## Response Envelope
 
 - All endpoints return a consistent envelope:
+
 ```json
 {
   "status": "SUCCESS | ERROR",
@@ -17,28 +19,34 @@
   "data": { ... } | null
 }
 ```
+
 - Timestamps use ISO 8601 with `Z` suffix (UTC), e.g. `2025-10-05T10:30:00Z`.
 
 ---
 
 ## 1) Login
 
-### Endpoint
+### Login Endpoint
+
 ```http
 POST /users/auth/login
 ```
 
-### Description
+### Login Description
+
 Authenticates a user via Supabase and returns access/refresh tokens. If the account requires a password change, returns a reset link and a `PENDING_SETUP` state instead of tokens.
 
-### Authentication
+### Login Authentication
+
 Not required
 
-### Rate Limiting
+### Login Rate Limiting
+
 - Default: 10 requests/minute, 50/hour per (IP + email)
 - On limit breach: `429 Too Many Requests` with `Retry-After` header
 
 ### Request Body
+
 ```json
 {
   "email": "user@example.com",
@@ -48,7 +56,8 @@ Not required
 
 ### Success Responses (200)
 
-1. Active user
+### Active user
+
 ```json
 {
   "status": "SUCCESS",
@@ -70,7 +79,8 @@ Not required
 }
 ```
 
-2. Password change required
+### Password change required
+
 ```json
 {
   "status": "SUCCESS",
@@ -83,6 +93,7 @@ Not required
 ```
 
 ### Error Responses
+
 - 401 Unauthorized
   - `USER_NOT_FOUND`
   - `INVALID_CREDENTIALS`
@@ -92,6 +103,7 @@ Not required
   - `login failed`
 
 ### Example cURL
+
 ```bash
 curl -X POST "$BASE_URL/users/auth/login" \
   -H "Content-Type: application/json" \
@@ -102,20 +114,25 @@ curl -X POST "$BASE_URL/users/auth/login" \
 
 ## 2) Reset Password
 
-### Endpoint
+### Reset Password Endpoint
+
 ```http
 POST /users/auth/reset-password
 ```
 
-### Description
+### Reset Password Description
+
 Completes a password reset using a token. Supports two flows via `action`:
+
 - `force_change`: First-time password change after initial setup; also updates Supabase user metadata and verifies email.
 - `forgot`: Regular password reset; password is updated, metadata unchanged.
 
-### Authentication
+### Reset Password Authentication
+
 Not required
 
-### Request Body
+### Reset Password Request Body
+
 ```json
 {
   "token_hash": "<HASH_FROM_EMAIL_LINK>",
@@ -125,7 +142,8 @@ Not required
 }
 ```
 
-### Success Response (200)
+### Reset Password Success Response (200)
+
 ```json
 {
   "status": "SUCCESS",
@@ -134,7 +152,8 @@ Not required
 }
 ```
 
-### Error Responses
+### Reset Password Error Responses
+
 - 400 Bad Request
   - `Recovery token_hash is required.`
   - `New password is required.`
@@ -148,7 +167,8 @@ Not required
   - `Error updating user data after password reset.`
   - `First-time password change failed`
 
-### Example cURL
+### Reset Password Example cURL
+
 ```bash
 curl -X POST "$BASE_URL/users/auth/reset-password" \
   -H "Content-Type: application/json" \
@@ -164,23 +184,28 @@ curl -X POST "$BASE_URL/users/auth/reset-password" \
 
 ## 3) Refresh Token
 
-### Endpoint
+### Refresh Token Endpoint
+
 ```http
 POST /users/auth/refresh-token
 ```
 
-### Description
+### Refresh Token Description
+
 Exchanges a valid refresh token for a new access token (and possibly a new refresh token).
 
-### Authentication
+### Refresh Token Authentication
+
 Not required (refresh token is in the request body)
 
-### Request Body
+### Refresh Token Request Body
+
 ```json
 { "refresh_token": "<REFRESH_TOKEN>" }
 ```
 
-### Success Response (200)
+### Refresh Token Success Response (200)
+
 ```json
 {
   "status": "SUCCESS",
@@ -192,7 +217,8 @@ Not required (refresh token is in the request body)
 }
 ```
 
-### Error Responses
+### Refresh Token Error Responses
+
 - 400 Bad Request | 401 Unauthorized | 404 Not Found | 409 Conflict
   - Returned when Supabase reports specific auth errors (message varies)
 - 401 Unauthorized
@@ -200,7 +226,8 @@ Not required (refresh token is in the request body)
 - 500 Internal Server Error
   - `Token refresh failed. Please log in again.`
 
-### Example cURL
+### Refresh Token Example cURL
+
 ```bash
 curl -X POST "$BASE_URL/users/auth/refresh-token" \
   -H "Content-Type: application/json" \
@@ -211,23 +238,28 @@ curl -X POST "$BASE_URL/users/auth/refresh-token" \
 
 ## 4) Forgot Password
 
-### Endpoint
+### Forgot Password Endpoint
+
 ```http
 POST /users/auth/forgot-password
 ```
 
-### Description
+### Forgot Password Description
+
 Initiates a password reset by generating a password reset link and sending it via email. The response is deliberately generic to prevent account enumeration.
 
-### Authentication
+### Forgot Password Authentication
+
 Not required
 
-### Request Body
+### Forgot Password Request Body
+
 ```json
 { "email": "user@example.com" }
 ```
 
-### Success Response (200)
+### Forgot Password Success Response (200)
+
 ```json
 {
   "status": "SUCCESS",
@@ -236,13 +268,15 @@ Not required
 }
 ```
 
-### Error Responses
+### Forgot Password Error Responses
+
 - 500 Internal Server Error
   - `Failed to generate password reset link`
   - `Failed to send password reset email. Please check email service configuration.`
   - `Forgot password request failed`
 
-### Example cURL
+### Forgot Password Example cURL
+
 ```bash
 curl -X POST "$BASE_URL/users/auth/forgot-password" \
   -H "Content-Type: application/json" \
@@ -253,23 +287,28 @@ curl -X POST "$BASE_URL/users/auth/forgot-password" \
 
 ## 5) Logout
 
-### Endpoint
+### Logout Endpoint
+
 ```http
 POST /users/auth/logout
 ```
 
-### Description
+### Logout Description
+
 Logs out the current authenticated user. If `global_logout` is true, logs out from all active sessions for this user.
 
-### Authentication
+### Logout Authentication
+
 Required (Bearer access token)
 
-### Request Body
+### Logout Request Body
+
 ```json
 { "global_logout": false }
 ```
 
-### Success Response (200)
+### Logout Success Response (200)
+
 ```json
 {
   "status": "SUCCESS",
@@ -280,7 +319,8 @@ Required (Bearer access token)
 
 When `global_logout` is true, message becomes: "Successfully logged out from all sessions."
 
-### Error Responses
+### Logout Error Responses
+
 - 401 Unauthorized
   - `Missing or invalid authorization header`
   - `Invalid token: missing user ID`
@@ -288,7 +328,8 @@ When `global_logout` is true, message becomes: "Successfully logged out from all
 - 500 Internal Server Error
   - `An unexpected error occurred during logout.`
 
-### Example cURL
+### Logout Example cURL
+
 ```bash
 curl -X POST "$BASE_URL/users/auth/logout" \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
@@ -299,6 +340,7 @@ curl -X POST "$BASE_URL/users/auth/logout" \
 ---
 
 ## Security Notes
+
 - Use the returned `access_token` as a Bearer token for protected endpoints: `Authorization: Bearer <access_token>`.
 - Keep the `refresh_token` secure; it can mint new access tokens.
 - Login attempts are rate-limited. Defaults can be tuned via env vars:
@@ -308,6 +350,7 @@ curl -X POST "$BASE_URL/users/auth/logout" \
 ## Field Reference
 
 ### User Login Response Fields
+
 - `state`: `ACTIVE` or `PASSWORD_CHANGE_REQUIRED`
 - `tokens.access_token`: JWT used in `Authorization: Bearer` header
 - `tokens.refresh_token`: Token to exchange at `/refresh-token`
@@ -324,4 +367,3 @@ curl -X POST "$BASE_URL/users/auth/logout" \
 | 409 | Conflict (from underlying auth service) |
 | 429 | Too many requests (rate limit) |
 | 500 | Internal server error |
-

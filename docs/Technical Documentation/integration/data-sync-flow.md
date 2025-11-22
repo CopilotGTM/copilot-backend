@@ -23,7 +23,7 @@ This document describes the complete end-to-end data synchronization flow for in
 
 ## Complete Flow Diagram
 
-```
+```text
 ┌────────────────────────────────────────────────────────────────────────┐
 │ STAGE 1: EXTERNAL TRIGGER                                              │
 └────────────────────────────────────────────────────────────────────────┘
@@ -436,17 +436,17 @@ This document describes the complete end-to-end data synchronization flow for in
 
 ```
 
----
-
 ## Error Handling Flow
 
 ### Error at Webhook Level
-```
+
+```text
 Webhook Reception Error → Return 400/500 → Nango retries webhook
 ```
 
 ### Error at Task Level
-```
+
+```text
 Task Execution Error
   ↓
 Caught by task wrapper
@@ -461,7 +461,8 @@ No retry if unrecoverable
 ```
 
 ### Error at Data Type Level
-```
+
+```text
 Data Type Sync Error
   ↓
 Caught by dispatcher
@@ -474,6 +475,7 @@ Return partial success result
 ```
 
 **Example Multi-Data-Type Error**:
+
 ```json
 {
   "status": "partial",
@@ -496,6 +498,7 @@ Return partial success result
 ## Performance Characteristics
 
 ### Timing Breakdown
+
 | Stage | Component | Duration | Notes |
 |-------|-----------|----------|-------|
 | Webhook Reception | FastAPI | 50-100ms | Includes DB lookup |
@@ -508,12 +511,14 @@ Return partial success result
 | **Total** | - | **5-30s** | End-to-end sync time |
 
 ### Scalability
+
 - **Concurrent Syncs**: 4 workers × 1 task each = 4 parallel syncs
 - **Throughput**: ~240 syncs/hour (1 sync per worker per minute average)
 - **Data Volume**: Up to 2500 records per sync (Google Calendar limit)
 - **Queue Depth**: Unlimited (Redis queue)
 
 ### Resource Usage
+
 - **Memory**: ~200MB per worker
 - **CPU**: Low (I/O bound)
 - **Network**: 1-10MB per sync (depends on data)
@@ -524,6 +529,7 @@ Return partial success result
 ## Monitoring & Observability
 
 ### Key Metrics to Track
+
 1. **Webhook Success Rate**: % of webhooks successfully processed
 2. **Task Success Rate**: % of tasks completed successfully
 3. **Sync Duration**: Average time per sync
@@ -533,6 +539,7 @@ Return partial success result
 7. **Worker Utilization**: % of time workers are busy
 
 ### Log Messages to Monitor
+
 ```python
 # Success indicators
 "Sync webhook enqueued: org=... int=... cat=... prov=... types=..."
@@ -552,6 +559,7 @@ Return partial success result
 ```
 
 ### Alerting Rules
+
 1. **Critical**: Error rate > 10% over 5 minutes
 2. **Warning**: Sync duration > 60 seconds average
 3. **Warning**: Queue depth > 100 tasks
@@ -562,6 +570,7 @@ Return partial success result
 ## Configuration Reference
 
 ### Environment Variables
+
 ```bash
 # Nango
 NANGO_SECRET_KEY=nango_secret_xxx
@@ -579,6 +588,7 @@ CELERY_RESULT_BACKEND=redis://localhost:6379/0
 ```
 
 ### Worker Configuration
+
 ```python
 # Celery App: src/workers/integrations_worker/celery_app.py
 task_routes = {
@@ -600,6 +610,7 @@ task_max_retries = 3  # Max 3 retry attempts
 ## Testing the Flow
 
 ### 1. Trigger Manual Sync
+
 ```python
 from celery import Celery
 app = Celery(broker='redis://localhost:6379/0')
@@ -622,6 +633,7 @@ print(f"Result: {result.get(timeout=60)}")
 ```
 
 ### 2. Monitor Task Progress
+
 ```bash
 # Watch Celery logs
 celery -A src.workers.integrations_worker.celery_app worker -l info
@@ -634,6 +646,7 @@ redis-cli GET "celery-task-meta-{task_id}"
 ```
 
 ### 3. Verify Data Sync
+
 ```sql
 -- Check synced events
 SELECT 
@@ -663,25 +676,31 @@ WHERE integration_id = '4418889b-0a99-4249-a070-ff595fdc009e';
 ## Troubleshooting Guide
 
 ### Issue: Webhook not triggering sync
+
 **Check**:
+
 1. Webhook signature validation (X-Nango-Signature)
 2. Organisation derivation (tags in Nango connection)
 3. Integration lookup (connection_id exists in DB)
 
 **Logs**:
-```
+
+```text
 "NANGO WEBHOOK RECEIVED"
 "Connection ID: ..., Webhook Type: sync"
 "Derived organisation ... from Nango connection"
 ```
 
 ### Issue: Task not executing
+
 **Check**:
+
 1. Celery worker running
 2. Redis connection
 3. Queue name correct ("integrations")
 
 **Commands**:
+
 ```bash
 # Check worker status
 celery -A src.workers.integrations_worker.celery_app inspect active
@@ -691,26 +710,32 @@ redis-cli LLEN integrations
 ```
 
 ### Issue: Data not syncing
+
 **Check**:
+
 1. Nango connection valid (not expired)
 2. Provider API accessible
 3. Database permissions
 
 **Logs**:
-```
+
+```text
 "HTTP Request: GET /proxy/google-calendar/..."
 "Fetched X records for data_type=..."
 "Upserted X calendar events"
 ```
 
 ### Issue: High error rate
+
 **Check**:
+
 1. Provider API rate limits
 2. OAuth token expiry
 3. Database connection pool exhaustion
 
 **Logs**:
-```
+
+```text
 "Error syncing data_type=...: ..."
 "DB Pools: ... usage=X% health=..."
 ```
@@ -729,6 +754,7 @@ redis-cli LLEN integrations
 ## Changelog
 
 ### 2025-10-19
+
 - ✅ Initial document created
 - ✅ Documented complete end-to-end flow
 - ✅ Added error handling details

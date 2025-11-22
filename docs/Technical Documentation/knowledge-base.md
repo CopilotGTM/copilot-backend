@@ -1,13 +1,15 @@
-Knowledge Base Upload & Access (Technical)
+# Knowledge Base Upload & Access (Technical)
 
 Scope: src/api/routers/knowledge_base, src/service/knowledge, src/api/schemas/knowledge_*.py
 
 Overview
+
 - Upload flow: client requests presigned SAS URLs, uploads blobs directly to Azure, then calls finalize to trigger background processing.
 - Access flow: list sources with cursor pagination and filters; generate short-lived read SAS URLs; stream status via SSE (Redis pub/sub).
 - Tenancy: every DB operation runs under an organisation-scoped Session with `search_path` set to the org schema.
 
 API Surface (mounted under `/users/knowledge`)
+
 - POST `/presign/batch` — returns per-file SAS upload URLs.
 - POST `/finalize/batch` — marks sources uploaded; enqueues processing.
 - GET `/source/{source_id}` — returns current state + optional read SAS + metadata.
@@ -17,9 +19,11 @@ API Surface (mounted under `/users/knowledge`)
 - DELETE `/source/{source_id}` — soft-delete and enqueue async cleanup.
 
 Response Envelope
+
 - All endpoints respond with `GenericResponse[T]` (see `src/api/schemas/base_models.py`).
 
 Pydantic Schemas (Uploads)
+
 - Source of truth: `src/api/schemas/knowledge_upload_models.py`
 - Optional fields are declared as `Optional[...]` or have defaults; all others are required.
 
@@ -87,6 +91,7 @@ class KnowledgeSourceEventUpdate(BaseModel):
 ```
 
 Pydantic Schemas (Access)
+
 - Source of truth: `src/api/schemas/knowledge_access_models.py`
 
 ```python
@@ -127,7 +132,9 @@ class KnowledgeDeleteResponse(BaseModel):
 ```
 
 Examples
+
 - Batch presign request
+
 ```json
 {
   "files": [
@@ -136,7 +143,9 @@ Examples
   ]
 }
 ```
+
 - List page (truncated)
+
 ```json
 {
   "items": [
@@ -152,12 +161,14 @@ Examples
 ```
 
 Architecture and Dependencies
+
 - Routers: `upload_handler.py`, `access_handler.py`.
 - Services: `KnowledgeUploadService`, `KnowledgeAccessService`, `KnowledgeSourceSSEService`.
 - Infra: `AzureOrganisationBlobStorage` (SAS read/write, thumbnails), `AsyncRedisPubSub` (channels `kb:{org_id}:sources`).
 - Background: Celery `src/workers/knowledge_worker/celery_app.py` tasks `knowledge.post_upload_process`, `knowledge.delete_source`.
 
 SSE Status Flow
+
 ```mermaid
 sequenceDiagram
   participant UI
@@ -175,31 +186,36 @@ sequenceDiagram
 ```
 
 Listing and Download
+
 - List: cursor over `(created_at DESC, source_id DESC)`; cursor is opaque and must be echoed back verbatim.
 - Filters: status (enum), type (file/integration), filename search (`ILIKE %q%`). Soft-deleted rows are excluded.
 - Optional URLs: when `include_urls=true`, SAS URLs for thumbnails are generated concurrently.
 - Download: validates org+user ownership and `storage_path`, then returns a read SAS URL.
 
 Tenancy and Security
+
 - Session scoping: `get_org_session()` applies `SET search_path TO "{tenant}", public` for the request lifetime.
 - Access control: all DB queries constrain by `organisation_id` and `user_id`. SSE limited to current user.
 - SAS links: short-lived; uploads use write permission; downloads use read permission with optional filename.
 
 Error Handling
+
 - Domain errors carry `status_code` for router translation.
 - Envelope helpers produce consistent responses; batch operations accumulate per-file errors.
 
 Configuration
+
 - Upload limits: `KNOWLEDGE_MAX_UPLOAD_FILE_SIZE_BYTES` (default 100MB), `KNOWLEDGE_ALLOWED_MIMETYPES`.
 - Redis: from `Config().get_redis_client_details`; async client required (redis>=5 recommended).
 - Azure Storage: `ORGANISATION_STORAGE_NAME` (single account, container per org).
 
 Performance Notes
+
 - Presign: per-file validation; partial failures do not block the batch.
 - SSE: heartbeats ~25s; returns `complete` when all watched sources reach terminal state.
 - Thumbnails: generated and signed on demand; use concurrency when building lists.
 
 Operational Tips
+
 - Logs: `knowledge_upload_handler`, `knowledge_access_handler`, `knowledge_sse_service`, `azure_org_blob_storage`, `redis_pubsub`.
 - Close async clients in routers to avoid unclosed session warnings.
-

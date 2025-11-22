@@ -7,12 +7,14 @@ This document provides the **overall architecture** for the webhook-based integr
 > 📘 **For detailed end-to-end sync flow**, see: [Data Sync Flow](./data-sync-flow.md)
 
 ### Key Principles
+
 1. **Webhook-Driven**: Data sync is triggered by Nango webhooks when provider data changes
 2. **Worker-Based**: All heavy sync operations are handled asynchronously by Celery workers
 3. **Multi-Category Support**: Extensible architecture supporting CRM and Calendar categories (Email service placeholder for future)
 4. **Cached Reads**: API serves cached data from PostgreSQL for fast response times
 
 ### Related Documentation
+
 - **[Data Sync Flow](./data-sync-flow.md)** - Complete step-by-step sync process with timings and examples
 - **[Integrations Worker README](../../../src/workers/integrations_worker/README.md)** - Worker setup and configuration
 - **[OAuth Data Flow](../../API%20Documentation/oauth-data-flow.md)** - OAuth connection establishment
@@ -21,7 +23,7 @@ This document provides the **overall architecture** for the webhook-based integr
 
 ## System Architecture Diagram
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                            EXTERNAL LAYER                                   │
 ├─────────────────────────────────────────────────────────────────────────────┤
@@ -233,12 +235,14 @@ This document provides the **overall architecture** for the webhook-based integr
 **Endpoint:** `POST /api/v1/users/integrations/oauth/webhooks/nango`
 
 **Responsibilities:**
+
 - Verify Nango webhook signature (`X-Nango-Signature` header)
 - Handle two webhook types:
   - **`auth` webhook**: When user completes OAuth (existing)
   - **`sync` webhook**: When provider data changes (NEW)
 
 **Sync Webhook Flow:**
+
 ```python
 @router.post("/webhooks/nango")
 async def handle_nango_webhook(request: Request, x_nango_signature: str = Header(...)):
@@ -260,6 +264,7 @@ async def handle_nango_webhook(request: Request, x_nango_signature: str = Header
 ```
 
 **Sync Webhook Payload Example:**
+
 ```json
 {
   "type": "sync",
@@ -278,6 +283,7 @@ async def handle_nango_webhook(request: Request, x_nango_signature: str = Header
 ```
 
 **Handler Logic:**
+
 ```python
 async def handle_sync_webhook(payload: Dict[str, Any]) -> Response:
     """
@@ -336,6 +342,7 @@ async def handle_sync_webhook(payload: Dict[str, Any]) -> Response:
 #### 1.2 Auth Webhook (Enhanced - Existing)
 
 **When user completes OAuth:**
+
 ```python
 async def handle_auth_webhook(payload: Dict[str, Any]) -> Response:
     """
@@ -370,7 +377,7 @@ async def handle_auth_webhook(payload: Dict[str, Any]) -> Response:
 
 #### 2.1 Directory Structure
 
-```
+```text
 src/workers/integrations_worker/
 ├── celery_app.py                      # Celery app initialization
 ├── config.py                          # Worker configuration
@@ -1150,7 +1157,7 @@ class KnowledgeIntegration(OrganisationBase):
 
 ### Example 1: Initial Sync After OAuth
 
-```
+```text
 1. User completes OAuth in frontend
    └─> Nango sends auth webhook
 
@@ -1180,7 +1187,7 @@ class KnowledgeIntegration(OrganisationBase):
 
 ### Example 2: Webhook-Triggered Incremental Sync
 
-```
+```text
 1. User updates a contact in HubSpot
    └─> HubSpot notifies Nango
    └─> Nango performs sync
@@ -1220,11 +1227,13 @@ class KnowledgeIntegration(OrganisationBase):
 ### CRM Category (HubSpot)
 
 **Data Types:**
+
 - `contacts`: Individual contact records
 - `deals`: Sales opportunities
 - `companies`: Account/organization records
 
 **Nango Sync Names:**
+
 - `hubspot-contacts`
 - `hubspot-deals`
 - `hubspot-companies`
@@ -1235,9 +1244,11 @@ class KnowledgeIntegration(OrganisationBase):
 ### Calendar Category (Google Calendar)
 
 **Data Types:**
+
 - `events`: Calendar events
 
 **Nango Sync Names:**
+
 - `google-calendar-events`
 
 **Initial Sync:** Events in time range (90 days past to 365 days future)
@@ -1246,10 +1257,12 @@ class KnowledgeIntegration(OrganisationBase):
 ### Email Category (Reserved)
 
 **Placeholder for:**
+
 - Gmail
 - Outlook
 
 **Data Types (future):**
+
 - `messages`: Email messages
 - `threads`: Email threads
 
@@ -1339,26 +1352,31 @@ logger.info(
 ## Migration Path
 
 ### Phase 1: Foundation (Week 1)
+
 ✅ Database schema (tables, indexes, migrations)
 ✅ Service layer (SyncService)
 ✅ Worker task scaffolding
 
 ### Phase 2: CRM Implementation (Week 2)
+
 ✅ HubSpot handler (contacts, deals, companies)
 ✅ Webhook handler enhancement (sync webhook support)
 ✅ Initial sync on auth webhook
 
 ### Phase 3: Calendar Implementation (Week 3)
+
 ✅ Google Calendar handler (events)
 ✅ Time-range based sync
 ✅ Incremental updates
 
 ### Phase 4: API & Frontend (Week 4)
+
 ✅ Read API for cached data
 ✅ Sync status API
 ✅ Frontend integration (display synced data)
 
 ### Phase 5: Optimization (Ongoing)
+
 - Performance tuning (batch sizes, concurrency)
 - Advanced error handling (circuit breakers)
 - Monitoring dashboards
@@ -1385,6 +1403,7 @@ The system is designed to start with HubSpot (CRM) and Google Calendar, with cle
 ## Quick Reference
 
 ### Key Documents
+
 | Document | Purpose | Audience |
 |----------|---------|----------|
 | [Data Sync Flow](./data-sync-flow.md) | Complete end-to-end sync process with timings, examples, and troubleshooting | Developers, DevOps |
@@ -1394,6 +1413,7 @@ The system is designed to start with HubSpot (CRM) and Google Calendar, with cle
 | [OAuth Data Flow](../../API%20Documentation/oauth-data-flow.md) | OAuth connection establishment | API Developers |
 
 ### Common Tasks
+
 | Task | See Document | Section |
 |------|--------------|---------|
 | Understand sync flow | [Data Sync Flow](./data-sync-flow.md) | Complete Flow Diagram |
@@ -1404,6 +1424,7 @@ The system is designed to start with HubSpot (CRM) and Google Calendar, with cle
 | Test sync | [Data Sync Flow](./data-sync-flow.md) | Testing the Flow |
 
 ### Current Status (October 2025)
+
 - ✅ **Production Ready**: Comprehensive error handling, logging, and monitoring
 - ✅ **Google Calendar**: Fully implemented with incremental sync
 - ⏳ **HubSpot CRM**: Architecture ready, implementation pending

@@ -2,7 +2,7 @@
 
 ## Base URL
 
-```
+```text
 /users/crm
 ```
 
@@ -439,7 +439,7 @@ export interface ApiEnvelope<T> {
 
 ## 1. List Deals (Paginated)
 
-### Endpoint
+### Endpoint for List Deals
 
 ```http
 GET /users/crm/deals?limit=20&cursor=<opaque>&statuses=open&statuses=won&pipeline_ids=<uuid>&owner_external_ids=<id>&q=enterprise
@@ -447,26 +447,26 @@ GET /users/crm/deals?limit=20&cursor=<opaque>&statuses=open&statuses=won&pipelin
 
 > **Note:** Always call `/users/crm/deals` with no trailing slash. FastAPI normalizes routes and will respond with a `307 Temporary Redirect` when the request includes an extra `/`, so use the canonical path to avoid the extra hop.
 
-### Description
+### Description for List Deals
 
 Returns a cursor-paginated list of CRM deals for the current organisation with optional filters. Ordered by `created_at DESC, deal_id DESC` for consistent pagination.
 
-### Query Parameters
+### Query Parameters for List Deals
 
 | Parameter            | Type           | Required | Description                                                       |
 |---------------------|----------------|----------|-------------------------------------------------------------------|
 | `limit`             | integer        | No       | Items per page (1..100, default 20)                               |
 | `cursor`            | string         | No       | Opaque cursor from previous response                              |
-| `statuses`          | array<string>  | No       | Filter by status (`open`, `won`, `lost`, `closed`; repeat param) |
-| `pipeline_ids`      | array<UUID>    | No       | Filter by pipeline UUIDs (repeat parameter)                       |
-| `owner_external_ids`| array<string>  | No       | Filter by owner external IDs from CRM (repeat parameter)          |
+| `statuses`          | array&lt;string&gt;  | No       | Filter by status (`open`, `won`, `lost`, `closed`; repeat param) |
+| `pipeline_ids`      | array&lt;UUID&gt;    | No       | Filter by pipeline UUIDs (repeat parameter)                       |
+| `owner_external_ids`| array&lt;string&gt;  | No       | Filter by owner external IDs from CRM (repeat parameter)          |
 | `min_amount`        | number         | No       | Filter by minimum deal amount                                     |
 | `max_amount`        | number         | No       | Filter by maximum deal amount                                     |
 | `min_close_date`    | string         | No       | Filter by minimum close date (ISO8601)                            |
 | `max_close_date`    | string         | No       | Filter by maximum close date (ISO8601)                            |
 | `q`                 | string         | No       | Case-insensitive substring match on deal name                     |
 
-### Success Response (200)
+### Success Response (200) for List Deals
 
 ```json
 {
@@ -501,7 +501,7 @@ Returns a cursor-paginated list of CRM deals for the current organisation with o
 }
 ```
 
-### Notes
+### Notes for List Deals
 
 - Empty `items` array with `cursor: null` indicates no results
 - Cursor is `null` when no more pages exist
@@ -509,7 +509,7 @@ Returns a cursor-paginated list of CRM deals for the current organisation with o
 - All filters are ANDed together
 - Multiple values for the same filter (e.g., multiple statuses) are ORed
 
-### Error Responses
+### Error Responses for List Deals
 
 - `400 Bad Request` — invalid cursor or filter values
 
@@ -532,7 +532,7 @@ Returns a cursor-paginated list of CRM deals for the current organisation with o
   }
   ```
 
-### Example cURL
+### Example cURL for List Deals
 
 ```bash
 curl -X GET "$BASE_URL/users/crm/deals?limit=20&statuses=open&statuses=won&q=enterprise" \
@@ -540,7 +540,7 @@ curl -X GET "$BASE_URL/users/crm/deals?limit=20&statuses=open&statuses=won&q=ent
   -H "Accept: application/json"
 ```
 
-### Example TypeScript
+### Example TypeScript for List Deals
 
 ```typescript
 async function listDeals(params: ListDealsParams): Promise<DealsPage> {
@@ -569,21 +569,21 @@ async function listDeals(params: ListDealsParams): Promise<DealsPage> {
 
 ## 2. Get Deal Statistics
 
-### Endpoint
+### Endpoint for Get Deal Statistics
 
 ```http
 GET /users/crm/deals/stats
 ```
 
-### Description
+### Description for Get Deal Statistics
 
 Returns aggregate statistics for all CRM deals in the organisation. Useful for dashboard widgets and overview cards.
 
-### Authentication
+### Authentication for Get Deal Statistics
 
 Required
 
-### Success Response (200)
+### Success Response (200) for Get Deal Statistics
 
 ```json
 {
@@ -618,19 +618,19 @@ Required
 | `total_amount`   | number \| null        | Sum of all deal amounts (null if no amounts)         |
 | `average_amount` | number \| null        | Average deal amount (null if no amounts)             |
 
-### Notes
+### Notes for Get Deal Statistics
 
 - Amounts are calculated from deals with non-null `amount` values
 - Pipelines without names are excluded from `by_pipeline`
 - Statistics exclude soft-deleted deals
 - Currency is not normalized; `total_amount` and `average_amount` mix currencies
 
-### Error Responses
+### Error Responses for Get Deal Statistics
 
 - `429 Too Many Requests` — rate limit exceeded
 - `500 Internal Server Error` — unexpected error
 
-### Example cURL
+### Example cURL for Get Deal Statistics
 
 ```bash
 curl -X GET "$BASE_URL/users/crm/deals/stats" \
@@ -638,7 +638,7 @@ curl -X GET "$BASE_URL/users/crm/deals/stats" \
   -H "Accept: application/json"
 ```
 
-### Example TypeScript
+### Example TypeScript for Get Deal Statistics
 
 ```typescript
 async function getDealsStats(): Promise<DealsStats> {
@@ -659,27 +659,27 @@ async function getDealsStats(): Promise<DealsStats> {
 
 ## 3. Get Deal Details
 
-### Endpoint
+### Endpoint for Get Deal Details
 
 ```http
 GET /users/crm/deals/{deal_id}
 ```
 
-### Description
+### Description for Get Deal Details
 
 Retrieves full details for a specific CRM deal by its internal UUID. Returns all available fields including metadata, associations, and activity timeline.
 
-### Authentication
+### Authentication for Get Deal Details
 
 Required
 
-### Path Parameters
+### Path Parameters for Get Deal Details
 
 | Parameter | Type | Required | Description                 |
 |-----------|------|----------|-----------------------------|
 | `deal_id` | UUID | Yes      | Internal deal UUID          |
 
-### Success Response (200)
+### Success Response (200) for Get Deal
 
 ```json
 {
@@ -812,7 +812,7 @@ Required
 }
 ```
 
-### Error Responses
+### Error Responses for Get Deal Details
 
 - `404 Not Found` — deal does not exist or access denied
 
@@ -827,7 +827,7 @@ Required
 - `429 Too Many Requests` — rate limit exceeded
 - `500 Internal Server Error` — unexpected error
 
-### Example cURL
+### Example cURL for Get Deal Details
 
 ```bash
 curl -X GET "$BASE_URL/users/crm/deals/f47ac10b-58cc-4372-a567-0e02b2c3d479" \
@@ -835,7 +835,7 @@ curl -X GET "$BASE_URL/users/crm/deals/f47ac10b-58cc-4372-a567-0e02b2c3d479" \
   -H "Accept: application/json"
 ```
 
-### Example TypeScript
+### Example TypeScript for Get Deal Details
 
 ```typescript
 async function getDealById(dealId: string): Promise<DealDetail> {
@@ -937,27 +937,27 @@ try {
 
 ## 4. List Deal Tasks
 
-### Endpoint
+### Endpoint for List Deal Tasks
 
 ```http
 GET /users/crm/deals/{deal_id}/tasks
 ```
 
-### Description
+### Description for List Deal Tasks
 
 Returns a cursor-paginated list of all tasks linked to the specified deal. Use this for the full Tasks tab or when you need filters beyond the right-rail widget (status, priority, type).
 
-### Query Parameters
+### Query Parameters for List Deal Tasks
 
 | Parameter   | Type         | Required | Description                                     |
 |-------------|--------------|----------|-------------------------------------------------|
 | `limit`     | integer      | No       | Items per page (1..100, default 50)             |
 | `cursor`    | string       | No       | Opaque cursor from previous response            |
-| `statuses`  | array<string> | No      | Filter by task status (repeat parameter)        |
-| `priorities`| array<string> | No      | Filter by priority (repeat parameter)           |
-| `task_types`| array<string> | No      | Filter by task type/category (repeat parameter) |
+| `statuses`  | array&lt;string&gt; | No      | Filter by task status (repeat parameter)        |
+| `priorities`| array&lt;string&gt; | No      | Filter by priority (repeat parameter)           |
+| `task_types`| array&lt;string&gt; | No      | Filter by task type/category (repeat parameter) |
 
-### Success Response (200)
+### Success Response (200) for List Deal Tasks
 
 ```json
 {
@@ -988,7 +988,7 @@ Returns a cursor-paginated list of all tasks linked to the specified deal. Use t
 }
 ```
 
-### Notes
+### Notes for List Deal Tasks
 
 - `is_overdue` is computed server-side to avoid timezone drift on the client.
 - Ordering is `created_at DESC, task_id DESC` for stable pagination.
@@ -997,17 +997,17 @@ Returns a cursor-paginated list of all tasks linked to the specified deal. Use t
 
 ## 5. Get Task Detail
 
-### Endpoint
+### Endpoint for Get Task Detail
 
 ```http
 GET /users/crm/tasks/{task_id}
 ```
 
-### Description
+### Description for Get Task Detail
 
 Returns the full payload for a single task (body, reminders, metadata). Use when clicking a task card to open the drawer/editor.
 
-### Success Response (200)
+### Success Response (200) for Get Task Detail
 
 ```json
 {
@@ -1042,7 +1042,7 @@ Returns the full payload for a single task (body, reminders, metadata). Use when
 }
 ```
 
-### Notes
+### Notes for Get Task Detail
 
 - Returns `404` if the task does not belong to the authenticated organisation.
 - `properties` and `metrics` echo any CRM-specific custom payloads for advanced use cases.

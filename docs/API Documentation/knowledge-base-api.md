@@ -1,14 +1,17 @@
 # Knowledge Base API Documentation
 
 ## Base URL
-```
+
+```text
 /users/knowledge
 ```
 
 ---
 
 ## Response Envelope
+
 All endpoints return the shared `GenericResponse` envelope.
+
 ```json
 {
   "status": "SUCCESS | ERROR",
@@ -20,12 +23,14 @@ All endpoints return the shared `GenericResponse` envelope.
 ---
 
 ## Authentication
+
 - Required: Bearer token (`Authorization: Bearer <access_token>`)
 - User identity (organisation, user, role) resolved from the token; clients never pass these explicitly
 
 ---
 
 ## Rate Limiting (defaults)
+
 - Write endpoints (`POST`, `DELETE`): ~15/min, 100/hour per user
 - Read endpoints (`GET`): ~60/min, 1000/hour per user
 - On limit breach: `429 Too Many Requests` with `Retry-After`
@@ -33,6 +38,7 @@ All endpoints return the shared `GenericResponse` envelope.
 ---
 
 ## Status Lifecycle
+
 | Status            | Meaning                                                     | UI Guidance                           |
 |-------------------|-------------------------------------------------------------|----------------------------------------|
 | `pending_upload`  | File registered, waiting for blob upload                    | Show "Waiting for upload" badge        |
@@ -46,18 +52,22 @@ All endpoints return the shared `GenericResponse` envelope.
 
 ## 1. Batch Presign Upload URLs
 
-### Endpoint
+### Batch Presign Upload URLs Endpoint
+
 ```http
 POST /users/knowledge/presign/batch
 ```
 
-### Description
+### Batch Presign Upload URLs Description
+
 Registers one or more files and returns SAS upload URLs so the browser can upload directly to storage. Partial success is supported.
 
-### Authentication
+### Batch Presign Upload URLs Authentication
+
 Required
 
-### Request Body
+### Batch Presign Upload URLs Request Body
+
 ```json
 {
   "files": [
@@ -69,6 +79,7 @@ Required
 ```
 
 ### Request Fields
+
 | Field             | Type    | Required | Description                                      |
 |-------------------|---------|----------|--------------------------------------------------|
 | `files`           | array   | Yes      | File descriptors; at least one required          |
@@ -78,7 +89,8 @@ Required
 | `default_filters` | object  | No       | Metadata auto-applied to each source             |
 | `client_batch_id` | string  | No       | Client correlation token (<= 100 characters)    |
 
-### Success Response (200)
+### Batch Presign Upload URLs Success Response (200)
+
 ```json
 {
   "status": "SUCCESS",
@@ -102,6 +114,7 @@ Required
 ```
 
 ### Error Response (200 with partial errors)
+
 ```json
 {
   "status": "SUCCESS",
@@ -128,6 +141,7 @@ Required
 ```
 
 ### Error Response (400)
+
 ```json
 {
   "status": "ERROR",
@@ -140,18 +154,22 @@ Required
 
 ## 2. Batch Finalize Uploads
 
-### Endpoint
+### Batch Finalize Uploads Endpoint
+
 ```http
 POST /users/knowledge/finalize/batch
 ```
 
-### Description
+### Batch Finalize Uploads Description
+
 Marks uploaded files as ready for processing and enqueues extraction jobs. Returns per-file success and error details.
 
-### Authentication
+### Batch Finalize Uploads Authentication
+
 Required
 
 ### Request Body
+
 ```json
 {
   "files": [
@@ -160,7 +178,8 @@ Required
 }
 ```
 
-### Success Response (200)
+### Batch Finalize Uploads Success Response (200)
+
 ```json
 {
   "status": "SUCCESS",
@@ -179,6 +198,7 @@ Required
 ```
 
 ### Partial Error Response (200)
+
 ```json
 {
   "status": "SUCCESS",
@@ -193,21 +213,25 @@ Required
 ```
 
 ### Error Response (500)
+
 Returned when all finalize operations fail.
 
 ---
 
 ## 3. Get Source Status
 
-### Endpoint
+### Get Source Status Endpoint
+
 ```http
 GET /users/knowledge/source/{source_id}
 ```
 
-### Description
+### Get Source Status Description
+
 Returns the latest status, metadata, and optional read SAS for a single knowledge source.
 
-### Success Response (200)
+### Get Source Status Success Response (200)
+
 ```json
 {
   "status": "SUCCESS",
@@ -231,7 +255,8 @@ Returns the latest status, metadata, and optional read SAS for a single knowledg
 }
 ```
 
-### Error Responses
+### Get Source Status Error Responses
+
 - `404` when the source does not exist or access is denied
 - `500` for unexpected errors
 
@@ -239,20 +264,24 @@ Returns the latest status, metadata, and optional read SAS for a single knowledg
 
 ## 4. Stream Source Updates (SSE)
 
-### Endpoint
+### Stream Source Updates Endpoint
+
 ```http
 GET /users/knowledge/sources/stream?source_ids=<uuid>&source_ids=<uuid>
 ```
 
-### Description
+### Stream Source Updates Description
+
 Streams realtime status updates for one or more sources using Server-Sent Events.
 
-### Query Parameters
+### Stream Source Updates Query Parameters
+
 | Parameter    | Type      | Required | Description                                           |
 |--------------|-----------|----------|-------------------------------------------------------|
-| `source_ids` | array<UUID> | No       | Restrict stream to specific sources (repeat param)    |
+| `source_ids` | array[UUID] | No       | Restrict stream to specific sources (repeat param)    |
 
-### Event Payload Example
+### Stream Source Updates Event Payload Example
+
 ```json
 {
   "source_id": "d7b2f0cd-4c9c-44a8-9f2a-998af8db6c34",
@@ -265,7 +294,8 @@ Streams realtime status updates for one or more sources using Server-Sent Events
 }
 ```
 
-### Notes
+### Stream Source Updates Notes
+
 - Heartbeats every ~25s (event `ping`).
 - Stream timeout after ~15 minutes of inactivity.
 - Use `Last-Event-ID` header to resume after transient disconnects.
@@ -274,25 +304,29 @@ Streams realtime status updates for one or more sources using Server-Sent Events
 
 ## 5. List Sources (Paginated)
 
-### Endpoint
+### List Sources Endpoint
+
 ```http
 GET /users/knowledge/sources?limit=20&cursor=<opaque>&statuses=completed&source_types=file&q=report&include_urls=true
 ```
 
-### Description
+### List Sources Description
+
 Returns a cursor-paginated list of knowledge sources with optional filters.
 
-### Query Parameters
+### List Sources Query Parameters
+
 | Parameter      | Type           | Required | Description                                                       |
 |----------------|----------------|----------|-------------------------------------------------------------------|
 | `limit`        | integer        | No       | Items per page (1..100, default 20)                               |
 | `cursor`       | string         | No       | Opaque cursor from previous response                              |
-| `statuses`     | array<string>  | No       | Filter by status (repeat parameter)                               |
-| `source_types` | array<string>  | No       | Filter by type (`file`, `integration`)                            |
+| `statuses`     | array[string]  | No       | Filter by status (repeat parameter)                               |
+| `source_types` | array[string]  | No       | Filter by type (`file`, `integration`)                            |
 | `q`            | string         | No       | Case-insensitive substring match on filename                      |
 | `include_urls` | boolean        | No       | Include signed URLs in payload (default `false`)                  |
 
-### Success Response (200)
+### List Sources Success Response (200)
+
 ```json
 {
   "status": "SUCCESS",
@@ -318,7 +352,8 @@ Returns a cursor-paginated list of knowledge sources with optional filters.
 }
 ```
 
-### Error Responses
+### List Sources Error Responses
+
 - `400` for invalid filters or cursor
 - `500` for unexpected errors
 
@@ -326,20 +361,24 @@ Returns a cursor-paginated list of knowledge sources with optional filters.
 
 ## 6. Generate Download URL
 
-### Endpoint
+### Generate Download URL Endpoint
+
 ```http
 GET /users/knowledge/source/{source_id}/download?expires_minutes=120
 ```
 
-### Description
+### Generate Download URL Description
+
 Generates a temporary read SAS URL for the original file.
 
-### Query Parameters
+### Generate Download URL Query Parameters
+
 | Parameter        | Type    | Required | Description                              |
 |------------------|---------|----------|------------------------------------------|
 | `expires_minutes`| integer | No       | 1..720, default 120 minutes               |
 
-### Success Response (200)
+### Generate Download URL Success Response (200)
+
 ```json
 {
   "status": "SUCCESS",
@@ -352,7 +391,8 @@ Generates a temporary read SAS URL for the original file.
 }
 ```
 
-### Error Responses
+### Generate Download URL Error Responses
+
 - `404` if source missing or access denied
 - `500` unexpected
 
@@ -360,15 +400,18 @@ Generates a temporary read SAS URL for the original file.
 
 ## 7. Retrieve Aggregated Stats
 
-### Endpoint
+### Retrieve Aggregated Stats Endpoint
+
 ```http
 GET /users/knowledge/sources/stats
 ```
 
-### Description
+### Retrieve Aggregated Stats Description
+
 Returns aggregate counts for dashboard widgets.
 
-### Success Response (200)
+### Retrieve Aggregated Stats Success Response (200)
+
 ```json
 {
   "status": "SUCCESS",
@@ -392,15 +435,18 @@ Returns aggregate counts for dashboard widgets.
 
 ## 8. Request Deletion
 
-### Endpoint
+### Request Deletion Endpoint
+
 ```http
 DELETE /users/knowledge/source/{source_id}
 ```
 
-### Description
+### Request Deletion Description
+
 Soft-deletes a knowledge source and enqueues background cleanup. Returns `202 Accepted` when queued.
 
-### Success Response (202)
+### Request Deletion Success Response (202)
+
 ```json
 {
   "status": "SUCCESS",
@@ -412,16 +458,19 @@ Soft-deletes a knowledge source and enqueues background cleanup. Returns `202 Ac
 }
 ```
 
-### Idempotent Response
+### Request Deletion Idempotent Response
+
 If already deleted, returns `SUCCESS` with `status: "deleted"`.
 
-### Error Responses
+### Request Deletion Error Responses
+
 - `404` when source missing or not owned by caller
 - `500` when background task could not be enqueued
 
 ---
 
 ## Error Codes Summary
+
 | HTTP Code | Reason                                              | Suggested Action                         |
 |-----------|------------------------------------------------------|------------------------------------------|
 | 400       | Validation failure (missing fields, invalid cursor)  | Fix request payload                      |
@@ -435,6 +484,7 @@ If already deleted, returns `SUCCESS` with `status: "deleted"`.
 ---
 
 ## Frontend Integration Notes
+
 1. Presign -> upload -> finalize sequence is required per file.
 2. Use SSE stream for real-time status; reconnect with backoff on network errors.
 3. Cache list responses briefly, but refresh after finalize or delete actions.
@@ -443,5 +493,6 @@ If already deleted, returns `SUCCESS` with `status: "deleted"`.
 ---
 
 ## Related References
+
 - Functional overview: `docs/Functional Documentation/knowledge-base.md`
 - Technical implementation: `docs/Technical Documentation/knowledge-base.md`
