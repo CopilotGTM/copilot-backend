@@ -1,19 +1,22 @@
-Chat Attachments Upload & Download (Technical)
+# Chat Attachments Upload & Download (Technical)
 
 Scope: src/service/chat, src/api/routers/chat_attachments, src/api/schemas/upload_models.py
 
 Overview
+
 - Direct-to-blob uploads via Azure SAS: client requests upload URL(s), uploads bytes directly, then finalizes.
 - Background processing via Celery: checksum (optional), thumbnails for images/PDFs, status updates.
 - Real-time status via SSE over Redis pub/sub.
 - Short-lived read SAS URLs for secure downloads.
 
 Mount Points
+
 - Routers are mounted under both prefixes for UI compatibility:
   - `/chats/upload/*` and `/chats/attachment/*`
   - `/users/chats/upload/*`
 
 API Surface
+
 - POST `/presign` — single-file presign (returns `PresignResponse`).
 - POST `/presign/batch` — batch presign (per-file results; partial success allowed).
 - POST `/finalize` — finalize one upload (verifies blob; enqueues worker).
@@ -23,12 +26,14 @@ API Surface
 - GET `/attachment/{attachment_id}/download` — short-lived read SAS URL for original blob.
 
 Response Envelope
+
 - All endpoints respond with `GenericResponse[T]` (see `src/api/schemas/base_models.py`):
   - `status`: "SUCCESS" | "ERROR"
   - `message`: human-readable
   - `data`: payload (model below) or `null` on error
 
 Pydantic Schemas (Requests/Responses)
+
 - Source of truth: `src/api/schemas/upload_models.py`
 - Optional fields are declared as `Optional[...]` or have defaults; all others are required.
 
@@ -107,11 +112,15 @@ class AttachmentEventUpdate(BaseModel):
 ```
 
 Examples
+
 - Presign request
+
 ```json
 { "filename": "report.pdf", "mimetype": "application/pdf", "size_bytes": 123456 }
 ```
+
 - Presign response
+
 ```json
 {
   "attachment_id": "2b5a4d8e-...",
@@ -125,7 +134,9 @@ Examples
   "error_message": null
 }
 ```
+
 - SSE status frame data (array)
+
 ```json
 [
   {
@@ -139,6 +150,7 @@ Examples
 ```
 
 Services and Infra
+
 - Upload service: `src/service/chat/chat_attachments_service.py`
   - Validates ownership and org scoping; generates Azure SAS; enqueues Celery tasks.
 - SSE service: `src/service/chat/chat_attachments_sse_service.py`
@@ -148,6 +160,7 @@ Services and Infra
 - Celery worker: `src/workers/chat_worker/celery_app.py`, task `attachments.post_upload`.
 
 Upload Flow
+
 ```mermaid
 sequenceDiagram
   autonumber
@@ -172,6 +185,7 @@ sequenceDiagram
 ```
 
 SSE Flow
+
 ```mermaid
 sequenceDiagram
   participant UI
@@ -189,6 +203,7 @@ sequenceDiagram
 ```
 
 Download Flow
+
 ```mermaid
 flowchart LR
   A[Click download] --> B[API validates ownership/status]
@@ -197,15 +212,18 @@ flowchart LR
 ```
 
 Tenancy and Security
+
 - DB session is org-scoped via `get_org_session`; queries constrain by `organisation_id` and `user_id`.
 - SAS links are short-lived and scoped: write for upload, read for download with optional filename.
 - SSE limits updates to the current user's attachments; explicit ID filtering when supplied.
 
 Error Handling
+
 - Domain errors raised with HTTP-aware exceptions; batch responses accumulate per-file errors.
 - Envelope always returned; `status` and `message` reflect outcome.
 
 Configuration
+
 - Upload limits from `chat_file_upload_config`:
   - `MAX_UPLOAD_FILE_SIZE_BYTES` (~50MB default)
   - `ALLOWED_MIMETYPES` (PDFs, images, office docs)
@@ -214,11 +232,12 @@ Configuration
 - Celery: chat worker `chat_worker`; task `attachments.post_upload`.
 
 Data Model Highlights
+
 - `Attachment`: `status`, `storage_path`, `thumbnail_small_path`, `thumbnail_medium_path`, `checksum`, `virus_scan_status`, timestamps.
 - Terminal statuses: `completed`, `failed`.
 
 Operational Notes
+
 - Loggers: `upload_handler`, `attachment_download_handler`, `attachments_post_upload_task`, `attachment_sse_service`, `azure_org_blob_storage`, `redis_pubsub`.
 - SSE timeouts emit `timeout`; client should reconnect with backoff when needed.
 - Ensure async clients are closed in routers to avoid resource warnings.
-

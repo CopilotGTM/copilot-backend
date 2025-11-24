@@ -271,4 +271,3 @@ class SyncedEntity(SyncedRecordMixin, table=True):
 8) Sync: for provider data, inherit from `SyncedRecordMixin` and ensure `(integration_id, external_id)` uniqueness.
 9) Migrations: add comments, names for constraints, and reversible `downgrade()`.
 10) Tests: basic CRUD + RLS/tenant scoping where applicable.
-

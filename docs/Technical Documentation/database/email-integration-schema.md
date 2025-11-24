@@ -146,7 +146,7 @@ kb_source_id        # Reference to OrganisationSource (for linking)
 
 **Summary Generation Process**:
 
-```
+```text
 Night 1 (Day's emails synced):
 ├─ 10 emails in thread "Acme Pricing Discussion"
 ├─ Raw emails stored in `emails` table (no embeddings)
@@ -186,7 +186,7 @@ Night 3 (KB export at 3 AM):
 
 ### Phase 1: Email Sync (Real-time/Hourly)
 
-```
+```text
 Gmail/Outlook API
     ↓
 Sync monitored folders (is_monitored=true)
@@ -202,7 +202,7 @@ No embeddings yet (cost optimization)
 
 ### Phase 2: Summary Generation (Nightly at 2 AM)
 
-```
+```sql
 Query: SELECT thread_id, array_agg(email_id) 
        FROM emails 
        WHERE received_at >= CURRENT_DATE - 1
@@ -219,7 +219,7 @@ For each thread:
 
 ### Phase 3: Knowledge Base Export (Nightly at 3 AM)
 
-```
+```text
 Query: SELECT * FROM email_thread_summaries 
        WHERE exported_to_kb=false
     ↓
@@ -235,7 +235,7 @@ Now searchable in unified RAG!
 
 ### Phase 4: User Query (Real-time)
 
-```
+```text
 User: "What's the latest on Acme pricing?"
     ↓
 Vector search across organisation_documents (includes email summaries)

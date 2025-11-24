@@ -52,7 +52,7 @@ Implemented automatic Teams channel synchronization with both scheduled and on-d
 
 ## Data Flow
 
-```
+```text
 1. Scheduled Sync (Every 3 hours)
    └─> sync_teams_channels_task (no args)
        └─> Gets all approved orgs

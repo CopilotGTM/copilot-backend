@@ -2,7 +2,7 @@
 
 ## Base URL
 
-```
+```text
 /users/integrations
 ```
 
@@ -15,6 +15,7 @@
 ```http
 GET /users/integrations/available
 ```
+
 | `connected_integrations` | array | List of user's connected instances (see Connected Integration Fields below) |
 | `total_available` | integer | Total number of integration types |
 | `total_connected` | integer | Total connected integrations |
@@ -252,13 +253,13 @@ const orgIntegrations = allIntegrations.filter(
 
 ## 2. Initiate OAuth Flow (Create Nango Connect Session)
 
-### Endpoint
+### Initiate OAuth Flow Endpoint
 
 ```http
 POST /users/integrations/oauth/authorize
 ```
 
-### Description
+### Initiate OAuth Flow Description
 
 Creates a Nango Connect Session for the selected integration and returns a `session_token` that the frontend uses with the Nango Connect UI.
 
@@ -272,7 +273,7 @@ Creates a Nango Connect Session for the selected integration and returns a `sess
 
 **Note:** This is the modern Nango Connect flow - no callback endpoint is involved.
 
-### Authentication
+### Initiate OAuth Flow Authentication
 
 Required - Bearer token
 
@@ -291,7 +292,7 @@ These are automatically sent to Nango and will be returned in the webhook.
 - `integration_scope` - Set based on integration type (ORGANIZATION for HubSpot/Salesforce, USER for Google Drive)
 - `integration_email` - Extracted from OAuth provider's response (e.g., connected account email)
 
-### Request Body
+### Initiate OAuth Flow Request Body
 
 ```json
 {
@@ -300,7 +301,7 @@ These are automatically sent to Nango and will be returned in the webhook.
 }
 ```
 
-### Request Fields
+### Initiate OAuth Flow Request Fields
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -314,7 +315,7 @@ These are automatically sent to Nango and will be returned in the webhook.
 - ❌ `email` - Retrieved from User model automatically
 - ❌ `display_name` - Generated from User model automatically
 
-### Response (200 OK)
+### Initiate OAuth Flow Response (200 OK)
 
 ```json
 {
@@ -328,7 +329,7 @@ These are automatically sent to Nango and will be returned in the webhook.
 }
 ```
 
-### Response Fields
+### Initiate OAuth Flow Response Fields
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -336,7 +337,7 @@ These are automatically sent to Nango and will be returned in the webhook.
 | `integration_type` | string | Integration type being connected |
 | `expires_at` | string | ISO 8601 timestamp when session token expires |
 
-### Error Responses
+### Initiate OAuth Flow Error Responses
 
 ```json
 {
@@ -346,9 +347,9 @@ These are automatically sent to Nango and will be returned in the webhook.
 }
 ```
 
-### Frontend Implementation (Nango Connect UI)
+### Initiate OAuth Flow Frontend Implementation (Nango Connect UI)
 
-**Step 1: Request session token from backend**
+### Step 1: Request session token from backend
 
 ```typescript
 const initiateOAuth = async (integrationType: string) => {
@@ -375,7 +376,7 @@ const initiateOAuth = async (integrationType: string) => {
 };
 ```
 
-**Step 2: Use Nango Connect UI**
+### Step 2: Use Nango Connect UI
 
 ```typescript
 import Nango from '@nangohq/frontend';
@@ -401,7 +402,7 @@ const openNangoConnect = (sessionToken: string) => {
 };
 ```
 
-**Step 3: Handle completion**
+### Step 3: Handle Completion
 
 ```typescript
 const refreshIntegrations = async () => {
@@ -414,7 +415,7 @@ const refreshIntegrations = async () => {
 };
 ```
 
-### 🔄 Data Flow: How User & Organization Information is Handled
+### Initiate OAuth Flow Data Flow
 
 **See complete data flow documentation:** [`oauth-data-flow.md`](./oauth-data-flow.md)
 
@@ -462,7 +463,7 @@ const refreshIntegrations = async () => {
 
 **Everything is handled automatically by the backend!**
 
-### OAuth Scopes (Backend Managed)
+### Initiate OAuth Flow Scopes (Backend Managed)
 
 OAuth scopes are managed server-side based on integration requirements; the frontend does not pass scopes.
 
@@ -475,7 +476,7 @@ OAuth scopes are managed server-side based on integration requirements; the fron
 - HubSpot: `crm.objects.contacts.read`, `crm.objects.deals.read`, `crm.objects.companies.read`, `files`
 - Slack: `channels:read`, `channels:history`, `files:read`, `users:read`
 
-### Pydantic Models (Backend)
+### Initiate OAuth Flow Pydantic Models (Backend)
 
 ```python
 from pydantic import BaseModel, Field
@@ -511,7 +512,7 @@ class OAuthInitiateResponse(BaseModel):
     )
 ```
 
-### TypeScript Interfaces (Frontend)
+### Initiate OAuth Flow TypeScript Interfaces (Frontend)
 
 ```ts
 interface OAuthInitiateRequest {
@@ -530,19 +531,19 @@ interface OAuthInitiateResponse {
 
 ## 3. OAuth Callback (Automatic - Provider Calls This)
 
-### Endpoint
+### OAuth Callback Endpoint
 
 ```http
 GET /users/integrations/oauth/callback
 ```
 
-### Description
+### OAuth Callback Description
 
 **⚠️ This endpoint is NOT called by the frontend.** It's called automatically by the OAuth provider (HubSpot, Slack, etc.) after the user authorizes your application. This is part of the standard OAuth 2.0 flow.
 
 ### How It Works
 
-```
+```text
 1. User authorizes on HubSpot → HubSpot redirects to this callback
 2. Callback receives authorization code
 3. Backend exchanges code for access tokens (via Nango)
@@ -564,7 +565,7 @@ OAuth provider validates this request using registered callback URL and state pa
 
 ### Example Request (Called by HubSpot)
 
-```
+```http
 GET /users/integrations/oauth/callback
   ?code=abc123xyz789
   &state=random-security-token
@@ -577,7 +578,7 @@ Redirects user to frontend with status:
 
 **Success Redirect:**
 
-```
+```text
 https://yourfrontend.com/settings/integrations
   ?status=success
   &integration_id=123e4567-e89b-12d3-a456-426614174000
@@ -585,13 +586,13 @@ https://yourfrontend.com/settings/integrations
 
 **Error Redirect:**
 
-```
+```text
 https://yourfrontend.com/settings/integrations
   ?status=error
   &message=Error+description
 ```
 
-### Frontend Implementation
+### Disconnect Integration Frontend Implementation
 
 **Listen for OAuth completion:**
 
@@ -670,7 +671,7 @@ useEffect(() => {
 
 You must register this callback URL with each OAuth provider (HubSpot, Slack, etc.):
 
-```
+```text
 Production: https://api.yourapp.com/users/integrations/oauth/callback
 Development: http://localhost:8000/users/integrations/oauth/callback
 ```
@@ -713,17 +714,17 @@ This tells the backend where to redirect users after OAuth completion.
 
 ## 4. Disconnect Integration
 
-### Endpoint
+### Disconnect Integration Endpoint
 
 ```http
 DELETE /users/integrations/oauth/disconnect/{integration_id}
 ```
 
-### Description
+### Disconnect Integration Description
 
 Disconnects and deletes an integration, revoking OAuth tokens and removing all associated data.
 
-### Authentication
+### Disconnect Integration Authentication
 
 Required - Bearer token
 

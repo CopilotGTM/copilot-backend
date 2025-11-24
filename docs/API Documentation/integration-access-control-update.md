@@ -1,10 +1,13 @@
 # Integration Access Control Update
 
 ## Overview
+
 This document describes the new access control fields added to the integrations system to properly scope integration visibility and track integration ownership.
 
 ## Problem Statement
+
 Previously, the `knowledge_integrations` table only had `organisation_id`, meaning:
+
 - ❌ All users in an organization could see ALL integrations
 - ❌ No way to distinguish between personal (Google Drive) vs org-wide (HubSpot) integrations
 - ❌ No tracking of who created each integration
@@ -26,6 +29,7 @@ Previously, the `knowledge_integrations` table only had `organisation_id`, meani
 **File:** `3c69a1ff9b62_004_add_integration_access_control.py`
 
 **Upgrade Actions:**
+
 1. Add `created_by_user_id` column (UUID, NOT NULL with temp default)
 2. Add `created_by_admin` column (Boolean, default false)
 3. Add `integration_email` column (String 255, nullable)
@@ -34,35 +38,45 @@ Previously, the `knowledge_integrations` table only had `organisation_id`, meani
 6. Create composite index on `(organisation_id, integration_scope, created_by_user_id)`
 
 **Downgrade Actions:**
+
 - Drops all indexes and columns in reverse order
 
 ## Access Scope Types
 
 ### 1. Organization Scope (`organization`)
+
 **Use case:** Company-wide integrations like HubSpot, Salesforce, Slack
+
 - ✅ All users in organization can see the data
 - ✅ Usually one connection per organization
 - ✅ Typically created by admins
 - **Examples:** HubSpot CRM, Salesforce, Company Slack workspace
 
 ### 2. User Scope (`user`)
+
 **Use case:** Personal integrations like Google Drive, personal Dropbox
+
 - ✅ Only the creator can see the data
 - ✅ Each user has their own connection
 - ✅ Can be created by any member
 - **Examples:** Personal Google Drive, individual Dropbox
 
 ### 3. Team Scope (`team`) - Future
+
 **Use case:** Shared by specific team members
+
 - 🔜 Coming in future release
 
 ### 4. Role-Based Scope (`role_based`) - Future
+
 **Use case:** Access determined by user role
+
 - 🔜 Coming in future release
 
 ## Integration Email Field
 
 ### Purpose
+
 Stores the **external account email/username** that was connected during OAuth, NOT the internal user's email.
 
 ### Examples by Provider
@@ -76,7 +90,8 @@ Stores the **external account email/username** that was connected during OAuth, 
 | Microsoft 365 | `user@company.com` | Microsoft account email |
 
 ### Use Cases
-1. **UI Display**: "Connected as: sales@acme.com"
+
+1. **UI Display**: "Connected as: `sales@acme.com`"
 2. **Debugging**: Identify which account has auth issues
 3. **Multiple Accounts**: Distinguish between 2+ Google Drive connections
 4. **Audit Trail**: Track which external accounts are connected
@@ -86,6 +101,7 @@ Stores the **external account email/username** that was connected during OAuth, 
 ### IntegrationResponse Schema
 
 **Before:**
+
 ```json
 {
   "integration_id": "uuid",
@@ -98,6 +114,7 @@ Stores the **external account email/username** that was connected during OAuth, 
 ```
 
 **After:**
+
 ```json
 {
   "integration_id": "uuid",
@@ -117,6 +134,7 @@ Stores the **external account email/username** that was connected during OAuth, 
 ```
 
 ### IntegrationStatusResponse Schema
+
 Same additions as `IntegrationResponse`.
 
 ## Service Layer Changes
@@ -124,6 +142,7 @@ Same additions as `IntegrationResponse`.
 ### `IntegrationService.create_integration()`
 
 **New Parameters:**
+
 ```python
 async def create_integration(
     self,
@@ -305,12 +324,14 @@ INTEGRATION_METADATA = {
 ## Testing Checklist
 
 ### Database Migration
+
 - [ ] Run migration: `python -m migrations.migration_manager upgrade org`
 - [ ] Verify columns created: `created_by_user_id`, `created_by_admin`, `integration_email`, `integration_scope`
 - [ ] Verify indexes created
 - [ ] Test rollback: `python -m migrations.migration_manager downgrade org -1`
 
 ### API Testing
+
 - [ ] Create HubSpot integration as admin → verify `created_by_admin=true`, `integration_scope=organization`
 - [ ] Create Google Drive as member → verify `created_by_admin=false`, `integration_scope=user`
 - [ ] Verify `integration_email` is populated from OAuth metadata
@@ -318,6 +339,7 @@ INTEGRATION_METADATA = {
 - [ ] List integrations as member → see only org + own personal integrations
 
 ### Frontend Testing
+
 - [ ] Display integration email in UI
 - [ ] Show scope badges (Organization vs Personal)
 - [ ] Show "Created by Admin" badge when applicable

@@ -2,7 +2,7 @@
 
 ## Base URL
 
-```
+```text
 /users/integrations
 ```
 
@@ -10,13 +10,13 @@
 
 ## 1. List Available Integrations for Deal
 
-### Endpoint
+### List Deal Integrations Endpoint
 
 ```http
 GET /users/integrations/deals/{deal_id}/available
 ```
 
-### Description
+### List Deal Integrations Description
 
 Returns available integrations specifically for deal context (Slack and Teams).
 Shows which integrations are connected to the specified deal.
@@ -25,17 +25,17 @@ Shows which integrations are connected to the specified deal.
 - Organization-wide integrations (e.g., Slack)
 - User-specific integrations (e.g., Teams) belonging to the current user.
 
-### Authentication
+### List Deal Integrations Authentication
 
 Required - Bearer token
 
-### Request
+### List Deal Integrations Request
 
 **Path Parameters:**
 
 - `deal_id` (UUID, required): Context deal ID.
 
-### Response (200 OK)
+### List Deal Integrations Response (200 OK)
 
 ```json
 {
@@ -91,23 +91,23 @@ Required - Bearer token
 
 ## 2. List Channels for Integration
 
-### Endpoint
+### List Integration Channels Endpoint
 
 ```http
 GET /users/integrations/deals/{integration_id}/channels?deal_id={deal_id}
 ```
 
-### Description
+### List Integration Channels Description
 
 Fetch available channels/teams for a specific integration (e.g., Teams, Slack).
 This is used to populate the channel selection dropdown when linking a channel to a deal.
 If `deal_id` is provided, channels already linked to that deal will be excluded from the response.
 
-### Authentication
+### List Integration Channels Authentication
 
 Required - Bearer token
 
-### Request
+### List Integration Channels Request
 
 **Path Parameters:**
 
@@ -117,7 +117,7 @@ Required - Bearer token
 
 - `deal_id` (UUID, optional): ID of the deal to filter out already linked channels.
 
-### Response (200 OK)
+### List Integration Channels Response (200 OK)
 
 ```json
 {
@@ -142,22 +142,22 @@ Required - Bearer token
 
 ## 3. Link Channel to Deal
 
-### Endpoint
+### Link Channel Endpoint
 
 ```http
 POST /users/integrations/deals/{deal_id}/channels
 ```
 
-### Description
+### Link Channel Description
 
 Links a specific messaging channel (Slack/Teams) to a deal.
 This enables message syncing for that channel in the context of the deal.
 
-### Authentication
+### Link Channel Authentication
 
 Required - Bearer token
 
-### Request
+### Link Channel Request
 
 **Path Parameters:**
 
@@ -185,7 +185,7 @@ Required - Bearer token
 | `parent_id` | string\|null | Parent ID (e.g. Team ID) |
 | `parent_name` | string\|null | Parent Name |
 
-### Response (200 OK)
+### Link Channel Response (200 OK)
 
 ```json
 {
@@ -204,28 +204,28 @@ Required - Bearer token
 
 ## 4. Remove Channel from Deal
 
-### Endpoint
+### Remove Channel Endpoint
 
 ```http
 DELETE /users/integrations/deals/{deal_id}/channels/{channel_id}
 ```
 
-### Description
+### Remove Channel Description
 
 Unlink a messaging channel from a deal.
 
-### Authentication
+### Remove Channel Authentication
 
 Required - Bearer token
 
-### Request
+### Remove Channel Request
 
 **Path Parameters:**
 
 - `deal_id` (UUID, required): The ID of the deal.
 - `channel_id` (UUID, required): The internal ID of the channel to remove (not the external ID).
 
-### Response (200 OK)
+### Remove Channel Response (200 OK)
 
 ```json
 {

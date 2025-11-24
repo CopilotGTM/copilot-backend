@@ -208,6 +208,7 @@ def task_function(self, org_id: str, item_id: str):
 ### Database Access
 
 **Sync (Preferred)**:
+
 ```python
 session_gen = acquire_org_session(org_id)
 session = next(session_gen)
@@ -221,6 +222,7 @@ finally:
 ```
 
 **Async (When Needed)**:
+
 ```python
 from src.infra.database.factory import get_async_provider
 
@@ -237,6 +239,7 @@ result = asyncio.run(main())
 ### Status Publishing
 
 **Attachment Status**:
+
 ```python
 from src.infra.messaging.attachment_status_publish import publish_attachment_status
 from src.api.schemas.upload_models import AttachmentEventUpdate
@@ -249,6 +252,7 @@ publish_attachment_status(org_id, AttachmentEventUpdate(
 ```
 
 **Knowledge Source**:
+
 ```python
 from src.workers.knowledge_worker.services.progress import ProgressPublisher
 
@@ -257,6 +261,7 @@ publisher.publish(status=Status.EXTRACTING.value, progress=50)
 ```
 
 **Chat Frames**:
+
 ```python
 from src.infra.messaging.redis_streams import xadd_json_frame
 from src.infra.messaging.redis_channels import channel_for_chat_job
@@ -294,7 +299,7 @@ except ValidationError as e:
 
 ### Architecture
 
-```
+```text
 Nango Webhook → API Handler → Celery Task → Dispatcher → Fetcher → Adapter → Database
 ```
 
@@ -332,6 +337,7 @@ Nango Webhook → API Handler → Celery Task → Dispatcher → Fetcher → Ada
 ### Key Components
 
 **Nango Client** (`nango_client.py`):
+
 ```python
 async def proxy_request(provider_config_key, connection_id, endpoint, params):
     # Proxies API calls to provider via Nango
@@ -339,6 +345,7 @@ async def proxy_request(provider_config_key, connection_id, endpoint, params):
 ```
 
 **Provider Registry** (`providers/registry.py`):
+
 ```python
 _REGISTRY = {
     ("calendar", "google"): {"events": google_calendar_fetch},
@@ -346,6 +353,7 @@ _REGISTRY = {
 ```
 
 **Fetcher Signature**:
+
 ```python
 async def fetch_events(
     nango: NangoClient,

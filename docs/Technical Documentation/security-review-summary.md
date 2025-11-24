@@ -2,7 +2,8 @@
 
 ## Your Current Setup
 
-**What you have:**
+### What you have
+
 - ✅ Supabase for authentication (OAuth-based)
 - ✅ Access tokens (JWT) for API requests
 - ✅ Refresh tokens for token renewal
@@ -14,8 +15,9 @@
 - ✅ **Admin authentication with approval checks** (NEWLY IMPLEMENTED)
 - ✅ **Rate limiting on admin auth endpoints** (NEWLY IMPLEMENTED)
 
-**Location of security code:**
-```
+### Location of security code
+
+```text
 src/
 ├── api/routers/admin/
 │   ├── admin_auth_handler.py          # Admin login/logout endpoints
@@ -40,17 +42,21 @@ src/
 For a B2B SaaS application, you need **defense in depth** with multiple security layers:
 
 #### ✅ **Authentication Layer**
-```
+
+```text
 Manual Signup + SSO/SAML + MFA
 ```
+
 - **Manual signup** (email/password) for SMB customers - ✅ You have this via Supabase
 - **SSO/SAML** for enterprise customers - ❌ You DON'T have this
 - **MFA** for additional security - ❌ You DON'T have this
 
 #### ✅ **Authorization Layer**
-```
+
+```text
 RBAC (Role-Based Access Control) + ABAC (Attribute-Based Access Control)
 ```
+
 - Define roles (Admin, Manager, User, Viewer)
 - Assign permissions per role
 - Check permissions on every API call
@@ -58,9 +64,11 @@ RBAC (Role-Based Access Control) + ABAC (Attribute-Based Access Control)
 **You currently have:** Basic token validation only (no RBAC)
 
 #### ✅ **Token Security**
-```
+
+```text
 JWT Access Token (short-lived) + Refresh Token (long-lived) + Token Revocation
 ```
+
 - Access token: 15 minutes expiry - ❓ Check your config
 - Refresh token: 7 days with rotation - ❓ Check your config
 - Token revocation list - ✅ **IMPLEMENTED** (Redis-based blacklist)
@@ -69,9 +77,11 @@ JWT Access Token (short-lived) + Refresh Token (long-lived) + Token Revocation
 **NEWLY ADDED:** Redis-based token revocation service ✅
 
 #### ✅ **API Security**
-```
+
+```text
 Rate Limiting + Request Validation + CORS + HTTPS
 ```
+
 - Rate limiting: Prevent brute force attacks - ✅ **IMPLEMENTED** (admin auth endpoints)
 - Input validation: Pydantic models - ✅ You have this
 - CORS configuration - ❓ Check your config
@@ -80,9 +90,11 @@ Rate Limiting + Request Validation + CORS + HTTPS
 **NEWLY ADDED:** Rate limiting on admin login (3/min, 20/hr) and password reset (3/15min, 10/hr) ✅
 
 #### ✅ **Monitoring & Logging**
-```
+
+```text
 Audit Logs + Security Alerts + Anomaly Detection
 ```
+
 - Track all authentication events - ❌ Limited logging
 - Alert on suspicious activity - ❌ You DON'T have this
 - Log failed login attempts - ⚠️ Partial logging
@@ -114,9 +126,10 @@ Audit Logs + Security Alerts + Anomaly Detection
 
 #### ⚠️ **Critical Issues** → ✅ **Recently Addressed**
 
-1. **~~No Rate Limiting~~** ✅ **FIXED** 
-   ```
-   Status: IMPLEMENTED
+1. **~~No Rate Limiting~~** ✅ **FIXED**
+
+```text
+Status: IMPLEMENTED
    What: Rate limiting on admin auth endpoints
    Details:
    - Admin login: 3 attempts/minute, 20/hour
@@ -125,9 +138,10 @@ Audit Logs + Security Alerts + Anomaly Detection
    Implementation: SlowAPI with Redis backend
    ```
 
-2. **~~No Token Revocation~~** ✅ **FIXED**
-   ```
-   Status: IMPLEMENTED
+1. **~~No Token Revocation~~** ✅ **FIXED**
+
+```text
+Status: IMPLEMENTED
    What: Redis-based token blacklist with forced global sign-out
    Details:
    - Token revocation service using Redis
@@ -139,44 +153,50 @@ Audit Logs + Security Alerts + Anomaly Detection
    Implementation: Complete with TTL management
    ```
 
-3. **No SSO/SAML Support** 🟡 MEDIUM RISK (for enterprise sales)
-   ```
-   Impact: Can't sell to enterprise customers who require SSO
+1. **No SSO/SAML Support** 🟡 MEDIUM RISK (for enterprise sales)
+
+```text
+Impact: Can't sell to enterprise customers who require SSO
    Location: Not implemented
    Fix: Integrate WorkOS or Auth0 (3-5 days)
    ```
 
-4. **Limited Audit Logging** 🟡 MEDIUM RISK
-   ```
-   Impact: Can't track security events or comply with SOC 2
+1. **Limited Audit Logging** 🟡 MEDIUM RISK
+
+```text
+Impact: Can't track security events or comply with SOC 2
    Location: Scattered logging throughout
    Fix: Centralized audit log service (1 day)
    ```
 
-5. **No RBAC/ABAC** 🟡 MEDIUM RISK
-   ```
-   Impact: All authenticated users have same permissions
+1. **No RBAC/ABAC** 🟡 MEDIUM RISK
+
+```text
+Impact: All authenticated users have same permissions
    Location: No permission checking middleware
    Fix: Implement RBAC system (1 week)
    ```
 
-6. **No MFA Support** 🟢 LOW RISK (but nice to have)
-   ```
-   Impact: Less secure for high-value accounts
+1. **No MFA Support** 🟢 LOW RISK (but nice to have)
+
+    ```text
+    Impact: Less secure for high-value accounts
    Location: Not implemented
    Fix: Add TOTP-based MFA (3-4 days)
    ```
 
 #### 📊 **Security Score: 7.5/10** (Updated: November 2025)
 
-**Breakdown:**
+### Breakdown
+
 - Authentication: 8/10 (Supabase is solid)
 - Authorization: 5/10 (Token validation + admin approval checks) ⬆️ **IMPROVED**
 - Token Security: 8/10 (Revocation implemented) ⬆️ **IMPROVED**
 - API Security: 7/10 (Rate limiting on critical endpoints) ⬆️ **IMPROVED**
 - Monitoring: 4/10 (Basic logging only)
 
-**Recent Improvements (+1.5 points):**
+### Recent Improvements (+1.5 points)
+
 - ✅ Redis-based token revocation (+1.5 pts to Token Security)
 - ✅ Rate limiting on admin auth (+1.5 pts to API Security)
 - ✅ Admin approval/status enforcement (+1 pt to Authorization)
@@ -188,7 +208,7 @@ Audit Logs + Security Alerts + Anomaly Detection
 
 ### ✅ **Recommended Architecture**
 
-```
+```text
                     ┌─────────────────────┐
                     │   Frontend Login    │
                     └──────────┬──────────┘
@@ -251,6 +271,7 @@ Return app tokens
 #### **Phase 1: Keep Supabase for Manual Signup** ✅
 
 Your existing Supabase setup is perfect for:
+
 - Individual users
 - Small teams
 - Quick signups
@@ -261,6 +282,7 @@ Your existing Supabase setup is perfect for:
 #### **Phase 2: Add WorkOS for Enterprise SSO** 🆕
 
 Add WorkOS alongside Supabase for:
+
 - Enterprise customers
 - Companies with existing IdP (Okta, Azure AD)
 - SAML 2.0 / OIDC support
@@ -305,26 +327,32 @@ async def smart_login(request: LoginRequest):
 
 ### ✅ Week 1: Security Hardening - **COMPLETED**
 
-**✅ Day 1-2: Rate Limiting - IMPLEMENTED**
+#### ✅ Day 1-2: Rate Limiting - IMPLEMENTED
+
 ```bash
 # Already added to project
 slowapi + redis integration
 ```
 
-**Implemented rate limits:**
+#### Implemented rate limits
+
 - ✅ Admin login: 3 attempts/minute, 20/hour
 - ✅ Password reset: 3 attempts/15min, 10/hour
 - 📍 Location: `src/api/dependencies/rate_limit.py`
 
-**✅ Day 3-4: Audit Logging - IN PROGRESS**
+#### ✅ Day 3-4: Audit Logging - IN PROGRESS
+
 Partial implementation:
+
 - ✅ Login success/failure logging in handlers
 - ✅ Password reset event logging
 - ⚠️ Centralized audit log table - TODO
 - ⚠️ Security event dashboard - TODO
 
-**✅ Day 5: Token Revocation - IMPLEMENTED**
+#### ✅ Day 5: Token Revocation - IMPLEMENTED
+
 Redis-based token blacklist completed:
+
 ```python
 # Implemented in src/infra/security/token_revocation.py
 class TokenRevocationService:
@@ -338,7 +366,8 @@ class TokenRevocationService:
         # Check token and user-level revocation
 ```
 
-**Features implemented:**
+#### Features implemented
+
 - ✅ JWT hash-based revocation (protects token privacy)
 - ✅ User-level revocation flags
 - ✅ TTL management for cleanup
@@ -348,25 +377,29 @@ class TokenRevocationService:
 
 ### Week 2: SSO Foundation
 
-**Day 1: Choose SSO Provider**
+#### Day 1: Choose SSO Provider
+
 - Option A: WorkOS ($125/month) - RECOMMENDED
 - Option B: Auth0 ($240/month)
 - Option C: Custom SAML (free but 2-3 weeks work)
 
-**Day 2-3: Setup WorkOS**
+#### Day 2-3: Setup WorkOS
+
 1. Create WorkOS account
 2. Add test organization
 3. Configure test IdP connection
 4. Test authentication flow
 
-**Day 4-5: Implement SSO Routes**
+#### Day 4-5: Implement SSO Routes
+
 - `POST /auth/sso/initiate` - Start SSO flow
 - `GET /auth/sso/callback` - Handle IdP redirect
 - `POST /auth/login` - Unified login (detects SSO vs manual)
 
 ### Week 3: User Provisioning
 
-**Day 1-3: Auto-Provision Users from SSO**
+#### Day 1-3: Auto-Provision Users from SSO
+
 ```python
 async def provision_sso_user(profile: dict):
     """
@@ -387,24 +420,28 @@ async def provision_sso_user(profile: dict):
     return user
 ```
 
-**Day 4-5: Test with Real IdPs**
+#### Day 4-5: Test with Real IdPs
+
 - Test with Azure AD
 - Test with Okta
 - Test with Google Workspace
 
 ### Week 4: Production Readiness
 
-**Day 1-2: Error Handling**
+#### Day 1-2: Error Handling
+
 - Handle SSO failures gracefully
 - Fallback to manual login if SSO is down
 - User-friendly error messages
 
-**Day 3-4: Documentation**
+#### Day 3-4: Documentation
+
 - Admin guide for setting up SSO
 - User guide for login options
 - Troubleshooting guide
 
-**Day 5: Deploy to Production**
+#### Day 5: Deploy to Production
+
 - Deploy behind feature flag
 - Test with beta customers
 - Monitor error rates
@@ -414,12 +451,14 @@ async def provision_sso_user(profile: dict):
 ## 💰 **Cost Analysis**
 
 ### Current State
+
 | Service | Cost/Month |
 |---------|-----------|
 | Supabase | $25-100 |
 | **Total** | **$25-100** |
 
 ### Recommended Setup
+
 | Service | Cost/Month | Purpose |
 |---------|-----------|---------|
 | Supabase | $25-100 | Manual signup |
@@ -428,7 +467,8 @@ async def provision_sso_user(profile: dict):
 | Monitoring (Sentry) | $26 | Error tracking |
 | **Total** | **$191-281** | Enterprise-ready |
 
-**ROI Calculation:**
+### ROI Calculation
+
 - One enterprise customer pays $500-5000/month
 - They REQUIRE SSO to sign contract
 - Investment: ~$166/month extra
@@ -439,11 +479,13 @@ async def provision_sso_user(profile: dict):
 ## 🚀 **Quick Start (This Week)**
 
 ### Priority 1: Rate Limiting (2 hours)
+
 ```bash
 uv add slowapi
 ```
 
 Add to `src/main.py`:
+
 ```python
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -454,6 +496,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 ```
 
 Apply to login:
+
 ```python
 from src.main import limiter
 
@@ -464,12 +507,15 @@ async def login(...):
 ```
 
 ### Priority 2: Audit Logging (4 hours)
+
 Create migration and add logging to:
+
 - Login success/failure
 - Password resets
 - Token refreshes
 
 ### Priority 3: Evaluate SSO Providers (1 hour)
+
 - Sign up for WorkOS free trial
 - Review pricing
 - Test demo integration
@@ -498,30 +544,34 @@ Create migration and add logging to:
 ## ✅ **Final Recommendations**
 
 ### Immediate (This Week)
+
 1. ✅ Add rate limiting to all auth endpoints
 2. ✅ Implement audit logging for security events
 3. ✅ Set up token revocation mechanism
 
 ### Short-term (Next Month)
-4. ✅ Integrate WorkOS for SSO support
-5. ✅ Implement unified login endpoint
-6. ✅ Add RBAC middleware for permissions
+
+1. ✅ Integrate WorkOS for SSO support
+2. ✅ Implement unified login endpoint
+3. ✅ Add RBAC middleware for permissions
 
 ### Medium-term (Q1 2025)
-7. ✅ Add MFA support (TOTP)
-8. ✅ Implement session management dashboard
-9. ✅ Set up security monitoring and alerts
+
+1. ✅ Add MFA support (TOTP)
+2. ✅ Implement session management dashboard
+3. ✅ Set up security monitoring and alerts
 
 ### Long-term (Q2 2025)
-10. ✅ SOC 2 compliance
-11. ✅ Penetration testing
-12. ✅ IP allowlisting for enterprise
+
+1. ✅ SOC 2 compliance
+2. ✅ Penetration testing
+3. ✅ IP allowlisting for enterprise
 
 ---
 
 ## 📞 **Next Steps**
 
-1. **Review the detailed implementation plan:** 
+1. **Review the detailed implementation plan:**
    - See `docs/Technical Documentation/security-implementation-plan.md`
 
 2. **Try the quick start guide:**
@@ -562,9 +612,9 @@ Create migration and add logging to:
 
 - **Detailed Implementation Plan:** `security-implementation-plan.md`
 - **Quick Start Guide:** `security-quick-start.md`
-- **WorkOS Documentation:** https://workos.com/docs
-- **Supabase Auth Docs:** https://supabase.com/docs/guides/auth
-- **OWASP Top 10:** https://owasp.org/www-project-top-ten/
+- **WorkOS Documentation:** <https://workos.com/docs>
+- **Supabase Auth Docs:** <https://supabase.com/docs/guides/auth>
+- **OWASP Top 10:** <https://owasp.org/www-project-top-ten/>
 
 ---
 

@@ -11,7 +11,8 @@ This document explains how user and organization data flows through the OAuth in
 ### Step 1: Frontend Initiates OAuth
 
 **Frontend sends** (via JWT Bearer Token):
-```
+
+```text
 POST /users/integrations/oauth/authorize
 Authorization: Bearer <jwt_token>
 
@@ -23,6 +24,7 @@ Body:
 ```
 
 **Backend extracts from JWT** (automatically via authentication):
+
 - `user_id` - From JWT token
 - `organisation_id` - From JWT token  
 - `email` - From User model
@@ -30,6 +32,7 @@ Body:
 - `last_name` - From User model
 
 **Backend sends TO Nango**:
+
 ```json
 {
   "end_user": {
@@ -45,6 +48,7 @@ Body:
 ```
 
 **Backend returns to Frontend**:
+
 ```json
 {
   "status": "success",
@@ -61,6 +65,7 @@ Body:
 ### Step 2: Frontend Opens Nango Connect UI
 
 **Frontend code**:
+
 ```typescript
 import Nango from '@nangohq/frontend';
 
@@ -77,6 +82,7 @@ nango.auth(sessionToken)
 ```
 
 **What Nango does**:
+
 1. Opens OAuth modal with provider (HubSpot, Slack, etc.)
 2. User authorizes the application
 3. Nango receives OAuth tokens from provider
@@ -88,7 +94,8 @@ nango.auth(sessionToken)
 ### Step 3: Nango Sends Webhook to Backend
 
 **Nango sends** (without any authentication):
-```
+
+```text
 POST /users/integrations/oauth/webhooks/nango
 X-Nango-Signature: <sha256_hash>
 Content-Type: application/json
@@ -115,6 +122,7 @@ Body:
 ```
 
 **Backend receives and extracts**:
+
 ```python
 # Extract from webhook payload
 user_id = payload["endUser"]["id"]
@@ -127,6 +135,7 @@ provider = payload["providerConfigKey"]
 ```
 
 **Backend returns to Nango**:
+
 ```json
 {
   "status": "success",
@@ -146,17 +155,20 @@ provider = payload["providerConfigKey"]
 ### 1. Frontend Does NOT Send Organization ID
 
 ❌ **Frontend does NOT explicitly send**:
+
 - `user_id`
 - `organisation_id`
 - User email or name
 
 ✅ **Backend automatically extracts from**:
+
 - **JWT Token** → `user_id`, `organisation_id`
 - **User Model** → `email`, `first_name`, `last_name`
 
 ### 2. Backend Sends Data TO Nango
 
 ✅ **Backend sends to Nango** (in Connect Session):
+
 ```json
 {
   "end_user": {
@@ -173,6 +185,7 @@ provider = payload["providerConfigKey"]
 ### 3. Nango Sends Data BACK to Backend
 
 ✅ **Nango returns in webhook** (exact same data):
+
 ```json
 {
   "endUser": {
@@ -187,6 +200,7 @@ provider = payload["providerConfigKey"]
 ### 4. Why This Design?
 
 **Round-trip verification**:
+
 1. Backend **sends** `user_id` and `organization_id` to Nango
 2. Nango **stores** this in the session
 3. User completes OAuth
@@ -194,6 +208,7 @@ provider = payload["providerConfigKey"]
 5. Backend **verifies** and creates integration for the correct user/org
 
 **Security**:
+
 - Webhook has no JWT authentication (Nango can't get our JWT)
 - Instead uses **signature verification** (`X-Nango-Signature`)
 - Backend trusts `user_id` and `organization_id` because:
@@ -205,7 +220,7 @@ provider = payload["providerConfigKey"]
 
 ## 📊 Data Flow Diagram
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────┐
 │                     STEP 1: Frontend → Backend                   │
 └─────────────────────────────────────────────────────────────────┘
@@ -368,11 +383,13 @@ Frontend                          Backend
 ### 1. No JWT in Webhook
 
 **Why?**
+
 - Webhooks come from Nango's servers (not from user's browser)
 - Nango doesn't have access to user's JWT tokens
 - Can't use traditional JWT authentication
 
 **Solution:**
+
 - Use **signature verification** (`X-Nango-Signature`)
 - Signature proves webhook comes from Nango
 - Formula: `SHA256(NANGO_SECRET_KEY + JSON_payload)`
@@ -382,12 +399,14 @@ Frontend                          Backend
 **Why can we trust `user_id` and `organization_id` in webhook?**
 
 ✅ **Safe because**:
+
 1. **We sent it originally**: Backend extracted from authenticated JWT
 2. **Signature verified**: Webhook is proven to come from Nango
 3. **No user tampering**: User never sees or controls this data
 4. **Round-trip validation**: We get back exactly what we sent
 
 ❌ **Not safe if**:
+
 - Webhook signature verification is disabled
 - User could modify the session creation request
 - Organization ID came from frontend (not JWT)
@@ -403,6 +422,7 @@ async for session in acquire_org_async_session(UUID(organization_id)):
 ```
 
 **Security**:
+
 - Each organization has isolated database access
 - Organization ID from webhook ensures correct database
 - No cross-organization data leakage
@@ -415,6 +435,7 @@ async for session in acquire_org_async_session(UUID(organization_id)):
 
 - [x] **Extract user/org from JWT** in `/oauth/authorize` endpoint
 - [x] **Send to Nango** in `create_connect_session()`
+
   ```python
   end_user = {
       "id": str(user_ids.user_id),
@@ -423,17 +444,21 @@ async for session in acquire_org_async_session(UUID(organization_id)):
       "display_name": f"{user.first_name} {user.last_name}"
   }
   ```
+
 - [x] **Receive from Nango** in webhook handler
+
   ```python
   user_id = payload["endUser"]["id"]
   organization_id = payload["endUser"]["tags"]["organizationId"]
   ```
+
 - [x] **Verify webhook signature** before processing
 - [x] **Create integration** in correct organization database
 
 ### Frontend Requirements
 
 - [ ] **Send JWT token** in Authorization header
+
   ```typescript
   fetch('/users/integrations/oauth/authorize', {
     headers: {
@@ -443,11 +468,14 @@ async for session in acquire_org_async_session(UUID(organization_id)):
     body: JSON.stringify({ integration_type: 'hubspot' })
   })
   ```
+
 - [ ] **Use session token** with Nango Connect UI
+
   ```typescript
   const nango = new Nango({ publicKey: 'YOUR_PUBLIC_KEY' });
   nango.auth(sessionToken);
   ```
+
 - [ ] **Poll or refresh** integrations list after OAuth completion
 - [ ] **Do NOT send** `user_id` or `organization_id` explicitly
 
@@ -505,6 +533,7 @@ assert payload["endUser"]["tags"]["organizationId"] == original_org_id
 ### POST /users/integrations/oauth/authorize
 
 **Frontend Request**:
+
 ```http
 POST /users/integrations/oauth/authorize
 Authorization: Bearer <jwt_token>
@@ -517,10 +546,12 @@ Content-Type: application/json
 ```
 
 **What Backend Extracts Automatically**:
+
 - From JWT: `user_id`, `organisation_id`
 - From User model: `email`, `first_name`, `last_name`
 
 **Backend Response**:
+
 ```json
 {
   "status": "success",
@@ -536,6 +567,7 @@ Content-Type: application/json
 ### POST /users/integrations/oauth/webhooks/nango
 
 **Nango Request**:
+
 ```http
 POST /users/integrations/oauth/webhooks/nango
 X-Nango-Signature: abc123def456...
@@ -562,6 +594,7 @@ Content-Type: application/json
 ```
 
 **What Backend Extracts**:
+
 ```python
 user_id = payload["endUser"]["id"]
 organization_id = payload["endUser"]["tags"]["organizationId"]
@@ -570,6 +603,7 @@ provider = payload["providerConfigKey"]
 ```
 
 **Backend Response**:
+
 ```json
 {
   "status": "success",
@@ -601,12 +635,14 @@ provider = payload["providerConfigKey"]
 ### No Additional Frontend Work Required
 
 Frontend developers **do not need** to:
+
 - ❌ Send `user_id` explicitly
 - ❌ Send `organization_id` explicitly
 - ❌ Extract these from JWT themselves
 - ❌ Handle webhook responses
 
 Frontend developers **only need** to:
+
 - ✅ Send JWT token in Authorization header
 - ✅ Send `integration_type` in request body
 - ✅ Use returned `session_token` with Nango Connect UI
