@@ -1,7 +1,13 @@
 """Synced data domain models (calendar + future CRM, email, etc.)."""
 
 from .base import SyncCategory, SyncedRecordMixin
-from .calendar import CalendarAttendee, CalendarEvent
+from .calendar import (
+    AssociationStatus,
+    CalendarAttendee,
+    CalendarEvent,
+    CalendarEventDealAssociation,
+    GenerationStatus,
+)
 from .conversation_intelligence import (
     CICall,
     CICallAnalyticsSnapshot,
@@ -26,6 +32,11 @@ from .crm import (
     CRMPipeline,
     CRMStageState,
     CRMUser,
+    DealStakeholder,
+    DecisionPower,
+    StakeholderSource,
+    StakeholderStance,
+    StakeholderTemperature,
 )
 from .email_models import (
     Email,
@@ -57,6 +68,9 @@ __all__ = [
     "SyncedRecordMixin",
     "CalendarEvent",
     "CalendarAttendee",
+    "CalendarEventDealAssociation",
+    "AssociationStatus",
+    "GenerationStatus",
     "IntegrationType",
     "IntegrationScope",
     "KnowledgeIntegration",
@@ -74,6 +88,11 @@ __all__ = [
     "CRMStageState",
     "CRMUser",
     "CRMCompany",
+    "DealStakeholder",
+    "StakeholderStance",
+    "DecisionPower",
+    "StakeholderTemperature",
+    "StakeholderSource",
     "CICall",
     "CICallDealLink",
     "CICallSpeaker",

@@ -5,16 +5,18 @@ This worker handles knowledge base-related background tasks, specifically docume
 ## Tasks
 
 ### knowledge.document_extraction
+
 - **Queue**: `knowledge_extract`
 - **Purpose**: Heavy document extraction task for PDF/DOC files
 - **Args**: `organisation_id: str, source_id: str`
 - **Retries**: 3 max retries
-- **Features**: 
+- **Features**:
   - Processes uploaded documents for knowledge base
   - Updates source status to COMPLETED or FAILED
   - Publishes status updates via messaging
 
 ### knowledge.post_upload_process
+
 - **Queue**: `knowledge_upload`
 - **Purpose**: Fast post-upload processing (checksum calculation, thumbnail generation)
 - **Args**: `organisation_id: str, source_id: str`
@@ -24,6 +26,7 @@ This worker handles knowledge base-related background tasks, specifically docume
   - Updates source metadata
 
 ### Test Tasks
+
 - **knowledge.ping**: Simple connectivity test
 - **knowledge.test_task**: Test task with message parameter
 
@@ -34,12 +37,14 @@ This worker handles knowledge base-related background tasks, specifically docume
 
 ## Usage
 
-### Start the worker:
+### Start the worker
+
 ```powershell
 celery -A src.workers.knowledge_worker.celery_app worker -l info -Q knowledge_extract,knowledge_upload --pool=solo
 ```
 
-### Test connectivity:
+### Test connectivity
+
 ```powershell
 python -c "from src.workers.knowledge_worker.celery_app import app; result = app.send_task('knowledge.ping'); print(result.get())"
 ```
@@ -72,6 +77,7 @@ The worker uses a dedicated `knowledge` exchange with proper routing keys to avo
 ## Task Separation
 
 This worker focuses on knowledge base operations:
+
 - **Document extraction**: Heavy processing of PDF/DOC files
 - **Post-upload processing**: Fast checksum and thumbnail generation
 - **Knowledge source management**: Status updates and metadata handling

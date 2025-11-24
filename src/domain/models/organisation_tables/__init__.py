@@ -23,6 +23,7 @@ from .knowledge_models import OrganisationDocument, OrganisationSource
 from .sync import (
     CalendarAttendee,
     CalendarEvent,
+    CalendarEventDealAssociation,
     CRMCompany,
     CRMContact,
     CRMDeal,
@@ -35,6 +36,7 @@ from .sync import (
     CRMPipeline,
     CRMStageState,
     CRMUser,
+    DealStakeholder,
     IntegrationScope,
     IntegrationSyncHistory,
     IntegrationType,
@@ -66,6 +68,7 @@ __all__ = [
     "SyncedRecordMixin",
     "CalendarEvent",
     "CalendarAttendee",
+    "CalendarEventDealAssociation",
     "CRMContact",
     "CRMCompany",
     "CRMUser",
@@ -78,6 +81,7 @@ __all__ = [
     "CRMParticipantType",
     "CRMDealStatus",
     "CRMStageState",
+    "DealStakeholder",
     # Job Models
     "JobStatus",
     "ChatMessageJob",

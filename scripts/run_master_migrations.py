@@ -1,28 +1,25 @@
 #!/usr/bin/env python3
+import argparse
 import os
+import secrets
 import sys
 
-# ── so we can import your app code under `src/` ──
-SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
-PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
-sys.path.insert(0, PROJECT_ROOT)
-
-import argparse
-import secrets
-
-from sqlalchemy import create_engine, text
-from alembic.config import Config
 from alembic import command
+from alembic.config import Config
+from azure.core.credentials import TokenCredential
 from azure.identity import (
-    WorkloadIdentityCredential,
-    ManagedIdentityCredential,
     DefaultAzureCredential,
+    ManagedIdentityCredential,
+    WorkloadIdentityCredential,
 )
 from azure.keyvault.secrets import SecretClient
-from src.infra.utils.logger import get_logger
-from src.infra.utils.get_master_db_url import get_master_db_url
+from sqlalchemy import create_engine, text
 
-logger = get_logger("run-master-migrations")
+# Adjust sys.path so we can import application code under src/
+SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
+PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 
 def parse_args():
@@ -59,8 +56,8 @@ def run_master_migrations(revision="head", downgrade=False):
         print(f"[OK] Master migrations upgraded to '{revision}'")
 
 
-def _store_password_in_key_vault(secret_name: str, password: str):
-    """Store password in Azure Key Vault"""
+def _store_password_in_key_vault(secret_name: str, password: str) -> None:
+    """Store password in Azure Key Vault."""
     print(f"Attempting to store password for '{secret_name}' in Azure Key Vault.")
     try:
         key_vault_url = os.getenv("AZURE_KEY_VAULT_URL")
@@ -71,30 +68,28 @@ def _store_password_in_key_vault(secret_name: str, password: str):
             print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
             return
 
-        credential = None
-        # Use DefaultAzureCredential for local development for convenience
         if os.getenv("ENV") == "local":
             print(
                 "Auth strategy (migrations): DefaultAzureCredential (local development)."
             )
-            credential = DefaultAzureCredential()
+            credential: TokenCredential = DefaultAzureCredential()
         else:
-            # Production credential order
             tenant_id = os.getenv("AZURE_TENANT_ID")
             client_id = os.getenv("AZURE_CLIENT_ID")
 
             if tenant_id and client_id:
-                print("Auth strategy (migrations): Workload Identity (federated token)")
+                print(
+                    "Auth strategy (migrations): Workload Identity (federated token)"
+                )
                 credential = WorkloadIdentityCredential(
                     tenant_id=tenant_id,
                     client_id=client_id,
                 )
-            elif client_id and not tenant_id:
-                print(
-                    "[migrations] WARNING: Workload identity client id present but AZURE_TENANT_ID missing; using Managed Identity fallback."
-                )
-
-            if not credential:
+            else:
+                if client_id and not tenant_id:
+                    print(
+                        "[migrations] WARNING: Workload identity client id present but AZURE_TENANT_ID missing; using Managed Identity fallback."
+                    )
                 print("Auth strategy (migrations): Managed Identity fallback")
                 credential = ManagedIdentityCredential()
 
@@ -111,48 +106,45 @@ def create_master_copilot_role(engine):
     password = secrets.token_urlsafe(16)
     secret_name = "master-copilot-role-password"
 
-    with engine.connect() as conn:
-        # Use a transaction to ensure all commands succeed or fail together
-        with conn.begin():
-            # Check if the role already exists
-            role_exists = conn.execute(
-                text("SELECT 1 FROM pg_roles WHERE rolname = :role_name"),
-                {"role_name": role_name},
-            ).scalar_one_or_none()
+    with engine.begin() as conn:
+        role_exists = conn.execute(
+            text("SELECT 1 FROM pg_roles WHERE rolname = :role_name"),
+            {"role_name": role_name},
+        ).scalar_one_or_none()
 
-            if not role_exists:
-                print(f"-> Creating role '{role_name}'...")
-                conn.execute(
-                    text(f"CREATE ROLE {role_name} LOGIN PASSWORD :password"),
-                    {"password": password},
-                )
-                print(f"[OK] Role '{role_name}' created.")
-                # Store the password in Key Vault
-                _store_password_in_key_vault(secret_name, password)
-
-            else:
-                print(f"-> Role '{role_name}' already exists. Skipping creation.")
-
-            # Grant full access to the public schema
-            print(f"-> Granting full access on public schema to '{role_name}'...")
-            conn.execute(text(f"GRANT ALL PRIVILEGES ON SCHEMA public TO {role_name}"))
+        if not role_exists:
+            print(f"-> Creating role '{role_name}'...")
             conn.execute(
-                text(
-                    f"GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO {role_name}"
-                )
+                text(f"CREATE ROLE {role_name} LOGIN PASSWORD :password"),
+                {"password": password},
             )
-            conn.execute(
-                text(
-                    f"GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO {role_name}"
-                )
+            print(f"[OK] Role '{role_name}' created.")
+            _store_password_in_key_vault(secret_name, password)
+        else:
+            print(f"-> Role '{role_name}' already exists. Skipping creation.")
+
+        print(f"-> Granting full access on public schema to '{role_name}'...")
+        conn.execute(text(f"GRANT ALL PRIVILEGES ON SCHEMA public TO {role_name}"))
+        conn.execute(
+            text(
+                f"GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO {role_name}"
             )
-            print("[OK] Privileges granted.")
+        )
+        conn.execute(
+            text(
+                f"GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO {role_name}"
+            )
+        )
+        print("[OK] Privileges granted.")
 
 
-def main():
+def main() -> None:
+    from src.infra.utils.get_master_db_url import get_master_db_url
+    from src.infra.utils.logger import get_logger
+
     args = parse_args()
+    logger = get_logger("run-master-migrations")
 
-    # Verify database connection
     db_url = get_master_db_url()
     engine = create_engine(db_url, future=True)
 
@@ -164,13 +156,11 @@ def main():
         logger.error(f"[ERROR] Database connection failed: {e}")
         sys.exit(1)
 
-    # Create the master_copilot_role unless skipped
     if not args.skip_role:
         create_master_copilot_role(engine)
     else:
         logger.info("Skipping master_copilot_role creation (--skip-role)")
 
-    # Run master migrations unless skipped
     if not args.skip_migrations:
         run_master_migrations(args.revision, args.downgrade)
     else:

@@ -11,6 +11,13 @@ from .deals import (
     CRMPipeline,
     CRMStageState,
 )
+from .stakeholders import (
+    DealStakeholder,
+    DecisionPower,
+    StakeholderSource,
+    StakeholderStance,
+    StakeholderTemperature,
+)
 from .users import CRMUser
 
 __all__ = [
@@ -23,10 +30,15 @@ __all__ = [
     "CRMDealStatus",
     "CRMParticipantType",
     "CRMStageState",
-    "CRMUser",
     "CRMCompany",
+    "CRMUser",
     "CRMDealTask",
     "CRMTaskStatus",
     "CRMTaskType",
     "CRMTaskPriority",
+    "DealStakeholder",
+    "StakeholderStance",
+    "DecisionPower",
+    "StakeholderTemperature",
+    "StakeholderSource",
 ]

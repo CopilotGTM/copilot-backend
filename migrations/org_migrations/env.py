@@ -20,6 +20,7 @@ from src.domain.models.organisation_tables import (
     ChatMessageAttachmentLink,
     CalendarEvent,
     CalendarAttendee,
+    CalendarEventDealAssociation,
     CRMPipeline,
     CRMDealStage,
     CRMDeal,
@@ -29,6 +30,7 @@ from src.domain.models.organisation_tables import (
     CRMContact,
     CRMUser,
     CRMCompany,
+    DealStakeholder,
 )
 from src.domain.models.organisation_tables.sync.email_models import (
     EmailFolder,
@@ -92,6 +94,7 @@ all_org_models: list[type[Any]] = [
     ChatMessageAttachmentLink,
     CalendarEvent,
     CalendarAttendee,
+    CalendarEventDealAssociation,
     CRMPipeline,
     CRMDealStage,
     CRMDeal,
@@ -101,6 +104,7 @@ all_org_models: list[type[Any]] = [
     CRMContact,
     CRMUser,
     CRMCompany,
+    DealStakeholder,
     # Email tables
     EmailFolder,
     Email,

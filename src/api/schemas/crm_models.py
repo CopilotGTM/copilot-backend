@@ -7,6 +7,12 @@ from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+from src.domain.models.organisation_tables.sync.crm.stakeholders import (
+    DecisionPower,
+    StakeholderSource,
+    StakeholderStance,
+    StakeholderTemperature,
+)
 
 
 class PipelineStage(BaseModel):
@@ -250,3 +256,34 @@ class DealsStats(BaseModel):
     by_pipeline: dict[str, int]
     total_amount: float | None = Field(None, description="Sum of all deal amounts")
     average_amount: float | None = Field(None, description="Average deal amount")
+
+
+class StakeholderDetail(BaseModel):
+    """Detailed view of a deal stakeholder."""
+
+    stakeholder_id: UUID
+    deal_id: UUID
+    contact_id: UUID | None = None
+    email: str
+    name: str | None = None
+    job_title: str | None = None
+    external_links: list[StakeholderLink] | None = None
+    stance: StakeholderStance
+    decision_power: DecisionPower
+    champion_potential: float
+    motivation: str | None = None
+    pain_points: list[str] | None = None
+    keywords: list[str] | None = None
+    last_contact_at: datetime | None = None
+    engagement_score: float
+    temperature: StakeholderTemperature
+    source: StakeholderSource
+
+    model_config = {"from_attributes": True}
+
+
+class StakeholderLink(BaseModel):
+    platform: str = Field(..., description="Platform name (e.g., linkedin, twitter, crm)")
+    url: str = Field(..., description="The URL")
+    label: str | None = Field(None, description="Optional display label")
+    added_at: datetime | None = Field(default_factory=datetime.utcnow)

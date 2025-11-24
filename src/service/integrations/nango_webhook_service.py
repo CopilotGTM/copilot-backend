@@ -120,15 +120,14 @@ class NangoWebhookService:
         # Direct mapping for Outlook integrations
         if provider_key_lower == "outlook":
             logger.info(
-                "Detected 'outlook' provider, mapping to OUTLOOK_EMAIL. " "Connection ID: %s",
+                "Detected 'outlook' provider, mapping to OUTLOOK_EMAIL. Connection ID: %s",
                 connection_id,
             )
             return IntegrationType.OUTLOOK_EMAIL
 
         if provider_key_lower == "outlook-bflm":
             logger.info(
-                "Detected 'outlook-bflm' provider, mapping to OUTLOOK_CALENDAR. "
-                "Connection ID: %s",
+                "Detected 'outlook-bflm' provider, mapping to OUTLOOK_CALENDAR. Connection ID: %s",
                 connection_id,
             )
             return IntegrationType.OUTLOOK_CALENDAR
