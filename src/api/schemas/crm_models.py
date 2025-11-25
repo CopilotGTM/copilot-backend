@@ -287,3 +287,72 @@ class StakeholderLink(BaseModel):
     url: str = Field(..., description="The URL")
     label: str | None = Field(None, description="Optional display label")
     added_at: datetime | None = Field(default_factory=datetime.utcnow)
+
+
+class CreateStakeholderRequest(BaseModel):
+    """Request model for creating a new stakeholder."""
+
+    email: str
+    name: str | None = None
+    job_title: str | None = None
+    external_links: list[StakeholderLink] | None = None
+    stance: StakeholderStance = StakeholderStance.UNKNOWN
+    decision_power: DecisionPower = DecisionPower.UNKNOWN
+
+
+class UpdateStakeholderRequest(BaseModel):
+    """Request model for updating stakeholder fields."""
+
+    stance: StakeholderStance | None = None
+    decision_power: DecisionPower | None = None
+    motivation: str | None = None
+    pain_points: list[str] | None = None
+    external_links: list[StakeholderLink] | None = None
+
+
+# ---------------------------------------------------------------------------
+# Meeting Models
+# ---------------------------------------------------------------------------
+
+
+class MeetingAttendee(BaseModel):
+    """Single attendee in a calendar event."""
+
+    name: str | None
+    email: str
+    status: str | None
+
+
+class DealMeetingResponse(BaseModel):
+    """Meeting associated with a deal."""
+
+    event_id: UUID
+    subject: str | None
+    start_at: datetime
+    status: str  # AssociationStatus value
+    stage: str | None
+    attendees: list[MeetingAttendee]
+    meeting_prep_status: str  # GenerationStatus value
+    meeting_prep_data: dict[str, Any] | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class UpdateMeetingStatusRequest(BaseModel):
+    """Request model for updating meeting association status."""
+
+    status: str  # AssociationStatus value
+
+
+class ContactListItem(BaseModel):
+    """Simplified contact model for selection lists."""
+
+    contact_id: UUID
+    external_id: str
+    first_name: str | None = None
+    last_name: str | None = None
+    email: str | None = None
+    job_title: str | None = None
+    company_name: str | None = None
+
+    model_config = {"from_attributes": True}

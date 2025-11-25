@@ -103,3 +103,85 @@ class StakeholderService:
             processed_count += 1
 
         return processed_count
+
+    async def sync_stakeholders_from_deal(self, deal: CRMDeal) -> int:
+        """
+        Extract stakeholders directly from the deal (primary contact, participants).
+        Returns the number of stakeholders processed/updated.
+        """
+        processed_count = 0
+
+        # 1. Process Primary Contact
+        if deal.primary_contact_email:
+            await self._ensure_stakeholder(
+                deal=deal,
+                email=deal.primary_contact_email,
+                name=deal.primary_contact_name,
+                source=StakeholderSource.CRM,
+                role="Primary Contact",
+            )
+            processed_count += 1
+
+        # 2. Process Participants
+        if deal.participants:
+            for participant in deal.participants:
+                if participant.participant_type == "contact" and participant.related_email:
+                    await self._ensure_stakeholder(
+                        deal=deal,
+                        email=participant.related_email,
+                        name=participant.related_name,
+                        source=StakeholderSource.CRM,
+                        role=participant.relationship_role,
+                    )
+                    processed_count += 1
+
+        return processed_count
+
+    async def _ensure_stakeholder(
+        self,
+        deal: CRMDeal,
+        email: str,
+        name: str | None,
+        source: StakeholderSource,
+        role: str | None = None,
+    ) -> DealStakeholder:
+        """Helper to create or update a stakeholder."""
+        stmt = select(DealStakeholder).where(
+            col(DealStakeholder.deal_id) == deal.deal_id,
+            col(DealStakeholder.email) == email,
+        )
+        result = await self.session.execute(stmt)
+        stakeholder = result.scalars().first()
+
+        if not stakeholder:
+            stakeholder = DealStakeholder(
+                organisation_id=self.organisation_id,
+                integration_id=deal.integration_id,
+                deal_id=deal.deal_id,
+                email=email,
+                name=name,
+                source=source,
+                stance=StakeholderStance.UNKNOWN,
+                temperature=StakeholderTemperature.COLD,
+                engagement_score=0.0,
+                job_title=role,  # Use role as initial job title if not known
+            )
+
+            # Try to link to CRM Contact
+            contact_stmt = select(CRMContact).where(
+                col(CRMContact.organisation_id) == self.organisation_id,
+                col(CRMContact.email) == email,
+            )
+            contact_result = await self.session.execute(contact_stmt)
+            contact = contact_result.scalars().first()
+
+            if contact:
+                stakeholder.contact_id = contact.contact_id
+                if not stakeholder.name and contact.full_name:
+                    stakeholder.name = contact.full_name
+                if contact.job_title:
+                    stakeholder.job_title = contact.job_title
+
+            self.session.add(stakeholder)
+
+        return stakeholder

@@ -1,42 +1,44 @@
 from __future__ import annotations
 
-from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import col
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
     get_current_user,
     get_org_async_session,
 )
 from src.api.schemas.base_models import GenericResponse
-from src.domain.models.organisation_tables.sync.calendar import (
-    AssociationStatus,
-    CalendarEvent,
-    CalendarEventDealAssociation,
-    GenerationStatus,
-)
-from src.workers.deal_worker.services.briefing_generator import (
+from src.api.schemas.crm_models import (
     BriefingData,
-    BriefingGeneratorService,
+    DealMeetingResponse,
+    UpdateMeetingStatusRequest,
+)
+from src.api.utils.http_response import Response
+from src.infra.utils.logger import get_logger
+from src.service.crm import (
+    MeetingsService,
+    MeetingsServiceError,
 )
 
 meetings_router = APIRouter()
+logger = get_logger(__name__)
 
 
-class DealMeetingResponse(BaseModel):
-    event_id: UUID
-    subject: str | None
-    start_at: datetime
-    status: AssociationStatus
-    meeting_prep_status: GenerationStatus
-    meeting_prep_data: BriefingData | None = None
-
-    model_config = {"from_attributes": True}
+async def get_meetings_service(
+    user_ids: UserIDs = Depends(get_current_user),
+    session: AsyncSession = Depends(get_org_async_session),
+):
+    """Dependency that yields a MeetingsService instance for the current org."""
+    service = MeetingsService(session, user_ids.organisation_id)
+    try:
+        yield service
+    finally:
+        try:
+            await service.close()
+        except Exception:
+            logger.debug("Meetings service close failed", exc_info=True)
 
 
 @meetings_router.get(
@@ -46,45 +48,19 @@ class DealMeetingResponse(BaseModel):
 )
 async def get_deal_meetings(
     deal_id: UUID,
-    user_ids: UserIDs = Depends(get_current_user),
-    session: AsyncSession = Depends(get_org_async_session),
+    service: MeetingsService = Depends(get_meetings_service),
 ):
     """
     Get all meetings associated with a specific deal.
     """
-    stmt = (
-        select(CalendarEventDealAssociation, CalendarEvent)
-        .join(
-            CalendarEvent, col(CalendarEventDealAssociation.event_id) == col(CalendarEvent.event_id)
-        )
-        .where(
-            col(CalendarEventDealAssociation.deal_id) == deal_id,
-            col(CalendarEventDealAssociation.organisation_id) == user_ids.organisation_id,
-        )
-    )
-    result = await session.execute(stmt)
-    rows = result.all()
-
-    meetings = []
-    for assoc, event in rows:
-        meetings.append(
-            DealMeetingResponse(
-                event_id=event.event_id,
-                subject=event.data_payload.get("subject") if event.data_payload else None,
-                start_at=event.start_at,
-                status=assoc.status,
-                meeting_prep_status=assoc.meeting_prep_status,
-                meeting_prep_data=BriefingData(**assoc.meeting_prep_data)
-                if assoc.meeting_prep_data
-                else None,
-            )
-        )
-
-    return GenericResponse(
-        status="SUCCESS",
-        message="Meetings retrieved successfully",
-        data=meetings,
-    )
+    try:
+        meetings = await service.list_meetings_by_deal(deal_id)
+        return Response.success_response("Meetings retrieved successfully", meetings)
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to retrieve meetings for deal %s", deal_id)
+        return Response.internal_server_error_response("Failed to retrieve meetings")
 
 
 @meetings_router.post(
@@ -95,29 +71,25 @@ async def get_deal_meetings(
 async def generate_meeting_briefing(
     deal_id: UUID,
     event_id: UUID,
-    user_ids: UserIDs = Depends(get_current_user),
-    session: AsyncSession = Depends(get_org_async_session),
+    service: MeetingsService = Depends(get_meetings_service),
 ):
     """
     Trigger the generation of a meeting briefing using AI.
     """
-    service = BriefingGeneratorService(session, organisation_id=user_ids.organisation_id)
-    briefing = await service.generate_briefing(deal_id, event_id)
+    try:
+        briefing = await service.generate_briefing(deal_id, event_id)
 
-    if not briefing:
-        raise HTTPException(
-            status_code=404, detail="Could not generate briefing. Check deal/event existence."
-        )
+        if not briefing:
+            raise HTTPException(
+                status_code=404, detail="Could not generate briefing. Check deal/event existence."
+            )
 
-    return GenericResponse(
-        status="SUCCESS",
-        message="Briefing generated successfully",
-        data=briefing,
-    )
-
-
-class UpdateMeetingStatusRequest(BaseModel):
-    status: AssociationStatus
+        return Response.success_response("Briefing generated successfully", briefing)
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to generate briefing for deal %s event %s", deal_id, event_id)
+        return Response.internal_server_error_response("Failed to generate briefing")
 
 
 @meetings_router.patch(
@@ -129,27 +101,20 @@ async def update_meeting_status(
     deal_id: UUID,
     event_id: UUID,
     request: UpdateMeetingStatusRequest,
-    user_ids: UserIDs = Depends(get_current_user),
-    session: AsyncSession = Depends(get_org_async_session),
+    service: MeetingsService = Depends(get_meetings_service),
 ):
     """
     Update the status of a meeting association (e.g., CONFIRM or REJECT).
     """
-    stmt = select(CalendarEventDealAssociation).where(
-        col(CalendarEventDealAssociation.deal_id) == deal_id,
-        col(CalendarEventDealAssociation.event_id) == event_id,
-        col(CalendarEventDealAssociation.organisation_id) == user_ids.organisation_id,
-    )
-    result = await session.execute(stmt)
-    association = result.scalars().first()
-
-    if not association:
-        raise HTTPException(status_code=404, detail="Meeting association not found.")
-
-    association.status = request.status
-    await session.commit()
-
-    return GenericResponse(
-        status="SUCCESS",
-        message=f"Meeting status updated to {request.status.value}",
-    )
+    try:
+        await service.update_meeting_status(deal_id, event_id, request.status)
+        return Response.success_response(f"Meeting status updated to {request.status.value}")
+    except MeetingsServiceError as e:
+        if e.status_code == 404:
+            raise HTTPException(status_code=404, detail=e.message) from e
+        raise HTTPException(status_code=e.status_code, detail=e.message) from e
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to update meeting status for deal %s event %s", deal_id, event_id)
+        return Response.internal_server_error_response("Failed to update meeting status")

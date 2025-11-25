@@ -5,45 +5,44 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import col
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
     get_current_user,
     get_org_async_session,
 )
 from src.api.schemas.base_models import GenericResponse
-from src.api.schemas.crm_models import StakeholderDetail, StakeholderLink
-from src.domain.models.organisation_tables.sync.crm.stakeholders import (
-    DealStakeholder,
-    DecisionPower,
-    StakeholderSource,
-    StakeholderStance,
+from src.api.schemas.crm_models import (
+    ContactListItem,
+    CreateStakeholderRequest,
+    StakeholderDetail,
+    UpdateStakeholderRequest,
 )
+from src.api.utils.http_response import Response
 from src.infra.utils.logger import get_logger
+from src.service.crm import (
+    StakeholdersService,
+    StakeholdersServiceError,
+)
 
-logger = get_logger("stakeholders_handler")
+logger = get_logger(__name__)
 
 stakeholders_router = APIRouter()
 
 
-class CreateStakeholderRequest(BaseModel):
-    email: str
-    name: str | None = None
-    job_title: str | None = None
-    external_links: list[StakeholderLink] | None = None
-    stance: StakeholderStance = StakeholderStance.UNKNOWN
-    decision_power: DecisionPower = DecisionPower.UNKNOWN
-
-
-class UpdateStakeholderRequest(BaseModel):
-    stance: StakeholderStance | None = None
-    decision_power: DecisionPower | None = None
-    motivation: str | None = None
-    pain_points: list[str] | None = None
-    external_links: list[StakeholderLink] | None = None
+async def get_stakeholders_service(
+    user_ids: UserIDs = Depends(get_current_user),
+    session: AsyncSession = Depends(get_org_async_session),
+):
+    """Dependency that yields a StakeholdersService instance for the current org."""
+    service = StakeholdersService(session, user_ids.organisation_id)
+    try:
+        yield service
+    finally:
+        try:
+            await service.close()
+        except Exception:
+            logger.debug("Stakeholders service close failed", exc_info=True)
 
 
 @stakeholders_router.get(
@@ -53,24 +52,39 @@ class UpdateStakeholderRequest(BaseModel):
 )
 async def get_deal_stakeholders(
     deal_id: UUID,
-    user_ids: UserIDs = Depends(get_current_user),
-    session: AsyncSession = Depends(get_org_async_session),
+    service: StakeholdersService = Depends(get_stakeholders_service),
 ):
-    """
-    Get all stakeholders associated with a specific deal.
-    """
-    stmt = select(DealStakeholder).where(
-        col(DealStakeholder.deal_id) == deal_id,
-        col(DealStakeholder.organisation_id) == user_ids.organisation_id,
-    )
-    result = await session.execute(stmt)
-    stakeholders = result.scalars().all()
+    """Get all stakeholders associated with a specific deal."""
+    try:
+        stakeholders = await service.list_stakeholders_by_deal(deal_id)
+        return Response.success(data=stakeholders)
+    except StakeholdersServiceError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.message) from e
+    except Exception as e:
+        logger.error(f"Error fetching stakeholders: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error") from e
 
-    return GenericResponse(
-        status="SUCCESS",
-        message="Stakeholders retrieved successfully",
-        data=stakeholders,
-    )
+
+@stakeholders_router.get(
+    "/{deal_id}/stakeholders/available-contacts",
+    response_model=GenericResponse[list[ContactListItem]],
+    summary="List available contacts for adding as stakeholders",
+)
+async def list_available_contacts(
+    deal_id: UUID,
+    query: str | None = None,
+    limit: int = 50,
+    service: StakeholdersService = Depends(get_stakeholders_service),
+):
+    """List contacts that can be added as stakeholders to the deal."""
+    try:
+        contacts = await service.list_available_contacts(deal_id, query, limit)
+        return Response.success(data=contacts)
+    except StakeholdersServiceError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.message) from e
+    except Exception as e:
+        logger.error(f"Error listing available contacts: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error") from e
 
 
 @stakeholders_router.post(
@@ -81,44 +95,23 @@ async def get_deal_stakeholders(
 async def create_stakeholder(
     deal_id: UUID,
     request: CreateStakeholderRequest,
-    user_ids: UserIDs = Depends(get_current_user),
-    session: AsyncSession = Depends(get_org_async_session),
+    service: StakeholdersService = Depends(get_stakeholders_service),
 ):
     """
     Manually add a stakeholder to a deal.
     """
-    # Check if already exists
-    stmt = select(DealStakeholder).where(
-        col(DealStakeholder.deal_id) == deal_id,
-        col(DealStakeholder.email) == request.email,
-        col(DealStakeholder.organisation_id) == user_ids.organisation_id,
-    )
-    result = await session.execute(stmt)
-    existing = result.scalars().first()
-
-    if existing:
-        raise HTTPException(status_code=409, detail="Stakeholder already exists for this deal.")
-
-    new_stakeholder = DealStakeholder(
-        organisation_id=user_ids.organisation_id,
-        deal_id=deal_id,
-        email=request.email,
-        name=request.name,
-        job_title=request.job_title,
-        external_links=request.external_links,
-        stance=request.stance,
-        decision_power=request.decision_power,
-        source=StakeholderSource.MANUAL,
-    )
-    session.add(new_stakeholder)
-    await session.commit()
-    await session.refresh(new_stakeholder)
-
-    return GenericResponse(
-        status="SUCCESS",
-        message="Stakeholder added successfully",
-        data=new_stakeholder,
-    )
+    try:
+        new_stakeholder = await service.create_stakeholder(deal_id, request)
+        return Response.success_response("Stakeholder added successfully", new_stakeholder)
+    except StakeholdersServiceError as e:
+        if e.status_code == 409:
+            raise HTTPException(status_code=409, detail=e.message) from e
+        raise HTTPException(status_code=e.status_code, detail=e.message) from e
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to create stakeholder for deal %s", deal_id)
+        return Response.internal_server_error_response("Failed to create stakeholder")
 
 
 @stakeholders_router.patch(
@@ -130,41 +123,20 @@ async def update_stakeholder(
     deal_id: UUID,
     stakeholder_id: UUID,
     request: UpdateStakeholderRequest,
-    user_ids: UserIDs = Depends(get_current_user),
-    session: AsyncSession = Depends(get_org_async_session),
+    service: StakeholdersService = Depends(get_stakeholders_service),
 ):
     """
     Update manual fields for a stakeholder (Stance, Power, Motivation).
     """
-    stmt = select(DealStakeholder).where(
-        col(DealStakeholder.stakeholder_id) == stakeholder_id,
-        col(DealStakeholder.deal_id) == deal_id,
-        col(DealStakeholder.organisation_id) == user_ids.organisation_id,
-    )
-    result = await session.execute(stmt)
-    stakeholder = result.scalars().first()
-
-    if not stakeholder:
-        raise HTTPException(status_code=404, detail="Stakeholder not found.")
-
-    if request.stance is not None:
-        stakeholder.stance = request.stance
-    if request.decision_power is not None:
-        stakeholder.decision_power = request.decision_power
-    if request.motivation is not None:
-        stakeholder.motivation = request.motivation
-    if request.pain_points is not None:
-        stakeholder.pain_points = request.pain_points
-    if request.external_links is not None:
-        # Merge or replace? Let's replace for simplicity, or merge if desired.
-        # For now, simple replacement of the dict.
-        stakeholder.external_links = request.external_links
-
-    await session.commit()
-    await session.refresh(stakeholder)
-
-    return GenericResponse(
-        status="SUCCESS",
-        message="Stakeholder updated successfully",
-        data=stakeholder,
-    )
+    try:
+        stakeholder = await service.update_stakeholder(deal_id, stakeholder_id, request)
+        return Response.success_response("Stakeholder updated successfully", stakeholder)
+    except StakeholdersServiceError as e:
+        if e.status_code == 404:
+            raise HTTPException(status_code=404, detail=e.message) from e
+        raise HTTPException(status_code=e.status_code, detail=e.message) from e
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to update stakeholder %s for deal %s", stakeholder_id, deal_id)
+        return Response.internal_server_error_response("Failed to update stakeholder")

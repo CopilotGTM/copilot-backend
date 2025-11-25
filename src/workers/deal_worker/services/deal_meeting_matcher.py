@@ -184,6 +184,9 @@ class DealMeetingMatcher:
 
         for deal in deals:
             stats["deals_processed"] += 1
+            # Ensure deal stakeholders are synced (primary contact, participants)
+            await self.stakeholder_service.sync_stakeholders_from_deal(deal)
+
             linked_count = await self._find_and_link_meetings(deal)
             stats["meetings_linked"] += linked_count
 
@@ -209,6 +212,9 @@ class DealMeetingMatcher:
         if not deal:
             logger.warning(f"Deal {deal_id} not found in org {self.organisation_id}")
             return {"deals_processed": 0, "meetings_linked": 0}
+
+        # Ensure deal stakeholders are synced (primary contact, participants)
+        await self.stakeholder_service.sync_stakeholders_from_deal(deal)
 
         linked_count = await self._find_and_link_meetings(deal)
         await self.session.commit()
