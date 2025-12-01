@@ -10,7 +10,6 @@ Job handlers are defined in the services module for better separation of concern
 
 from __future__ import annotations
 
-from contextlib import suppress
 from uuid import UUID
 
 from celery import Task
@@ -37,8 +36,8 @@ def process_deal_meeting_job(self: Task, organisation_id: str, job_id: str):
     It dispatches to specific handlers based on job_type.
 
     Args:
-        organisation_id: The organisation ID (as string)
-        job_id: The job ID to process (as string)
+        organisation_id: The organisation ID (as string for JSON serialization)
+        job_id: The job ID to process (as string for JSON serialization)
 
     Returns:
         Dictionary with job completion status
@@ -49,9 +48,8 @@ def process_deal_meeting_job(self: Task, organisation_id: str, job_id: str):
         org_uuid = UUID(organisation_id)
         job_uuid = UUID(job_id)
 
-        session_gen = acquire_org_async_session(org_uuid)
-        session = await anext(session_gen)
-        try:
+        # Use async for pattern for proper session lifecycle
+        async for session in acquire_org_async_session(org_uuid):
             # 1. Load job
             logger.info("Loading deal meeting job %s", job_id)
             job = await session.get(DealMeetingJob, job_uuid)
@@ -60,83 +58,73 @@ def process_deal_meeting_job(self: Task, organisation_id: str, job_id: str):
 
             publisher = DealJobRedisPublisher(org_uuid, job_uuid, str(job.job_type))
 
-            # Update status to IN_PROGRESS
-            job.status = JobStatus.IN_PROGRESS
-            await session.commit()
-
-            # 2. Dispatch to handler based on job type
-            handler = get_job_handler(job.job_type)
-            logger.info("Dispatching to handler for job %s type=%s", job_id, job.job_type)
-            result = await handler(session, job, publisher)
-
-            # 3. Save result
-            job.status = JobStatus.COMPLETED
-            job.result_data = result
-            await session.commit()
-
-            # 4. Finalize SSE stream
-            publisher.publish_result(result)
-            publisher.publish_finalize("done")
-
-            logger.info("Deal meeting job completed: %s type=%s", job_id, job.job_type)
-            return {
-                "status": "completed",
-                "job_id": job_id,
-                "job_type": str(job.job_type),
-            }
-
-        except NonRetryableJobError as e:
-            # Permanent failure - don't retry, complete the stream gracefully
-            logger.info(
-                "Deal meeting job permanently failed %s: %s (code=%s)",
-                job_id,
-                str(e),
-                e.error_code,
-            )
             try:
-                job = await session.get(DealMeetingJob, job_uuid)
-                if job:
+                # 2. Update status to IN_PROGRESS
+                job.status = JobStatus.IN_PROGRESS
+                await session.commit()
+
+                # 3. Dispatch to handler based on job type
+                handler = get_job_handler(job.job_type)
+                logger.info("Dispatching to handler for job %s type=%s", job_id, job.job_type)
+                result = await handler(session, job, publisher)
+
+                # 4. Save result
+                job.status = JobStatus.COMPLETED
+                job.result_data = result
+                await session.commit()
+
+                # 5. Finalize SSE stream
+                publisher.publish_result(result)
+                publisher.publish_finalize("done")
+
+                logger.info("Deal meeting job completed: %s type=%s", job_id, job.job_type)
+                return {
+                    "status": "completed",
+                    "job_id": job_id,
+                    "job_type": str(job.job_type),
+                }
+
+            except NonRetryableJobError as e:
+                # Permanent failure - don't retry, complete the stream gracefully
+                logger.info(
+                    "Deal meeting job permanently failed %s: %s (code=%s)",
+                    job_id,
+                    str(e),
+                    e.error_code,
+                )
+                try:
                     job.status = JobStatus.FAILED
                     job.error_message = str(e)
                     await session.commit()
 
-                    publisher = DealJobRedisPublisher(org_uuid, job_uuid, str(job.job_type))
                     # Send error details through SSE so frontend can show helpful message
                     publisher.publish_error(str(e), e.error_code)
                     publisher.publish_finalize("error")
-            except Exception:
-                logger.error("Failed to update job status after error", exc_info=True)
+                except Exception:
+                    logger.error("Failed to update job status after error", exc_info=True)
 
-            # Return failure status - do NOT raise (no retry)
-            return {
-                "status": "failed",
-                "job_id": job_id,
-                "error": str(e),
-                "error_code": e.error_code,
-                "retryable": False,
-            }
+                # Return failure status - do NOT raise (no retry)
+                return {
+                    "status": "failed",
+                    "job_id": job_id,
+                    "error": str(e),
+                    "error_code": e.error_code,
+                    "retryable": False,
+                }
 
-        except Exception as e:
-            logger.error("Deal meeting job failed %s: %s", job_id, e, exc_info=True)
-            # Try to update job status
-            try:
-                job = await session.get(DealMeetingJob, job_uuid)
-                if job:
+            except Exception as e:
+                logger.error("Deal meeting job failed %s: %s", job_id, e, exc_info=True)
+                # Try to update job status
+                try:
                     job.status = JobStatus.FAILED
-                    job.error_message = str(e)
+                    job.error_message = str(e)[:500]
                     job.retry_count += 1
                     await session.commit()
 
-                    publisher = DealJobRedisPublisher(
-                        org_uuid, job_uuid, str(job.job_type) if job else "unknown"
-                    )
                     publisher.publish_finalize("error")
-            except Exception:
-                logger.error("Failed to update job status after error", exc_info=True)
-            raise
-        finally:
-            with suppress(StopAsyncIteration):
-                await anext(session_gen)
+                except Exception:
+                    logger.error("Failed to update job status after error", exc_info=True)
+                raise
 
     try:
         return run_async(_run())
@@ -151,4 +139,5 @@ def process_deal_meeting_job(self: Task, organisation_id: str, job_id: str):
         }
     except Exception as e:
         logger.error("Deal meeting job task failed %s: %s", job_id, e, exc_info=True)
-        raise self.retry(exc=e, countdown=60, max_retries=3) from e
+        # Exponential backoff: 60, 120, 240 seconds
+        raise self.retry(exc=e, countdown=60 * (2**self.request.retries)) from e

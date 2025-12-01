@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from contextlib import suppress
 from uuid import UUID
 
 from celery import Task
@@ -24,21 +23,21 @@ logger = get_logger(__name__)
 def process_deal_meetings_task(self: Task, organisation_id: str) -> dict[str, int]:
     """
     Celery task to process deal meetings for an organisation.
+
+    Args:
+        organisation_id: UUID of the organization (string for JSON serialization)
+
+    Returns:
+        Dictionary with processing results
     """
     logger.info(f"Starting deal meeting processing for org {organisation_id}")
 
     async def _run():
-        # Convert string UUID to UUID object
         org_uuid = UUID(organisation_id)
 
-        # Acquire session
-        session_gen = acquire_org_async_session(org_uuid)
-        session = await anext(session_gen)
-        try:
+        # Use async for pattern for proper session lifecycle
+        async for session in acquire_org_async_session(org_uuid):
             return await process_deal_meetings(session, org_uuid)
-        finally:
-            with suppress(StopAsyncIteration):
-                await anext(session_gen)
 
     try:
         result = run_async(_run())
@@ -48,13 +47,16 @@ def process_deal_meetings_task(self: Task, organisation_id: str) -> dict[str, in
         logger.error(
             f"Deal meeting processing failed for org {organisation_id}: {e}", exc_info=True
         )
-        raise self.retry(exc=e, countdown=60, max_retries=3) from e
+        raise self.retry(exc=e, countdown=60 * (2**self.request.retries)) from e
 
 
 @app.task(name="deal.trigger_deal_meeting_processing_all_orgs")
 def trigger_deal_meeting_processing_all_orgs():
     """
     Periodic task to trigger deal meeting processing for all active organisations.
+
+    This task runs on a schedule (every 3 hours) and enqueues individual
+    processing tasks for each active organisation.
     """
     logger.info("Triggering deal meeting processing for all organisations")
 
@@ -69,6 +71,7 @@ def trigger_deal_meeting_processing_all_orgs():
             logger.info(f"Found {len(orgs)} active organisations to process")
 
             for org in orgs:
+                # Enqueue task for each organisation
                 process_deal_meetings_task.delay(str(org.organisation_id))
 
     run_async(_run())
@@ -78,6 +81,13 @@ def trigger_deal_meeting_processing_all_orgs():
 def process_single_deal_task(self: Task, organisation_id: str, deal_id: str) -> dict[str, int]:
     """
     Celery task to process meetings for a single deal.
+
+    Args:
+        organisation_id: UUID of the organization (string for JSON serialization)
+        deal_id: UUID of the deal to process (string for JSON serialization)
+
+    Returns:
+        Dictionary with processing results
     """
     logger.info(f"Starting deal meeting processing for deal {deal_id} in org {organisation_id}")
 
@@ -85,14 +95,10 @@ def process_single_deal_task(self: Task, organisation_id: str, deal_id: str) -> 
         org_uuid = UUID(organisation_id)
         deal_uuid = UUID(deal_id)
 
-        session_gen = acquire_org_async_session(org_uuid)
-        session = await anext(session_gen)
-        try:
+        # Use async for pattern for proper session lifecycle
+        async for session in acquire_org_async_session(org_uuid):
             matcher = DealMeetingMatcher(session, org_uuid)
             return await matcher.process_deal(deal_uuid)
-        finally:
-            with suppress(StopAsyncIteration):
-                await anext(session_gen)
 
     try:
         result = run_async(_run())
@@ -100,4 +106,4 @@ def process_single_deal_task(self: Task, organisation_id: str, deal_id: str) -> 
         return result
     except Exception as e:
         logger.error(f"Deal meeting processing failed for deal {deal_id}: {e}", exc_info=True)
-        raise self.retry(exc=e, countdown=60, max_retries=3) from e
+        raise self.retry(exc=e, countdown=60 * (2**self.request.retries)) from e

@@ -5,18 +5,30 @@ from src.workers.base.worker_config import BaseWorkerConfig
 
 
 class DealWorkerConfig(BaseWorkerConfig):
-    """Configuration for the Deal Worker."""
+    """Configuration for the Deal Worker.
+    Handles deal-related background processing:
+    - Deal-meeting matching and association
+    - Meeting briefing and summary generation
+    - Stakeholder synchronization
+    """
 
     def __init__(self):
         super().__init__()
 
+        # Time limits (default 5 minutes, can be adjusted for long-running tasks)
+        self.task_time_limit = 300  # 5 minutes hard limit
+        self.task_soft_time_limit = 240  # 4 minutes soft limit
+
+        # Define exchange (use direct type for explicit routing)
         deal_exchange = Exchange("deal", type="direct")
 
+        # Exchange defaults
         self.task_default_exchange = "deal"
         self.task_default_exchange_type = "direct"
         self.task_default_queue = "deal"
         self.task_default_routing_key = "deal"
 
+        # Define queues
         self.task_queues = (
             Queue(
                 "deal",
@@ -30,7 +42,9 @@ class DealWorkerConfig(BaseWorkerConfig):
             ),
         )
 
+        # Route tasks to queues
         self.task_routes = {
+            # Deal matching and processing tasks -> deal queue
             "deal.process_deal_meetings_task": {
                 "queue": "deal",
                 "routing_key": "deal",
@@ -43,10 +57,15 @@ class DealWorkerConfig(BaseWorkerConfig):
                 "queue": "deal",
                 "routing_key": "deal",
             },
-            # All deal meeting job tasks route to the deal_jobs queue
+            # Deal meeting job tasks (briefing, summary, followup) -> deal_jobs queue
             "deal_meeting_task.process": {
                 "queue": "deal_jobs",
                 "routing_key": "deal_jobs",
+            },
+            # Stakeholder sync tasks -> deal queue
+            "stakeholder.sync_from_meeting_task": {
+                "queue": "deal",
+                "routing_key": "deal",
             },
         }
 

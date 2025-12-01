@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from contextlib import suppress
 from uuid import UUID
 
 from celery import Task
@@ -28,7 +27,16 @@ logger = get_logger(__name__)
 def sync_stakeholders_from_meeting_task(
     self: Task, organisation_id: str, deal_id: str, event_id: str
 ) -> dict[str, int]:
-    """Sync stakeholders for a single deal/event association triggered via API."""
+    """Sync stakeholders for a single deal/event association triggered via API.
+
+    Args:
+        organisation_id: UUID of the organization (string for JSON serialization)
+        deal_id: UUID of the deal (string for JSON serialization)
+        event_id: UUID of the calendar event (string for JSON serialization)
+
+    Returns:
+        Dictionary with stakeholders_synced count
+    """
     logger.info(
         "Syncing stakeholders for org %s deal %s event %s",
         organisation_id,
@@ -41,9 +49,9 @@ def sync_stakeholders_from_meeting_task(
         deal_uuid = UUID(deal_id)
         event_uuid = UUID(event_id)
 
-        session_gen = acquire_org_async_session(org_uuid)
-        session = await anext(session_gen)
-        try:
+        # Use async for pattern for proper session lifecycle
+        async for session in acquire_org_async_session(org_uuid):
+            # Load deal
             deal_stmt = select(CRMDeal).where(
                 col(CRMDeal.organisation_id) == org_uuid,
                 col(CRMDeal.deal_id) == deal_uuid,
@@ -54,6 +62,7 @@ def sync_stakeholders_from_meeting_task(
                 logger.warning("Deal %s not found in org %s", deal_id, organisation_id)
                 return {"stakeholders_synced": 0}
 
+            # Load event with attendees
             event_stmt = (
                 select(CalendarEvent)
                 .options(selectinload(CalendarEvent.attendees))
@@ -68,22 +77,20 @@ def sync_stakeholders_from_meeting_task(
                 logger.warning("Event %s not found in org %s", event_id, organisation_id)
                 return {"stakeholders_synced": 0}
 
+            # Sync stakeholders
             service = StakeholderService(session, org_uuid)
             synced = await service.sync_stakeholders_from_event(deal, event)
             logger.info(
-                "Stakeholder sync completed for deal %s event %s: %s",
+                "Stakeholder sync completed for deal %s event %s: %s synced",
                 deal_id,
                 event_id,
                 synced,
             )
             return {"stakeholders_synced": synced}
-        finally:
-            with suppress(StopAsyncIteration):
-                await anext(session_gen)
 
     try:
         return run_async(_run())
-    except Exception as exc:  # pragma: no cover - Celery handles retries
+    except Exception as exc:
         logger.error(
             "Stakeholder sync failed for org %s deal %s event %s: %s",
             organisation_id,
@@ -92,4 +99,5 @@ def sync_stakeholders_from_meeting_task(
             exc,
             exc_info=True,
         )
-        raise self.retry(exc=exc, countdown=60, max_retries=3) from exc
+        # Exponential backoff: 60, 120, 240 seconds
+        raise self.retry(exc=exc, countdown=60 * (2**self.request.retries)) from exc
