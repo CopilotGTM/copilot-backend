@@ -23,6 +23,11 @@ class DealWorkerConfig(BaseWorkerConfig):
                 exchange=deal_exchange,
                 routing_key="deal",
             ),
+            Queue(
+                "deal_jobs",
+                exchange=deal_exchange,
+                routing_key="deal_jobs",
+            ),
         )
 
         self.task_routes = {
@@ -37,6 +42,11 @@ class DealWorkerConfig(BaseWorkerConfig):
             "deal.process_single_deal_task": {
                 "queue": "deal",
                 "routing_key": "deal",
+            },
+            # All deal meeting job tasks route to the deal_jobs queue
+            "deal_meeting_task.process": {
+                "queue": "deal_jobs",
+                "routing_key": "deal_jobs",
             },
         }
 

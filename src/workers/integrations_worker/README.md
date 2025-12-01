@@ -21,6 +21,7 @@ Celery worker dedicated to managing third-party integrations, OAuth token lifecy
 ## Overview
 
 The Integrations Worker is a specialized Celery worker that handles:
+
 - **OAuth Token Management**: Automatic refresh of expiring OAuth tokens
 - **Webhook Processing**: Receives and processes sync notifications from Nango
 - **Data Synchronization**: Fetches and persists data from external providers
@@ -38,7 +39,7 @@ The Integrations Worker is a specialized Celery worker that handles:
 
 ## Architecture
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────┐
 │                        External Providers                        │
 │  (Google Calendar, HubSpot CRM, Salesforce, etc.)              │
@@ -96,6 +97,7 @@ The Integrations Worker is a specialized Celery worker that handles:
 ### CRM Providers
 
 #### HubSpot
+
 - **Category**: `crm`
 - **Provider**: `hubspot`
 - **Data Types**:
@@ -106,6 +108,7 @@ The Integrations Worker is a specialized Celery worker that handles:
   - `companies` - Company/account records ✨ **NEW**
 
 **Company Sync Features**:
+
 - Full and incremental sync support
 - 30+ properties including business metrics, contact info, and social links
 - Owner mapping and relationship tracking
@@ -116,6 +119,7 @@ The Integrations Worker is a specialized Celery worker that handles:
 ### Calendar Providers
 
 #### Google Calendar
+
 - **Category**: `calendar`
 - **Provider**: `google`
 - **Data Types**:
@@ -125,7 +129,7 @@ The Integrations Worker is a specialized Celery worker that handles:
 
 ### Complete Sync Flow (Webhook-Driven)
 
-```
+```text
 1. User Authorizes Integration
    └─> Nango OAuth Flow completes
        └─> Nango sends webhook to /oauth/webhooks/nango
@@ -158,7 +162,7 @@ The Integrations Worker is a specialized Celery worker that handles:
 
 ### Example: HubSpot Companies Sync
 
-```
+```text
 User connects HubSpot → Nango webhook (type=sync, syncName=companies)
   ↓
 NangoWebhookService resolves organisation & integration
@@ -257,6 +261,7 @@ Handles synchronization of CRM data (HubSpot deals, contacts, users, companies, 
 - `sync_companies()` - Sync company/account records ✨ **NEW**
 
 **Features**:
+
 - Upsert logic (create or update existing records)
 - Relationship mapping (owners, associations)
 - Type conversion (int for employees, float for revenue)
@@ -296,9 +301,10 @@ await db.commit()
 ## Tasks
 
 ### integrations.sync_integration_data
+
 - **Queue**: `integrations`
 - **Purpose**: Main sync task - performs provider sync (fetch via Nango proxy, persist records, update metadata)
-- **Args**: 
+- **Args**:
   - `organisation_id: str` - Organisation UUID
   - `integration_id: str` - Integration UUID
   - `category: str` - Integration category (e.g., 'crm', 'calendar')
@@ -318,10 +324,12 @@ await db.commit()
   - Comprehensive error handling with retry logic
 
 **Retry Behavior**:
+
 - **Retryable errors**: Network issues, temporary provider outages, rate limiting
 - **Non-retryable errors**: Integration not found, unsupported data type, missing configuration
 
 ### integrations.refresh_expiring_tokens
+
 - **Queue**: `integrations`
 - **Purpose**: Hourly sweep to refresh tokens expiring within a buffer window
 - **Args**: `buffer_hours: int = 2`
@@ -333,10 +341,11 @@ await db.commit()
   - Prevents integration breakage due to expired tokens
 
 ### integrations.refresh_single_integration
+
 - **Queue**: `integrations_priority`
 - **Purpose**: Manual refresh for a specific integration (API-triggered)
 - **Args**: `organisation_id: str`, `integration_id: str`
-- **Features**: 
+- **Features**:
   - Priority queue to ensure user-driven refreshes don't wait behind scheduled jobs
   - Triggered on-demand via API endpoints
   - Useful for testing or manual token renewal
@@ -348,17 +357,20 @@ await db.commit()
 
 ## Usage
 
-### Start the worker:
+### Start the worker
+
 ```powershell
 celery -A src.workers.integrations_worker.celery_app worker -l info -Q integrations,integrations_priority --pool=solo
 ```
 
-### Start the worker with beat scheduler:
+### Start the worker with beat scheduler
+
 ```powershell
 celery -A src.workers.integrations_worker.celery_app worker -l info --beat -Q integrations,integrations_priority --pool=solo
 ```
 
-### Test connectivity:
+### Test connectivity
+
 ```powershell
 python -c "from src.workers.integrations_worker.celery_app import app; result = app.send_task('integrations.refresh_expiring_tokens'); print(result.get())"
 ```
@@ -388,6 +400,7 @@ The worker uses dedicated `integrations` and `integrations_priority` exchanges w
 ## Task Separation
 
 This worker focuses on integration-level operations:
+
 - OAuth token management and renewal.
 - Webhook processing from external providers (Nango).
 - Data synchronization and persistence.
@@ -424,6 +437,7 @@ celery -A src.workers.integrations_worker.celery_app worker -l info -Q integrati
 To add a new CRM provider or data type:
 
 1. **Create Fetcher Function** (`providers/crm/<provider>.py`):
+
 ```python
 async def fetch_companies(
     *,
@@ -444,7 +458,8 @@ async def fetch_companies(
         return await _search_companies_since(nango, connection_id, provider, last_synced_at)
 ```
 
-2. **Register Fetcher** (`providers/registry.py`):
+1. **Register Fetcher** (`providers/registry.py`):
+
 ```python
 from .crm.<provider> import fetch_companies as provider_companies_fetch
 
@@ -453,7 +468,8 @@ _REGISTRY[("crm", "<provider>")] = {
 }
 ```
 
-3. **Update Adapter** (`adapters/crm_adapter.py`):
+1. **Update Adapter** (`adapters/crm_adapter.py`):
+
 ```python
 if data_type == "companies":
     return await service.sync_companies(
@@ -463,7 +479,8 @@ if data_type == "companies":
     )
 ```
 
-4. **Create/Update Sync Service** (`src/service/integrations/crm_sync_service.py`):
+1. **Create/Update Sync Service** (`src/service/integrations/crm_sync_service.py`):
+
 ```python
 async def sync_companies(
     self,
@@ -479,7 +496,8 @@ async def sync_companies(
     pass
 ```
 
-5. **Create Database Model** (`src/domain/models/organisation_tables/sync/`):
+1. **Create Database Model** (`src/domain/models/organisation_tables/sync/`):
+
 ```python
 class CRMCompany(SyncedRecordMixin, table=True):
     __tablename__ = "crm_companies"
@@ -488,7 +506,8 @@ class CRMCompany(SyncedRecordMixin, table=True):
     # Add normalized fields
 ```
 
-6. **Create Migration**:
+1. **Create Migration**:
+
 ```bash
 # Generate migration
 alembic -c migrations/org_migrations/alembic.ini revision --autogenerate -m "add_crm_companies_table"
@@ -542,33 +561,39 @@ print(result.get(timeout=60))
 ### Common Issues
 
 **Issue**: `relation "crm_companies" does not exist`
+
 - **Cause**: Database migration not run
 - **Solution**: Run `python migrations/migration_manager.py run-org`
 
 **Issue**: `No module named 'src.domain.models.base_mixins'`
+
 - **Cause**: Incorrect import path in model file
 - **Solution**: Check relative imports match file location
   - Files in `sync/` folder: `from ..base_mixins import utcnow`
   - Files in `sync/crm/` folder: `from ...base_mixins import utcnow`
 
 **Issue**: Task retries indefinitely with `Integration not found`
+
 - **Cause**: Non-retryable error being retried
 - **Solution**: Add error type to `NON_RETRYABLE_ERRORS` in `tasks/sync_tasks.py`
 
 **Issue**: Webhook not triggering sync
+
 - **Cause**: Webhook signature validation failing or mapping not found
-- **Solution**: 
+- **Solution**:
   - Check `X-Nango-Signature` header validation
   - Verify connection_id mapping exists in database
   - Check Nango webhook URL configuration
 
 **Issue**: Duplicate records being created
+
 - **Cause**: Upsert logic not finding existing records
 - **Solution**: Verify `external_id` uniqueness constraint and query logic
 
 ### Debugging
 
 Enable verbose logging:
+
 ```python
 # In celery_app.py
 import logging
@@ -576,11 +601,13 @@ logging.getLogger('src.workers.integrations_worker').setLevel(logging.DEBUG)
 ```
 
 Monitor Celery events:
+
 ```powershell
 celery -A src.workers.integrations_worker.celery_app events
 ```
 
 Inspect task state:
+
 ```powershell
 celery -A src.workers.integrations_worker.celery_app inspect active
 celery -A src.workers.integrations_worker.celery_app inspect scheduled
@@ -598,24 +625,28 @@ celery -A src.workers.integrations_worker.celery_app inspect reserved
 ## Architecture Decisions
 
 ### Why Nango?
+
 - Handles OAuth token refresh automatically
 - Provides unified API across providers
 - Manages rate limiting and retries
 - Simplifies integration maintenance
 
 ### Why Celery?
+
 - Async task processing decoupled from API requests
 - Reliable retry mechanisms
 - Priority queues for critical tasks
 - Scheduled tasks for token refresh
 
 ### Why Provider Registry?
+
 - Decouples provider-specific logic
 - Easy to add new providers
 - Testable in isolation
 - Clear separation of concerns
 
 ### Why Sync History?
+
 - Audit trail for compliance
 - Debugging failed syncs
 - Performance monitoring

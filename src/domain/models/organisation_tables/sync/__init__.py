@@ -8,6 +8,9 @@ from .calendar import (
     CalendarEventDealAssociation,
     GenerationStatus,
 )
+
+# DEPRECATED: Use meeting_intelligence models instead for new development
+# Kept for backward compatibility and potential future Gong/Chorus sync
 from .conversation_intelligence import (
     CICall,
     CICallAnalyticsSnapshot,
@@ -52,6 +55,12 @@ from .integration_models import (
     KnowledgeIntegration,
     SyncStatus,
 )
+from .meeting_intelligence import (
+    Meeting,
+    MeetingSource,
+    MeetingStatus,
+    TranscriptSegment,
+)
 from .messaging_models import (
     ChannelType,
     MessageType,
@@ -93,6 +102,7 @@ __all__ = [
     "DecisionPower",
     "StakeholderTemperature",
     "StakeholderSource",
+    # Legacy CI models (deprecated - use Meeting* instead)
     "CICall",
     "CICallDealLink",
     "CICallSpeaker",
@@ -102,8 +112,15 @@ __all__ = [
     "CICallRecordingStatus",
     "CISpeakerRole",
     "TranscriptContentFormat",
+    # New Meeting Intelligence models (minimal - reuses calendar models)
+    "MeetingSource",
+    "MeetingStatus",
+    "Meeting",
+    "TranscriptSegment",
+    # Participant models
     "IntegrationParticipant",
     "IntegrationParticipantIdentity",
+    # Messaging models
     "ChannelType",
     "MessageType",
     "MessagingChannel",
@@ -111,6 +128,7 @@ __all__ = [
     "MessagingDealLink",
     "MessagingMessage",
     "MessagingThreadSummary",
+    # Email models
     "EmailDirection",
     "EmailPriority",
     "EmailFolder",

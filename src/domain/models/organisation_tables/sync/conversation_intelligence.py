@@ -1,3 +1,22 @@
+"""
+Conversation Intelligence Models (DEPRECATED).
+
+⚠️  DEPRECATED: Use meeting_intelligence.py for new development.
+
+This module was designed for syncing data FROM external CI tools (Gong, Chorus)
+where we don't own the data - we just mirror it. It has sync overhead fields
+like synced_at, last_seen_at, source_modified_at.
+
+For native meeting intelligence (Teams transcripts, Zoom, our own bot), use:
+- Meeting (meeting_intelligence.py)
+- TranscriptSegment (meeting_intelligence.py)
+- CalendarEventDealAssociation.meeting_summary_data for insights
+
+This module is kept for:
+1. Backward compatibility with existing data
+2. Future Gong/Chorus integration if needed (external sync use case)
+"""
+
 from datetime import datetime
 from enum import Enum
 from typing import Any

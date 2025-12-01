@@ -56,6 +56,8 @@ class CalendarEvent(SyncedRecordMixin, table=True):
     is_all_day: bool = Field(default=False)
     status: str | None = Field(default=None)
     conference_link: str | None = Field(default=None)
+    online_meeting_id: str | None = Field(default=None, index=True)
+    online_meeting_provider: str | None = Field(default=None)
     timezone: str | None = Field(default=None)
     attendee_count: int = Field(default=0)
 

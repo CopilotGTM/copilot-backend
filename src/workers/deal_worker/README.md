@@ -6,14 +6,18 @@ The **Deal Worker** is a dedicated background worker service responsible for pro
 
 ```text
 src/workers/deal_worker/
-├── services/                 # Core business logic and domain services
+├── services/                     # Core business logic and domain services
 │   ├── deal_meeting_matcher.py   # Logic to link Calendar Events to Deals
 │   ├── stakeholder_service.py    # Logic to identify and enrich Stakeholders
-│   └── briefing_generator.py     # Logic to generate meeting briefings
-├── tasks/                    # Celery task definitions
-│   └── deal_tasks.py             # Entry points for deal-related tasks
-├── celery_app.py             # Celery application instance configuration
-└── config.py                 # Worker-specific configuration
+│   ├── deal_job_handlers.py      # Job handlers for briefing, summary, etc.
+│   ├── deal_job_publisher.py     # Redis publisher for SSE streaming
+│   └── deal_job_utils.py         # Utility functions for job processing
+├── tasks/                        # Celery task definitions
+│   ├── deal_tasks.py             # Deal matching and processing tasks
+│   ├── deal_meeting_tasks.py     # Meeting job tasks (briefing, summary, followup)
+│   └── stakeholder_tasks.py      # Stakeholder sync tasks
+├── celery_app.py                 # Celery application instance configuration
+└── config.py                     # Worker-specific configuration
 ```
 
 ## 🛠️ Key Services
@@ -32,21 +36,28 @@ Extracts and manages stakeholders involved in a deal.
 - **Discovery:** Identifies new contacts from meeting attendee lists.
 - **Enrichment:** Tracks engagement, stance, and influence based on interactions.
 
-### 3. Briefing Generator (`services/briefing_generator.py`)
+### 3. Deal Job Handlers (`services/deal_job_handlers.py`)
 
-Generates preparation materials for upcoming meetings.
+Handles different types of deal meeting jobs:
 
-- **Input:** Deal context, past interactions, and stakeholder profiles.
-- **Output:** Meeting briefings (objectives, questions to ask, potential objections).
+- **Meeting Briefing:** Pre-meeting preparation and context generation.
+- **Meeting Summary:** Post-meeting summary from transcripts.
+- **Stakeholder Analysis:** Stakeholder insights and recommendations.
 
 ## ⚡ Celery Tasks
 
-Tasks are defined in `tasks/deal_tasks.py` and can be triggered via the Celery broker.
+### Deal Tasks (`tasks/deal_tasks.py`)
 
-- **`deal.process_deal_meetings_task`**:
-  - **Input:** `organisation_id` (UUID string)
-  - **Action:** Runs the `DealMeetingMatcher` for all open deals in the specified organisation.
-  - **Schedule:** Typically runs nightly or can be triggered manually.
+- **`deal.process_deal_meetings_task`**: Runs the `DealMeetingMatcher` for all open deals in an organisation.
+- **`deal.process_single_deal_task`**: Processes meetings for a single deal.
+- **`deal.trigger_deal_meeting_processing_all_orgs`**: Periodic task to trigger processing for all organisations.
+
+### Deal Meeting Tasks (`tasks/deal_meeting_tasks.py`)
+
+- **`deal_meeting_task.process`**: Generic job processor for meeting-related jobs.
+  - **Input:** `organisation_id`, `job_id`
+  - **Action:** Dispatches to appropriate handler based on job type (briefing, summary, followup).
+  - **Queue:** `deal_jobs`
 
 ## 📡 Triggering Tasks
 
@@ -74,14 +85,19 @@ To start the Celery worker for this module:
 ### PowerShell (Windows)
 
 ```powershell
-celery -A src.workers.deal_worker.celery_app worker -l info -Q deal --pool=solo
+celery -A src.workers.deal_worker.celery_app worker -l info -Q deal,deal_jobs --pool=solo
 ```
 
 ### Bash (Linux/Mac)
 
 ```bash
-celery -A src.workers.deal_worker.celery_app worker --loglevel=info -Q deal
+celery -A src.workers.deal_worker.celery_app worker --loglevel=info -Q deal,deal_jobs
 ```
+
+> **Note:** The worker must listen to both `deal` and `deal_jobs` queues:
+>
+> - `deal`: For deal matching and processing tasks
+> - `deal_jobs`: For meeting job tasks (briefing, summary, followup)
 
 ## 📚 Related Documentation
 

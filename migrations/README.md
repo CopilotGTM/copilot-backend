@@ -23,12 +23,14 @@ migrations/
 ## Migration Types
 
 ### Master Migrations (`master_migrations/`)
+
 - **Purpose**: System-wide changes in the `public` schema
 - **Scope**: Organizations, users, system tables
 - **Usage**: `python scripts/run_master_migrations.py`
 - **Examples**: Adding organization fields, user authentication changes
 
 ### Organization Migrations (`org_migrations/`)
+
 - **Purpose**: Organization-specific changes in org schemas
 - **Scope**: Chat sessions, messages, knowledge base, etc.
 - **Usage**: `python scripts/run_org_migrations.py`
@@ -70,4 +72,4 @@ python scripts/create_organization.py --name "Org Name" --admin-email "admin@org
 1. **Development**: Create and test migrations locally
 2. **Staging**: Run migrations on staging environment
 3. **Production**: Run migrations on production with proper backups
-4. **Rollback**: Keep rollback plans ready for critical migrations 
+4. **Rollback**: Keep rollback plans ready for critical migrations

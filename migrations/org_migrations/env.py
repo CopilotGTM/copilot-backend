@@ -31,6 +31,7 @@ from src.domain.models.organisation_tables import (
     CRMUser,
     CRMCompany,
     DealStakeholder,
+    DealMeetingJob,
 )
 from src.domain.models.organisation_tables.sync.email_models import (
     EmailFolder,
@@ -47,6 +48,10 @@ from src.domain.models.organisation_tables.sync.messaging_models import (
 from src.domain.models.organisation_tables.sync.participant_models import (
     IntegrationParticipant,
     IntegrationParticipantIdentity,
+)
+from src.domain.models.organisation_tables.sync.meeting_intelligence import (
+    Meeting,
+    TranscriptSegment,
 )
 
 load_dotenv()
@@ -105,6 +110,7 @@ all_org_models: list[type[Any]] = [
     CRMUser,
     CRMCompany,
     DealStakeholder,
+    DealMeetingJob,
     # Email tables
     EmailFolder,
     Email,
@@ -118,6 +124,9 @@ all_org_models: list[type[Any]] = [
     # Participant tables (shared across integrations)
     IntegrationParticipant,
     IntegrationParticipantIdentity,
+    # Meeting intelligence tables
+    Meeting,
+    TranscriptSegment,
 ]
 
 for model in all_org_models:

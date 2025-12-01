@@ -311,6 +311,65 @@ class UpdateStakeholderRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Deal Job Models
+# ---------------------------------------------------------------------------
+
+
+class BriefingData(BaseModel):
+    """Generated meeting briefing data.
+
+    Contains a single narrative field with the full briefing content.
+    Future versions may add structured sections (objectives, pain_points, etc.)
+    but for v1.0 we ship only the primary narrative.
+    """
+
+    briefing_overview: str = Field(
+        ...,
+        description="Multi-paragraph prep brief that synthesizes the most important intel before the call.",
+    )
+
+
+class SummaryData(BaseModel):
+    """Generated meeting summary data.
+
+    Contains a single narrative field with the full summary content.
+    Future versions may add structured sections (attendees, decisions, etc.)
+    but for v1.0 we ship only the primary narrative.
+    """
+
+    meeting_summary: str = Field(
+        ...,
+        description="Transcript-backed recap of what actually happened, including decisions and context.",
+    )
+
+
+class DealJobResponse(BaseModel):
+    """Response for deal job initiation (generic for all job types).
+
+    Used when:
+    - POST to initiate a new job (returns job_id to subscribe SSE)
+    - GET to check for active jobs (for reconnection/recovery)
+    """
+
+    job_id: UUID | None = Field(
+        None, description="Job ID for SSE subscription (None if no active job)"
+    )
+    job_type: str = Field(..., description="Type of job")
+    status: str = Field(..., description="Current status of the job")
+
+
+class MeetingJobsStatus(BaseModel):
+    """Active jobs for a meeting, keyed by job type.
+
+    Each field is None if no active job exists for that type.
+    """
+
+    meeting_briefing: DealJobResponse | None = None
+    meeting_summary: DealJobResponse | None = None
+    meeting_followup: DealJobResponse | None = None
+
+
+# ---------------------------------------------------------------------------
 # Meeting Models
 # ---------------------------------------------------------------------------
 
@@ -330,10 +389,22 @@ class DealMeetingResponse(BaseModel):
     subject: str | None
     start_at: datetime
     status: str  # AssociationStatus value
-    stage: str | None
     attendees: list[MeetingAttendee]
+
+    # Meeting Prep (Briefing) - Pre-meeting
     meeting_prep_status: str  # GenerationStatus value
     meeting_prep_data: dict[str, Any] | None = None
+
+    # Meeting Summary - Post-meeting
+    meeting_summary_status: str  # GenerationStatus value
+    meeting_summary_data: dict[str, Any] | None = None
+
+    # Meeting Follow-up - Post-meeting actions
+    meeting_followup_status: str  # GenerationStatus value
+    meeting_followup_data: dict[str, Any] | None = None
+
+    # Active jobs (unified for all job types)
+    active_jobs: MeetingJobsStatus | None = None
 
     model_config = {"from_attributes": True}
 

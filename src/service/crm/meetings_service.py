@@ -11,9 +11,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlmodel import col
 from src.api.schemas.crm_models import (
+    DealJobResponse,
     DealMeetingResponse,
     MeetingAttendee,
+    MeetingJobsStatus,
 )
+from src.domain.models.organisation_tables.job_models import DealJobType, DealMeetingJob, JobStatus
 from src.domain.models.organisation_tables.sync.calendar import (
     AssociationStatus,
     CalendarEvent,
@@ -22,10 +25,6 @@ from src.domain.models.organisation_tables.sync.calendar import (
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
 from src.infra.utils.logger import get_logger
 from src.workers.deal_worker.celery_app import app as deal_worker_app
-from src.workers.deal_worker.services.briefing_generator import (
-    BriefingData,
-    BriefingGeneratorService,
-)
 from src.workers.deal_worker.services.stakeholder_service import StakeholderService
 
 logger = get_logger("meetings_service")
@@ -60,13 +59,13 @@ class MeetingsService:
 
     async def list_meetings_by_deal(self, deal_id: UUID) -> list[DealMeetingResponse]:
         """Get all meetings associated with a specific deal."""
+        # Fetch Meetings (No Deal Join needed as stage is available in deal context)
         stmt = (
-            select(CalendarEventDealAssociation, CalendarEvent, CRMDeal)
+            select(CalendarEventDealAssociation, CalendarEvent)
             .join(
                 CalendarEvent,
                 col(CalendarEventDealAssociation.event_id) == col(CalendarEvent.event_id),
             )
-            .join(CRMDeal, col(CalendarEventDealAssociation.deal_id) == col(CRMDeal.deal_id))
             .options(selectinload(cast(Any, CalendarEvent.attendees)))
             .where(
                 col(CalendarEventDealAssociation.deal_id) == deal_id,
@@ -76,8 +75,12 @@ class MeetingsService:
         result = await self.session.execute(stmt)
         rows = result.all()
 
+        # Collect event IDs to fetch active jobs
+        event_ids = [row[1].event_id for row in rows]
+        active_jobs_map = await self._get_active_meeting_jobs(event_ids)
+
         meetings = []
-        for assoc, event, deal in rows:
+        for assoc, event in rows:
             attendees = [
                 MeetingAttendee(
                     name=att.display_name,
@@ -87,26 +90,81 @@ class MeetingsService:
                 for att in event.attendees
             ]
 
+            # Get active jobs for this event
+            active_jobs = active_jobs_map.get(event.event_id)
+
             meetings.append(
                 DealMeetingResponse(
                     event_id=event.event_id,
                     subject=event.data_payload.get("subject") if event.data_payload else None,
                     start_at=event.start_at,
                     status=assoc.status,
-                    stage=deal.stage_label or deal.stage_name,
                     attendees=attendees,
+                    # Meeting Prep (Briefing)
                     meeting_prep_status=assoc.meeting_prep_status,
-                    meeting_prep_data=BriefingData(**assoc.meeting_prep_data)
-                    if assoc.meeting_prep_data
-                    else None,
+                    meeting_prep_data=assoc.meeting_prep_data,
+                    # Meeting Summary
+                    meeting_summary_status=assoc.meeting_summary_status,
+                    meeting_summary_data=assoc.meeting_summary_data,
+                    # Meeting Follow-up
+                    meeting_followup_status=assoc.meeting_followup_status,
+                    meeting_followup_data=assoc.meeting_followup_data,
+                    # Active jobs
+                    active_jobs=active_jobs,
                 )
             )
         return meetings
 
-    async def generate_briefing(self, deal_id: UUID, event_id: UUID) -> BriefingData | None:
-        """Trigger the generation of a meeting briefing using AI."""
-        service = BriefingGeneratorService(self.session, organisation_id=self.organisation_id)
-        return await service.generate_briefing(deal_id, event_id)
+    # Meeting job types that can be active
+    MEETING_JOB_TYPES = {
+        DealJobType.MEETING_BRIEFING,
+        DealJobType.MEETING_SUMMARY,
+        DealJobType.MEETING_FOLLOWUP,
+    }
+
+    async def _get_active_meeting_jobs(
+        self, event_ids: list[UUID]
+    ) -> dict[UUID, MeetingJobsStatus]:
+        """
+        Fetch all active meeting jobs for a list of events.
+        Returns a map of event_id -> MeetingJobsStatus.
+        """
+        if not event_ids:
+            return {}
+
+        stmt = select(DealMeetingJob).where(
+            col(DealMeetingJob.organisation_id) == self.organisation_id,
+            col(DealMeetingJob.event_id).in_(event_ids),
+            col(DealMeetingJob.job_type).in_(self.MEETING_JOB_TYPES),
+            col(DealMeetingJob.status).in_([JobStatus.PENDING, JobStatus.IN_PROGRESS]),
+        )
+        result = await self.session.execute(stmt)
+        jobs = result.scalars().all()
+
+        # Group jobs by event_id
+        jobs_by_event: dict[UUID, MeetingJobsStatus] = {}
+        for job in jobs:
+            if not job.event_id:
+                continue
+
+            if job.event_id not in jobs_by_event:
+                jobs_by_event[job.event_id] = MeetingJobsStatus()
+
+            job_response = DealJobResponse(
+                job_id=job.job_id,
+                job_type=str(job.job_type),
+                status=str(job.status),
+            )
+
+            # Map to appropriate field based on job type
+            if job.job_type == DealJobType.MEETING_BRIEFING:
+                jobs_by_event[job.event_id].meeting_briefing = job_response
+            elif job.job_type == DealJobType.MEETING_SUMMARY:
+                jobs_by_event[job.event_id].meeting_summary = job_response
+            elif job.job_type == DealJobType.MEETING_FOLLOWUP:
+                jobs_by_event[job.event_id].meeting_followup = job_response
+
+        return jobs_by_event
 
     async def update_meeting_status(
         self, deal_id: UUID, event_id: UUID, status: AssociationStatus

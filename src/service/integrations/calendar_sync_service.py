@@ -493,10 +493,26 @@ class CalendarSyncService:
     def _apply_google_conference(fields: dict[str, Any], conference_data: Any) -> None:
         if not isinstance(conference_data, dict):
             return
+
+        # Extract video conference link
         for entry in conference_data.get("entryPoints", []):
             if entry.get("entryPointType") == "video":
                 fields["conference_link"] = entry.get("uri")
                 break
+
+        # Extract online meeting provider and ID
+        solution = conference_data.get("conferenceSolution", {})
+        solution_type = solution.get("key", {}).get("type", "")
+
+        if solution_type == "hangoutsMeet":
+            fields["online_meeting_provider"] = "googleMeet"
+            # Google Meet conferenceId is the meeting code (e.g., "abc-defg-hij")
+            fields["online_meeting_id"] = conference_data.get("conferenceId")
+        elif solution_type == "addOn":
+            # Third-party provider integrated via Google Calendar (e.g., Zoom)
+            provider_name = solution.get("name", "").lower().replace(" ", "")
+            fields["online_meeting_provider"] = provider_name or "thirdParty"
+            fields["online_meeting_id"] = conference_data.get("conferenceId")
 
     @staticmethod
     def _apply_google_organizer(fields: dict[str, Any], organizer: Any) -> None:
@@ -554,8 +570,56 @@ class CalendarSyncService:
     @staticmethod
     def _apply_microsoft_online_meeting(fields: dict[str, Any], event_data: dict[str, Any]) -> None:
         online_meeting = event_data.get("onlineMeeting")
-        if isinstance(online_meeting, dict):
-            fields["conference_link"] = online_meeting.get("joinUrl")
+        if not isinstance(online_meeting, dict):
+            return
+
+        join_url = online_meeting.get("joinUrl")
+        fields["conference_link"] = join_url
+
+        # Extract Teams meeting ID from join URL for transcript access
+        if join_url and "teams.microsoft.com" in join_url:
+            fields["online_meeting_provider"] = "teamsForBusiness"
+            meeting_id = CalendarSyncService._extract_teams_meeting_id(join_url)
+            if meeting_id:
+                fields["online_meeting_id"] = meeting_id
+
+    @staticmethod
+    def _extract_teams_meeting_id(join_url: str) -> str | None:
+        """
+        Extract Teams online meeting ID from join URL.
+
+        The join URL contains the meeting thread ID which is needed for
+        accessing transcripts via MS Graph API.
+
+        URL format:
+            https://teams.microsoft.com/l/meetup-join/
+            19%3ameeting_ZGQ4ZmVlYzEtY...%40thread.v2/0?context=...
+
+        The meeting ID is: 19:meeting_ZGQ4ZmVlYzEtY...@thread.v2
+
+        Returns:
+            The decoded meeting ID or None if parsing fails.
+        """
+        import urllib.parse
+
+        try:
+            parsed = urllib.parse.urlparse(join_url)
+            # The path looks like: /l/meetup-join/19%3ameeting_XXX%40thread.v2/0
+            path_parts = parsed.path.split("/")
+
+            for part in path_parts:
+                if not part:
+                    continue
+                decoded = urllib.parse.unquote(part)
+                # Teams meeting IDs start with "19:meeting_" and contain "@thread"
+                if decoded.startswith("19:meeting_") and "@thread" in decoded:
+                    return decoded
+
+        except Exception as e:
+            logger.warning("Failed to extract Teams meeting ID from URL: %s", str(e))
+            # If parsing fails, return None - we'll just not have transcript access
+
+        return None
 
     @classmethod
     def _apply_microsoft_source_modified(
