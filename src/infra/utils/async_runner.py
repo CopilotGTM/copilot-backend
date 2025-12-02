@@ -13,14 +13,53 @@ logger = get_logger(__name__)
 _thread_local = threading.local()
 
 
+def _clear_async_db_provider_cache() -> None:
+    """Clear cached async database engines when event loop changes.
+
+    This prevents "attached to a different loop" errors when asyncpg
+    connections cached in the provider were created on a previous event loop.
+    Called when we detect the event loop was recreated.
+    """
+    try:
+        from src.infra.database.factory import _async_instance
+        from src.infra.database.provider_async import AsyncSqlAlchemyProvider
+
+        # Cast to concrete implementation to access internal caches
+        if _async_instance is not None and isinstance(_async_instance, AsyncSqlAlchemyProvider):
+            provider = _async_instance
+            # Clear the engine caches without async disposal (old loop may be dead)
+            with provider._lock:
+                if provider._tenant_engines:
+                    logger.info(
+                        "Clearing %d stale async tenant engines after loop recreation",
+                        len(provider._tenant_engines),
+                    )
+                    provider._tenant_engines.clear()
+                    provider._tenant_pool_order.clear()
+                    provider._tenant_locks.clear()
+                if provider._master_engine is not None:
+                    logger.info("Clearing stale async master engine after loop recreation")
+                    provider._master_engine = None
+    except Exception as e:
+        logger.debug("Could not clear async DB provider cache: %s", e)
+
+
 def _get_or_create_loop() -> asyncio.AbstractEventLoop:
     """Get or create a persistent event loop for the current thread.
 
     In Celery solo pool mode, all tasks run in the same thread, so we
     need a persistent loop that doesn't get closed between tasks.
+
+    If a new loop is created (because previous was closed/corrupted),
+    we also clear cached async database engines to prevent connection errors.
     """
     loop: asyncio.AbstractEventLoop | None = getattr(_thread_local, "loop", None)
     if loop is None or loop.is_closed():
+        # Clear stale DB connections before creating new loop
+        if loop is not None and loop.is_closed():
+            logger.warning("Event loop was closed, creating new loop and clearing DB caches")
+            _clear_async_db_provider_cache()
+
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         _thread_local.loop = loop

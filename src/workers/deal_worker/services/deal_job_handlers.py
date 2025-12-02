@@ -23,6 +23,7 @@ from src.workers.deal_worker.services.deal_job_utils import (
     get_association,
     get_deal,
     get_event,
+    get_previous_meetings,
     get_stakeholders,
 )
 
@@ -95,7 +96,7 @@ async def handle_meeting_briefing(
     """Handle meeting briefing generation.
 
     Generates a pre-meeting briefing with context about the deal,
-    stakeholders, and meeting details.
+    stakeholders, meeting details, and transcripts from previous meetings.
 
     Args:
         session: Database session
@@ -123,6 +124,35 @@ async def handle_meeting_briefing(
     if not deal or not event:
         raise RuntimeError("Missing deal or event data")
 
+    publisher.publish_progress("Loading historical context...", "history", 0.2)
+
+    # Fetch previous meetings for historical context
+    previous_meetings = await get_previous_meetings(session, org_id, job.deal_id, event.start_at)
+
+    # Fetch transcripts for previous meetings using TranscriptService
+    previous_transcripts: list[dict] = []
+    if previous_meetings:
+        transcript_service = TranscriptService(session, org_id)
+        for prev_event in previous_meetings:
+            # ensure_transcript will fetch from provider if not in DB
+            meeting = await transcript_service.ensure_transcript(prev_event.event_id)
+            if meeting and meeting.full_transcript:
+                previous_transcripts.append(
+                    {
+                        "subject": prev_event.title or "Unknown Subject",
+                        "date": prev_event.start_at.isoformat()
+                        if prev_event.start_at
+                        else "Unknown",
+                        "transcript": meeting.full_transcript,
+                    }
+                )
+
+    logger.info(
+        "Found %d previous meetings with transcripts for deal %s",
+        len(previous_transcripts),
+        job.deal_id,
+    )
+
     publisher.publish_progress("Analyzing deal context...", "analysis", 0.3)
 
     # Update association status if exists
@@ -130,8 +160,10 @@ async def handle_meeting_briefing(
         association.meeting_prep_status = GenerationStatus.GENERATING
         await session.commit()
 
-    # Build context and run agent
-    context_string = build_briefing_context_string(deal, event, stakeholders)
+    # Build context with historical transcripts and run agent
+    context_string = build_briefing_context_string(
+        deal, event, stakeholders, previous_transcripts if previous_transcripts else None
+    )
 
     publisher.publish_progress("Generating briefing...", "generation", 0.5)
 
