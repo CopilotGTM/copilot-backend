@@ -134,3 +134,124 @@ class DealEnrichmentService:
     def _compose_name(self, first: Any, last: Any) -> str | None:
         parts = [str(part).strip() for part in (first, last) if part]
         return " ".join(parts) if parts else None
+
+    async def enrich_participants(
+        self, integration_id: UUID, *, deal_ids: Sequence[UUID] | None = None
+    ) -> int:
+        """Enrich deal participants with related entity details.
+
+        Looks up CRMContact and CRMCompany records to populate related_name
+        and related_email fields on CRMDealParticipant records.
+
+        Args:
+            integration_id: The integration to scope the enrichment to.
+            deal_ids: Optional list of deal IDs to limit enrichment scope.
+                     If None, enriches all participants for the integration.
+
+        Returns:
+            Number of participants enriched.
+        """
+        from src.domain.models.organisation_tables.sync.crm import (
+            CRMDealParticipant,
+            CRMParticipantType,
+        )
+
+        def _get_participant_type_str(ptype: Any) -> str:
+            """Normalize participant type to string for comparison."""
+            if hasattr(ptype, "value"):
+                return ptype.value
+            return str(ptype)
+
+        # Build query for participants needing enrichment
+        stmt = (
+            select(CRMDealParticipant)
+            .where(CRMDealParticipant.organisation_id == self.organisation_id)  # type: ignore[arg-type]
+            .where(CRMDealParticipant.integration_id == integration_id)  # type: ignore[arg-type]
+            .where(CRMDealParticipant.is_deleted.is_(False))  # type: ignore[attr-defined]
+        )
+
+        if deal_ids:
+            stmt = stmt.where(CRMDealParticipant.deal_id.in_(deal_ids))  # type: ignore[attr-defined]
+
+        result = await self.db.execute(stmt)
+        participants = list(result.scalars().all())
+
+        if not participants:
+            return 0
+
+        # Collect external IDs by type (handle both string and enum)
+        contact_ext_ids: set[str] = set()
+        company_ext_ids: set[str] = set()
+        user_ext_ids: set[str] = set()
+
+        for p in participants:
+            ptype = _get_participant_type_str(p.participant_type)
+            if ptype == CRMParticipantType.CONTACT.value and p.related_external_id:
+                contact_ext_ids.add(p.related_external_id)
+            elif ptype == CRMParticipantType.COMPANY.value and p.related_external_id:
+                company_ext_ids.add(p.related_external_id)
+            elif ptype == CRMParticipantType.USER.value and p.related_external_id:
+                user_ext_ids.add(p.related_external_id)
+
+        # Load related entities
+        contact_map = await self._load_contacts(contact_ext_ids) if contact_ext_ids else {}
+        company_map = await self._load_companies(company_ext_ids) if company_ext_ids else {}
+        user_map = await self._load_users(user_ext_ids) if user_ext_ids else {}
+
+        enriched_count = 0
+        for p in participants:
+            updated = False
+            ptype = _get_participant_type_str(p.participant_type)
+
+            if ptype == CRMParticipantType.CONTACT.value:
+                contact = contact_map.get(p.related_external_id)
+                if contact:
+                    name = contact.full_name or self._compose_name(
+                        contact.first_name, contact.last_name
+                    )
+                    if name and name != p.related_name:
+                        p.related_name = name
+                        updated = True
+                    if contact.email and contact.email != p.related_email:
+                        p.related_email = contact.email
+                        updated = True
+                    if contact.contact_id and p.related_local_id != contact.contact_id:
+                        p.related_local_id = contact.contact_id
+                        updated = True
+
+            elif ptype == CRMParticipantType.COMPANY.value:
+                company = company_map.get(p.related_external_id)
+                if company:
+                    if company.name and company.name != p.related_name:
+                        p.related_name = company.name
+                        updated = True
+                    # Use company domain as related_email for companies
+                    if company.domain and company.domain != p.related_email:
+                        p.related_email = company.domain
+                        updated = True
+                    if company.company_id and p.related_local_id != company.company_id:
+                        p.related_local_id = company.company_id
+                        updated = True
+
+            elif ptype == CRMParticipantType.USER.value:
+                user = user_map.get(p.related_external_id)
+                if user:
+                    name = user.full_name or self._compose_name(user.first_name, user.last_name)
+                    if name and name != p.related_name:
+                        p.related_name = name
+                        updated = True
+                    if user.email and user.email != p.related_email:
+                        p.related_email = user.email
+                        updated = True
+                    if user.user_id and p.related_local_id != user.user_id:
+                        p.related_local_id = user.user_id
+                        updated = True
+
+            if updated:
+                self.db.add(p)
+                enriched_count += 1
+
+        if enriched_count > 0:
+            await self.db.commit()
+
+        return enriched_count

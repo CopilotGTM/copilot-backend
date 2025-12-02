@@ -300,14 +300,59 @@ class CreateStakeholderRequest(BaseModel):
     decision_power: DecisionPower = DecisionPower.UNKNOWN
 
 
-class UpdateStakeholderRequest(BaseModel):
-    """Request model for updating stakeholder fields."""
+class AvailableContactItem(BaseModel):
+    """Contact available for adding as a stakeholder.
 
-    stance: StakeholderStance | None = None
-    decision_power: DecisionPower | None = None
-    motivation: str | None = None
-    pain_points: list[str] | None = None
-    external_links: list[StakeholderLink] | None = None
+    Only contacts with valid email addresses are returned.
+    Includes professional context useful for stakeholder selection.
+    """
+
+    contact_id: UUID = Field(..., description="Internal contact identifier")
+    external_id: str = Field(..., description="CRM provider's contact identifier")
+    email: str = Field(..., description="Primary email address (required for stakeholders)")
+    first_name: str | None = Field(None, description="Contact's first name")
+    last_name: str | None = Field(None, description="Contact's last name")
+    full_name: str | None = Field(None, description="Contact's display name")
+    job_title: str | None = Field(None, description="Current job title")
+    company_name: str | None = Field(None, description="Associated company name")
+    phone: str | None = Field(None, description="Primary phone number")
+    lifecycle_stage: str | None = Field(None, description="CRM lifecycle stage")
+    last_activity_at: datetime | None = Field(None, description="Last activity timestamp")
+
+    model_config = {"from_attributes": True}
+
+
+class AddContactsAsStakeholdersRequest(BaseModel):
+    """Request to add selected contacts as stakeholders."""
+
+    contact_ids: list[UUID] = Field(
+        ...,
+        description="List of contact IDs to add as stakeholders",
+        min_length=1,
+    )
+
+
+class SkippedContact(BaseModel):
+    """Details about a contact that was skipped during stakeholder creation."""
+
+    contact_id: UUID = Field(..., description="ID of the skipped contact")
+    reason: str = Field(..., description="Reason why the contact was skipped")
+
+
+class AddContactsAsStakeholdersResponse(BaseModel):
+    """Response for adding contacts as stakeholders."""
+
+    added: list[StakeholderDetail] = Field(
+        default_factory=list,
+        description="Successfully added stakeholders",
+    )
+    skipped: list[SkippedContact] = Field(
+        default_factory=list,
+        description="Contacts that were skipped (no email or already exists)",
+    )
+    total_requested: int = Field(..., description="Total number of contacts requested")
+    total_added: int = Field(..., description="Number of contacts successfully added")
+    total_skipped: int = Field(..., description="Number of contacts skipped")
 
 
 # ---------------------------------------------------------------------------

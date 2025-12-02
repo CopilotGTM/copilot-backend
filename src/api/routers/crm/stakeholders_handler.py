@@ -13,10 +13,10 @@ from src.api.dependencies.organisation_dependencies import (
 )
 from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.crm_models import (
-    ContactListItem,
-    CreateStakeholderRequest,
+    AddContactsAsStakeholdersRequest,
+    AddContactsAsStakeholdersResponse,
+    AvailableContactItem,
     StakeholderDetail,
-    UpdateStakeholderRequest,
 )
 from src.api.utils.http_response import Response
 from src.infra.utils.logger import get_logger
@@ -57,7 +57,7 @@ async def get_deal_stakeholders(
     """Get all stakeholders associated with a specific deal."""
     try:
         stakeholders = await service.list_stakeholders_by_deal(deal_id)
-        return Response.success(data=stakeholders)
+        return Response.success_response(message="Stakeholders retrieved", data=stakeholders)
     except StakeholdersServiceError as e:
         raise HTTPException(status_code=e.status_code, detail=e.message) from e
     except Exception as e:
@@ -67,7 +67,7 @@ async def get_deal_stakeholders(
 
 @stakeholders_router.get(
     "/{deal_id}/stakeholders/available-contacts",
-    response_model=GenericResponse[list[ContactListItem]],
+    response_model=GenericResponse[list[AvailableContactItem]],
     summary="List available contacts for adding as stakeholders",
 )
 async def list_available_contacts(
@@ -76,10 +76,20 @@ async def list_available_contacts(
     limit: int = 50,
     service: StakeholdersService = Depends(get_stakeholders_service),
 ):
-    """List contacts that can be added as stakeholders to the deal."""
+    """
+    List contacts that can be added as stakeholders to the deal.
+
+    Only returns contacts that have a valid email address, as email is required
+    for stakeholder identification and communication.
+
+    Response includes:
+    - Contact identity (name, email)
+    - Professional context (job title, company name)
+    - CRM metadata for reference
+    """
     try:
         contacts = await service.list_available_contacts(deal_id, query, limit)
-        return Response.success(data=contacts)
+        return Response.success_response(message="Available contacts retrieved", data=contacts)
     except StakeholdersServiceError as e:
         raise HTTPException(status_code=e.status_code, detail=e.message) from e
     except Exception as e:
@@ -88,55 +98,32 @@ async def list_available_contacts(
 
 
 @stakeholders_router.post(
-    "/{deal_id}/stakeholders",
-    response_model=GenericResponse[StakeholderDetail],
-    summary="Manually add a stakeholder",
+    "/{deal_id}/stakeholders/add-from-contacts",
+    response_model=GenericResponse[AddContactsAsStakeholdersResponse],
+    summary="Add selected contacts as stakeholders",
 )
-async def create_stakeholder(
+async def add_contacts_as_stakeholders(
     deal_id: UUID,
-    request: CreateStakeholderRequest,
+    request: AddContactsAsStakeholdersRequest,
     service: StakeholdersService = Depends(get_stakeholders_service),
 ):
     """
-    Manually add a stakeholder to a deal.
+    Add selected contacts as stakeholders to a deal.
+
+    Only contacts with valid email addresses will be added. Contacts without
+    email addresses are skipped and reported in the response.
+
+    Returns:
+    - List of successfully added stakeholders
+    - List of skipped contact IDs (no email or already exists)
     """
     try:
-        new_stakeholder = await service.create_stakeholder(deal_id, request)
-        return Response.success_response("Stakeholder added successfully", new_stakeholder)
+        result = await service.add_contacts_as_stakeholders(deal_id, request.contact_ids)
+        return Response.success_response("Stakeholders added from contacts", result)
     except StakeholdersServiceError as e:
-        if e.status_code == 409:
-            raise HTTPException(status_code=409, detail=e.message) from e
         raise HTTPException(status_code=e.status_code, detail=e.message) from e
     except HTTPException:
         raise
     except Exception:
-        logger.exception("Failed to create stakeholder for deal %s", deal_id)
-        return Response.internal_server_error_response("Failed to create stakeholder")
-
-
-@stakeholders_router.patch(
-    "/{deal_id}/stakeholders/{stakeholder_id}",
-    response_model=GenericResponse[StakeholderDetail],
-    summary="Update stakeholder details",
-)
-async def update_stakeholder(
-    deal_id: UUID,
-    stakeholder_id: UUID,
-    request: UpdateStakeholderRequest,
-    service: StakeholdersService = Depends(get_stakeholders_service),
-):
-    """
-    Update manual fields for a stakeholder (Stance, Power, Motivation).
-    """
-    try:
-        stakeholder = await service.update_stakeholder(deal_id, stakeholder_id, request)
-        return Response.success_response("Stakeholder updated successfully", stakeholder)
-    except StakeholdersServiceError as e:
-        if e.status_code == 404:
-            raise HTTPException(status_code=404, detail=e.message) from e
-        raise HTTPException(status_code=e.status_code, detail=e.message) from e
-    except HTTPException:
-        raise
-    except Exception:
-        logger.exception("Failed to update stakeholder %s for deal %s", stakeholder_id, deal_id)
-        return Response.internal_server_error_response("Failed to update stakeholder")
+        logger.exception("Failed to add contacts as stakeholders for deal %s", deal_id)
+        return Response.internal_server_error_response("Failed to add stakeholders")

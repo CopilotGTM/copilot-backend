@@ -11,17 +11,21 @@ from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
 
 
 class StakeholderStance(str, Enum):
+    UNKNOWN = "UNKNOWN"
+    CHAMPION = "CHAMPION"
     SUPPORTER = "SUPPORTER"
     NEUTRAL = "NEUTRAL"
+    DETRACTOR = "DETRACTOR"
     BLOCKER = "BLOCKER"
-    UNKNOWN = "UNKNOWN"
 
 
 class DecisionPower(str, Enum):
-    HIGH = "HIGH"
-    MEDIUM = "MEDIUM"
-    LOW = "LOW"
     UNKNOWN = "UNKNOWN"
+    DECISION_MAKER = "DECISION_MAKER"
+    INFLUENCER = "INFLUENCER"
+    EVALUATOR = "EVALUATOR"
+    GATEKEEPER = "GATEKEEPER"
+    END_USER = "END_USER"
 
 
 class StakeholderTemperature(str, Enum):

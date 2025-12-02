@@ -1,42 +1,191 @@
-# Deal Stakeholders API
+# Deal Stakeholders API Documentation
 
-This API manages stakeholders associated with CRM deals, including retrieving stakeholder lists, manually adding stakeholders, and updating their details.
+## Base URL
 
-**Base URL**: `/users/crm/deals`
+```text
+/users/crm/deals
+```
+
+---
+
+## Response Envelope
+
+All endpoints return the shared `GenericResponse` envelope.
+
+```json
+{
+  "status": "SUCCESS | ERROR",
+  "message": "Human-readable message",
+  "data": { ... } | null
+}
+```
+
+---
+
+## Authentication
+
+- Required: Bearer token (`Authorization: Bearer <access_token>`)
+- User identity (organisation, user, role) resolved from the token; clients never pass these explicitly
+
+---
+
+## Rate Limiting (defaults)
+
+- Write endpoints (`POST`): ~15/min, 100/hour per user
+- Read endpoints (`GET`): ~60/min, 1000/hour per user
+- On limit breach: `429 Too Many Requests` with `Retry-After`
+
+---
+
+## Data Types
+
+### Enums
+
+#### StakeholderStance
+
+| Value | Description |
+|-------|-------------|
+| `UNKNOWN` | Stance not yet determined |
+| `CHAMPION` | Actively advocates for the deal |
+| `SUPPORTER` | Generally supportive |
+| `NEUTRAL` | No strong opinion either way |
+| `DETRACTOR` | Has concerns or objections |
+| `BLOCKER` | Actively opposing the deal |
+
+#### DecisionPower
+
+| Value | Description |
+|-------|-------------|
+| `UNKNOWN` | Decision power not yet determined |
+| `DECISION_MAKER` | Has final authority on the decision |
+| `INFLUENCER` | Can influence the decision |
+| `EVALUATOR` | Evaluates options and provides input |
+| `GATEKEEPER` | Controls access to decision makers |
+| `END_USER` | Will use the product/service |
+
+#### StakeholderTemperature
+
+| Value | Description |
+|-------|-------------|
+| `HOT` | Highly engaged, recent interactions |
+| `WARM` | Moderately engaged |
+| `COLD` | Low engagement, needs outreach |
+
+#### StakeholderSource
+
+| Value | Description |
+|-------|-------------|
+| `CRM` | Imported from CRM system |
+| `CALENDAR_DISCOVERY` | Discovered from calendar events |
+| `MANUAL` | Manually added by user |
+
+### Response Models (TypeScript)
+
+```ts
+type UUID = string;
+
+export interface StakeholderDetail {
+  stakeholder_id: UUID;
+  deal_id: UUID;
+  contact_id: UUID | null;
+  email: string;
+  name: string | null;
+  job_title: string | null;
+  external_links: StakeholderLink[] | null;
+  stance: StakeholderStance;
+  decision_power: DecisionPower;
+  champion_potential: number;        // 0-100 score
+  motivation: string | null;
+  pain_points: string[] | null;
+  keywords: string[] | null;
+  last_contact_at: string | null;    // ISO8601
+  engagement_score: number;
+  temperature: StakeholderTemperature;
+  source: StakeholderSource;
+}
+
+export interface StakeholderLink {
+  platform: string;                  // e.g., "linkedin", "twitter"
+  url: string;
+  label: string | null;
+  added_at: string | null;           // ISO8601
+}
+
+export interface AvailableContactItem {
+  contact_id: UUID;
+  external_id: string;
+  email: string;                     // Required - only contacts with email are returned
+  first_name: string | null;
+  last_name: string | null;
+  full_name: string | null;
+  job_title: string | null;
+  company_name: string | null;
+  phone: string | null;
+  lifecycle_stage: string | null;
+  last_activity_at: string | null;   // ISO8601
+}
+
+export interface SkippedContact {
+  contact_id: UUID;
+  reason: string;
+}
+
+export interface AddContactsAsStakeholdersResponse {
+  added: StakeholderDetail[];
+  skipped: SkippedContact[];
+  total_requested: number;
+  total_added: number;
+  total_skipped: number;
+}
+```
+
+---
 
 ## 1. Get Deal Stakeholders
 
 Retrieves all stakeholders associated with a specific deal.
 
-- **Endpoint**: `GET /{deal_id}/stakeholders`
-- **Method**: `GET`
-- **Tags**: `crm`, `stakeholders`
+### Endpoint
 
-### Path Parameters (Get Deal Stakeholders)
+```http
+GET /{deal_id}/stakeholders
+```
 
-| Parameter | Type | Description |
-| :--- | :--- | :--- |
-| `deal_id` | UUID | The unique identifier of the deal. |
+### Path Parameters
 
-### Response (Get Deal Stakeholders)
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `deal_id` | UUID | Yes | The unique identifier of the deal |
 
-Returns a list of stakeholders linked to the deal.
+### Success Response (200)
 
 ```json
 {
   "status": "SUCCESS",
-  "message": "Stakeholders retrieved successfully",
+  "message": "Stakeholders retrieved",
   "data": [
     {
       "stakeholder_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
       "deal_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
       "contact_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-      "email": "jane@example.com",
+      "email": "jane.doe@example.com",
       "name": "Jane Doe",
-      "job_title": "CTO",
+      "job_title": "Director of IT, Information Technology",
+      "external_links": [
+        {
+          "platform": "linkedin",
+          "url": "https://linkedin.com/in/janedoe",
+          "label": "LinkedIn Profile",
+          "added_at": "2025-01-15T10:30:00Z"
+        }
+      ],
       "stance": "SUPPORTER",
       "decision_power": "DECISION_MAKER",
-      "champion_potential": 0.85,
+      "champion_potential": 92.0,
+      "motivation": "Reduce technical debt and improve team productivity",
+      "pain_points": ["Legacy system maintenance", "Slow deployment cycles"],
+      "keywords": ["digital transformation", "modernize legacy systems"],
+      "last_contact_at": "2024-11-08T14:00:00Z",
       "engagement_score": 75.0,
       "temperature": "WARM",
       "source": "CRM"
@@ -45,160 +194,237 @@ Returns a list of stakeholders linked to the deal.
 }
 ```
 
-#### Response Schema (`StakeholderDetail`)
+### Error Responses
 
-| Field | Type | Description |
-| :--- | :--- | :--- |
-| `stakeholder_id` | UUID | Unique identifier for the stakeholder record. |
-| `deal_id` | UUID | The deal this stakeholder belongs to. |
-| `contact_id` | UUID | Linked CRM contact ID (if available). |
-| `email` | string | Stakeholder email address. |
-| `name` | string | Full name. |
-| `job_title` | string | Job title. |
-| `stance` | enum | Attitude towards the deal (e.g., `SUPPORTER`, `DETRACTOR`). |
-| `decision_power` | enum | Influence level (e.g., `DECISION_MAKER`, `INFLUENCER`). |
-| `champion_potential` | float | Calculated score indicating champion likelihood. |
-| `engagement_score` | float | Score based on interaction frequency/quality. |
-| `temperature` | enum | Relationship warmth (e.g., `COLD`, `WARM`, `HOT`). |
-| `source` | enum | Origin of the stakeholder (e.g., `CRM`, `EMAIL`). |
+| Code | Description |
+|------|-------------|
+| `401` | Missing or invalid authentication token |
+| `500` | Internal server error |
 
----
+### Example cURL
 
-## 2. Create Stakeholder
-
-Manually adds a stakeholder to a deal.
-
-- **Endpoint**: `POST /{deal_id}/stakeholders`
-- **Method**: `POST`
-- **Tags**: `crm`, `stakeholders`
-
-### Path Parameters (Create Stakeholder)
-
-| Parameter | Type | Description |
-| :--- | :--- | :--- |
-| `deal_id` | UUID | The unique identifier of the deal. |
-
-### Request Body (Create Stakeholder)
-
-```json
-{
-  "email": "new.stakeholder@example.com",
-  "name": "New Stakeholder",
-  "job_title": "VP of Engineering",
-  "stance": "NEUTRAL",
-  "decision_power": "INFLUENCER"
-}
+```bash
+curl -X GET "$BASE_URL/users/crm/deals/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Accept: application/json"
 ```
 
-#### Request Schema (`CreateStakeholderRequest`)
-
-| Field | Type | Description |
-| :--- | :--- | :--- |
-| `email` | string | **Required**. Email address of the stakeholder. |
-| `name` | string | Full name. |
-| `job_title` | string | Job title. |
-| `stance` | enum | Initial stance (default: `UNKNOWN`). |
-| `decision_power` | enum | Initial decision power (default: `UNKNOWN`). |
-| `external_links` | list | List of social/external profile links. |
-
-### Response (Create Stakeholder)
-
-Returns the created stakeholder details.
-
 ---
 
-## 3. Update Stakeholder
+## 2. List Available Contacts
 
-Updates manual fields for a stakeholder (Stance, Power, Motivation).
+Lists CRM contacts that can be added as stakeholders for a deal. Only returns contacts with valid email addresses. Excludes contacts that are already stakeholders for this deal.
 
-- **Endpoint**: `PATCH /{deal_id}/stakeholders/{stakeholder_id}`
-- **Method**: `PATCH`
-- **Tags**: `crm`, `stakeholders`
+### Endpoint
 
-### Path Parameters (Update Stakeholder)
-
-| Parameter | Type | Description |
-| :--- | :--- | :--- |
-| `deal_id` | UUID | The unique identifier of the deal. |
-| `stakeholder_id` | UUID | The unique identifier of the stakeholder. |
-
-### Request Body (Update Stakeholder)
-
-```json
-{
-  "stance": "CHAMPION",
-  "motivation": "Wants to modernize tech stack",
-  "pain_points": ["Legacy system maintenance", "Slow deployment cycles"]
-}
+```http
+GET /{deal_id}/stakeholders/available-contacts
 ```
 
-#### Request Schema (`UpdateStakeholderRequest`)
+### Path Parameters
 
-| Field | Type | Description |
-| :--- | :--- | :--- |
-| `stance` | enum | Updated stance. |
-| `decision_power` | enum | Updated decision power. |
-| `motivation` | string | Key motivation for the deal. |
-| `pain_points` | list[string] | List of identified pain points. |
-| `external_links` | list | Updated list of external links. |
-
-### Response (Update Stakeholder)
-
-Returns the updated stakeholder details.
-
----
-
-## 4. List Available Contacts
-
-Lists contacts that can be added as stakeholders for a deal. This excludes contacts that are already stakeholders.
-
-- **Endpoint**: `GET /{deal_id}/stakeholders/available-contacts`
-- **Method**: `GET`
-- **Tags**: `crm`, `stakeholders`
-
-### Path Parameters (List Available Contacts)
-
-| Parameter | Type | Description |
-| :--- | :--- | :--- |
-| `deal_id` | UUID | The unique identifier of the deal. |
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `deal_id` | UUID | Yes | The unique identifier of the deal |
 
 ### Query Parameters
 
-| Parameter | Type | Description |
-| :--- | :--- | :--- |
-| `query` | string | Optional search string for name or email. |
-| `limit` | integer | Maximum number of results to return (default: 50). |
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `query` | string | No | - | Search string to filter by name, email, or company |
+| `limit` | integer | No | 50 | Maximum number of results to return |
 
-### Response (List Available Contacts)
-
-Returns a list of available contacts.
+### Success Response (200)
 
 ```json
 {
   "status": "SUCCESS",
-  "message": "Available contacts retrieved successfully",
+  "message": "Available contacts retrieved",
   "data": [
     {
       "contact_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-      "external_id": "contact_123",
+      "external_id": "contact_12345",
+      "email": "alice.smith@acmecorp.com",
       "first_name": "Alice",
-      "last_name": "Wonderland",
-      "email": "alice@example.com",
-      "job_title": "Product Manager",
-      "company_name": "Acme Corp"
+      "last_name": "Smith",
+      "full_name": "Alice Smith",
+      "job_title": "VP of Engineering",
+      "company_name": "Acme Corporation",
+      "phone": "+1-555-123-4567",
+      "lifecycle_stage": "opportunity",
+      "last_activity_at": "2024-11-01T09:00:00Z"
     }
   ]
 }
 ```
 
-#### Response Schema (`ContactListItem`)
+### Notes
 
-| Field | Type | Description |
-| :--- | :--- | :--- |
-| `contact_id` | UUID | Internal unique identifier for the contact. |
-| `external_id` | string | External system identifier. |
-| `first_name` | string | First name. |
-| `last_name` | string | Last name. |
-| `email` | string | Email address. |
-| `job_title` | string | Job title. |
-| `company_name` | string | Associated company name. |
+- **Email Required**: Only contacts with a valid email address are returned, as email is required for stakeholder identification
+- **Search**: The `query` parameter searches across `first_name`, `last_name`, `full_name`, `email`, and `company_name`
+- **Exclusion**: Contacts already added as stakeholders for this deal are automatically excluded
+
+### Error Responses
+
+| Code | Description |
+|------|-------------|
+| `401` | Missing or invalid authentication token |
+| `500` | Internal server error |
+
+### Example cURL
+
+```bash
+curl -X GET "$BASE_URL/users/crm/deals/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders/available-contacts?query=engineering&limit=20" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Accept: application/json"
+```
+
+---
+
+## 3. Add Contacts as Stakeholders
+
+Add selected CRM contacts as stakeholders to a deal. Only contacts with valid email addresses will be added. Contacts without emails or those that already exist as stakeholders are skipped.
+
+### Endpoint
+
+```http
+POST /{deal_id}/stakeholders/add-from-contacts
+```
+
+### Path Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `deal_id` | UUID | Yes | The unique identifier of the deal |
+
+### Request Body
+
+```json
+{
+  "contact_ids": [
+    "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+    "4fa85f64-5717-4562-b3fc-2c963f66afa7",
+    "5fa85f64-5717-4562-b3fc-2c963f66afa8"
+  ]
+}
+```
+
+#### Request Schema (`AddContactsAsStakeholdersRequest`)
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `contact_ids` | UUID[] | Yes | List of contact IDs to add as stakeholders (minimum 1) |
+
+### Success Response (200)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Stakeholders added from contacts",
+  "data": {
+    "added": [
+      {
+        "stakeholder_id": "6fa85f64-5717-4562-b3fc-2c963f66afa9",
+        "deal_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+        "contact_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+        "email": "alice.smith@acmecorp.com",
+        "name": "Alice Smith",
+        "job_title": "VP of Engineering",
+        "stance": "UNKNOWN",
+        "decision_power": "UNKNOWN",
+        "champion_potential": 0.0,
+        "engagement_score": 0.0,
+        "temperature": "COLD",
+        "source": "CRM"
+      }
+    ],
+    "skipped": [
+      {
+        "contact_id": "4fa85f64-5717-4562-b3fc-2c963f66afa7",
+        "reason": "Contact has no email address"
+      },
+      {
+        "contact_id": "5fa85f64-5717-4562-b3fc-2c963f66afa8",
+        "reason": "Stakeholder with this email already exists"
+      }
+    ],
+    "total_requested": 3,
+    "total_added": 1,
+    "total_skipped": 2
+  }
+}
+```
+
+### Skip Reasons
+
+| Reason | Description |
+|--------|-------------|
+| `Contact not found` | The contact ID does not exist in the CRM |
+| `Contact has no email address` | Contact exists but has no email |
+| `Stakeholder with this email already exists` | A stakeholder with the same email is already on this deal |
+| `Contact is already a stakeholder` | The contact is already linked to this deal |
+
+### Error Responses
+
+| Code | Description |
+|------|-------------|
+| `401` | Missing or invalid authentication token |
+| `422` | Validation error (e.g., empty contact_ids list) |
+| `500` | Internal server error |
+
+### Example cURL
+
+```bash
+curl -X POST "$BASE_URL/users/crm/deals/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders/add-from-contacts" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "contact_ids": [
+      "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+      "4fa85f64-5717-4562-b3fc-2c963f66afa7"
+    ]
+  }'
+```
+
+---
+
+## Error Codes Summary
+
+| HTTP Code | Reason | Suggested Action |
+|-----------|--------|------------------|
+| 401 | Missing/invalid token | Ensure valid bearer token |
+| 422 | Validation failure | Fix request parameters |
+| 429 | Rate limit exceeded | Respect `Retry-After` header |
+| 500 | Unexpected server error | Retry with backoff; contact support |
+
+---
+
+## Frontend Integration Notes
+
+### Typical Flow
+
+1. **View Stakeholders**: Call `GET /{deal_id}/stakeholders` to display the stakeholder list
+2. **Add Stakeholders**: 
+   - User clicks "Add Stakeholder" button
+   - Call `GET /{deal_id}/stakeholders/available-contacts` to show available contacts
+   - User selects one or more contacts
+   - Call `POST /{deal_id}/stakeholders/add-from-contacts` with selected contact IDs
+   - Display success/skip summary to user
+
+### Search Best Practices
+
+- Debounce the `query` parameter input (300-500ms) to avoid excessive API calls
+- Show loading state while fetching contacts
+- Display company name and job title to help users identify the right contacts
+
+### Handling Skipped Contacts
+
+- Display skipped contacts with their reasons in a non-blocking way
+- For "no email" skips, consider prompting user to update contact in CRM first
+
+---
+
+## Related References
+
+- CRM Deals API: `docs/API Documentation/deals/crm-deals-api.md`
+- Deal Meetings API: `docs/API Documentation/deals/deal-meetings-api.md`

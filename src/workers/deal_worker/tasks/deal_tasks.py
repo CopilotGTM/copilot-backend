@@ -24,6 +24,10 @@ def process_deal_meetings_task(self: Task, organisation_id: str) -> dict[str, in
     """
     Celery task to process deal meetings for an organisation.
 
+    Matches calendar events to deals and discovers stakeholders from:
+    1. CRM contact participants (directly added)
+    2. Meeting attendees sharing the same domain as CRM contacts
+
     Args:
         organisation_id: UUID of the organization (string for JSON serialization)
 
@@ -34,8 +38,6 @@ def process_deal_meetings_task(self: Task, organisation_id: str) -> dict[str, in
 
     async def _run():
         org_uuid = UUID(organisation_id)
-
-        # Use async for pattern for proper session lifecycle
         async for session in acquire_org_async_session(org_uuid):
             return await process_deal_meetings(session, org_uuid)
 
@@ -82,6 +84,10 @@ def process_single_deal_task(self: Task, organisation_id: str, deal_id: str) -> 
     """
     Celery task to process meetings for a single deal.
 
+    Matches calendar events to the deal and discovers stakeholders from:
+    1. CRM contact participants (directly added)
+    2. Meeting attendees sharing the same domain as CRM contacts
+
     Args:
         organisation_id: UUID of the organization (string for JSON serialization)
         deal_id: UUID of the deal to process (string for JSON serialization)
@@ -94,8 +100,6 @@ def process_single_deal_task(self: Task, organisation_id: str, deal_id: str) -> 
     async def _run():
         org_uuid = UUID(organisation_id)
         deal_uuid = UUID(deal_id)
-
-        # Use async for pattern for proper session lifecycle
         async for session in acquire_org_async_session(org_uuid):
             matcher = DealMeetingMatcher(session, org_uuid)
             return await matcher.process_deal(deal_uuid)

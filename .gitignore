@@ -191,3 +191,4 @@ workflows/deck_generation/test.py
 test-local-scripts/
 cache/
 .github/instructions/
+docs/Task List/

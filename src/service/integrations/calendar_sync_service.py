@@ -107,7 +107,7 @@ class CalendarSyncService:
                 try:
                     external_id = self._extract_external_id(event_data, provider)
                     if not external_id:
-                        logger.debug("Event %d: skipping (no external_id)", idx)
+                        logger.info("Event %d: skipping (no external_id)", idx)
                         records_failed += 1
                         continue
 
@@ -120,7 +120,7 @@ class CalendarSyncService:
                         # Update existing event
                         await self._update_event(existing_event, event_data, provider)
                         updated_count += 1
-                        logger.debug(
+                        logger.info(
                             "Updated event: external_id=%s title=%s",
                             external_id,
                             event_data.get("summary"),
@@ -129,7 +129,7 @@ class CalendarSyncService:
                         # Create new event
                         await self._create_event(integration, event_data, provider, external_id)
                         created_count += 1
-                        logger.debug(
+                        logger.info(
                             "Created event: external_id=%s title=%s",
                             external_id,
                             event_data.get("summary"),
@@ -140,7 +140,7 @@ class CalendarSyncService:
                     # Commit in batches of 100 to reduce transaction overhead
                     if records_processed % 100 == 0:
                         await self.db.commit()
-                        logger.debug("Batch commit: %d events processed", records_processed)
+                        logger.info("Batch commit: %d events processed", records_processed)
 
                 except Exception as e:
                     logger.error(
@@ -307,6 +307,13 @@ class CalendarSyncService:
         """Update existing calendar event."""
         # Update fields
         fields = self._extract_event_fields(event_data, provider)
+        logger.info(
+            "Updating event %s (provider=%s): extracted fields status=%s, all_fields=%s",
+            event.external_id,
+            provider,
+            fields.get("status"),
+            list(fields.keys()),
+        )
         for key, value in fields.items():
             setattr(event, key, value)
 
@@ -440,10 +447,12 @@ class CalendarSyncService:
     @classmethod
     def _extract_event_fields(cls, event_data: dict[str, Any], provider: str) -> dict[str, Any]:
         """Extract event fields from provider data."""
+        logger.info("Extracting event fields for provider=%s", provider)
         if provider == "google":
             return cls._extract_google_event_fields(event_data)
         if provider in ("microsoft", "outlook"):
             return cls._extract_microsoft_event_fields(event_data)
+        logger.warning("Unknown provider %s, using generic extraction", provider)
         return cls._extract_generic_event_fields(event_data)
 
     @classmethod
@@ -530,12 +539,22 @@ class CalendarSyncService:
 
     @classmethod
     def _extract_microsoft_event_fields(cls, event_data: dict[str, Any]) -> dict[str, Any]:
+        # Microsoft uses isCancelled boolean; translate to status string for consistency with Google
+        is_cancelled = event_data.get("isCancelled", False)
+        status = "cancelled" if is_cancelled else "confirmed"
+        logger.info(
+            "Microsoft event extraction: isCancelled=%s -> status=%s, subject=%s",
+            is_cancelled,
+            status,
+            event_data.get("subject"),
+        )
+
         fields = {
             "title": event_data.get("subject") or DEFAULT_EVENT_TITLE,
             "description": event_data.get("bodyPreview")
             or event_data.get("body", {}).get("content"),
             "location": event_data.get("location", {}).get("displayName"),
-            "status": event_data.get("status"),
+            "status": status,
         }
         cls._apply_microsoft_times(fields, event_data)
         cls._apply_microsoft_organizer(fields, event_data)
