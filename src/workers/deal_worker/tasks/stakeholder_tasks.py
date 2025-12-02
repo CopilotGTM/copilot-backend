@@ -1,5 +1,12 @@
+"""Celery tasks for stakeholder synchronization.
+
+This module provides tasks for syncing stakeholders from calendar events to deals.
+For stakeholder analysis tasks, see stakeholder_analysis_tasks.py.
+"""
+
 from __future__ import annotations
 
+from typing import Any, cast
 from uuid import UUID
 
 from celery import Task
@@ -49,7 +56,6 @@ def sync_stakeholders_from_meeting_task(
         deal_uuid = UUID(deal_id)
         event_uuid = UUID(event_id)
 
-        # Use async for pattern for proper session lifecycle
         async for session in acquire_org_async_session(org_uuid):
             # Load deal
             deal_stmt = select(CRMDeal).where(
@@ -63,9 +69,10 @@ def sync_stakeholders_from_meeting_task(
                 return {"stakeholders_synced": 0}
 
             # Load event with attendees
+            attendees_rel = cast(Any, CalendarEvent.attendees)
             event_stmt = (
                 select(CalendarEvent)
-                .options(selectinload(CalendarEvent.attendees))
+                .options(selectinload(attendees_rel))
                 .where(
                     col(CalendarEvent.organisation_id) == org_uuid,
                     col(CalendarEvent.event_id) == event_uuid,
@@ -79,7 +86,9 @@ def sync_stakeholders_from_meeting_task(
 
             # Sync stakeholders
             service = StakeholderService(session, org_uuid)
-            synced = await service.sync_stakeholders_from_event(deal, event)
+            _, customer_domains = await service.sync_stakeholders_from_deal(deal)
+            synced = await service.sync_stakeholders_from_event(deal, event, customer_domains)
+            await session.commit()
             logger.info(
                 "Stakeholder sync completed for deal %s event %s: %s synced",
                 deal_id,
@@ -99,5 +108,4 @@ def sync_stakeholders_from_meeting_task(
             exc,
             exc_info=True,
         )
-        # Exponential backoff: 60, 120, 240 seconds
         raise self.retry(exc=exc, countdown=60 * (2**self.request.retries)) from exc

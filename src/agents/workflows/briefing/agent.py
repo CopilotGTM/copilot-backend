@@ -11,7 +11,7 @@ from typing import cast
 from agno.agent import Agent
 from agno.models.azure import AzureOpenAI
 
-from src.api.schemas.crm_models import BriefingData
+from src.agents.workflows.briefing.models import BriefingData
 from src.infra.utils.logger import get_logger
 
 logger = get_logger(__name__)

@@ -11,8 +11,8 @@ from typing import cast
 from agno.agent import Agent
 from agno.models.azure import AzureOpenAI
 
+from src.agents.workflows.summary.models import SummaryData
 from src.agents.workflows.summary.prompts import SUMMARY_SYSTEM_PROMPT
-from src.api.schemas.crm_models import SummaryData
 from src.infra.utils.logger import get_logger
 
 logger = get_logger(__name__)

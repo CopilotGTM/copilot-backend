@@ -67,6 +67,19 @@ class DealWorkerConfig(BaseWorkerConfig):
                 "queue": "deal",
                 "routing_key": "deal",
             },
+            # Stakeholder analysis tasks -> deal_jobs queue (uses LLM)
+            "stakeholder.analyze_deal_stakeholders_task": {
+                "queue": "deal_jobs",
+                "routing_key": "deal_jobs",
+            },
+            "stakeholder.analyze_org_stakeholders_task": {
+                "queue": "deal_jobs",
+                "routing_key": "deal_jobs",
+            },
+            "stakeholder.trigger_analysis_all_orgs": {
+                "queue": "deal",
+                "routing_key": "deal",
+            },
         }
 
         # Celery Beat schedule for periodic tasks
@@ -74,6 +87,14 @@ class DealWorkerConfig(BaseWorkerConfig):
             "process-deal-meetings-all-orgs": {
                 "task": "deal.trigger_deal_meeting_processing_all_orgs",
                 "schedule": crontab(minute=0, hour="*/3"),  # Run every 3 hours
+                "options": {
+                    "queue": "deal",
+                    "routing_key": "deal",
+                },
+            },
+            "analyze-stakeholders-all-orgs": {
+                "task": "stakeholder.trigger_analysis_all_orgs",
+                "schedule": crontab(minute=0, hour=2),  # Run daily at 2 AM
                 "options": {
                     "queue": "deal",
                     "routing_key": "deal",

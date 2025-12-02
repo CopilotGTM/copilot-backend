@@ -13,6 +13,7 @@ src/workers/deal_worker/
 ├── services/                     # Core business logic and domain services
 │   ├── deal_meeting_matcher.py   # Logic to link Calendar Events to Deals
 │   ├── stakeholder_service.py    # Logic to identify and enrich Stakeholders
+│   ├── stakeholder_analysis_service.py  # AI-driven stakeholder analysis
 │   ├── deal_job_handlers.py      # Job handlers for briefing, summary, etc.
 │   ├── deal_job_publisher.py     # Redis publisher for SSE streaming
 │   └── deal_job_utils.py         # Utility functions for job processing
@@ -20,7 +21,7 @@ src/workers/deal_worker/
 │   ├── __init__.py               # Task module exports
 │   ├── deal_tasks.py             # Deal matching and processing tasks
 │   ├── deal_meeting_tasks.py     # Meeting job tasks (briefing, summary, followup)
-│   └── stakeholder_tasks.py      # Stakeholder sync tasks
+│   └── stakeholder_tasks.py      # Stakeholder sync and analysis tasks
 └── utils/                        # Worker utilities
 ```
 
@@ -52,6 +53,9 @@ src/workers/deal_worker/
 | Task Name | Description |
 |-----------|-------------|
 | `stakeholder.sync_from_meeting_task` | Sync stakeholders from a calendar event to a deal |
+| `stakeholder.analyze_deal_stakeholders_task` | Analyze all stakeholders for a specific deal using meeting transcripts |
+| `stakeholder.analyze_org_stakeholders_task` | Analyze all stakeholders across all deals for an organisation |
+| `stakeholder.trigger_analysis_all_orgs` | Periodic task to trigger stakeholder analysis for all organisations |
 
 ## 🛠️ Key Services
 
@@ -69,13 +73,21 @@ Extracts and manages stakeholders involved in a deal.
 - **Discovery:** Identifies new contacts from meeting attendee lists.
 - **Enrichment:** Tracks engagement, stance, and influence based on interactions.
 
-### 3. Deal Job Handlers (`services/deal_job_handlers.py`)
+### 3. Stakeholder Analysis Service (`services/stakeholder_analysis_service.py`)
+
+AI-driven stakeholder analysis using meeting transcripts.
+
+- **Context Building:** Aggregates meeting transcripts where stakeholder participated.
+- **Agent Analysis:** Uses AI to extract stance, decision power, motivations, and pain points.
+- **Automatic Updates:** Updates stakeholder records with analysis insights.
+
+### 4. Deal Job Handlers (`services/deal_job_handlers.py`)
 
 Handles different types of deal meeting jobs:
 
 - **Meeting Briefing:** Pre-meeting preparation and context generation.
 - **Meeting Summary:** Post-meeting summary from transcripts.
-- **Stakeholder Analysis:** Stakeholder insights and recommendations.
+- **Stakeholder Analysis:** Deep stakeholder insights from meeting transcripts.
 
 ## 📡 Triggering Tasks
 
@@ -106,6 +118,22 @@ deal_worker_app.send_task(
     args=[str(organisation_id), str(deal_id), str(event_id)],
     queue="deal",
     routing_key="deal",
+)
+
+# Trigger stakeholder analysis for an organisation
+deal_worker_app.send_task(
+    "stakeholder.analyze_org_stakeholders_task",
+    args=[str(organisation_id)],
+    queue="deal_jobs",
+    routing_key="deal_jobs",
+)
+
+# Trigger stakeholder analysis for a specific deal
+deal_worker_app.send_task(
+    "stakeholder.analyze_deal_stakeholders_task",
+    args=[str(organisation_id), str(deal_id)],
+    queue="deal_jobs",
+    routing_key="deal_jobs",
 )
 ```
 
@@ -151,6 +179,7 @@ celery -A src.workers.deal_worker.celery_app worker -l warning -Q deal,deal_jobs
 | Schedule | Task | Description |
 |----------|------|-------------|
 | Every 3 hours | `deal.trigger_deal_meeting_processing_all_orgs` | Process deal meetings for all active organisations |
+| Daily at 2 AM | `stakeholder.trigger_analysis_all_orgs` | Analyze stakeholders for all active organisations using meeting transcripts |
 
 ## 🔧 Environment Variables
 

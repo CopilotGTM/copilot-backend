@@ -304,7 +304,10 @@ async def handle_meeting_summary(
 async def handle_stakeholder_analysis(
     session: AsyncSession, job: DealMeetingJob, publisher: DealJobRedisPublisher
 ) -> dict:
-    """Handle stakeholder analysis.
+    """Handle stakeholder analysis for a deal.
+
+    Analyzes stakeholders using meeting transcripts to extract insights
+    about stance, decision power, motivations, and pain points.
 
     Args:
         session: Database session
@@ -312,10 +315,101 @@ async def handle_stakeholder_analysis(
         publisher: Redis publisher for progress updates
 
     Returns:
-        Dictionary containing the analysis data
+        Dictionary containing the analysis results for all stakeholders
 
     Raises:
-        NotImplementedError: This feature is not yet implemented
+        NonRetryableJobError: If no stakeholders or no transcripts are available
     """
-    # TODO: Implement stakeholder analysis
-    raise NotImplementedError("Stakeholder analysis not yet implemented")
+    from src.workers.deal_worker.services.stakeholder_analysis_service import (
+        StakeholderAnalysisService,
+    )
+
+    org_id = job.organisation_id
+    publisher.publish_progress("Loading deal context...", "context", 0.1)
+
+    # Load deal
+    deal = await get_deal(session, org_id, job.deal_id)
+    if not deal:
+        raise NonRetryableJobError("Deal not found", "invalid_data")
+
+    publisher.publish_progress("Loading stakeholders...", "stakeholders", 0.2)
+
+    # Initialize the analysis service
+    analysis_service = StakeholderAnalysisService(session, org_id)
+
+    # Get stakeholders for the deal
+    stakeholders = await analysis_service.get_stakeholders_for_deal(job.deal_id)
+    if not stakeholders:
+        raise NonRetryableJobError(
+            "No stakeholders found for this deal. Add stakeholders before running analysis.",
+            "no_stakeholders",
+        )
+
+    publisher.publish_progress("Loading meeting transcripts...", "transcripts", 0.3)
+
+    # Get meetings with transcripts
+    events = await analysis_service.get_meetings_for_deal(job.deal_id)
+    meetings_with_transcripts = await analysis_service.get_meetings_with_transcripts(events)
+
+    if not meetings_with_transcripts:
+        raise NonRetryableJobError(
+            "No meeting transcripts available for this deal. Transcripts are needed for stakeholder analysis.",
+            "no_transcripts",
+        )
+
+    publisher.publish_progress(f"Analyzing {len(stakeholders)} stakeholders...", "analysis", 0.5)
+
+    # Batch analyze all stakeholders in one LLM call
+    total_stakeholders = len(stakeholders)
+    results: dict[str, dict] = {}
+
+    try:
+        analysis_results = await analysis_service.analyze_all_stakeholders_for_deal(deal)
+
+        for stakeholder in stakeholders:
+            analysis = analysis_results.get(stakeholder.stakeholder_id)
+            if analysis:
+                results[str(stakeholder.stakeholder_id)] = {
+                    "stakeholder_name": stakeholder.name,
+                    "stakeholder_email": stakeholder.email,
+                    "analysis": analysis.model_dump(),
+                }
+            else:
+                results[str(stakeholder.stakeholder_id)] = {
+                    "stakeholder_name": stakeholder.name,
+                    "stakeholder_email": stakeholder.email,
+                    "error": "No analysis result returned",
+                }
+
+        analyzed_count = sum(1 for r in analysis_results.values() if r is not None)
+
+    except Exception as e:
+        logger.error(
+            "Error in batch stakeholder analysis for deal %s: %s",
+            job.deal_id,
+            e,
+            exc_info=True,
+        )
+        # Mark all stakeholders as failed
+        for stakeholder in stakeholders:
+            results[str(stakeholder.stakeholder_id)] = {
+                "stakeholder_name": stakeholder.name,
+                "stakeholder_email": stakeholder.email,
+                "error": str(e),
+            }
+        analyzed_count = 0
+
+    publisher.publish_progress("Saving results...", "saving", 0.9)
+
+    await session.commit()
+
+    # Wrap result with metadata envelope
+    result_data = {
+        "deal_id": str(job.deal_id),
+        "deal_name": deal.name,
+        "total_stakeholders": total_stakeholders,
+        "analyzed_count": analyzed_count,
+        "stakeholder_analyses": results,
+    }
+
+    return wrap_generated_content(result_data)

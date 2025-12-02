@@ -355,39 +355,6 @@ class AddContactsAsStakeholdersResponse(BaseModel):
     total_skipped: int = Field(..., description="Number of contacts skipped")
 
 
-# ---------------------------------------------------------------------------
-# Deal Job Models
-# ---------------------------------------------------------------------------
-
-
-class BriefingData(BaseModel):
-    """Generated meeting briefing data.
-
-    Contains a single narrative field with the full briefing content.
-    Future versions may add structured sections (objectives, pain_points, etc.)
-    but for v1.0 we ship only the primary narrative.
-    """
-
-    briefing_overview: str = Field(
-        ...,
-        description="Multi-paragraph prep brief that synthesizes the most important intel before the call.",
-    )
-
-
-class SummaryData(BaseModel):
-    """Generated meeting summary data.
-
-    Contains a single narrative field with the full summary content.
-    Future versions may add structured sections (attendees, decisions, etc.)
-    but for v1.0 we ship only the primary narrative.
-    """
-
-    meeting_summary: str = Field(
-        ...,
-        description="Transcript-backed recap of what actually happened, including decisions and context.",
-    )
-
-
 class DealJobResponse(BaseModel):
     """Response for deal job initiation (generic for all job types).
 
