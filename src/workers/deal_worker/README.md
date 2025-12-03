@@ -1,102 +1,116 @@
 # Deal Worker
 
-The **Deal Worker** is a dedicated Celery background worker responsible for processing asynchronous tasks related to CRM Deals. It focuses on enriching deal data, linking external activities (like meetings), and generating AI-driven insights.
+The **Deal Worker** is a Celery application dedicated to deal-centric background processing: matching meetings to CRM deals, syncing stakeholders, running AI workloads, and streaming results back to the product UI.
 
-## 📂 Structure
+---
+
+## Responsibilities at a Glance
+
+- Match `CalendarEvent` records to `CRMDeal` entries and maintain associations.
+- Discover, sync, and enrich deal stakeholders using attendee lists and CRM context.
+- Execute AI-powered flows (meeting briefings/summaries, deal-level summaries, stakeholder analysis).
+- Publish job progress/results to Redis Streams that back SSE endpoints.
+- Run periodic housekeeping (meeting reconciliation, org-wide analysis) via Celery Beat.
+
+---
+
+## Repository Layout
 
 ```text
 src/workers/deal_worker/
-├── __init__.py                   # Package marker
-├── celery_app.py                 # Celery application instance + signals
-├── config.py                     # Worker-specific configuration
-├── README.md                     # This file
-├── services/                     # Core business logic and domain services
-│   ├── deal_meeting_matcher.py   # Logic to link Calendar Events to Deals
-│   ├── stakeholder_service.py    # Logic to identify and enrich Stakeholders
-│   ├── stakeholder_analysis_service.py  # AI-driven stakeholder analysis
-│   ├── deal_job_handlers.py      # Job handlers for briefing, summary, etc.
-│   ├── deal_job_publisher.py     # Redis publisher for SSE streaming
-│   └── deal_job_utils.py         # Utility functions for job processing
-├── tasks/                        # Celery task definitions
-│   ├── __init__.py               # Task module exports
-│   ├── deal_tasks.py             # Deal matching and processing tasks
-│   ├── deal_meeting_tasks.py     # Meeting job tasks (briefing, summary, followup)
-│   └── stakeholder_tasks.py      # Stakeholder sync and analysis tasks
-└── utils/                        # Worker utilities
+|-- __init__.py
+|-- README.md
+|-- celery_app.py              # Celery bootstrap + signals + monitoring hook
+|-- config.py                  # Queue, routing, and beat schedule configuration
+|-- services/
+|   |-- deal_job_handlers.py   # Meeting job handlers (briefing/summary/follow-up)
+|   |-- deal_job_publisher.py  # Redis Stream publisher for SSE updates
+|   |-- deal_job_utils.py      # Shared helpers (context builders, fetchers)
+|   |-- deal_meeting_matcher.py
+|   |-- deal_summary_service.py
+|   |-- stakeholder_analysis_service.py
+|   `-- stakeholder_service.py
+|-- tasks/
+|   |-- __init__.py
+|   |-- deal_meeting_tasks.py
+|   |-- deal_summary_tasks.py
+|   |-- deal_tasks.py
+|   |-- stakeholder_analysis_tasks.py
+|   `-- stakeholder_tasks.py
+`-- utils/
 ```
 
-## ⚡ Queues
+---
+
+## Core Components
+
+- **`celery_app.py`** - sets DB pool env vars, loads `.env`, creates the Celery app via `create_celery_app`, registers worker lifecycle signal handlers, and wires in `scripts/monitoring/celery_integration.py` for metrics/log shipping.
+- **`config.py`** - extends `BaseWorkerConfig`, defines the `deal`/`deal_jobs` queues, routing rules, and two Beat schedules.
+- **Services**:
+  - `deal_meeting_matcher.py` - links meetings to deals and triggers attendee/domain-based stakeholder discovery.
+  - `stakeholder_service.py` - persists stakeholders discovered from CRM contacts and meeting attendees.
+  - `stakeholder_analysis_service.py` - batches stakeholders per deal, builds transcript context, runs `StakeholderAnalysisAgent`, and writes stance/power insights back.
+  - `deal_job_handlers.py` + `deal_job_publisher.py` - power the streaming meeting jobs (briefing, summary, follow-up) and publish progress/results via Redis Streams for SSE consumption.
+  - `deal_summary_service.py` - orchestrates deal-level transcript aggregation and calls `DealSummaryAgent`, persisting the output on `CRMDeal`.
+
+---
+
+## Queues and Routing
 
 | Queue | Purpose |
 |-------|---------|
-| `deal` | Deal matching, processing, and stakeholder sync tasks |
-| `deal_jobs` | Meeting job tasks (briefing, summary, followup) |
+| `deal` | Default queue for deterministic workloads: matching, stakeholder sync, periodic triggers. |
+| `deal_jobs` | AI/LLM-heavy workloads (meeting jobs, stakeholder analysis) isolated for scaling. |
 
-## 🎯 Tasks
+`DealWorkerConfig.task_routes` pins each task to the right queue. When adding new tasks, update the routes to avoid falling back to the default queue unintentionally.
 
-### Deal Tasks (`tasks/deal_tasks.py`)
+---
 
-| Task Name | Description |
-|-----------|-------------|
-| `deal.process_deal_meetings_task` | Process deal meetings for an organisation |
-| `deal.trigger_deal_meeting_processing_all_orgs` | Periodic task to trigger processing for all organisations |
-| `deal.process_single_deal_task` | Process meetings for a single deal |
+## Task Inventory
 
-### Deal Meeting Tasks (`tasks/deal_meeting_tasks.py`)
+### Deal Matching (`tasks/deal_tasks.py`)
 
-| Task Name | Description |
-|-----------|-------------|
-| `deal_meeting_task.process` | Generic job processor for meeting-related jobs (briefing, summary, followup) |
+| Task Name | Queue | Description |
+|-----------|-------|-------------|
+| `deal.process_deal_meetings_task` | `deal` | Reconciles meetings and deals + hydrates stakeholders for a single org. |
+| `deal.process_single_deal_task` | `deal` | Scopes processing to one deal (used from UI/API actions). |
+| `deal.trigger_deal_meeting_processing_all_orgs` | `deal` | Beat-triggered fan-out that enqueues `process_deal_meetings_task` for every approved org. |
 
-### Stakeholder Tasks (`tasks/stakeholder_tasks.py`)
+### Meeting Job Runner (`tasks/deal_meeting_tasks.py`)
 
-| Task Name | Description |
-|-----------|-------------|
-| `stakeholder.sync_from_meeting_task` | Sync stakeholders from a calendar event to a deal |
-| `stakeholder.analyze_deal_stakeholders_task` | Analyze all stakeholders for a specific deal using meeting transcripts |
-| `stakeholder.analyze_org_stakeholders_task` | Analyze all stakeholders across all deals for an organisation |
-| `stakeholder.trigger_analysis_all_orgs` | Periodic task to trigger stakeholder analysis for all organisations |
+| Task Name | Queue | Description |
+|-----------|-------|-------------|
+| `deal_meeting_task.process` | `deal_jobs` | Loads a `DealJobs` row, dispatches to `deal_job_handlers`, streams progress/results to Redis/SSE. Handles meeting briefings, meeting summaries, and upcoming follow-up jobs. |
 
-## 🛠️ Key Services
+### Deal Summary (`tasks/deal_summary_tasks.py`)
 
-### 1. Deal Meeting Matcher (`services/deal_meeting_matcher.py`)
+| Task Name | Queue | Description |
+|-----------|-------|-------------|
+| `deal_summary_task.process` | Default `deal` (override to `deal_jobs` when enqueueing) | Generates a holistic deal summary across all meetings via `DealSummaryService`, persists it on the `CRMDeal`, and streams the result. |
 
-Automatically identifies and links `CalendarEvent` records to `CRMDeal` records.
+### Stakeholder Sync (`tasks/stakeholder_tasks.py`)
 
-- **Logic:** Matches based on the Deal Owner (organiser) and the external Organisation's domain (attendees).
-- **Output:** Creates `CalendarEventDealAssociation` records.
+| Task Name | Queue | Description |
+|-----------|-------|-------------|
+| `stakeholder.sync_from_meeting_task` | `deal` | Syncs attendees from a specific meeting into deal stakeholders, enriches stance + domains, and persists the results. |
 
-### 2. Stakeholder Service (`services/stakeholder_service.py`)
+### Stakeholder Analysis (`tasks/stakeholder_analysis_tasks.py`)
 
-Extracts and manages stakeholders involved in a deal.
+| Task Name | Queue | Description |
+|-----------|-------|-------------|
+| `stakeholder.analyze_deal_stakeholders_task` | `deal_jobs` | Runs batch AI analysis for a single deal's stakeholders and writes stance/power/motivations back. |
+| `stakeholder.analyze_org_stakeholders_task` | `deal_jobs` | Iterates all deals with stakeholders for an org, batching LLM calls per deal. |
+| `stakeholder.trigger_analysis_all_orgs` | `deal` | Beat-triggered fan-out that enqueues org-wide analysis for every approved org. |
 
-- **Discovery:** Identifies new contacts from meeting attendee lists.
-- **Enrichment:** Tracks engagement, stance, and influence based on interactions.
+---
 
-### 3. Stakeholder Analysis Service (`services/stakeholder_analysis_service.py`)
+## Triggering Tasks Programmatically
 
-AI-driven stakeholder analysis using meeting transcripts.
-
-- **Context Building:** Aggregates meeting transcripts where stakeholder participated.
-- **Agent Analysis:** Uses AI to extract stance, decision power, motivations, and pain points.
-- **Automatic Updates:** Updates stakeholder records with analysis insights.
-
-### 4. Deal Job Handlers (`services/deal_job_handlers.py`)
-
-Handles different types of deal meeting jobs:
-
-- **Meeting Briefing:** Pre-meeting preparation and context generation.
-- **Meeting Summary:** Post-meeting summary from transcripts.
-- **Stakeholder Analysis:** Deep stakeholder insights from meeting transcripts.
-
-## 📡 Triggering Tasks
-
-### From Application Code
+### Using `send_task`
 
 ```python
 from src.workers.deal_worker.celery_app import app as deal_worker_app
 
-# Trigger for a specific organisation
 deal_worker_app.send_task(
     "deal.process_deal_meetings_task",
     args=[str(organisation_id)],
@@ -104,110 +118,110 @@ deal_worker_app.send_task(
     routing_key="deal",
 )
 
-# Trigger for a single deal
-deal_worker_app.send_task(
-    "deal.process_single_deal_task",
-    args=[str(organisation_id), str(deal_id)],
-    queue="deal",
-    routing_key="deal",
-)
+# AI-heavy workloads -> deal_jobs
 
-# Trigger stakeholder sync
-deal_worker_app.send_task(
-    "stakeholder.sync_from_meeting_task",
-    args=[str(organisation_id), str(deal_id), str(event_id)],
-    queue="deal",
-    routing_key="deal",
-)
-
-# Trigger stakeholder analysis for an organisation
-deal_worker_app.send_task(
-    "stakeholder.analyze_org_stakeholders_task",
-    args=[str(organisation_id)],
-    queue="deal_jobs",
-    routing_key="deal_jobs",
-)
-
-# Trigger stakeholder analysis for a specific deal
 deal_worker_app.send_task(
     "stakeholder.analyze_deal_stakeholders_task",
-    args=[str(organisation_id), str(deal_id)],
+    args=[str(org_id), str(deal_id)],
     queue="deal_jobs",
     routing_key="deal_jobs",
 )
 ```
 
-### Using Task Delay (Alternative)
+### Importing the Task Function
 
 ```python
 from src.workers.deal_worker.tasks.deal_tasks import process_deal_meetings_task
 
-# Trigger for a specific organisation
 process_deal_meetings_task.delay(organisation_id="<org_uuid>")
 ```
 
-## 🚀 Running the Worker
+When enqueueing meeting jobs, deal summaries, or stakeholder analysis, explicitly set `queue="deal_jobs"` to ensure they run on the worker pool provisioned for LLM workloads.
 
-### Development (Windows PowerShell)
+---
+
+## Running the Worker
+
+> Ensure the virtual environment is activated and the project root is the working directory.
+
+### Development
 
 ```powershell
+# Windows (PowerShell)
 celery -A src.workers.deal_worker.celery_app worker -l info -Q deal,deal_jobs --pool=solo
 ```
 
-### Development (Linux/Mac)
-
 ```bash
+# Linux / macOS
 celery -A src.workers.deal_worker.celery_app worker --loglevel=info -Q deal,deal_jobs --pool=solo
 ```
 
-### With Celery Beat (Periodic Tasks)
+### Celery Beat
 
 ```bash
 celery -A src.workers.deal_worker.celery_app beat -l info
 ```
 
-### Production
+Run Beat alongside at least one worker (or as a dedicated process) so the scheduled tasks keep firing.
+
+### Production Example
 
 ```bash
 celery -A src.workers.deal_worker.celery_app worker -l warning -Q deal,deal_jobs --concurrency=4
 ```
 
-> **Note:** The worker must listen to both `deal` and `deal_jobs` queues.
+Always listen to both queues; otherwise AI workloads or deterministic jobs will starve.
 
-## ⏰ Periodic Tasks (Celery Beat)
+---
 
-| Schedule | Task | Description |
-|----------|------|-------------|
-| Every 3 hours | `deal.trigger_deal_meeting_processing_all_orgs` | Process deal meetings for all active organisations |
-| Daily at 2 AM | `stakeholder.trigger_analysis_all_orgs` | Analyze stakeholders for all active organisations using meeting transcripts |
+## Periodic Tasks
 
-## 🔧 Environment Variables
+| Schedule | Task | Purpose |
+|----------|------|---------|
+| Every 3 hours | `deal.trigger_deal_meeting_processing_all_orgs` | Reconcile meetings <-> deals for every approved organisation. |
+| Daily @ 02:00 UTC | `stakeholder.trigger_analysis_all_orgs` | Refresh stakeholder intelligence snapshots from meeting transcripts. |
+
+Schedules live in `DealWorkerConfig.beat_schedule`; adjust there when adding new periodic jobs.
+
+---
+
+## Environment & Configuration
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `REDIS_HOST` | Redis host | `localhost` |
-| `REDIS_PORT` | Redis port | `6379` |
-| `REDIS_PASSWORD` | Redis password | `None` |
-| `MAX_TENANT_ENGINES` | Max tenant DB engines (set in celery_app.py) | `1` |
-| `TENANT_POOL_MULTIPLIER` | Tenant pool multiplier | `1.0` |
+| `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` | Connection info for Redis Streams used by `DealJobRedisPublisher`. | `localhost` / `6379` / `None` |
+| `MAX_TENANT_ENGINES` | Hard-set to `1` in `celery_app.py` before imports to cap tenant DB pools per worker. | `1` |
+| `TENANT_POOL_MULTIPLIER` | Pool multiplier applied by the DB factory. | `1.0` |
+| `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND` | Inherited from global Celery settings via `BaseWorkerConfig`. | See project `.env` |
 
-## 🐛 Debugging
+The worker loads `.env` (via `dotenv`) during boot. Configure broker/backends and Redis credentials there.
+
+---
+
+## Monitoring & Debugging
 
 ```bash
-# Check worker status
+# Active tasks
 celery -A src.workers.deal_worker.celery_app inspect active
 
-# List registered tasks
+# Registered tasks
 celery -A src.workers.deal_worker.celery_app inspect registered
 
-# Check queue lengths
+# Reserved (queued) tasks
 celery -A src.workers.deal_worker.celery_app inspect reserved
 
-# Task events in real-time
+# Stream task lifecycle events
 celery -A src.workers.deal_worker.celery_app events
 ```
 
-## 📚 Related Documentation
+- Worker lifecycle signals (`worker_ready`, `worker_shutdown`, etc.) initialize/tear down the Redis pool (`initialize_redis_pool` / `close_redis_pool`).
+- `DealJobRedisPublisher` frames (`progress`, `answer.replace`, `error`, `finalize`) feed the SSE gateway; check Redis Streams if the UI is missing updates.
+- `scripts/monitoring/celery_integration.py` hooks the worker into shared observability pipelines. Import failures are suppressed for local development.
+
+---
+
+## Related Documentation
 
 - [Celery Worker Creation Guide](../../../docs/Technical%20Documentation/celery-worker-creation-guide.md)
-- [Deal-Meeting Matching Logic Flow](../../../docs/Technical%20Documentation/deal-meeting-matching-flow.md)
+- [Deal/Meeting Matching Flow](../../../docs/Technical%20Documentation/deal-meeting-matching-flow.md)
+- Stakeholder intelligence notes (if present) live under `docs/Technical Documentation/`.

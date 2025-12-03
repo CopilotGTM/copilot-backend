@@ -1,9 +1,23 @@
-"""Celery tasks for stakeholder analysis using AI.
+"""Celery tasks for AI-powered stakeholder analysis.
 
-This module provides tasks for analyzing stakeholders using meeting transcripts
-to extract insights about stance, decision power, motivations, and pain points.
+This module provides Celery tasks that analyze stakeholders using meeting
+transcripts to extract insights via AI:
+    - Stance: Champion, Supporter, Neutral, Blocker, Unknown
+    - Decision Power: Final Decision, Influencer, Recommender, End User
+    - Temperature: Hot, Warm, Cold
+    - Champion Potential: Likelihood score (0.0 - 1.0)
+    - Motivations & Pain Points: Text insights from conversations
 
-For stakeholder synchronization tasks, see stakeholder_tasks.py.
+Tasks:
+    - analyze_deal_stakeholders_task: Analyze all stakeholders for a specific deal
+    - analyze_org_stakeholders_task: Analyze all stakeholders across an organisation
+    - trigger_stakeholder_analysis_all_orgs: Periodic task for all organisations
+
+The tasks delegate to StakeholderAnalysisService which batches all stakeholders
+for a deal into a single LLM call for efficiency.
+
+For stakeholder discovery/synchronization tasks, see stakeholder_tasks.py.
+See docs/Technical Documentation/deal/deal-worker-tasks.md for full documentation.
 """
 
 from __future__ import annotations

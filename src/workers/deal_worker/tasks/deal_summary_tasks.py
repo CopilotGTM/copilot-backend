@@ -1,10 +1,25 @@
-"""Celery tasks for deal-level summary generation.
+"""Celery tasks for AI-powered deal summary generation.
 
-This module provides the Celery task for processing deal summary jobs.
-The task is thin - it delegates to DealSummaryService for business logic.
+This module provides Celery tasks that generate comprehensive deal summaries
+by analyzing ALL meeting transcripts associated with a deal using AI.
 
-Deal summaries analyze ALL meeting transcripts for a deal to produce
-a comprehensive summary - this is separate from meeting-level tasks.
+Tasks:
+    - process_deal_summary_job: Process a deal summary job from the job queue
+
+The task delegates to DealSummaryService for business logic:
+    - Loading deal context and stakeholders
+    - Fetching transcripts via TranscriptService
+    - Building aggregated context for the AI agent
+    - Calling DealSummaryAgent for generation
+    - Publishing progress updates via SSE (Redis)
+
+Error Handling:
+    - DealNotFoundError: Deal doesn't exist (non-retryable)
+    - NoMeetingsError: No meetings for deal (non-retryable)
+    - NoTranscriptsError: No transcripts available (non-retryable)
+    - Other errors: Retried with exponential backoff
+
+See docs/Technical Documentation/deal/deal-worker-tasks.md for full documentation.
 """
 
 from __future__ import annotations
