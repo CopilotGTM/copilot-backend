@@ -269,7 +269,7 @@ STAKEHOLDERS TO ANALYZE ({len(stakeholders)} total)
 DEAL CONTEXT
 ==========================================================
 - Deal Name: {deal.name}
-- Company: {deal.company_name or 'Unknown'}
+- Company: {deal.company_name or "Unknown"}
 - Stage: {deal.stage_id}
 - Amount: {deal.amount}
 - Close Date: {deal.close_date}
@@ -281,7 +281,7 @@ The following are ALL meeting transcripts associated with this deal.
 Analyze each stakeholder based on their participation in these meetings.
 Look for each stakeholder by their email address in the attendee lists.
 
-{chr(10).join(transcripts_section) if transcripts_section else 'No meeting transcripts available.'}
+{chr(10).join(transcripts_section) if transcripts_section else "No meeting transcripts available."}
 """
 
     def update_stakeholder_with_analysis(
