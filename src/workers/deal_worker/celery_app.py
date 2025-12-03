@@ -93,6 +93,7 @@ def task_failure_handler(task_id=None, exception=None, traceback=None, einfo=Non
 # Explicitly import task modules to ensure registration
 from .tasks import (  # noqa: F401, E402
     deal_meeting_tasks,
+    deal_summary_tasks,
     deal_tasks,
     stakeholder_tasks,
 )

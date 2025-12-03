@@ -15,7 +15,7 @@ from uuid import UUID
 from celery import Task
 
 from src.api.dependencies.organisation_dependencies import acquire_org_async_session
-from src.domain.models.organisation_tables.job_models import DealMeetingJob, JobStatus
+from src.domain.models.organisation_tables.job_models import DealJobs, JobStatus
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.workers.deal_worker.celery_app import app
@@ -52,7 +52,7 @@ def process_deal_meeting_job(self: Task, organisation_id: str, job_id: str):
         async for session in acquire_org_async_session(org_uuid):
             # 1. Load job
             logger.info("Loading deal meeting job %s", job_id)
-            job = await session.get(DealMeetingJob, job_uuid)
+            job = await session.get(DealJobs, job_uuid)
             if not job:
                 raise RuntimeError(f"Deal job {job_id} not found")
 

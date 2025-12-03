@@ -245,6 +245,22 @@ class DealDetail(BaseModel):
     updated_at: datetime
     context: DealContext | None = None
 
+    # Deal Summary (AI-generated)
+    deal_summary_status: str | None = Field(
+        None,
+        description="Computed status: NOT_STARTED (no data), IN_PROGRESS (active job), COMPLETED (data exists)",
+    )
+    deal_summary_data: dict[str, Any] | None = Field(
+        None,
+        description="AI-generated deal summary with schema_version, generated_at, and data",
+    )
+
+    # Active deal-level jobs (for SSE subscription)
+    active_deal_jobs: DealSummaryJobsStatus | None = Field(
+        None,
+        description="Currently running deal-level jobs (for SSE reconnection)",
+    )
+
     model_config = {"from_attributes": True}
 
 
@@ -379,6 +395,16 @@ class MeetingJobsStatus(BaseModel):
     meeting_briefing: DealJobResponse | None = None
     meeting_summary: DealJobResponse | None = None
     meeting_followup: DealJobResponse | None = None
+
+
+class DealSummaryJobsStatus(BaseModel):
+    """Active deal-level jobs (not meeting-level).
+
+    Each field is None if no active job exists for that type.
+    """
+
+    deal_summary: DealJobResponse | None = None
+    # Future: stakeholder_analysis, deal_risk_analysis, etc.
 
 
 # ---------------------------------------------------------------------------

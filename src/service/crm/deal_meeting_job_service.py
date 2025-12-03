@@ -7,7 +7,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
-from src.domain.models.organisation_tables.job_models import DealJobType, DealMeetingJob, JobStatus
+from src.domain.models.organisation_tables.job_models import DealJobs, DealJobType, JobStatus
 from src.infra.utils.logger import get_logger
 from src.workers.deal_worker.celery_app import app as deal_worker_app
 
@@ -45,7 +45,7 @@ class DealMeetingJobService:
         event_id: UUID | None = None,
         stakeholder_id: UUID | None = None,
         metadata: dict | None = None,
-    ) -> DealMeetingJob:
+    ) -> DealJobs:
         """
         Create a new deal job and enqueue the task.
 
@@ -57,13 +57,13 @@ class DealMeetingJobService:
             metadata: Optional job-specific metadata
 
         Returns:
-            The created DealMeetingJob for SSE subscription
+            The created DealJobs for SSE subscription
         """
         # Validate based on job type
         self._validate_job_request(job_type, event_id, stakeholder_id)
 
         # Create job
-        job = DealMeetingJob(
+        job = DealJobs(
             organisation_id=self.organisation_id,
             user_id=self.user_id,
             job_type=job_type,
@@ -102,7 +102,7 @@ class DealMeetingJobService:
 
     async def create_meeting_job(
         self, deal_id: UUID, event_id: UUID, job_type: DealJobType
-    ) -> DealMeetingJob:
+    ) -> DealJobs:
         """
         Create a meeting job (briefing, summary, or followup).
 
@@ -114,7 +114,7 @@ class DealMeetingJobService:
             job_type: Type of meeting job (MEETING_BRIEFING, MEETING_SUMMARY, MEETING_FOLLOWUP)
 
         Returns:
-            The created or existing DealMeetingJob
+            The created or existing DealJobs
         """
         # Validate job type is a meeting job
         meeting_jobs = {
@@ -150,44 +150,44 @@ class DealMeetingJobService:
         deal_id: UUID,
         job_type: DealJobType,
         event_id: UUID | None = None,
-    ) -> DealMeetingJob | None:
+    ) -> DealJobs | None:
         """
         Get the currently running job for a specific type and context.
 
         Used for job recovery when user reconnects.
         """
-        stmt = select(DealMeetingJob).where(
-            col(DealMeetingJob.organisation_id) == self.organisation_id,
-            col(DealMeetingJob.deal_id) == deal_id,
-            col(DealMeetingJob.job_type) == job_type,
-            col(DealMeetingJob.status).in_([JobStatus.PENDING, JobStatus.IN_PROGRESS]),
+        stmt = select(DealJobs).where(
+            col(DealJobs.organisation_id) == self.organisation_id,
+            col(DealJobs.deal_id) == deal_id,
+            col(DealJobs.job_type) == job_type,
+            col(DealJobs.status).in_([JobStatus.PENDING, JobStatus.IN_PROGRESS]),
         )
         if event_id:
-            stmt = stmt.where(col(DealMeetingJob.event_id) == event_id)
+            stmt = stmt.where(col(DealJobs.event_id) == event_id)
 
         result = await self.session.execute(stmt)
         return result.scalars().first()
 
-    async def get_job(self, job_id: UUID) -> DealMeetingJob | None:
+    async def get_job(self, job_id: UUID) -> DealJobs | None:
         """Get a job by ID."""
-        return await self.session.get(DealMeetingJob, job_id)
+        return await self.session.get(DealJobs, job_id)
 
     async def list_jobs_for_deal(
         self,
         deal_id: UUID,
         job_type: DealJobType | None = None,
         status: JobStatus | None = None,
-    ) -> list[DealMeetingJob]:
+    ) -> list[DealJobs]:
         """List all jobs for a deal, optionally filtered by type and status."""
-        stmt = select(DealMeetingJob).where(
-            col(DealMeetingJob.organisation_id) == self.organisation_id,
-            col(DealMeetingJob.deal_id) == deal_id,
+        stmt = select(DealJobs).where(
+            col(DealJobs.organisation_id) == self.organisation_id,
+            col(DealJobs.deal_id) == deal_id,
         )
         if job_type:
-            stmt = stmt.where(col(DealMeetingJob.job_type) == job_type)
+            stmt = stmt.where(col(DealJobs.job_type) == job_type)
         if status:
-            stmt = stmt.where(col(DealMeetingJob.status) == status)
-        stmt = stmt.order_by(col(DealMeetingJob.created_at).desc())
+            stmt = stmt.where(col(DealJobs.status) == status)
+        stmt = stmt.order_by(col(DealJobs.created_at).desc())
 
         result = await self.session.execute(stmt)
         return list(result.scalars().all())

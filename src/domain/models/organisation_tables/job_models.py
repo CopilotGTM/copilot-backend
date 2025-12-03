@@ -147,21 +147,21 @@ class DealJobType(str, Enum):
     EMAIL_DRAFT = "email_draft"  # Draft follow-up email
 
 
-class DealMeetingJob(TimestampMixin, table=True):
+class DealJobs(TimestampMixin, table=True):
     """
-    Job model for deal meeting-related async operations.
+    Job model for deal-related async operations.
 
     Supports multiple job types that can run in parallel.
     Each job is associated with a deal and optionally with an event/meeting.
     """
 
-    __tablename__ = "deal_meeting_jobs"
+    __tablename__ = "deal_jobs"
     __table_args__ = (
-        Index("ix_deal_meeting_jobs_org_deal", "organisation_id", "deal_id"),
-        Index("ix_deal_meeting_jobs_org_status", "organisation_id", "status"),
-        Index("ix_deal_meeting_jobs_type_status", "job_type", "status"),
+        Index("ix_deal_jobs_org_deal", "organisation_id", "deal_id"),
+        Index("ix_deal_jobs_org_status", "organisation_id", "status"),
+        Index("ix_deal_jobs_type_status", "job_type", "status"),
         Index(
-            "ix_deal_meeting_jobs_active_lookup",
+            "ix_deal_jobs_active_lookup",
             "organisation_id",
             "deal_id",
             "job_type",
@@ -230,4 +230,4 @@ class DealMeetingJob(TimestampMixin, table=True):
     )
 
 
-DealMeetingJob.update_forward_refs()
+DealJobs.update_forward_refs()

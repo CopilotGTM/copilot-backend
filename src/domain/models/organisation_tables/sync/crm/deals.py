@@ -498,6 +498,13 @@ class CRMDeal(SyncedRecordMixin, table=True):
         description="Raw provider payload used for troubleshooting and replay.",
     )
 
+    # AI-generated content (not synced from CRM)
+    deal_summary_data: dict | None = Field(
+        default=None,
+        sa_column=Column(JSONB, nullable=True),
+        description="AI-generated deal summary data with schema_version, generated_at, and summary content.",
+    )
+
     participants: list["CRMDealParticipant"] = Relationship(back_populates="deal")
     stage_history: list["CRMDealStageHistory"] = Relationship(back_populates="deal")
 

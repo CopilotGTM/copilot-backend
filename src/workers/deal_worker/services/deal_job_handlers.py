@@ -12,7 +12,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from src.domain.models.organisation_tables.job_models import DealJobType, DealMeetingJob
+from src.domain.models.organisation_tables.job_models import DealJobs, DealJobType
 from src.domain.models.organisation_tables.sync.calendar import GenerationStatus
 from src.infra.utils.logger import get_logger
 from src.service.integrations.transcript_service import TranscriptService
@@ -91,7 +91,7 @@ def get_job_handler(job_type: DealJobType):
 
 
 async def handle_meeting_briefing(
-    session: AsyncSession, job: DealMeetingJob, publisher: DealJobRedisPublisher
+    session: AsyncSession, job: DealJobs, publisher: DealJobRedisPublisher
 ) -> dict:
     """Handle meeting briefing generation.
 
@@ -184,7 +184,7 @@ async def handle_meeting_briefing(
 
 
 async def handle_meeting_summary(
-    session: AsyncSession, job: DealMeetingJob, publisher: DealJobRedisPublisher
+    session: AsyncSession, job: DealJobs, publisher: DealJobRedisPublisher
 ) -> dict:
     """Handle meeting summary generation.
 
@@ -302,7 +302,7 @@ async def handle_meeting_summary(
 
 
 async def handle_stakeholder_analysis(
-    session: AsyncSession, job: DealMeetingJob, publisher: DealJobRedisPublisher
+    session: AsyncSession, job: DealJobs, publisher: DealJobRedisPublisher
 ) -> dict:
     """Handle stakeholder analysis for a deal.
 

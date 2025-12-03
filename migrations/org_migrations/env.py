@@ -31,7 +31,7 @@ from src.domain.models.organisation_tables import (
     CRMUser,
     CRMCompany,
     DealStakeholder,
-    DealMeetingJob,
+    DealJobs,
 )
 from src.domain.models.organisation_tables.sync.email_models import (
     EmailFolder,
@@ -110,7 +110,7 @@ all_org_models: list[type[Any]] = [
     CRMUser,
     CRMCompany,
     DealStakeholder,
-    DealMeetingJob,
+    DealJobs,
     # Email tables
     EmailFolder,
     Email,

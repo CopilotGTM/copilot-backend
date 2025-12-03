@@ -3,6 +3,7 @@ Tasks for the deal worker.
 """
 
 from .deal_meeting_tasks import process_deal_meeting_job
+from .deal_summary_tasks import process_deal_summary_job
 from .deal_tasks import (
     process_deal_meetings_task,
     process_single_deal_task,
@@ -16,8 +17,11 @@ from .stakeholder_analysis_tasks import (
 from .stakeholder_tasks import sync_stakeholders_from_meeting_task
 
 __all__ = [
-    # Deal tasks
+    # Deal meeting tasks (meeting-level)
     "process_deal_meeting_job",
+    # Deal summary tasks (deal-level)
+    "process_deal_summary_job",
+    # Deal tasks
     "process_deal_meetings_task",
     "process_single_deal_task",
     "trigger_deal_meeting_processing_all_orgs",

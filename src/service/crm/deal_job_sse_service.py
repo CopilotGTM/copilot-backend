@@ -12,7 +12,7 @@ from collections.abc import AsyncGenerator
 from uuid import UUID
 
 from src.api.dependencies.organisation_dependencies import acquire_org_async_session
-from src.domain.models.organisation_tables.job_models import DealMeetingJob, JobStatus
+from src.domain.models.organisation_tables.job_models import DealJobs, JobStatus
 from src.infra.messaging.redis_channels import channel_for_deal_job
 from src.infra.messaging.redis_streams import AsyncRedisStreams
 from src.infra.utils.logger import get_logger
@@ -192,7 +192,7 @@ class DealJobSSEService:
         """Get current job status and result from database."""
         try:
             async for session in acquire_org_async_session(UUID(self.organisation_id)):
-                job = await session.get(DealMeetingJob, UUID(self.job_id))
+                job = await session.get(DealJobs, UUID(self.job_id))
                 if not job:
                     return None, None
                 return job.status, job.result_data

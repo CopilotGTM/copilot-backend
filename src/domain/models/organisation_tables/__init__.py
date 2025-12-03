@@ -20,8 +20,8 @@ from .chat_message_models import Attachment, ChatMessage, ChatMessageAttachmentL
 from .chat_session_models import ChatSession
 from .job_models import (
     ChatMessageJob,
+    DealJobs,
     DealJobType,
-    DealMeetingJob,
     JobStatus,
     KnowledgeProcessingJob,
 )
@@ -92,6 +92,6 @@ __all__ = [
     "JobStatus",
     "ChatMessageJob",
     "KnowledgeProcessingJob",
-    "DealMeetingJob",
+    "DealJobs",
     "DealJobType",
 ]

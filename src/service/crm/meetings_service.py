@@ -16,7 +16,7 @@ from src.api.schemas.crm_models import (
     MeetingAttendee,
     MeetingJobsStatus,
 )
-from src.domain.models.organisation_tables.job_models import DealJobType, DealMeetingJob, JobStatus
+from src.domain.models.organisation_tables.job_models import DealJobs, DealJobType, JobStatus
 from src.domain.models.organisation_tables.sync.calendar import (
     AssociationStatus,
     CalendarEvent,
@@ -132,11 +132,11 @@ class MeetingsService:
         if not event_ids:
             return {}
 
-        stmt = select(DealMeetingJob).where(
-            col(DealMeetingJob.organisation_id) == self.organisation_id,
-            col(DealMeetingJob.event_id).in_(event_ids),
-            col(DealMeetingJob.job_type).in_(self.MEETING_JOB_TYPES),
-            col(DealMeetingJob.status).in_([JobStatus.PENDING, JobStatus.IN_PROGRESS]),
+        stmt = select(DealJobs).where(
+            col(DealJobs.organisation_id) == self.organisation_id,
+            col(DealJobs.event_id).in_(event_ids),
+            col(DealJobs.job_type).in_(self.MEETING_JOB_TYPES),
+            col(DealJobs.status).in_([JobStatus.PENDING, JobStatus.IN_PROGRESS]),
         )
         result = await self.session.execute(stmt)
         jobs = result.scalars().all()

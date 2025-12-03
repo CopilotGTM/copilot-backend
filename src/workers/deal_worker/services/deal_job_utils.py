@@ -155,6 +155,44 @@ async def get_previous_meetings(
     return list(result.scalars().all())
 
 
+async def get_all_deal_meetings(
+    session: AsyncSession,
+    org_id: UUID,
+    deal_id: UUID,
+    limit: int = 20,
+) -> list[CalendarEvent]:
+    """Get all meetings associated with a deal.
+
+    Fetches all meetings associated with the deal, ordered chronologically
+    (oldest first). Used for deal-level summary generation.
+
+    Args:
+        session: Database session
+        org_id: Organisation ID
+        deal_id: Deal ID to find meetings for
+        limit: Maximum number of meetings to return (default 20)
+
+    Returns:
+        List of CalendarEvent objects, ordered by start_at ascending (oldest first)
+    """
+    stmt = (
+        select(CalendarEvent)
+        .options(selectinload(cast(Any, CalendarEvent.attendees)))
+        .join(
+            CalendarEventDealAssociation,
+            col(CalendarEvent.event_id) == col(CalendarEventDealAssociation.event_id),
+        )
+        .where(
+            col(CalendarEventDealAssociation.deal_id) == deal_id,
+            col(CalendarEventDealAssociation.organisation_id) == org_id,
+        )
+        .order_by(col(CalendarEvent.start_at).asc())
+        .limit(limit)
+    )
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
 def _format_meeting_date(date_value: str) -> str:
     """Format a meeting date string for display.
 
@@ -377,4 +415,114 @@ KNOWN STAKEHOLDERS:
 
 MEETING TRANSCRIPT:
 {transcript}
+"""
+
+
+def build_deal_summary_context_string(
+    deal: CRMDeal,
+    stakeholders: list[DealStakeholder],
+    meetings_with_transcripts: list[dict],
+) -> str:
+    """Build the context string for the deal summary agent.
+
+    This aggregates ALL meeting transcripts for a deal into a single
+    context for comprehensive deal-level analysis.
+
+    Args:
+        deal: The CRM deal
+        stakeholders: List of stakeholders for the deal
+        meetings_with_transcripts: List of meeting dicts with 'subject', 'date',
+            'attendees', and 'transcript' keys, ordered chronologically
+
+    Returns:
+        Formatted context string for the deal summary agent
+    """
+    # Build stakeholder section
+    stakeholder_info = ""
+    if stakeholders:
+        stakeholder_lines = []
+        for s in stakeholders:
+            line = f"- {s.name}"
+            if s.job_title:
+                line += f" ({s.job_title})"
+            if s.email:
+                line += f" - {s.email}"
+            if s.stance:
+                line += f" | Stance: {s.stance}"
+            if s.decision_power:
+                line += f" | Decision Power: {s.decision_power}"
+            stakeholder_lines.append(line)
+        stakeholder_info = "\n".join(stakeholder_lines)
+
+    # Build meetings section - chronologically ordered
+    meetings_section = ""
+    if meetings_with_transcripts:
+        meeting_blocks = []
+        for i, meeting in enumerate(meetings_with_transcripts, 1):
+            subject = meeting.get("subject", "Unknown Subject")
+            date = meeting.get("date", "Unknown Date")
+            if isinstance(date, str) and "T" in date:
+                date = _format_meeting_date(date)
+
+            attendees = meeting.get("attendees", [])
+            attendees_str = ""
+            if attendees:
+                attendees_str = "\nAttendees:\n" + "\n".join(
+                    [f"  - {a.get('name', 'Unknown')} ({a.get('email', '')})" for a in attendees]
+                )
+
+            transcript = meeting.get("transcript", "No transcript available")
+            # Truncate very long transcripts to avoid context overflow
+            if len(transcript) > 15000:
+                transcript = transcript[:15000] + "\n... [transcript truncated for brevity]"
+
+            meeting_blocks.append(
+                f"""
+---
+### Meeting {i}: {subject}
+**Date:** {date}
+{attendees_str}
+
+**Transcript:**
+{transcript}
+---"""
+            )
+
+        meetings_section = "\n".join(meeting_blocks)
+
+    # Build deal stage info
+    stage_info = deal.stage_id if deal.stage_id else "Unknown"
+
+    return f"""
+==========================================================
+DEAL SUMMARY REQUEST
+==========================================================
+Generate a comprehensive summary of this deal by analyzing ALL meeting transcripts below.
+
+==========================================================
+DEAL INFORMATION
+==========================================================
+- Deal Name: {deal.name}
+- Company: {deal.company_name or "Unknown"}
+- Deal Stage: {stage_info}
+- Deal Amount: {deal.amount or "Not specified"}
+- Currency: {deal.currency or "USD"}
+- Close Date: {deal.close_date or "Not specified"}
+- Deal Status: {deal.deal_status or "Open"}
+
+==========================================================
+KNOWN STAKEHOLDERS
+==========================================================
+{stakeholder_info or "No stakeholder information available"}
+
+==========================================================
+MEETING TRANSCRIPTS ({len(meetings_with_transcripts)} meetings)
+==========================================================
+The following transcripts are provided in CHRONOLOGICAL order (oldest first).
+Analyze how the deal has progressed over time.
+{meetings_section or "No meeting transcripts available"}
+
+==========================================================
+END OF CONTEXT - Generate Deal Summary
+==========================================================
 """
