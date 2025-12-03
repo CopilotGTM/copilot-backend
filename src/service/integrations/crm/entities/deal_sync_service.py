@@ -54,9 +54,9 @@ class DealSyncService(BaseSyncService[CRMDeal]):
             Dictionary with sync statistics including participants and stage history
         """
         result = self._init_result()
-        self._log_sync_start("deals", provider, 0)
-
         deal_list = [d for d in records if isinstance(d, dict)]
+        self._log_sync_start("deals", provider, len(deal_list))
+
         if not deal_list:
             result.complete()
             return {
@@ -148,6 +148,19 @@ class DealSyncService(BaseSyncService[CRMDeal]):
 
         # Sync related entities
         participants_synced = await self._upsert_participants(integration, participants_to_upsert)
+
+        # Enrich participants with contact/company details
+        if deals_to_enrich:
+            deal_ids_for_enrichment = [d.deal_id for d in deals_to_enrich]
+            participants_enriched = await enricher.enrich_participants(
+                integration.integration_id, deal_ids=deal_ids_for_enrichment
+            )
+            logger.debug(
+                "Enriched deal participants",
+                participants_enriched=participants_enriched,
+                integration_id=str(integration.integration_id),
+            )
+
         history_synced = await self._upsert_stage_history(integration, history_entries)
 
         result.metadata.update(
@@ -480,22 +493,56 @@ class DealSyncService(BaseSyncService[CRMDeal]):
         integration: KnowledgeIntegration,
         participants: list[tuple[CRMDeal, dict[str, Any], CRMParticipantType]],
     ) -> int:
-        """Upsert deal participants."""
+        """Upsert deal participants.
+
+        Looks up existing participants by the unique constraint fields
+        (deal_id, participant_type, related_external_id, relationship_role)
+        to handle cases where external_id format may have changed.
+        """
         if not participants:
             return 0
 
         now = utcnow()
-        ext_ids = [payload[1]["external_id"] for payload in participants]
-        existing: dict[str, CRMDealParticipant] = {}
 
-        if ext_ids:
+        # Build lookup keys from unique constraint fields
+        lookup_keys: list[tuple[UUID, str, str, str]] = []
+        for deal_record, payload, participant_type in participants:
+            related_ext_id = payload.get("related_external_id")
+            relationship_role = payload.get("relationship_role") or ""
+            if related_ext_id:
+                lookup_keys.append(
+                    (
+                        deal_record.deal_id,
+                        participant_type.value,
+                        str(related_ext_id),
+                        relationship_role,
+                    )
+                )
+
+        # Query existing participants by unique constraint fields
+        existing: dict[tuple[UUID, str, str, str], CRMDealParticipant] = {}
+        if lookup_keys:
+            deal_ids = list({k[0] for k in lookup_keys})
             stmt = (
                 select(CRMDealParticipant)
                 .where(CRMDealParticipant.integration_id == integration.integration_id)  # type: ignore[arg-type]
-                .where(CRMDealParticipant.external_id.in_(ext_ids))  # type: ignore[attr-defined]
+                .where(CRMDealParticipant.deal_id.in_(deal_ids))  # type: ignore[attr-defined]
             )
             result = await self.db.execute(stmt)
-            existing = {row.external_id: row for row in result.scalars().all()}
+            for row in result.scalars().all():
+                # Ensure participant_type is always an enum for lookup key
+                participant_type_enum = (
+                    row.participant_type
+                    if isinstance(row.participant_type, CRMParticipantType)
+                    else CRMParticipantType(row.participant_type)
+                )
+                key = (
+                    row.deal_id,
+                    participant_type_enum.value,
+                    row.related_external_id,
+                    row.relationship_role or "",
+                )
+                existing[key] = row
 
         processed = 0
         for deal_record, payload, participant_type in participants:
@@ -503,7 +550,18 @@ class DealSyncService(BaseSyncService[CRMDeal]):
             if not external_id:
                 continue
 
-            record = existing.get(external_id)
+            related_ext_id = payload.get("related_external_id")
+            relationship_role = payload.get("relationship_role") or ""
+
+            # Look up by unique constraint fields
+            lookup_key = (
+                deal_record.deal_id,
+                participant_type.value,
+                str(related_ext_id) if related_ext_id else "",
+                relationship_role,
+            )
+            record = existing.get(lookup_key)
+
             if not record:
                 record = CRMDealParticipant(
                     organisation_id=self.organisation_id,
@@ -512,10 +570,11 @@ class DealSyncService(BaseSyncService[CRMDeal]):
                     deal_id=deal_record.deal_id,
                 )
 
+            # Update external_id to new format if it changed
+            record.external_id = external_id
             record.deal_id = deal_record.deal_id
             record.participant_type = participant_type
-            record.relationship_role = payload.get("relationship_role")
-            related_ext_id = payload.get("related_external_id")
+            record.relationship_role = relationship_role or None
             record.related_external_id = str(related_ext_id) if related_ext_id else ""
             record.related_local_id = None
             record.related_name = payload.get("related_name")
@@ -606,16 +665,26 @@ class DealSyncService(BaseSyncService[CRMDeal]):
         deal_record: CRMDeal,
         associations: dict[str, Any],
     ) -> list[tuple[CRMDeal, dict[str, Any], CRMParticipantType]]:
-        """Extract participant data from associations."""
+        """Extract participant data from associations.
+
+        HubSpot sends associations in the format:
+        {"contacts": {"results": [{"id": "123", ...}]}, "companies": {"results": [...]}}
+
+        We need to extract the 'results' array from each association type.
+        """
         participants: list[tuple[CRMDeal, dict[str, Any], CRMParticipantType]] = []
 
-        # Extract contacts
-        contacts = associations.get("contacts") or []
-        participants.extend(self._extract_contact_participants(deal_record, contacts))
+        # Extract contacts - handle HubSpot's {"results": [...]} structure
+        contacts_data = associations.get("contacts", {})
+        contacts_list = contacts_data.get("results", []) if isinstance(contacts_data, dict) else []
+        participants.extend(self._extract_contact_participants(deal_record, contacts_list))
 
-        # Extract companies
-        companies = associations.get("companies") or []
-        participants.extend(self._extract_company_participants(deal_record, companies))
+        # Extract companies - handle HubSpot's {"results": [...]} structure
+        companies_data = associations.get("companies", {})
+        companies_list = (
+            companies_data.get("results", []) if isinstance(companies_data, dict) else []
+        )
+        participants.extend(self._extract_company_participants(deal_record, companies_list))
 
         # Extract standard HubSpot collaborators and split owners
         participants.extend(self._extract_hubspot_owner_participants(deal_record))
@@ -625,9 +694,29 @@ class DealSyncService(BaseSyncService[CRMDeal]):
     def _extract_hubspot_owner_participants(
         self, deal_record: CRMDeal
     ) -> list[tuple[CRMDeal, dict[str, Any], CRMParticipantType]]:
-        """Extract standard HubSpot collaborators and split owners from properties."""
+        """Extract deal owner, collaborators, and split owners as user participants."""
         participants: list[tuple[CRMDeal, dict[str, Any], CRMParticipantType]] = []
         props = deal_record.properties or {}
+
+        # Add the deal owner as a participant
+        if deal_record.owner_external_id:
+            participants.append(
+                (
+                    deal_record,
+                    {
+                        "external_id": f"deal_{deal_record.external_id}_owner_{deal_record.owner_external_id}",
+                        "related_external_id": deal_record.owner_external_id,
+                        "relationship_role": "owner",
+                        "related_name": deal_record.owner_name,
+                        "related_email": deal_record.owner_email,
+                        "raw": {
+                            "id": deal_record.owner_external_id,
+                            "source": "deal_owner",
+                        },
+                    },
+                    CRMParticipantType.USER,
+                )
+            )
 
         # Process Collaborators
         collaborators_str = props.get("hs_all_collaborator_owner_ids")
@@ -682,12 +771,17 @@ class DealSyncService(BaseSyncService[CRMDeal]):
     def _extract_contact_participants(
         self, deal_record: CRMDeal, contacts: Any
     ) -> list[tuple[CRMDeal, dict[str, Any], CRMParticipantType]]:
-        """Extract contact participants from associations."""
-        participants: list[tuple[CRMDeal, dict[str, Any], CRMParticipantType]] = []
+        """Extract contact participants from associations.
 
+        HubSpot may return multiple association entries for the same contact with different
+        types (e.g., 'deal_to_contact' and 'deal_to_contact_unlabeled'). We deduplicate by
+        keeping only the primary (labeled) association when both exist for the same entity.
+        """
         if not isinstance(contacts, list):
-            return participants
+            return []
 
+        # Group contacts by ID and identify which have primary vs unlabeled associations
+        contact_map: dict[str, dict[str, Any]] = {}
         for contact in contacts:
             if not isinstance(contact, dict):
                 continue
@@ -695,13 +789,24 @@ class DealSyncService(BaseSyncService[CRMDeal]):
             if not contact_id:
                 continue
 
+            assoc_type = contact.get("type") or "contact"
+            is_unlabeled = "_unlabeled" in assoc_type
+
+            # Keep primary (non-unlabeled) over unlabeled
+            if contact_id not in contact_map or not is_unlabeled:
+                contact_map[contact_id] = contact
+
+        # Build participant list from deduplicated contacts
+        participants: list[tuple[CRMDeal, dict[str, Any], CRMParticipantType]] = []
+        for contact_id, contact in contact_map.items():
+            assoc_type = contact.get("type") or "contact"
             participants.append(
                 (
                     deal_record,
                     {
                         "external_id": f"deal_{deal_record.external_id}_contact_{contact_id}",
                         "related_external_id": contact_id,
-                        "relationship_role": "contact",
+                        "relationship_role": assoc_type,
                         "raw": contact,
                     },
                     CRMParticipantType.CONTACT,
@@ -713,12 +818,17 @@ class DealSyncService(BaseSyncService[CRMDeal]):
     def _extract_company_participants(
         self, deal_record: CRMDeal, companies: Any
     ) -> list[tuple[CRMDeal, dict[str, Any], CRMParticipantType]]:
-        """Extract company participants from associations."""
-        participants: list[tuple[CRMDeal, dict[str, Any], CRMParticipantType]] = []
+        """Extract company participants from associations.
 
+        HubSpot may return multiple association entries for the same company with different
+        types (e.g., 'deal_to_company' and 'deal_to_company_unlabeled'). We deduplicate by
+        keeping only the primary (labeled) association when both exist for the same entity.
+        """
         if not isinstance(companies, list):
-            return participants
+            return []
 
+        # Group companies by ID and identify which have primary vs unlabeled associations
+        company_map: dict[str, dict[str, Any]] = {}
         for company in companies:
             if not isinstance(company, dict):
                 continue
@@ -726,13 +836,24 @@ class DealSyncService(BaseSyncService[CRMDeal]):
             if not company_id:
                 continue
 
+            assoc_type = company.get("type") or "company"
+            is_unlabeled = "_unlabeled" in assoc_type
+
+            # Keep primary (non-unlabeled) over unlabeled
+            if company_id not in company_map or not is_unlabeled:
+                company_map[company_id] = company
+
+        # Build participant list from deduplicated companies
+        participants: list[tuple[CRMDeal, dict[str, Any], CRMParticipantType]] = []
+        for company_id, company in company_map.items():
+            assoc_type = company.get("type") or "company"
             participants.append(
                 (
                     deal_record,
                     {
                         "external_id": f"deal_{deal_record.external_id}_company_{company_id}",
                         "related_external_id": company_id,
-                        "relationship_role": "company",
+                        "relationship_role": assoc_type,
                         "raw": company,
                     },
                     CRMParticipantType.COMPANY,

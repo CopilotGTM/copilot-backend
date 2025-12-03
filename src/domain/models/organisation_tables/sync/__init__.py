@@ -1,7 +1,16 @@
 """Synced data domain models (calendar + future CRM, email, etc.)."""
 
 from .base import SyncCategory, SyncedRecordMixin
-from .calendar import CalendarAttendee, CalendarEvent
+from .calendar import (
+    AssociationStatus,
+    CalendarAttendee,
+    CalendarEvent,
+    CalendarEventDealAssociation,
+    GenerationStatus,
+)
+
+# DEPRECATED: Use meeting_intelligence models instead for new development
+# Kept for backward compatibility and potential future Gong/Chorus sync
 from .conversation_intelligence import (
     CICall,
     CICallAnalyticsSnapshot,
@@ -26,6 +35,11 @@ from .crm import (
     CRMPipeline,
     CRMStageState,
     CRMUser,
+    DealStakeholder,
+    DecisionPower,
+    StakeholderSource,
+    StakeholderStance,
+    StakeholderTemperature,
 )
 from .email_models import (
     Email,
@@ -40,6 +54,12 @@ from .integration_models import (
     IntegrationType,
     KnowledgeIntegration,
     SyncStatus,
+)
+from .meeting_intelligence import (
+    Meeting,
+    MeetingSource,
+    MeetingStatus,
+    TranscriptSegment,
 )
 from .messaging_models import (
     ChannelType,
@@ -57,6 +77,9 @@ __all__ = [
     "SyncedRecordMixin",
     "CalendarEvent",
     "CalendarAttendee",
+    "CalendarEventDealAssociation",
+    "AssociationStatus",
+    "GenerationStatus",
     "IntegrationType",
     "IntegrationScope",
     "KnowledgeIntegration",
@@ -74,6 +97,12 @@ __all__ = [
     "CRMStageState",
     "CRMUser",
     "CRMCompany",
+    "DealStakeholder",
+    "StakeholderStance",
+    "DecisionPower",
+    "StakeholderTemperature",
+    "StakeholderSource",
+    # Legacy CI models (deprecated - use Meeting* instead)
     "CICall",
     "CICallDealLink",
     "CICallSpeaker",
@@ -83,8 +112,15 @@ __all__ = [
     "CICallRecordingStatus",
     "CISpeakerRole",
     "TranscriptContentFormat",
+    # New Meeting Intelligence models (minimal - reuses calendar models)
+    "MeetingSource",
+    "MeetingStatus",
+    "Meeting",
+    "TranscriptSegment",
+    # Participant models
     "IntegrationParticipant",
     "IntegrationParticipantIdentity",
+    # Messaging models
     "ChannelType",
     "MessageType",
     "MessagingChannel",
@@ -92,6 +128,7 @@ __all__ = [
     "MessagingDealLink",
     "MessagingMessage",
     "MessagingThreadSummary",
+    # Email models
     "EmailDirection",
     "EmailPriority",
     "EmailFolder",

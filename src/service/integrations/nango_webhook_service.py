@@ -120,15 +120,14 @@ class NangoWebhookService:
         # Direct mapping for Outlook integrations
         if provider_key_lower == "outlook":
             logger.info(
-                "Detected 'outlook' provider, mapping to OUTLOOK_EMAIL. " "Connection ID: %s",
+                "Detected 'outlook' provider, mapping to OUTLOOK_EMAIL. Connection ID: %s",
                 connection_id,
             )
             return IntegrationType.OUTLOOK_EMAIL
 
         if provider_key_lower == "outlook-bflm":
             logger.info(
-                "Detected 'outlook-bflm' provider, mapping to OUTLOOK_CALENDAR. "
-                "Connection ID: %s",
+                "Detected 'outlook-bflm' provider, mapping to OUTLOOK_CALENDAR. Connection ID: %s",
                 connection_id,
             )
             return IntegrationType.OUTLOOK_CALENDAR
@@ -207,7 +206,13 @@ class NangoWebhookService:
         return Response.success_response(message=SYNC_WEBHOOK_ACCEPTED_MSG, data=None)
 
     async def _handle_authorization_webhook(self, payload: dict[str, Any]) -> Response:
-        """Handle authorization webhook - delegates to create or update flow."""
+        """
+        Handle authorization webhook - reactivate existing or create new integration.
+
+        When a user reconnects after disconnecting, we reuse the existing integration
+        record to preserve historical data (calendar events, deal associations, etc.)
+        instead of creating a new integration_id which would cause duplicate records.
+        """
         logger.info("Processing authorization webhook: %s", payload)
         connection_id: str = payload.get("connectionId")
         provider_config_key: str = payload.get("providerConfigKey")
@@ -229,26 +234,118 @@ class NangoWebhookService:
                 message="Missing user identifiers in endUser"
             )
 
+        # Determine integration type for reactivation lookup
+        integration_type = self._determine_integration_type(connection_id, provider_config_key)
+
         async for org_session in acquire_org_async_session(organization_id):
+            # Step 1: Check if this exact connection_id already exists (idempotency)
             stmt = select(KnowledgeIntegration).where(
                 KnowledgeIntegration.connection_id == connection_id
             )
             existing = await org_session.execute(stmt)
             existing = existing.scalars().first()
 
-            logger.info("Found existing integration: %s", existing)
             if existing:
-                logger.info("Existing integration ID: %s", existing.integration_id)
+                logger.info(
+                    "Connection %s already associated with integration %s",
+                    connection_id,
+                    existing.integration_id,
+                )
                 return Response.success_response(
                     message="Connection already associated with an integration",
                     data={"integrationId": existing.integration_id},
                 )
 
+            # Step 2: Look for an existing integration to reactivate (same user + type)
+            # This handles reconnection after disconnect - reuses integration_id to avoid duplicates
+            reactivate_stmt = (
+                select(KnowledgeIntegration)
+                .where(
+                    KnowledgeIntegration.created_by_user_id == user_id,
+                    KnowledgeIntegration.integration_type == integration_type,
+                )
+                .order_by(KnowledgeIntegration.updated_at.desc())
+                .limit(1)
+            )
+            reactivatable = await org_session.execute(reactivate_stmt)
+            reactivatable = reactivatable.scalars().first()
+
+            if reactivatable:
+                return await self._reactivate_integration(
+                    org_session,
+                    reactivatable,
+                    connection_id,
+                    provider_config_key,
+                )
+
+        # Step 3: No existing integration found - create new one
         return await self._handle_new_integration_auth(
             connection_id,
             provider_config_key,
             user_id,
             organization_id,
+        )
+
+    async def _reactivate_integration(
+        self,
+        session,
+        integration: KnowledgeIntegration,
+        new_connection_id: str,
+        provider_config_key: str,
+    ) -> Response:
+        """
+        Reactivate an existing integration with a new OAuth connection.
+
+        This preserves the integration_id so all historical synced data
+        (calendar events, deal associations, meeting preps) remains linked.
+        """
+        old_connection_id = integration.connection_id
+        was_active = integration.is_active
+
+        # Fetch updated connection metadata from Nango
+        nango = NangoClient()
+        try:
+            nango_connection = await nango.get_connection(
+                provider=provider_config_key, connection_id=new_connection_id
+            )
+            connection_metadata = nango_connection.get("connection_metadata", {})
+        except Exception as e:
+            logger.warning("Failed to fetch connection metadata for reactivation: %s", str(e))
+            connection_metadata = integration.connection_metadata or {}
+        finally:
+            await nango.close()
+
+        # Update integration with new connection details
+        integration.connection_id = new_connection_id
+        integration.is_active = True
+        integration.last_sync_error = None
+        integration.connection_metadata = connection_metadata
+
+        session.add(integration)
+        await session.commit()
+        await session.refresh(integration)
+
+        logger.info(
+            "Reactivated integration %s: connection_id %s → %s, was_active=%s",
+            integration.integration_id,
+            old_connection_id,
+            new_connection_id,
+            was_active,
+        )
+
+        # Update connection mapping in master database
+        await self._save_connection_mapping(new_connection_id, integration, provider_config_key)
+
+        return Response.success_response(
+            message="Integration reactivated successfully",
+            data={
+                "integration_id": str(integration.integration_id),
+                "integration_type": self._enum_value(integration.integration_type),
+                "connection_id": new_connection_id,
+                "integration_scope": self._enum_value(integration.integration_scope),
+                "reactivated": True,
+                "previous_connection_id": old_connection_id,
+            },
         )
 
     async def _handle_new_integration_auth(

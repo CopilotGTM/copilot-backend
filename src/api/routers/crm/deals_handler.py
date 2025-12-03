@@ -19,20 +19,26 @@ from src.api.schemas.crm_models import (
     DealContext,
     DealDetail,
     DealFinancialContext,
+    DealJobResponse,
     DealPipelineContext,
     DealsPage,
     DealsStats,
+    DealSummaryJobsStatus,
     DealTimelineContext,
     PipelineStage,
 )
 from src.api.utils.http_response import Response
+from src.domain.models.organisation_tables.job_models import JobStatus
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDealStatus
 from src.infra.utils.logger import get_logger
+from src.service.crm.deal_job_service import DealJobService, DealJobServiceError
+from src.service.crm.deal_job_sse_service import DealJobSSEService
 from src.service.crm.deals_access_service import (
     DealsAccessService,
     DealsAccessServiceError,
 )
 from src.workers.deal_worker.tasks import process_deal_meetings_task
+from sse_starlette.sse import EventSourceResponse
 
 logger = get_logger("deals_handler")
 
@@ -249,15 +255,7 @@ async def get_deals_access_service(
     user_ids: UserIDs = Depends(get_current_user),
     org_session: AsyncSession = Depends(get_org_async_session),
 ):
-    """Dependency that yields a DealsAccessService instance for the current org.
-
-    Args:
-        user_ids: Current user and organisation IDs from JWT
-        org_session: Async database session scoped to the organisation
-
-    Yields:
-        DealsAccessService instance
-    """
+    """Dependency that yields a DealsAccessService instance for the current org."""
     service = DealsAccessService(org_session, user_ids.organisation_id)
     try:
         yield service
@@ -266,6 +264,21 @@ async def get_deals_access_service(
             await service.close()
         except Exception:
             logger.debug("Deals service close failed", exc_info=True)
+
+
+async def get_deal_job_service(
+    user_ids: UserIDs = Depends(get_current_user),
+    session: AsyncSession = Depends(get_org_async_session),
+):
+    """Dependency that yields a DealJobService instance for deal-level jobs."""
+    service = DealJobService(session, user_ids.organisation_id, user_ids.user_id)
+    try:
+        yield service
+    finally:
+        try:
+            await service.close()
+        except Exception:
+            logger.debug("DealJobService close failed", exc_info=True)
 
 
 @deals_router.get(
@@ -428,11 +441,14 @@ async def get_deals_stats(
     - Ownership and associations
     - Activity timeline
     - Custom properties and metrics
+    - Deal summary data (if generated)
+    - Active deal-level jobs (for SSE reconnection)
     """,
 )
 async def get_deal(
     deal_id: UUID,
     service: DealsAccessService = Depends(get_deals_access_service),
+    deal_job_service: DealJobService = Depends(get_deal_job_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ):
     """Retrieve detailed information for a single deal.
@@ -441,7 +457,8 @@ async def get_deal(
         deal_id: UUID of the deal to retrieve
 
     Returns:
-        GenericResponse containing DealDetail with full deal information
+        GenericResponse containing DealDetail with full deal information,
+        including active deal-level jobs and summary data when available.
     """
     try:
         deal = await service.get_deal_by_id(deal_id)
@@ -455,10 +472,42 @@ async def get_deal(
         # Fetch stage history for the deal
         stage_history = await service.get_deal_stage_history(deal_id)
 
-        # Convert to detailed response model
+        # Build context while deal is still attached to session
+        context = await _build_deal_context(deal, service, stage_history)
+
+        # Convert to detailed response model BEFORE checking jobs
+        # (in case the jobs query fails and requires rollback)
         base_detail = DealDetail.model_validate(deal)
+
+        # Check for active deal-level jobs (for SSE reconnection)
+        # This is done LAST because if the table doesn't exist, we need to rollback
+        # which would invalidate the deal object
+        active_deal_jobs = None
+        try:
+            active_jobs_data = await deal_job_service.get_active_deal_jobs_status(deal_id)
+            if active_jobs_data:
+                active_deal_jobs = DealSummaryJobsStatus.model_validate(active_jobs_data)
+        except Exception as jobs_err:
+            # Log but don't fail - table may not exist yet
+            # No rollback needed since we've already extracted all data from deal
+            logger.debug("Could not fetch active deal jobs for %s: %s", deal_id, jobs_err)
+
+        # Compute deal_summary_status dynamically (no DB column needed):
+        # 1. Active job exists → IN_PROGRESS
+        # 2. deal_summary_data exists → COMPLETED
+        # 3. Otherwise → NOT_STARTED
+        deal_summary_status = "NOT_STARTED"
+        if active_deal_jobs and active_deal_jobs.deal_summary:
+            deal_summary_status = "IN_PROGRESS"
+        elif base_detail.deal_summary_data:
+            deal_summary_status = "COMPLETED"
+
         detail_with_context = base_detail.model_copy(
-            update={"context": await _build_deal_context(deal, service, stage_history)}
+            update={
+                "context": context,
+                "active_deal_jobs": active_deal_jobs,
+                "deal_summary_status": deal_summary_status,
+            }
         )
         return Response.success_response(
             message="Deal retrieved successfully", data=detail_with_context
@@ -500,3 +549,108 @@ async def trigger_deal_meeting_processing(
             message="Failed to trigger processing",
             status_code=500,
         )
+
+
+@deals_router.post(
+    "/deals/{deal_id}/deal-summary/generate",
+    response_model=GenericResponse[DealJobResponse],
+    tags=["crm", "deals", "ai"],
+    summary="Generate AI summary for a deal",
+    description="""
+    Initiate an AI-powered summary generation for a deal.
+
+    This analyzes ALL meeting transcripts associated with the deal to produce
+    a comprehensive deal summary including:
+    - Overall deal narrative and progression
+    - Key themes across meetings
+    - Relationship timeline
+    - Critical decisions made
+    - Outstanding items and risks
+    - Recommended next steps
+
+    If a summary job is already running, returns the existing job_id (idempotent).
+    Use the returned job_id to subscribe to the SSE stream for progress updates.
+    """,
+)
+async def generate_deal_summary(
+    deal_id: UUID,
+    service: DealJobService = Depends(get_deal_job_service),
+):
+    """
+    Generate an AI-powered summary for a deal.
+
+    Analyzes all meeting transcripts to produce a comprehensive deal summary.
+    """
+    try:
+        job = await service.create_deal_summary_job(deal_id)
+
+        # Determine if this is an existing job or a new one
+        is_new = job.status == JobStatus.PENDING
+        message = (
+            "Deal summary generation initiated"
+            if is_new
+            else "Deal summary generation already in progress"
+        )
+
+        return Response.accepted_response(
+            message,
+            DealJobResponse(
+                job_id=job.job_id,
+                job_type=str(job.job_type),
+                status=str(job.status),
+            ),
+        )
+    except DealJobServiceError as e:
+        logger.warning("Deal summary job error: %s", e.message, exc_info=True)
+        return Response.error_response(
+            message=e.message,
+            status_code=e.status_code,
+        )
+    except Exception:
+        logger.exception("Failed to initiate deal summary for deal %s", deal_id)
+        return Response.internal_server_error_response("Failed to initiate deal summary")
+
+
+@deals_router.get(
+    "/deals/{deal_id}/deal-summary/stream/{job_id}",
+    tags=["crm", "deals", "ai"],
+    summary="SSE stream for deal summary job",
+    description="""
+    SSE (Server-Sent Events) stream for deal summary job progress and results.
+
+    Subscribe to this endpoint with the job_id from POST /deals/{deal_id}/deal-summary/generate.
+    The stream will emit progress events during generation and the final result when complete.
+
+    Handles reconnection - if user disconnects and reconnects, the stream resumes from the
+    current state or delivers the cached result if already completed.
+    """,
+)
+async def deal_summary_stream(
+    deal_id: UUID,
+    job_id: UUID,
+    user_ids: UserIDs = Depends(get_current_user),
+):
+    """
+    SSE stream for deal summary job progress and results.
+
+    Subscribe with the job_id from POST /deals/{deal_id}/deal-summary/generate.
+    """
+    sse_service = DealJobSSEService(user_ids.organisation_id, job_id, user_ids.user_id)
+    logger.info(
+        "Client connected to deal summary SSE: org=%s deal=%s job=%s",
+        user_ids.organisation_id,
+        deal_id,
+        job_id,
+    )
+
+    async def event_generator():
+        try:
+            async for ev in sse_service.stream_events():
+                yield ev
+        finally:
+            try:
+                await sse_service.close()
+            except Exception:
+                logger.debug("DealJobSSE service close failed", exc_info=True)
+
+    return EventSourceResponse(event_generator())

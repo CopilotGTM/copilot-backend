@@ -20,6 +20,7 @@ from src.domain.models.organisation_tables import (
     ChatMessageAttachmentLink,
     CalendarEvent,
     CalendarAttendee,
+    CalendarEventDealAssociation,
     CRMPipeline,
     CRMDealStage,
     CRMDeal,
@@ -29,6 +30,8 @@ from src.domain.models.organisation_tables import (
     CRMContact,
     CRMUser,
     CRMCompany,
+    DealStakeholder,
+    DealJobs,
 )
 from src.domain.models.organisation_tables.sync.email_models import (
     EmailFolder,
@@ -45,6 +48,10 @@ from src.domain.models.organisation_tables.sync.messaging_models import (
 from src.domain.models.organisation_tables.sync.participant_models import (
     IntegrationParticipant,
     IntegrationParticipantIdentity,
+)
+from src.domain.models.organisation_tables.sync.meeting_intelligence import (
+    Meeting,
+    TranscriptSegment,
 )
 
 load_dotenv()
@@ -92,6 +99,7 @@ all_org_models: list[type[Any]] = [
     ChatMessageAttachmentLink,
     CalendarEvent,
     CalendarAttendee,
+    CalendarEventDealAssociation,
     CRMPipeline,
     CRMDealStage,
     CRMDeal,
@@ -101,6 +109,8 @@ all_org_models: list[type[Any]] = [
     CRMContact,
     CRMUser,
     CRMCompany,
+    DealStakeholder,
+    DealJobs,
     # Email tables
     EmailFolder,
     Email,
@@ -114,6 +124,9 @@ all_org_models: list[type[Any]] = [
     # Participant tables (shared across integrations)
     IntegrationParticipant,
     IntegrationParticipantIdentity,
+    # Meeting intelligence tables
+    Meeting,
+    TranscriptSegment,
 ]
 
 for model in all_org_models:

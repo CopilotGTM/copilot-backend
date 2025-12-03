@@ -21,11 +21,13 @@ Enterprise-grade B2B SaaS backend built with FastAPI, async support, and AI inte
 ### Install UV (Fast Package Manager)
 
 **Windows (PowerShell):**
+
 ```powershell
 powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
 **macOS/Linux:**
+
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
@@ -102,11 +104,13 @@ python -m alembic -c migrations/org_migrations/alembic.ini -x schema=test_org_sc
 ### 5. Run the Application
 
 **Development Mode:**
+
 ```bash
 uv run uvicorn src.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 **Production Mode:**
+
 ```bash
 uv run uvicorn src.main:app --host 0.0.0.0 --port 8000 --workers 4
 ```
@@ -215,6 +219,7 @@ docker ps
 docker logs copilot-postgres
 docker logs copilot-redis
 ```
+
 ---
 
 ## 📝 Helper Commands Reference

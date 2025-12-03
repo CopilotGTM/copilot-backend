@@ -22,7 +22,12 @@ from src.api.routers.chat_attachments.access_handler import (
     download_router as attachment_access_router,
 )
 from src.api.routers.chat_attachments.upload_handler import upload_router
-from src.api.routers.crm import deals_router, tasks_router
+from src.api.routers.crm import (
+    deals_router,
+    meetings_router,
+    stakeholders_router,
+    tasks_router,
+)
 from src.api.routers.healthcheck import healthcheck_router, public_health_router
 from src.api.routers.integrations import integrations_router
 from src.api.routers.knowledge_base.access_handler import (
@@ -153,6 +158,10 @@ def create_fastapi_app():
 
     # CRM routers
     fastapp.include_router(deals_router, prefix="/users/crm", tags=["crm", "deals"])
+    fastapp.include_router(
+        stakeholders_router, prefix="/users/crm/deals", tags=["crm", "stakeholders"]
+    )
+    fastapp.include_router(meetings_router, prefix="/users/crm/deals", tags=["crm", "meetings"])
     fastapp.include_router(tasks_router, prefix="/users/crm", tags=["crm", "tasks"])
 
     # Admin routers

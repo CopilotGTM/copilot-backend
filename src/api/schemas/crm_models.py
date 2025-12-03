@@ -7,6 +7,12 @@ from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+from src.domain.models.organisation_tables.sync.crm.stakeholders import (
+    DecisionPower,
+    StakeholderSource,
+    StakeholderStance,
+    StakeholderTemperature,
+)
 
 
 class PipelineStage(BaseModel):
@@ -239,6 +245,22 @@ class DealDetail(BaseModel):
     updated_at: datetime
     context: DealContext | None = None
 
+    # Deal Summary (AI-generated)
+    deal_summary_status: str | None = Field(
+        None,
+        description="Computed status: NOT_STARTED (no data), IN_PROGRESS (active job), COMPLETED (data exists)",
+    )
+    deal_summary_data: dict[str, Any] | None = Field(
+        None,
+        description="AI-generated deal summary with schema_version, generated_at, and data",
+    )
+
+    # Active deal-level jobs (for SSE subscription)
+    active_deal_jobs: DealSummaryJobsStatus | None = Field(
+        None,
+        description="Currently running deal-level jobs (for SSE reconnection)",
+    )
+
     model_config = {"from_attributes": True}
 
 
@@ -250,3 +272,196 @@ class DealsStats(BaseModel):
     by_pipeline: dict[str, int]
     total_amount: float | None = Field(None, description="Sum of all deal amounts")
     average_amount: float | None = Field(None, description="Average deal amount")
+
+
+class StakeholderDetail(BaseModel):
+    """Detailed view of a deal stakeholder."""
+
+    stakeholder_id: UUID
+    deal_id: UUID
+    contact_id: UUID | None = None
+    email: str
+    name: str | None = None
+    job_title: str | None = None
+    external_links: list[StakeholderLink] | None = None
+    stance: StakeholderStance
+    decision_power: DecisionPower
+    champion_potential: float
+    motivation: str | None = None
+    pain_points: list[str] | None = None
+    keywords: list[str] | None = None
+    last_contact_at: datetime | None = None
+    engagement_score: float
+    temperature: StakeholderTemperature
+    source: StakeholderSource
+
+    model_config = {"from_attributes": True}
+
+
+class StakeholderLink(BaseModel):
+    platform: str = Field(..., description="Platform name (e.g., linkedin, twitter, crm)")
+    url: str = Field(..., description="The URL")
+    label: str | None = Field(None, description="Optional display label")
+    added_at: datetime | None = Field(default_factory=datetime.utcnow)
+
+
+class CreateStakeholderRequest(BaseModel):
+    """Request model for creating a new stakeholder."""
+
+    email: str
+    name: str | None = None
+    job_title: str | None = None
+    external_links: list[StakeholderLink] | None = None
+    stance: StakeholderStance = StakeholderStance.UNKNOWN
+    decision_power: DecisionPower = DecisionPower.UNKNOWN
+
+
+class AvailableContactItem(BaseModel):
+    """Contact available for adding as a stakeholder.
+
+    Only contacts with valid email addresses are returned.
+    Includes professional context useful for stakeholder selection.
+    """
+
+    contact_id: UUID = Field(..., description="Internal contact identifier")
+    external_id: str = Field(..., description="CRM provider's contact identifier")
+    email: str = Field(..., description="Primary email address (required for stakeholders)")
+    first_name: str | None = Field(None, description="Contact's first name")
+    last_name: str | None = Field(None, description="Contact's last name")
+    full_name: str | None = Field(None, description="Contact's display name")
+    job_title: str | None = Field(None, description="Current job title")
+    company_name: str | None = Field(None, description="Associated company name")
+    phone: str | None = Field(None, description="Primary phone number")
+    lifecycle_stage: str | None = Field(None, description="CRM lifecycle stage")
+    last_activity_at: datetime | None = Field(None, description="Last activity timestamp")
+
+    model_config = {"from_attributes": True}
+
+
+class AddContactsAsStakeholdersRequest(BaseModel):
+    """Request to add selected contacts as stakeholders."""
+
+    contact_ids: list[UUID] = Field(
+        ...,
+        description="List of contact IDs to add as stakeholders",
+        min_length=1,
+    )
+
+
+class SkippedContact(BaseModel):
+    """Details about a contact that was skipped during stakeholder creation."""
+
+    contact_id: UUID = Field(..., description="ID of the skipped contact")
+    reason: str = Field(..., description="Reason why the contact was skipped")
+
+
+class AddContactsAsStakeholdersResponse(BaseModel):
+    """Response for adding contacts as stakeholders."""
+
+    added: list[StakeholderDetail] = Field(
+        default_factory=list,
+        description="Successfully added stakeholders",
+    )
+    skipped: list[SkippedContact] = Field(
+        default_factory=list,
+        description="Contacts that were skipped (no email or already exists)",
+    )
+    total_requested: int = Field(..., description="Total number of contacts requested")
+    total_added: int = Field(..., description="Number of contacts successfully added")
+    total_skipped: int = Field(..., description="Number of contacts skipped")
+
+
+class DealJobResponse(BaseModel):
+    """Response for deal job initiation (generic for all job types).
+
+    Used when:
+    - POST to initiate a new job (returns job_id to subscribe SSE)
+    - GET to check for active jobs (for reconnection/recovery)
+    """
+
+    job_id: UUID | None = Field(
+        None, description="Job ID for SSE subscription (None if no active job)"
+    )
+    job_type: str = Field(..., description="Type of job")
+    status: str = Field(..., description="Current status of the job")
+
+
+class MeetingJobsStatus(BaseModel):
+    """Active jobs for a meeting, keyed by job type.
+
+    Each field is None if no active job exists for that type.
+    """
+
+    meeting_briefing: DealJobResponse | None = None
+    meeting_summary: DealJobResponse | None = None
+    meeting_followup: DealJobResponse | None = None
+
+
+class DealSummaryJobsStatus(BaseModel):
+    """Active deal-level jobs (not meeting-level).
+
+    Each field is None if no active job exists for that type.
+    """
+
+    deal_summary: DealJobResponse | None = None
+    # Future: stakeholder_analysis, deal_risk_analysis, etc.
+
+
+# ---------------------------------------------------------------------------
+# Meeting Models
+# ---------------------------------------------------------------------------
+
+
+class MeetingAttendee(BaseModel):
+    """Single attendee in a calendar event."""
+
+    name: str | None
+    email: str
+    status: str | None
+
+
+class DealMeetingResponse(BaseModel):
+    """Meeting associated with a deal."""
+
+    event_id: UUID
+    subject: str | None
+    start_at: datetime
+    status: str  # AssociationStatus value
+    attendees: list[MeetingAttendee]
+
+    # Meeting Prep (Briefing) - Pre-meeting
+    meeting_prep_status: str  # GenerationStatus value
+    meeting_prep_data: dict[str, Any] | None = None
+
+    # Meeting Summary - Post-meeting
+    meeting_summary_status: str  # GenerationStatus value
+    meeting_summary_data: dict[str, Any] | None = None
+
+    # Meeting Follow-up - Post-meeting actions
+    meeting_followup_status: str  # GenerationStatus value
+    meeting_followup_data: dict[str, Any] | None = None
+
+    # Active jobs (unified for all job types)
+    active_jobs: MeetingJobsStatus | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class UpdateMeetingStatusRequest(BaseModel):
+    """Request model for updating meeting association status."""
+
+    status: str  # AssociationStatus value
+
+
+class ContactListItem(BaseModel):
+    """Simplified contact model for selection lists."""
+
+    contact_id: UUID
+    external_id: str
+    first_name: str | None = None
+    last_name: str | None = None
+    email: str | None = None
+    job_title: str | None = None
+    company_name: str | None = None
+
+    model_config = {"from_attributes": True}

@@ -3,13 +3,14 @@
 Security validation script for health check endpoints.
 Verifies that internal endpoints are properly secured.
 """
-import requests
-import sys
 import os
-from typing import Dict, Any
+import sys
+from typing import Any
+
+import requests
 
 
-def test_public_health_endpoint(base_url: str) -> Dict[str, Any]:
+def test_public_health_endpoint(base_url: str) -> dict[str, Any]:
     """Test that public health endpoint works and doesn't expose sensitive data."""
     print("🌐 Testing public health endpoint...")
 
@@ -61,7 +62,7 @@ def test_public_health_endpoint(base_url: str) -> Dict[str, Any]:
     return result
 
 
-def test_internal_health_endpoints(base_url: str) -> Dict[str, Any]:
+def test_internal_health_endpoints(base_url: str) -> dict[str, Any]:
     """Test that internal health endpoints are properly restricted."""
     print("🔒 Testing internal health endpoint security...")
 

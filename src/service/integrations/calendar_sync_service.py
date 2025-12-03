@@ -107,7 +107,7 @@ class CalendarSyncService:
                 try:
                     external_id = self._extract_external_id(event_data, provider)
                     if not external_id:
-                        logger.debug("Event %d: skipping (no external_id)", idx)
+                        logger.info("Event %d: skipping (no external_id)", idx)
                         records_failed += 1
                         continue
 
@@ -120,7 +120,7 @@ class CalendarSyncService:
                         # Update existing event
                         await self._update_event(existing_event, event_data, provider)
                         updated_count += 1
-                        logger.debug(
+                        logger.info(
                             "Updated event: external_id=%s title=%s",
                             external_id,
                             event_data.get("summary"),
@@ -129,7 +129,7 @@ class CalendarSyncService:
                         # Create new event
                         await self._create_event(integration, event_data, provider, external_id)
                         created_count += 1
-                        logger.debug(
+                        logger.info(
                             "Created event: external_id=%s title=%s",
                             external_id,
                             event_data.get("summary"),
@@ -140,7 +140,7 @@ class CalendarSyncService:
                     # Commit in batches of 100 to reduce transaction overhead
                     if records_processed % 100 == 0:
                         await self.db.commit()
-                        logger.debug("Batch commit: %d events processed", records_processed)
+                        logger.info("Batch commit: %d events processed", records_processed)
 
                 except Exception as e:
                     logger.error(
@@ -307,6 +307,13 @@ class CalendarSyncService:
         """Update existing calendar event."""
         # Update fields
         fields = self._extract_event_fields(event_data, provider)
+        logger.info(
+            "Updating event %s (provider=%s): extracted fields status=%s, all_fields=%s",
+            event.external_id,
+            provider,
+            fields.get("status"),
+            list(fields.keys()),
+        )
         for key, value in fields.items():
             setattr(event, key, value)
 
@@ -440,10 +447,12 @@ class CalendarSyncService:
     @classmethod
     def _extract_event_fields(cls, event_data: dict[str, Any], provider: str) -> dict[str, Any]:
         """Extract event fields from provider data."""
+        logger.info("Extracting event fields for provider=%s", provider)
         if provider == "google":
             return cls._extract_google_event_fields(event_data)
         if provider in ("microsoft", "outlook"):
             return cls._extract_microsoft_event_fields(event_data)
+        logger.warning("Unknown provider %s, using generic extraction", provider)
         return cls._extract_generic_event_fields(event_data)
 
     @classmethod
@@ -493,10 +502,26 @@ class CalendarSyncService:
     def _apply_google_conference(fields: dict[str, Any], conference_data: Any) -> None:
         if not isinstance(conference_data, dict):
             return
+
+        # Extract video conference link
         for entry in conference_data.get("entryPoints", []):
             if entry.get("entryPointType") == "video":
                 fields["conference_link"] = entry.get("uri")
                 break
+
+        # Extract online meeting provider and ID
+        solution = conference_data.get("conferenceSolution", {})
+        solution_type = solution.get("key", {}).get("type", "")
+
+        if solution_type == "hangoutsMeet":
+            fields["online_meeting_provider"] = "googleMeet"
+            # Google Meet conferenceId is the meeting code (e.g., "abc-defg-hij")
+            fields["online_meeting_id"] = conference_data.get("conferenceId")
+        elif solution_type == "addOn":
+            # Third-party provider integrated via Google Calendar (e.g., Zoom)
+            provider_name = solution.get("name", "").lower().replace(" ", "")
+            fields["online_meeting_provider"] = provider_name or "thirdParty"
+            fields["online_meeting_id"] = conference_data.get("conferenceId")
 
     @staticmethod
     def _apply_google_organizer(fields: dict[str, Any], organizer: Any) -> None:
@@ -514,12 +539,22 @@ class CalendarSyncService:
 
     @classmethod
     def _extract_microsoft_event_fields(cls, event_data: dict[str, Any]) -> dict[str, Any]:
+        # Microsoft uses isCancelled boolean; translate to status string for consistency with Google
+        is_cancelled = event_data.get("isCancelled", False)
+        status = "cancelled" if is_cancelled else "confirmed"
+        logger.info(
+            "Microsoft event extraction: isCancelled=%s -> status=%s, subject=%s",
+            is_cancelled,
+            status,
+            event_data.get("subject"),
+        )
+
         fields = {
             "title": event_data.get("subject") or DEFAULT_EVENT_TITLE,
             "description": event_data.get("bodyPreview")
             or event_data.get("body", {}).get("content"),
             "location": event_data.get("location", {}).get("displayName"),
-            "status": event_data.get("status"),
+            "status": status,
         }
         cls._apply_microsoft_times(fields, event_data)
         cls._apply_microsoft_organizer(fields, event_data)
@@ -554,8 +589,56 @@ class CalendarSyncService:
     @staticmethod
     def _apply_microsoft_online_meeting(fields: dict[str, Any], event_data: dict[str, Any]) -> None:
         online_meeting = event_data.get("onlineMeeting")
-        if isinstance(online_meeting, dict):
-            fields["conference_link"] = online_meeting.get("joinUrl")
+        if not isinstance(online_meeting, dict):
+            return
+
+        join_url = online_meeting.get("joinUrl")
+        fields["conference_link"] = join_url
+
+        # Extract Teams meeting ID from join URL for transcript access
+        if join_url and "teams.microsoft.com" in join_url:
+            fields["online_meeting_provider"] = "teamsForBusiness"
+            meeting_id = CalendarSyncService._extract_teams_meeting_id(join_url)
+            if meeting_id:
+                fields["online_meeting_id"] = meeting_id
+
+    @staticmethod
+    def _extract_teams_meeting_id(join_url: str) -> str | None:
+        """
+        Extract Teams online meeting ID from join URL.
+
+        The join URL contains the meeting thread ID which is needed for
+        accessing transcripts via MS Graph API.
+
+        URL format:
+            https://teams.microsoft.com/l/meetup-join/
+            19%3ameeting_ZGQ4ZmVlYzEtY...%40thread.v2/0?context=...
+
+        The meeting ID is: 19:meeting_ZGQ4ZmVlYzEtY...@thread.v2
+
+        Returns:
+            The decoded meeting ID or None if parsing fails.
+        """
+        import urllib.parse
+
+        try:
+            parsed = urllib.parse.urlparse(join_url)
+            # The path looks like: /l/meetup-join/19%3ameeting_XXX%40thread.v2/0
+            path_parts = parsed.path.split("/")
+
+            for part in path_parts:
+                if not part:
+                    continue
+                decoded = urllib.parse.unquote(part)
+                # Teams meeting IDs start with "19:meeting_" and contain "@thread"
+                if decoded.startswith("19:meeting_") and "@thread" in decoded:
+                    return decoded
+
+        except Exception as e:
+            logger.warning("Failed to extract Teams meeting ID from URL: %s", str(e))
+            # If parsing fails, return None - we'll just not have transcript access
+
+        return None
 
     @classmethod
     def _apply_microsoft_source_modified(

@@ -1,0 +1,634 @@
+# Deal Meetings API
+
+This API manages calendar meetings associated with CRM deals, including retrieving meeting lists, generating AI content (briefings, summaries, follow-ups), and streaming real-time job updates via SSE.
+
+**Base URL**: `/api/v1/deals`
+
+> **Note**: The deal `stage` is not included in meeting responses. Use the main Deal API (`GET /api/v1/deals/{deal_id}`) to get deal stage and other deal-level information.
+
+---
+
+## Overview
+
+### Job Types
+
+The API supports three AI generation job types for meetings:
+
+| Job Type | URL Param | Purpose | When to Use |
+|----------|-----------|---------|-------------|
+| **Meeting Briefing** | `briefing` | Pre-meeting preparation | Before a meeting starts |
+| **Meeting Summary** | `summary` | Post-meeting recap | After a meeting ends |
+| **Meeting Follow-up** | `followup` | Action items & next steps | After meeting summary |
+
+### Workflow
+
+1. **GET** `/deals/{deal_id}/meetings` - Get meetings list with active job status
+2. **POST** `/deals/{deal_id}/meetings/{event_id}/jobs/{job_type}` - Start a job
+3. **GET** `/deals/{deal_id}/meetings/{event_id}/jobs/{job_id}/stream` - Stream job updates via SSE
+
+---
+
+## 1. Get Deal Meetings
+
+Retrieve all meetings associated with a specific deal, including generation statuses and active jobs.
+
+- **Endpoint**: `GET /{deal_id}/meetings`
+- **Method**: `GET`
+- **Tags**: `crm`, `meetings`
+
+### Path Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `deal_id` | UUID | The unique identifier of the deal |
+
+### Response
+
+```json
+{
+  "success": true,
+  "message": "Meetings retrieved successfully",
+  "data": [
+    {
+      "event_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+      "subject": "Discovery Call with Acme Corp",
+      "start_at": "2025-11-25T14:00:00Z",
+      "status": "confirmed",
+      "attendees": [
+        {
+          "name": "Jane Doe",
+          "email": "jane@acme.com",
+          "status": "accepted"
+        }
+      ],
+      
+      "meeting_prep_status": "COMPLETED",
+      "meeting_prep_data": {
+        "schema_version": "1.0",
+        "generated_at": "2025-11-25T13:30:00Z",
+        "data": {
+          "briefing_overview": "Ahead of your call with Acme Corp, here are the key points to focus on..."
+        }
+      },
+      
+      "meeting_summary_status": "NOT_STARTED",
+      "meeting_summary_data": null,
+      
+      "meeting_followup_status": "NOT_STARTED",
+      "meeting_followup_data": null,
+      
+      "active_jobs": {
+        "meeting_briefing": null,
+        "meeting_summary": {
+          "job_id": "abc123-...",
+          "job_type": "meeting_summary",
+          "status": "in_progress"
+        },
+        "meeting_followup": null
+      }
+    }
+  ]
+}
+```
+
+### Response Schema (`DealMeetingResponse`)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `event_id` | UUID | Unique identifier for the calendar event |
+| `subject` | string \| null | Subject or title of the meeting |
+| `start_at` | datetime | Start time of the meeting (UTC) |
+| `status` | string | Calendar event status: `confirmed`, `tentative`, `cancelled` |
+| `attendees` | list | List of attendees with name, email, and response status |
+| `meeting_prep_status` | enum | Briefing status: `NOT_STARTED`, `IN_PROGRESS`, `COMPLETED`, `FAILED` |
+| `meeting_prep_data` | object \| null | Generated briefing content wrapped in metadata envelope (when COMPLETED) |
+| `meeting_summary_status` | enum | Summary status: `NOT_STARTED`, `IN_PROGRESS`, `COMPLETED`, `FAILED` |
+| `meeting_summary_data` | object \| null | Generated summary content wrapped in metadata envelope (when COMPLETED) |
+| `meeting_followup_status` | enum | Follow-up status: `NOT_STARTED`, `IN_PROGRESS`, `COMPLETED`, `FAILED` |
+| `meeting_followup_data` | object \| null | Generated follow-up content wrapped in metadata envelope (when COMPLETED) |
+| `active_jobs` | object \| null | Currently running jobs (see below) |
+
+### Active Jobs Schema (`MeetingJobsStatus`)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `meeting_briefing` | object \| null | Active briefing job (if running) |
+| `meeting_summary` | object \| null | Active summary job (if running) |
+| `meeting_followup` | object \| null | Active follow-up job (if running) |
+
+Each active job contains:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `job_id` | UUID | Job ID for SSE streaming |
+| `job_type` | string | `meeting_briefing`, `meeting_summary`, or `meeting_followup` |
+| `status` | string | `pending` or `in_progress` |
+
+---
+
+## 2. Initiate Meeting Job (Generic)
+
+Start an AI generation job for a meeting. This is the **recommended endpoint** for all job types.
+
+- **Endpoint**: `POST /{deal_id}/meetings/{event_id}/jobs/{job_type}`
+- **Method**: `POST`
+- **Tags**: `crm`, `meetings`, `jobs`
+
+**Path Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `deal_id` | UUID | The unique identifier of the deal |
+| `event_id` | UUID | The unique identifier of the meeting event |
+| `job_type` | string | One of: `briefing`, `summary`, `followup` |
+
+**Behavior:**
+
+- **Idempotent**: If a job of the same type is already running, returns the existing job
+- Returns immediately with `job_id` for SSE subscription
+- Background worker processes the job asynchronously
+
+**Success Response:**
+
+```json
+{
+  "success": true,
+  "message": "Job created successfully",
+  "data": {
+    "job_id": "7a85f64-5717-4562-b3fc-2c963f66afa6",
+    "job_type": "meeting_briefing",
+    "status": "pending"
+  }
+}
+```
+
+### Error Responses
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid `job_type` (must be briefing/summary/followup) |
+| `404` | Deal or meeting not found |
+| `401` | Unauthorized |
+
+---
+
+## 3. Stream Job Updates (SSE)
+
+Subscribe to real-time updates for a running job via Server-Sent Events.
+
+- **Endpoint**: `GET /{deal_id}/meetings/{event_id}/jobs/{job_id}/stream`
+- **Method**: `GET`
+- **Content-Type**: `text/event-stream`
+- **Tags**: `crm`, `meetings`, `jobs`, `sse`
+
+**Path Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `deal_id` | UUID | The unique identifier of the deal |
+| `event_id` | UUID | The unique identifier of the meeting event |
+| `job_id` | UUID | The job ID (from initiate response or `active_jobs`) |
+
+### SSE Event Types
+
+The SSE stream sends structured JSON frames with different types:
+
+| Frame Type | Description |
+|------------|-------------|
+| `progress.update` | Progress update during processing stages |
+| `answer.replace` | Final result data |
+| `error` | Error details when job fails permanently |
+| `finalize` | Completion signal (success or error) |
+
+### SSE Frame Schema
+
+All frames include these common fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | string | Frame type: `progress.update`, `answer.replace`, `error`, `finalize` |
+| `sequence` | number | Monotonically increasing sequence number |
+| `timestamp` | number | Unix timestamp of frame creation |
+| `job_type` | string | `meeting_briefing`, `meeting_summary`, or `meeting_followup` |
+| `job_id` | string | The job identifier |
+
+---
+
+### Progress Update Frames (`progress.update`)
+
+Progress frames are sent during processing to show current stage and completion percentage.
+
+**Frame Schema:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `message` | string | Human-readable status message |
+| `stage` | string | Current processing stage identifier |
+| `progress` | number | Progress percentage (0.0 to 1.0) |
+
+**Example:**
+
+```json
+{
+  "type": "progress.update",
+  "message": "Generating summary...",
+  "stage": "generation",
+  "progress": 0.5,
+  "sequence": 3,
+  "timestamp": 1733012345.678,
+  "job_type": "meeting_summary",
+  "job_id": "abc123-def456"
+}
+```
+
+#### Progress Stages by Job Type
+
+**Meeting Briefing (`briefing`):**
+
+| Stage | Progress | Message |
+|-------|----------|---------|
+| `context` | 0.1 | Loading context... |
+| `analysis` | 0.3 | Analyzing deal context... |
+| `generation` | 0.5 | Generating briefing... |
+| `saving` | 0.9 | Saving results... |
+
+**Meeting Summary (`summary`):**
+
+| Stage | Progress | Message |
+|-------|----------|---------|
+| `context` | 0.1 | Loading meeting context... |
+| `transcript` | 0.2 | Checking for transcript... |
+| `transcript_missing` | 0.4 | No transcript found. *(error case)* |
+| `connection_error` | 0.4 | Connection error - will retry *(error case)* |
+| `stakeholders` | 0.3 | Loading stakeholders... |
+| `analysis` | 0.4 | Analyzing transcript... |
+| `generation` | 0.5 | Generating summary... |
+| `saving` | 0.9 | Saving results... |
+
+**Meeting Follow-up (`followup`):**
+
+| Stage | Progress | Message |
+|-------|----------|---------|
+| `context` | 0.1 | Loading context... |
+| `summary` | 0.2 | Loading meeting summary... |
+| `generation` | 0.5 | Generating follow-up... |
+| `saving` | 0.9 | Saving results... |
+
+---
+
+### Result Frame (`answer.replace`)
+
+Sent when AI generation completes with the full result data. The content is wrapped in a metadata envelope.
+
+**Frame Schema:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `content` | object | The generated data wrapped in metadata envelope (see below) |
+
+**Content Envelope Schema:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `schema_version` | string | Schema version (e.g., `"1.0"`) for forward compatibility |
+| `generated_at` | string | ISO 8601 timestamp when the content was generated |
+| `data` | object | The actual generated payload (schema varies by job type) |
+
+**Example:**
+
+```json
+{
+  "type": "answer.replace",
+  "content": {
+    "schema_version": "1.0",
+    "generated_at": "2025-12-01T10:15:00Z",
+    "data": {
+      "meeting_summary": "The discovery call with Acme Corp focused on compliance automation..."
+    }
+  },
+  "sequence": 5,
+  "timestamp": 1733012350.123,
+  "job_type": "meeting_summary",
+  "job_id": "abc123-def456"
+}
+```
+
+---
+
+### Error Frame (`error`)
+
+Sent when a job fails permanently (non-retryable). Provides user-friendly error information.
+
+**Frame Schema:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `message` | string | Human-readable error message to display to the user |
+| `error_code` | string | Machine-readable error code for frontend handling |
+
+**Common Error Codes:**
+
+| Error Code | Description |
+|------------|-------------|
+| `no_transcript` | No transcript available - meeting wasn't recorded or transcription disabled |
+| `transcript_unavailable` | Transcript exists but cannot be retrieved |
+| `invalid_data` | Missing or invalid meeting/deal data |
+| `permanent_failure` | Generic permanent failure |
+
+**Example:**
+
+```json
+{
+  "type": "error",
+  "message": "No transcript available for this meeting. The meeting may not have been recorded or transcription was not enabled.",
+  "error_code": "no_transcript",
+  "sequence": 3,
+  "timestamp": 1733012340.789,
+  "job_type": "meeting_summary",
+  "job_id": "abc123-def456"
+}
+```
+
+---
+
+### Finalize Frame (`finalize`)
+
+Signals job completion. Clients should close the SSE connection after receiving this.
+
+**Frame Schema:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `reason` | string | `done` (success) or `error` (failure) |
+
+**Example - Success:**
+
+```json
+{
+  "type": "finalize",
+  "reason": "done",
+  "sequence": 6,
+  "timestamp": 1733012351.456,
+  "job_type": "meeting_summary",
+  "job_id": "abc123-def456"
+}
+```
+
+**Example - Error:**
+
+```json
+{
+  "type": "finalize",
+  "reason": "error",
+  "sequence": 4,
+  "timestamp": 1733012340.789,
+  "job_type": "meeting_summary",
+  "job_id": "abc123-def456"
+}
+```
+
+---
+
+## 4. Update Meeting Association Status
+
+Update the status of a meeting-deal association (e.g., confirm or reject a suggested match).
+
+- **Endpoint**: `PATCH /{deal_id}/meetings/{event_id}/status`
+- **Method**: `PATCH`
+- **Tags**: `crm`, `meetings`
+
+**Path Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `deal_id` | UUID | The unique identifier of the deal |
+| `event_id` | UUID | The unique identifier of the meeting event |
+
+**Request Body:**
+
+```json
+{
+  "status": "CONFIRMED"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `status` | enum | New status: `SUGGESTED`, `CONFIRMED`, `REJECTED` |
+
+**Success Response:**
+
+```json
+{
+  "success": true,
+  "message": "Meeting status updated to CONFIRMED",
+  "data": null
+}
+```
+
+---
+
+## Generated Content Schemas
+
+All generated content is wrapped in a metadata envelope for versioning and tracking:
+
+**Envelope Schema:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `schema_version` | string | Schema version (e.g., `"1.0"`) for forward compatibility |
+| `generated_at` | string | ISO 8601 timestamp when the content was generated |
+| `data` | object | The actual generated payload (schema varies by job type) |
+
+### Briefing Data (`meeting_prep_data`)
+
+Generated before a meeting to help with preparation.
+
+**`data` Object Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `briefing_overview` | string | Multi-paragraph prep brief that synthesizes the most important intel before the call |
+
+```json
+{
+  "schema_version": "1.0",
+  "generated_at": "2025-12-01T08:30:00Z",
+  "data": {
+    "briefing_overview": "Ahead of your call with Acme Corp, here are the key points to focus on...\n\n## Meeting Objective\nValidate integration feasibility and timeline for their compliance automation needs.\n\n## Key Stakeholders\n- **Lisa Wong** (Security Lead) - Focused on audit readiness and compliance visibility\n- **Tom Chen** (IT Director) - Concerned about integration complexity\n\n## Pain Points to Address\n- Manual compliance evidence collection (~40 hrs/mo)\n- Lack of real-time audit visibility\n\n## Suggested Questions\n- What triggers escalation to security leadership?\n- How do you currently track compliance evidence?\n\n## Potential Objections\n- \"We already have something similar\" - Be ready to differentiate\n\n## Pre-Meeting Checklist\n- [ ] Confirm definition of success metrics\n- [ ] Clarify integration ownership"
+  }
+}
+```
+
+### Summary Data (`meeting_summary_data`)
+
+Generated after a meeting from the transcript.
+
+**`data` Object Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `meeting_summary` | string | Transcript-backed recap of what actually happened, including decisions and context |
+
+```json
+{
+  "schema_version": "1.0",
+  "generated_at": "2025-12-01T10:15:00Z",
+  "data": {
+    "meeting_summary": "The discovery call with Acme Corp focused on their compliance automation needs.\n\n# Overview\nDiscovery call to understand compliance pain points and evaluate fit for our solution.\n\n# Individuals\n| Name | Role | Company |\n|------|------|---------|\n| Lisa Wong | Security Lead | Acme Corp |\n| Tom Chen | IT Director | Acme Corp |\n\n## Current Challenges\nThe team spends 40+ hours monthly on manual compliance evidence collection. Their audit process lacks real-time visibility.\n\n## Requirements Identified\n- Integration with existing SIEM tools\n- Automated evidence collection for SOC 2\n- Executive dashboard for compliance posture\n\n# Decision\nAgreed to proceed with a 30-day POC starting January 15th.\n\n# Next Steps\n- Technical team to provide API documentation by Friday\n- Follow-up call scheduled for next Tuesday to discuss integration architecture"
+  }
+}
+```
+
+### Follow-up Data (`meeting_followup_data`)
+
+Generated after the summary to create action items and follow-up communication.
+
+**`data` Object Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `follow_up_overview` | string | Long-form follow-up message with action items and next steps |
+
+```json
+{
+  "schema_version": "1.0",
+  "generated_at": "2025-12-01T10:20:00Z",
+  "data": {
+    "follow_up_overview": "Thank you for your time today. As discussed, we will proceed with a 30-day POC starting Jan 15.\n\n## Action Items\n- **John Smith** - Send API documentation and integration guide (Due: Dec 6)\n- **Sarah Chen** - Prepare POC environment with sample data (Due: Dec 10)\n\n## Next Steps\n1. Schedule technical deep-dive with their IT team\n2. Prepare ROI analysis based on 40 hours/month savings\n3. Draft POC success criteria document\n\n## Follow-up Email Draft\nHi Jane,\n\nThank you for taking the time to meet with us today. It was great learning more about Acme Corp's compliance automation needs.\n\nAs discussed, we'll send over the API documentation by Friday and schedule a technical deep-dive for next week.\n\nLooking forward to the POC kickoff on January 15th!\n\nBest regards,\nJohn"
+  }
+}
+```
+
+---
+
+## Frontend Integration Example
+
+```typescript
+// 1. Check for active jobs when loading meetings
+const meetings = await fetch(`/api/v1/deals/${dealId}/meetings`);
+const meeting = meetings.data[0];
+
+// 2. Determine UI state
+if (meeting.active_jobs?.meeting_briefing) {
+  // Job running - connect to SSE stream
+  const jobId = meeting.active_jobs.meeting_briefing.job_id;
+  connectToSSE(dealId, meeting.event_id, jobId);
+} else if (meeting.meeting_prep_status === "COMPLETED") {
+  // Show generated content (access data inside envelope)
+  const { data } = meeting.meeting_prep_data;
+  displayBriefing(data);
+} else {
+  // Show "Generate" button
+}
+
+// 3. Start a new job
+async function startJob(jobType: "briefing" | "summary" | "followup") {
+  const response = await fetch(
+    `/api/v1/deals/${dealId}/meetings/${eventId}/jobs/${jobType}`,
+    { method: "POST" }
+  );
+  const { job_id } = response.data;
+  connectToSSE(dealId, eventId, job_id);
+}
+
+// 4. SSE stream handling with actual frame types
+function connectToSSE(dealId: string, eventId: string, jobId: string) {
+  const es = new EventSource(
+    `/api/v1/deals/${dealId}/meetings/${eventId}/jobs/${jobId}/stream`
+  );
+  
+  es.onmessage = (event) => {
+    const frame = JSON.parse(event.data);
+    
+    switch (frame.type) {
+      case "progress.update":
+        // Show progress indicator
+        updateProgressBar(frame.progress);
+        showStatusMessage(frame.message);
+        console.log(`Stage: ${frame.stage}, Progress: ${frame.progress * 100}%`);
+        break;
+        
+      case "answer.replace":
+        // Display the final generated content (inside data envelope)
+        const { schema_version, generated_at, data } = frame.content;
+        console.log(`Generated at: ${generated_at}, version: ${schema_version}`);
+        displayResult(data);
+        break;
+        
+      case "error":
+        // Show user-friendly error message
+        showError(frame.message);
+        console.error(`Job failed: ${frame.error_code} - ${frame.message}`);
+        // Optionally handle specific error codes
+        if (frame.error_code === "no_transcript") {
+          showNoTranscriptMessage();
+        }
+        break;
+        
+      case "finalize":
+        if (frame.reason === "done") {
+          showSuccess("Generation complete!");
+        } else {
+          // Error already shown via "error" frame
+          console.log("Job finalized with error");
+        }
+        es.close();
+        break;
+    }
+  };
+  
+  es.onerror = (error) => {
+    console.error("SSE connection error:", error);
+    es.close();
+  };
+}
+
+// 5. Example progress UI update
+function updateProgressBar(progress: number) {
+  const progressBar = document.getElementById("progress-bar");
+  progressBar.style.width = `${progress * 100}%`;
+}
+
+function showStatusMessage(message: string) {
+  const statusEl = document.getElementById("status-message");
+  statusEl.textContent = message;
+}
+```
+
+### Typical SSE Frame Sequence
+
+**Meeting Summary Job:**
+
+```json
+1. {"type": "progress.update", "stage": "context", "progress": 0.1, "message": "Loading meeting context..."}
+2. {"type": "progress.update", "stage": "transcript", "progress": 0.2, "message": "Checking for transcript..."}
+3. {"type": "progress.update", "stage": "stakeholders", "progress": 0.3, "message": "Loading stakeholders..."}
+4. {"type": "progress.update", "stage": "analysis", "progress": 0.4, "message": "Analyzing transcript..."}
+5. {"type": "progress.update", "stage": "generation", "progress": 0.5, "message": "Generating summary..."}
+6. {"type": "progress.update", "stage": "saving", "progress": 0.9, "message": "Saving results..."}
+7. {"type": "answer.replace", "content": {"schema_version": "1.0", "generated_at": "2025-12-01T10:15:00Z", "data": {"meeting_summary": "..."}}}
+8. {"type": "finalize", "reason": "done"}
+```
+
+**Error Case (No Transcript):**
+
+```json
+1. {"type": "progress.update", "stage": "context", "progress": 0.1, "message": "Loading meeting context..."}
+2. {"type": "progress.update", "stage": "transcript", "progress": 0.2, "message": "Checking for transcript..."}
+3. {"type": "error", "message": "No transcript available for this meeting. The meeting may not have been recorded or transcription was not enabled.", "error_code": "no_transcript"}
+4. {"type": "finalize", "reason": "error"}
+```
+
+---
+
+## Legacy Endpoints (Deprecated)
+
+These endpoints still work but will be removed in a future version:
+
+| Old Endpoint | New Endpoint |
+|--------------|--------------|
+| `POST /{deal_id}/meetings/{event_id}/briefing` | `POST /{deal_id}/meetings/{event_id}/jobs/briefing` |
+| `GET /{deal_id}/meetings/{event_id}/briefing/stream` | `GET /{deal_id}/meetings/{event_id}/jobs/{job_id}/stream` |
+
+**Migration Note**: The new SSE endpoint requires `job_id` instead of inferring it. Get the `job_id` from the POST response or from `active_jobs` in the meetings list.

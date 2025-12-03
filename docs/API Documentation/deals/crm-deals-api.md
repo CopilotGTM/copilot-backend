@@ -199,6 +199,26 @@ export interface DealDetail {
   created_at: string;  // ISO8601
   updated_at: string;  // ISO8601
   context: DealContext | null;
+
+  // Deal Summary (AI-generated)
+  deal_summary_status: string | null;  // NOT_STARTED, IN_PROGRESS, COMPLETED, FAILED
+  deal_summary_data: Record<string, unknown> | null;  // AI-generated summary data
+
+  // Active deal-level jobs (for SSE reconnection)
+  active_deal_jobs: DealSummaryJobsStatus | null;
+}
+
+// Active deal-level jobs status
+export interface DealSummaryJobsStatus {
+  deal_summary: DealJobResponse | null;  // Active deal summary job, if any
+  // Future: stakeholder_analysis, deal_risk_analysis, etc.
+}
+
+// Job response for active job tracking
+export interface DealJobResponse {
+  job_id: UUID;
+  job_type: string;
+  status: string;  // PENDING, IN_PROGRESS, COMPLETED, FAILED
 }
 
 export interface DealContext {
@@ -667,7 +687,7 @@ GET /users/crm/deals/{deal_id}
 
 ### Description for Get Deal Details
 
-Retrieves full details for a specific CRM deal by its internal UUID. Returns all available fields including metadata, associations, and activity timeline.
+Retrieves full details for a specific CRM deal by its internal UUID. Returns all available fields including metadata, associations, activity timeline, AI-generated deal summary (if completed), and active deal-level jobs (for SSE reconnection).
 
 ### Authentication for Get Deal Details
 
@@ -807,10 +827,28 @@ Required
       },
       "health": "STALLED",
       "time_tracked": "47 hours"
-    }
+    },
+    "deal_summary_status": "COMPLETED",
+    "deal_summary_data": {
+      "schema_version": "1.0.0",
+      "generated_at": "2025-10-25T10:30:00Z",
+      "data": {
+        "overview": "Enterprise software license deal with Acme Corp...",
+        "key_stakeholders": ["Alex Fin", "John Smith"],
+        "next_steps": ["Schedule technical review", "Send proposal"],
+        "risks": ["Timeline concerns", "Budget constraints"]
+      }
+    },
+    "active_deal_jobs": null
   }
 }
 ```
+
+### Notes for Get Deal Details
+
+- **Deal Summary**: When `deal_summary_status` is `COMPLETED`, the `deal_summary_data` field contains AI-generated summary data including overview, key stakeholders, next steps, and risks.
+- **Active Jobs**: The `active_deal_jobs` field contains any currently running deal-level jobs (e.g., deal summary generation). Use this for SSE reconnection - if a job is `IN_PROGRESS`, subscribe to the SSE stream for real-time updates.
+- **Job Statuses**: `PENDING` (queued), `IN_PROGRESS` (running), `COMPLETED` (done), `FAILED` (error).
 
 ### Error Responses for Get Deal Details
 
@@ -935,7 +973,362 @@ try {
 
 ---
 
-## 4. List Deal Tasks
+## 4. Generate Deal Summary (AI)
+
+### Endpoint for Generate Deal Summary
+
+```http
+POST /users/crm/deals/{deal_id}/deal-summary/generate
+```
+
+### Description for Generate Deal Summary
+
+Initiates an AI-powered summary generation for a deal. This analyzes ALL meeting transcripts associated with the deal to produce a comprehensive deal summary including:
+
+- Overall deal narrative and progression
+- Key themes across meetings
+- Relationship timeline
+- Critical decisions made
+- Outstanding items and risks
+- Recommended next steps
+
+The operation is **idempotent** - if a summary job is already running for this deal, the existing job is returned instead of creating a new one.
+
+### Authentication for Generate Deal Summary
+
+Required
+
+### Path Parameters for Generate Deal Summary
+
+| Parameter | Type | Required | Description                 |
+|-----------|------|----------|-----------------------------|
+| `deal_id` | UUID | Yes      | Internal deal UUID          |
+
+### Success Response (202 Accepted) for Generate Deal Summary
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Deal summary generation initiated",
+  "data": {
+    "job_id": "a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d",
+    "job_type": "deal_summary",
+    "status": "PENDING"
+  }
+}
+```
+
+### Response When Job Already Running
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Deal summary generation already in progress",
+  "data": {
+    "job_id": "a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d",
+    "job_type": "deal_summary",
+    "status": "IN_PROGRESS"
+  }
+}
+```
+
+### Response Fields for Generate Deal Summary
+
+| Field      | Type   | Description                                                |
+|------------|--------|------------------------------------------------------------|
+| `job_id`   | UUID   | Job ID to use for SSE stream subscription                  |
+| `job_type` | string | Type of job (`deal_summary`)                               |
+| `status`   | string | Job status: `PENDING`, `IN_PROGRESS`, `COMPLETED`, `FAILED`|
+
+### Error Responses for Generate Deal Summary
+
+- `404 Not Found` — deal does not exist
+- `429 Too Many Requests` — rate limit exceeded
+- `500 Internal Server Error` — failed to schedule job
+
+### Example cURL for Generate Deal Summary
+
+```bash
+curl -X POST "$BASE_URL/users/crm/deals/f47ac10b-58cc-4372-a567-0e02b2c3d479/deal-summary/generate" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json"
+```
+
+### Example TypeScript for Generate Deal Summary
+
+```typescript
+interface DealJobResponse {
+  job_id: string;
+  job_type: string;
+  status: string;
+}
+
+async function generateDealSummary(dealId: string): Promise<DealJobResponse> {
+  const response = await fetch(
+    `${BASE_URL}/users/crm/deals/${dealId}/deal-summary/generate`,
+    {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      }
+    }
+  );
+  
+  const envelope: ApiEnvelope<DealJobResponse> = await response.json();
+  if (envelope.status === 'ERROR') throw new Error(envelope.message);
+  return envelope.data!;
+}
+```
+
+---
+
+## 5. Deal Summary SSE Stream
+
+### Endpoint for Deal Summary SSE Stream
+
+```http
+GET /users/crm/deals/{deal_id}/deal-summary/stream/{job_id}
+```
+
+### Description for Deal Summary SSE Stream
+
+Server-Sent Events (SSE) stream for real-time deal summary job progress and results.
+
+Subscribe to this endpoint with the `job_id` returned from the generate endpoint. The stream emits progress events during generation and the final result when complete.
+
+**Reconnection Support**: If the user disconnects and reconnects, the stream resumes from the current state or delivers the cached result if already completed.
+
+### Authentication for Deal Summary SSE Stream
+
+Required
+
+### Path Parameters for Deal Summary SSE Stream
+
+| Parameter | Type | Required | Description                                           |
+|-----------|------|----------|-------------------------------------------------------|
+| `deal_id` | UUID | Yes      | Internal deal UUID                                    |
+| `job_id`  | UUID | Yes      | Job ID from POST `/deal-summary/generate` response    |
+
+### SSE Event Types
+
+| Event Type  | Description                                              |
+|-------------|----------------------------------------------------------|
+| `ready`     | Initial event when stream connects, contains job_id      |
+| `ping`      | Heartbeat (every ~25s) to keep connection alive          |
+| `frame`     | Progress updates, content chunks, or finalize signal     |
+| `complete`  | Job finished successfully - stream will close            |
+| `error`     | Error occurred - check `reconnect` flag                  |
+| `timeout`   | Stream timeout (5 min default) - reconnect if needed     |
+
+### Frame Types (within `frame` event)
+
+| Frame Type       | Description                                         |
+|------------------|-----------------------------------------------------|
+| `progress.update`| Progress updates with message, stage, and percentage|
+| `answer.replace` | Final result content (full summary data)            |
+| `error`          | Error during processing                             |
+| `finalize`       | Signals job completion, stream will close           |
+
+### SSE Event Format
+
+```text
+event: ready
+data: {"job_id": "a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d"}
+
+event: frame
+data: {"type": "progress.update", "message": "Loading deal context...", "stage": "context", "progress": 0.1, ...}
+
+event: frame
+data: {"type": "progress.update", "message": "Found 5 meetings. Fetching transcripts...", "stage": "transcripts", "progress": 0.25, ...}
+
+event: frame
+data: {"type": "progress.update", "message": "Analyzing 5 meeting transcripts...", "stage": "analysis", "progress": 0.6, ...}
+
+event: frame
+data: {"type": "answer.replace", "content": {...summaryData}, "job_type": "deal_summary", "job_id": "...", ...}
+
+event: frame
+data: {"type": "finalize", "reason": "done", ...}
+
+event: complete
+data: {"job_id": "a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d"}
+```
+
+### Progress Update Frame Structure
+
+```json
+{
+  "type": "progress.update",
+  "message": "Loading deal context...",
+  "stage": "context",
+  "progress": 0.1,
+  "sequence": 0,
+  "timestamp": 1733234567.123,
+  "job_type": "deal_summary",
+  "job_id": "a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d"
+}
+```
+
+### Progress Stages
+
+| Stage            | Progress | Description                         |
+|------------------|----------|-------------------------------------|
+| `context`        | 0.10     | Loading deal context                |
+| `stakeholders`   | 0.15     | Loading stakeholders                |
+| `meetings`       | 0.20     | Loading meeting history             |
+| `transcripts`    | 0.25     | Starting transcript fetch           |
+| `transcript_fetch`| 0.25-0.60| Fetching individual transcripts    |
+| `analysis`       | 0.60     | Analyzing transcripts               |
+| `generation`     | 0.70     | Generating AI summary               |
+| `saving`         | 0.90     | Saving results to database          |
+
+### Answer Replace Frame Structure (Final Result)
+
+The `answer.replace` frame contains the full summary data in the `content` field:
+
+```json
+{
+  "type": "answer.replace",
+  "content": {
+    "schema_version": "1.0",
+    "generated_at": "2025-12-03T10:30:00Z",
+    "data": {
+      "overview": "Enterprise software license deal with Acme Corp spanning 5 meetings over 3 months...",
+      "key_stakeholders": [
+        {"name": "John Smith", "role": "Decision Maker", "sentiment": "positive"},
+        {"name": "Jane Doe", "role": "Technical Lead", "sentiment": "neutral"}
+      ],
+      "meeting_timeline": [
+        {"date": "2025-09-15", "type": "Discovery", "key_points": ["Initial requirements gathered"]},
+        {"date": "2025-10-01", "type": "Demo", "key_points": ["Product demo well received"]}
+      ],
+      "next_steps": [
+        "Schedule technical deep-dive with engineering team",
+        "Send updated proposal with custom pricing"
+      ],
+      "risks": [
+        "Budget approval pending Q1 review",
+        "Competitor evaluation ongoing"
+      ],
+      "overall_sentiment": "positive",
+      "deal_health": "on_track"
+    }
+  },
+  "sequence": 8,
+  "timestamp": 1733234567.123,
+  "job_type": "deal_summary",
+  "job_id": "a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d"
+}
+```
+
+**Note:** The `content` field contains the same structure as `deal_summary_data` in the Deal Detail response. Frontend should extract this from `frame.content` when `frame.type === "answer.replace"`.
+
+### Example TypeScript for Deal Summary SSE Stream
+
+```typescript
+function subscribeToDealSummaryStream(
+  dealId: string,
+  jobId: string,
+  callbacks: {
+    onProgress?: (progress: number, stage: string) => void;
+    onChunk?: (content: string) => void;
+    onComplete?: (result: DealSummaryResult) => void;
+    onError?: (error: string) => void;
+  }
+): EventSource {
+  const eventSource = new EventSource(
+    `${BASE_URL}/users/crm/deals/${dealId}/deal-summary/stream/${jobId}`,
+    { 
+      // Note: For auth, you may need to use fetch with ReadableStream instead
+      // or pass token via query param if your backend supports it
+    }
+  );
+
+  eventSource.addEventListener('progress', (event) => {
+    const data = JSON.parse(event.data);
+    callbacks.onProgress?.(data.progress, data.stage);
+  });
+
+  eventSource.addEventListener('chunk', (event) => {
+    const data = JSON.parse(event.data);
+    callbacks.onChunk?.(data.content);
+  });
+
+  eventSource.addEventListener('complete', (event) => {
+    const data = JSON.parse(event.data);
+    callbacks.onComplete?.(data.result);
+    eventSource.close();
+  });
+
+  eventSource.addEventListener('error', (event) => {
+    if (event.data) {
+      const data = JSON.parse(event.data);
+      callbacks.onError?.(data.error);
+    }
+    eventSource.close();
+  });
+
+  return eventSource;
+}
+
+// Usage example
+const job = await generateDealSummary(dealId);
+
+const stream = subscribeToDealSummaryStream(dealId, job.job_id, {
+  onProgress: (progress, stage) => {
+    console.log(`${progress}% - ${stage}`);
+    updateProgressBar(progress);
+  },
+  onChunk: (content) => {
+    appendToSummaryPreview(content);
+  },
+  onComplete: (result) => {
+    displayFinalSummary(result);
+  },
+  onError: (error) => {
+    showErrorMessage(error);
+  }
+});
+```
+
+### Reconnection Pattern
+
+If the user navigates away and returns, check `active_deal_jobs` in the deal detail response:
+
+```typescript
+async function checkAndReconnectToSummaryJob(dealId: string) {
+  const deal = await getDealById(dealId);
+  
+  // Check if there's an active summary job
+  if (deal.active_deal_jobs?.deal_summary) {
+    const { job_id, status } = deal.active_deal_jobs.deal_summary;
+    
+    if (status === 'IN_PROGRESS' || status === 'PENDING') {
+      // Reconnect to the stream
+      return subscribeToDealSummaryStream(dealId, job_id, callbacks);
+    }
+  }
+  
+  // No active job - check if summary already exists
+  if (deal.deal_summary_status === 'COMPLETED' && deal.deal_summary_data) {
+    displayFinalSummary(deal.deal_summary_data);
+  }
+  
+  return null;
+}
+```
+
+### Notes for Deal Summary SSE Stream
+
+- The stream automatically closes after sending the `complete` or `error` event
+- If the job completes before the client connects, the `complete` event is sent immediately
+- Progress percentages are approximate and may not be strictly linear
+- For authenticated SSE, consider using fetch with ReadableStream or EventSource polyfill
+
+---
+
+## 6. List Deal Tasks
 
 ### Endpoint for List Deal Tasks
 
@@ -995,7 +1388,7 @@ Returns a cursor-paginated list of all tasks linked to the specified deal. Use t
 
 ---
 
-## 5. Get Task Detail
+## 7. Get Task Detail
 
 ### Endpoint for Get Task Detail
 

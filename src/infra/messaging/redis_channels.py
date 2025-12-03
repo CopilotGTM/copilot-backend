@@ -12,6 +12,7 @@ from uuid import UUID
 _CHAT_JOB_TEMPLATE = "chat:{org_id}:job:{job_id}"
 _KNOWLEDGE_TEMPLATE = "kb:{org_id}:sources"
 _ATTACHMENT_TEMPLATE = "att:{org_id}:attachments"
+_DEAL_JOB_TEMPLATE = "deal:{org_id}:job:{job_id}"
 
 
 def channel_for_chat_job(organisation_id: UUID | str, job_id: UUID | str) -> str:
@@ -24,3 +25,12 @@ def channel_for_knowledge_update_status(organisation_id: UUID | str) -> str:
 
 def channel_for_attachment_update_status(organisation_id: UUID | str) -> str:
     return _ATTACHMENT_TEMPLATE.format(org_id=organisation_id)
+
+
+def channel_for_deal_job(organisation_id: UUID | str, job_id: UUID | str) -> str:
+    """
+    Generic channel for any deal job type (briefing, summary, stakeholder analysis, etc.).
+
+    The job_id is unique, so we don't need job_type in the channel name.
+    """
+    return _DEAL_JOB_TEMPLATE.format(org_id=organisation_id, job_id=job_id)

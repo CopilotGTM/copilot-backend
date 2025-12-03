@@ -70,6 +70,16 @@ class Organisation(TimestampMixin, table=True):
         unique=True,
         description="Organisation/company name. Unique.",
     )
+    domain: list[str] | None = Field(
+        default=None,
+        sa_column=Column(JSON, nullable=True),
+        description="List of primary domains of the organisation (e.g. ['acme.com', 'acme.io']).",
+    )
+    agent_name: str | None = Field(
+        default=None,
+        sa_column=Column(String(255), nullable=True),
+        description="Name of the organisation to be used in Agent contexts.",
+    )
     sales_team_size: int | None = Field(
         default=None,
         ge=0,
