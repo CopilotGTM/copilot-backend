@@ -16,7 +16,6 @@ import os
 import threading
 
 from celery.signals import worker_ready, worker_shutdown
-
 from src.infra.utils.logger import get_logger
 
 try:

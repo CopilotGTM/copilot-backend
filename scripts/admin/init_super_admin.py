@@ -9,9 +9,9 @@ Usage:
     python scripts/admin/init_super_admin.py
 """
 
+import asyncio
 import os
 import sys
-import asyncio
 from pathlib import Path
 
 # Add the project root to Python path for module resolution
@@ -21,7 +21,6 @@ sys.path.insert(0, str(project_root))
 from dotenv import load_dotenv
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-
 from src.domain.models.master_tables import SuperAdmin
 from src.infra.auth.admin_auth import admin_auth
 from src.infra.auth.email_service import email_service

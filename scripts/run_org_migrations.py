@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
+import argparse
 import os
 import sys
-import argparse
 
 # ── so we can import your app code under `src/` ──
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
 sys.path.insert(0, PROJECT_ROOT)
 
-from dotenv import load_dotenv
 import urllib.parse
-from sqlmodel import Session, select
-from sqlalchemy import create_engine
-from src.domain.models.master_tables import Organisation, OrganisationStatus
+
+from dotenv import load_dotenv
 from migrations.migration_manager import migration_manager
+from sqlalchemy import create_engine
+from sqlmodel import Session, select
+from src.domain.models.master_tables import Organisation, OrganisationStatus
 from src.infra.utils.resource_naming import get_schema_name
 
 load_dotenv()
