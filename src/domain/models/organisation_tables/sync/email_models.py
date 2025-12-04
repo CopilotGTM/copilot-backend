@@ -7,10 +7,11 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import Column, DateTime, Index, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlmodel import Field, Relationship
+from sqlmodel import Field, Relationship, SQLModel
 
 from ..base_mixins import utcnow
 from .base import SyncedRecordMixin
+from .calendar import AssociationStatus
 from .integration_models import EMPTY_JSONB_SQL
 
 EMPTY_JSONB_ARRAY = "'[]'::jsonb"
@@ -21,6 +22,14 @@ class EmailDirection(str, Enum):
 
     INBOUND = "inbound"
     OUTBOUND = "outbound"
+
+
+class DealEmailDirection(str, Enum):
+    """Direction of email relative to the deal team."""
+
+    INBOUND = "INBOUND"  # From external contact to team
+    OUTBOUND = "OUTBOUND"  # From team to external contact
+    INTERNAL = "INTERNAL"  # Between team members (CC'd contacts)
 
 
 class EmailPriority(str, Enum):
@@ -145,6 +154,7 @@ class Email(SyncedRecordMixin, table=True):
         ),
         Index("ix_email_folder_received", "folder_id", "received_at"),
         Index("ix_email_thread", "thread_id"),
+        Index("ix_email_internet_message_id", "organisation_id", "internet_message_id"),
         Index("ix_email_from_participant", "from_participant_id"),
         Index("ix_email_deal", "deal_id"),
     )
@@ -164,6 +174,11 @@ class Email(SyncedRecordMixin, table=True):
         default=None,
         sa_column=Column(String(255), nullable=True, index=True),
         description="Email thread identifier for conversation grouping.",
+    )
+    internet_message_id: str | None = Field(
+        default=None,
+        sa_column=Column(String(512), nullable=True),
+        description="RFC 822 Message-ID header. Same across all recipients - use for cross-user deduplication and deal mapping.",
     )
     in_reply_to: str | None = Field(
         default=None,
@@ -450,10 +465,86 @@ class EmailThreadSummary(SyncedRecordMixin, table=True):
     folder: EmailFolder | None = Relationship(back_populates="thread_summaries")
 
 
+class DealEmailAssociation(SQLModel, table=True):
+    """
+    Links emails to deals using internet_message_id for cross-user deduplication.
+
+    Follows the same pattern as CalendarEventDealAssociation. One association per
+    unique email per deal - if the same email appears in multiple user mailboxes,
+    only one association is created (using internet_message_id).
+    """
+
+    __tablename__ = "deal_email_associations"
+    __table_args__ = (
+        UniqueConstraint("deal_id", "internet_message_id", name="uq_deal_email"),
+        Index("ix_deal_email_org_status", "organisation_id", "status"),
+        Index("ix_deal_email_deal", "deal_id"),
+        Index("ix_deal_email_internet_msg", "internet_message_id"),
+    )
+
+    association_id: UUID = Field(default_factory=uuid4, primary_key=True)
+    organisation_id: UUID = Field(index=True)
+    deal_id: UUID = Field(
+        foreign_key="crm_deals.deal_id",
+        description="The deal this email is associated with.",
+    )
+    internet_message_id: str = Field(
+        sa_column=Column(String(512), nullable=False),
+        description="RFC 822 Message-ID - same across all recipients of the email.",
+    )
+
+    # Matching metadata (same pattern as CalendarEventDealAssociation)
+    status: AssociationStatus = Field(
+        default=AssociationStatus.SUGGESTED,
+        sa_column=Column(String(32), nullable=False, server_default=text("'SUGGESTED'")),
+        description="Association status: SUGGESTED, CONFIRMED, or REJECTED.",
+    )
+    match_score: float = Field(
+        default=0.0,
+        description="Confidence score 0.0-1.0 based on stakeholder matching.",
+    )
+
+    # Email-specific metadata
+    direction: DealEmailDirection = Field(
+        default=DealEmailDirection.INBOUND,
+        sa_column=Column(String(32), nullable=False, server_default=text("'INBOUND'")),
+        description="Direction relative to deal team: INBOUND, OUTBOUND, or INTERNAL.",
+    )
+    matched_stakeholder_emails: list[str] | None = Field(
+        default=None,
+        sa_column=Column(JSONB, nullable=True),
+        description="Which stakeholder emails matched this email for audit trail.",
+    )
+
+    # Email context (denormalized for quick access without joining)
+    email_subject: str | None = Field(
+        default=None,
+        sa_column=Column(String(500), nullable=True),
+        description="Email subject line for display purposes.",
+    )
+    email_date: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+        description="When the email was sent/received.",
+    )
+
+    # Timestamps
+    created_at: datetime = Field(
+        default_factory=utcnow,
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+    updated_at: datetime = Field(
+        default_factory=utcnow,
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+
+
 __all__ = [
     "EmailDirection",
+    "DealEmailDirection",
     "EmailPriority",
     "EmailFolder",
     "Email",
     "EmailThreadSummary",
+    "DealEmailAssociation",
 ]

@@ -1,3 +1,19 @@
+"""Celery tasks for deal-meeting matching and stakeholder discovery.
+
+This module provides Celery tasks that orchestrate the deal-meeting matching process:
+- Match calendar events to CRM deals based on team and contact participation
+- Discover stakeholders from meeting attendees
+- Handle cancelled meeting associations
+
+Tasks:
+    - process_deal_meetings_task: Process all deals for a single organisation
+    - process_single_deal_task: Process meetings for a specific deal
+    - trigger_deal_meeting_processing_all_orgs: Periodic task for all organisations
+
+The tasks delegate to DealMeetingMatcher service for the actual matching logic.
+See docs/Technical Documentation/deal/deal-meeting-automation.md for algorithm details.
+"""
+
 from __future__ import annotations
 
 from uuid import UUID

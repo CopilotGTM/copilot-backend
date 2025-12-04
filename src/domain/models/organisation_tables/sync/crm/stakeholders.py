@@ -37,6 +37,7 @@ class StakeholderTemperature(str, Enum):
 class StakeholderSource(str, Enum):
     CRM = "CRM"
     CALENDAR_DISCOVERY = "CALENDAR_DISCOVERY"
+    EMAIL_DISCOVERY = "EMAIL_DISCOVERY"
     MANUAL = "MANUAL"
 
 

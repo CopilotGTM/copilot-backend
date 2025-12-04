@@ -42,6 +42,8 @@ from .crm import (
     StakeholderTemperature,
 )
 from .email_models import (
+    DealEmailAssociation,
+    DealEmailDirection,
     Email,
     EmailDirection,
     EmailFolder,
@@ -130,8 +132,10 @@ __all__ = [
     "MessagingThreadSummary",
     # Email models
     "EmailDirection",
+    "DealEmailDirection",
     "EmailPriority",
     "EmailFolder",
     "Email",
     "EmailThreadSummary",
+    "DealEmailAssociation",
 ]

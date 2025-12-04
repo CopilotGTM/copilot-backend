@@ -54,6 +54,8 @@ spec:
             - "src.workers.organization_worker.celery_app:app"
             {{- else if contains "integration" .Values.config.queueName }}
             - "src.workers.integrations_worker.celery_app:app"
+            {{- else if contains "deal" .Values.config.queueName }}
+            - "src.workers.deal_worker.celery_app:app"
             {{- else if contains "attachments" .Values.config.queueName }}
             - "src.workers.chat_worker.celery_app:app"
             {{- else if contains "chat" .Values.config.queueName }}
@@ -63,6 +65,14 @@ spec:
             {{- else }}
             - "src.workers.knowledge_worker.celery_app:app"
             {{- end }}
+            {{- if .Values.config.beatMode }}
+            # Celery Beat scheduler mode - uses schedule from app config
+            - "beat"
+            - "-l"
+            - "info"
+            - "-s"
+            - "/tmp/celerybeat-schedule"
+            {{- else }}
             - "worker"
             - "-l"
             - "info"
@@ -74,6 +84,7 @@ spec:
             {{- end }}
             - "-Q"
             - "{{ .Values.config.queueName }}{{- if .Values.config.additionalQueues }},{{ join "," .Values.config.additionalQueues }}{{- end }}"
+            {{- end }}
           envFrom:
             - secretRef:
                 name: {{ .Values.config.secretName | default .Values.global.secretName }}
@@ -98,7 +109,7 @@ spec:
             - name: CELERYD_WORKER_SHUTDOWN_TIMEOUT
               value: {{ .Values.config.gracefulTimeout | quote }}
           {{- end }}
-          {{- if .Values.shutdown.enabled }}
+          {{- if and .Values.shutdown.enabled (not .Values.config.beatMode) }}
           lifecycle:
             preStop:
               exec:
@@ -111,6 +122,7 @@ spec:
                     {{- if contains "knowledge" .Values.config.queueName }} src.workers.knowledge_worker.celery_app:app \
                     {{- else if contains "organization" .Values.config.queueName }} src.workers.organization_worker.celery_app:app \
                     {{- else if contains "integration" .Values.config.queueName }} src.workers.integrations_worker.celery_app:app \
+                    {{- else if contains "deal" .Values.config.queueName }} src.workers.deal_worker.celery_app:app \
                     {{- else if contains "attachments" .Values.config.queueName }} src.workers.chat_worker.celery_app:app \
                     {{- else if contains "chat" .Values.config.queueName }} src.workers.chat_worker.celery_app:app \
                     {{- else if contains "content" .Values.config.queueName }} src.workers.content_worker.celery_app:app \
@@ -120,6 +132,7 @@ spec:
                     {{- if contains "knowledge" .Values.config.queueName }} src.workers.knowledge_worker.celery_app:app \
                     {{- else if contains "organization" .Values.config.queueName }} src.workers.organization_worker.celery_app:app \
                     {{- else if contains "integration" .Values.config.queueName }} src.workers.integrations_worker.celery_app:app \
+                    {{- else if contains "deal" .Values.config.queueName }} src.workers.deal_worker.celery_app:app \
                     {{- else if contains "attachments" .Values.config.queueName }} src.workers.chat_worker.celery_app:app \
                     {{- else if contains "chat" .Values.config.queueName }} src.workers.chat_worker.celery_app:app \
                     {{- else if contains "content" .Values.config.queueName }} src.workers.content_worker.celery_app:app \

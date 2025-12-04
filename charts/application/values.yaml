@@ -190,10 +190,10 @@ organization-worker:
   resources:
     requests:
       cpu: "250m"
-      memory: "256Mi"
+      memory: "512Mi"
     limits:
       cpu: "500m"
-      memory: "512Mi"
+      memory: "1Gi"
   autoscaling:
     enabled: true
     minReplicas: 1
@@ -240,14 +240,14 @@ integrations-worker:
   config:
     queueName: "integrations"
     additionalQueues: ["integrations_priority"]
-    concurrency: 4
+    concurrency: 8  # Reduced from 20 to prevent OOM
   resources:
     requests:
       cpu: "500m"
-      memory: "768Mi"
+      memory: "2Gi"
     limits:
       cpu: "2000m"
-      memory: "1.5Gi"
+      memory: "4Gi"
   autoscaling:
     enabled: true
     minReplicas: 1
@@ -255,3 +255,61 @@ integrations-worker:
     queueLength: 5
     scaleDownDelay: 240
     scaleUpDelay: 10
+
+# Deal Worker (handles deal-meeting matching, email matching, stakeholders)
+deal-worker:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: "copilotgtmacrdev.azurecr.io/copilot-backend"
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  config:
+    queueName: "deal"
+    additionalQueues: ["deal_jobs"]
+    concurrency: 4
+    gracefulTimeout: 540  # 9 minutes for long-running deal processing
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "768Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1.5Gi"
+  autoscaling:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 5
+    queueLength: 3
+    scaleDownDelay: 300
+    scaleUpDelay: 10
+
+# Deal Beat Scheduler (Celery Beat for scheduled deal tasks)
+# Runs periodic tasks defined in DealWorkerConfig.beat_schedule:
+# - deal.trigger_deal_meeting_processing_all_orgs: Every 2 hours
+# - deal.trigger_deal_email_processing_all_orgs: Every hour at :30
+# - stakeholder.trigger_analysis_all_orgs: Daily at 2 AM
+deal-beat:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: "copilotgtmacrdev.azurecr.io/copilot-backend"
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  config:
+    queueName: "deal"
+    # Beat mode - runs scheduler instead of worker
+    beatMode: true
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "250m"
+      memory: "512Mi"
+  # Beat scheduler doesn't need autoscaling - single instance only
+  autoscaling:
+    enabled: false
+  # Beat scheduler doesn't need PDB
+  pdb:
+    enabled: false

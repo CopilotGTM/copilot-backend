@@ -399,6 +399,11 @@ stages:
                       --set organization-worker.image.tag="$BUILD_BUILDID" \
                       --set integrations-worker.image.repository="$ACR_LOGIN_SERVER/copilot-backend" \
                       --set integrations-worker.image.tag="$BUILD_BUILDID" \
+                      --set deal-worker.image.repository="$ACR_LOGIN_SERVER/copilot-backend" \
+                      --set deal-worker.image.tag="$BUILD_BUILDID" \
+                      --set deal-worker.autoscaling.enabled=true \
+                      --set deal-beat.image.repository="$ACR_LOGIN_SERVER/copilot-backend" \
+                      --set deal-beat.image.tag="$BUILD_BUILDID" \
                       --set api.secrets.DATABASE_HOST="$(DATABASE_HOST)" \
                       --set api.secrets.DATABASE_USER="$(DATABASE_USER)" \
                       --set api.secrets.DATABASE_PORT="$(DATABASE_PORT)" \
@@ -439,11 +444,15 @@ stages:
                       --set organization-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
                       --set chat-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
                       --set integrations-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
+                      --set deal-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
+                      --set deal-beat.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
                       --set knowledge-extract-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
                       --set knowledge-upload-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
                       --set organization-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
                       --set chat-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
-                      --set integrations-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)"
+                      --set integrations-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
+                      --set deal-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
+                      --set deal-beat.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)"
 
 
                   displayName: Helm Upgrade/Install
@@ -508,6 +517,8 @@ stages:
                     kubectl rollout restart deployment copilot-backend-chat-worker -n copilotgtm
                     kubectl rollout restart deployment copilot-backend-organization-worker -n copilotgtm
                     kubectl rollout restart deployment copilot-backend-integrations-worker -n copilotgtm
+                    kubectl rollout restart deployment copilot-backend-deal-worker -n copilotgtm
+                    kubectl rollout restart deployment copilot-backend-deal-beat -n copilotgtm
 
                     # Wait for rollouts to complete
                     echo "Waiting for rollouts to complete..."
@@ -516,6 +527,8 @@ stages:
                     kubectl rollout status deployment copilot-backend-chat-worker -n copilotgtm --timeout=300s
                     kubectl rollout status deployment copilot-backend-organization-worker -n copilotgtm --timeout=300s
                     kubectl rollout status deployment copilot-backend-integrations-worker -n copilotgtm --timeout=300s
+                    kubectl rollout status deployment copilot-backend-deal-worker -n copilotgtm --timeout=300s
+                    kubectl rollout status deployment copilot-backend-deal-beat -n copilotgtm --timeout=300s
                   displayName: Force restart workers to pick up latest values
 
                 - task: Bash@3

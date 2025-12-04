@@ -286,6 +286,11 @@ function Deploy-WithHelm {
         "--set", "integrations-worker.image.repository=$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY",
         "--set", "integrations-worker.image.tag=$IMAGE_TAG",
         "--set", "integrations-worker.autoscaling.enabled=true",
+        "--set", "deal-worker.image.repository=$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY",
+        "--set", "deal-worker.image.tag=$IMAGE_TAG",
+        "--set", "deal-worker.autoscaling.enabled=true",
+        "--set", "deal-beat.image.repository=$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY",
+        "--set", "deal-beat.image.tag=$IMAGE_TAG",
         "--set", "chat-worker.autoscaling.enabled=true",
         "--set", "api.secrets.DATABASE_HOST=$($env:DATABASE_HOST)",
         "--set", "api.secrets.DATABASE_USER=$($env:DATABASE_USER)",
@@ -329,11 +334,15 @@ function Deploy-WithHelm {
         "--set", "organization-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
         "--set", "chat-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
         "--set", "integrations-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
+        "--set", "deal-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
+        "--set", "deal-beat.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
         "--set", "knowledge-extract-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
         "--set", "knowledge-upload-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
         "--set", "organization-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
         "--set", "chat-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
-        "--set", "integrations-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)"
+        "--set", "integrations-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
+        "--set", "deal-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
+        "--set", "deal-beat.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)"
     )
 
     # Execute Helm command and check for errors
@@ -360,6 +369,8 @@ function Deploy-WithHelm {
     kubectl rollout restart deployment copilot-backend-chat-worker -n $NAMESPACE
     kubectl rollout restart deployment copilot-backend-organization-worker -n $NAMESPACE
     kubectl rollout restart deployment copilot-backend-integrations-worker -n $NAMESPACE
+    kubectl rollout restart deployment copilot-backend-deal-worker -n $NAMESPACE
+    kubectl rollout restart deployment copilot-backend-deal-beat -n $NAMESPACE
     
     Write-Host "Waiting for rollouts to complete..."
     kubectl rollout status deployment copilot-backend-knowledge-extract-worker -n $NAMESPACE --timeout=300s
@@ -367,6 +378,8 @@ function Deploy-WithHelm {
     kubectl rollout status deployment copilot-backend-chat-worker -n $NAMESPACE --timeout=300s
     kubectl rollout status deployment copilot-backend-organization-worker -n $NAMESPACE --timeout=300s
     kubectl rollout status deployment copilot-backend-integrations-worker -n $NAMESPACE --timeout=300s
+    kubectl rollout status deployment copilot-backend-deal-worker -n $NAMESPACE --timeout=300s
+    kubectl rollout status deployment copilot-backend-deal-beat -n $NAMESPACE --timeout=300s
     
     Write-Success "Worker restarts completed"
     
