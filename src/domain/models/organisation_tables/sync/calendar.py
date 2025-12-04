@@ -6,7 +6,7 @@ from sqlalchemy import CheckConstraint, Column, DateTime, Index, String, UniqueC
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, Relationship, SQLModel
 from src.domain.models.organisation_tables.base_mixins import utcnow
-from src.domain.models.organisation_tables.sync.base import SyncedRecordMixin
+from src.domain.models.organisation_tables.sync.base import FlexibleSyncedRecordMixin
 
 
 class AssociationStatus(str, Enum):
@@ -22,10 +22,10 @@ class GenerationStatus(str, Enum):
     FAILED = "FAILED"
 
 
-class CalendarEvent(SyncedRecordMixin, table=True):
+class CalendarEvent(FlexibleSyncedRecordMixin, table=True):
     __tablename__ = "calendar_events"
     __table_args__ = (
-        UniqueConstraint("integration_id", "external_id", name="uq_calendar_event_external"),
+        UniqueConstraint("organisation_id", "external_id", name="uq_calendar_event_external"),
         Index("ix_calendar_event_org_start", "organisation_id", "start_at"),
         Index("ix_calendar_event_owner", "organiser_email"),
     )
@@ -62,7 +62,47 @@ class CalendarEvent(SyncedRecordMixin, table=True):
     attendee_count: int = Field(default=0)
 
     attendees: list["CalendarAttendee"] = Relationship(back_populates="event")
+    user_states: list["CalendarEventUserState"] = Relationship(back_populates="event")
     deal_associations: list["CalendarEventDealAssociation"] = Relationship(back_populates="event")
+
+
+class CalendarEventUserState(SQLModel, table=True):
+    """
+    Tracks which integrations (users) have synced each calendar event.
+    Used for cleanup when a user disconnects their integration.
+    """
+
+    __tablename__ = "calendar_event_user_states"
+    __table_args__ = (
+        UniqueConstraint("event_id", "integration_id", name="uq_calendar_event_user_state"),
+        Index("ix_calendar_user_state_integration", "integration_id"),
+    )
+
+    state_id: UUID = Field(default_factory=uuid4, primary_key=True)
+    event_id: UUID = Field(foreign_key="calendar_events.event_id", index=True)
+    integration_id: UUID = Field(
+        foreign_key="knowledge_integrations.integration_id",
+        index=True,
+        description="The user's calendar integration that synced this event.",
+    )
+    external_id: str = Field(
+        sa_column=Column(String(255), nullable=False),
+        description="Provider's event ID for this specific user's calendar.",
+    )
+    is_deleted: bool = Field(
+        default=False,
+        description="Whether this event was deleted from this user's calendar.",
+    )
+    created_at: datetime = Field(
+        default_factory=utcnow,
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+    updated_at: datetime = Field(
+        default_factory=utcnow,
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+
+    event: "CalendarEvent" = Relationship(back_populates="user_states")
 
 
 class CalendarAttendee(SQLModel, table=True):

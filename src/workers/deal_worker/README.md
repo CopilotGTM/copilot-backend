@@ -8,6 +8,7 @@ The **Deal Worker** is a Celery application dedicated to deal-centric background
 
 - Match `CalendarEvent` records to `CRMDeal` entries and maintain associations.
 - Discover, sync, and enrich deal stakeholders using attendee lists and CRM context.
+- Map inbound/outbound emails to deals using participant + thread signals and refresh stakeholders from email touches.
 - Execute AI-powered flows (meeting briefings/summaries, deal-level summaries, stakeholder analysis).
 - Publish job progress/results to Redis Streams that back SSE endpoints.
 - Run periodic housekeeping (meeting reconciliation, org-wide analysis) via Celery Beat.
@@ -102,6 +103,15 @@ src/workers/deal_worker/
 | `stakeholder.analyze_org_stakeholders_task` | `deal_jobs` | Iterates all deals with stakeholders for an org, batching LLM calls per deal. |
 | `stakeholder.trigger_analysis_all_orgs` | `deal` | Beat-triggered fan-out that enqueues org-wide analysis for every approved org. |
 
+### Email Mapping (`tasks/email_tasks.py`)
+
+| Task Name | Queue | Description |
+|-----------|-------|-------------|
+| `email.process_single_email_task` | `deal` | Map a single email to deals using participant + thread signals and update stakeholders. |
+| `email.process_org_emails_task` | `deal` | Incremental sweep for one org using a cursor to avoid rescanning mailboxes. |
+| `email.process_deal_emails_task` | `deal` | Backfill mapping for a single deal (e.g., after CRM contact updates). |
+| `email.trigger_email_mapping_all_orgs` | `deal` | Beat-triggered fan-out that enqueues org sweeps hourly for all approved orgs. |
+
 ---
 
 ## Triggering Tasks Programmatically
@@ -180,6 +190,7 @@ Always listen to both queues; otherwise AI workloads or deterministic jobs will 
 |----------|------|---------|
 | Every 3 hours | `deal.trigger_deal_meeting_processing_all_orgs` | Reconcile meetings <-> deals for every approved organisation. |
 | Daily @ 02:00 UTC | `stakeholder.trigger_analysis_all_orgs` | Refresh stakeholder intelligence snapshots from meeting transcripts. |
+| Hourly | (none) | - |
 
 Schedules live in `DealWorkerConfig.beat_schedule`; adjust there when adding new periodic jobs.
 
@@ -224,4 +235,5 @@ celery -A src.workers.deal_worker.celery_app events
 
 - [Celery Worker Creation Guide](../../../docs/Technical%20Documentation/celery-worker-creation-guide.md)
 - [Deal/Meeting Matching Flow](../../../docs/Technical%20Documentation/deal-meeting-matching-flow.md)
+- [Email–Deal Mapping](../../../docs/Technical%20Documentation/deal/email-deal-mapping.md)
 - Stakeholder intelligence notes (if present) live under `docs/Technical Documentation/`.

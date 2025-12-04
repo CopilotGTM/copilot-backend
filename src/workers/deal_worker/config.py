@@ -57,6 +57,15 @@ class DealWorkerConfig(BaseWorkerConfig):
                 "queue": "deal",
                 "routing_key": "deal",
             },
+            # Deal email matching tasks -> deal queue
+            "deal.process_deal_emails_task": {
+                "queue": "deal",
+                "routing_key": "deal",
+            },
+            "deal.trigger_deal_email_processing_all_orgs": {
+                "queue": "deal",
+                "routing_key": "deal",
+            },
             # Deal meeting job tasks (briefing, summary, followup) -> deal_jobs queue
             "deal_meeting_task.process": {
                 "queue": "deal_jobs",
@@ -95,6 +104,14 @@ class DealWorkerConfig(BaseWorkerConfig):
             "analyze-stakeholders-all-orgs": {
                 "task": "stakeholder.trigger_analysis_all_orgs",
                 "schedule": crontab(minute=0, hour=2),  # Run daily at 2 AM
+                "options": {
+                    "queue": "deal",
+                    "routing_key": "deal",
+                },
+            },
+            "process-deal-emails-all-orgs": {
+                "task": "deal.trigger_deal_email_processing_all_orgs",
+                "schedule": crontab(minute=30),  # Run every hour at :30
                 "options": {
                     "queue": "deal",
                     "routing_key": "deal",

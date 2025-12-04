@@ -2,6 +2,10 @@
 Tasks for the deal worker.
 """
 
+from .deal_email_tasks import (
+    process_deal_emails_task,
+    trigger_deal_email_processing_all_orgs,
+)
 from .deal_meeting_tasks import process_deal_meeting_job
 from .deal_summary_tasks import process_deal_summary_job
 from .deal_tasks import (
@@ -17,6 +21,9 @@ from .stakeholder_analysis_tasks import (
 from .stakeholder_tasks import sync_stakeholders_from_meeting_task
 
 __all__ = [
+    # Deal email tasks
+    "process_deal_emails_task",
+    "trigger_deal_email_processing_all_orgs",
     # Deal meeting tasks (meeting-level)
     "process_deal_meeting_job",
     # Deal summary tasks (deal-level)

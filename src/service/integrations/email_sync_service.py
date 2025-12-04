@@ -18,6 +18,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.domain.models.organisation_tables.sync import KnowledgeIntegration
 from src.domain.models.organisation_tables.sync.email_models import Email, EmailFolder
@@ -103,26 +104,22 @@ class EmailSyncService:
                         records_failed += 1
                         continue
 
-                    # Check if folder already exists
-                    existing_folder = await self._get_folder_by_external_id(
-                        integration.integration_id, external_id
+                    # Upsert folder to handle race conditions
+                    folder = await self._upsert_folder(
+                        integration, folder_data, provider, external_id
                     )
 
-                    if existing_folder:
-                        # Update existing folder
-                        await self._update_folder(existing_folder, folder_data, provider)
-                        updated_count += 1
+                    if folder.created_at == folder.updated_at:
+                        created_count += 1
                         logger.debug(
-                            "Updated folder: external_id=%s name=%s",
+                            "Created folder: external_id=%s name=%s",
                             external_id,
                             folder_data.get("displayName"),
                         )
                     else:
-                        # Create new folder
-                        await self._create_folder(integration, folder_data, provider, external_id)
-                        created_count += 1
+                        updated_count += 1
                         logger.debug(
-                            "Created folder: external_id=%s name=%s",
+                            "Updated folder: external_id=%s name=%s",
                             external_id,
                             folder_data.get("displayName"),
                         )
@@ -256,32 +253,22 @@ class EmailSyncService:
                         records_failed += 1
                         continue
 
-                    # Check if message already exists
-                    existing_message = await self._get_message_by_external_id(
-                        integration.integration_id, external_id
+                    # Upsert message to handle race conditions
+                    message = await self._upsert_message(
+                        integration, message_data, provider, external_id, folder_id
                     )
 
-                    if existing_message:
-                        # Update existing message
-                        await self._update_message(existing_message, message_data, provider)
-                        updated_count += 1
+                    if message.created_at == message.updated_at:
+                        created_count += 1
                         logger.debug(
-                            "Updated message: external_id=%s subject=%s",
+                            "Created message: external_id=%s subject=%s",
                             external_id,
                             message_data.get("subject"),
                         )
                     else:
-                        # Create new message
-                        await self._create_message(
-                            integration,
-                            message_data,
-                            provider,
-                            external_id,
-                            folder_id,
-                        )
-                        created_count += 1
+                        updated_count += 1
                         logger.debug(
-                            "Created message: external_id=%s subject=%s",
+                            "Updated message: external_id=%s subject=%s",
                             external_id,
                             message_data.get("subject"),
                         )
@@ -411,6 +398,118 @@ class EmailSyncService:
             records_failed,
         )
 
+    async def _upsert_folder(
+        self,
+        integration: KnowledgeIntegration,
+        folder_data: dict[str, Any],
+        provider: str,
+        external_id: str,
+    ) -> EmailFolder:
+        """
+        Upsert email folder to handle race conditions.
+
+        Uses PostgreSQL ON CONFLICT DO UPDATE to atomically insert or update.
+        """
+        fields = self._extract_folder_fields(folder_data, provider)
+
+        values = {
+            "organisation_id": self.organisation_id,
+            "integration_id": integration.integration_id,
+            "external_folder_id": external_id,
+            "synced_at": datetime.now(UTC),
+            "created_at": datetime.now(UTC),
+            "updated_at": datetime.now(UTC),
+            **fields,
+        }
+
+        stmt = insert(EmailFolder).values(**values)
+
+        # Prepare update values (exclude primary key and immutable fields)
+        update_dict = {
+            k: v
+            for k, v in values.items()
+            if k
+            not in (
+                "folder_id",
+                "organisation_id",
+                "integration_id",
+                "external_folder_id",
+                "created_at",
+            )
+        }
+
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["integration_id", "external_folder_id"],
+            set_=update_dict,
+        ).returning(EmailFolder)
+
+        result = await self.db.execute(stmt)
+        folder = result.scalars().one()
+
+        # Update cache
+        self._folder_cache[external_id] = folder.folder_id
+
+        return folder
+
+    async def _upsert_message(
+        self,
+        integration: KnowledgeIntegration,
+        message_data: dict[str, Any],
+        provider: str,
+        external_id: str,
+        folder_id: UUID | None,
+    ) -> Email:
+        """
+        Upsert email message to handle race conditions.
+
+        Uses PostgreSQL ON CONFLICT DO UPDATE to atomically insert or update.
+        """
+        fields = self._extract_message_fields(message_data, provider)
+
+        # Resolve folder ID
+        resolved_folder_id = await self._ensure_folder_id(
+            integration.integration_id,
+            message_data,
+            provider,
+            folder_id,
+            external_id,
+        )
+
+        values = {
+            "organisation_id": self.organisation_id,
+            "integration_id": integration.integration_id,
+            "external_message_id": external_id,
+            "folder_id": resolved_folder_id,
+            "synced_at": datetime.now(UTC),
+            "created_at": datetime.now(UTC),
+            "updated_at": datetime.now(UTC),
+            **fields,
+        }
+
+        stmt = insert(Email).values(**values)
+
+        # Prepare update values (exclude primary key and immutable fields)
+        update_dict = {
+            k: v
+            for k, v in values.items()
+            if k
+            not in (
+                "email_id",
+                "organisation_id",
+                "integration_id",
+                "external_message_id",
+                "created_at",
+            )
+        }
+
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["integration_id", "external_message_id"],
+            set_=update_dict,
+        ).returning(Email)
+
+        result = await self.db.execute(stmt)
+        return result.scalars().one()
+
     async def _get_folder_by_external_id(
         self, integration_id: UUID, external_id: str
     ) -> EmailFolder | None:
@@ -421,105 +520,6 @@ class EmailSyncService:
         )
         result = await self.db.execute(stmt)
         return result.scalars().first()
-
-    async def _create_folder(
-        self,
-        integration: KnowledgeIntegration,
-        folder_data: dict[str, Any],
-        provider: str,
-        external_id: str,
-    ) -> EmailFolder:
-        """Create a new email folder."""
-        folder = EmailFolder(
-            organisation_id=self.organisation_id,
-            integration_id=integration.integration_id,
-            external_folder_id=external_id,
-            synced_at=datetime.now(UTC),
-            **self._extract_folder_fields(folder_data, provider),
-        )
-
-        self.db.add(folder)
-        await self.db.flush()
-        return folder
-
-    async def _update_folder(
-        self, folder: EmailFolder, folder_data: dict[str, Any], provider: str
-    ) -> None:
-        """Update existing email folder."""
-        # Update fields
-        fields = self._extract_folder_fields(folder_data, provider)
-        for key, value in fields.items():
-            setattr(folder, key, value)
-
-        # Update sync timestamp
-        folder.synced_at = datetime.now(UTC)
-
-        self.db.add(folder)
-        await self.db.flush()
-
-    async def _get_message_by_external_id(
-        self, integration_id: UUID, external_id: str
-    ) -> Email | None:
-        """Get existing email message by external_id."""
-        stmt = select(Email).where(
-            Email.integration_id == integration_id,  # type: ignore[arg-type]
-            Email.external_message_id == external_id,  # type: ignore[arg-type]
-        )
-        result = await self.db.execute(stmt)
-        return result.scalars().first()
-
-    async def _create_message(
-        self,
-        integration: KnowledgeIntegration,
-        message_data: dict[str, Any],
-        provider: str,
-        external_id: str,
-        folder_id: UUID | None,
-    ) -> Email:
-        """Create a new email message."""
-        message = Email(
-            organisation_id=self.organisation_id,
-            integration_id=integration.integration_id,
-            external_message_id=external_id,
-            folder_id=await self._ensure_folder_id(
-                integration.integration_id,
-                message_data,
-                provider,
-                folder_id,
-                external_id,
-            ),
-            synced_at=datetime.now(UTC),
-            **self._extract_message_fields(message_data, provider),
-        )
-
-        self.db.add(message)
-        await self.db.flush()
-        return message
-
-    async def _update_message(
-        self, message: Email, message_data: dict[str, Any], provider: str
-    ) -> None:
-        """Update existing email message."""
-        # Update fields
-        fields = self._extract_message_fields(message_data, provider)
-        for key, value in fields.items():
-            setattr(message, key, value)
-
-        # Update folder mapping if message moved to a different folder
-        resolved_folder_id = await self._ensure_folder_id(
-            message.integration_id,
-            message_data,
-            provider,
-            message.folder_id,
-            message.external_message_id,
-        )
-        message.folder_id = resolved_folder_id
-
-        # Update sync timestamp
-        message.synced_at = datetime.now(UTC)
-
-        self.db.add(message)
-        await self.db.flush()
 
     @staticmethod
     def _extract_folder_id(folder_data: dict[str, Any], _provider: str) -> str | None:
@@ -608,6 +608,7 @@ class EmailSyncService:
 
         return {
             "thread_id": message_data.get("conversationId"),
+            "internet_message_id": message_data.get("internetMessageId"),
             "in_reply_to": None,  # Would need full headers
             "from_email": from_address.get("address", ""),
             "from_name": from_address.get("name"),
@@ -640,6 +641,8 @@ class EmailSyncService:
         """Extract message fields from generic provider data."""
         return {
             "thread_id": message_data.get("threadId"),
+            "internet_message_id": message_data.get("internetMessageId")
+            or message_data.get("messageId"),
             "from_email": message_data.get("from", ""),
             "from_name": None,
             "to_emails": message_data.get("to", []),

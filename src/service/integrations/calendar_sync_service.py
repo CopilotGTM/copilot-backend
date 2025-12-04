@@ -2,9 +2,10 @@
 Calendar sync service for Google Calendar, Outlook Calendar, etc.
 
 This service ONLY writes to:
-1. calendar_events - Event records
-2. calendar_attendees - Attendee records
-3. integration_sync_history - Sync tracking
+1. calendar_events - Canonical event records (one per unique event per org)
+2. calendar_event_user_states - Tracks which integrations synced each event
+3. calendar_attendees - Attendee records
+4. integration_sync_history - Sync tracking
 
 IMPORTANT: This service does NOT create OrganisationSource or OrganisationDocument records.
 Calendar data is stored in dedicated calendar tables, NOT in the knowledge base/embeddings system.
@@ -17,10 +18,14 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.domain.models.organisation_tables.sync import KnowledgeIntegration
-from src.domain.models.organisation_tables.sync.calendar import CalendarAttendee, CalendarEvent
+from src.domain.models.organisation_tables.sync.calendar import (
+    CalendarAttendee,
+    CalendarEvent,
+    CalendarEventUserState,
+)
 from src.domain.models.organisation_tables.sync.integration_models import (
     IntegrationSyncHistory,
     SyncStatus,
@@ -111,26 +116,20 @@ class CalendarSyncService:
                         records_failed += 1
                         continue
 
-                    # Check if event already exists
-                    existing_event = await self._get_event_by_external_id(
-                        integration.integration_id, external_id
-                    )
+                    # Upsert event to handle race conditions
+                    event = await self._upsert_event(integration, event_data, provider, external_id)
 
-                    if existing_event:
-                        # Update existing event
-                        await self._update_event(existing_event, event_data, provider)
-                        updated_count += 1
+                    if event.created_at == event.updated_at:
+                        created_count += 1
                         logger.info(
-                            "Updated event: external_id=%s title=%s",
+                            "Created event: external_id=%s title=%s",
                             external_id,
                             event_data.get("summary"),
                         )
                     else:
-                        # Create new event
-                        await self._create_event(integration, event_data, provider, external_id)
-                        created_count += 1
+                        updated_count += 1
                         logger.info(
-                            "Created event: external_id=%s title=%s",
+                            "Updated event: external_id=%s title=%s",
                             external_id,
                             event_data.get("summary"),
                         )
@@ -265,67 +264,111 @@ class CalendarSyncService:
             records_failed,
         )
 
-    async def _get_event_by_external_id(
-        self, integration_id: UUID, external_id: str
-    ) -> CalendarEvent | None:
-        """Get existing calendar event by external_id."""
-        stmt = select(CalendarEvent).where(
-            CalendarEvent.integration_id == integration_id,  # type: ignore[arg-type]
-            CalendarEvent.external_id == external_id,  # type: ignore[arg-type]
-        )
-        result = await self.db.execute(stmt)
-        return result.scalars().first()
-
-    async def _create_event(
+    async def _upsert_event(
         self,
         integration: KnowledgeIntegration,
         event_data: dict[str, Any],
         provider: str,
         external_id: str,
     ) -> CalendarEvent:
-        """Create a new calendar event."""
-        event = CalendarEvent(
-            organisation_id=self.organisation_id,
-            integration_id=integration.integration_id,
-            external_id=external_id,
-            data_payload=event_data,
-            synced_at=datetime.now(UTC),
-            **self._extract_event_fields(event_data, provider),
+        """
+        Upsert calendar event to handle race conditions.
+
+        Uses PostgreSQL ON CONFLICT DO UPDATE to atomically insert or update the event.
+        This prevents race conditions when multiple users sync the same event simultaneously.
+        """
+        # Prepare event fields
+        fields = self._extract_event_fields(event_data, provider)
+
+        # Determine if current integration user is the organizer
+        organiser_email = fields.get("organiser_email")
+        is_organizer = (
+            organiser_email
+            and integration.integration_email
+            and organiser_email.lower() == integration.integration_email.lower()
         )
 
-        self.db.add(event)
-        # No need to flush here; event creation/update already flushes attendees.
+        # Base values for insert
+        values = {
+            "organisation_id": self.organisation_id,
+            "integration_id": integration.integration_id,  # Default to current integration
+            "external_id": external_id,
+            "data_payload": event_data,
+            "synced_at": datetime.now(UTC),
+            "created_at": datetime.now(UTC),
+            "updated_at": datetime.now(UTC),
+            **fields,
+        }
 
-        # Add attendees if present
+        # Construct upsert statement
+        stmt = insert(CalendarEvent).values(**values)
+
+        # Prepare update values (exclude primary key and immutable fields)
+        update_dict = {
+            k: v
+            for k, v in values.items()
+            if k not in ("event_id", "organisation_id", "external_id", "created_at")
+        }
+
+        # Special handling for integration_id on update:
+        # Only update integration_id if the current user is the organizer.
+        # Otherwise, keep the existing integration_id.
+        if not is_organizer:
+            update_dict.pop("integration_id")
+
+        # Add ON CONFLICT clause
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["organisation_id", "external_id"],
+            set_=update_dict,
+        ).returning(CalendarEvent)
+
+        # Execute upsert
+        result = await self.db.execute(stmt)
+        event = result.scalars().one()
+
+        # Sync attendees (always needed)
         await self._sync_attendees(event, event_data)
+
+        # Upsert user state to track which integrations have this event
+        await self._upsert_user_state(event, integration, external_id)
 
         return event
 
-    async def _update_event(
-        self, event: CalendarEvent, event_data: dict[str, Any], provider: str
-    ) -> None:
-        """Update existing calendar event."""
-        # Update fields
-        fields = self._extract_event_fields(event_data, provider)
-        logger.info(
-            "Updating event %s (provider=%s): extracted fields status=%s, all_fields=%s",
-            event.external_id,
-            provider,
-            fields.get("status"),
-            list(fields.keys()),
-        )
-        for key, value in fields.items():
-            setattr(event, key, value)
+    async def _upsert_user_state(
+        self,
+        event: CalendarEvent,
+        integration: KnowledgeIntegration,
+        external_id: str,
+    ) -> CalendarEventUserState:
+        """
+        Upsert calendar event user state to track which integrations synced this event.
+        Used for cleanup when a user disconnects their integration.
+        """
+        values = {
+            "event_id": event.event_id,
+            "integration_id": integration.integration_id,
+            "external_id": external_id,
+            "is_deleted": False,
+            "created_at": datetime.now(UTC),
+            "updated_at": datetime.now(UTC),
+        }
 
-        # Update metadata
-        event.data_payload = event_data
-        event.synced_at = datetime.now(UTC)
+        stmt = insert(CalendarEventUserState).values(**values)
 
-        self.db.add(event)
-        await self.db.flush()
+        # Prepare update values (exclude primary key and immutable fields)
+        update_dict = {
+            "external_id": external_id,
+            "is_deleted": False,
+            "updated_at": datetime.now(UTC),
+        }
 
-        # Update attendees
-        await self._sync_attendees(event, event_data)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["event_id", "integration_id"],
+            set_=update_dict,
+        ).returning(CalendarEventUserState)
+
+        result = await self.db.execute(stmt)
+        return result.scalars().one()
 
     async def _sync_attendees(self, event: CalendarEvent, event_data: dict[str, Any]) -> None:
         """Sync attendees for an event."""

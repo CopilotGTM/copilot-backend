@@ -27,3 +27,22 @@ class SyncedRecordMixin(TimestampMixin):
         default=False,
         description="Soft delete flag reflecting provider state.",
     )
+
+
+class FlexibleSyncedRecordMixin(TimestampMixin):
+    """
+    Similar to SyncedRecordMixin but allows integration_id to be None.
+    Used for records that can be shared across multiple integrations (e.g. Calendar Events).
+    """
+
+    organisation_id: UUID = Field(index=True)
+    integration_id: UUID | None = Field(
+        default=None,
+        index=True,
+        foreign_key="knowledge_integrations.integration_id",
+        description="Integration owning this record.",
+    )
+    is_deleted: bool = Field(
+        default=False,
+        description="Soft delete flag reflecting provider state.",
+    )
