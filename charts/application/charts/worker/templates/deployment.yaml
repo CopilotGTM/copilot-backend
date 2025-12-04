@@ -66,12 +66,12 @@ spec:
             - "src.workers.knowledge_worker.celery_app:app"
             {{- end }}
             {{- if .Values.config.beatMode }}
-            # Celery Beat scheduler mode
+            # Celery Beat scheduler mode - uses schedule from app config
             - "beat"
             - "-l"
             - "info"
-            - "--scheduler"
-            - "celery.beat:PersistentScheduler"
+            - "-s"
+            - "/tmp/celerybeat-schedule"
             {{- else }}
             - "worker"
             - "-l"
