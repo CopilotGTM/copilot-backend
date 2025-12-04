@@ -24,6 +24,10 @@ config:
   # Time (seconds) Celery will wait for running tasks to finish after SIGTERM before cold shutdown.
   # Set lower than shutdown.gracefulPeriodSeconds (leave null to use Celery default ~10s -> may be too short for long tasks)
   gracefulTimeout: 540
+  # Beat mode - set to true for Celery Beat scheduler (runs periodic tasks)
+  beatMode: false
+  # Schedule interval for beat mode (seconds) - default 2 hours
+  scheduleInterval: 7200
 
 global:
   secretName: "" # Will be populated by parent chart

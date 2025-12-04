@@ -36,3 +36,13 @@ dependencies:
   repository: "file://./charts/worker"
   alias: integrations-worker
   condition: integrations-worker.enabled
+- name: worker
+  version: "0.1.0"
+  repository: "file://./charts/worker"
+  alias: deal-worker
+  condition: deal-worker.enabled
+- name: worker
+  version: "0.1.0"
+  repository: "file://./charts/worker"
+  alias: deal-beat
+  condition: deal-beat.enabled

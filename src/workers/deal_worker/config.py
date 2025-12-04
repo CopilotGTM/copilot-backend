@@ -95,7 +95,7 @@ class DealWorkerConfig(BaseWorkerConfig):
         self.beat_schedule = {
             "process-deal-meetings-all-orgs": {
                 "task": "deal.trigger_deal_meeting_processing_all_orgs",
-                "schedule": crontab(minute=0, hour="*/3"),  # Run every 3 hours
+                "schedule": crontab(minute=0, hour="*/2"),  # Run every 2 hours
                 "options": {
                     "queue": "deal",
                     "routing_key": "deal",
