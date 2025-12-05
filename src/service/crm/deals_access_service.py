@@ -167,6 +167,87 @@ class DealsAccessService:
 
         return items, next_cursor
 
+    async def get_all_deals(
+        self,
+        max_results: int = 500,
+        statuses: Iterable[CRMDealStatus | str] | None = None,
+        pipeline_ids: Iterable[UUID] | None = None,
+        owner_external_ids: Iterable[str] | None = None,
+        min_amount: float | None = None,
+        max_amount: float | None = None,
+        min_close_date: datetime | None = None,
+        max_close_date: datetime | None = None,
+        q: str | None = None,
+    ) -> list[CRMDeal]:
+        """Retrieve all deals without pagination (capped at max_results).
+
+        Useful for small datasets where client-side filtering is preferred.
+        All filters are applied server-side before returning results.
+
+        Args:
+            max_results: Maximum number of deals to return (default 500, safety cap)
+            statuses: Optional list of deal statuses to filter (OPEN, WON, LOST, CLOSED)
+            pipeline_ids: Optional list of pipeline UUIDs to filter
+            owner_external_ids: Optional list of owner external IDs to filter
+            min_amount: Optional minimum deal amount
+            max_amount: Optional maximum deal amount
+            min_close_date: Optional minimum close date
+            max_close_date: Optional maximum close date
+            q: Optional search query for deal name (case-insensitive)
+
+        Returns:
+            List of all matching deals (up to max_results)
+
+        Raises:
+            DealsAccessServiceError: If database error occurs
+        """
+        try:
+            c = cast(Any, CRMDeal).__table__.c
+            stmt = select(CRMDeal).where(
+                c.organisation_id == self.organisation_id,
+                c.is_deleted.is_(False),
+            )
+
+            # Apply filters (same logic as list_deals)
+            if statuses:
+                status_values = [s.value if hasattr(s, "value") else str(s) for s in statuses]
+                stmt = stmt.where(c.deal_status.in_(status_values))
+
+            if pipeline_ids:
+                stmt = stmt.where(c.pipeline_id.in_(list(pipeline_ids)))
+
+            if owner_external_ids:
+                stmt = stmt.where(c.owner_external_id.in_(list(owner_external_ids)))
+
+            if min_amount is not None:
+                stmt = stmt.where(c.amount >= min_amount)
+
+            if max_amount is not None:
+                stmt = stmt.where(c.amount <= max_amount)
+
+            if min_close_date:
+                stmt = stmt.where(c.close_date >= min_close_date)
+
+            if max_close_date:
+                stmt = stmt.where(c.close_date <= max_close_date)
+
+            if q:
+                like_expr = f"%{q.lower()}%"
+                stmt = stmt.where(c.name.ilike(like_expr))
+
+            # Order by created_at DESC for consistent results
+            stmt = stmt.order_by(
+                c.created_at.desc(),
+                c.deal_id.desc(),
+            ).limit(max_results)
+
+            res = await self.org_session.execute(stmt)
+            return list(res.scalars().all())
+
+        except Exception as e:
+            logger.error("Failed to get all deals: %s", e, exc_info=True)
+            raise DealsAccessServiceError("Failed to retrieve deals") from e
+
     async def get_deal_by_id(self, deal_id: UUID) -> CRMDeal | None:
         """Retrieve a single deal by ID.
 

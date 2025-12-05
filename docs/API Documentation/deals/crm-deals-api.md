@@ -68,8 +68,9 @@ type UUID = string;
 
 
 export interface ListDealsParams {
-  limit?: number;           // 1..100, default 20
-  cursor?: string;          // opaque pagination cursor
+  limit?: number;           // 1..100, default 50
+  cursor?: string;          // opaque pagination cursor (ignored if fetch_all=true)
+  fetch_all?: boolean;      // fetch all deals without pagination (max 500)
 
   statuses?: CRMDealStatus[];  // filter by deal status
   pipeline_ids?: UUID[];    // filter by pipeline UUIDs
@@ -106,6 +107,7 @@ export interface DealListItem {
 
   pipeline_label: string | null;
 
+  owner_external_id: string | null;  // Required for owner_external_ids filter
   owner_name: string | null;
   owner_email: string | null;
   company_external_id: string | null;
@@ -457,26 +459,36 @@ export interface ApiEnvelope<T> {
 
 ---
 
-## 1. List Deals (Paginated)
+## 1. List Deals
 
 ### Endpoint for List Deals
 
 ```http
-GET /users/crm/deals?limit=20&cursor=<opaque>&statuses=open&statuses=won&pipeline_ids=<uuid>&owner_external_ids=<id>&q=enterprise
+# Paginated (default)
+GET /users/crm/deals?limit=50&cursor=<opaque>&statuses=open&statuses=won&q=enterprise
+
+# Fetch all deals (recommended for <300 deals)
+GET /users/crm/deals?fetch_all=true&statuses=open
 ```
 
 > **Note:** Always call `/users/crm/deals` with no trailing slash. FastAPI normalizes routes and will respond with a `307 Temporary Redirect` when the request includes an extra `/`, so use the canonical path to avoid the extra hop.
 
 ### Description for List Deals
 
-Returns a cursor-paginated list of CRM deals for the current organisation with optional filters. Ordered by `created_at DESC, deal_id DESC` for consistent pagination.
+Returns a list of CRM deals for the current organisation with optional filters. Supports two modes:
+
+- **Pagination Mode (default):** Cursor-based pagination for large datasets
+- **Fetch All Mode:** Set `fetch_all=true` to retrieve all deals in one request (max 500) — ideal for small datasets where client-side filtering is preferred
+
+Ordered by `created_at DESC, deal_id DESC` for consistent results.
 
 ### Query Parameters for List Deals
 
 | Parameter            | Type           | Required | Description                                                       |
 |---------------------|----------------|----------|-------------------------------------------------------------------|
-| `limit`             | integer        | No       | Items per page (1..100, default 20)                               |
-| `cursor`            | string         | No       | Opaque cursor from previous response                              |
+| `limit`             | integer        | No       | Items per page (1..100, default 50). Ignored if `fetch_all=true`  |
+| `cursor`            | string         | No       | Opaque cursor from previous response. Ignored if `fetch_all=true` |
+| `fetch_all`         | boolean        | No       | Fetch all deals in one request (max 500). Default: `false`        |
 | `statuses`          | array&lt;string&gt;  | No       | Filter by status (`open`, `won`, `lost`, `closed`; repeat param) |
 | `pipeline_ids`      | array&lt;UUID&gt;    | No       | Filter by pipeline UUIDs (repeat parameter)                       |
 | `owner_external_ids`| array&lt;string&gt;  | No       | Filter by owner external IDs from CRM (repeat parameter)          |
@@ -523,9 +535,17 @@ Returns a cursor-paginated list of CRM deals for the current organisation with o
 
 ### Notes for List Deals
 
-- Empty `items` array with `cursor: null` indicates no results
-- Cursor is `null` when no more pages exist
-- Pass `cursor` from previous response to fetch next page
+- **Fetch All Mode (`fetch_all=true`):**
+  - Returns all matching deals in a single response (max 500)
+  - `cursor` is always `null` (no pagination)
+  - Recommended for datasets <300 deals for instant client-side filtering
+  - All filters still apply server-side
+
+- **Pagination Mode (default):**
+  - Empty `items` array with `cursor: null` indicates no results
+  - Cursor is `null` when no more pages exist
+  - Pass `cursor` from previous response to fetch next page
+
 - All filters are ANDed together
 - Multiple values for the same filter (e.g., multiple statuses) are ORed
 
@@ -555,7 +575,13 @@ Returns a cursor-paginated list of CRM deals for the current organisation with o
 ### Example cURL for List Deals
 
 ```bash
-curl -X GET "$BASE_URL/users/crm/deals?limit=20&statuses=open&statuses=won&q=enterprise" \
+# Paginated request
+curl -X GET "$BASE_URL/users/crm/deals?limit=50&statuses=open&statuses=won&q=enterprise" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Accept: application/json"
+
+# Fetch all deals (for client-side filtering)
+curl -X GET "$BASE_URL/users/crm/deals?fetch_all=true" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Accept: application/json"
 ```
@@ -565,8 +591,17 @@ curl -X GET "$BASE_URL/users/crm/deals?limit=20&statuses=open&statuses=won&q=ent
 ```typescript
 async function listDeals(params: ListDealsParams): Promise<DealsPage> {
   const queryParams = new URLSearchParams();
-  if (params.limit) queryParams.append('limit', params.limit.toString());
-  if (params.cursor) queryParams.append('cursor', params.cursor);
+  
+  // Fetch all mode (recommended for small datasets)
+  if (params.fetch_all) {
+    queryParams.append('fetch_all', 'true');
+  } else {
+    // Pagination mode
+    if (params.limit) queryParams.append('limit', params.limit.toString());
+    if (params.cursor) queryParams.append('cursor', params.cursor);
+  }
+  
+  // Filters (work with both modes)
   if (params.statuses) params.statuses.forEach(s => queryParams.append('statuses', s));
   if (params.pipeline_ids) params.pipeline_ids.forEach(id => queryParams.append('pipeline_ids', id));
   if (params.owner_external_ids) params.owner_external_ids.forEach(id => queryParams.append('owner_external_ids', id));
@@ -582,6 +617,12 @@ async function listDeals(params: ListDealsParams): Promise<DealsPage> {
   const envelope: ApiEnvelope<DealsPage> = await response.json();
   if (envelope.status === 'ERROR') throw new Error(envelope.message);
   return envelope.data!;
+}
+
+// Example: Fetch all deals for client-side filtering
+async function getAllDealsForFiltering(): Promise<DealListItem[]> {
+  const page = await listDeals({ fetch_all: true });
+  return page.items; // All deals, filter client-side
 }
 ```
 
