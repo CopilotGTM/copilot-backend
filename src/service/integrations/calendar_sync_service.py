@@ -112,7 +112,7 @@ class CalendarSyncService:
                 try:
                     external_id = self._extract_external_id(event_data, provider)
                     if not external_id:
-                        logger.info("Event %d: skipping (no external_id)", idx)
+                        logger.debug("Event %d: skipping (no external_id)", idx)
                         records_failed += 1
                         continue
 
@@ -121,17 +121,17 @@ class CalendarSyncService:
 
                     if event.created_at == event.updated_at:
                         created_count += 1
-                        logger.info(
+                        logger.debug(
                             "Created event: external_id=%s title=%s",
                             external_id,
-                            event_data.get("summary"),
+                            event.title,
                         )
                     else:
                         updated_count += 1
-                        logger.info(
+                        logger.debug(
                             "Updated event: external_id=%s title=%s",
                             external_id,
-                            event_data.get("summary"),
+                            event.title,
                         )
 
                     records_processed += 1
@@ -139,7 +139,7 @@ class CalendarSyncService:
                     # Commit in batches of 100 to reduce transaction overhead
                     if records_processed % 100 == 0:
                         await self.db.commit()
-                        logger.info("Batch commit: %d events processed", records_processed)
+                        logger.debug("Batch commit: %d events processed", records_processed)
 
                 except Exception as e:
                     logger.error(
@@ -179,11 +179,6 @@ class CalendarSyncService:
                 created_count,
                 updated_count,
                 records_failed,
-            )
-
-            logger.info(
-                "Tables modified: calendar_events (events), calendar_attendees (attendees), "
-                "integration_sync_history (tracking), knowledge_integrations (metadata only)"
             )
 
             return {
@@ -229,7 +224,7 @@ class CalendarSyncService:
         await self.db.commit()
         await self.db.refresh(sync_history)
 
-        logger.info("Created sync history: sync_id=%s", sync_history.sync_id)
+        logger.debug("Created sync history: sync_id=%s", sync_history.sync_id)
         return sync_history
 
     async def _complete_sync_history(
@@ -256,7 +251,7 @@ class CalendarSyncService:
         self.db.add(sync_history)
         await self.db.commit()
 
-        logger.info(
+        logger.debug(
             "Updated sync history: sync_id=%s status=%s processed=%d failed=%d",
             sync_history.sync_id,
             status.value,
@@ -490,7 +485,7 @@ class CalendarSyncService:
     @classmethod
     def _extract_event_fields(cls, event_data: dict[str, Any], provider: str) -> dict[str, Any]:
         """Extract event fields from provider data."""
-        logger.info("Extracting event fields for provider=%s", provider)
+        logger.debug("Extracting event fields for provider=%s", provider)
         if provider == "google":
             return cls._extract_google_event_fields(event_data)
         if provider in ("microsoft", "outlook"):
@@ -585,7 +580,7 @@ class CalendarSyncService:
         # Microsoft uses isCancelled boolean; translate to status string for consistency with Google
         is_cancelled = event_data.get("isCancelled", False)
         status = "cancelled" if is_cancelled else "confirmed"
-        logger.info(
+        logger.debug(
             "Microsoft event extraction: isCancelled=%s -> status=%s, subject=%s",
             is_cancelled,
             status,
