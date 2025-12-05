@@ -287,9 +287,13 @@ async def get_deal_job_service(
     tags=["crm", "deals"],
     summary="List CRM deals with pagination and filtering",
     description="""
-    Retrieve a paginated list of CRM deals for the current organisation.
+    Retrieve a list of CRM deals for the current organisation.
 
-    Supports filtering by:
+    **Pagination Modes:**
+    - Default: Cursor-based pagination (use `limit` and `cursor`)
+    - Fetch All: Set `fetch_all=true` to retrieve all deals in one request (max 500)
+
+    **Filters (work with both modes):**
     - Deal status (OPEN, WON, LOST, CLOSED)
     - Pipeline ID
     - Owner external ID
@@ -297,13 +301,19 @@ async def get_deal_job_service(
     - Close Date range (min/max)
     - Search query on deal name (case-insensitive)
 
-    Uses cursor-based pagination for efficient traversal of large datasets.
+    **Recommendation:** Use `fetch_all=true` for small datasets (<300 deals) to enable
+    instant client-side filtering. Use pagination for larger datasets.
     """,
 )
 async def list_deals(
-    limit: int = Query(20, ge=1, le=100, description="Maximum deals per page"),
+    limit: int = Query(
+        50, ge=1, le=100, description="Maximum deals per page (ignored if fetch_all=true)"
+    ),
     cursor: str | None = Query(
-        None, description="Opaque cursor from previous page (omit for first page)"
+        None, description="Opaque cursor from previous page (ignored if fetch_all=true)"
+    ),
+    fetch_all: bool = Query(
+        False, description="Fetch all deals in one request (max 500, ignores limit/cursor)"
     ),
     statuses: list[CRMDealStatus] | None = Query(None, description="Filter by deal statuses"),
     pipeline_ids: list[UUID] | None = Query(None, description="Filter by pipeline IDs"),
@@ -318,22 +328,42 @@ async def list_deals(
 ):
     """List CRM deals with optional filters and pagination.
 
+    Args:
+        fetch_all: If True, returns all deals (up to 500) ignoring limit/cursor.
+                   Useful for small datasets where client-side filtering is preferred.
+
     Returns:
         GenericResponse containing DealsPage with deals list and next cursor
     """
     try:
-        deals, next_cursor = await service.list_deals(
-            limit=limit,
-            cursor=cursor,
-            statuses=statuses,
-            pipeline_ids=pipeline_ids,
-            owner_external_ids=owner_external_ids,
-            min_amount=min_amount,
-            max_amount=max_amount,
-            min_close_date=min_close_date,
-            max_close_date=max_close_date,
-            q=q,
-        )
+        # Fetch all mode: retrieve all deals without pagination (capped at 500)
+        if fetch_all:
+            deals = await service.get_all_deals(
+                max_results=500,
+                statuses=statuses,
+                pipeline_ids=pipeline_ids,
+                owner_external_ids=owner_external_ids,
+                min_amount=min_amount,
+                max_amount=max_amount,
+                min_close_date=min_close_date,
+                max_close_date=max_close_date,
+                q=q,
+            )
+            next_cursor = None  # No pagination when fetching all
+        else:
+            # Standard pagination mode
+            deals, next_cursor = await service.list_deals(
+                limit=limit,
+                cursor=cursor,
+                statuses=statuses,
+                pipeline_ids=pipeline_ids,
+                owner_external_ids=owner_external_ids,
+                min_amount=min_amount,
+                max_amount=max_amount,
+                min_close_date=min_close_date,
+                max_close_date=max_close_date,
+                q=q,
+            )
 
         # Convert to response models
         items = [
@@ -350,6 +380,7 @@ async def list_deals(
                 "stage_label": deal.stage_label,
                 "pipeline_name": deal.pipeline_name,
                 "pipeline_label": deal.pipeline_label,
+                "owner_external_id": deal.owner_external_id,
                 "owner_name": deal.owner_name,
                 "owner_email": deal.owner_email,
                 "company_external_id": deal.company_external_id,

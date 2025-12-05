@@ -156,6 +156,7 @@ class DealListItem(BaseModel):
     stage_label: str | None
     pipeline_name: str | None
     pipeline_label: str | None
+    owner_external_id: str | None = None
     owner_name: str | None
     owner_email: str | None
     company_external_id: str | None
