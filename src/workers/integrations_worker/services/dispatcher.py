@@ -39,6 +39,165 @@ from ..utils.dedupe import acquire_sync_lock, release_sync_lock
 logger = get_logger(__name__)
 
 
+async def _enrich_participants_after_crm_sync(
+    organisation_id: UUID,
+    integration_id: UUID,
+) -> int:
+    """
+    Re-enrich deal participants after contacts/users sync.
+
+    When contacts or users sync completes, we re-run participant enrichment
+    to populate related_email fields that were empty during deals sync.
+
+    Args:
+        organisation_id: The organisation UUID
+        integration_id: The CRM integration UUID
+
+    Returns:
+        Number of participants enriched
+    """
+    from src.api.dependencies.organisation_dependencies import acquire_org_async_session
+    from src.service.integrations.crm.entities.deal_enrichment_service import (
+        DealEnrichmentService,
+    )
+
+    async for session in acquire_org_async_session(organisation_id):
+        enricher = DealEnrichmentService(db=session, organisation_id=organisation_id)
+        enriched = await enricher.enrich_participants(integration_id)
+        return enriched
+
+    return 0
+
+
+def _trigger_deal_tasks_on_initial_sync(
+    organisation_id: UUID,
+    integration_id: UUID | None,
+    category: str,
+    sync_type: str | None,
+    sync_name: str | None,
+    was_successful: bool,
+) -> None:
+    """
+    Trigger deal worker tasks after a successful initial (full) sync.
+
+    Deal tasks are triggered when:
+    - CRM contacts/users sync completes → re-enriches participants, then triggers matching
+    - Calendar events initial sync completes → triggers deal-meeting matching
+    - Email initial sync completes → triggers deal-email matching
+
+    **CRM Sync Order and Dependencies:**
+    Nango sends separate webhooks for each sync type (deals, contacts, users, etc.).
+    The deal matching algorithm needs contact emails, which come from:
+
+    1. CRMDealParticipant.related_email - populated during enrichment
+    2. Fallback: CRMContact lookup by external_id
+
+    During 'deals' sync:
+    - Creates crm_deals and crm_deal_participants
+    - Participants have related_external_id but NO related_email (HubSpot associations
+      only include contact IDs, not their properties)
+    - enrich_participants() is called but contacts table may be empty → no emails filled
+
+    During 'contacts' sync:
+    - Creates crm_contacts with email addresses
+    - NOW we can enrich participants with contact emails
+
+    During 'users' sync:
+    - Creates crm_users with email addresses
+    - Allows enrichment of USER-type participants (deal owners, collaborators)
+
+    Therefore, we trigger deal tasks after contacts/users sync, not deals sync.
+    This ensures participant emails are available for matching.
+
+    Args:
+        organisation_id: The organisation UUID
+        integration_id: The integration UUID (for re-enrichment)
+        category: Integration category (calendar, email, crm)
+        sync_type: Sync type from Nango (INITIAL, INCREMENTAL)
+        sync_name: Data type synced (events, emails, contacts, deals, users, etc.)
+        was_successful: Whether the sync completed successfully
+    """
+    from src.infra.utils.async_runner import run_async
+
+    # Only trigger on INITIAL sync (full sync)
+    if sync_type != "INITIAL":
+        return
+
+    # Only trigger if sync was successful
+    if not was_successful:
+        return
+
+    org_id_str = str(organisation_id)
+
+    try:
+        # Import here to avoid circular imports
+        from src.workers.deal_worker.tasks.deal_email_tasks import process_deal_emails_task
+        from src.workers.deal_worker.tasks.deal_tasks import process_deal_meetings_task
+
+        # After contacts/users sync, re-enrich participants to fill in emails,
+        # then trigger deal matching tasks
+        if category == "crm" and sync_name in ("contacts", "users"):
+            if integration_id:
+                logger.info(
+                    "Re-enriching deal participants after CRM %s sync: org=%s integration=%s",
+                    sync_name,
+                    organisation_id,
+                    integration_id,
+                )
+                try:
+                    enriched = run_async(
+                        _enrich_participants_after_crm_sync(organisation_id, integration_id)
+                    )
+                    logger.info(
+                        "Enriched %d participants after %s sync: org=%s",
+                        enriched,
+                        sync_name,
+                        organisation_id,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to re-enrich participants: org=%s error=%s",
+                        organisation_id,
+                        str(e),
+                    )
+
+            # Trigger deal matching - now participants should have emails
+            logger.info(
+                "Triggering deal matching tasks after initial CRM %s sync: org=%s",
+                sync_name,
+                organisation_id,
+            )
+            process_deal_meetings_task.delay(org_id_str)
+            process_deal_emails_task.delay(org_id_str)
+
+        # Trigger deal-meeting matching after calendar events sync
+        # This catches case where calendar is connected after CRM
+        if category == "calendar" and sync_name == "events":
+            logger.info(
+                "Triggering deal-meeting matching after initial calendar sync: org=%s",
+                organisation_id,
+            )
+            process_deal_meetings_task.delay(org_id_str)
+
+        # Trigger deal-email matching after email sync
+        # This catches case where email is connected after CRM
+        if category == "email" and sync_name in ("emails", "messages"):
+            logger.info(
+                "Triggering deal-email matching after initial email sync: org=%s",
+                organisation_id,
+            )
+            process_deal_emails_task.delay(org_id_str)
+
+    except Exception as e:
+        # Log but don't fail the sync - deal task triggering is best-effort
+        logger.warning(
+            "Failed to trigger deal tasks after initial sync: org=%s category=%s error=%s",
+            organisation_id,
+            category,
+            str(e),
+        )
+
+
 def _create_crm_service(
     data_type: str,
     session: AsyncSession,
@@ -241,7 +400,7 @@ async def _handle_calendar(
             provider=provider,
             events=records,
         )
-        logger.info(
+        logger.debug(
             "Calendar sync completed for data_type=%s: %d events processed",
             data_type,
             count,
@@ -305,7 +464,7 @@ async def _handle_email(
 
         records_synced = metrics.get("records_processed", 0)
 
-        logger.info(
+        logger.debug(
             "Email sync completed for data_type=%s: %s",
             data_type,
             metrics,
@@ -372,7 +531,7 @@ async def _handle_messaging(
 
         records_synced = metrics.get("records_processed", 0)
 
-        logger.info(
+        logger.debug(
             "Messaging sync completed for data_type=%s: %s",
             data_type,
             metrics,
@@ -422,7 +581,7 @@ async def _handle_crm(
         except (TypeError, ValueError):
             synced_count = len(records)
 
-        logger.info(
+        logger.debug(
             "CRM sync completed for data_type=%s: %s",
             data_type,
             metrics,
@@ -481,7 +640,7 @@ async def _sync_conversation_intelligence(
         except (TypeError, ValueError):
             synced_count = 0
 
-        logger.info(
+        logger.debug(
             "Conversation intelligence sync completed for data_type=%s: %s",
             data_type,
             metrics,
@@ -656,7 +815,7 @@ async def _execute_category_sync(
     sync_data_type: str,
 ) -> tuple[IntegrationMetadata | None, bool]:
     fetcher = get_fetcher(request.category, request.provider, sync_data_type)
-    logger.info("Fetcher obtained: %s", fetcher.__name__ if fetcher else "None")
+    logger.debug("Fetcher obtained: %s", fetcher.__name__ if fetcher else "None")
     if not fetcher:
         logger.warning(
             "No fetcher found for category=%s provider=%s data_type=%s",
@@ -667,9 +826,9 @@ async def _execute_category_sync(
         result.items[sync_data_type] = SyncItemResult(status="ignored", reason="no_fetcher")
         return None, True
 
-    logger.info("Starting Fetch for Connection ID: %s", integration_meta.connection_id)
-    logger.info("Last Synced At: %s", integration_meta.last_synced_at)
-    logger.info("Is Initial Sync: %s", not request.incremental)
+    logger.debug("Starting Fetch for Connection ID: %s", integration_meta.connection_id)
+    logger.debug("Last Synced At: %s", integration_meta.last_synced_at)
+    logger.debug("Is Initial Sync: %s", not request.incremental)
 
     monitored_fetch: MonitoredMessagesFetchResult | None = None
     if request.category == "messaging" and sync_data_type == "messages":
@@ -684,7 +843,7 @@ async def _execute_category_sync(
             is_initial=not request.incremental,
         )
         records = monitored_fetch.messages
-        logger.info(
+        logger.debug(
             "Fetched %d messages across %d monitored channels",
             len(records),
             monitored_fetch.monitored_channel_count,
@@ -698,9 +857,9 @@ async def _execute_category_sync(
             data_type=sync_data_type,
             provider_config_key=provider_key,
         )
-        logger.info("Fetched %d records for data_type=%s", len(records), sync_data_type)
+        logger.debug("Fetched %d records for data_type=%s", len(records), sync_data_type)
     if not records:
-        logger.info(
+        logger.debug(
             "No records returned for data_type=%s; skipping processing.",
             sync_data_type,
         )
@@ -712,7 +871,7 @@ async def _execute_category_sync(
         )
         return None, True
 
-    logger.info("Sample record for data_type=%s: %s", sync_data_type, records[0])
+    logger.debug("Sample record for data_type=%s: %s", sync_data_type, records[0])
 
     outcome = await _dispatch_category(
         category=request.category,
@@ -771,7 +930,7 @@ async def execute_sync(request: SyncJobRequest) -> dict[str, Any]:
             integration_meta.integration_type
         )
 
-        logger.info("Processing data type: %s", sync_data_type)
+        logger.debug("Processing data type: %s", sync_data_type)
 
         # Check sync lock
         with _sync_lock_guard(str(request.integration_id), sync_data_type) as lock_acquired:
@@ -829,6 +988,16 @@ async def execute_sync(request: SyncJobRequest) -> dict[str, Any]:
             success_count,
             1,
             total_records,
+        )
+
+        # Trigger deal tasks on initial sync completion
+        _trigger_deal_tasks_on_initial_sync(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            category=request.category,
+            sync_type=request.sync_type,
+            sync_name=request.sync_name,
+            was_successful=(result.status == "success"),
         )
 
         return result.to_dict()

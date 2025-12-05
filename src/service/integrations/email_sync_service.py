@@ -80,13 +80,16 @@ class EmailSyncService:
         Returns:
             Dictionary with sync statistics
         """
-        sync_history = await self._create_sync_history(integration.integration_id)
+        # Cache integration_id to avoid lazy-loading after commits expire the object
+        integration_id = integration.integration_id
+
+        sync_history = await self._create_sync_history(integration_id)
 
         try:
             folder_list = list(folders)
-            logger.info(
+            logger.debug(
                 "sync_folders started: integration=%s provider=%s folder_count=%d",
-                integration.integration_id,
+                integration_id,
                 provider,
                 len(folder_list),
             )
@@ -106,7 +109,7 @@ class EmailSyncService:
 
                     # Upsert folder to handle race conditions
                     folder = await self._upsert_folder(
-                        integration, folder_data, provider, external_id
+                        integration_id, folder_data, provider, external_id
                     )
 
                     if folder.created_at == folder.updated_at:
@@ -163,9 +166,9 @@ class EmailSyncService:
             self.db.add(integration)
             await self.db.commit()
 
-            logger.info(
+            logger.debug(
                 "Folder sync completed: integration=%s created=%d updated=%d failed=%d",
-                integration.integration_id,
+                integration_id,
                 created_count,
                 updated_count,
                 records_failed,
@@ -182,7 +185,7 @@ class EmailSyncService:
         except Exception as e:
             logger.error(
                 "Folder sync failed: integration=%s error=%s",
-                integration.integration_id,
+                integration_id,
                 str(e),
                 exc_info=True,
             )
@@ -228,13 +231,16 @@ class EmailSyncService:
         Returns:
             Dictionary with sync statistics
         """
-        sync_history = await self._create_sync_history(integration.integration_id)
+        # Cache integration_id to avoid lazy-loading after commits expire the object
+        integration_id = integration.integration_id
+
+        sync_history = await self._create_sync_history(integration_id)
 
         try:
             message_list = list(messages)
-            logger.info(
+            logger.debug(
                 "sync_messages started: integration=%s provider=%s message_count=%d folder_id=%s",
-                integration.integration_id,
+                integration_id,
                 provider,
                 len(message_list),
                 folder_id,
@@ -255,7 +261,7 @@ class EmailSyncService:
 
                     # Upsert message to handle race conditions
                     message = await self._upsert_message(
-                        integration, message_data, provider, external_id, folder_id
+                        integration_id, message_data, provider, external_id, folder_id
                     )
 
                     if message.created_at == message.updated_at:
@@ -312,9 +318,9 @@ class EmailSyncService:
             self.db.add(integration)
             await self.db.commit()
 
-            logger.info(
+            logger.debug(
                 "Message sync completed: integration=%s created=%d updated=%d failed=%d",
-                integration.integration_id,
+                integration_id,
                 created_count,
                 updated_count,
                 records_failed,
@@ -331,7 +337,7 @@ class EmailSyncService:
         except Exception as e:
             logger.error(
                 "Message sync failed: integration=%s error=%s",
-                integration.integration_id,
+                integration_id,
                 str(e),
                 exc_info=True,
             )
@@ -363,7 +369,7 @@ class EmailSyncService:
         await self.db.commit()
         await self.db.refresh(sync_history)
 
-        logger.info("Created sync history: sync_id=%s", sync_history.sync_id)
+        logger.debug("Created sync history: sync_id=%s", sync_history.sync_id)
         return sync_history
 
     async def _complete_sync_history(
@@ -390,7 +396,7 @@ class EmailSyncService:
         self.db.add(sync_history)
         await self.db.commit()
 
-        logger.info(
+        logger.debug(
             "Updated sync history: sync_id=%s status=%s processed=%d failed=%d",
             sync_history.sync_id,
             status.value,
@@ -400,7 +406,7 @@ class EmailSyncService:
 
     async def _upsert_folder(
         self,
-        integration: KnowledgeIntegration,
+        integration_id: UUID,
         folder_data: dict[str, Any],
         provider: str,
         external_id: str,
@@ -414,7 +420,7 @@ class EmailSyncService:
 
         values = {
             "organisation_id": self.organisation_id,
-            "integration_id": integration.integration_id,
+            "integration_id": integration_id,
             "external_folder_id": external_id,
             "synced_at": datetime.now(UTC),
             "created_at": datetime.now(UTC),
@@ -453,7 +459,7 @@ class EmailSyncService:
 
     async def _upsert_message(
         self,
-        integration: KnowledgeIntegration,
+        integration_id: UUID,
         message_data: dict[str, Any],
         provider: str,
         external_id: str,
@@ -468,7 +474,7 @@ class EmailSyncService:
 
         # Resolve folder ID
         resolved_folder_id = await self._ensure_folder_id(
-            integration.integration_id,
+            integration_id,
             message_data,
             provider,
             folder_id,
@@ -477,7 +483,7 @@ class EmailSyncService:
 
         values = {
             "organisation_id": self.organisation_id,
-            "integration_id": integration.integration_id,
+            "integration_id": integration_id,
             "external_message_id": external_id,
             "folder_id": resolved_folder_id,
             "synced_at": datetime.now(UTC),
