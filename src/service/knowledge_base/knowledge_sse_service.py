@@ -8,6 +8,7 @@ filtering, timeouts, and error recovery.
 import asyncio
 import json
 from collections.abc import AsyncGenerator
+from typing import cast
 from uuid import UUID
 
 from sqlalchemy import not_, select
@@ -54,9 +55,13 @@ class KnowledgeSourceSSEService:
     TERMINAL_STATUSES = {
         OrganisationSourceStatus.COMPLETED,
         OrganisationSourceStatus.FAILED,
+        OrganisationSourceStatus.DELETING,  # Deletion in progress is also terminal for SSE
     }
     # Cached list of terminal *values* (strings) for query / comparisons.
     TERMINAL_STATUS_VALUES = [s.value for s in TERMINAL_STATUSES]
+
+    # Additional statuses that indicate complete removal (source no longer exists)
+    DELETION_COMPLETE_STATUSES = {"deleted"}
 
     def __init__(self, org_session: AsyncSession, organisation_id: UUID, user_id: UUID):
         """Initialize SSE service.
@@ -98,22 +103,22 @@ class KnowledgeSourceSSEService:
     ) -> list[OrganisationSource]:
         """Fetch initial source snapshot based on filter criteria (async)."""
         base_filters = [
-            OrganisationSource.organisation_id == self.organisation_id,
-            OrganisationSource.user_id == self.user_id,
-            OrganisationSource.is_deleted.is_(False),  # exclude soft-deleted
+            OrganisationSource.organisation_id == self.organisation_id,  # type: ignore[arg-type]
+            OrganisationSource.user_id == self.user_id,  # type: ignore[arg-type]
+            OrganisationSource.is_deleted == False,  # type: ignore[arg-type]  # noqa: E712
         ]
 
         stmt = select(OrganisationSource).where(*base_filters)
 
         if explicit_ids:
-            stmt = stmt.where(OrganisationSource.source_id.in_(explicit_ids))
+            stmt = stmt.where(OrganisationSource.source_id.in_(explicit_ids))  # type: ignore[attr-defined]
             res = await self.org_session.execute(stmt)
-            return res.scalars().all()
+            return cast(list[OrganisationSource], list(res.scalars().all()))
 
         logger.info("Fetching initial sources for User non-terminal IDs")
-        stmt = stmt.where(not_(OrganisationSource.status.in_(self.TERMINAL_STATUS_VALUES)))
+        stmt = stmt.where(not_(OrganisationSource.status.in_(self.TERMINAL_STATUS_VALUES)))  # type: ignore[attr-defined]
         res = await self.org_session.execute(stmt)
-        sources = res.scalars().all()
+        sources = cast(list[OrganisationSource], list(res.scalars().all()))
         logger.debug("Initial non-terminal sources count=%d", len(sources))
         return sources
 
@@ -143,17 +148,17 @@ class KnowledgeSourceSSEService:
             OrganisationSourceStatus.COMPLETED,
         ]:
             # Generate SAS URLs conditionally (only if paths exist)
-            if getattr(source, "thumbnail_small_path", None):
+            if source.thumbnail_small_path:
                 try:
                     data["thumbnail_small_url"] = await self.storage.generate_read_sas(
-                        source.thumbnail_small_path, minutes=120
+                        cast(str, source.thumbnail_small_path), minutes=120
                     )
                 except Exception:
                     logger.debug("Thumbnail small SAS generation failed", exc_info=True)
-            if getattr(source, "thumbnail_medium_path", None):
+            if source.thumbnail_medium_path:
                 try:
                     data["thumbnail_medium_url"] = await self.storage.generate_read_sas(
-                        source.thumbnail_medium_path, minutes=120
+                        cast(str, source.thumbnail_medium_path), minutes=120
                     )
                 except Exception:
                     logger.debug("Thumbnail medium SAS generation failed", exc_info=True)
@@ -181,16 +186,29 @@ class KnowledgeSourceSSEService:
         allowed_ids_set: set[str] | None,
         watched_status: dict[str, str],
     ) -> dict | None:
-        """Process a single Redis pub/sub message and return an event dict if applicable."""
+        """Process a single Redis pub/sub message and return an event dict if applicable.
+
+        Handles deletion status updates specially:
+        - 'deleting' status with progress updates
+        - 'deleted' status indicates source removal (emit special event type)
+        """
         source_id = message.get("source_id")
         if not source_id or (allowed_ids_set and source_id not in allowed_ids_set):
             return None
-        watched_status[source_id] = message.get("status")
+
+        status = str(message.get("status", ""))
+        watched_status[source_id] = status
+
+        # Use 'deleted' event type for completed deletions to signal UI removal
+        if status in self.DELETION_COMPLETE_STATUSES:
+            return self._send_event("deleted", [message])
+
         return self._send_event("status", [message])
 
     def _all_sources_terminal(self, watched_status: dict[str, str]) -> bool:
-        """Check if all watched sources are in terminal status."""
-        return all(status in self.TERMINAL_STATUS_VALUES for status in watched_status.values())
+        """Check if all watched sources are in terminal status or deleted."""
+        all_terminal_values = set(self.TERMINAL_STATUS_VALUES) | self.DELETION_COMPLETE_STATUSES
+        return all(status in all_terminal_values for status in watched_status.values())
 
     def _should_timeout(
         self, start_time: float, current_time: float, timeout_seconds: int | None

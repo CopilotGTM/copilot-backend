@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field, HttpUrl
@@ -39,8 +40,26 @@ class KnowledgeSourcesStats(BaseModel):
     by_type: dict[str, int]
 
 
-class KnowledgeDeleteResponse(BaseModel):
-    source_id: UUID
-    status: str
+# -------- Delete Models --------
+class KnowledgeBatchDeleteRequest(BaseModel):
+    """Request body for deletion of one or more knowledge sources."""
 
-    model_config = {"from_attributes": True}
+    source_ids: list[UUID] = Field(..., min_length=1, max_length=100)
+    client_batch_id: str | None = Field(default=None, max_length=100)
+
+
+class KnowledgeDeleteResultItem(BaseModel):
+    """Per-source result in batch deletion response."""
+
+    source_id: UUID
+    status: str  # "deleting", "already_deleted", "not_found"
+    job_id: UUID | None = None
+    error_message: str | None = None
+
+
+class KnowledgeBatchDeleteResponse(BaseModel):
+    """Response for batch deletion request."""
+
+    batch_id: UUID
+    results: list[KnowledgeDeleteResultItem]
+    errors: list[dict[str, Any]] = []

@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterable
-from uuid import UUID
+from typing import Any
+from uuid import UUID, uuid4
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from src.domain.models.organisation_tables.job_models import (
+    JobStatus,
+    KnowledgeProcessingJob,
+)
 from src.domain.models.organisation_tables.knowledge_models import (
     OrganisationSource,
     OrganisationSourceStatus,
@@ -16,6 +21,9 @@ from src.infra.utils.cursor import decode_cursor
 from src.infra.utils.logger import get_logger
 
 logger = get_logger("knowledge_access_service")
+
+# Job type constant for deletion tracking
+DELETE_SOURCE_JOB_TYPE = "delete_source"
 
 
 def _get_status_str(status_enum):
@@ -64,22 +72,22 @@ class KnowledgeAccessService:
         """
         # Base filters: organisation scope + exclude soft-deleted
         stmt = select(OrganisationSource).where(
-            OrganisationSource.organisation_id == self.organisation_id,
-            OrganisationSource.user_id == self.user_id,
-            OrganisationSource.is_deleted.is_(False),  # exclude soft-deleted
+            OrganisationSource.organisation_id == self.organisation_id,  # type: ignore[arg-type]
+            OrganisationSource.user_id == self.user_id,  # type: ignore[arg-type]
+            OrganisationSource.is_deleted.is_(False),
         )
 
         if statuses:
             status_values = [s.value if hasattr(s, "value") else str(s) for s in statuses]
-            stmt = stmt.where(OrganisationSource.status.in_(status_values))  # type: ignore[arg-type]
+            stmt = stmt.where(OrganisationSource.status.in_(status_values))  # type: ignore[attr-defined]
 
         if source_types:
             type_values = [s.value if hasattr(s, "value") else str(s) for s in source_types]
-            stmt = stmt.where(OrganisationSource.source_type.in_(type_values))  # type: ignore[arg-type]
+            stmt = stmt.where(OrganisationSource.source_type.in_(type_values))  # type: ignore[attr-defined]
 
         if q:
             like_expr = f"%{q.lower()}%"
-            stmt = stmt.where(OrganisationSource.filename.ilike(like_expr))  # type: ignore[attr-defined]
+            stmt = stmt.where(OrganisationSource.filename.ilike(like_expr))  # type: ignore[union-attr]
 
         if cursor:
             try:
@@ -88,21 +96,21 @@ class KnowledgeAccessService:
                 raise KnowledgeAccessServiceError("Invalid cursor", status_code=400) from e
             stmt = stmt.where(
                 or_(
-                    OrganisationSource.created_at < ts,
+                    OrganisationSource.created_at < ts,  # type: ignore[arg-type]
                     and_(
-                        OrganisationSource.created_at == ts,
-                        OrganisationSource.source_id < sid,
+                        OrganisationSource.created_at == ts,  # type: ignore[arg-type]
+                        OrganisationSource.source_id < sid,  # type: ignore[arg-type]
                     ),
                 )
             )
 
         stmt = stmt.order_by(
-            OrganisationSource.created_at.desc(),
-            OrganisationSource.source_id.desc(),
+            OrganisationSource.created_at.desc(),  # type: ignore[attr-defined]
+            OrganisationSource.source_id.desc(),  # type: ignore[attr-defined]
         ).limit(limit + 1)
 
         res = await self.org_session.execute(stmt)
-        rows: list[OrganisationSource] = res.scalars().all()
+        rows: list[OrganisationSource] = list(res.scalars().all())
         has_more = len(rows) == limit + 1
         items = rows[:limit]
         next_cursor: str | None = None
@@ -190,7 +198,7 @@ class KnowledgeAccessService:
         ]
 
         status_stmt = (
-            select(OrganisationSource.status, func.count())
+            select(OrganisationSource.status, func.count())  # type: ignore[call-overload]
             .where(*base_filters)
             .group_by(OrganisationSource.status)
         )
@@ -205,7 +213,7 @@ class KnowledgeAccessService:
                 total += int(count)
 
         type_stmt = (
-            select(OrganisationSource.source_type, func.count())
+            select(OrganisationSource.source_type, func.count())  # type: ignore[call-overload]
             .where(*base_filters)
             .group_by(OrganisationSource.source_type)
         )
@@ -218,3 +226,97 @@ class KnowledgeAccessService:
                 by_type[key] = int(count)
 
         return {"total": total, "by_status": by_status, "by_type": by_type}
+
+    # -------- Deletion ----------
+    async def request_batch_deletion(
+        self,
+        source_ids: list[UUID],
+    ) -> tuple[list[tuple[OrganisationSource, KnowledgeProcessingJob]], list[dict[str, Any]]]:
+        """Request deletion of one or more sources with job tracking.
+
+        Works for both single and batch deletion - pass one or more source_ids.
+
+        Returns:
+            tuple: (successes, errors)
+            - successes: List of (source, job) tuples for successfully enqueued deletions
+            - errors: List of error dicts for failed operations
+        """
+        successes: list[tuple[OrganisationSource, KnowledgeProcessingJob]] = []
+        errors: list[dict[str, Any]] = []
+
+        for source_id in source_ids:
+            src: OrganisationSource | None = await self.org_session.get(
+                OrganisationSource, source_id
+            )
+
+            # Validate ownership
+            if (
+                not src
+                or src.organisation_id != self.organisation_id
+                or src.user_id != self.user_id
+            ):
+                errors.append(
+                    {
+                        "source_id": str(source_id),
+                        "reason": "not_found",
+                        "message": "Source not found or access denied",
+                    }
+                )
+                continue
+
+            # Idempotent: if already soft-deleted, skip
+            if getattr(src, "is_deleted", False):
+                errors.append(
+                    {
+                        "source_id": str(source_id),
+                        "reason": "already_deleted",
+                        "message": "Source already deleted",
+                    }
+                )
+                continue
+
+            # If already in deleting state, find existing job
+            current_status = _get_status_str(src.status)
+            if current_status == OrganisationSourceStatus.DELETING.value:
+                existing_job_stmt = select(KnowledgeProcessingJob).where(
+                    KnowledgeProcessingJob.source_id == source_id,  # type: ignore[arg-type]
+                    KnowledgeProcessingJob.job_type == DELETE_SOURCE_JOB_TYPE,  # type: ignore[arg-type]
+                )
+                result = await self.org_session.execute(existing_job_stmt)
+                existing_job = result.scalars().first()
+                if existing_job:
+                    successes.append((src, existing_job))
+                continue
+
+            try:
+                # Create deletion job
+                job = KnowledgeProcessingJob(
+                    job_id=uuid4(),
+                    source_id=source_id,
+                    job_type=DELETE_SOURCE_JOB_TYPE,
+                    status=JobStatus.PENDING,
+                )
+                self.org_session.add(job)
+
+                # Update source status to DELETING and soft-delete flag
+                src.status = OrganisationSourceStatus.DELETING
+                src.is_deleted = True
+                self.org_session.add(src)
+
+                await self.org_session.flush()
+                await self.org_session.refresh(job)
+                await self.org_session.commit()
+
+                successes.append((src, job))
+            except Exception as e:
+                await self.org_session.rollback()
+                logger.error("Failed to create deletion job for source %s: %s", source_id, e)
+                errors.append(
+                    {
+                        "source_id": str(source_id),
+                        "reason": "db_error",
+                        "message": "Failed to create deletion job",
+                    }
+                )
+
+        return successes, errors

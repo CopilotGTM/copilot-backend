@@ -47,6 +47,7 @@ All endpoints return the shared `GenericResponse` envelope.
 | `extracting`      | Text extraction specifically in progress                    | Display spinner + percentage if known |
 | `completed`       | Document ready for search and download                      | Mark as available                      |
 | `failed`          | Processing error; see `error_message` for cause             | Show error state with retry guidance   |
+| `deleting`        | Deletion in progress (background cleanup running)           | Show "Deleting..." indicator           |
 
 ---
 
@@ -433,39 +434,264 @@ Returns aggregate counts for dashboard widgets.
 
 ---
 
-## 8. Request Deletion
+## 8. Delete Sources
 
-### Request Deletion Endpoint
+### Delete Sources Endpoint
 
 ```http
-DELETE /users/knowledge/source/{source_id}
+DELETE /users/knowledge/sources
 ```
 
-### Request Deletion Description
+### Delete Sources Description
 
-Soft-deletes a knowledge source and enqueues background cleanup. Returns `202 Accepted` when queued.
+Delete one or more knowledge sources in a single request. This unified endpoint handles both single file and batch deletion - simply pass one or more source IDs. The endpoint:
 
-### Request Deletion Success Response (202)
+1. **Validates ownership** - Each source must belong to the authenticated user's organisation
+2. **Creates deletion jobs** - A `KnowledgeProcessingJob` record is created for each source to track deletion progress
+3. **Updates source status** - Source status changes to `deleting` and `is_deleted` flag is set
+4. **Enqueues background tasks** - Celery tasks are dispatched to perform actual cleanup (blob deletion, document removal)
+5. **Returns immediately** - Returns `202 Accepted` with job tracking information
+
+Supports partial success for batch operations - some sources may be deleted while others fail validation.
+
+### Delete Sources Request Body
+
+```json
+{
+  "source_ids": [
+    "d7b2f0cd-4c9c-44a8-9f2a-998af8db6c34"
+  ],
+  "client_batch_id": "optional-correlation-id"
+}
+```
+
+For batch deletion:
+
+```json
+{
+  "source_ids": [
+    "d7b2f0cd-4c9c-44a8-9f2a-998af8db6c34",
+    "e8c3f1de-5d0a-55b9-0f3b-009bf9ec7d45",
+    "f9d4g2ef-6e1b-66ca-1g4c-110cg0fd8e56"
+  ],
+  "client_batch_id": "optional-correlation-id"
+}
+```
+
+### Delete Sources Request Fields
+
+| Field             | Type         | Required | Description                                      |
+|-------------------|--------------|----------|--------------------------------------------------|
+| `source_ids`      | array[UUID]  | Yes      | List of source IDs to delete (1-100 items)       |
+| `client_batch_id` | string       | No       | Client correlation token (<= 100 characters)     |
+
+### Delete Sources Success Response (202)
+
+Single source:
 
 ```json
 {
   "status": "SUCCESS",
   "message": "Deletion enqueued",
   "data": {
-    "source_id": "d7b2f0cd-4c9c-44a8-9f2a-998af8db6c34",
-    "status": "deleting"
+    "batch_id": "b1234567-89ab-cdef-0123-456789abcdef",
+    "results": [
+      {
+        "source_id": "d7b2f0cd-4c9c-44a8-9f2a-998af8db6c34",
+        "status": "deleting",
+        "job_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+      }
+    ],
+    "errors": []
   }
 }
 ```
 
-### Request Deletion Idempotent Response
+Multiple sources:
 
-If already deleted, returns `SUCCESS` with `status: "deleted"`.
+```json
+{
+  "status": "SUCCESS",
+  "message": "Batch deletion enqueued (3 sources)",
+  "data": {
+    "batch_id": "b1234567-89ab-cdef-0123-456789abcdef",
+    "results": [
+      {
+        "source_id": "d7b2f0cd-4c9c-44a8-9f2a-998af8db6c34",
+        "status": "deleting",
+        "job_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+      },
+      {
+        "source_id": "e8c3f1de-5d0a-55b9-0f3b-009bf9ec7d45",
+        "status": "already_deleted",
+        "job_id": null
+      }
+    ],
+    "errors": []
+  }
+}
+```
 
-### Request Deletion Error Responses
+### Delete Sources Response Fields
 
-- `404` when source missing or not owned by caller
-- `500` when background task could not be enqueued
+| Field                  | Type        | Description                                              |
+|------------------------|-------------|----------------------------------------------------------|
+| `batch_id`             | UUID        | Server-generated ID for this deletion batch              |
+| `results`              | array       | Successfully processed sources                           |
+| `results[].source_id`  | UUID        | The source ID                                            |
+| `results[].status`     | string      | `"deleting"` or `"already_deleted"`                      |
+| `results[].job_id`     | UUID\|null  | Job tracking ID (null if already deleted)                |
+| `errors`               | array       | Sources that failed validation                           |
+| `errors[].source_id`   | UUID        | The source ID that failed                                |
+| `errors[].reason`      | string      | Error code: `"not_found"`, `"already_deleted"`, `"db_error"` |
+| `errors[].message`     | string      | Human-readable error description                         |
+
+### Delete Sources Partial Error Response (202)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Batch deletion enqueued (2 sources) with 1 errors",
+  "data": {
+    "batch_id": "b1234567-89ab-cdef-0123-456789abcdef",
+    "results": [
+      {
+        "source_id": "d7b2f0cd-4c9c-44a8-9f2a-998af8db6c34",
+        "status": "deleting",
+        "job_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+      }
+    ],
+    "errors": [
+      {
+        "source_id": "f9d4g2ef-6e1b-66ca-1g4c-110cg0fd8e56",
+        "reason": "not_found",
+        "message": "Source not found or access denied"
+      }
+    ]
+  }
+}
+```
+
+### Delete Sources Idempotent Behavior
+
+- If a source is already deleted, it appears in `errors` with `reason: "already_deleted"`
+- If a source is currently being deleted (status = `deleting`), it appears in `results` with the existing `job_id`
+- Repeated deletion requests for the same source are safe and will not cause errors
+
+### Delete Sources Error Responses
+
+- `400` when request validation fails (empty source_ids, exceeds 100 limit)
+- `400` when all deletion requests failed (all sources not found or already deleted)
+- `500` unexpected server error
+
+### Delete Sources Background Processing
+
+After the API returns `202 Accepted`, background workers perform the actual cleanup:
+
+1. **Delete derived documents** - Removes all chunks from `knowledge_base` table
+2. **Delete associated jobs** - Cleans up `KnowledgeProcessingJob` records
+3. **Delete blobs** - Removes original file and thumbnails from Azure storage
+4. **Hard-delete source** - Permanently removes the `OrganisationSource` record
+
+Progress is published via Redis pub/sub and can be monitored through SSE (see below).
+
+- `500` unexpected server error
+
+---
+
+## 9. Deletion Status via SSE
+
+To track deletion progress in real-time, subscribe to the SSE stream endpoint with the source IDs being deleted.
+
+### SSE Stream Endpoint for Deletion
+
+```http
+GET /users/knowledge/sources/stream?source_ids=<uuid>&source_ids=<uuid>
+```
+
+Pass the `source_id` values from the deletion response to track specific sources. When subscribed to `/sources/stream`, deletion progress is streamed as follows:
+
+### Deletion Progress Event
+
+During deletion, the worker publishes progress updates:
+
+| Progress | Stage Description                        |
+|----------|------------------------------------------|
+| 0%       | Deletion job started                     |
+| 100%     | Deletion complete, source removed        |
+
+```json
+{
+  "event": "status",
+  "data": [{
+    "source_id": "d7b2f0cd-4c9c-44a8-9f2a-998af8db6c34",
+    "status": "deleting",
+    "progress": 50,
+    "error_message": null
+  }]
+}
+```
+
+### Deletion Completed Event
+
+When deletion completes successfully, a special `deleted` event type is emitted to signal the UI should remove the source from its state:
+
+```json
+{
+  "event": "deleted",
+  "data": [{
+    "source_id": "d7b2f0cd-4c9c-44a8-9f2a-998af8db6c34",
+    "status": "deleted",
+    "progress": 100
+  }]
+}
+```
+
+### Deletion Failed Event
+
+If deletion fails at any stage, the source status changes to `failed` with an error message:
+
+```json
+{
+  "event": "status",
+  "data": [{
+    "source_id": "d7b2f0cd-4c9c-44a8-9f2a-998af8db6c34",
+    "status": "failed",
+    "progress": 60,
+    "error_message": "Blob deletion failed: Azure storage timeout"
+  }]
+}
+```
+
+### Frontend Integration Example
+
+```javascript
+// After calling DELETE /users/knowledge/sources
+const response = await deleteSourcesAPI({ source_ids: [...] });
+const sourceIds = response.data.results.map(r => r.source_id);
+
+// Subscribe to SSE for deletion progress
+const params = sourceIds.map(id => `source_ids=${id}`).join('&');
+const eventSource = new EventSource(`/users/knowledge/sources/stream?${params}`);
+
+eventSource.addEventListener('status', (event) => {
+  const updates = JSON.parse(event.data);
+  updates.forEach(update => {
+    if (update.status === 'deleting') {
+      updateProgressUI(update.source_id, update.progress);
+    } else if (update.status === 'failed') {
+      showErrorUI(update.source_id, update.error_message);
+    }
+  });
+});
+
+eventSource.addEventListener('deleted', (event) => {
+  const updates = JSON.parse(event.data);
+  updates.forEach(update => {
+    removeSourceFromUI(update.source_id);
+  });
+});
+```
 
 ---
 
