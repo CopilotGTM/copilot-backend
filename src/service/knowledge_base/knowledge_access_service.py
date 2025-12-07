@@ -2,10 +2,17 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterable
-from uuid import UUID
+from datetime import datetime
+from typing import Any
+from uuid import UUID, uuid4
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, not_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from src.api.schemas.knowledge_access_models import ACTIVE_STATUSES
+from src.domain.models.organisation_tables.job_models import (
+    JobStatus,
+    KnowledgeProcessingJob,
+)
 from src.domain.models.organisation_tables.knowledge_models import (
     OrganisationSource,
     OrganisationSourceStatus,
@@ -16,6 +23,9 @@ from src.infra.utils.cursor import decode_cursor
 from src.infra.utils.logger import get_logger
 
 logger = get_logger("knowledge_access_service")
+
+# Job type constant for deletion tracking
+DELETE_SOURCE_JOB_TYPE = "delete_source"
 
 
 def _get_status_str(status_enum):
@@ -57,29 +67,48 @@ class KnowledgeAccessService:
         statuses: Iterable[OrganisationSourceStatus | str] | None = None,
         source_types: Iterable[SourceType | str] | None = None,
         q: str | None = None,
+        updated_after: datetime | None = None,
     ) -> tuple[list[OrganisationSource], str | None]:
         """Return page of sources (key‑set pagination).
+
+        Args:
+            limit: Max items to return
+            cursor: Pagination cursor from previous response
+            statuses: Filter by status. If not provided, 'failed' status is excluded by default.
+            source_types: Filter by source type
+            q: Case-insensitive filename search
+            updated_after: Filter sources updated after this timestamp
 
         Returns (items, next_cursor).
         """
         # Base filters: organisation scope + exclude soft-deleted
         stmt = select(OrganisationSource).where(
-            OrganisationSource.organisation_id == self.organisation_id,
-            OrganisationSource.user_id == self.user_id,
-            OrganisationSource.is_deleted.is_(False),  # exclude soft-deleted
+            OrganisationSource.organisation_id == self.organisation_id,  # type: ignore[arg-type]
+            OrganisationSource.user_id == self.user_id,  # type: ignore[arg-type]
+            OrganisationSource.is_deleted.is_(False),
         )
 
         if statuses:
+            # User explicitly requested specific statuses - include them
             status_values = [s.value if hasattr(s, "value") else str(s) for s in statuses]
-            stmt = stmt.where(OrganisationSource.status.in_(status_values))  # type: ignore[arg-type]
+            stmt = stmt.where(OrganisationSource.status.in_(status_values))  # type: ignore[attr-defined]
+        else:
+            # No status filter provided - exclude 'failed' by default
+            # This keeps normal browsing clean; failed files require explicit query
+            stmt = stmt.where(
+                not_(OrganisationSource.status == OrganisationSourceStatus.FAILED.value)  # type: ignore[arg-type]
+            )
 
         if source_types:
             type_values = [s.value if hasattr(s, "value") else str(s) for s in source_types]
-            stmt = stmt.where(OrganisationSource.source_type.in_(type_values))  # type: ignore[arg-type]
+            stmt = stmt.where(OrganisationSource.source_type.in_(type_values))  # type: ignore[attr-defined]
 
         if q:
             like_expr = f"%{q.lower()}%"
-            stmt = stmt.where(OrganisationSource.filename.ilike(like_expr))  # type: ignore[attr-defined]
+            stmt = stmt.where(OrganisationSource.filename.ilike(like_expr))  # type: ignore[union-attr]
+
+        if updated_after:
+            stmt = stmt.where(OrganisationSource.updated_at >= updated_after)  # type: ignore[arg-type]
 
         if cursor:
             try:
@@ -88,21 +117,21 @@ class KnowledgeAccessService:
                 raise KnowledgeAccessServiceError("Invalid cursor", status_code=400) from e
             stmt = stmt.where(
                 or_(
-                    OrganisationSource.created_at < ts,
+                    OrganisationSource.created_at < ts,  # type: ignore[arg-type]
                     and_(
-                        OrganisationSource.created_at == ts,
-                        OrganisationSource.source_id < sid,
+                        OrganisationSource.created_at == ts,  # type: ignore[arg-type]
+                        OrganisationSource.source_id < sid,  # type: ignore[arg-type]
                     ),
                 )
             )
 
         stmt = stmt.order_by(
-            OrganisationSource.created_at.desc(),
-            OrganisationSource.source_id.desc(),
+            OrganisationSource.created_at.desc(),  # type: ignore[attr-defined]
+            OrganisationSource.source_id.desc(),  # type: ignore[attr-defined]
         ).limit(limit + 1)
 
         res = await self.org_session.execute(stmt)
-        rows: list[OrganisationSource] = res.scalars().all()
+        rows: list[OrganisationSource] = list(res.scalars().all())
         has_more = len(rows) == limit + 1
         items = rows[:limit]
         next_cursor: str | None = None
@@ -137,17 +166,20 @@ class KnowledgeAccessService:
             raise KnowledgeAccessServiceError("Could not generate download URL") from e
 
     async def build_item_dict(self, src: OrganisationSource, include_urls: bool) -> dict:
+        status_str = _get_status_str(src.status)
+
         def base_data() -> dict:
             return {
                 "source_id": str(src.source_id),
                 "filename": src.filename,
                 "mimetype": src.mimetype,
                 "size_bytes": src.size_bytes,
-                "status": _get_status_str(src.status),
+                "status": status_str,
                 "created_at": src.created_at,
                 "updated_at": src.updated_at,
                 "error_message": src.error_message,
                 "checksum": getattr(src, "checksum", None),
+                "is_active": status_str in ACTIVE_STATUSES,
             }
 
         async def generate_url(path: str, key: str):
@@ -183,14 +215,17 @@ class KnowledgeAccessService:
         """Return aggregated counts for dashboard usage.
 
         Counts are restricted to the current organisation (matching list logic).
+        Includes active_count (sources needing SSE monitoring) and recent_failures_24h.
         """
+        from datetime import UTC, datetime, timedelta
+
         base_filters = [
             OrganisationSource.organisation_id == self.organisation_id,
             OrganisationSource.is_deleted.is_(False),
         ]
 
         status_stmt = (
-            select(OrganisationSource.status, func.count())
+            select(OrganisationSource.status, func.count())  # type: ignore[call-overload]
             .where(*base_filters)
             .group_by(OrganisationSource.status)
         )
@@ -198,14 +233,18 @@ class KnowledgeAccessService:
         status_rows = status_res.all()
         by_status: dict[str, int] = {}
         total = 0
+        active_count = 0
         for status_val, count in status_rows:
             key = _get_status_str(status_val)
             if key:
                 by_status[key] = int(count)
                 total += int(count)
+                # Count active sources (those needing SSE monitoring)
+                if key in ACTIVE_STATUSES:
+                    active_count += int(count)
 
         type_stmt = (
-            select(OrganisationSource.source_type, func.count())
+            select(OrganisationSource.source_type, func.count())  # type: ignore[call-overload]
             .where(*base_filters)
             .group_by(OrganisationSource.source_type)
         )
@@ -217,4 +256,118 @@ class KnowledgeAccessService:
             if key:
                 by_type[key] = int(count)
 
-        return {"total": total, "by_status": by_status, "by_type": by_type}
+        # Count recent failures (last 24 hours)
+        cutoff_24h = datetime.now(UTC) - timedelta(hours=24)
+        recent_failures_stmt = (
+            select(func.count())
+            .select_from(OrganisationSource)
+            .where(
+                *base_filters,
+                OrganisationSource.status == OrganisationSourceStatus.FAILED.value,
+                OrganisationSource.updated_at >= cutoff_24h,
+            )
+        )
+        recent_failures_res = await self.org_session.execute(recent_failures_stmt)
+        recent_failures_24h = recent_failures_res.scalar() or 0
+
+        return {
+            "total": total,
+            "by_status": by_status,
+            "by_type": by_type,
+            "active_count": active_count,
+            "recent_failures_24h": recent_failures_24h,
+        }
+
+    # -------- Deletion ----------
+    async def request_batch_deletion(
+        self,
+        source_ids: list[UUID],
+    ) -> tuple[list[tuple[OrganisationSource, KnowledgeProcessingJob]], list[dict[str, Any]]]:
+        """Request deletion of one or more sources with job tracking.
+
+        Works for both single and batch deletion - pass one or more source_ids.
+
+        Returns:
+            tuple: (successes, errors)
+            - successes: List of (source, job) tuples for successfully enqueued deletions
+            - errors: List of error dicts for failed operations
+        """
+        successes: list[tuple[OrganisationSource, KnowledgeProcessingJob]] = []
+        errors: list[dict[str, Any]] = []
+
+        for source_id in source_ids:
+            src: OrganisationSource | None = await self.org_session.get(
+                OrganisationSource, source_id
+            )
+
+            # Validate ownership
+            if (
+                not src
+                or src.organisation_id != self.organisation_id
+                or src.user_id != self.user_id
+            ):
+                errors.append(
+                    {
+                        "source_id": str(source_id),
+                        "reason": "not_found",
+                        "message": "Source not found or access denied",
+                    }
+                )
+                continue
+
+            # Idempotent: if already soft-deleted, skip
+            if getattr(src, "is_deleted", False):
+                errors.append(
+                    {
+                        "source_id": str(source_id),
+                        "reason": "already_deleted",
+                        "message": "Source already deleted",
+                    }
+                )
+                continue
+
+            # If already in deleting state, find existing job
+            current_status = _get_status_str(src.status)
+            if current_status == OrganisationSourceStatus.DELETING.value:
+                existing_job_stmt = select(KnowledgeProcessingJob).where(
+                    KnowledgeProcessingJob.source_id == source_id,  # type: ignore[arg-type]
+                    KnowledgeProcessingJob.job_type == DELETE_SOURCE_JOB_TYPE,  # type: ignore[arg-type]
+                )
+                result = await self.org_session.execute(existing_job_stmt)
+                existing_job = result.scalars().first()
+                if existing_job:
+                    successes.append((src, existing_job))
+                continue
+
+            try:
+                # Create deletion job
+                job = KnowledgeProcessingJob(
+                    job_id=uuid4(),
+                    source_id=source_id,
+                    job_type=DELETE_SOURCE_JOB_TYPE,
+                    status=JobStatus.PENDING,
+                )
+                self.org_session.add(job)
+
+                # Update source status to DELETING and soft-delete flag
+                src.status = OrganisationSourceStatus.DELETING
+                src.is_deleted = True
+                self.org_session.add(src)
+
+                await self.org_session.flush()
+                await self.org_session.refresh(job)
+                await self.org_session.commit()
+
+                successes.append((src, job))
+            except Exception as e:
+                await self.org_session.rollback()
+                logger.error("Failed to create deletion job for source %s: %s", source_id, e)
+                errors.append(
+                    {
+                        "source_id": str(source_id),
+                        "reason": "db_error",
+                        "message": "Failed to create deletion job",
+                    }
+                )
+
+        return successes, errors

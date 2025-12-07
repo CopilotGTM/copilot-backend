@@ -32,6 +32,7 @@ class OrganisationSourceStatus(str, Enum):
     CHUNKING         -> (Reserved) Specifically performing chunk & embed (optional future granularity).
     COMPLETED        -> All processing succeeded; source ready for retrieval / search.
     FAILED           -> Terminal error state.
+    DELETING         -> Deletion in progress (background cleanup running).
     """
 
     PENDING_UPLOAD = "pending_upload"
@@ -41,6 +42,7 @@ class OrganisationSourceStatus(str, Enum):
     EXTRACTING = "extracting"
     COMPLETED = "completed"
     FAILED = "failed"
+    DELETING = "deleting"
 
 
 class OrganisationSource(TimestampMixin, table=True):

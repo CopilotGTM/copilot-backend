@@ -165,7 +165,53 @@ Architecture and Dependencies
 - Routers: `upload_handler.py`, `access_handler.py`.
 - Services: `KnowledgeUploadService`, `KnowledgeAccessService`, `KnowledgeSourceSSEService`.
 - Infra: `AzureOrganisationBlobStorage` (SAS read/write, thumbnails), `AsyncRedisPubSub` (channels `kb:{org_id}:sources`).
-- Background: Celery `src/workers/knowledge_worker/celery_app.py` tasks `knowledge.post_upload_process`, `knowledge.delete_source`.
+- Background: Celery `src/workers/knowledge_worker/celery_app.py` tasks.
+
+### Background Worker Tasks
+
+| Task | Purpose | Trigger |
+|------|---------|--------|
+| `knowledge.post_upload_process` | Checksum validation, thumbnail generation | `finalize/batch` API |
+| `knowledge.document_extraction` | PDF/DOC text extraction, chunking, embeddings | After post_upload_process |
+| `knowledge.delete_source` | Blob cleanup, DB hard-delete | `DELETE /source/{id}` API |
+
+### Extraction Pipeline Architecture
+
+```mermaid
+flowchart TD
+    A[document_extraction task] --> B[Download blob to temp file]
+    B --> C[ExtractionService.extract_and_store]
+    C --> D[ParserRegistry selects parser by MIME]
+    D --> E[PDFParser / TextParser]
+    E --> F[ChunkProcessor.process_all]
+    F --> G[Per-chunk: embedding + multimodal]
+    G --> H[DocumentStore.store]
+    H --> I[ProgressPublisher updates]
+    I --> J[Redis pub/sub → SSE]
+```
+
+### Key Services (src/workers/knowledge_worker/services/)
+
+| Service | Responsibility |
+|---------|---------------|
+| `ExtractionService` | Orchestrates parse → process → store pipeline |
+| `ChunkProcessor` | Handles embedding generation, multimodal analysis |
+| `ProgressPublisher` | Publishes progress events to Redis |
+| `TaskHelperService` | Status management, job validation |
+
+### Task Configuration
+
+```python
+@app.task(
+    name="knowledge.document_extraction",
+    bind=True,
+    acks_late=True,
+    max_retries=3,
+    default_retry_delay=60,
+    time_limit=1800,       # 30 min hard limit
+    soft_time_limit=1680,  # 28 min soft limit
+)
+```
 
 SSE Status Flow
 
@@ -185,10 +231,51 @@ sequenceDiagram
   SSE-->>UI: "status" events; emits "complete" when all terminal
 ```
 
+### SSE Event Types
+
+| Event Type | Purpose | Payload |
+|------------|---------|--------|
+| `status` | Source status/progress update | `KnowledgeSourceEventUpdate[]` |
+| `deleted` | Source permanently removed | `[{source_id, status: "deleted", progress: 100}]` |
+| `complete` | All watched sources terminal | `{message: "all_sources_completed"}` |
+| `ping` | Heartbeat (every 25s) | `{timestamp: <unix_epoch>}` |
+| `timeout` | Stream timeout (15 min) | `{message, timeout_seconds, reconnect: true}` |
+| `error` | Server error occurred | `{message, error_type, reconnect: true}` |
+
+### Terminal Statuses
+
+SSE stops tracking when source reaches: `completed`, `failed`, `deleting`, `deleted`
+
+```python
+TERMINAL_STATUSES = {
+    OrganisationSourceStatus.COMPLETED,
+    OrganisationSourceStatus.FAILED,
+    OrganisationSourceStatus.DELETING,
+}
+DELETION_COMPLETE_STATUSES = {"deleted"}
+```
+
+### Extraction Progress Stages
+
+During `extracting` status, `progress` field updates through these stages:
+
+| Progress | Stage | Description |
+|----------|-------|-------------|
+| 5% | Job started | Task picked up by Celery worker |
+| 20% | Document parsed | PDF/DOC parsed, pages extracted |
+| 20-80% | Chunk processing | Per-chunk embedding + multimodal analysis |
+| 90% | Storing results | Writing chunks to knowledge base |
+| 100% | Complete | Extraction finished successfully |
+
+Progress formula during chunk processing: `progress = 20 + (chunk_index / total_chunks) * 60`
+
 Listing and Download
 
 - List: cursor over `(created_at DESC, source_id DESC)`; cursor is opaque and must be echoed back verbatim.
-- Filters: status (enum), type (file/integration), filename search (`ILIKE %q%`). Soft-deleted rows are excluded.
+- Filters: status (enum), type (file/integration), filename search (`ILIKE %q%`), `updated_after` (datetime). Soft-deleted rows are excluded.
+- **Failed exclusion**: By default, `failed` status is excluded from results. To fetch failed files, explicitly pass `statuses=failed`.
+- **Time filter**: Use `updated_after` parameter to fetch recent failures (e.g., last 7 days).
+- **is_active field**: Each list item includes `is_active: bool` indicating if SSE monitoring is needed.
 - Optional URLs: when `include_urls=true`, SAS URLs for thumbnails are generated concurrently.
 - Download: validates org+user ownership and `storage_path`, then returns a read SAS URL.
 
@@ -212,8 +299,10 @@ Configuration
 Performance Notes
 
 - Presign: per-file validation; partial failures do not block the batch.
-- SSE: heartbeats ~25s; returns `complete` when all watched sources reach terminal state.
-- Thumbnails: generated and signed on demand; use concurrency when building lists.
+- SSE: heartbeats every 25s; stream timeout after 900s (15 min); returns `complete` when all watched sources reach terminal state.
+- Thumbnails: generated at ~20% extraction progress; SAS URLs expire after 120 minutes.
+- Progress updates: published per-chunk during extraction for granular UI feedback.
+- Redis channel pattern: `kb:{org_id}:sources` - one channel per organisation.
 
 Operational Tips
 

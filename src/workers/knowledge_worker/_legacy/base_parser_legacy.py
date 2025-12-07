@@ -65,6 +65,6 @@ class BaseParser(ABC):
         if callable(m):
             try:
                 return list(m())
-            except Exception:
-                pass
+            except Exception:  # noqa: S110
+                pass  # Fallback to empty list below
         return []

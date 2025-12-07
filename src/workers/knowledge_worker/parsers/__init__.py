@@ -1,13 +1,17 @@
 # Parser modules for document extraction
-from .base_parser import BaseParser
-from .parser_factory import ParserFactory, parser_factory
+
+# Parsers
 from .pdf_parser import PDFParser
-from .pdf_parser import PDFParser as DocumentParser  # Backward compatibility
+from .protocol import IDocumentParser, UnsupportedMimeTypeError
+from .registry import ParserRegistry
+from .text_parser import TextParser
 
 __all__ = [
-    "ParserFactory",
-    "parser_factory",
-    "BaseParser",
+    # Core protocol and registry
+    "IDocumentParser",
+    "UnsupportedMimeTypeError",
+    "ParserRegistry",
+    # Parsers
     "PDFParser",
-    "DocumentParser",  # legacy name
+    "TextParser",
 ]

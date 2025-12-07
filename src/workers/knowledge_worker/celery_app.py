@@ -10,6 +10,12 @@ import os
 os.environ["MAX_TENANT_ENGINES"] = "1"
 os.environ["TENANT_POOL_MULTIPLIER"] = "1.0"
 
+# Disable HuggingFace symlinks for Windows compatibility
+# Windows doesn't support symlinks without admin privileges or Developer Mode
+# Setting this makes HF use file copies instead of symlinks (uses more disk space but works)
+os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
+
 from celery.signals import (
     task_failure,
     task_postrun,

@@ -1,19 +1,23 @@
 from __future__ import annotations
 
 import asyncio
-from uuid import UUID
+from datetime import datetime
+from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Body, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
     get_current_user,
     get_org_async_session,
 )
-from src.api.dependencies.rate_limit import rate_limit_user_read
+from src.api.dependencies.rate_limit import rate_limit_user_read, rate_limit_user_write
 from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.knowledge_access_models import (
-    KnowledgeDeleteResponse,
+    ACTIVE_STATUSES,
+    KnowledgeBatchDeleteRequest,
+    KnowledgeBatchDeleteResponse,
+    KnowledgeDeleteResultItem,
     KnowledgeDownloadResponse,
     KnowledgeSourceListItem,
     KnowledgeSourcesPage,
@@ -21,7 +25,6 @@ from src.api.schemas.knowledge_access_models import (
 )
 from src.api.utils.http_response import Response
 from src.domain.models.organisation_tables.knowledge_models import (
-    OrganisationSource,
     OrganisationSourceStatus,
     SourceType,
 )
@@ -78,12 +81,17 @@ async def list_sources(
         None, description="Opaque cursor returned by previous page (omit for first)"
     ),
     statuses: list[OrganisationSourceStatus] | None = Query(
-        None, description="Optional list of statuses to filter"
+        None,
+        description="Optional list of statuses to filter. Note: 'failed' status is excluded by default unless explicitly requested.",
     ),
     source_types: list[SourceType] | None = Query(
         None, description="Optional list of source types (e.g. file, integration)"
     ),
     q: str | None = Query(None, description="Case-insensitive filename search fragment"),
+    updated_after: datetime | None = Query(
+        None,
+        description="Filter sources updated after this timestamp (ISO8601). Useful for fetching recent failures.",
+    ),
     include_urls: bool = Query(
         False,
         description="If true include read + thumbnail SAS URLs (extra storage calls).",
@@ -98,6 +106,7 @@ async def list_sources(
             statuses=statuses,
             source_types=source_types,
             q=q,
+            updated_after=updated_after,
         )
         # Build item dicts with optional URLs concurrently
         items: list[KnowledgeSourceListItem] = []
@@ -112,17 +121,19 @@ async def list_sources(
                 items.append(KnowledgeSourceListItem(**res))
         else:
             for src in sources:
+                status_str = _get_status_str(src.status)
                 items.append(
                     KnowledgeSourceListItem(
                         source_id=src.source_id,
                         filename=src.filename,
                         mimetype=src.mimetype,
                         size_bytes=src.size_bytes,
-                        status=_get_status_str(src.status),
+                        status=status_str,
                         created_at=src.created_at,
                         updated_at=src.updated_at,
                         error_message=src.error_message,
                         checksum=getattr(src, "checksum", None),
+                        is_active=status_str in ACTIVE_STATUSES,
                     )
                 )
         page = KnowledgeSourcesPage(items=items, cursor=next_cursor)
@@ -182,68 +193,97 @@ async def sources_stats(
 
 
 @access_router.delete(
-    "/source/{source_id}",
-    response_model=GenericResponse[KnowledgeDeleteResponse],
+    "/sources",
+    response_model=GenericResponse[KnowledgeBatchDeleteResponse],
     tags=["knowledge_access"],
-    summary="Request deletion of a knowledge source and its derived records",
+    summary="Delete one or more knowledge sources",
     status_code=status.HTTP_202_ACCEPTED,
 )
-async def delete_source(
-    source_id: UUID,
+async def delete_sources(
+    payload: KnowledgeBatchDeleteRequest = Body(...),
     service: KnowledgeAccessService = Depends(get_knowledge_access_service),
+    _rl: None = Depends(rate_limit_user_write),
 ):
-    """Enqueue deletion of a source and all related records.
+    """Enqueue deletion of one or more sources and their related records.
+
+    Supports both single and batch deletion - pass one or more source_ids.
 
     Behaviour:
-    - Validates access to the source (org + ownership).
-    - Marks the source as soft-deleted (`is_deleted` = True).
-    - Enqueues background task to delete DB records and blobs.
-    - Returns 202 Accepted on successful enqueue.
+    - Validates access to each source (org + ownership).
+    - Creates deletion jobs for tracking.
+    - Marks sources as soft-deleted (`is_deleted` = True) and status as DELETING.
+    - Enqueues background tasks for each source.
+    - Returns 202 Accepted with per-source results and any errors.
+    - Partial success supported: some sources may succeed while others fail.
     """
     try:
-        # Permission check: source must exist and belong to caller
-        src = await service.session.get(OrganisationSource, source_id)
-        if (
-            not src
-            or src.organisation_id != service.organisation_id
-            or src.user_id != service.user_id
-        ):
-            return Response.not_found_error_response("Source not found or access denied")
+        batch_id = uuid4()
+        successes, errors = await service.request_batch_deletion(payload.source_ids)
 
-        # Idempotent check: if already soft-deleted, return an accepted response
-        if getattr(src, "is_deleted", False):
-            return Response.accepted_response(
-                "Deletion already in progress or completed",
-                KnowledgeDeleteResponse(source_id=source_id, status="deleted"),
-            )
+        results: list[KnowledgeDeleteResultItem] = []
 
-        # Mark as soft-deleted immediately
-        if hasattr(src, "is_deleted"):
-            src.is_deleted = True
+        # Enqueue tasks for successful deletions
+        for src, job in successes:
             try:
-                service.session.add(src)
-            except Exception:
-                await service.session.rollback()
-                logger.error("Soft delete commit failed for %s", source_id, exc_info=True)
-                return Response.internal_server_error_response("Failed to update source status")
+                knowledge_app.send_task(
+                    "knowledge.delete_source",
+                    args=[str(service.organisation_id), str(src.source_id), str(job.job_id)],
+                    queue="knowledge_upload",
+                    routing_key="knowledge_upload",
+                )
+                results.append(
+                    KnowledgeDeleteResultItem(
+                        source_id=src.source_id,
+                        status="deleting",
+                        job_id=job.job_id,
+                    )
+                )
+            except Exception as task_err:
+                logger.error(
+                    "Failed to enqueue deletion for source %s: %s", src.source_id, task_err
+                )
+                errors.append(
+                    {
+                        "source_id": str(src.source_id),
+                        "reason": "enqueue_failed",
+                        "message": f"Failed to enqueue task: {task_err}",
+                    }
+                )
 
-        # Enqueue deletion task in knowledge worker (fast lane queue)
-        try:
-            knowledge_app.send_task(
-                "knowledge.delete_source",
-                args=[str(service.organisation_id), str(source_id)],
-                queue="knowledge_upload",
-                routing_key="knowledge_upload",
-            )
-        except Exception as task_err:
-            logger.error("Failed to enqueue deletion for source %s: %s", source_id, task_err)
-            return Response.internal_server_error_response("Failed to enqueue delete request")
+        # Convert error dicts to result items for already_deleted cases
+        error_results = []
+        for err in errors:
+            if err.get("reason") == "already_deleted":
+                results.append(
+                    KnowledgeDeleteResultItem(
+                        source_id=UUID(err["source_id"]),
+                        status="already_deleted",
+                        job_id=None,
+                    )
+                )
+            else:
+                error_results.append(err)
 
-        delete_resp = KnowledgeDeleteResponse(
-            source_id=source_id,
-            status="deleting",
+        response = KnowledgeBatchDeleteResponse(
+            batch_id=batch_id,
+            results=results,
+            errors=error_results,
         )
-        return Response.accepted_response("Deletion enqueued", delete_resp)
+
+        if error_results and not results:
+            return Response.error_response(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                message="All deletion requests failed",
+                data=response,
+            )
+
+        message = "Deletion enqueued"
+        if len(payload.source_ids) > 1:
+            message = f"Batch deletion enqueued ({len(results)} sources)"
+        if error_results:
+            message = f"{message} with {len(error_results)} errors"
+
+        return Response.accepted_response(message, response)
     except Exception as e:  # pragma: no cover
-        logger.error("Unexpected error enqueuing deletion: %s", e, exc_info=True)
+        logger.error("Unexpected error in deletion: %s", e, exc_info=True)
         return Response.internal_server_error_response(KnowledgeBaseErrors.UNEXPECTED_ERROR)
