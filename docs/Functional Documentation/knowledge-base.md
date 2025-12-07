@@ -36,11 +36,32 @@ All endpoints sit under the `/users/knowledge` base path and return the common `
 
 ### Status lifecycle (frontend badge mapping)
 
-- `pending_upload` → file created, waiting for blob upload.
-- `uploaded` → blob exists; ready for finalize.
-- `processing` / `extracting` → background jobs running.
-- `completed` → text search-ready; thumbnails and filters available.
-- `failed` → unrecoverable error; inspect `error_message` for cause.
+| Status | Meaning | Terminal? | UI Action |
+|--------|---------|-----------|----------|
+| `pending_upload` | File created, waiting for blob upload | No | Show "Waiting" badge |
+| `uploaded` | Blob exists; ready for finalize | No | Enable "Process" button |
+| `processing` | Initial processing (checksum, thumbnails) | No | Show "Preparing..." |
+| `extracting` | Text extraction in progress (0-100%) | No | Show progress bar |
+| `completed` | Text search-ready; thumbnails available | Yes | Show success, enable actions |
+| `failed` | Unrecoverable error; see `error_message` | Yes | Show error with retry option |
+| `deleting` | Deletion in progress | Yes* | Show "Deleting..." |
+| `deleted` | Permanently removed (SSE event only) | Yes | Remove from UI |
+
+> **Note:** `deleting` is terminal for SSE purposes but source still exists until `deleted` event.
+
+### Extraction progress stages
+
+During `extracting` status, the `progress` field updates through these stages:
+
+| Progress | What's happening |
+|----------|------------------|
+| 5% | Worker picked up job |
+| 20% | Document parsed, pages extracted |
+| 20-80% | Processing each chunk (embeddings, analysis) |
+| 90% | Storing results to database |
+| 100% | Extraction complete |
+
+**Thumbnail availability:** Thumbnail URLs become available at ~20% progress when the first page is processed.
 
 ## Library browsing & management
 
@@ -48,27 +69,96 @@ All endpoints sit under the `/users/knowledge` base path and return the common `
   - `statuses`: `pending_upload`, `uploaded`, `processing`, `extracting`, `completed`, `failed`.
   - `source_types`: `file` (user uploads) or `integration` (ingested connectors).
   - `q`: case-insensitive substring match on filename.
+  - `updated_after`: ISO8601 timestamp to filter by update time (useful for recent failures).
   - `include_urls=true` to inline download + thumbnail SAS links (adds storage calls; use sparingly on large pages).
-- **Stats** – `GET /sources/stats` drives dashboard counters (total, by status, by type). Useful for health widgets.
+  
+- **Failed files behavior**:
+  - By default, `failed` files are **excluded** from list results to keep normal browsing clean.
+  - To fetch failed files, explicitly pass `statuses=failed`.
+  - To fetch recent failures only, combine with `updated_after` (e.g., last 7 days).
+
+- **is_active field** – Each list item includes `is_active: bool` indicating if the source needs SSE monitoring. Active statuses: `pending_upload`, `uploaded`, `processing`, `extracting`, `deleting`.
+
+- **Stats** – `GET /sources/stats` drives dashboard counters:
+  - `total`, `by_status`, `by_type` (existing)
+  - `active_count`: sources needing SSE monitoring
+  - `recent_failures_24h`: failed sources in last 24 hours
+  
 - **Downloads** – `GET /source/{source_id}/download` issues a read SAS with configurable expiry (`expires_minutes` query).
-- **Deletion** – `DELETE /source/{source_id}` soft-deletes immediately, enqueues async cleanup, and returns `status="deleting"`. Repeated requests are idempotent (returns `status="deleted"` once complete).
+- **Deletion** – `DELETE /sources` soft-deletes immediately, enqueues async cleanup, and returns `status="deleting"`. Use `source_id` (not `job_id`) for SSE tracking.
 
 ## Real-time update contract (SSE)
 
-- Endpoint emits JSON frames with `event: message` and payload like:
+### Connection
 
-  ```json
-  {
+- **Endpoint:** `GET /sources/stream?source_ids=<uuid>&source_ids=<uuid>`
+- **Heartbeat:** Every 25 seconds (`ping` event)
+- **Timeout:** 900 seconds (15 minutes) - reconnect after `timeout` event
+- **Scope:** Pass `source_ids` to watch specific sources; omit to watch all non-terminal sources
+
+### Event Types
+
+| Event | When | Action Required |
+|-------|------|----------------|
+| `status` | Status or progress changed | Update UI state |
+| `deleted` | Source permanently removed | Remove from UI |
+| `complete` | All sources reached terminal status | Close connection |
+| `ping` | Every 25 seconds | None (keep-alive) |
+| `timeout` | After 15 minutes | Reconnect |
+| `error` | Server error | Reconnect with backoff |
+
+### Status Event Payload
+
+```json
+{
+  "event": "status",
+  "data": [{
     "source_id": "<UUID>",
-    "status": "processing",
-    "progress": 65,
+    "status": "extracting",
+    "progress": 45,
+    "updated_at": "2025-12-07T10:02:00Z",
+    "error_message": null,
     "thumbnail_small_url": "https://...",
-    "error_message": null
-  }
-  ```
+    "thumbnail_medium_url": "https://..."
+  }]
+}
+```
 
-- Pass `source_ids` query param to scope updates; omit to monitor all non-terminal sources owned by the user.
-- `Last-Event-ID` supported for resume. Stream closes automatically when all watched sources reach `completed` or `failed`.
+### Deleted Event Payload
+
+```json
+{
+  "event": "deleted",
+  "data": [{
+    "source_id": "<UUID>",
+    "status": "deleted",
+    "progress": 100
+  }]
+}
+```
+
+### Frontend Integration Pattern
+
+```javascript
+const eventSource = new EventSource(`/api/users/knowledge/sources/stream?source_ids=${id}`);
+
+eventSource.addEventListener('status', (e) => {
+  const updates = JSON.parse(e.data);
+  updates.forEach(u => {
+    updateProgressBar(u.source_id, u.progress);
+    if (u.thumbnail_small_url) showThumbnail(u.source_id, u.thumbnail_small_url);
+  });
+});
+
+eventSource.addEventListener('deleted', (e) => {
+  const updates = JSON.parse(e.data);
+  updates.forEach(u => removeFromUI(u.source_id));
+});
+
+eventSource.addEventListener('complete', () => eventSource.close());
+eventSource.addEventListener('timeout', () => reconnectWithBackoff());
+eventSource.addEventListener('error', () => reconnectWithBackoff());
+```
 
 ## Permissions & tenancy rules
 
@@ -84,10 +174,37 @@ All endpoints sit under the `/users/knowledge` base path and return the common `
 
 ## UI guidelines & best practices
 
-- Disable finalize button until each file upload promise resolves; retry presign for individual files when `upload_url` is missing.
-- Surface processing progress using SSE updates; show fallback "Processing" chip when no progress percentage is provided.
-- Cache `GET /sources` response for short intervals (<5 min) to reduce churn but refresh immediately after finalize or delete.
-- Confirm deletions and communicate the action is irreversible; once deletion completes the item disappears from subsequent lists.
+### Upload Flow
+- Disable finalize button until each file upload promise resolves
+- Retry presign for individual files when `upload_url` is missing
+- Connect to SSE immediately after `finalize/batch` returns
+
+### Progress Display
+- Show progress bar during `extracting` status (0-100%)
+- Display thumbnail preview when `thumbnail_small_url` becomes available (~20% progress)
+- Show fallback "Processing" chip when no progress percentage is provided
+
+### SSE Connection Management
+- Reconnect with exponential backoff on disconnect: 1s, 2s, 4s, 8s, 16s
+- Close connection when receiving `complete` event
+- Handle `timeout` event (15 min) by reconnecting if user is still on page
+- Reset reconnect counter on successful `ping` event
+
+### State Management
+- Cache `GET /sources` response for short intervals (<5 min)
+- Refresh immediately after finalize or delete actions
+- Merge SSE updates into local state; don't replace entire list
+- Remove source from state on `deleted` event (not `deleting`)
+
+### Deletion UX
+- Confirm deletions and communicate the action is irreversible
+- Show "Deleting..." indicator immediately on API success (optimistic UI)
+- Remove item from list only after receiving `deleted` SSE event
+
+### Error Handling
+- Display `error_message` field when status is `failed`
+- Offer retry option for failed uploads (re-upload flow)
+- Show reconnection indicator when SSE connection drops
 
 ## Related documentation
 

@@ -200,9 +200,10 @@ def post_upload_process(self, organisation_id: UUID, source_id: UUID):
                 thumbnail_medium_url=thumbnail_medium_url,
             )
 
+            # Note: args must be strings for JSON serialization
             app.send_task(
                 "knowledge.document_extraction",
-                args=[UUID(organisation_id), UUID(source_id)],
+                args=[str(organisation_id), str(source_id)],
                 queue="knowledge_extract",
             )
         except self.MaxRetriesExceededError:

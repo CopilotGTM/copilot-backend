@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Body, Depends, Query, status
@@ -13,6 +14,7 @@ from src.api.dependencies.organisation_dependencies import (
 from src.api.dependencies.rate_limit import rate_limit_user_read, rate_limit_user_write
 from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.knowledge_access_models import (
+    ACTIVE_STATUSES,
     KnowledgeBatchDeleteRequest,
     KnowledgeBatchDeleteResponse,
     KnowledgeDeleteResultItem,
@@ -79,12 +81,17 @@ async def list_sources(
         None, description="Opaque cursor returned by previous page (omit for first)"
     ),
     statuses: list[OrganisationSourceStatus] | None = Query(
-        None, description="Optional list of statuses to filter"
+        None,
+        description="Optional list of statuses to filter. Note: 'failed' status is excluded by default unless explicitly requested.",
     ),
     source_types: list[SourceType] | None = Query(
         None, description="Optional list of source types (e.g. file, integration)"
     ),
     q: str | None = Query(None, description="Case-insensitive filename search fragment"),
+    updated_after: datetime | None = Query(
+        None,
+        description="Filter sources updated after this timestamp (ISO8601). Useful for fetching recent failures.",
+    ),
     include_urls: bool = Query(
         False,
         description="If true include read + thumbnail SAS URLs (extra storage calls).",
@@ -99,6 +106,7 @@ async def list_sources(
             statuses=statuses,
             source_types=source_types,
             q=q,
+            updated_after=updated_after,
         )
         # Build item dicts with optional URLs concurrently
         items: list[KnowledgeSourceListItem] = []
@@ -113,17 +121,19 @@ async def list_sources(
                 items.append(KnowledgeSourceListItem(**res))
         else:
             for src in sources:
+                status_str = _get_status_str(src.status)
                 items.append(
                     KnowledgeSourceListItem(
                         source_id=src.source_id,
                         filename=src.filename,
                         mimetype=src.mimetype,
                         size_bytes=src.size_bytes,
-                        status=_get_status_str(src.status),
+                        status=status_str,
                         created_at=src.created_at,
                         updated_at=src.updated_at,
                         error_message=src.error_message,
                         checksum=getattr(src, "checksum", None),
+                        is_active=status_str in ACTIVE_STATUSES,
                     )
                 )
         page = KnowledgeSourcesPage(items=items, cursor=next_cursor)

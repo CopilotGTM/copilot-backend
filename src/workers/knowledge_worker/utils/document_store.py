@@ -26,7 +26,7 @@ class DocumentStore:
 
     def store_documents(
         self,
-        documents: list[dict[str, Any]],
+        documents: list[dict[str, Any]] | list[OrganisationDocument],
         source_id: str,
         uploader_user_id: str | None = None,
     ) -> list[str]:
@@ -34,8 +34,9 @@ class DocumentStore:
         Store parsed documents in the database.
 
         Args:
-            documents: List of parsed document data
+            documents: List of parsed document data (dicts) or OrganisationDocument objects
             source_id: The source ID these documents belong to
+            uploader_user_id: Optional user ID for attribution
 
         Returns:
             List of stored document IDs
@@ -48,47 +49,77 @@ class DocumentStore:
 
             for doc_data in documents:
                 try:
-                    # Create OrganisationDocument instance only if content_hash is unique
-                    uid = uploader_user_id
-                    if not uid and isinstance(doc_data, dict):
-                        uid = doc_data.get("uploader_user_id") or doc_data.get("meta_data", {}).get(
-                            "user_id"
+                    # Handle both OrganisationDocument objects and dict data
+                    if isinstance(doc_data, OrganisationDocument):
+                        # Already an OrganisationDocument - use it directly
+                        doc = doc_data
+                        computed_hash = doc.content_hash or self._generate_content_hash(
+                            doc.content or ""
                         )
 
-                    computed_hash = doc_data.get(
-                        "content_hash",
-                        self._generate_content_hash(doc_data.get("content", "")),
-                    )
-
-                    # Check if content_hash already exists to avoid UniqueViolation
-                    existing = (
-                        session.query(OrganisationDocument)
-                        .filter_by(content_hash=computed_hash)
-                        .first()
-                    )
-                    if existing:
-                        logger.warning(
-                            f"Skipping duplicate document with content_hash={computed_hash}"
+                        # Check for duplicates
+                        existing = (
+                            session.query(OrganisationDocument)
+                            .filter_by(content_hash=computed_hash)
+                            .first()
                         )
-                        continue
+                        if existing:
+                            logger.debug(
+                                f"Skipping duplicate document with content_hash={computed_hash}"
+                            )
+                            continue
 
-                    doc = OrganisationDocument(
-                        source_id=UUID(source_id),
-                        uploader_user_id=UUID(uid) if uid else None,
-                        name=doc_data.get("name", "Untitled"),
-                        content=doc_data.get("content", ""),
-                        meta_data=doc_data.get("meta_data", {}),
-                        filters=doc_data.get("filters", {}),
-                        embedding=doc_data.get("embedding", []),
-                        usage=doc_data.get("usage", {}),
-                        content_hash=computed_hash,
-                    )
+                        # Set content_hash if not already set
+                        if not doc.content_hash:
+                            doc.content_hash = computed_hash
 
-                    session.add(doc)
-                    stored_ids.append(str(doc.document_id))
-                    logger.debug(
-                        f"Added document {doc.document_id} to session with content_hash={computed_hash}"
-                    )
+                        session.add(doc)
+                        stored_ids.append(str(doc.document_id))
+                        logger.debug(
+                            f"Added document {doc.document_id} to session with content_hash={computed_hash}"
+                        )
+                    else:
+                        # Dict data - create OrganisationDocument
+                        uid = uploader_user_id
+                        if not uid:
+                            uid = doc_data.get("uploader_user_id") or doc_data.get(
+                                "meta_data", {}
+                            ).get("user_id")
+
+                        computed_hash = doc_data.get(
+                            "content_hash",
+                            self._generate_content_hash(doc_data.get("content", "")),
+                        )
+
+                        # Check if content_hash already exists to avoid UniqueViolation
+                        existing = (
+                            session.query(OrganisationDocument)
+                            .filter_by(content_hash=computed_hash)
+                            .first()
+                        )
+                        if existing:
+                            logger.debug(
+                                f"Skipping duplicate document with content_hash={computed_hash}"
+                            )
+                            continue
+
+                        doc = OrganisationDocument(
+                            source_id=UUID(source_id),
+                            uploader_user_id=UUID(uid) if uid else None,
+                            name=doc_data.get("name", "Untitled"),
+                            content=doc_data.get("content", ""),
+                            meta_data=doc_data.get("meta_data", {}),
+                            filters=doc_data.get("filters", {}),
+                            embedding=doc_data.get("embedding", []),
+                            usage=doc_data.get("usage", {}),
+                            content_hash=computed_hash,
+                        )
+
+                        session.add(doc)
+                        stored_ids.append(str(doc.document_id))
+                        logger.debug(
+                            f"Added document {doc.document_id} to session with content_hash={computed_hash}"
+                        )
 
                 except Exception as e:
                     logger.error(f"Error creating document: {str(e)}")

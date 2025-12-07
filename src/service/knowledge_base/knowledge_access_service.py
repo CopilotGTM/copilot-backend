@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterable
+from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, not_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from src.api.schemas.knowledge_access_models import ACTIVE_STATUSES
 from src.domain.models.organisation_tables.job_models import (
     JobStatus,
     KnowledgeProcessingJob,
@@ -65,8 +67,17 @@ class KnowledgeAccessService:
         statuses: Iterable[OrganisationSourceStatus | str] | None = None,
         source_types: Iterable[SourceType | str] | None = None,
         q: str | None = None,
+        updated_after: datetime | None = None,
     ) -> tuple[list[OrganisationSource], str | None]:
         """Return page of sources (key‑set pagination).
+
+        Args:
+            limit: Max items to return
+            cursor: Pagination cursor from previous response
+            statuses: Filter by status. If not provided, 'failed' status is excluded by default.
+            source_types: Filter by source type
+            q: Case-insensitive filename search
+            updated_after: Filter sources updated after this timestamp
 
         Returns (items, next_cursor).
         """
@@ -78,8 +89,15 @@ class KnowledgeAccessService:
         )
 
         if statuses:
+            # User explicitly requested specific statuses - include them
             status_values = [s.value if hasattr(s, "value") else str(s) for s in statuses]
             stmt = stmt.where(OrganisationSource.status.in_(status_values))  # type: ignore[attr-defined]
+        else:
+            # No status filter provided - exclude 'failed' by default
+            # This keeps normal browsing clean; failed files require explicit query
+            stmt = stmt.where(
+                not_(OrganisationSource.status == OrganisationSourceStatus.FAILED.value)  # type: ignore[arg-type]
+            )
 
         if source_types:
             type_values = [s.value if hasattr(s, "value") else str(s) for s in source_types]
@@ -88,6 +106,9 @@ class KnowledgeAccessService:
         if q:
             like_expr = f"%{q.lower()}%"
             stmt = stmt.where(OrganisationSource.filename.ilike(like_expr))  # type: ignore[union-attr]
+
+        if updated_after:
+            stmt = stmt.where(OrganisationSource.updated_at >= updated_after)  # type: ignore[arg-type]
 
         if cursor:
             try:
@@ -145,17 +166,20 @@ class KnowledgeAccessService:
             raise KnowledgeAccessServiceError("Could not generate download URL") from e
 
     async def build_item_dict(self, src: OrganisationSource, include_urls: bool) -> dict:
+        status_str = _get_status_str(src.status)
+
         def base_data() -> dict:
             return {
                 "source_id": str(src.source_id),
                 "filename": src.filename,
                 "mimetype": src.mimetype,
                 "size_bytes": src.size_bytes,
-                "status": _get_status_str(src.status),
+                "status": status_str,
                 "created_at": src.created_at,
                 "updated_at": src.updated_at,
                 "error_message": src.error_message,
                 "checksum": getattr(src, "checksum", None),
+                "is_active": status_str in ACTIVE_STATUSES,
             }
 
         async def generate_url(path: str, key: str):
@@ -191,7 +215,10 @@ class KnowledgeAccessService:
         """Return aggregated counts for dashboard usage.
 
         Counts are restricted to the current organisation (matching list logic).
+        Includes active_count (sources needing SSE monitoring) and recent_failures_24h.
         """
+        from datetime import UTC, datetime, timedelta
+
         base_filters = [
             OrganisationSource.organisation_id == self.organisation_id,
             OrganisationSource.is_deleted.is_(False),
@@ -206,11 +233,15 @@ class KnowledgeAccessService:
         status_rows = status_res.all()
         by_status: dict[str, int] = {}
         total = 0
+        active_count = 0
         for status_val, count in status_rows:
             key = _get_status_str(status_val)
             if key:
                 by_status[key] = int(count)
                 total += int(count)
+                # Count active sources (those needing SSE monitoring)
+                if key in ACTIVE_STATUSES:
+                    active_count += int(count)
 
         type_stmt = (
             select(OrganisationSource.source_type, func.count())  # type: ignore[call-overload]
@@ -225,7 +256,27 @@ class KnowledgeAccessService:
             if key:
                 by_type[key] = int(count)
 
-        return {"total": total, "by_status": by_status, "by_type": by_type}
+        # Count recent failures (last 24 hours)
+        cutoff_24h = datetime.now(UTC) - timedelta(hours=24)
+        recent_failures_stmt = (
+            select(func.count())
+            .select_from(OrganisationSource)
+            .where(
+                *base_filters,
+                OrganisationSource.status == OrganisationSourceStatus.FAILED.value,
+                OrganisationSource.updated_at >= cutoff_24h,
+            )
+        )
+        recent_failures_res = await self.org_session.execute(recent_failures_stmt)
+        recent_failures_24h = recent_failures_res.scalar() or 0
+
+        return {
+            "total": total,
+            "by_status": by_status,
+            "by_type": by_type,
+            "active_count": active_count,
+            "recent_failures_24h": recent_failures_24h,
+        }
 
     # -------- Deletion ----------
     async def request_batch_deletion(

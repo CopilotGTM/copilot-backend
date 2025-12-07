@@ -6,6 +6,9 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, HttpUrl
 
+# Statuses considered "active" (require SSE monitoring)
+ACTIVE_STATUSES = {"pending_upload", "uploaded", "processing", "extracting", "deleting"}
+
 
 class KnowledgeSourceListItem(BaseModel):
     source_id: UUID
@@ -19,6 +22,7 @@ class KnowledgeSourceListItem(BaseModel):
     checksum: str | None = None
     thumbnail_small_url: HttpUrl | None = None
     thumbnail_medium_url: HttpUrl | None = None
+    is_active: bool = False  # True if source needs SSE monitoring (status in ACTIVE_STATUSES)
 
     model_config = {"from_attributes": True}
 
@@ -38,6 +42,8 @@ class KnowledgeSourcesStats(BaseModel):
     total: int
     by_status: dict[str, int]
     by_type: dict[str, int]
+    active_count: int = 0  # Count of sources needing SSE monitoring
+    recent_failures_24h: int = 0  # Failed sources in last 24 hours
 
 
 # -------- Delete Models --------
