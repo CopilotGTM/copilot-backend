@@ -689,24 +689,199 @@ celery -A src.workers.my_worker.celery_app worker -l info -Q my_processing,my_pr
 - `REDIS_HOST`: Redis host (default: localhost)
 - `REDIS_PORT`: Redis port (default: 6379)
 
-### Step 7: Enqueue Tasks from API
+### Step 7: Create Async Client for API Usage
+
+> **⚠️ CRITICAL**: Never import `celery_app.py` directly in FastAPI API handlers. This causes the full Celery app to initialize at module import time, leading to blocking issues.
+
+#### Why Async Clients Are Required
+
+The Celery `send_task()` method is **synchronous and blocking**. When called from an async FastAPI endpoint, it can block the entire asyncio event loop, causing:
+
+1. **Request Hangs**: The API request appears stuck while `send_task()` establishes a Redis connection
+2. **Cold Start Issues**: First requests after pod restart hang because connection isn't established
+3. **Intermittent Failures**: Works locally (fast localhost Redis) but fails in production (remote Redis with SSL)
+4. **Connection Timeout Issues**: SSL handshake + authentication to Azure Redis can take 100ms-2s
+
+#### The Problem (Don't Do This)
 
 ```python
+# ❌ WRONG: Direct import initializes Celery app at module load
 from src.workers.my_worker.celery_app import app as my_worker_app
 
-def trigger_processing(organisation_id: UUID, item_id: UUID):
-    """Enqueue a processing task."""
+@router.post("/trigger")
+async def trigger_endpoint():
+    # This BLOCKS the event loop while connecting to Redis!
+    my_worker_app.send_task("my_worker.process", args=[...])
+```
+
+#### The Solution: Async Client Module
+
+Create a lightweight client module (`client.py`) for each worker:
+
+**File: `src/workers/my_worker/client.py`**
+
+```python
+"""
+Lightweight Celery client for sending tasks to the my_worker.
+
+This module provides async wrappers that run send_task in a thread pool
+to avoid blocking the asyncio event loop.
+"""
+
+import asyncio
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
+from celery import Celery
+
+from src.infra.utils.logger import get_logger
+
+logger = get_logger("my_worker_client")
+
+# Thread-safe lazy initialization
+_client_lock = threading.Lock()
+_my_client: Celery | None = None
+
+# Thread pool for running blocking Celery operations
+_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="celery_my_client")
+
+
+def _create_client() -> Celery:
+    """Create a minimal Celery client for sending tasks only."""
+    from src.workers.base.worker_config import BaseWorkerConfig
+
+    config = BaseWorkerConfig()
+
+    client = Celery(
+        "my_client",
+        broker=config.broker_url,
+        backend=config.backend_url,
+    )
+
+    if config.ssl_config:
+        client.conf.broker_use_ssl = config.ssl_config
+        client.conf.redis_backend_use_ssl = config.ssl_config
+
+    client.conf.update(
+        task_serializer="json",
+        accept_content=["json"],
+        result_serializer="json",
+        timezone="UTC",
+        enable_utc=True,
+        broker_connection_retry_on_startup=True,
+        broker_connection_retry=True,
+        broker_connection_max_retries=5,
+        broker_connection_timeout=10,  # Prevent indefinite blocking
+        worker_hijack_root_logger=False,
+    )
+
+    logger.info(
+        "My Celery client initialized (broker=%s)",
+        config.broker_url.replace(config.redis_password, "****")
+        if config.redis_password
+        else config.broker_url,
+    )
+
+    return client
+
+
+def get_celery_client() -> Celery:
+    """Get or create the singleton Celery client (lazy initialization)."""
+    global _my_client
+
+    if _my_client is None:
+        with _client_lock:
+            if _my_client is None:
+                _my_client = _create_client()
+
+    return _my_client
+
+
+def send_task(
+    task_name: str,
+    args: list | None = None,
+    kwargs: dict | None = None,
+    queue: str = "my_processing",
+    routing_key: str | None = None,
+) -> str:
+    """Send a task (synchronous - use send_task_async in async contexts)."""
+    client = get_celery_client()
+    result = client.send_task(
+        task_name,
+        args=args or [],
+        kwargs=kwargs or {},
+        queue=queue,
+        routing_key=routing_key or queue,
+    )
+    return result.id
+
+
+async def send_task_async(
+    task_name: str,
+    args: list | None = None,
+    kwargs: dict | None = None,
+    queue: str = "my_processing",
+    routing_key: str | None = None,
+) -> str:
+    """Send a task asynchronously (non-blocking for asyncio)."""
+    loop = asyncio.get_event_loop()
+    task_id = await loop.run_in_executor(
+        _executor,
+        send_task,
+        task_name,
+        args,
+        kwargs,
+        queue,
+        routing_key,
+    )
+    return task_id
+```
+
+#### Usage in FastAPI Handlers
+
+```python
+# ✅ CORRECT: Import async client, not celery_app
+from src.workers.my_worker.client import send_task_async
+
+@router.post("/trigger")
+async def trigger_endpoint(organisation_id: UUID, item_id: UUID):
+    """Enqueue a processing task (non-blocking)."""
     try:
-        my_worker_app.send_task(
+        task_id = await send_task_async(
             "my_worker.process",
             args=[str(organisation_id), str(item_id)],
             queue="my_processing",
             routing_key="my_processing",
         )
+        logger.info("Enqueued task %s", task_id)
+        return {"task_id": task_id}
     except Exception as e:
-        logger.error(f"Failed to enqueue task: {e}")
-        raise
+        logger.error("Failed to enqueue task: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to schedule task")
 ```
+
+#### Key Benefits of Async Client Pattern
+
+| Aspect | Direct Import | Async Client |
+|--------|---------------|--------------|
+| Module Load | Initializes full Celery app | No initialization until first use |
+| Event Loop | Blocks on `send_task()` | Runs in thread pool |
+| Cold Start | Can hang indefinitely | Has connection timeout (10s) |
+| Memory | Loads all worker code | Minimal client only |
+| Signal Handlers | Registers worker signals | No signal handlers |
+
+#### Existing Async Clients
+
+| Worker | Client Module | Key Functions |
+|--------|---------------|---------------|
+| chat_worker | `src/workers/chat_worker/client.py` | `send_chat_task_async()` |
+| knowledge_worker | `src/workers/knowledge_worker/client.py` | `send_knowledge_task_async()` |
+| deal_worker | `src/workers/deal_worker/client.py` | `send_deal_task_async()` |
+| organization_worker | `src/workers/organization_worker/client.py` | `send_organization_task_async()`, `send_organization_task_and_wait_async()` |
+| content_worker | `src/workers/content_worker/client.py` | `send_content_task_async()` |
+| integrations_worker | `src/workers/integrations_worker/client.py` | `send_integrations_task_async()` |
+
+When creating a new worker, **always create a corresponding `client.py`** for API usage.
 
 ---
 
@@ -1254,6 +1429,9 @@ SELECT COUNT(*) FROM organisation_documents WHERE source_id IN (
 
 | Issue | Cause | Solution |
 |-------|-------|----------|
+| **API request hangs on send_task** | Synchronous `send_task()` blocking asyncio event loop | Use async client (`client.py`) with `send_task_async()` |
+| **Intermittent send_task hangs** | Cold start - Redis connection not established | Use async client with `broker_connection_timeout=10` |
+| **"Scheduling" log but no "Enqueued"** | `send_task()` blocking on SSL handshake to Redis | Use thread pool executor in async client |
 | Task not received | Worker not connected to correct queue | Check `task_routes` and queue names match |
 | Task stuck in PENDING | Worker crashed mid-execution | Enable `acks_late=True`, check worker logs |
 | "Event loop is closed" | Event loop reuse issues | Use `run_async()` helper or create new loop per task |
@@ -1261,6 +1439,32 @@ SELECT COUNT(*) FROM organisation_documents WHERE source_id IN (
 | SSL connection failed | Wrong SSL config for environment | Check `REDIS_SSL_CERT_REQS`, localhost uses no SSL |
 | Database pool exhausted | Too many connections | Set `MAX_TENANT_ENGINES=1` for workers |
 | Task timeout | Long-running task | Increase `task_time_limit` in config |
+
+### API Request Hanging on Task Submission
+
+**Symptoms:**
+- API endpoint logs "Scheduling task..." but never logs "Enqueued"
+- Request times out or hangs indefinitely
+- Works locally but fails in production (Kubernetes/Azure)
+- Works sometimes, fails other times (cold start issue)
+
+**Root Cause:**
+Celery's `send_task()` is synchronous. When called from an async FastAPI endpoint, it blocks the asyncio event loop while:
+1. Establishing TCP connection to Redis
+2. Performing SSL/TLS handshake (production Redis uses SSL)
+3. Authenticating with Redis password
+
+**Solution:**
+Use the async client pattern (see Step 7 in Section 5):
+```python
+# ❌ Don't do this in async endpoints
+from src.workers.my_worker.celery_app import app
+app.send_task(...)  # BLOCKS event loop
+
+# ✅ Do this instead
+from src.workers.my_worker.client import send_task_async
+await send_task_async(...)  # Runs in thread pool
+```
 
 ### Debugging Commands
 
@@ -1322,6 +1526,12 @@ logger.debug(f"Intermediate result: {result}")
   - [ ] Celery app via `create_celery_app()`
   - [ ] Signal handlers for `worker_ready` and `worker_shutdown`
   - [ ] Redis pool initialization/cleanup
+- [ ] Create `client.py` for API usage with:
+  - [ ] Lazy-initialized singleton Celery client
+  - [ ] Thread pool executor for non-blocking sends
+  - [ ] `send_task()` sync function
+  - [ ] `send_task_async()` async function
+  - [ ] `broker_connection_timeout=10` to prevent hangs
 - [ ] Create `tasks/__init__.py`
 - [ ] Implement task files with:
   - [ ] Proper task decorators (`bind=True`, `acks_late=True`, `max_retries`)

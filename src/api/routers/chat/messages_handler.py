@@ -25,7 +25,7 @@ from src.domain.models.organisation_tables.chat_message_models import (
 from src.infra.utils.logger import get_logger
 from src.service.chat.chat_message_service import ChatMessageService
 from src.service.chat.chat_message_sse_service import ChatMessageSSEService
-from src.workers.chat_worker.celery_app import app as chat_app
+from src.workers.chat_worker.client import send_chat_task_async
 from sse_starlette.sse import EventSourceResponse
 
 logger = get_logger("chat_messages")
@@ -90,16 +90,17 @@ async def send_message(
             job.job_id,
         )
         try:
-            chat_app.send_task(
+            task_id = await send_chat_task_async(
                 "chat.process_message",
-                args=[user_ids.organisation_id, job.job_id],
+                args=[str(user_ids.organisation_id), str(job.job_id)],
                 queue="chat_messages",
                 routing_key="chat_messages",
             )
             logger.info(
-                "Enqueued chat processing job org=%s job=%s",
+                "Enqueued chat processing job org=%s job=%s task_id=%s",
                 user_ids.organisation_id,
                 job.job_id,
+                task_id,
             )
         except Exception as e:
             logger.error(

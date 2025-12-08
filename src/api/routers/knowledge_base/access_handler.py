@@ -34,7 +34,7 @@ from src.service.knowledge_base.knowledge_access_service import (
     KnowledgeAccessService,
     KnowledgeAccessServiceError,
 )
-from src.workers.knowledge_worker.celery_app import app as knowledge_app
+from src.workers.knowledge_worker.client import send_knowledge_task_async
 
 logger = get_logger("knowledge_access_handler")
 
@@ -225,7 +225,7 @@ async def delete_sources(
         # Enqueue tasks for successful deletions
         for src, job in successes:
             try:
-                knowledge_app.send_task(
+                await send_knowledge_task_async(
                     "knowledge.delete_source",
                     args=[str(service.organisation_id), str(src.source_id), str(job.job_id)],
                     queue="knowledge_upload",

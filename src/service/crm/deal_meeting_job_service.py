@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.domain.models.organisation_tables.job_models import DealJobs, DealJobType, JobStatus
 from src.infra.utils.logger import get_logger
-from src.workers.deal_worker.celery_app import app as deal_worker_app
+from src.workers.deal_worker.client import send_deal_task_async
 
 logger = get_logger(__name__)
 
@@ -77,9 +77,9 @@ class DealMeetingJobService:
         await self.session.flush()
         await self.session.refresh(job)
 
-        # Enqueue Celery task
+        # Enqueue Celery task (use async client to avoid blocking event loop)
         try:
-            deal_worker_app.send_task(
+            await send_deal_task_async(
                 DEAL_JOB_TASK_NAME,
                 args=[str(self.organisation_id), str(job.job_id)],
                 queue="deal_jobs",

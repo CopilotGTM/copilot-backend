@@ -33,7 +33,7 @@ from src.service.knowledge_base.knowledge_upload_service import (
     KnowledgeUploadService,
     KnowledgeUploadServiceError,
 )
-from src.workers.knowledge_worker.celery_app import app as knowledge_app
+from src.workers.knowledge_worker.client import send_knowledge_task_async
 from sse_starlette.sse import EventSourceResponse
 
 logger = get_logger("knowledge_upload_handler")
@@ -200,9 +200,9 @@ async def finalize_batch(
 
                 # Enqueue first phase task (fire-and-forget)
                 try:
-                    knowledge_app.send_task(
+                    await send_knowledge_task_async(
                         "knowledge.post_upload_process",
-                        args=[service.organisation_id, src.source_id],
+                        args=[str(service.organisation_id), str(src.source_id)],
                         queue="knowledge_upload",
                         routing_key="knowledge_upload",
                     )
