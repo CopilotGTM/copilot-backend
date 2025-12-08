@@ -3,6 +3,7 @@
 Security validation script for health check endpoints.
 Verifies that internal endpoints are properly secured.
 """
+
 import os
 import sys
 from typing import Any
@@ -44,9 +45,7 @@ def test_public_health_endpoint(base_url: str) -> dict[str, Any]:
 
             if exposed_sensitive:
                 result["status"] = "⚠️ WARNING"
-                result["warning"] = (
-                    f"Potentially sensitive data exposed: {exposed_sensitive}"
-                )
+                result["warning"] = f"Potentially sensitive data exposed: {exposed_sensitive}"
 
         else:
             result = {

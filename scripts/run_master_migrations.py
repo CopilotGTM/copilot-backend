@@ -23,21 +23,11 @@ if PROJECT_ROOT not in sys.path:
 
 
 def parse_args():
-    p = argparse.ArgumentParser(
-        description="Run master migrations (organizations, users, etc.)"
-    )
-    p.add_argument(
-        "--revision", default="head", help="Revision to upgrade to (default: head)"
-    )
-    p.add_argument(
-        "--downgrade", action="store_true", help="Downgrade instead of upgrade"
-    )
-    p.add_argument(
-        "--skip-role", action="store_true", help="Skip creation of master_copilot_role"
-    )
-    p.add_argument(
-        "--skip-migrations", action="store_true", help="Skip running Alembic migrations"
-    )
+    p = argparse.ArgumentParser(description="Run master migrations (organizations, users, etc.)")
+    p.add_argument("--revision", default="head", help="Revision to upgrade to (default: head)")
+    p.add_argument("--downgrade", action="store_true", help="Downgrade instead of upgrade")
+    p.add_argument("--skip-role", action="store_true", help="Skip creation of master_copilot_role")
+    p.add_argument("--skip-migrations", action="store_true", help="Skip running Alembic migrations")
     p.add_argument("--verbose", action="store_true", help="Enable verbose logging")
     return p.parse_args()
 
@@ -69,18 +59,14 @@ def _store_password_in_key_vault(secret_name: str, password: str) -> None:
             return
 
         if os.getenv("ENV") == "local":
-            print(
-                "Auth strategy (migrations): DefaultAzureCredential (local development)."
-            )
+            print("Auth strategy (migrations): DefaultAzureCredential (local development).")
             credential: TokenCredential = DefaultAzureCredential()
         else:
             tenant_id = os.getenv("AZURE_TENANT_ID")
             client_id = os.getenv("AZURE_CLIENT_ID")
 
             if tenant_id and client_id:
-                print(
-                    "Auth strategy (migrations): Workload Identity (federated token)"
-                )
+                print("Auth strategy (migrations): Workload Identity (federated token)")
                 credential = WorkloadIdentityCredential(
                     tenant_id=tenant_id,
                     client_id=client_id,
@@ -125,16 +111,8 @@ def create_master_copilot_role(engine):
 
         print(f"-> Granting full access on public schema to '{role_name}'...")
         conn.execute(text(f"GRANT ALL PRIVILEGES ON SCHEMA public TO {role_name}"))
-        conn.execute(
-            text(
-                f"GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO {role_name}"
-            )
-        )
-        conn.execute(
-            text(
-                f"GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO {role_name}"
-            )
-        )
+        conn.execute(text(f"GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO {role_name}"))
+        conn.execute(text(f"GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO {role_name}"))
         print("[OK] Privileges granted.")
 
 

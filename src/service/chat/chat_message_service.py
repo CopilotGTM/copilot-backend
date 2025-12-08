@@ -4,11 +4,12 @@ import contextlib
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 from sqlalchemy import and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 from sqlmodel import select
 from src.domain.models.organisation_tables.chat_message_models import (
     Attachment,
@@ -51,6 +52,15 @@ def _to_confidence(val) -> str | None:
     return None
 
 
+def _col(expr: Any) -> ColumnElement[Any]:
+    """Helper for mypy to treat SQLModel fields as ColumnElements."""
+    return cast(ColumnElement[Any], expr)
+
+
+def _col_bool(expr: Any) -> ColumnElement[bool]:
+    return cast(ColumnElement[bool], expr)
+
+
 class ChatMessageService:
     def __init__(self, db: AsyncSession, organisation_id: UUID, user_id: UUID):
         self.db = db
@@ -61,13 +71,14 @@ class ChatMessageService:
         if not attachment_ids:
             return []
         stmt = select(Attachment).where(
-            Attachment.attachment_id.in_(list(attachment_ids)),
-            Attachment.organisation_id == self.organisation_id,
-            Attachment.user_id == self.user_id,
-            Attachment.is_deleted.is_(False),
+            _col(Attachment.attachment_id).in_(list(attachment_ids)),
+            _col_bool(Attachment.organisation_id == self.organisation_id),
+            _col_bool(Attachment.user_id == self.user_id),
+            _col_bool(Attachment.is_deleted).is_(False),
         )
         result = await self.db.execute(stmt)
-        return result.scalars().all()
+        rows: list[Attachment] = list(result.scalars().all())
+        return rows
 
     def create_link(self, message_id: UUID, order_att):
         """Create a link between a message and an attachment."""
@@ -97,10 +108,10 @@ class ChatMessageService:
 
         # Guard: Ensure session belongs to caller's org/user
         sess_stmt = select(ChatSession).where(
-            ChatSession.session_id == session_id,
-            ChatSession.organisation_id == self.organisation_id,
-            ChatSession.user_id == self.user_id,
-            ChatSession.is_deleted.is_(False),
+            _col_bool(ChatSession.session_id == session_id),
+            _col_bool(ChatSession.organisation_id == self.organisation_id),
+            _col_bool(ChatSession.user_id == self.user_id),
+            _col_bool(ChatSession.is_deleted).is_(False),
         )
         result = await self.db.execute(sess_stmt)
         session = result.scalar_one_or_none()
@@ -108,13 +119,13 @@ class ChatMessageService:
             raise ValueError("Chat session not found")
 
         # Shape content as JSON (allows future rich content)
-        content = {"text": content}
+        content_payload = {"text": content}
 
         message = ChatMessage(
             session_id=session_id,
             role=role,
             message_type=message_type,
-            content=content,
+            content=content_payload,
         )
 
         # Resolve and link attachments
@@ -165,41 +176,44 @@ class ChatMessageService:
         """
         # Ensure session belongs to caller
         sess_stmt = select(ChatSession).where(
-            ChatSession.session_id == session_id,
-            ChatSession.organisation_id == self.organisation_id,
-            ChatSession.user_id == self.user_id,
-            ChatSession.is_deleted.is_(False),
+            _col_bool(ChatSession.session_id == session_id),
+            _col_bool(ChatSession.organisation_id == self.organisation_id),
+            _col_bool(ChatSession.user_id == self.user_id),
+            _col_bool(ChatSession.is_deleted).is_(False),
         )
-        res = await self.db.execute(sess_stmt)
-        session = res.scalar_one_or_none()
+        session_res = await self.db.execute(sess_stmt)
+        session = session_res.scalar_one_or_none()
         if not session:
             raise ValueError("Chat session not found")
 
-        filters = [
-            ChatMessage.session_id == session_id,
+        filters: list[ColumnElement[bool]] = [
+            _col_bool(ChatMessage.session_id == session_id),
         ]
         if role:
-            filters.append(ChatMessage.role == role)
+            filters.append(_col_bool(ChatMessage.role == role))
         if message_type:
-            filters.append(ChatMessage.message_type == message_type)
+            filters.append(_col_bool(ChatMessage.message_type == message_type))
 
         if cursor:
             ts, mid = decode_cursor(cursor)
             filters.append(
                 or_(
-                    ChatMessage.created_at < ts,
-                    and_(ChatMessage.created_at == ts, ChatMessage.message_id < mid),
+                    _col_bool(ChatMessage.created_at < ts),
+                    and_(
+                        _col_bool(ChatMessage.created_at == ts),
+                        _col_bool(ChatMessage.message_id < mid),
+                    ),
                 )
             )
 
         stmt = (
             select(ChatMessage)
             .where(*filters)
-            .order_by(ChatMessage.created_at.desc(), ChatMessage.message_id.desc())
+            .order_by(_col(ChatMessage.created_at).desc(), _col(ChatMessage.message_id).desc())
             .limit(limit + 1)
         )
-        res = await self.db.execute(stmt)
-        rows = res.scalars().all()
+        message_res = await self.db.execute(stmt)
+        rows: list[ChatMessage] = list(message_res.scalars().all())
         has_more = len(rows) == limit + 1
         items = rows[:limit]
         next_cursor = (
@@ -214,25 +228,27 @@ class ChatMessageService:
         if not messages:
             return {}
         msg_ids = [m.message_id for m in messages]
+        message_id_col = _col(ChatMessageAttachmentLink.message_id)
+        attachment_id_col = _col(ChatMessageAttachmentLink.attachment_id)
         res = await self.db.execute(
             select(
-                ChatMessageAttachmentLink.message_id,
+                message_id_col,
                 Attachment,
                 ChatMessageAttachmentLink.attachment_order,
             )
             .join(
                 Attachment,
-                ChatMessageAttachmentLink.attachment_id == Attachment.attachment_id,
+                _col_bool(attachment_id_col == Attachment.attachment_id),
             )
             .where(
-                ChatMessageAttachmentLink.message_id.in_(msg_ids),
-                Attachment.organisation_id == self.organisation_id,
-                Attachment.user_id == self.user_id,
-                Attachment.is_deleted.is_(False),
+                _col_bool(message_id_col.in_(msg_ids)),
+                _col_bool(Attachment.organisation_id == self.organisation_id),
+                _col_bool(Attachment.user_id == self.user_id),
+                _col_bool(Attachment.is_deleted).is_(False),
             )
             .order_by(
-                ChatMessageAttachmentLink.message_id,
-                ChatMessageAttachmentLink.attachment_order,
+                message_id_col,
+                _col(ChatMessageAttachmentLink.attachment_order),
             )
         )
         result_map: dict[UUID, list[Attachment]] = {mid: [] for mid in msg_ids}
@@ -309,6 +325,59 @@ class ChatMessageService:
                     "suggestions": (
                         agent.get("suggested_questions") if isinstance(agent, dict) else None
                     ),
+                    "feedback_score": getattr(m, "feedback_score", None),
                 }
             )
         return items
+
+    async def update_message_feedback(
+        self,
+        *,
+        message_id: UUID,
+        feedback_score: int,
+    ) -> ChatMessage:
+        """Update the feedback score for a message.
+
+        Args:
+            message_id: The ID of the message to update
+            feedback_score: The feedback score (1 for thumbs up, -1 for thumbs down, 0 to clear)
+
+        Returns:
+            The updated ChatMessage
+
+        Raises:
+            ValueError: If the message is not found or doesn't belong to the user
+        """
+        # Validate feedback score
+        if feedback_score not in {-1, 0, 1}:
+            raise ValueError("feedback_score must be -1, 0, or 1")
+
+        # Find the message and verify ownership through session
+        stmt = (
+            select(ChatMessage)
+            .join(
+                ChatSession,
+                _col_bool(ChatMessage.session_id == ChatSession.session_id),
+            )
+            .where(
+                _col_bool(ChatMessage.message_id == message_id),
+                _col_bool(ChatSession.organisation_id == self.organisation_id),
+                _col_bool(ChatSession.user_id == self.user_id),
+                _col_bool(ChatSession.is_deleted).is_(False),
+            )
+        )
+        result = await self.db.execute(stmt)
+        message = result.scalar_one_or_none()
+
+        if not message:
+            raise ValueError(
+                "Message not found or you don't have permission to update this message"
+            )
+
+        # Update feedback score (set to None if 0 to clear feedback)
+        message.feedback_score = feedback_score if feedback_score != 0 else None
+
+        # Commit is handled by the caller for transaction control
+        await self.db.flush()
+        await self.db.refresh(message)
+        return message

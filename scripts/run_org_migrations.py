@@ -27,13 +27,10 @@ def get_database_url():
     user = os.getenv("DATABASE_USER", "postgres")
     pwd = os.getenv("DATABASE_PASSWORD", "")
     enc = urllib.parse.quote_plus(pwd)
-    return (
-        os.getenv("DATABASE_URL") or f"postgresql://{user}:{enc}@{host}:{port}/{name}"
-    )
+    return os.getenv("DATABASE_URL") or f"postgresql://{user}:{enc}@{host}:{port}/{name}"
 
 
 def parse_args():
-
     print("Running organization migrations script...")
     print("This script migrates organization schemas to the latest version.")
     p = argparse.ArgumentParser(
@@ -51,9 +48,7 @@ def parse_args():
         default="head",
         help="Target migration version (default: head)",
     )
-    p.add_argument(
-        "--list-orgs", action="store_true", help="List all organizations and exit"
-    )
+    p.add_argument("--list-orgs", action="store_true", help="List all organizations and exit")
     p.add_argument(
         "--all",
         action="store_true",
@@ -99,9 +94,7 @@ def list_organizations():
                 exists = False
                 try:
                     res = conn.execute(
-                        sa_text(
-                            "SELECT 1 FROM information_schema.schemata WHERE schema_name=:s"
-                        ),
+                        sa_text("SELECT 1 FROM information_schema.schemata WHERE schema_name=:s"),
                         {"s": schema},
                     )
                     exists = res.fetchone() is not None
@@ -142,9 +135,7 @@ def run_migrations_for_orgs(
         target_orgs = []
         if migrate_all:
             print("Fetching all organizations (deriving schemas)...")
-            stmt_all = select(Organisation).where(
-                Organisation.status != OrganisationStatus.FAILED
-            )
+            stmt_all = select(Organisation).where(Organisation.status != OrganisationStatus.FAILED)
             target_orgs = session.exec(stmt_all).all()
             if not target_orgs:
                 print("No organizations found.")
@@ -152,9 +143,7 @@ def run_migrations_for_orgs(
         else:
             # Fetch each specified org
             for org_id in org_ids:
-                stmt = select(Organisation).where(
-                    Organisation.organisation_id == org_id
-                )
+                stmt = select(Organisation).where(Organisation.organisation_id == org_id)
                 org = session.exec(stmt).one_or_none()
                 if not org:
                     print(f"❌ Organization not found: {org_id}")
@@ -178,9 +167,7 @@ def run_migrations_for_orgs(
                     current = None
                     try:
                         res = conn.execute(
-                            sa_text(
-                                f"SELECT version_num FROM {schema}.alembic_version LIMIT 1"
-                            )
+                            sa_text(f"SELECT version_num FROM {schema}.alembic_version LIMIT 1")
                         )
                         row = res.fetchone()
                         current = row[0] if row else None
@@ -201,9 +188,7 @@ def run_migrations_for_orgs(
             try:
                 with engine.connect() as conn:
                     res = conn.execute(
-                        sa_text(
-                            "SELECT 1 FROM information_schema.schemata WHERE schema_name=:s"
-                        ),
+                        sa_text("SELECT 1 FROM information_schema.schemata WHERE schema_name=:s"),
                         {"s": schema_name},
                     )
                     schema_exists = res.fetchone() is not None
@@ -232,17 +217,13 @@ def run_migrations_for_orgs(
                     )
                     migrated.append(org_id)
                 else:
-                    print(
-                        f"❌ Migration failed for organization {org_id}: {result.error}"
-                    )
+                    print(f"❌ Migration failed for organization {org_id}: {result.error}")
                     failed.append(org_id)
                     if fail_fast:
                         print("⛔ Fail-fast enabled: stopping further migrations.")
                         break
             except Exception as e:
-                print(
-                    f"❌ Exception during migration for organization {org_id}: {str(e)}"
-                )
+                print(f"❌ Exception during migration for organization {org_id}: {str(e)}")
                 failed.append(org_id)
                 if fail_fast:
                     print("⛔ Fail-fast enabled: stopping further migrations.")
@@ -278,9 +259,7 @@ def main():
     if migrate_all:
         print("🚀 Running organization migrations for ALL organizations")
     else:
-        print(
-            f"🚀 Running organization migrations for {len(args.org_ids)} organization(s)"
-        )
+        print(f"🚀 Running organization migrations for {len(args.org_ids)} organization(s)")
     print(f"🎯 Target version: {args.target_version}")
 
     run_migrations_for_orgs(

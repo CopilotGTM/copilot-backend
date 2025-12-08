@@ -45,9 +45,7 @@ def load_database_url() -> str:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Delete CRM, integration sync, and calendar data."
-    )
+    parser = argparse.ArgumentParser(description="Delete CRM, integration sync, and calendar data.")
     parser.add_argument(
         "--org-id",
         type=lambda value: str(uuid.UUID(value)),

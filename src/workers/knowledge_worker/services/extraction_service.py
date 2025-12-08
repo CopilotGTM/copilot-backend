@@ -124,8 +124,7 @@ class ExtractionService:
             return ExtractionResult.fail(f"Unsupported document type: {mimetype}")
 
         logger.info(
-            f"Using parser {parser.__class__.__name__} for {mimetype} "
-            f"(source: {context.source_id})"
+            f"Using parser {parser.__class__.__name__} for {mimetype} (source: {context.source_id})"
         )
 
         # 2. Parse the document

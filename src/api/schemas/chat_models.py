@@ -130,6 +130,10 @@ class ChatMessageListItem(BaseModel):
     confidence_score: str | None = None
     sources: list[dict[str, Any]] | None = None
     suggestions: list[str] | None = None
+    feedback_score: int | None = Field(
+        default=None,
+        description="User feedback: 1 (thumbs up), -1 (thumbs down), None (no feedback)",
+    )
 
 
 class ChatMessagesPage(BaseModel):
@@ -142,3 +146,31 @@ class ChatAttachmentView(BaseModel):
     filename: str
     mimetype: str
     thumbnail_small_url: str | None = None
+
+
+class MessageFeedbackRequest(BaseModel):
+    """Request model for providing feedback on a message."""
+
+    message_id: UUID = Field(..., description="The message ID to provide feedback for")
+    feedback_score: int = Field(
+        ...,
+        description="Feedback score: 1 for thumbs up, -1 for thumbs down, 0 to clear feedback",
+        ge=-1,
+        le=1,
+    )
+
+    @field_validator("feedback_score")
+    @classmethod
+    def validate_feedback_score(cls, v: int) -> int:
+        if v not in {-1, 0, 1}:
+            raise ValueError("feedback_score must be -1 (thumbs down), 0 (clear), or 1 (thumbs up)")
+        return v
+
+
+class MessageFeedbackResponse(BaseModel):
+    """Response after updating message feedback."""
+
+    message_id: UUID = Field(..., description="The message ID that was updated")
+    feedback_score: int | None = Field(
+        ..., description="The current feedback score (None if cleared)"
+    )

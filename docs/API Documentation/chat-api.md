@@ -176,11 +176,22 @@ export interface ChatMessageListItem {
   confidence_score?: string | null; // "very_low"|"low"|"medium"|"high"|"very_high" or null
   sources?: Array<Record<string, any>> | null;
   suggestions?: string[] | null;
+  feedback_score?: number | null; // 1 (thumbs up), -1 (thumbs down), null (no feedback)
 }
 
 export interface ChatMessagesPage {
   items: ChatMessageListItem[];
   cursor?: string | null;
+}
+
+export interface MessageFeedbackRequest {
+  message_id: UUID;
+  feedback_score: number; // -1 (thumbs down), 0 (clear), or 1 (thumbs up)
+}
+
+export interface MessageFeedbackResponse {
+  message_id: UUID;
+  feedback_score: number | null; // null if cleared
 }
 
 // Standard envelope used by all endpoints
@@ -668,7 +679,123 @@ src.addEventListener('complete', () => src.close());
 
 ---
 
-## 9) List Messages (cursor-based)
+## 9) Provide Message Feedback
+
+### Provide Message Feedback Endpoint
+
+```http
+POST /users/chats/messages/feedback
+```
+
+### Provide Message Feedback Description
+
+Allows users to provide feedback (thumbs up/down) on chat messages. This is useful for collecting user satisfaction data and improving the assistant's responses.
+
+```json
+{
+  "message_id": "<UUID>",
+  "feedback_score": 1
+}
+```
+
+Notes
+
+- `feedback_score` must be one of: `1` (thumbs up), `-1` (thumbs down), or `0` (clear/remove feedback)
+- Users can only provide feedback on messages from their own chat sessions
+- Feedback can be updated multiple times for the same message
+
+### Provide Message Feedback Success Response (200)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Feedback updated successfully",
+  "data": {
+    "message_id": "f1b9e0a8-...",
+    "feedback_score": 1
+  }
+}
+```
+
+Notes
+
+- If `feedback_score` was `0` (clear), the response will show `feedback_score: null`
+- The feedback is immediately persisted to the database
+
+### Provide Message Feedback Error Responses
+
+- 400 Bad Request — Invalid feedback score (must be -1, 0, or 1), message not found, or permission denied
+- 500 Internal Server Error — "Unable to update feedback"
+
+### Provide Message Feedback Example cURL
+
+```bash
+# Thumbs up
+curl -X POST "$BASE_URL/users/chats/messages/feedback" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"message_id":"f1b9e0a8-...","feedback_score":1}'
+
+# Thumbs down
+curl -X POST "$BASE_URL/users/chats/messages/feedback" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"message_id":"f1b9e0a8-...","feedback_score":-1}'
+
+# Clear feedback
+curl -X POST "$BASE_URL/users/chats/messages/feedback" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"message_id":"f1b9e0a8-...","feedback_score":0}'
+```
+
+### Frontend Integration Example
+
+```typescript
+// Thumbs up handler
+async function handleThumbsUp(messageId: string) {
+  const response = await fetch('/users/chats/messages/feedback', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      message_id: messageId,
+      feedback_score: 1
+    })
+  });
+  const result = await response.json();
+  // Update UI with result.data.feedback_score
+}
+
+// Thumbs down handler
+async function handleThumbsDown(messageId: string) {
+  const response = await fetch('/users/chats/messages/feedback', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      message_id: messageId,
+      feedback_score: -1
+    })
+  });
+  const result = await response.json();
+  // Update UI with result.data.feedback_score
+}
+
+// Toggle feedback (clear if already set to same value)
+async function toggleFeedback(messageId: string, currentScore: number | null, newScore: number) {
+  const feedbackScore = currentScore === newScore ? 0 : newScore;
+  // ... make API call with feedbackScore
+}
+```
+
+---
+
+## 10) List Messages (cursor-based)
 
 ### List Messages Endpoint
 
@@ -678,7 +805,13 @@ GET /users/chats/messages/list?session_id=<UUID>&limit=20&cursor=<opaque>&role=<
 
 ### List Messages Description
 
-Returns chat messages for a session with lightweight enrichment (attachments, sources, suggestions, confidence).
+Returns chat messages for a session with lightweight enrichment (attachments, sources, suggestions, confidence, and feedback).
+
+Notes
+
+- Each message includes a `feedback_score` field showing user feedback: `1` (thumbs up), `-1` (thumbs down), or `null` (no feedback)
+- Use this field to display the correct thumbs up/down icon state in your UI
+- Feedback scores are set via the `POST /messages/feedback` endpoint
 
 ### List Messages Success Response (200)
 
@@ -707,7 +840,8 @@ Returns chat messages for a session with lightweight enrichment (attachments, so
         ],
         "confidence_score": "high",
         "sources": [{"title":"Doc","url":"..."}],
-        "suggestions": ["Next question A"]
+        "suggestions": ["Next question A"],
+        "feedback_score": 1
       }
     ],
     "cursor": null
@@ -731,4 +865,6 @@ Returns chat messages for a session with lightweight enrichment (attachments, so
   3) `POST /send_message` (include attachment IDs)
   4) Open SSE `/message_events?job_id=...` and render frames in real time
   5) Refresh UI via `GET /messages/list` when complete to show persisted assistant message
+  6) [Optional] User provides feedback via `POST /messages/feedback` with thumbs up/down
 - Use pagination cursors as opaque strings; pass them back verbatim.
+- Store feedback scores in your UI state and show the selected icon (thumbs up/down) based on the `feedback_score` field returned in message lists.
