@@ -44,6 +44,7 @@ class GeneralAgent(BaseAgent):
             structured_outputs=False,
             debug_mode=False,
             markdown=True,
+            tools=[self._search_internal_knowledge, self._search_internet],
         )
         self.capabilities: AgentCapabilities | None = None
         self.context = context
@@ -398,7 +399,7 @@ class GeneralAgent(BaseAgent):
         separators = ["⟦AEP:1⟧"]
 
         # Initialize capabilities and frame queue
-        frame_queue = []
+        frame_queue: list[Frame] = []
         self.capabilities = self._setup_capabilities(message_id, frame_queue)
 
         try:
@@ -434,12 +435,16 @@ class GeneralAgent(BaseAgent):
 
     async def _search_internal_knowledge(self, query: str, limit: int = 5) -> list[dict[str, str]]:
         """Search internal knowledge base using InternalKnowledgeBase tool."""
+        if not self.capabilities:
+            logger.error("Capabilities not initialized")
+            return []
+
         if not self.context.session or not self.context.organisation_id:
             logger.warning("InternalKnowledgeBase unavailable: missing session or organisation_id")
             return []
 
         try:
-            return await self.capabilities.use_tool(
+            result = await self.capabilities.use_tool(
                 tool_name="InternalKnowledgeBase",
                 tool_func=internal_knowledge_base,
                 parameters={
@@ -451,25 +456,34 @@ class GeneralAgent(BaseAgent):
                 },
                 description=f"Searching internal documents for: {query}",
             )
+            return list(result) if result else []
         except Exception as e:
             logger.error(f"InternalKnowledgeBase tool failed: {e}", exc_info=True)
             return []
 
     async def _search_internet(self, query: str, max_results: int = 5) -> list[dict[str, str]]:
         """Search internet using InternetSearch tool."""
+        if not self.capabilities:
+            logger.error("Capabilities not initialized")
+            return []
+
         try:
-            return await self.capabilities.use_tool(
+            result = await self.capabilities.use_tool(
                 tool_name="InternetSearch",
                 tool_func=internet_search,
                 parameters={"query": query, "max_results": max_results},
                 description=f"Searching the web for: {query}",
             )
+            return list(result) if result else []
         except Exception as e:
             logger.error(f"InternetSearch tool failed: {e}", exc_info=True)
             return []
 
     async def _run_initial_setup(self, frame_queue: list):
         """Run initial setup and emit progress frames."""
+        if not self.capabilities:
+            return
+
         # Initial progress signal
         await self.capabilities.update_progress(
             "Initializing agent...", progress=0.05, stage="init"
@@ -515,10 +529,11 @@ class GeneralAgent(BaseAgent):
             yield AnswerDelta(content=buffer)
 
         if json_part_started and buffer:
-            # Progress: parsing metadata
-            await self.capabilities.update_progress(
-                "Processing additional insights...", progress=0.9, stage="postprocess"
-            )
+            if self.capabilities:
+                # Progress: parsing metadata
+                await self.capabilities.update_progress(
+                    "Processing additional insights...", progress=0.9, stage="postprocess"
+                )
 
             # Emit progress frame
             while frame_queue:

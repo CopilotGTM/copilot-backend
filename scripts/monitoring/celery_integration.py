@@ -77,9 +77,7 @@ def _on_worker_ready(sender=None, **kwargs):  # pragma: no cover - Celery signal
     if _started:
         return
     _started = True
-    _thread = threading.Thread(
-        target=_run_monitor_loop, name="db-pool-monitor", daemon=True
-    )
+    _thread = threading.Thread(target=_run_monitor_loop, name="db-pool-monitor", daemon=True)
     _thread.start()
     logger.info("DB pool monitor thread started in Celery worker")
 

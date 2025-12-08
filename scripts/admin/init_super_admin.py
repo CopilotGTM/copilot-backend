@@ -57,9 +57,7 @@ async def create_super_admin_async(session: AsyncSession) -> bool:
         return False
 
     first_name, last_name = "Super", "Admin"
-    logger.info(
-        f"Creating super admin for: {first_name} {last_name} ({SUPER_ADMIN_EMAIL})"
-    )
+    logger.info(f"Creating super admin for: {first_name} {last_name} ({SUPER_ADMIN_EMAIL})")
 
     try:
         admin, temp_password = await admin_auth.create_super_admin(
@@ -111,9 +109,7 @@ async def main_async() -> None:
                 sys.exit(1)
 
     except Exception as e:
-        logger.error(
-            f"A critical error occurred during super admin initialization: {e}"
-        )
+        logger.error(f"A critical error occurred during super admin initialization: {e}")
         sys.exit(1)
 
 

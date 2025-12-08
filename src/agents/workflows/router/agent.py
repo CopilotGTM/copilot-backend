@@ -12,7 +12,7 @@ class RouterAgent(Agent):
     """Agent that routes to the correct sub-agent."""
 
     def __init__(self, *, context: AgentContext):
-        self.context = context
+        super().__init__(context=context)
 
     async def run_stream(self, message_list: list[ChatMessage]) -> AsyncIterator[Frame]:
         """Run the agent and stream back frames."""

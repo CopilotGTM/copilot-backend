@@ -107,7 +107,7 @@ knowledge-extract-worker:
   pullPolicy: IfNotPresent
   config:
     queueName: "knowledge_extract"
-    concurrency: 1
+    concurrency: 3
 
   # High-Compute CPU Node Pool Configuration
   # Targets dedicated CPU node pool (kgpu) with high-compute resources

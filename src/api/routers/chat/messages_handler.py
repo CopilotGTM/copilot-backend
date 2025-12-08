@@ -12,6 +12,8 @@ from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.chat_models import (
     ChatMessageListItem,
     ChatMessagesPage,
+    MessageFeedbackRequest,
+    MessageFeedbackResponse,
     SendMessageRequest,
     SendMessageResponse,
 )
@@ -197,3 +199,53 @@ async def list_messages(
     except Exception as e:
         logger.error("Unexpected error listing messages: %s", e, exc_info=True)
         return Response.internal_server_error_response("Unable to list messages")
+
+
+@router.post(
+    "/messages/feedback",
+    response_model=GenericResponse[MessageFeedbackResponse],
+    tags=["chat_messages"],
+    summary="Provide feedback (thumbs up/down) for a message",
+)
+async def provide_message_feedback(
+    payload: MessageFeedbackRequest = Body(...),
+    service: ChatMessageService = Depends(get_chat_message_service),
+    _rl: None = Depends(rate_limit_user_write),
+):
+    """Provide feedback on a chat message.
+
+    Users can give thumbs up (+1), thumbs down (-1), or clear feedback (0).
+    Only messages from sessions owned by the authenticated user can be updated.
+    """
+    try:
+        # Update the feedback score
+        updated_message = await service.update_message_feedback(
+            message_id=payload.message_id,
+            feedback_score=payload.feedback_score,
+        )
+
+        # Commit the transaction
+        await service.db.commit()
+
+        # Build response
+        response = MessageFeedbackResponse(
+            message_id=updated_message.message_id,
+            feedback_score=updated_message.feedback_score,
+        )
+
+        logger.info(
+            "Feedback updated for message=%s, score=%s",
+            payload.message_id,
+            payload.feedback_score,
+        )
+
+        return Response.success_response("Feedback updated successfully", response)
+
+    except ValueError as e:
+        await service.db.rollback()
+        logger.warning("Invalid feedback request: %s", e)
+        return Response.bad_request_error_response(str(e))
+    except Exception as e:
+        await service.db.rollback()
+        logger.error("Failed to update message feedback: %s", e, exc_info=True)
+        return Response.internal_server_error_response("Unable to update feedback")

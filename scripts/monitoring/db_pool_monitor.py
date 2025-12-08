@@ -45,14 +45,13 @@ def _unregister_monitor(pool: Any) -> None:
 _LOOKUP_CACHE: dict[int, SinglePoolMonitor | None] = {}
 _LOOKUP_CACHE_LOCK = threading.RLock()
 
+
 def _lookup_monitor(connection_record: Any) -> SinglePoolMonitor | None:
     key = id(connection_record)
     with _LOOKUP_CACHE_LOCK:
         if key in _LOOKUP_CACHE:
             return _LOOKUP_CACHE[key]
-    pool = getattr(connection_record, "pool", None) or getattr(
-        connection_record, "_pool", None
-    )
+    pool = getattr(connection_record, "pool", None) or getattr(connection_record, "_pool", None)
     if pool is None:
         with _LOOKUP_CACHE_LOCK:
             _LOOKUP_CACHE[key] = None
@@ -198,9 +197,7 @@ class SinglePoolMonitor:
             long_running = [
                 t for (t, _, _) in self._checked_out.values() if now - t > threshold_sec
             ]
-            longest = max(
-                ((now - t) for (t, _, _) in self._checked_out.values()), default=None
-            )
+            longest = max(((now - t) for (t, _, _) in self._checked_out.values()), default=None)
 
         health = self._derive_health(size, checked_out, max_overflow)
 
@@ -221,9 +218,7 @@ class SinglePoolMonitor:
         # Keep it minimal here; enrichment happens in collect_snapshot()
         return pm
 
-    def enforce_checkout_limit(
-        self, max_sec: float, *, force_close: bool = False
-    ) -> int:
+    def enforce_checkout_limit(self, max_sec: float, *, force_close: bool = False) -> int:
         """Invalidate connections checked out longer than max_sec.
 
         Returns number of connections marked for close. If force_close is True,
@@ -293,17 +288,11 @@ class SinglePoolMonitor:
             return None
 
     @staticmethod
-    def _derive_health(
-        size: int | None, checked_out: int | None, max_overflow: int | None
-    ) -> str:
+    def _derive_health(size: int | None, checked_out: int | None, max_overflow: int | None) -> str:
         try:
             sz = int(size or 0)
             co = int(checked_out or 0)
-            mo = (
-                max_overflow
-                if (isinstance(max_overflow, int) and max_overflow >= 0)
-                else 0
-            )
+            mo = max_overflow if (isinstance(max_overflow, int) and max_overflow >= 0) else 0
             capacity = sz + mo if (sz + mo) > 0 else max(sz, 1)
             usage = co / capacity
             if co >= capacity:
@@ -493,9 +482,7 @@ class DbPoolsMonitorService:
         except Exception:
             return
         if n:
-            logger.warning(
-                "Enforced max checkout on %s connections for pool %s", n, label
-            )
+            logger.warning("Enforced max checkout on %s connections for pool %s", n, label)
 
     def collect_snapshot(self) -> dict[str, Any]:
         metrics = [self._build_metric_dict(mon) for mon in self._monitors.values()]
@@ -532,9 +519,7 @@ class DbPoolsMonitorService:
                 "in_use": checked_out,
                 "total_open": total_open,
                 "usage_pct": (
-                    None
-                    if not capacity_total
-                    else float(checked_out or 0) / float(capacity_total)
+                    None if not capacity_total else float(checked_out or 0) / float(capacity_total)
                 ),
                 "counters": counters,
                 "alive_sample_ok": monitor._last_probe_ok,
@@ -559,12 +544,8 @@ class DbPoolsMonitorService:
             "total_checked_out": sum(int(m.get("checked_out") or 0) for m in metrics),
             "total_size": sum(int(m.get("size") or 0) for m in metrics),
             "total_idle": sum(int(m.get("checked_in") or 0) for m in metrics),
-            "total_current_overflow": sum(
-                int(m.get("current_overflow") or 0) for m in metrics
-            ),
-            "total_long_running": sum(
-                int(m.get("long_running_checked_out") or 0) for m in metrics
-            ),
+            "total_current_overflow": sum(int(m.get("current_overflow") or 0) for m in metrics),
+            "total_long_running": sum(int(m.get("long_running_checked_out") or 0) for m in metrics),
             "total_enforced": sum(
                 int((m.get("counters") or {}).get("enforced") or 0) for m in metrics
             ),
