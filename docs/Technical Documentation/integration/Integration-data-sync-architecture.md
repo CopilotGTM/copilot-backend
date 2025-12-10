@@ -282,62 +282,24 @@ async def handle_nango_webhook(request: Request, x_nango_signature: str = Header
 }
 ```
 
-**Handler Logic:**
+**Handler Logic (current as of Dec 2025):**
 
-```python
-async def handle_sync_webhook(payload: Dict[str, Any]) -> Response:
-    """
-    Handle Nango sync webhook - triggered when provider data changes.
-    
-    Steps:
-    1. Extract connection_id and sync details
-    2. Lookup integration_id from connection_id
-    3. Determine if sync is needed (check responseResults)
-    4. Enqueue incremental sync task
-    """
-    connection_id = payload.get("connectionId")
-    sync_name = payload.get("syncName")  # e.g., "contacts", "deals", "events"
-    response_results = payload.get("responseResults", {})
-    
-    # Check if there are actual changes
-    total_changes = (
-        response_results.get("added", 0) +
-        response_results.get("updated", 0) +
-        response_results.get("deleted", 0)
-    )
-    
-    if total_changes == 0:
-        logger.info(f"Sync webhook for {connection_id}: No changes detected")
-        return Response.success_response(message="No changes to sync")
-    
-    # Get integration from connection_id
-    async for org_session in acquire_org_async_session_from_connection(connection_id):
-        integration = await get_integration_by_connection_id(org_session, connection_id)
-        
-        if not integration:
-            logger.error(f"Integration not found for connection_id: {connection_id}")
-            return Response.not_found_response()
-        
-        # Enqueue incremental sync task
-        from src.workers.integrations_worker.tasks.sync_tasks import sync_integration_incremental_task
-        
-        sync_integration_incremental_task.delay(
-            integration_id=str(integration.integration_id),
-            organization_id=str(integration.organization_id),
-            data_types=[sync_name],  # e.g., ["contacts"]
-            trigger="webhook"
-        )
-        
-        logger.info(
-            f"Enqueued incremental sync for integration {integration.integration_id}, "
-            f"data_type={sync_name}, changes={total_changes}"
-        )
-        
-        return Response.success_response(
-            message="Sync webhook processed",
-            data={"integration_id": str(integration.integration_id), "data_type": sync_name}
-        )
-```
+- Implementation lives in `src/service/integrations/nango_webhook_service.py::_handle_sync_webhook`.
+- Every Nango `sync` webhook (Outlook, Google, HubSpot, etc.) is enqueued to `integrations.sync_integration_data` with `incremental` derived **only** from `sync_type != "INITIAL"`.
+- The webhook payload's `responseResults` (added/updated/deleted counts) and `syncType`/`syncVariant` are **not** used to short-circuit zero-delta notifications; missing `syncType` defaults to `incremental=True`.
+- Effect today: even when Nango reports `added=0`, `updated=0`, `deleted=0` (common for Outlook calendar incremental webhooks), the worker still re-fetches and upserts everything allowed by the fetcher for `sync_name`.
+
+**Desired delta-aware gating (not implemented yet):**
+
+1. Read `responseResults` from the webhook and compute `total_changes = added + updated + deleted`.
+2. If `total_changes == 0`, return 200 OK without enqueueing a sync task (log the no-op).
+3. Otherwise enqueue `sync_integration_data` with:
+   - `incremental = (syncType != "INITIAL")`
+   - `sync_name = syncName` (the provider data type)
+   - `provider_config_key` to preserve Outlook calendar vs email routing
+4. Continue to rely on `syncVariant` when fetchers need variant-specific behavior.
+
+**Why this matters for Outlook calendar:** Outlook sends three numbers (`added`, `updated`, `deleted`) plus `syncType` (INITIAL/INCREMENTAL). Because we ignore the counts, every incremental webhook re-processes the full event set, inflating DB writes and queue load and making it harder to reason about true deltas.
 
 #### 1.2 Auth Webhook (Enhanced - Existing)
 

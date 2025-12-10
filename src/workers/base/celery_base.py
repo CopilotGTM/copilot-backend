@@ -37,6 +37,10 @@ def create_celery_app(worker_name, config, tasks_module):
     if hasattr(config, "task_routes"):
         celery_app.conf.task_routes = config.task_routes
 
+    # Set beat schedule if defined in the worker's config (for periodic tasks)
+    if hasattr(config, "beat_schedule") and config.beat_schedule:
+        celery_app.conf.beat_schedule = config.beat_schedule
+
     # Default time limits (can be overridden by worker-specific config)
     default_time_limit = 300  # 5 minutes
     default_soft_time_limit = 240  # 4 minutes

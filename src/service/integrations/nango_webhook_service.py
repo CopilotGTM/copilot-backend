@@ -151,6 +151,35 @@ class NangoWebhookService:
         provider_config_key = payload.get("providerConfigKey")
         logger.info("Processing sync webhook: %s", payload)
 
+        # Check for zero-delta webhooks and skip if no changes
+        response_results = payload.get("responseResults", {})
+        logger.debug("Sync webhook responseResults: %s", response_results)
+        added = response_results.get("added", 0) if response_results else 0
+        updated = response_results.get("updated", 0) if response_results else 0
+        deleted = response_results.get("deleted", 0) if response_results else 0
+        total_changes = added + updated + deleted
+
+        sync_type = payload.get("syncType")
+        sync_name = payload.get("syncName")
+
+        # Skip sync if no changes and this is an incremental sync
+        # Always process INITIAL syncs regardless of responseResults
+        is_initial = str(sync_type).upper() == "INITIAL" if sync_type else False
+        if total_changes == 0 and not is_initial:
+            logger.info(
+                "Sync webhook skipped (no changes): connection=%s sync_name=%s "
+                "added=%d updated=%d deleted=%d",
+                connection_id,
+                sync_name,
+                added,
+                updated,
+                deleted,
+            )
+            return Response.success_response(
+                message="No changes to sync",
+                data={"skipped": True, "reason": "zero_delta"},
+            )
+
         # Validate required fields
         integration: KnowledgeIntegration | None = None
         async for org_session in acquire_org_async_session(organisation_id):
@@ -179,14 +208,16 @@ class NangoWebhookService:
         )
 
         # Resolve organisation ID and validate mapping
-        sync_name = payload.get("syncName")
-        sync_type = payload.get("syncType")
         sync_variant = payload.get("syncVariant")
         logger.info(
-            "Sync webhook: determined data types %s for integration %s (category=%s)",
+            "Sync webhook: determined data types %s for integration %s (category=%s) "
+            "changes: added=%d updated=%d deleted=%d",
             [sync_name, sync_type, sync_variant],
             integration.integration_id,
             category,
+            added,
+            updated,
+            deleted,
         )
 
         # Import here to avoid circular import
