@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, Literal, TypeVar
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -127,7 +127,10 @@ class ChatMessageListItem(BaseModel):
     updated_at: datetime
     # Enriched fields
     attachments: list[ChatAttachmentView] = []
-    confidence_score: str | None = None
+    confidence_score: Literal["high", "medium", "low", "neutral"] | None = Field(
+        default=None,
+        description="Confidence score: high, medium, low, or neutral (for greetings/pleasantries)",
+    )
     sources: list[dict[str, Any]] | None = None
     suggestions: list[str] | None = None
     feedback_score: int | None = Field(

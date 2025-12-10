@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agno.agent.agent import Message
+from agno.models.message import Message
 
 from src.domain.models.organisation_tables import ChatMessage
 

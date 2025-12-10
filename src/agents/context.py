@@ -26,6 +26,7 @@ class AgentContext:
     Attributes:
         session: SQLAlchemy async session (organisation-scoped)
         organisation_id: Tenant organisation UUID
+        org_name: Organisation display name (for prompt personalization)
         user_id: Current user UUID (optional, for user-scoped queries)
         deal_id: Associated deal identifier (optional, for deal-specific filtering)
         message_id: Current message correlation ID (optional, for tracing)
@@ -34,6 +35,7 @@ class AgentContext:
 
     session: AsyncSession
     organisation_id: UUID
+    org_name: str = "Our Organization"
     user_id: UUID | None = None
     deal_id: str | None = None
     message_id: str | None = None
@@ -77,6 +79,7 @@ class AgentContext:
         return AgentContext(
             session=self.session,
             organisation_id=self.organisation_id,
+            org_name=self.org_name,
             user_id=self.user_id,
             deal_id=self.deal_id,
             message_id=message_id,
@@ -89,6 +92,7 @@ class AgentContext:
         return AgentContext(
             session=self.session,
             organisation_id=self.organisation_id,
+            org_name=self.org_name,
             user_id=self.user_id,
             deal_id=self.deal_id,
             message_id=self.message_id,

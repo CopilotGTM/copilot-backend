@@ -21,6 +21,43 @@ class TransparentToolManager:
         self.message_id = message_id
         self._active_tools: dict[str, dict] = {}
 
+    async def _emit_frame(self, frame_emitter: Callable | None, frame: Any) -> None:
+        """Emit a frame, handling both sync and async emitters."""
+        if frame_emitter is None:
+            return
+        if asyncio.iscoroutinefunction(frame_emitter):
+            await frame_emitter(frame)
+        else:
+            frame_emitter(frame)
+
+    def _sanitize_parameters(self, parameters: dict[str, Any]) -> dict[str, Any]:
+        """Create a sanitized copy of parameters safe for JSON serialization.
+
+        Removes or converts non-serializable objects like database sessions.
+        """
+        sanitized = {}
+        for key, value in parameters.items():
+            # Skip known non-serializable types
+            if (
+                key in ("session", "db", "connection")
+                or hasattr(value, "__class__")
+                and "Session" in type(value).__name__
+            ):
+                sanitized[key] = f"<{type(value).__name__}>"
+            elif isinstance(value, str | int | float | bool | type(None)):
+                sanitized[key] = value
+            elif isinstance(value, list | tuple):
+                sanitized[key] = [
+                    str(v)[:100] if not isinstance(v, str | int | float | bool | type(None)) else v
+                    for v in value
+                ]
+            elif isinstance(value, dict):
+                sanitized[key] = self._sanitize_parameters(value)
+            else:
+                # Convert other objects to string representation
+                sanitized[key] = str(value)[:100]
+        return sanitized
+
     async def use_tool(
         self,
         tool_name: str,
@@ -33,35 +70,38 @@ class TransparentToolManager:
         tool_id = str(uuid4())
         start_time = time.time()
 
+        # Sanitize parameters for logging/serialization (remove sessions, etc.)
+        safe_parameters = self._sanitize_parameters(parameters)
+
         # Emit starting frame
-        if frame_emitter:
-            await frame_emitter(
-                ToolUsage(
-                    message_id=self.message_id,
-                    tool_name=tool_name,
-                    tool_description=description,
-                    status="starting",
-                    parameters=parameters,
-                )
-            )
+        await self._emit_frame(
+            frame_emitter,
+            ToolUsage(
+                message_id=self.message_id,
+                tool_name=tool_name,
+                tool_description=description,
+                status="starting",
+                parameters=safe_parameters,
+            ),
+        )
 
         try:
             # Store active tool
             self._active_tools[tool_id] = {
                 "name": tool_name,
                 "start_time": start_time,
-                "parameters": parameters,
+                "parameters": safe_parameters,
             }
 
             # Emit in-progress frame
-            if frame_emitter:
-                await frame_emitter(
-                    ToolUsage(
-                        message_id=self.message_id,
-                        tool_name=tool_name,
-                        status="in_progress",
-                    )
-                )
+            await self._emit_frame(
+                frame_emitter,
+                ToolUsage(
+                    message_id=self.message_id,
+                    tool_name=tool_name,
+                    status="in_progress",
+                ),
+            )
 
             # Execute tool
             result = (
@@ -73,18 +113,18 @@ class TransparentToolManager:
             duration_ms = int((time.time() - start_time) * 1000)
 
             # Emit completion frame
-            if frame_emitter:
-                await frame_emitter(
-                    ToolUsage(
-                        message_id=self.message_id,
-                        tool_name=tool_name,
-                        status="completed",
-                        result_summary=(
-                            str(result)[:200] + "..." if len(str(result)) > 200 else str(result)
-                        ),
-                        duration_ms=duration_ms,
-                    )
-                )
+            await self._emit_frame(
+                frame_emitter,
+                ToolUsage(
+                    message_id=self.message_id,
+                    tool_name=tool_name,
+                    status="completed",
+                    result_summary=(
+                        str(result)[:200] + "..." if len(str(result)) > 200 else str(result)
+                    ),
+                    duration_ms=duration_ms,
+                ),
+            )
 
             return result
 
@@ -92,16 +132,16 @@ class TransparentToolManager:
             duration_ms = int((time.time() - start_time) * 1000)
 
             # Emit failure frame
-            if frame_emitter:
-                await frame_emitter(
-                    ToolUsage(
-                        message_id=self.message_id,
-                        tool_name=tool_name,
-                        status="failed",
-                        result_summary=f"Error: {str(e)}",
-                        duration_ms=duration_ms,
-                    )
-                )
+            await self._emit_frame(
+                frame_emitter,
+                ToolUsage(
+                    message_id=self.message_id,
+                    tool_name=tool_name,
+                    status="failed",
+                    result_summary=f"Error: {str(e)}",
+                    duration_ms=duration_ms,
+                ),
+            )
             raise
         finally:
             # Clean up
