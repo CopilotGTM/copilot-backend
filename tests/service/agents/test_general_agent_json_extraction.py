@@ -119,6 +119,18 @@ class TestJsonExtraction:
         parsed = json.loads(result)
         assert parsed["confidence_score"] == "low"
 
+    def test_extract_fenced_json_neutral_confidence(self, agent):
+        """Test extraction with neutral confidence score for greetings/pleasantries."""
+        text = """Hello! How can I assist you today?
+
+```json
+{"version": "aep/1", "confidence_score": "neutral"}
+```"""
+        result = agent._extract_json_str(text)
+        assert result is not None
+        parsed = json.loads(result)
+        assert parsed["confidence_score"] == "neutral"
+
     def test_extract_fenced_without_hint(self, agent):
         """Test extraction from fenced code block without language hint."""
         text = """Answer text.

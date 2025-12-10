@@ -236,9 +236,11 @@ async def _consume_agent_stream(
 
     async for session in acquire_org_async_session(organisation_id):
         # Build context once for the entire agent execution
+        # TODO: Fetch org_name from organisation database in future
         context = AgentContext(
             session=session,
             organisation_id=organisation_id,
+            org_name="CopilotGTM",
             user_id=user_id,
             message_id=str(assistant_message_id),
         )

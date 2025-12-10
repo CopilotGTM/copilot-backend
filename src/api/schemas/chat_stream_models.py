@@ -58,7 +58,7 @@ class AnswerReplace(FrameBase):
 
 class AnswerMetrics(FrameBase):
     type: Literal["answer.metrics"] = "answer.metrics"
-    confidence: Literal["high", "medium", "low"] | None = None
+    confidence: Literal["high", "medium", "low", "neutral"] | None = None
 
 
 class SuggestionsReplace(FrameBase):

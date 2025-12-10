@@ -37,7 +37,7 @@ from src.service.crm.deals_access_service import (
     DealsAccessService,
     DealsAccessServiceError,
 )
-from src.workers.deal_worker.tasks import process_deal_meetings_task
+from src.workers.deal_worker.client import send_deal_task_async
 from sse_starlette.sse import EventSourceResponse
 
 logger = get_logger("deals_handler")
@@ -569,10 +569,15 @@ async def trigger_deal_meeting_processing(
 ) -> GenericResponse[dict]:
     """Trigger the deal meeting processing task."""
     try:
-        task = process_deal_meetings_task.delay(str(user.organisation_id))
+        task_id = await send_deal_task_async(
+            "deal.process_deal_meetings_task",
+            args=[str(user.organisation_id)],
+            queue="deal",
+            routing_key="deal",
+        )
         return Response.success_response(
             message="Deal meeting processing triggered successfully",
-            data={"task_id": task.id},
+            data={"task_id": task_id},
         )
     except Exception as e:
         logger.error(f"Failed to trigger deal meeting processing: {e}", exc_info=True)

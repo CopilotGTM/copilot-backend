@@ -24,7 +24,7 @@ from src.infra.utils.logger import get_logger
 from src.service.orgnisation.organization_management import (
     organization_management_service,
 )
-from src.workers.organization_worker.tasks.organization import create_organization_task
+from src.workers.organization_worker.client import send_organization_task_and_wait_async
 
 logger = get_logger("admin_organisations_handler")
 router = APIRouter()
@@ -64,11 +64,17 @@ async def create_organization(
         org_details = request.model_dump(exclude_unset=True, exclude={"organisation_name"})
         logger.info(f"Organization details: {org_details}")
 
-        task_result = create_organization_task.delay(
-            admin_id=str(current_user),
-            organisation_name=request.organisation_name,
-            org_details=org_details,
-        ).get(timeout=120)  # 1-minute timeout for the synchronous task
+        task_result = await send_organization_task_and_wait_async(
+            "organization.create",
+            kwargs={
+                "admin_id": str(current_user),
+                "organisation_name": request.organisation_name,
+                "org_details": org_details,
+            },
+            queue="organization",
+            routing_key="organization",
+            timeout=120,  # 2-minute timeout for the synchronous task
+        )
 
         response_data = CreateOrganizationResponse(**task_result)
 

@@ -31,7 +31,7 @@ from src.service.chat.chat_attachments_service import UploadService, UploadServi
 from src.service.chat.chat_attachments_sse_service import (
     AttachmentSSEService,
 )
-from src.workers.chat_worker.celery_app import app as chat_app
+from src.workers.chat_worker.client import send_chat_task_async
 from sse_starlette.sse import EventSourceResponse
 
 # Reused literals / constants
@@ -153,7 +153,7 @@ async def finalize_batch(
         # Enqueue processing task per successfully finalized attachment
         for att in finalized:
             try:
-                chat_app.send_task(
+                await send_chat_task_async(
                     "attachments.post_upload",
                     args=[str(service.organisation_id), str(att.attachment_id)],
                     queue="attachments",
@@ -297,7 +297,7 @@ async def finalize_upload(
         attachment = await service.finalize_upload(payload)
 
         # Schedule single post‑upload processing task (checksum + thumbnails)
-        chat_app.send_task(
+        await send_chat_task_async(
             "attachments.post_upload",
             args=[str(service.organisation_id), str(attachment.attachment_id)],
             queue="attachments",

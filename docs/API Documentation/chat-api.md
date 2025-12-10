@@ -173,7 +173,7 @@ export interface ChatMessageListItem {
   created_at: string; // ISO8601
   updated_at: string; // ISO8601
   attachments: ChatAttachmentView[];
-  confidence_score?: string | null; // "very_low"|"low"|"medium"|"high"|"very_high" or null
+  confidence_score?: string | null; // "low"|"medium"|"high"|"neutral" or null
   sources?: Array<Record<string, any>> | null;
   suggestions?: string[] | null;
   feedback_score?: number | null; // 1 (thumbs up), -1 (thumbs down), null (no feedback)
@@ -210,7 +210,7 @@ export interface ApiEnvelope<T> {
 ```json
 { "type": "answer.delta", "content": "partial markdown ...", "format": "markdown", "sequence": 3 }
 { "type": "answer.replace", "content": "full answer ...", "format": "markdown" }
-{ "type": "answer.metrics", "confidence": "high" }
+{ "type": "answer.metrics", "confidence": "high" }  // values: "high"|"medium"|"low"|"neutral"
 { "type": "suggestions.replace", "items": ["Follow-up A", "B"] }
 { "type": "sources.replace", "sources": [{"title":"Doc","url":"..."}] }
 { "type": "progress.update", "stage":"retrieval", "progress": 0.7 }
@@ -580,7 +580,7 @@ Streams Server-Sent Events for a specific message job. Includes reconnection sup
 ```json
 { "type": "answer.delta", "content": "partial markdown ...", "format": "markdown", "sequence": 3 }
 { "type": "answer.replace", "content": "full answer ...", "format": "markdown" }
-{ "type": "answer.metrics", "confidence": "high" }
+{ "type": "answer.metrics", "confidence": "high" }  // values: "high"|"medium"|"low"|"neutral"
 { "type": "suggestions.replace", "items": ["Follow-up A", "B"] }
 { "type": "sources.replace", "sources": [{"title":"Doc","url":"..."}] }
 { "type": "progress.update", "stage":"retrieval", "progress": 0.7 }
@@ -614,7 +614,7 @@ Streams Server-Sent Events for a specific message job. Includes reconnection sup
   - Finalization: a `finalize` frame is followed by an `event: complete`. After `complete`, close the stream and optionally refresh with `GET /messages/list` to show the persisted assistant message.
 
 - Diagnostics / “autopsy” frames (what the frontend can expect)
-  - `answer.metrics`: confidence signal for the answer (e.g., `very_low|low|medium|high|very_high`). May also include `citations` in some cases.
+  - `answer.metrics`: confidence signal for the answer (e.g., `low|medium|high|neutral`). May also include `citations` in some cases.
   - `sources.replace`: full replacement list of sources/citations to display alongside the answer.
   - `suggestions.replace`: full replacement list of suggested follow-ups.
   - `progress.update`: background status such as `{ stage, message?, progress [0..1], eta_seconds? }` to drive progress UI.
@@ -853,6 +853,266 @@ Notes
 
 - 400 Bad Request — invalid session or filters
 - 500 Internal Server Error — "Unable to list messages"
+
+---
+
+## Tool Usage Frontend Integration Guide
+
+This section explains how to properly handle `tool.usage` frames in the frontend and the recommended UX patterns.
+
+### The Two Information Streams
+
+When the agent executes tools, the frontend receives information through **two different channels**:
+
+1. **`tool.usage` frames** — Structured events specifically for tool execution lifecycle
+2. **`answer.delta` frames** — The LLM's natural language response (may include tool execution summaries)
+
+### Understanding `tool.usage` Frames
+
+The backend sends `tool.usage` frames at each stage of tool execution:
+
+```typescript
+interface ToolUsageFrame {
+  type: "tool.usage";
+  job_id: string;
+  assistant_message_id: string;
+  version: string;
+  timestamp: number;
+  sequence: number;
+  tool_name: string;                    // e.g., "search_internal_knowledge", "search_internet"
+  tool_description?: string;            // Human-readable description
+  status: "starting" | "in_progress" | "completed" | "failed";
+  parameters?: Record<string, any>;     // Sanitized parameters (sessions replaced with placeholders)
+  result_summary?: string;              // Truncated result on completion
+  duration_ms?: number;                 // Execution time on completion
+}
+```
+
+### Tool Execution Lifecycle Example
+
+For a single tool call, you will receive **3-4 frames** in sequence:
+
+```json
+// 1. Starting - tool is about to execute
+{ "type": "tool.usage", "tool_name": "search_internal_knowledge", "status": "starting", "parameters": { "query": "pricing information" } }
+
+// 2. In Progress - tool is executing
+{ "type": "tool.usage", "tool_name": "search_internal_knowledge", "status": "in_progress" }
+
+// 3. Completed - tool finished successfully
+{ "type": "tool.usage", "tool_name": "search_internal_knowledge", "status": "completed", "duration_ms": 9718, "result_summary": "Found 3 relevant documents..." }
+
+// OR 3. Failed - tool encountered an error
+{ "type": "tool.usage", "tool_name": "search_internal_knowledge", "status": "failed", "result_summary": "Error: Connection timeout" }
+```
+
+### Multiple Tool Calls
+
+The agent may execute multiple tools for a single query. Each tool goes through its own lifecycle:
+
+```json
+// Tool 1: Internal knowledge search
+{ "type": "tool.usage", "tool_name": "search_internal_knowledge", "status": "starting" }
+{ "type": "tool.usage", "tool_name": "search_internal_knowledge", "status": "completed", "duration_ms": 9718 }
+
+// Tool 2: Internet search (may start concurrently or after Tool 1)
+{ "type": "tool.usage", "tool_name": "search_internet", "status": "starting" }
+{ "type": "tool.usage", "tool_name": "search_internet", "status": "completed", "duration_ms": 465 }
+```
+
+### The `answer.delta` Tool Summary Issue (Handled Server-Side)
+
+**Background**: The Agno framework injects tool execution summaries into the content stream when tools complete. These messages look like:
+
+```json
+{ "type": "answer.delta", "content": "search_internal_knowledge(query=...) completed in 9.7185s." }
+```
+
+**Server-side handling**: The backend now filters these out automatically by detecting Agno's `ToolCallCompleted` events in the `StreamingAnswerBuffer`. The frontend should **not** receive these polluted `answer.delta` frames.
+
+**If filtering fails** (edge cases), the frontend can optionally strip them:
+```typescript
+const toolSummaryPattern = /\w+\([^)]*\)\s+completed\s+in\s+[\d.]+s\.?/g;
+const cleanContent = content.replace(toolSummaryPattern, '').trim();
+```
+
+### Recommended Frontend UX Patterns
+
+#### Pattern 1: Expandable Research Panel (Recommended)
+
+Show a collapsible "Research" section above or beside the answer:
+
+```
+┌─────────────────────────────────────────────┐
+│ 🔍 Research                          [▼]    │
+├─────────────────────────────────────────────┤
+│ ✓ Searched internal knowledge (9.7s)        │
+│ ✓ Searched internet (0.5s)                  │
+└─────────────────────────────────────────────┘
+│                                             │
+│ CopilotGTM is your AI-powered partner...    │
+│                                             │
+```
+
+**State Management**:
+```typescript
+interface ToolState {
+  tool_name: string;
+  status: "pending" | "running" | "completed" | "failed";
+  duration_ms?: number;
+  started_at?: number;
+}
+
+const [tools, setTools] = useState<Map<string, ToolState>>(new Map());
+
+// Update on tool.usage frames
+function handleToolUsage(frame: ToolUsageFrame) {
+  setTools(prev => {
+    const updated = new Map(prev);
+    updated.set(frame.tool_name, {
+      tool_name: frame.tool_name,
+      status: frame.status === "starting" ? "running" 
+             : frame.status === "in_progress" ? "running"
+             : frame.status,
+      duration_ms: frame.duration_ms,
+      started_at: frame.status === "starting" ? Date.now() : prev.get(frame.tool_name)?.started_at
+    });
+    return updated;
+  });
+}
+```
+
+#### Pattern 2: Inline Status Indicators
+
+Show tool status inline before the answer starts streaming:
+
+```
+🔄 Searching internal knowledge...
+✓ Searched internal knowledge (9.7s)
+🔄 Searching the web...
+✓ Searched the web (0.5s)
+
+CopilotGTM is your AI-powered partner...
+```
+
+#### Pattern 3: Side Panel (Advanced)
+
+For detailed research transparency, show a side panel with full tool details:
+
+```
+┌────────────────────┬───────────────────────────────┐
+│ Research Panel     │  Answer                       │
+├────────────────────┼───────────────────────────────┤
+│                    │                               │
+│ 🔍 Internal Search │  CopilotGTM is your          │
+│   Query: "pricing" │  AI-powered partner for      │
+│   Found: 3 docs    │  go-to-market execution...   │
+│   Time: 9.7s       │                               │
+│                    │                               │
+│ 🌐 Web Search      │                               │
+│   Query: "pricing" │                               │
+│   Results: 10      │                               │
+│   Time: 0.5s       │                               │
+│                    │                               │
+└────────────────────┴───────────────────────────────┘
+```
+
+### Complete Frontend Handler Example
+
+```typescript
+interface ChatState {
+  content: string;
+  tools: Map<string, ToolState>;
+  sources: Source[];
+  suggestions: string[];
+  confidence?: string;
+  isComplete: boolean;
+}
+
+function handleFrame(frame: Frame, setState: SetState<ChatState>) {
+  switch (frame.type) {
+    case "tool.usage":
+      setState(prev => ({
+        ...prev,
+        tools: updateToolState(prev.tools, frame)
+      }));
+      break;
+      
+    case "answer.delta":
+      // Option: Filter out tool summaries
+      const cleanContent = filterToolSummaries(frame.content);
+      setState(prev => ({
+        ...prev,
+        content: prev.content + cleanContent
+      }));
+      break;
+      
+    case "answer.replace":
+      setState(prev => ({
+        ...prev,
+        content: filterToolSummaries(frame.content)
+      }));
+      break;
+      
+    case "sources.replace":
+      setState(prev => ({ ...prev, sources: frame.sources }));
+      break;
+      
+    case "suggestions.replace":
+      setState(prev => ({ ...prev, suggestions: frame.items }));
+      break;
+      
+    case "answer.metrics":
+      setState(prev => ({ ...prev, confidence: frame.confidence }));
+      break;
+      
+    case "finalize":
+      setState(prev => ({ ...prev, isComplete: true }));
+      break;
+  }
+}
+
+function filterToolSummaries(content: string): string {
+  // Remove LLM's tool execution acknowledgments
+  return content
+    .replace(/\w+\([^)]*\)\s+completed\s+in\s+[\d.]+s\.?\s*/g, '')
+    .trim();
+}
+
+function updateToolState(tools: Map<string, ToolState>, frame: ToolUsageFrame): Map<string, ToolState> {
+  const updated = new Map(tools);
+  updated.set(frame.tool_name, {
+    tool_name: frame.tool_name,
+    displayName: getToolDisplayName(frame.tool_name),
+    status: mapStatus(frame.status),
+    duration_ms: frame.duration_ms,
+    parameters: frame.parameters,
+    result_summary: frame.result_summary
+  });
+  return updated;
+}
+
+function getToolDisplayName(toolName: string): string {
+  const names: Record<string, string> = {
+    "search_internal_knowledge": "Internal Knowledge",
+    "search_internet": "Web Search"
+  };
+  return names[toolName] || toolName;
+}
+```
+
+### Production Recommendation
+
+**Use Pattern 1 (Expandable Research Panel)** with tool summary filtering:
+
+1. **Show `tool.usage` frames** in a collapsible "Research" section
+2. **Filter `answer.delta`** to remove tool execution summaries
+3. **Keep both streams** — `tool.usage` for structured UI, `answer.delta` for the actual answer
+
+This gives users:
+- Clear visibility into what research the agent performed
+- A clean answer without technical noise
+- Optional deep-dive into research details
 
 ---
 

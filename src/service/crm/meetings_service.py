@@ -24,7 +24,7 @@ from src.domain.models.organisation_tables.sync.calendar import (
 )
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
 from src.infra.utils.logger import get_logger
-from src.workers.deal_worker.celery_app import app as deal_worker_app
+from src.workers.deal_worker.client import send_deal_task_async
 from src.workers.deal_worker.services.stakeholder_service import StakeholderService
 
 logger = get_logger("meetings_service")
@@ -194,15 +194,15 @@ class MeetingsService:
         use_async: bool = ASYNC_STAKEHOLDER_SYNC_DEFAULT,
     ) -> None:
         """Trigger stakeholder sync via task when enabled, fallback to inline."""
-        if use_async and self._enqueue_stakeholder_task(deal_id, event_id):
+        if use_async and await self._enqueue_stakeholder_task(deal_id, event_id):
             return
 
         await self._sync_stakeholders_inline(deal_id, event_id)
 
-    def _enqueue_stakeholder_task(self, deal_id: UUID, event_id: UUID) -> bool:
+    async def _enqueue_stakeholder_task(self, deal_id: UUID, event_id: UUID) -> bool:
         """Enqueue stakeholder sync task; return True on success."""
         try:
-            deal_worker_app.send_task(
+            await send_deal_task_async(
                 STAKEHOLDER_TASK_NAME,
                 args=[str(self.organisation_id), str(deal_id), str(event_id)],
             )
