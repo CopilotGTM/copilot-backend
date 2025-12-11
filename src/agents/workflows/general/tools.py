@@ -5,8 +5,7 @@ from collections.abc import Callable
 
 from src.agents.common.tool_wrappers import use_tool_with_capabilities
 from src.agents.context import AgentContext
-from src.agents.tools.internal_knowledge_base import internal_knowledge_base
-from src.agents.tools.internet_search import internet_search
+from src.agents.tools.search import internal_knowledge_base, internet_search
 from src.agents.tools.transparent_tools import AgentCapabilities
 from src.infra.utils.logger import get_logger
 

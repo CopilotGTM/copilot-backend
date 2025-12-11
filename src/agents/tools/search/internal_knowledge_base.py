@@ -1,16 +1,24 @@
+"""Internal knowledge base search tool.
+
+Searches organisation documents and returns normalized results.
+"""
+
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.agents.tools.base import db_session_lock, execute_with_capabilities
 from src.domain.models.organisation_tables.knowledge_models import OrganisationDocument
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
+    from src.agents.tools.transparent_tools import AgentCapabilities
 
 logger = logging.getLogger(__name__)
 
@@ -70,35 +78,36 @@ async def internal_knowledge_base(
 
     effective_limit = max(1, min(limit, 20))
 
+    # Use table columns for SQLAlchemy operations (keeps type checker happy)
+    c = cast(Any, OrganisationDocument).__table__.c
+
     # Build query
     stmt = select(OrganisationDocument).where(
-        OrganisationDocument.is_searchable.is_(True),
-        OrganisationDocument.is_archived.is_(False),
+        c.is_searchable.is_(True),
+        c.is_archived.is_(False),
     )
 
     # Filter by organisation-wide or user's personal docs
     if user_id:
-        from sqlalchemy import or_
-
         stmt = stmt.where(
             or_(
-                OrganisationDocument.is_org_wide.is_(True),
-                OrganisationDocument.uploader_user_id == user_id,
+                c.is_org_wide.is_(True),
+                c.uploader_user_id == user_id,
             )
         )
     else:
-        stmt = stmt.where(OrganisationDocument.is_org_wide.is_(True))
+        stmt = stmt.where(c.is_org_wide.is_(True))
 
     # Optional deal filter
     if deal_id:
-        stmt = stmt.where(OrganisationDocument.deal_id == deal_id)
+        stmt = stmt.where(c.deal_id == deal_id)
 
     # Basic text search (ILIKE on content)
     like_pattern = f"%{trimmed_query}%"
-    stmt = stmt.where(OrganisationDocument.content.ilike(like_pattern))  # type: ignore
+    stmt = stmt.where(c.content.ilike(like_pattern))
 
     # Order by created_at desc (most recent first)
-    stmt = stmt.order_by(OrganisationDocument.created_at.desc())
+    stmt = stmt.order_by(c.created_at.desc())
     stmt = stmt.limit(effective_limit)
 
     try:
@@ -137,3 +146,69 @@ async def internal_knowledge_base(
         logger.info("InternalKnowledgeBase returned no results for query: '%s'", trimmed_query)
 
     return results
+
+
+def create_search_internal_knowledge(
+    context: AgentContext,
+    capabilities_getter: Callable[[], AgentCapabilities | None],
+) -> Callable:
+    """Factory that returns a tool function bound to context and capabilities.
+
+    Args:
+        context: AgentContext with session and org metadata
+        capabilities_getter: Callable that returns current AgentCapabilities
+
+    Returns:
+        Async function suitable for use as an agent tool
+    """
+
+    async def search_internal_knowledge(query: str, limit: int = 5) -> list[dict[str, str]]:
+        """Search internal knowledge base for company documents and information.
+
+        Use this tool to find information from the organization's internal documents,
+        knowledge base articles, product documentation, and other internal resources.
+        Returns relevant document snippets with citations.
+
+        Args:
+            query: The search query to find relevant internal documents.
+            limit: Maximum number of results to return (default: 5).
+
+        Returns:
+            List of dictionaries containing document information with keys:
+            - label: Document name or title
+            - url: Internal reference link (kb://org/{org_id}/doc/{doc_id})
+            - snippet: Relevant text excerpt from the document
+        """
+        logger.info(f"[TOOL CALLED] search_internal_knowledge - query='{query}', limit={limit}")
+
+        if not context.session or not context.organisation_id:
+            logger.warning("InternalKnowledgeBase unavailable: missing session or organisation_id")
+            return []
+
+        # Use lock to prevent concurrent session access
+        # Agno may call multiple tools in parallel, but AsyncSession doesn't support that
+        async with db_session_lock:
+            result = await execute_with_capabilities(
+                capabilities_getter(),
+                tool_name="InternalKnowledgeBase",
+                tool_func=internal_knowledge_base,
+                parameters={
+                    "session": context.session,
+                    "organisation_id": context.organisation_id,
+                    "query": query,
+                    "limit": limit,
+                    "user_id": context.user_id,
+                },
+                description=f"Searching internal documents for: {query}",
+                fallback_value=[],
+            )
+
+        logger.info(
+            f"[TOOL RESULT] search_internal_knowledge returned {len(result) if result else 0} results"
+        )
+        return list(result) if result else []
+
+    return search_internal_knowledge
+
+
+__all__ = ["internal_knowledge_base", "create_search_internal_knowledge"]

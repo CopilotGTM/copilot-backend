@@ -48,32 +48,6 @@ class AgentContext:
         if not self.organisation_id:
             raise ValueError("AgentContext requires organisation_id")
 
-    async def search_internal_knowledge(
-        self,
-        query: str,
-        *,
-        limit: int = 5,
-    ) -> list[dict[str, str]]:
-        """Search internal knowledge base (convenience wrapper).
-
-        Args:
-            query: Search query string
-            limit: Maximum number of results (default 5)
-
-        Returns:
-            List of dicts with keys: label, url, snippet
-        """
-        from src.agents.tools.internal_knowledge_base import internal_knowledge_base
-
-        return await internal_knowledge_base(
-            session=self.session,
-            organisation_id=self.organisation_id,
-            query=query,
-            limit=limit,
-            user_id=self.user_id,
-            deal_id=self.deal_id,
-        )
-
     def with_message_id(self, message_id: str) -> AgentContext:
         """Create a copy with updated message_id (immutable-style update)."""
         return AgentContext(
