@@ -118,6 +118,14 @@ This document describes the complete end-to-end data synchronization flow for in
   │ Body: {"status": "accepted"}                                 │
   └──────────────────────────────────────────────────────────────┘
 
+### Incremental webhook behavior (current)
+
+- The FastAPI handler (`nango_webhook_service.py::_handle_sync_webhook`) enqueues `integrations.sync_integration_data` for **every** `sync` webhook.
+- `incremental` is derived only from `syncType != "INITIAL"`; when `syncType` is missing it defaults to incremental.
+- The webhook's `responseResults` counts (`added`, `updated`, `deleted`) are not consulted, so zero-delta webhooks still trigger a worker run.
+- Outlook calendar sends frequent incremental webhooks with `added=0`, `updated=0`, `deleted=0`; we currently re-fetch and re-upsert the full event set on each of those notifications.
+- Recommended improvement: short-circuit when `added + updated + deleted == 0` to avoid unnecessary worker load and write amplification (see architecture doc for details).
+
 
 ┌────────────────────────────────────────────────────────────────────────┐
 │ STAGE 3: TASK QUEUE (Redis + Celery)                                  │

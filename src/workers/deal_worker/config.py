@@ -95,7 +95,7 @@ class DealWorkerConfig(BaseWorkerConfig):
         self.beat_schedule = {
             "process-deal-meetings-all-orgs": {
                 "task": "deal.trigger_deal_meeting_processing_all_orgs",
-                "schedule": crontab(minute=0, hour="*/2"),  # Run every 2 hours
+                "schedule": crontab(minute=0),  # Run every hour at :00
                 "options": {
                     "queue": "deal",
                     "routing_key": "deal",
@@ -103,7 +103,7 @@ class DealWorkerConfig(BaseWorkerConfig):
             },
             "analyze-stakeholders-all-orgs": {
                 "task": "stakeholder.trigger_analysis_all_orgs",
-                "schedule": crontab(minute=0, hour=2),  # Run daily at 2 AM
+                "schedule": crontab(minute=0),  # Run every hour at :00
                 "options": {
                     "queue": "deal",
                     "routing_key": "deal",
@@ -111,7 +111,7 @@ class DealWorkerConfig(BaseWorkerConfig):
             },
             "process-deal-emails-all-orgs": {
                 "task": "deal.trigger_deal_email_processing_all_orgs",
-                "schedule": crontab(minute=30),  # Run every hour at :30
+                "schedule": crontab(minute=0),  # Run every hour at :00
                 "options": {
                     "queue": "deal",
                     "routing_key": "deal",
