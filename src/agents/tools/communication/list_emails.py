@@ -202,7 +202,7 @@ def create_list_deal_emails(
             logger.warning("list_deal_emails unavailable: missing session or organisation_id")
             return []
 
-        async with db_session_lock:
+        async with db_session_lock():
             result = await execute_with_capabilities(
                 capabilities_getter(),
                 tool_name="ListDealEmails",

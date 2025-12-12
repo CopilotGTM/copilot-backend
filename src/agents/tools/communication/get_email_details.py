@@ -207,7 +207,7 @@ def create_get_email_details(
             logger.warning("get_email_details unavailable: missing session or organisation_id")
             return None
 
-        async with db_session_lock:
+        async with db_session_lock():
             result = await execute_with_capabilities(
                 capabilities_getter(),
                 tool_name="GetEmailDetails",

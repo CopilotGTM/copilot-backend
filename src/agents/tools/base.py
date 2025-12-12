@@ -13,6 +13,7 @@ import asyncio
 import functools
 import logging
 from collections.abc import Callable
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -21,9 +22,30 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Lock to prevent concurrent access to shared database session
-# Agno calls tools in parallel, but AsyncSession doesn't support concurrent operations
-db_session_lock = asyncio.Lock()
+# Context variable to store per-context lock
+# This ensures each async context (event loop) gets its own lock
+_db_lock_var: ContextVar[asyncio.Lock | None] = ContextVar("db_session_lock", default=None)
+
+
+def get_db_session_lock() -> asyncio.Lock:
+    """Get or create a database session lock for the current async context.
+
+    This avoids the "bound to different event loop" error by creating
+    the lock lazily within the current event loop context.
+
+    Returns:
+        asyncio.Lock for the current context
+    """
+    lock = _db_lock_var.get()
+    if lock is None:
+        lock = asyncio.Lock()
+        _db_lock_var.set(lock)
+    return lock
+
+
+# Keep the old name as an alias for backward compatibility,
+# but it's now a function that returns the current context's lock
+db_session_lock = get_db_session_lock
 
 
 def validate_org_context(context: AgentContext | None) -> bool:

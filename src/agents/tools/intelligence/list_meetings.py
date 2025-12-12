@@ -177,7 +177,6 @@ async def list_deal_meetings(
                 "organiser_email": event.organiser_email,
                 "attendee_count": event.attendee_count,
                 "attendees": attendees,
-                "conference_link": event.conference_link,
                 "location": event.location,
                 # Transcript/intelligence status
                 "has_transcript": meeting is not None and meeting.status == MeetingStatus.READY,
@@ -257,7 +256,7 @@ def create_list_deal_meetings(
             logger.warning("list_deal_meetings: no deal_id provided and none in context")
             return []
 
-        async with db_session_lock:
+        async with db_session_lock():
             result = await execute_with_capabilities(
                 capabilities_getter(),
                 tool_name="ListDealMeetings",

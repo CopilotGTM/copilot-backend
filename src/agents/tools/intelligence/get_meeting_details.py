@@ -274,7 +274,7 @@ def create_get_meeting_details(
             - event_id, title, description, start_at, end_at, duration_minutes
             - organiser: {name, email}
             - attendees: List of {email, name, response_status, is_organiser}
-            - location, conference_link, status
+            - location, status
             - transcript: {available, status, source, language, full_text (if requested)}
             - summary: {status, data} with key_points, decisions, concerns
             - meeting_prep: {status, data} with stakeholder_insights, suggested_topics
@@ -289,7 +289,7 @@ def create_get_meeting_details(
             logger.warning("get_meeting_details unavailable: missing session or organisation_id")
             return None
 
-        async with db_session_lock:
+        async with db_session_lock():
             result = await execute_with_capabilities(
                 capabilities_getter(),
                 tool_name="GetMeetingDetails",

@@ -140,7 +140,7 @@ def create_get_stakeholder_details(
             )
             return None
 
-        async with db_session_lock:
+        async with db_session_lock():
             result = await execute_with_capabilities(
                 capabilities_getter(),
                 tool_name="GetStakeholderDetails",

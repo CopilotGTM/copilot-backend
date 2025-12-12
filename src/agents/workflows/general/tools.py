@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from contextvars import ContextVar
 
 from src.agents.common.tool_wrappers import use_tool_with_capabilities
 from src.agents.context import AgentContext
@@ -11,9 +12,18 @@ from src.infra.utils.logger import get_logger
 
 logger = get_logger()
 
-# Lock to prevent concurrent access to shared database session
-# Agno calls tools in parallel, but AsyncSession doesn't support concurrent operations
-_db_session_lock = asyncio.Lock()
+# Context variable to store per-context lock
+# This ensures each async context (event loop) gets its own lock
+_db_lock_var: ContextVar[asyncio.Lock | None] = ContextVar("general_db_session_lock", default=None)
+
+
+def _get_db_session_lock():
+    """Get or create a database session lock for the current async context."""
+    lock = _db_lock_var.get()
+    if lock is None:
+        lock = asyncio.Lock()
+        _db_lock_var.set(lock)
+    return lock
 
 
 def create_search_internal_knowledge(
@@ -47,7 +57,7 @@ def create_search_internal_knowledge(
 
         # Use lock to prevent concurrent session access
         # Agno may call multiple tools in parallel, but AsyncSession doesn't support that
-        async with _db_session_lock:
+        async with _get_db_session_lock():
             result = await use_tool_with_capabilities(
                 capabilities_getter(),
                 tool_name="InternalKnowledgeBase",

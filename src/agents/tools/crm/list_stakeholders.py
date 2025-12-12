@@ -145,7 +145,7 @@ def create_list_deal_stakeholders(
             logger.warning("list_deal_stakeholders: no deal_id provided and none in context")
             return []
 
-        async with db_session_lock:
+        async with db_session_lock():
             result = await execute_with_capabilities(
                 capabilities_getter(),
                 tool_name="ListDealStakeholders",

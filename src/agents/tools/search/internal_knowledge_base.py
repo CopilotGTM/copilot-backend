@@ -187,7 +187,7 @@ def create_search_internal_knowledge(
 
         # Use lock to prevent concurrent session access
         # Agno may call multiple tools in parallel, but AsyncSession doesn't support that
-        async with db_session_lock:
+        async with db_session_lock():
             result = await execute_with_capabilities(
                 capabilities_getter(),
                 tool_name="InternalKnowledgeBase",
