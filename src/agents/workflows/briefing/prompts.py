@@ -266,8 +266,8 @@ def build_briefing_user_prompt(input_data: BriefingInput) -> str:
     deal_details = dedent(
         f"""
 ## Deal Details
-- deal_name: {input_data.deal_name or ''}
-- company_name: {input_data.company_name or ''}
+- deal_name: {input_data.deal_name or ""}
+- company_name: {input_data.company_name or ""}
 """
     ).strip()
 
@@ -280,11 +280,11 @@ def build_briefing_user_prompt(input_data: BriefingInput) -> str:
         event_details_block = dedent(
             f"""
 ## Event Details
-- title: {event_details.title or ''}
-- description: {event_details.description or ''}
-- start_at: {event_details.start_at or ''}
-- end_at: {event_details.end_at or ''}
-- organiser: {(event_details.organiser_name or '')} {(event_details.organiser_email or '')}
+- title: {event_details.title or ""}
+- description: {event_details.description or ""}
+- start_at: {event_details.start_at or ""}
+- end_at: {event_details.end_at or ""}
+- organiser: {(event_details.organiser_name or "")} {(event_details.organiser_email or "")}
 - attendees_preview: {attendees_preview}
 """
         ).strip()
