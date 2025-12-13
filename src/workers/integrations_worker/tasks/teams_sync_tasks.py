@@ -21,6 +21,7 @@ from src.api.dependencies.master_dependencies import acquire_master_async_sessio
 from src.api.dependencies.organisation_dependencies import acquire_org_async_session
 from src.domain.models.master_tables import Organisation, OrganisationStatus
 from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
+from src.infra.observability.context import correlation_headers
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.workers.integrations_worker.celery_app import app
@@ -167,7 +168,8 @@ def sync_teams_channels_task(
                             "sync_type": "INCREMENTAL",
                             "sync_variant": "base",
                             "incremental": True,
-                        }
+                        },
+                        headers=correlation_headers(),
                     )
 
                     integration_syncs.append(
@@ -213,7 +215,8 @@ def sync_teams_channels_task(
                             "sync_type": "INCREMENTAL",
                             "sync_variant": "base",
                             "incremental": True,
-                        }
+                        },
+                        headers=correlation_headers(),
                     )
 
                     integration_syncs.append(

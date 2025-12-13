@@ -11,6 +11,10 @@ dependencies:
   repository: "file://./charts/webservice"
   alias: api
   condition: api.enabled
+- name: flower
+  version: "0.1.0"
+  repository: "file://./charts/flower"
+  condition: flower.enabled
 - name: worker
   version: "0.1.0"
   repository: "file://./charts/worker"

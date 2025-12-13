@@ -5,6 +5,8 @@ import contextlib
 import time
 from uuid import UUID
 
+from celery.exceptions import Retry
+
 from src.agents.orchestrator import run_agent_for_chat
 from src.api.dependencies.organisation_dependencies import acquire_org_session
 from src.domain.models.organisation_tables.chat_message_models import (
@@ -294,8 +296,8 @@ async def _consume_agent_stream(
         }
 
 
-@app.task(name="chat.process_message", acks_late=True, max_retries=3)
-def process_message(organisation_id: UUID, job_id: UUID):
+@app.task(name="chat.process_message", acks_late=True, bind=True, max_retries=5)
+def process_message(self, organisation_id: UUID, job_id: UUID):
     """Process a chat message job."""
     logger.info("Processing chat message job org=%s job=%s", organisation_id, job_id)
 
@@ -303,8 +305,22 @@ def process_message(organisation_id: UUID, job_id: UUID):
     publisher = RedisPublisher(organisation_id, job_id)
 
     try:
-        # Load and validate job
-        job = _load_job(session, job_id)
+        # Load and validate job. This can race if the API enqueued before DB commit.
+        try:
+            job = _load_job(session, job_id)
+        except RuntimeError as e:
+            if " not found" in str(e):
+                countdown = min(2**self.request.retries, 30)
+                logger.warning(
+                    "Chat job %s not found yet (org=%s). Retrying in %ss (attempt %s/%s).",
+                    job_id,
+                    organisation_id,
+                    countdown,
+                    self.request.retries + 1,
+                    self.max_retries,
+                )
+                raise self.retry(exc=e, countdown=countdown) from e
+            raise
         _update_job_status(session, job, JobStatus.IN_PROGRESS)
 
         # Load session and conversation data (assistant_message_id from metadata, not created yet)
@@ -326,6 +342,8 @@ def process_message(organisation_id: UUID, job_id: UUID):
 
         logger.info("Job %s completed", job_id)
 
+    except Retry:
+        raise
     except Exception as e:
         _handle_job_failure(session, job_id, e)
         raise

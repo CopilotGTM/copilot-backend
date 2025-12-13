@@ -23,6 +23,7 @@ from src.domain.models.organisation_tables.sync import (
     KnowledgeIntegration,
 )
 from src.infra.config.provider_categories import categorize_integration_type
+from src.infra.observability.context import correlation_headers
 from src.infra.utils.logger import get_logger
 from src.service.integrations import NangoClient
 
@@ -223,16 +224,19 @@ class NangoWebhookService:
         # Import here to avoid circular import
         from src.workers.integrations_worker.tasks.sync_tasks import sync_integration_data_task
 
-        sync_integration_data_task.delay(
-            organisation_id=str(organisation_id),
-            integration_id=str(integration.integration_id),
-            category=category,
-            provider=provider,
-            provider_config_key=provider_config_key,
-            sync_name=sync_name,
-            sync_type=sync_type,
-            sync_variant=sync_variant,
-            incremental=str(sync_type).upper() != "INITIAL" if sync_type else True,
+        sync_integration_data_task.apply_async(
+            kwargs={
+                "organisation_id": str(organisation_id),
+                "integration_id": str(integration.integration_id),
+                "category": category,
+                "provider": provider,
+                "provider_config_key": provider_config_key,
+                "sync_name": sync_name,
+                "sync_type": sync_type,
+                "sync_variant": sync_variant,
+                "incremental": str(sync_type).upper() != "INITIAL" if sync_type else True,
+            },
+            headers=correlation_headers(),
         )
         return Response.success_response(message=SYNC_WEBHOOK_ACCEPTED_MSG, data=None)
 

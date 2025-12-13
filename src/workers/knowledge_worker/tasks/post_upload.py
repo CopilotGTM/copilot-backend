@@ -17,6 +17,7 @@ from src.infra.media.thumbnail_generator import (
     generate_thumbnail_sas_urls,
     generate_thumbnails,
 )
+from src.infra.observability.context import correlation_headers
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
 from src.infra.utils.logger import get_logger
 from src.workers.knowledge_worker.celery_app import app
@@ -205,6 +206,7 @@ def post_upload_process(self, organisation_id: UUID, source_id: UUID):
                 "knowledge.document_extraction",
                 args=[str(organisation_id), str(source_id)],
                 queue="knowledge_extract",
+                headers=correlation_headers(),
             )
         except self.MaxRetriesExceededError:
             logger.warning("Max retries exceeded for thumbnail generation source=%s", source_id)

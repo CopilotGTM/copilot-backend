@@ -21,11 +21,13 @@ Usage:
 """
 
 import asyncio
+import contextvars
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
 from celery import Celery
 
+from src.infra.observability.context import correlation_headers
 from src.infra.utils.logger import get_logger
 
 logger = get_logger("organization_worker_client")
@@ -105,6 +107,7 @@ def send_organization_task(
     kwargs: dict | None = None,
     queue: str = "organization",
     routing_key: str | None = None,
+    headers: dict | None = None,
 ) -> str:
     """
     Send a task to the organization worker (synchronous version).
@@ -119,6 +122,7 @@ def send_organization_task(
         kwargs=kwargs or {},
         queue=queue,
         routing_key=routing_key or queue,
+        headers=correlation_headers(headers),
     )
 
     return str(result.id)
@@ -131,6 +135,7 @@ def send_organization_task_and_wait(
     queue: str = "organization",
     routing_key: str | None = None,
     timeout: int = 120,  # noqa: S7483 - Celery API requires timeout parameter
+    headers: dict | None = None,
 ):
     """
     Send a task and wait for the result (synchronous version).
@@ -145,6 +150,7 @@ def send_organization_task_and_wait(
         kwargs=kwargs or {},
         queue=queue,
         routing_key=routing_key or queue,
+        headers=correlation_headers(headers),
     )
 
     return result.get(timeout=timeout)
@@ -156,6 +162,7 @@ async def send_organization_task_async(
     kwargs: dict | None = None,
     queue: str = "organization",
     routing_key: str | None = None,
+    headers: dict | None = None,
 ) -> str:
     """
     Send a task to the organization worker (async version).
@@ -164,15 +171,18 @@ async def send_organization_task_async(
     blocking the asyncio event loop. Use this in FastAPI async endpoints.
     """
     loop = asyncio.get_event_loop()
+    ctx = contextvars.copy_context()
 
     task_id = await loop.run_in_executor(
         _executor,
+        ctx.run,
         send_organization_task,
         task_name,
         args,
         kwargs,
         queue,
         routing_key,
+        headers,
     )
 
     return task_id
@@ -185,6 +195,7 @@ async def send_organization_task_and_wait_async(
     queue: str = "organization",
     routing_key: str | None = None,
     timeout: int = 120,  # noqa: S7483 - Celery API requires timeout parameter
+    headers: dict | None = None,
 ):
     """
     Send a task and wait for the result (async version).
@@ -194,11 +205,20 @@ async def send_organization_task_and_wait_async(
     when you need to wait for the task result.
     """
     loop = asyncio.get_event_loop()
+    ctx = contextvars.copy_context()
 
     # Create a wrapper function that includes the timeout
     def _send_and_wait():
-        return send_organization_task_and_wait(task_name, args, kwargs, queue, routing_key, timeout)
+        return send_organization_task_and_wait(
+            task_name,
+            args,
+            kwargs,
+            queue,
+            routing_key,
+            timeout=timeout,
+            headers=headers,
+        )
 
-    result = await loop.run_in_executor(_executor, _send_and_wait)
+    result = await loop.run_in_executor(_executor, ctx.run, _send_and_wait)
 
     return result

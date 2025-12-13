@@ -22,6 +22,7 @@ from src.domain.models.organisation_tables.chat_message_models import (
     ChatMessageRole,
     ChatMessageType,
 )
+from src.domain.models.organisation_tables.job_models import JobStatus
 from src.infra.utils.logger import get_logger
 from src.service.chat.chat_message_service import ChatMessageService
 from src.service.chat.chat_message_sse_service import ChatMessageSSEService
@@ -83,6 +84,9 @@ async def send_message(
             assistant_message_id=assistant_message_id,
         )
 
+        # Commit before enqueueing so the worker can always see the job/message.
+        await service.db.commit()
+
         # Enqueue background processing task
         logger.info(
             "Scheduling chat processing job org=%s job=%s",
@@ -102,6 +106,14 @@ async def send_message(
                 job.job_id,
                 task_id,
             )
+
+            # Best-effort: store task id for easier debugging in DB.
+            try:
+                job.job_metadata = {**(job.job_metadata or {}), "celery_task_id": task_id}
+                service.db.add(job)
+                await service.db.commit()
+            except Exception:
+                await service.db.rollback()
         except Exception as e:
             logger.error(
                 "Failed to enqueue chat processing job %s: %s",
@@ -109,10 +121,15 @@ async def send_message(
                 e,
                 exc_info=True,
             )
-            await service.db.rollback()
+            try:
+                job.status = JobStatus.FAILED
+                job.error_message = f"Failed to enqueue message processing: {e}"[:500]
+                service.db.add(job)
+                await service.db.commit()
+            except Exception:
+                await service.db.rollback()
             return Response.internal_server_error_response("Failed to schedule message processing.")
 
-        await service.db.commit()
         return Response.success_response("Message accepted", resp)
     except ValueError as e:
         await service.db.rollback()
