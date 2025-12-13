@@ -19,8 +19,7 @@ class SummaryInput(BaseModel):
     deal_id: str | None = Field(
         None,
         description=(
-            "UUID of the associated deal, if known. "
-            "Helps the agent fetch deal context more easily."
+            "UUID of the associated deal, if known. Helps the agent fetch deal context more easily."
         ),
     )
 
