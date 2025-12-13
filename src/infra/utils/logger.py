@@ -94,7 +94,7 @@ def get_logger(
     # File handler (if log_file is specified)
     if log_file:
         os.makedirs(os.path.dirname(log_file), exist_ok=True)
-        file_handler: logging.Handler
+        file_handler: logging.FileHandler
         if rotate_logs:
             from logging.handlers import RotatingFileHandler
 
