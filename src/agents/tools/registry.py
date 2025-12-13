@@ -44,6 +44,7 @@ class ToolName(str, Enum):
     LIST_DEAL_MEETINGS = "list_deal_meetings"
     GET_MEETING_DETAILS = "get_meeting_details"
     GET_MEETING_TRANSCRIPT = "get_meeting_transcript"
+    GET_MEETING_DEAL_CONTEXT = "get_meeting_deal_context"
 
     # Communication/Email tools
     LIST_DEAL_EMAILS = "list_deal_emails"
@@ -143,6 +144,7 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     ToolName.LIST_DEAL_MEETINGS: ToolCategory.INTELLIGENCE,
     ToolName.GET_MEETING_DETAILS: ToolCategory.INTELLIGENCE,
     ToolName.GET_MEETING_TRANSCRIPT: ToolCategory.INTELLIGENCE,
+    ToolName.GET_MEETING_DEAL_CONTEXT: ToolCategory.INTELLIGENCE,
     ToolName.GET_MEETING_SUMMARY: ToolCategory.INTELLIGENCE,
     ToolName.GET_TRANSCRIPT: ToolCategory.INTELLIGENCE,
     ToolName.GET_BRIEFING: ToolCategory.INTELLIGENCE,
@@ -192,6 +194,7 @@ class ToolRegistry:
             create_list_deal_stakeholders,
         )
         from src.agents.tools.intelligence import (
+            create_get_meeting_deal_context,
             create_get_meeting_details,
             create_get_meeting_transcript,
             create_list_deal_meetings,
@@ -226,6 +229,9 @@ class ToolRegistry:
         )
         self._tool_factories[ToolName.GET_MEETING_TRANSCRIPT] = (
             lambda: create_get_meeting_transcript(self.context, self.capabilities_getter)
+        )
+        self._tool_factories[ToolName.GET_MEETING_DEAL_CONTEXT] = (
+            lambda: create_get_meeting_deal_context(self.context, self.capabilities_getter)
         )
 
         # Communication/Email tools

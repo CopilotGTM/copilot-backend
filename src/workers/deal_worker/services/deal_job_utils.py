@@ -6,20 +6,45 @@ and building context for job handlers.
 
 from __future__ import annotations
 
+import contextlib
 from datetime import datetime
 from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlmodel import col
+from src.domain.models.master_tables.organisation_models import Organisation
 from src.domain.models.organisation_tables.sync.calendar import (
     CalendarEvent,
     CalendarEventDealAssociation,
 )
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
 from src.domain.models.organisation_tables.sync.crm.stakeholders import DealStakeholder
+
+
+async def get_organisation_name(session: AsyncSession, org_id: UUID) -> str | None:
+    """Load the organisation display name (best-effort).
+
+    Note: Depending on tenant DB configuration, master tables may or may not be
+    available through the provided session. Callers should treat failures as
+    non-fatal and fall back to a default name.
+    """
+
+    stmt = select(Organisation.organisation_name).where(
+        col(Organisation.organisation_id) == org_id,
+    )
+    try:
+        result = await session.execute(stmt)
+        return result.scalar_one_or_none()
+    except SQLAlchemyError:
+        # Best-effort: some tenant connections don't have access to master tables.
+        # Ensure the surrounding session isn't left in a failed transaction.
+        with contextlib.suppress(Exception):
+            await session.rollback()
+        return None
 
 
 async def get_deal(session: AsyncSession, org_id: UUID, deal_id: UUID) -> CRMDeal | None:
@@ -226,6 +251,86 @@ async def count_deal_meetings(
     return result.scalar() or 0
 
 
+async def count_previous_meetings(
+    session: AsyncSession,
+    org_id: UUID,
+    deal_id: UUID,
+    before_date: datetime,
+) -> int:
+    """Count meetings for a deal before a specific date.
+
+    Used to determine how many previous meetings exist before
+    the target meeting for briefing generation.
+
+    Args:
+        session: Database session
+        org_id: Organisation ID
+        deal_id: Deal ID
+        before_date: Only count meetings before this datetime
+
+    Returns:
+        Number of meetings before the specified date
+    """
+    from sqlalchemy import func
+
+    stmt = (
+        select(func.count())
+        .select_from(CalendarEvent)
+        .join(
+            CalendarEventDealAssociation,
+            col(CalendarEvent.event_id) == col(CalendarEventDealAssociation.event_id),
+        )
+        .where(
+            col(CalendarEventDealAssociation.deal_id) == deal_id,
+            col(CalendarEventDealAssociation.organisation_id) == org_id,
+            col(CalendarEvent.start_at) < before_date,
+        )
+    )
+    result = await session.execute(stmt)
+    return result.scalar() or 0
+
+
+async def count_prior_meetings_for_briefing(
+    session: AsyncSession,
+    org_id: UUID,
+    deal_id: UUID,
+    *,
+    before_date: datetime | None,
+    exclude_event_id: UUID | None,
+) -> int:
+    """Count prior meetings for briefing (non-rejected, excludes target event).
+
+    This mirrors the `list_deal_meetings` tool semantics (exclude REJECTED) while
+    also applying a pre-meeting cutoff (before_date) and excluding the current event.
+    """
+
+    from sqlalchemy import func
+    from src.domain.models.organisation_tables.sync.calendar import AssociationStatus
+
+    stmt = (
+        select(func.count())
+        .select_from(CalendarEvent)
+        .join(
+            CalendarEventDealAssociation,
+            col(CalendarEvent.event_id) == col(CalendarEventDealAssociation.event_id),
+        )
+        .where(
+            col(CalendarEventDealAssociation.deal_id) == deal_id,
+            col(CalendarEventDealAssociation.organisation_id) == org_id,
+            col(CalendarEventDealAssociation.status) != AssociationStatus.REJECTED,
+        )
+    )
+
+    if exclude_event_id:
+        stmt = stmt.where(col(CalendarEvent.event_id) != exclude_event_id)
+
+    if before_date:
+        stmt = stmt.where(col(CalendarEvent.start_at) < before_date)
+
+    result = await session.execute(stmt)
+    return result.scalar() or 0
+
+
 async def count_deal_stakeholders(
     session: AsyncSession,
     org_id: UUID,
@@ -283,6 +388,193 @@ async def count_deal_emails(
     )
     result = await session.execute(stmt)
     return result.scalar() or 0
+
+
+async def count_emails_for_briefing(
+    session: AsyncSession,
+    org_id: UUID,
+    deal_id: UUID,
+    *,
+    before_date: datetime | None,
+) -> int:
+    """Count deal-linked emails for briefing (non-rejected, optional time cutoff).
+
+    Uses DealEmailAssociation (same table as `list_deal_emails`).
+    """
+
+    from sqlalchemy import func
+    from src.domain.models.organisation_tables.sync.calendar import AssociationStatus
+    from src.domain.models.organisation_tables.sync.email_models import DealEmailAssociation
+
+    stmt = (
+        select(func.count())
+        .select_from(DealEmailAssociation)
+        .where(
+            col(DealEmailAssociation.deal_id) == deal_id,
+            col(DealEmailAssociation.organisation_id) == org_id,
+            col(DealEmailAssociation.status) != AssociationStatus.REJECTED,
+        )
+    )
+
+    if before_date:
+        stmt = stmt.where(col(DealEmailAssociation.email_date) < before_date)
+
+    result = await session.execute(stmt)
+    return result.scalar() or 0
+
+
+async def get_previous_emails(
+    session: AsyncSession,
+    org_id: UUID,
+    deal_id: UUID,
+    before_date: datetime,
+    limit: int = 20,
+) -> list[dict]:
+    """Get emails for a deal before a specific date.
+
+    Fetches emails associated with the deal that were sent/received
+    before the specified date. Used for briefing generation context.
+    Does NOT include email body/snippet - the agent should use email
+    tools to read full content if needed.
+
+    Args:
+        session: Database session
+        org_id: Organisation ID
+        deal_id: Deal ID
+        before_date: Only include emails before this datetime
+        limit: Maximum number of emails to return (default 20)
+
+    Returns:
+        List of email dictionaries with subject, datetime, direction, sender
+    """
+    from src.domain.models.organisation_tables.sync.email_models import (
+        DealEmailAssociation,
+        Email,
+    )
+
+    # Get email associations before the date
+    stmt = (
+        select(DealEmailAssociation)
+        .where(
+            col(DealEmailAssociation.deal_id) == deal_id,
+            col(DealEmailAssociation.organisation_id) == org_id,
+            col(DealEmailAssociation.email_date) < before_date,
+        )
+        .order_by(col(DealEmailAssociation.email_date).desc())
+        .limit(limit)
+    )
+    result = await session.execute(stmt)
+    associations = list(result.scalars().all())
+
+    # Batch-fetch actual Email records for sender info
+    internet_message_ids: list[str] = [
+        assoc.internet_message_id for assoc in associations if assoc.internet_message_id
+    ]
+
+    email_map: dict[str, Email] = {}
+    if internet_message_ids:
+        email_stmt = select(Email).where(
+            col(Email.organisation_id) == org_id,
+            col(Email.internet_message_id).in_(internet_message_ids),
+        )
+        email_result = await session.execute(email_stmt)
+        for e in email_result.scalars().all():
+            if e.internet_message_id:
+                email_map[e.internet_message_id] = e
+
+    emails_data: list[dict] = []
+    for assoc in associations:
+        email = email_map.get(assoc.internet_message_id) if assoc.internet_message_id else None
+
+        # Build sender string from Email record
+        sender: str | None = None
+        if email:
+            sender = (
+                f"{email.from_name} <{email.from_email}>" if email.from_name else email.from_email
+            )
+
+        emails_data.append(
+            {
+                "subject": assoc.email_subject or "No subject",
+                "datetime": assoc.email_date.isoformat() if assoc.email_date else None,
+                "direction": assoc.direction.value if assoc.direction else "unknown",
+                "sender": sender,
+            }
+        )
+
+    return emails_data
+
+
+async def get_previous_meetings_with_summaries(
+    session: AsyncSession,
+    org_id: UUID,
+    deal_id: UUID,
+    before_date: datetime,
+    limit: int = 10,
+) -> list[dict]:
+    """Get previous meetings for a deal before a specific date.
+
+    Fetches meetings older than the specified date that are associated with
+    the deal. Returns metadata only - the agent should use meeting/transcript
+    tools to read full content if needed.
+
+    Args:
+        session: Database session
+        org_id: Organisation ID
+        deal_id: Deal ID to find meetings for
+        before_date: Only include meetings before this datetime
+        limit: Maximum number of meetings to return (default 10)
+
+    Returns:
+        List of meeting dictionaries with event_id, subject, datetime, attendees, has_summary
+    """
+    from src.domain.models.organisation_tables.sync.calendar import GenerationStatus
+
+    stmt = (
+        select(CalendarEvent, CalendarEventDealAssociation)
+        .options(selectinload(cast(Any, CalendarEvent.attendees)))
+        .join(
+            CalendarEventDealAssociation,
+            col(CalendarEvent.event_id) == col(CalendarEventDealAssociation.event_id),
+        )
+        .where(
+            col(CalendarEventDealAssociation.deal_id) == deal_id,
+            col(CalendarEventDealAssociation.organisation_id) == org_id,
+            col(CalendarEvent.start_at) < before_date,
+        )
+        .order_by(col(CalendarEvent.start_at).desc())
+        .limit(limit)
+    )
+    result = await session.execute(stmt)
+    rows = list(result.all())
+
+    meetings_data: list[dict] = []
+    for event, association in rows:
+        attendee_names: list[str] = []
+        if event.attendees:
+            attendee_names = [
+                a.display_name or a.email for a in event.attendees if a.display_name or a.email
+            ]
+
+        has_summary = (
+            association is not None
+            and association.meeting_summary_status == GenerationStatus.COMPLETED
+            and association.meeting_summary_data is not None
+        )
+
+        meetings_data.append(
+            {
+                "event_id": str(event.event_id),
+                "subject": event.title or "Untitled meeting",
+                "datetime": event.start_at.isoformat() if event.start_at else None,
+                "attendees": attendee_names,
+                "has_summary": has_summary,
+            }
+        )
+
+    return meetings_data
+
+    return meetings_data
 
 
 async def get_deal_meeting_date_range(

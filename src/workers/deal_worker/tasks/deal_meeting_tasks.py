@@ -93,6 +93,9 @@ def process_deal_meeting_job(self: Task, organisation_id: str, job_id: str):
                     e.error_code,
                 )
                 try:
+                    # If the error was raised after a DB exception, the session may be
+                    # in an aborted transaction; rollback first so we can persist status.
+                    await session.rollback()
                     job.status = JobStatus.FAILED
                     job.error_message = str(e)
                     await session.commit()
@@ -116,6 +119,9 @@ def process_deal_meeting_job(self: Task, organisation_id: str, job_id: str):
                 logger.error("Deal meeting job failed %s: %s", job_id, e, exc_info=True)
                 # Try to update job status
                 try:
+                    # Ensure we can write status updates even if the original failure
+                    # aborted the current transaction.
+                    await session.rollback()
                     job.status = JobStatus.FAILED
                     job.error_message = str(e)[:500]
                     job.retry_count += 1

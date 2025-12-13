@@ -82,6 +82,19 @@ def run_async(coro: Coroutine[Any, Any, T]) -> T:
 
     try:
         return loop.run_until_complete(coro)
+    except RuntimeError as e:
+        # Common failure mode in Celery workers on Windows: asyncpg connections
+        # (or SQLAlchemy async engines/pools) were created on a different event loop
+        # and later reused. Clear cached engines so the next retry builds fresh
+        # pools on the current loop.
+        msg = str(e)
+        if "attached to a different loop" in msg or "different loop" in msg:
+            logger.warning(
+                "Detected event-loop mismatch; clearing async DB caches and re-raising: %s",
+                msg,
+            )
+            _clear_async_db_provider_cache()
+        raise
     finally:
         # Clean up pending tasks after each task execution
         # but DON'T close the loop - keep it for the next task
