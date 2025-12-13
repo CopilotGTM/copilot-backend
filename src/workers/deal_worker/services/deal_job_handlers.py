@@ -18,13 +18,12 @@ from src.infra.utils.logger import get_logger
 from src.service.integrations.transcript_service import TranscriptService
 from src.workers.deal_worker.services.deal_job_publisher import DealJobRedisPublisher
 from src.workers.deal_worker.services.deal_job_utils import (
-    build_briefing_context_string,
-    build_summary_context_string,
+    count_emails_for_briefing,
+    count_prior_meetings_for_briefing,
     get_association,
     get_deal,
     get_event,
-    get_previous_meetings,
-    get_stakeholders,
+    get_organisation_name,
 )
 
 logger = get_logger(__name__)
@@ -93,10 +92,10 @@ def get_job_handler(job_type: DealJobType):
 async def handle_meeting_briefing(
     session: AsyncSession, job: DealJobs, publisher: DealJobRedisPublisher
 ) -> dict:
-    """Handle meeting briefing generation.
+    """Handle meeting briefing generation (tool-first, call-type-first).
 
-    Generates a pre-meeting briefing with context about the deal,
-    stakeholders, meeting details, and transcripts from previous meetings.
+    Passes minimal identifiers + current time and event details.
+    The agent must first fetch the target event via tools and infer call type.
 
     Args:
         session: Database session
@@ -109,68 +108,108 @@ async def handle_meeting_briefing(
     Raises:
         RuntimeError: If deal or event data is missing
     """
-    from src.agents.workflows.briefing import BriefingAgent
+    from src.agents.workflows.briefing import BriefingAgent, BriefingInput, EventDetails
 
+    # Copy scalar identifiers up-front.
+    # Some best-effort helpers may rollback the session on DB errors, which expires
+    # ORM instances. Accessing expired attributes in AsyncSession triggers
+    # MissingGreenlet via a lazy-load, so use locals going forward.
     org_id = job.organisation_id
+    deal_id = job.deal_id
+    event_id = job.event_id
 
-    publisher.publish_progress("Loading context...", "context", 0.1)
+    org_name: str | None = None
+    org_name = await get_organisation_name(session, org_id)
 
-    # Load deal, event, stakeholders
-    deal = await get_deal(session, org_id, job.deal_id)
-    event = await get_event(session, org_id, job.event_id)
-    stakeholders = await get_stakeholders(session, org_id, job.deal_id)
-    association = await get_association(session, org_id, job.deal_id, job.event_id)
+    publisher.publish_progress("Loading context...", "Querying Database", 0.1)
+
+    # Load deal and event info
+    deal = await get_deal(session, org_id, deal_id)
+    event = await get_event(session, org_id, event_id)
+    association = await get_association(session, org_id, deal_id, event_id)
 
     if not deal or not event:
         raise RuntimeError("Missing deal or event data")
 
-    publisher.publish_progress("Loading historical context...", "history", 0.2)
+    publisher.publish_progress("Preparing AI briefing...", "Analysing", 0.25)
 
-    # Fetch previous meetings for historical context
-    previous_meetings = await get_previous_meetings(session, org_id, job.deal_id, event.start_at)
-
-    # Fetch transcripts for previous meetings using TranscriptService
-    previous_transcripts: list[dict] = []
-    if previous_meetings:
-        transcript_service = TranscriptService(session, org_id)
-        for prev_event in previous_meetings:
-            # ensure_transcript will fetch from provider if not in DB
-            meeting = await transcript_service.ensure_transcript(prev_event.event_id)
-            if meeting and meeting.full_transcript:
-                previous_transcripts.append(
-                    {
-                        "subject": prev_event.title or "Unknown Subject",
-                        "date": prev_event.start_at.isoformat()
-                        if prev_event.start_at
-                        else "Unknown",
-                        "transcript": meeting.full_transcript,
-                    }
-                )
+    # Prepare a small preview of attendees
+    attendees_preview: list[str] = []
+    if event.attendees:
+        attendees_preview = [
+            (a.display_name or a.email) for a in event.attendees if (a.display_name or a.email)
+        ][:8]
 
     logger.info(
-        "Found %d previous meetings with transcripts for deal %s",
-        len(previous_transcripts),
-        job.deal_id,
+        "Preparing briefing for deal %s, event %s",
+        deal_id,
+        event_id,
     )
 
-    publisher.publish_progress("Analyzing deal context...", "analysis", 0.3)
+    # Use a single "now" timestamp for deterministic counts + prompt context.
+    current_dt = datetime.now(UTC)
+
+    # Lightweight interaction signals to help call-type inference
+    prior_meetings_count: int | None = None
+    emails_exchanged_count: int | None = None
+    try:
+        prior_meetings_count = await count_prior_meetings_for_briefing(
+            session,
+            org_id,
+            deal_id,
+            before_date=current_dt,
+            exclude_event_id=event_id,
+        )
+        emails_exchanged_count = await count_emails_for_briefing(
+            session,
+            org_id,
+            deal_id,
+            before_date=current_dt,
+        )
+    except Exception:
+        # Non-fatal: counts are only a prompt signal.
+        logger.debug(
+            "Unable to compute briefing interaction counts for org_id=%s, deal_id=%s",
+            org_id,
+            deal_id,
+            exc_info=True,
+        )
+
+    publisher.publish_progress("Starting AI analysis...", "Analysing", 0.3)
 
     # Update association status if exists
     if association:
         association.meeting_prep_status = GenerationStatus.GENERATING
         await session.commit()
 
-    # Build context with historical transcripts and run agent
-    context_string = build_briefing_context_string(
-        deal, event, stakeholders, previous_transcripts if previous_transcripts else None
+    # Build minimal input; agent must fetch meeting details first and infer call type.
+    input_data = BriefingInput(
+        deal_id=str(deal_id),
+        event_id=str(event_id),
+        current_datetime=current_dt.isoformat(),
+        prior_meetings_count=prior_meetings_count,
+        emails_exchanged_count=emails_exchanged_count,
+        deal_name=deal.name,
+        company_name=deal.company_name,
+        event_details=EventDetails(
+            title=event.title,
+            description=event.description,
+            start_at=event.start_at.isoformat() if event.start_at else None,
+            end_at=event.end_at.isoformat() if event.end_at else None,
+            organiser_name=event.organiser_name,
+            organiser_email=event.organiser_email,
+            attendee_count=event.attendee_count,
+            attendees_preview=attendees_preview,
+        ),
     )
 
-    publisher.publish_progress("Generating briefing...", "generation", 0.5)
+    publisher.publish_progress("Generating briefing with AI...", "Agent in Progress", 0.4)
 
-    agent = BriefingAgent()
-    briefing_data = await agent.generate(context_string)
+    # Agent receives pre-loaded context and can use tools for deeper analysis
+    agent = BriefingAgent(session, org_id, publisher, org_name=org_name)
+    briefing_data = await agent.generate(input_data)
 
-    publisher.publish_progress("Saving results...", "saving", 0.9)
+    publisher.publish_progress("Saving results...", "Saving Results", 0.9)
 
     # Wrap result with metadata envelope and update association
     briefing_dict = briefing_data.model_dump()
@@ -186,9 +225,10 @@ async def handle_meeting_briefing(
 async def handle_meeting_summary(
     session: AsyncSession, job: DealJobs, publisher: DealJobRedisPublisher
 ) -> dict:
-    """Handle meeting summary generation.
+    """Handle meeting summary generation using tool-based agent.
 
-    Generates a post-meeting summary from the meeting transcript.
+    The agent uses tools to fetch the transcript and stakeholder data,
+    rather than receiving all data pre-loaded.
 
     Args:
         session: Database session
@@ -201,29 +241,36 @@ async def handle_meeting_summary(
     Raises:
         RuntimeError: If event data or transcript is missing
     """
-    from src.agents.workflows.summary import SummaryAgent
+    from src.agents.workflows.summary import SummaryAgent, SummaryInput
     from src.domain.models.organisation_tables.sync.meeting_intelligence import MeetingStatus
 
+    # Copy scalar identifiers up-front for async-safety (see meeting briefing handler).
     org_id = job.organisation_id
-    publisher.publish_progress("Loading meeting context...", "context", 0.1)
+    deal_id = job.deal_id
+    event_id = job.event_id
+    publisher.publish_progress("Loading meeting context...", "Querying Database", 0.1)
 
-    # Load deal and event
-    deal = await get_deal(session, org_id, job.deal_id)
-    event = await get_event(session, org_id, job.event_id)
+    org_name: str | None = None
+    org_name = await get_organisation_name(session, org_id)
+
+    # Load minimal data - deal and event info only
+    deal = await get_deal(session, org_id, deal_id)
+    event = await get_event(session, org_id, event_id)
     if not deal or not event:
         raise NonRetryableJobError("Missing deal or event data", "invalid_data")
 
-    # Use TranscriptService to ensure transcript exists
-    publisher.publish_progress("Checking for transcript...", "transcript", 0.2)
+    # IMPORTANT: Still verify transcript exists before calling agent
+    # The agent will fetch it via tool, but we need to fail fast if unavailable
+    publisher.publish_progress("Verifying transcript availability...", "Analysing", 0.15)
 
     transcript_service = TranscriptService(session, org_id)
-    meeting = await transcript_service.ensure_transcript(job.event_id)
+    meeting = await transcript_service.ensure_transcript(event_id)
 
     if not meeting:
         # No meeting record - this is a permanent failure
         logger.info(
             "No Meeting record for event %s. Event has online_meeting_id=%s, provider=%s",
-            job.event_id,
+            event_id,
             event.online_meeting_id,
             event.online_meeting_provider,
         )
@@ -265,28 +312,36 @@ async def handle_meeting_summary(
             "transcript_unavailable",
         )
 
-    publisher.publish_progress("Loading stakeholders...", "stakeholders", 0.3)
-
-    # Load stakeholders for context
-    stakeholders = await get_stakeholders(session, org_id, job.deal_id)
-
-    publisher.publish_progress("Analyzing transcript...", "analysis", 0.4)
+    publisher.publish_progress("Checking stakeholders...", "Getting Stakeholders", 0.2)
 
     # Update association status
-    association = await get_association(session, org_id, job.deal_id, job.event_id)
+    association = await get_association(session, org_id, deal_id, event_id)
     if association:
         association.meeting_summary_status = GenerationStatus.GENERATING
         await session.commit()
 
-    # Build context and run agent
-    context_string = build_summary_context_string(
-        deal, event, meeting.full_transcript, stakeholders
+    logger.info(
+        "Preparing summary for meeting %s (deal %s)",
+        event_id,
+        deal_id,
     )
 
-    publisher.publish_progress("Generating summary...", "generation", 0.5)
+    publisher.publish_progress("Starting AI analysis...", "analysis", 0.25)
 
-    agent = SummaryAgent()
-    summary_data = await agent.generate(context_string)
+    # Build minimal input - agent will use tools to fetch transcript, meeting details,
+    # and (optionally) deal/stakeholder context starting from event_id.
+    current_dt = datetime.now(UTC)
+    input_data = SummaryInput(
+        event_id=str(event_id),
+        deal_id=str(deal_id),
+        current_datetime=current_dt.isoformat(),
+    )
+
+    publisher.publish_progress("Generating summary with AI...", "generation", 0.3)
+
+    # Agent uses tools to fetch transcript and stakeholders, then generates summary
+    agent = SummaryAgent(session, org_id, publisher, org_name=org_name)
+    summary_data = await agent.generate(input_data)
 
     publisher.publish_progress("Saving results...", "saving", 0.9)
 

@@ -109,12 +109,21 @@ class SinglePoolMonitor:
     def attach(self) -> None:
         if self._listeners_attached:
             return
-        # Attach event listeners only to this pool instance
-        event.listen(self.pool, "checkout", _dispatch_checkout)
-        event.listen(self.pool, "checkin", _dispatch_checkin)
-        event.listen(self.pool, "connect", _dispatch_connect)
-        event.listen(self.pool, "invalidate", _dispatch_invalidate)
-        event.listen(self.pool, "close", _dispatch_close)
+        # Attach event listeners only to this pool instance.
+        # We catch RuntimeError ("deque mutated during iteration") which can
+        # occur if attachment races with connection creation on another thread.
+        # Caller should retry on next monitor tick.
+        try:
+            event.listen(self.pool, "checkout", _dispatch_checkout)
+            event.listen(self.pool, "checkin", _dispatch_checkin)
+            event.listen(self.pool, "connect", _dispatch_connect)
+            event.listen(self.pool, "invalidate", _dispatch_invalidate)
+            event.listen(self.pool, "close", _dispatch_close)
+        except RuntimeError as e:
+            if "deque mutated" in str(e):
+                # Race condition - pool is actively being used; skip this tick
+                raise
+            raise
         _register_monitor(self)
         self._listeners_attached = True
 
@@ -450,6 +459,15 @@ class DbPoolsMonitorService:
         monitor = SinglePoolMonitor(pool=pool, label=label, kind=kind, engine=engine)
         try:
             monitor.attach()
+        except RuntimeError as exc:
+            # Transient race condition during pool creation; will retry next tick
+            if "deque mutated" in str(exc):
+                logger.debug(
+                    "Deferred monitor attach for pool %s (pool busy): %s", label, exc
+                )
+                return None
+            logger.warning("Failed to attach monitor to pool %s: %s", label, exc)
+            return None
         except Exception as exc:
             logger.warning("Failed to attach monitor to pool %s: %s", label, exc)
             return None

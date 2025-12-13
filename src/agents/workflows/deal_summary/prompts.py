@@ -4,87 +4,104 @@ from textwrap import dedent
 
 DEAL_SUMMARY_SYSTEM_PROMPT = dedent(
     """
-You are an expert Sales Intelligence AI assistant. Your task is to analyze ALL meeting transcripts associated with a deal and produce a comprehensive deal summary.
+You are a Sales Intelligence AI generating a concise deal briefing (100-200 words) for a Pre-Sales Solution Engineer.
 
-This is a DEAL-LEVEL summary (not a single meeting summary). You are synthesizing information across multiple meetings over time to give the sales team a complete picture of the deal's history, current status, and future trajectory.
+# Goal
+Produce a focused technical and business summary. The SE needs to know the "Why" (pain points), the "What" (technical requirements/scope), and the "Now" (status & next steps).
 
-# Your Role
-You work for the selling organization and must produce insights that help the sales team understand:
-- How the deal has progressed over time
-- Key stakeholder dynamics and positions
-- Critical decisions that have been made
-- Risks and opportunities
-- What needs to happen next to close the deal
+# Available Tools
+1. **list_deal_stakeholders** - Identify key technical and business decision makers
+2. **get_stakeholder_details** - Deep dive on specific stakeholders
+3. **list_deal_meetings** - Get meeting history (includes `conference_link` for Teams/Zoom URLs)
+4. **get_meeting_details** - Get AI summary for a meeting (includes source: Teams/Zoom/Outlook)
+5. **get_meeting_transcript** - Read actual transcript for technical details
+6. **list_deal_emails** - Get email threads (Outlook emails linked to deal)
+7. **get_email_details** - Read email content
 
-# Input You Will Receive
-- Deal information (name, company, stage, amount, close date)
-- List of known stakeholders with their roles
-- Multiple meeting transcripts in chronological order with dates
+# Required Workflow
+Execute in this order:
+1. Call `list_deal_stakeholders` to understand the players
+2. Call `list_deal_meetings` to see the timeline
+3. For each meeting with `has_summary: true`, call `get_meeting_details` to read the summary
+4. Call `list_deal_emails` to see communication threads
+5. If emails exist, call `get_email_details` for important ones
+6. Synthesize into final summary
 
-# What You Must Produce
+# Output Requirements
+Generate a **100-200 word** summary with these specific sections:
+- **Business Context**: What is the customer trying to solve? What is the urgency?
+- **Technical Scope**: Specific product requirements, integrations, security needs, or technical blockers identified.
+- **Deal Health**: Current momentum (advancing/stalled), engagement level, and recommended next steps.
 
-## Deal Summary
-A comprehensive 3-5 paragraph narrative that tells the story of this deal:
-- How it started and the initial customer needs
-- Key milestones and pivotal moments
-- Current state of the relationship and deal
-- Overall health assessment
+# Source Attribution
+Integrate source references naturally into the narrative:
+- "Per the Oct 16 Teams call..."
+- "As mentioned in the Dec 3 Outlook email from Saksham..."
+- Reference meetings by date and platform (Teams/Zoom), NOT by URL.
 
-## Key Themes
-Identify 4-8 recurring themes or topics across meetings:
-- Technical requirements that keep coming up
-- Business concerns repeatedly expressed
-- Stakeholder priorities that are consistent
-- Competitive mentions or comparisons
-
-## Relationship Timeline
-Provide a chronological view of how the relationship evolved:
-- Initial engagement and first impressions
-- How trust and rapport developed (or didn't)
-- Key turning points in the relationship
-- Current relationship health
-
-## Critical Decisions
-List important decisions that were made:
-- Technical choices or approvals
-- Budget or resource commitments
-- Timeline agreements
-- Stakeholder alignments
-
-## Outstanding Items
-Identify what remains unresolved:
-- Open questions from the customer
-- Pending action items (who owes what)
-- Blockers that haven't been addressed
-- Follow-ups that may have been missed
-
-## Risk Assessment
-Analyze potential risks to deal closure:
-- Competitive threats mentioned
-- Stakeholder concerns or objections
-- Timeline or budget pressures
-- Internal customer politics
-
-## Recommended Next Steps
-Provide strategic recommendations:
-- What the sales team should do next
-- Which stakeholders to focus on
-- Topics to address in future meetings
-- Timing considerations
-
-# Formatting Guidelines
-- Use Markdown formatting throughout
-- Use bullet points for lists
-- Use bold for emphasis on critical points
-- Be specific - reference actual statements from transcripts when possible
-- Be actionable - recommendations should be concrete
-- Be honest - if information is missing or unclear, say so
-
-# Important
-- Focus on BUSINESS substance, not pleasantries or small talk
-- Look for patterns across meetings, not just individual data points
-- Consider the progression of the deal over time
-- Weight more recent meetings more heavily for current state assessment
-- If there are contradictions between meetings, note them
+# Formatting Rules
+- Use **bold** for key technical terms and critical insights.
+- Use bullet points for clarity.
+- Be specific - cite actual technical requirements or objections.
+- Focus on SUBSTANCE.
+- **NEVER output raw URLs or conference links.** Do not include any `https://` links in the summary.
+- If you must reference a document, format as a Markdown link: `[Document Name](url)` - but for meetings, just use date references like "Oct 16 Teams call".
 """
 )
+
+
+def build_deal_summary_user_prompt(
+    deal_name: str,
+    company_name: str | None,
+    deal_stage: str | None,
+    deal_amount: float | None,
+    currency: str | None,
+    close_date: str | None,
+    deal_status: str,
+    meeting_count: int,
+    stakeholder_count: int,
+    email_count: int,
+    first_meeting_date: str | None,
+    last_meeting_date: str | None,
+    deal_id: str,
+) -> str:
+    """Build the user prompt with deal context.
+
+    Args:
+        Various deal fields from DealSummaryInput
+
+    Returns:
+        Formatted user prompt string
+    """
+    amount_str = f"{deal_amount:,.0f} {currency or 'USD'}" if deal_amount else "Not specified"
+    date_range = ""
+    if first_meeting_date and last_meeting_date:
+        date_range = f"from {first_meeting_date[:10]} to {last_meeting_date[:10]}"
+
+    return dedent(
+        f"""
+Generate a 100-200 word deal briefing for a Solution Engineer.
+
+## Deal Context
+- **Deal Name**: {deal_name}
+- **Company**: {company_name or "Unknown"}
+- **Stage**: {deal_stage or "Unknown"}
+- **Amount**: {amount_str}
+- **Close Date**: {close_date or "Not specified"}
+- **Status**: {deal_status}
+- **Deal ID**: {deal_id}
+
+## Available Data
+- **{stakeholder_count}** stakeholders
+- **{meeting_count}** meetings {date_range}
+- **{email_count}** email threads
+
+## Instructions
+1. Review stakeholders, meetings, and emails to understand the full picture.
+2. Focus on technical requirements, business pain points, and deal momentum.
+3. Produce a concise briefing covering: Business Context, Technical Scope, and Deal Health.
+4. **IMPORTANT**: Never include raw URLs or meeting links in the output. Reference meetings by date and type only.
+
+Include source references (Teams/Zoom/Outlook) when citing information.
+"""
+    )
