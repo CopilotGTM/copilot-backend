@@ -2,6 +2,7 @@ import logging
 import os
 from datetime import UTC, datetime
 from json import dumps as json_dumps
+from logging.handlers import RotatingFileHandler
 
 from src.infra.observability.context import (
     get_celery_queue,
@@ -94,15 +95,11 @@ def get_logger(
     # File handler (if log_file is specified)
     if log_file:
         os.makedirs(os.path.dirname(log_file), exist_ok=True)
-        file_handler: logging.FileHandler
-        if rotate_logs:
-            from logging.handlers import RotatingFileHandler
-
-            file_handler = RotatingFileHandler(
-                log_file, maxBytes=max_bytes, backupCount=backup_count
-            )
-        else:
-            file_handler = logging.FileHandler(log_file)
+        file_handler: logging.FileHandler = (
+            RotatingFileHandler(log_file, maxBytes=max_bytes, backupCount=backup_count)
+            if rotate_logs
+            else logging.FileHandler(log_file)
+        )
 
         file_handler.setFormatter(formatter)
         file_handler.addFilter(_ContextFilter())
