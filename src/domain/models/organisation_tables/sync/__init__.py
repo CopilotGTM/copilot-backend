@@ -23,6 +23,7 @@ from .conversation_intelligence import (
     TranscriptContentFormat,
 )
 from .crm import (
+    CRMAssociationCategory,
     CRMCompany,
     CRMContact,
     CRMDeal,
@@ -31,6 +32,8 @@ from .crm import (
     CRMDealStageHistory,
     CRMDealStatus,
     CRMDealTask,
+    CRMObjectAssociation,
+    CRMObjectType,
     CRMParticipantType,
     CRMPipeline,
     CRMStageState,
@@ -88,6 +91,9 @@ __all__ = [
     "IntegrationSyncHistory",
     "SyncStatus",
     "CRMContact",
+    "CRMObjectAssociation",
+    "CRMObjectType",
+    "CRMAssociationCategory",
     "CRMPipeline",
     "CRMDealStage",
     "CRMDeal",

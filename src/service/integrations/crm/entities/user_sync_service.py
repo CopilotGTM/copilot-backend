@@ -309,6 +309,7 @@ class UserSyncService(BaseSyncService[CRMUser]):
         """Update status fields (active, archived, deleted)."""
         archived_flag = self._as_bool(pick("archived"))
         active_flag = self._as_bool(pick("active", "isActive", "hasAccess"))
+        deleted_flag = self._as_bool(pick("deleted", "isDeleted", "is_deleted"))
 
         # Resolve active status
         if active_flag is not None:
@@ -317,9 +318,9 @@ class UserSyncService(BaseSyncService[CRMUser]):
             record.is_active = not archived_flag
         # Keep existing value if neither flag present
 
-        # Set remote deletion flag
-        if archived_flag is not None:
-            record.is_deleted_remote = bool(archived_flag)
+        # Deleted (provider true deletion) should map to SyncedRecordMixin.is_deleted
+        if deleted_flag is not None:
+            record.is_deleted = bool(deleted_flag)
 
     def _update_date_fields(self, record: CRMUser, pick: Any) -> None:
         """Update date-related fields."""

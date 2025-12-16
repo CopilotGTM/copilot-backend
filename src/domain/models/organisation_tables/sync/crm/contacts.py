@@ -82,6 +82,11 @@ class CRMContact(SyncedRecordMixin, table=True):
         sa_column=Column(String(255)),
         description="Display name for the owner, if provided.",
     )
+    owner_id: UUID | None = Field(
+        default=None,
+        foreign_key="crm_users.user_id",
+        description="Resolved internal user ID for the contact owner (FK to crm_users).",
+    )
     lifecycle_stage: str | None = Field(
         default=None,
         description="Lifecycle stage (e.g., subscriber, lead, opportunity).",

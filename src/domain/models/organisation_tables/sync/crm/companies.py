@@ -66,6 +66,11 @@ class CRMCompany(SyncedRecordMixin, table=True):
     )
     owner_email: str | None = Field(default=None, description="Email of the account owner.")
     owner_name: str | None = Field(default=None, description="Display name of the account owner.")
+    owner_id: UUID | None = Field(
+        default=None,
+        foreign_key="crm_users.user_id",
+        description="Resolved internal user ID for the company owner (FK to crm_users).",
+    )
 
     # Business metrics
     number_of_employees: int | None = Field(

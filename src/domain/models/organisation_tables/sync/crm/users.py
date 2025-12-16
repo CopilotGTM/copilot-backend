@@ -69,11 +69,6 @@ class CRMUser(SyncedRecordMixin, table=True):
         sa_column=Column(Boolean, nullable=False, server_default=text("true")),
         description="Whether the user is active according to the provider.",
     )
-    is_deleted_remote: bool = Field(
-        default=False,
-        sa_column=Column(Boolean, nullable=False, server_default=text("false")),
-        description="Provider deletion flag for the user.",
-    )
 
     # Activity
     last_login_at: datetime | None = Field(
@@ -117,3 +112,13 @@ class CRMUser(SyncedRecordMixin, table=True):
         sa_column=Column(JSONB),
         description="Raw provider payload useful for debugging.",
     )
+
+    @property
+    def is_deleted_remote(self) -> bool:
+        """Backwards-compatible alias for SyncedRecordMixin.is_deleted."""
+
+        return bool(self.is_deleted)
+
+    @is_deleted_remote.setter
+    def is_deleted_remote(self, value: bool) -> None:
+        self.is_deleted = bool(value)
