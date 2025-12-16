@@ -16,6 +16,22 @@ variable "dns_zone_resource_group" {
   default     = "master-resources"
 }
 
+variable "letsencrypt_email" {
+  type        = string
+  description = "Email address for Let's Encrypt registration"
+}
+
+variable "azure_dns_managed_identity_client_id" {
+  type        = string
+  description = "Client ID of the managed identity used by cert-manager to solve Azure DNS challenges"
+}
+
+variable "api_subdomain" {
+  type        = string
+  description = "API subdomain (e.g. api, devapi)"
+  default     = "api"
+}
+
 # ingress-controller lookup
 variable "ingress_namespace" {
   type        = string

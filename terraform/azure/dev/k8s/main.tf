@@ -1,6 +1,16 @@
 # -----------------------------------------------------------------
 # 1) Helm chart: nginx-ingress
 # -----------------------------------------------------------------
+moved {
+  from = azurerm_dns_a_record.devapi
+  to   = azurerm_dns_a_record.api
+}
+
+moved {
+  from = kubernetes_manifest.devapi_certificate
+  to   = kubernetes_manifest.api_certificate
+}
+
 resource "helm_release" "ingress_nginx" {
   name             = "ingress-nginx"
   repository       = "https://kubernetes.github.io/ingress-nginx"
@@ -36,37 +46,6 @@ resource "helm_release" "ingress_nginx" {
     }
   ]
 }
-
-# -----------------------------------------------------------------
-# 7) Create a certificate for the devapi
-# -----------------------------------------------------------------
-resource "kubernetes_manifest" "devapi_certificate" {
-  manifest = {
-    "apiVersion" = "cert-manager.io/v1"
-    "kind"       = "Certificate"
-    "metadata" = {
-      "name"      = "devapi-tls"
-      "namespace" = var.app_namespace
-    }
-    "spec" = {
-      "secretName" = "devapi-tls"
-      "issuerRef" = {
-        "name" = "letsencrypt"
-        "kind" = "ClusterIssuer"
-      }
-      "commonName" = "devapi.${var.dns_zone_name}"
-      "dnsNames" = [
-        "devapi.${var.dns_zone_name}"
-      ]
-    }
-  }
-
-  depends_on = [
-    kubernetes_manifest.letsencrypt_issuer,
-    kubernetes_namespace.app_namespace
-  ]
-}
-
 
 # -----------------------------------------------------------------
 # 2) Helm chart: cert-manager
@@ -154,7 +133,7 @@ resource "kubernetes_manifest" "letsencrypt_issuer" {
     }
     "spec" = {
       "acme" = {
-        "email"  = "nikhil@copilotgtm.com"
+        "email"  = var.letsencrypt_email
         "server" = "https://acme-v02.api.letsencrypt.org/directory"
         "privateKeySecretRef" = {
           "name" = "letsencrypt-account-key"
@@ -171,12 +150,12 @@ resource "kubernetes_manifest" "letsencrypt_issuer" {
             "dns01" = {
               "azureDNS" = {
                 "managedIdentity" = {
-                  "clientID" = "d999da04-d31f-43f5-b27d-2a6ddce80e13"
+                  "clientID" = var.azure_dns_managed_identity_client_id
                 }
-                "subscriptionID" = "675df0ed-8e06-441b-a1e4-110d19521816"
-                "resourceGroupName" = "master-resources"
-                "hostedZoneName" = "copilotgtm.com"
-                "environment" = "AzurePublicCloud"
+                "subscriptionID"    = var.subscription_id
+                "resourceGroupName" = var.dns_zone_resource_group
+                "hostedZoneName"    = var.dns_zone_name
+                "environment"       = "AzurePublicCloud"
               }
             }
           }
@@ -215,8 +194,8 @@ resource "kubernetes_namespace" "app_namespace" {
 # -----------------------------------------------------------------
 # 6) Create the DNS A record pointing at that IP
 # -----------------------------------------------------------------
-resource "azurerm_dns_a_record" "devapi" {
-  name                = "devapi"
+resource "azurerm_dns_a_record" "api" {
+  name                = var.api_subdomain
   zone_name           = var.dns_zone_name
   resource_group_name = var.dns_zone_resource_group
   ttl                 = 300
@@ -227,5 +206,33 @@ resource "azurerm_dns_a_record" "devapi" {
       .load_balancer[0]
       .ingress[0]
       .ip
+  ]
+}
+
+# -----------------------------------------------------------------
+# 7) Create a certificate for the API
+# -----------------------------------------------------------------
+resource "kubernetes_manifest" "api_certificate" {
+  manifest = {
+    "apiVersion" = "cert-manager.io/v1"
+    "kind"       = "Certificate"
+    "metadata" = {
+      "name"      = "${var.api_subdomain}-tls"
+      "namespace" = var.app_namespace
+    }
+    "spec" = {
+      "secretName" = "${var.api_subdomain}-tls"
+      "issuerRef" = {
+        "name" = "letsencrypt"
+        "kind" = "ClusterIssuer"
+      }
+      "commonName" = "${var.api_subdomain}.${var.dns_zone_name}"
+      "dnsNames"   = ["${var.api_subdomain}.${var.dns_zone_name}"]
+    }
+  }
+
+  depends_on = [
+    kubernetes_manifest.letsencrypt_issuer,
+    kubernetes_namespace.app_namespace
   ]
 }

@@ -23,7 +23,7 @@ terraform {
     resource_group_name  = "gtm-tfstate"
     storage_account_name = "gtmstatestor001"
     container_name       = "tfstate"
-    key                  = "k8s.terraform.tfstate"
+    key                  = "azure/dev/k8s/terraform.tfstate"
   }
 }
 

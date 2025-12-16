@@ -6,6 +6,7 @@ Terraform infrastructure for Azure (modular, environment folders under `terrafor
 
 - Deployment guide (two-step: core + k8s): `docs/infrastructure-deployment-guide.md`
 - KEDA notes: `docs/keda-autoscaling-guide.md`
+- Dev → Prod promotion guide: `docs/environment-promotion-dev-to-prod.md`
 
 ## Quickstart (any environment)
 
