@@ -45,41 +45,41 @@ Provisioned services and capabilities:
 
 - **Resource group** (environment-suffixed)
 - **Networking** via VNet module
-    - VNet, public + private subnets
-    - NAT/public IP outputs (as exposed by the module)
+  - VNet, public + private subnets
+  - NAT/public IP outputs (as exposed by the module)
 - **Azure Cache for Redis**
 - **Key Vaults**
-    - database Key Vault (DB secrets)
-    - master Key Vault (shared/master secrets)
+  - database Key Vault (DB secrets)
+  - master Key Vault (shared/master secrets)
 - **Storage accounts**
-    - master storage (general)
-    - organisation storage (per-organisation data)
-    - blob CORS configured for frontend origins
+  - master storage (general)
+  - organisation storage (per-organisation data)
+  - blob CORS configured for frontend origins
 - **Azure Container Registry (ACR)**
 - **Azure Kubernetes Service (AKS)**
-    - optional GPU/compute node pool settings (controlled by variables)
-    - OIDC issuer enabled (required for workload identity)
+  - optional GPU/compute node pool settings (controlled by variables)
+  - OIDC issuer enabled (required for workload identity)
 - **Workload identity (Entra ID)**
-    - backend workload identity principal
-    - workers workload identity principal
+  - backend workload identity principal
+  - workers workload identity principal
 - **RBAC role assignments**
-    - AKS kubelet gets `AcrPull` on ACR
-    - workload identities get scoped access to Key Vault + Storage
+  - AKS kubelet gets `AcrPull` on ACR
+  - workload identities get scoped access to Key Vault + Storage
 - **PostgreSQL Flexible Server** (module-managed)
-    - admin password generated via `random_password`
-    - connection details exported for app usage
+  - admin password generated via `random_password`
+  - connection details exported for app usage
 - **Azure AI Foundry** (module-managed)
-    - OpenAI endpoint details exported for app usage
+  - OpenAI endpoint details exported for app usage
 - **App Services** (Linux, container-based)
-    - frontend web app
-    - admin frontend web app
-    - optional custom domain + DNS record creation (module-controlled)
+  - frontend web app
+  - admin frontend web app
+  - optional custom domain + DNS record creation (module-controlled)
 - **Azure DevOps automation**
-    - service principal for pipelines/service connections
-    - Azure DevOps service connections (Azure RM + ACR)
-    - variable group for runtime config + secrets
-    - pipelines (backend, frontend, admin)
-    - secure file for kubeconfig (generated from AKS outputs)
+  - service principal for pipelines/service connections
+  - Azure DevOps service connections (Azure RM + ACR)
+  - variable group for runtime config + secrets
+  - pipelines (backend, frontend, admin)
+  - secure file for kubeconfig (generated from AKS outputs)
 
 ### Step 2: AKS add-ons (`terraform/azure/<env>/k8s/`)
 
