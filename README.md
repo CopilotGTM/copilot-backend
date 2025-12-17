@@ -29,14 +29,13 @@ Notes:
 - Keep real `terraform.tfvars` local/secure (it commonly contains secrets).
 - See `terraform/azure/dev/README.md` and `terraform/azure/prod/README.md` for environment-specific notes.
 
-2. cert-manager will automatically provision and renew TLS certificates for your domains (e.g., api.copilotgtm.com, devapi.copilotgtm.com).
+2.cert-manager will automatically provision and renew TLS certificates for your domains (e.g., api.copilotgtm.com, devapi.copilotgtm.com).
 
 ### Notes
 
 - This two-step process is required because cert-manager CRDs must be present before you can create ClusterIssuer or Certificate resources.
 - You only need to repeat Step 2 if you change certificate details or add new domains.
 - For more details, see `cert-manager-step1.tf` and `cert-manager-step2.tf` in the `terraform/azure/dev` directory.
-
 
 terraform apply -target="helm_release.cert_manager"
 terraform apply -auto-approve
