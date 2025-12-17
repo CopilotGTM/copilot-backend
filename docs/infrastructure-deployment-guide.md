@@ -9,7 +9,7 @@ The guidance below is **environment-agnostic**. Use it for any environment folde
 
 ## Repo structure
 
-```
+```text
 terraform/
     azure/
         <env>/

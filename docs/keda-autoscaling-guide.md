@@ -5,6 +5,7 @@ This document explains how to use KEDA (Kubernetes Event-driven Autoscaling) in 
 ## What is KEDA?
 
 KEDA is a Kubernetes-based Event Driven Autoscaler that allows you to scale applications based on various external metrics like:
+
 - Azure Service Bus queues
 - Redis lists/streams
 - HTTP requests
@@ -60,6 +61,7 @@ kedaAutoscaling:
 ## Common KEDA Triggers
 
 ### Azure Service Bus Queue
+
 ```yaml
 triggers:
   - type: azure-servicebus
@@ -70,6 +72,7 @@ triggers:
 ```
 
 ### Redis List/Stream
+
 ```yaml
 triggers:
   - type: redis
@@ -80,6 +83,7 @@ triggers:
 ```
 
 ### HTTP Requests (Prometheus)
+
 ```yaml
 triggers:
   - type: prometheus
@@ -91,6 +95,7 @@ triggers:
 ```
 
 ### Azure Blob Storage
+
 ```yaml
 triggers:
   - type: azure-blob
@@ -129,18 +134,21 @@ env:
 ## Troubleshooting
 
 ### Check KEDA Status
+
 ```bash
 kubectl get scaledobjects -n your-namespace
 kubectl describe scaledobject your-app-scaledobject -n your-namespace
 ```
 
 ### Check KEDA Logs
+
 ```bash
 kubectl logs -n keda-system deployment/keda-operator
 kubectl logs -n keda-system deployment/keda-metrics-apiserver
 ```
 
 ### Check HPA Status (created by KEDA)
+
 ```bash
 kubectl get hpa -n your-namespace
 kubectl describe hpa keda-hpa-your-app -n your-namespace
