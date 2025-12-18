@@ -1,8 +1,12 @@
-"""Task enrichment helper service.
+"""Task/Activity enrichment helper service.
 
-Enriches CRMDealTask records with denormalised data pulled from related
-entities (users, deals). Intended to be used by the task sync flow to
-populate owner details after syncing.
+Enriches CRMActivity (CRMDealTask) records with denormalised data pulled from
+related entities (users, deals, contacts, companies). Intended to be used by
+the activity sync flow to populate related entity details after syncing.
+
+This service handles bidirectional linking:
+- When activities are synced first: external IDs are stored, local IDs resolved later
+- When related entities are synced first: activities get enriched with local IDs
 """
 
 from __future__ import annotations
@@ -13,34 +17,62 @@ from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from src.domain.models.organisation_tables.sync.crm import CRMDealTask, CRMUser
+from src.domain.models.organisation_tables.sync.crm import (
+    CRMCompany,
+    CRMContact,
+    CRMDeal,
+    CRMDealTask,
+    CRMUser,
+)
 
 
 class TaskEnrichmentService:
-    """Populate denormalised task fields from related CRM entities."""
+    """Populate denormalised activity fields from related CRM entities.
+
+    Handles enrichment of:
+    - Owner details (name, email) from CRMUser
+    - Deal linkage (deal_id) from CRMDeal
+    - Contact linkage (contact_id) from CRMContact
+    - Company linkage (company_id) from CRMCompany
+    """
 
     def __init__(self, *, db: AsyncSession, organisation_id: UUID) -> None:
         self.db = db
         self.organisation_id = organisation_id
 
     async def enrich_tasks(self, tasks: Iterable[CRMDealTask]) -> None:
-        """Enrich the provided task records in-place.
+        """Enrich the provided activity records in-place.
 
         Args:
-            tasks: Iterable of task ORM objects already attached to the session.
+            tasks: Iterable of activity ORM objects already attached to the session.
         """
         task_list = [task for task in tasks if isinstance(task, CRMDealTask)]
         if not task_list:
             return
 
-        # Collect owner IDs that need enrichment
+        # Collect IDs that need enrichment
         owner_ids = {task.owner_external_id for task in task_list if task.owner_external_id}
+        deal_ext_ids = {
+            task.deal_external_id
+            for task in task_list
+            if task.deal_external_id and not task.deal_id
+        }
+        contact_ext_ids = {
+            task.contact_external_id
+            for task in task_list
+            if task.contact_external_id and not task.contact_id
+        }
+        company_ext_ids = {
+            task.company_external_id
+            for task in task_list
+            if task.company_external_id and not task.company_id
+        }
 
-        if not owner_ids:
-            return
-
-        # Load users
-        users = await self._load_users(owner_ids)
+        # Load related entities
+        users = await self._load_users(owner_ids) if owner_ids else {}
+        deals = await self._load_deals(deal_ext_ids) if deal_ext_ids else {}
+        contacts = await self._load_contacts(contact_ext_ids) if contact_ext_ids else {}
+        companies = await self._load_companies(company_ext_ids) if company_ext_ids else {}
 
         # Apply enrichment
         for task in task_list:
@@ -48,6 +80,21 @@ class TaskEnrichmentService:
                 user = users.get(task.owner_external_id)
                 if user:
                     self._apply_owner_details(task, user)
+
+            if task.deal_external_id and not task.deal_id:
+                deal = deals.get(task.deal_external_id)
+                if deal:
+                    task.deal_id = deal.deal_id
+
+            if task.contact_external_id and not task.contact_id:
+                contact = contacts.get(task.contact_external_id)
+                if contact:
+                    task.contact_id = contact.contact_id
+
+            if task.company_external_id and not task.company_id:
+                company = companies.get(task.company_external_id)
+                if company:
+                    task.company_id = company.company_id
 
     async def enrich_tasks_for_integration(self, integration_id: UUID) -> None:
         """Enrich all tasks for a given integration."""
@@ -92,6 +139,61 @@ class TaskEnrichmentService:
 
         if user.email and user.email != task.owner_email:
             task.owner_email = user.email
+
+        # Also set owner_id FK if not set
+        if not task.owner_id:
+            task.owner_id = user.user_id
+
+    async def _load_deals(self, deal_ext_ids: set[str]) -> dict[str, CRMDeal]:
+        """Load CRM deals by external IDs.
+
+        Args:
+            deal_ext_ids: Set of deal external IDs to load
+
+        Returns:
+            Dictionary mapping external_id to CRMDeal
+        """
+        result = await self.db.execute(
+            select(CRMDeal)
+            .where(CRMDeal.organisation_id == self.organisation_id)  # type: ignore[arg-type]
+            .where(CRMDeal.external_id.in_(deal_ext_ids))  # type: ignore[attr-defined]
+            .where(CRMDeal.is_deleted.is_(False))  # type: ignore[attr-defined]
+        )
+        return {deal.external_id: deal for deal in result.scalars().all()}
+
+    async def _load_contacts(self, contact_ext_ids: set[str]) -> dict[str, CRMContact]:
+        """Load CRM contacts by external IDs.
+
+        Args:
+            contact_ext_ids: Set of contact external IDs to load
+
+        Returns:
+            Dictionary mapping external_id to CRMContact
+        """
+        result = await self.db.execute(
+            select(CRMContact)
+            .where(CRMContact.organisation_id == self.organisation_id)  # type: ignore[arg-type]
+            .where(CRMContact.external_id.in_(contact_ext_ids))  # type: ignore[attr-defined]
+            .where(CRMContact.is_deleted.is_(False))  # type: ignore[attr-defined]
+        )
+        return {contact.external_id: contact for contact in result.scalars().all()}
+
+    async def _load_companies(self, company_ext_ids: set[str]) -> dict[str, CRMCompany]:
+        """Load CRM companies by external IDs.
+
+        Args:
+            company_ext_ids: Set of company external IDs to load
+
+        Returns:
+            Dictionary mapping external_id to CRMCompany
+        """
+        result = await self.db.execute(
+            select(CRMCompany)
+            .where(CRMCompany.organisation_id == self.organisation_id)  # type: ignore[arg-type]
+            .where(CRMCompany.external_id.in_(company_ext_ids))  # type: ignore[attr-defined]
+            .where(CRMCompany.is_deleted.is_(False))  # type: ignore[attr-defined]
+        )
+        return {company.external_id: company for company in result.scalars().all()}
 
     def _compose_name(self, first: Any, last: Any) -> str | None:
         """Compose full name from first and last name.
