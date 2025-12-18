@@ -21,11 +21,13 @@ Usage:
 """
 
 import asyncio
+import contextvars
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
 from celery import Celery
 
+from src.infra.observability.context import correlation_headers
 from src.infra.utils.logger import get_logger
 
 logger = get_logger("chat_worker_client")
@@ -117,6 +119,7 @@ def send_chat_task(
     kwargs: dict | None = None,
     queue: str = "chat_messages",
     routing_key: str | None = None,
+    headers: dict | None = None,
 ) -> str:
     """
     Send a task to the chat worker (synchronous version).
@@ -144,6 +147,7 @@ def send_chat_task(
         kwargs=kwargs or {},
         queue=queue,
         routing_key=routing_key or queue,
+        headers=correlation_headers(headers),
     )
 
     return str(result.id)
@@ -155,6 +159,7 @@ async def send_chat_task_async(
     kwargs: dict | None = None,
     queue: str = "chat_messages",
     routing_key: str | None = None,
+    headers: dict | None = None,
 ) -> str:
     """
     Send a task to the chat worker (async version).
@@ -176,16 +181,19 @@ async def send_chat_task_async(
         Exception: If the task cannot be sent
     """
     loop = asyncio.get_event_loop()
+    ctx = contextvars.copy_context()
 
     # Run the blocking send_task in the thread pool
     task_id = await loop.run_in_executor(
         _executor,
+        ctx.run,
         send_chat_task,
         task_name,
         args,
         kwargs,
         queue,
         routing_key,
+        headers,
     )
 
     return task_id

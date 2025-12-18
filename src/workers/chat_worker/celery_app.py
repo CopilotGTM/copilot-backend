@@ -7,10 +7,6 @@ os.environ["TENANT_POOL_MULTIPLIER"] = "1.0"
 import contextlib
 
 from celery.signals import (
-    task_failure,
-    task_postrun,
-    task_prerun,
-    task_received,
     worker_ready,
     worker_shutdown,
 )
@@ -77,28 +73,6 @@ def worker_shutdown_handler(sender=None, **kwargs):
         logger.info("Redis connection pool closed successfully")
     except Exception as e:
         logger.error(f"Error closing Redis connection pool: {e}")
-
-
-@task_received.connect
-def task_received_handler(sender=None, headers=None, body=None, **kwargs):
-    print(f"Task received: {headers}")
-
-
-@task_prerun.connect
-def task_prerun_handler(task_id=None, task=None, args=None, kwargs=None, **kwds):
-    print(f"Task starting: {task.name}({task_id}) with args={args} kwargs={kwargs}")
-
-
-@task_postrun.connect
-def task_postrun_handler(
-    task_id=None, task=None, args=None, kwargs=None, retval=None, state=None, **kwds
-):
-    print(f"Task finished: {task.name}({task_id}) state={state}")
-
-
-@task_failure.connect
-def task_failure_handler(task_id=None, exception=None, traceback=None, einfo=None, **kwds):
-    print(f"Task failed: {task_id} exception={exception}")
 
 
 # Explicitly import task modules to ensure registration

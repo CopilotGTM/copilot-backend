@@ -1,0 +1,33 @@
+enabled: false
+replicaCount: 1
+
+image:
+  repository: mher/flower
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 5555
+
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+  hosts: []
+  tls: []
+
+auth:
+  enabled: false
+  basicAuth: ""
+
+config:
+  secretName: ""
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 250m
+    memory: 256Mi

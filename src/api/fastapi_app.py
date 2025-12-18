@@ -40,6 +40,7 @@ from src.api.routers.users.auth_handler import router as user_auth_router
 from starlette.middleware.sessions import SessionMiddleware
 
 from ..api.events.socket_app import sio
+from ..api.middleware.request_context import RequestContextMiddleware
 from ..infra.messaging.redis_client import close_redis_pool, initialize_redis_pool
 from ..infra.messaging.redis_streams import (
     close_async_redis_pool,
@@ -103,6 +104,8 @@ def create_fastapi_app():
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    fastapp.add_middleware(RequestContextMiddleware)
 
     APP_ENV = os.getenv("ENV", "dev")
     logger.info(f"App Environment: {APP_ENV}")

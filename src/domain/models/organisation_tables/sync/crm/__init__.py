@@ -1,6 +1,18 @@
+from .activities import (
+    CRMActivity,
+    CRMActivityObjectType,
+    CRMActivityPriority,
+    CRMActivityStatus,
+    CRMActivityType,
+    # Backwards compatibility aliases
+    CRMDealTask,
+    CRMTaskPriority,
+    CRMTaskStatus,
+    CRMTaskType,
+)
+from .associations import CRMAssociationCategory, CRMObjectAssociation, CRMObjectType
 from .companies import CRMCompany
 from .contacts import CRMContact
-from .deal_tasks import CRMDealTask, CRMTaskPriority, CRMTaskStatus, CRMTaskType
 from .deals import (
     CRMDeal,
     CRMDealParticipant,
@@ -21,21 +33,38 @@ from .stakeholders import (
 from .users import CRMUser
 
 __all__ = [
+    # Activities (generalized from Tasks)
+    "CRMActivity",
+    "CRMActivityStatus",
+    "CRMActivityType",
+    "CRMActivityPriority",
+    "CRMActivityObjectType",
+    # Backwards compatibility aliases for Tasks
+    "CRMDealTask",
+    "CRMTaskStatus",
+    "CRMTaskType",
+    "CRMTaskPriority",
+    # Associations
+    "CRMObjectAssociation",
+    "CRMObjectType",
+    "CRMAssociationCategory",
+    # Contacts
     "CRMContact",
+    # Pipelines and Stages
     "CRMPipeline",
     "CRMDealStage",
+    "CRMStageState",
+    # Deals
     "CRMDeal",
     "CRMDealParticipant",
     "CRMDealStageHistory",
     "CRMDealStatus",
     "CRMParticipantType",
-    "CRMStageState",
+    # Companies
     "CRMCompany",
+    # Users
     "CRMUser",
-    "CRMDealTask",
-    "CRMTaskStatus",
-    "CRMTaskType",
-    "CRMTaskPriority",
+    # Stakeholders
     "DealStakeholder",
     "StakeholderStance",
     "DecisionPower",

@@ -15,6 +15,7 @@ from src.domain.models.organisation_tables.sync import (
     KnowledgeIntegration,
 )
 from src.infra.config.nango_provider_mapping import to_nango_connect_integration_key
+from src.infra.observability.context import correlation_headers
 from src.infra.utils.logger import get_logger
 from src.service.integrations import NangoClient
 from src.service.integrations.crm.entities import (
@@ -167,8 +168,8 @@ def _trigger_deal_tasks_on_initial_sync(
                 sync_name,
                 organisation_id,
             )
-            process_deal_meetings_task.delay(org_id_str)
-            process_deal_emails_task.delay(org_id_str)
+            process_deal_meetings_task.apply_async(args=[org_id_str], headers=correlation_headers())
+            process_deal_emails_task.apply_async(args=[org_id_str], headers=correlation_headers())
 
         # Trigger deal-meeting matching after calendar events sync
         # This catches case where calendar is connected after CRM
@@ -177,7 +178,7 @@ def _trigger_deal_tasks_on_initial_sync(
                 "Triggering deal-meeting matching after initial calendar sync: org=%s",
                 organisation_id,
             )
-            process_deal_meetings_task.delay(org_id_str)
+            process_deal_meetings_task.apply_async(args=[org_id_str], headers=correlation_headers())
 
         # Trigger deal-email matching after email sync
         # This catches case where email is connected after CRM
@@ -186,7 +187,7 @@ def _trigger_deal_tasks_on_initial_sync(
                 "Triggering deal-email matching after initial email sync: org=%s",
                 organisation_id,
             )
-            process_deal_emails_task.delay(org_id_str)
+            process_deal_emails_task.apply_async(args=[org_id_str], headers=correlation_headers())
 
     except Exception as e:
         # Log but don't fail the sync - deal task triggering is best-effort

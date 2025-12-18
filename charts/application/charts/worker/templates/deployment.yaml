@@ -76,6 +76,9 @@ spec:
             - "worker"
             - "-l"
             - "info"
+            {{- if or (.Values.config.enableEvents | default false) (.Values.global.celery.enableEvents | default false) }}
+            - "-E"
+            {{- end }}
             {{- if .Values.config.concurrency }}
             - "--concurrency={{ .Values.config.concurrency }}"
             {{- end }}

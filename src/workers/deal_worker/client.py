@@ -21,11 +21,13 @@ Usage:
 """
 
 import asyncio
+import contextvars
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
 from celery import Celery
 
+from src.infra.observability.context import correlation_headers
 from src.infra.utils.logger import get_logger
 
 logger = get_logger("deal_worker_client")
@@ -105,6 +107,7 @@ def send_deal_task(
     kwargs: dict | None = None,
     queue: str = "deal",
     routing_key: str | None = None,
+    headers: dict | None = None,
 ) -> str:
     """
     Send a task to the deal worker (synchronous version).
@@ -119,6 +122,7 @@ def send_deal_task(
         kwargs=kwargs or {},
         queue=queue,
         routing_key=routing_key or queue,
+        headers=correlation_headers(headers),
     )
 
     return str(result.id)
@@ -130,6 +134,7 @@ async def send_deal_task_async(
     kwargs: dict | None = None,
     queue: str = "deal",
     routing_key: str | None = None,
+    headers: dict | None = None,
 ) -> str:
     """
     Send a task to the deal worker (async version).
@@ -138,15 +143,18 @@ async def send_deal_task_async(
     blocking the asyncio event loop. Use this in FastAPI async endpoints.
     """
     loop = asyncio.get_event_loop()
+    ctx = contextvars.copy_context()
 
     task_id = await loop.run_in_executor(
         _executor,
+        ctx.run,
         send_deal_task,
         task_name,
         args,
         kwargs,
         queue,
         routing_key,
+        headers,
     )
 
     return task_id

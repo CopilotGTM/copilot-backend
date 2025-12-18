@@ -1,4 +1,4 @@
-"""CRM service layer for accessing deal tasks."""
+"""CRM service layer for accessing activities (tasks, calls, meetings, etc.)."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from uuid import UUID
 
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from src.domain.models.organisation_tables.sync.crm.deal_tasks import CRMDealTask
+from src.domain.models.organisation_tables.sync.crm import CRMActivity
 from src.infra.utils.cursor import decode_cursor, encode_cursor
 from src.infra.utils.logger import get_logger
 
@@ -50,15 +50,14 @@ class TasksAccessService:
         statuses: Iterable[str] | None = None,
         priorities: Iterable[str] | None = None,
         task_types: Iterable[str] | None = None,
-    ) -> tuple[list[CRMDealTask], str | None]:
-        """Return paginated tasks for a specific deal."""
+    ) -> tuple[list[CRMActivity], str | None]:
+        """Return paginated activities for a specific deal."""
 
-        c = cast(Any, CRMDealTask).__table__.c
-        stmt = select(CRMDealTask).where(
+        c = cast(Any, CRMActivity).__table__.c
+        stmt = select(CRMActivity).where(
             c.organisation_id == self.organisation_id,
             c.deal_id == deal_id,
-            c.is_deleted.is_(False),
-            or_(c.is_deleted_remote.is_(False), c.is_deleted_remote.is_(None)),
+            or_(c.is_deleted.is_(False), c.is_deleted.is_(None)),
         )
 
         if statuses:
@@ -68,25 +67,25 @@ class TasksAccessService:
             stmt = stmt.where(c.priority.in_(list(priorities)))
 
         if task_types:
-            stmt = stmt.where(c.task_type.in_(list(task_types)))
+            stmt = stmt.where(c.activity_type.in_(list(task_types)))
 
         if cursor:
             try:
-                ts, task_id = decode_cursor(cursor)
+                ts, activity_id = decode_cursor(cursor)
             except Exception as exc:
                 raise TasksAccessServiceError("Invalid cursor", status_code=400) from exc
 
             stmt = stmt.where(
                 or_(
                     c.created_at < ts,
-                    and_(c.created_at == ts, c.task_id < task_id),
+                    and_(c.created_at == ts, c.activity_id < activity_id),
                 )
             )
 
-        stmt = stmt.order_by(c.created_at.desc(), c.task_id.desc()).limit(limit + 1)
+        stmt = stmt.order_by(c.created_at.desc(), c.activity_id.desc()).limit(limit + 1)
 
         res = await self.org_session.execute(stmt)
-        rows: list[CRMDealTask] = list(res.scalars().all())
+        rows: list[CRMActivity] = list(res.scalars().all())
 
         has_more = len(rows) == limit + 1
         items = rows[:limit]
@@ -94,17 +93,17 @@ class TasksAccessService:
         next_cursor: str | None = None
         if has_more and items:
             last = items[-1]
-            next_cursor = encode_cursor(last.created_at, last.task_id)
+            next_cursor = encode_cursor(last.created_at, last.activity_id)
 
         return items, next_cursor
 
-    async def get_task_by_id(self, task_id: UUID) -> CRMDealTask | None:
-        """Fetch a single task by task ID."""
+    async def get_task_by_id(self, task_id: UUID) -> CRMActivity | None:
+        """Fetch a single activity by ID (backwards compatible with task_id param name)."""
 
         try:
-            c = cast(Any, CRMDealTask).__table__.c
-            stmt = select(CRMDealTask).where(
-                c.task_id == task_id,
+            c = cast(Any, CRMActivity).__table__.c
+            stmt = select(CRMActivity).where(
+                c.activity_id == task_id,
                 c.organisation_id == self.organisation_id,
                 c.is_deleted.is_(False),
             )

@@ -5,7 +5,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import Column, DateTime, Index, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, Relationship
-from src.domain.models.organisation_tables.sync.base import SyncedRecordMixin
+from src.domain.models.organisation_tables.sync.base import FlexibleSyncedRecordMixin
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
 
@@ -41,7 +41,7 @@ class StakeholderSource(str, Enum):
     MANUAL = "MANUAL"
 
 
-class DealStakeholder(SyncedRecordMixin, table=True):
+class DealStakeholder(FlexibleSyncedRecordMixin, table=True):
     __tablename__ = "deal_stakeholders"
     __table_args__ = (
         UniqueConstraint("deal_id", "email", name="uq_deal_stakeholder_email"),

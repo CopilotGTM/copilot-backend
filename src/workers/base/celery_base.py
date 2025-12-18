@@ -1,8 +1,52 @@
+from typing import Any
+
 from celery import Celery
+from celery.signals import task_postrun, task_prerun
+
+from src.infra.observability.context import load_from_headers, reset_context, set_celery_context
+
+_signals_registered = False
+
+
+def _register_observability_signals() -> None:
+    global _signals_registered
+    if _signals_registered:
+        return
+
+    _signals_registered = True
+
+    @task_prerun.connect(weak=False)
+    def _task_prerun_handler(task_id=None, task=None, **kwargs):  # noqa: ARG001
+        headers: dict[str, Any] = {}
+        try:
+            headers = getattr(getattr(task, "request", None), "headers", None) or {}
+        except Exception:
+            headers = {}
+
+        load_from_headers(headers)
+
+        queue = None
+        try:
+            delivery_info = getattr(getattr(task, "request", None), "delivery_info", None) or {}
+            queue = delivery_info.get("routing_key") or delivery_info.get("exchange")
+        except Exception:
+            queue = None
+
+        set_celery_context(
+            task_id=str(task_id) if task_id else None,
+            task_name=getattr(task, "name", None),
+            queue=str(queue) if queue else None,
+        )
+
+    @task_postrun.connect(weak=False)
+    def _task_postrun_handler(task_id=None, task=None, **kwargs):  # noqa: ARG001
+        reset_context()
 
 
 def create_celery_app(worker_name, config, tasks_module):
     """Factory function to create a Celery app for a specific worker."""
+
+    _register_observability_signals()
 
     celery_app = Celery(
         worker_name,

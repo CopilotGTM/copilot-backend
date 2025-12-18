@@ -16,19 +16,22 @@
 
 param(
     [string]$DeployEnvironment = "dev",
+    [switch]$EnableFlower,
     [switch]$Help
 )
 
 # Show usage if help is requested
 if ($Help) {
-    Write-Host "Usage: .\local-deploy.ps1 [-DeployEnvironment <env>] [-Help]"
+    Write-Host "Usage: .\local-deploy.ps1 [-DeployEnvironment <env>] [-EnableFlower] [-Help]"
     Write-Host ""
     Write-Host "Parameters:"
     Write-Host "  -DeployEnvironment  Target environment (default: dev)"
+    Write-Host "  -EnableFlower       Deploy Flower UI and enable Celery events (internal access via port-forward)"
     Write-Host "  -Help              Show this help message"
     Write-Host ""
     Write-Host "Example:"
     Write-Host "  .\local-deploy.ps1                        # Deploy to dev environment"
+    Write-Host "  .\local-deploy.ps1 -EnableFlower          # Deploy Flower UI (internal)"
     Write-Host "  .\local-deploy.ps1 -DeployEnvironment staging  # Deploy to staging"
     exit 0
 }
@@ -345,6 +348,15 @@ function Deploy-WithHelm {
         "--set", "deal-beat.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)"
     )
 
+    if ($EnableFlower) {
+        Write-Host "Flower enabled: deploying Flower UI and enabling Celery events for workers..."
+        $helmArgs += @(
+            "--set", "flower.enabled=true",
+            "--set", "flower.ingress.enabled=false",
+            "--set", "global.celery.enableEvents=true"
+        )
+    }
+
     # Execute Helm command and check for errors
     $helmResult = & helm @helmArgs
     $helmExitCode = $LASTEXITCODE
@@ -446,6 +458,12 @@ function Main {
     Test-DeploymentStatus
 
     Write-Success "Deployment completed successfully!"
+
+    if ($EnableFlower) {
+        Write-Host "Flower UI is deployed (internal). Access it from your machine with:"
+        Write-Host "kubectl port-forward -n $NAMESPACE svc/$HELM_RELEASE_NAME-flower 5555:5555"
+        Write-Host "Then open: http://localhost:5555"
+    }
     Write-Host ""
     Write-Host "🚀 Your application should now be running with the latest changes."
     Write-Host "🔍 Check the status with: kubectl get pods -n $NAMESPACE"

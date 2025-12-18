@@ -7,9 +7,17 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from src.domain.models.organisation_tables.base_mixins import utcnow
 from src.domain.models.organisation_tables.sync import KnowledgeIntegration
-from src.domain.models.organisation_tables.sync.crm import CRMContact
+from src.domain.models.organisation_tables.sync.crm import (
+    CRMAssociationCategory,
+    CRMCompany,
+    CRMContact,
+    CRMObjectAssociation,
+    CRMObjectType,
+)
 from src.infra.utils.logger import get_logger
 from src.service.integrations.core import BaseSyncService
 
@@ -61,6 +69,26 @@ class ContactSyncService(BaseSyncService[CRMContact]):
             integration.integration_id,
         )
 
+        # Pre-load companies referenced by contacts so we can resolve to_local_id where possible.
+        referenced_company_external_ids: set[str] = set()
+        for raw_contact in contact_list:
+            properties = raw_contact.get("properties") or {}
+            referenced_company_external_ids.update(
+                self._extract_contact_company_external_ids(properties, provider)
+            )
+
+        company_local_id_by_external_id: dict[str, UUID] = {}
+        if referenced_company_external_ids:
+            stmt = (
+                select(CRMCompany)
+                .where(CRMCompany.integration_id == integration.integration_id)  # type: ignore[arg-type]
+                .where(CRMCompany.external_id.in_(list(referenced_company_external_ids)))  # type: ignore[attr-defined]
+            )
+            result_companies = await self.db.execute(stmt)
+            company_local_id_by_external_id = {
+                row.external_id: row.company_id for row in result_companies.scalars().all()
+            }
+
         now = utcnow()
         contacts_processed = 0
 
@@ -95,6 +123,21 @@ class ContactSyncService(BaseSyncService[CRMContact]):
                 contacts_processed += 1
                 result.increment_processed()
 
+                # Normalize contact ↔ company relationship via crm_object_associations.
+                properties = contact.get("properties") or {}
+                company_external_ids = self._extract_contact_company_external_ids(
+                    properties, provider
+                )
+                if company_external_ids:
+                    await self._upsert_contact_company_associations(
+                        integration_id=integration.integration_id,
+                        provider=provider,
+                        contact_record=record,
+                        company_external_ids=company_external_ids,
+                        company_local_id_by_external_id=company_local_id_by_external_id,
+                        now=now,
+                    )
+
                 if is_new:
                     result.increment_created()
                 else:
@@ -113,6 +156,136 @@ class ContactSyncService(BaseSyncService[CRMContact]):
         self._log_sync_complete(result)
 
         return {"contacts": contacts_processed, **result.to_dict()}
+
+    def _extract_contact_company_external_ids(
+        self, properties: dict[str, Any], provider: str
+    ) -> list[str]:
+        """Extract company/account external IDs from a contact payload.
+
+        We keep this deliberately best-effort and provider-tolerant. The goal is to
+        start normalizing contact↔company relationships without requiring extra API calls.
+        """
+
+        candidates: list[Any] = []
+
+        # HubSpot: primary associated company id
+        # Commonly stored as string numeric.
+        candidates.append(properties.get("associatedcompanyid"))
+
+        # Salesforce: primary AccountId on Contact
+        candidates.append(properties.get("accountid"))
+        candidates.append(properties.get("account_id"))
+        candidates.append(properties.get("accountId"))
+
+        # Pipedrive: person org id
+        candidates.append(properties.get("org_id"))
+        candidates.append(properties.get("orgid"))
+
+        company_ids: list[str] = []
+        for value in candidates:
+            if value is None:
+                continue
+            if isinstance(value, dict):
+                # Pipedrive org_id can sometimes be an object with {value, name}
+                dict_value = value.get("value")
+                if dict_value is not None:
+                    company_ids.append(str(dict_value))
+                continue
+            if isinstance(value, str | int):
+                value_str = str(value).strip()
+                if value_str:
+                    company_ids.append(value_str)
+
+        # De-dupe while preserving order
+        seen: set[str] = set()
+        unique_company_ids: list[str] = []
+        for cid in company_ids:
+            if cid not in seen:
+                seen.add(cid)
+                unique_company_ids.append(cid)
+
+        # Provider-specific: if we ever want to add additional keys, keep it contained here.
+        _ = provider
+        return unique_company_ids
+
+    async def _upsert_contact_company_associations(
+        self,
+        *,
+        integration_id: UUID,
+        provider: str,
+        contact_record: CRMContact,
+        company_external_ids: list[str],
+        company_local_id_by_external_id: dict[str, UUID],
+        now: datetime,
+    ) -> None:
+        """Upsert contact→company associations into crm_object_associations."""
+
+        if provider == "hubspot":
+            association_category = CRMAssociationCategory.HUBSPOT_DEFINED.value
+        elif provider == "salesforce":
+            association_category = CRMAssociationCategory.SALESFORCE_STANDARD.value
+        elif provider == "pipedrive":
+            association_category = CRMAssociationCategory.PIPEDRIVE_STANDARD.value
+        elif provider == "zoho":
+            association_category = CRMAssociationCategory.ZOHO_STANDARD.value
+        else:
+            association_category = CRMAssociationCategory.OTHER.value
+
+        # Primary association: first company ID is considered primary.
+        for index, company_external_id in enumerate(company_external_ids):
+            is_primary = index == 0
+            to_local_id = company_local_id_by_external_id.get(company_external_id)
+
+            insert_stmt = pg_insert(CRMObjectAssociation).values(
+                organisation_id=self.organisation_id,
+                integration_id=integration_id,
+                is_deleted=False,
+                external_id=None,
+                from_object_type=CRMObjectType.CONTACT.value,
+                from_external_id=contact_record.external_id,
+                from_local_id=contact_record.contact_id,
+                to_object_type=CRMObjectType.COMPANY.value,
+                to_external_id=company_external_id,
+                to_local_id=to_local_id,
+                association_category=association_category,
+                association_type_id="contact_company",
+                association_label=None,
+                role_label="primary" if is_primary else None,
+                is_primary=is_primary,
+                properties={},
+                source_created_at=None,
+                source_modified_at=contact_record.source_modified_at,
+                synced_at=now,
+                last_seen_at=now,
+                data_payload=None,
+            )
+
+            # Upsert based on the logical uniqueness constraint.
+            upsert_stmt = insert_stmt.on_conflict_do_update(
+                index_elements=[
+                    CRMObjectAssociation.organisation_id,
+                    CRMObjectAssociation.integration_id,
+                    CRMObjectAssociation.from_object_type,
+                    CRMObjectAssociation.from_external_id,
+                    CRMObjectAssociation.to_object_type,
+                    CRMObjectAssociation.to_external_id,
+                    CRMObjectAssociation.association_type_id,
+                ],
+                set_={
+                    "updated_at": now,
+                    "is_deleted": False,
+                    "from_local_id": contact_record.contact_id,
+                    "to_local_id": to_local_id,
+                    "association_category": association_category,
+                    "role_label": "primary" if is_primary else None,
+                    "is_primary": is_primary,
+                    "source_modified_at": contact_record.source_modified_at,
+                    "synced_at": now,
+                    "last_seen_at": now,
+                },
+            )
+
+            await self.db.execute(upsert_stmt)
 
     def _transform_record(self, raw: dict[str, Any], _provider: str) -> CRMContact:
         """Transform provider-specific contact data to CRMContact model.

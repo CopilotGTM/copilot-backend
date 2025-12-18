@@ -368,6 +368,11 @@ class CRMDeal(SyncedRecordMixin, table=True):
         sa_column=Column(String(255)),
         description="Email address for the deal owner, if supplied.",
     )
+    owner_id: UUID | None = Field(
+        default=None,
+        foreign_key="crm_users.user_id",
+        description="Resolved internal user ID for the deal owner (FK to crm_users).",
+    )
     created_by_user_external_id: str | None = Field(
         default=None,
         sa_column=Column(String(255)),

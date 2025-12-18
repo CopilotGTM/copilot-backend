@@ -5,6 +5,8 @@ global:
     port: 6379                                       # Overridden in pipeline with --set global.redis.port
     enableTLS: true                                  # Set true for Azure Redis (port 6380)
     usePassword: true                                # Set true to create TriggerAuthentication for password
+  celery:
+    enableEvents: false
   # Must match the api chart secret name (<fullname>-secret) so workers & KEDA reference an existing secret
   secretName: "copilot-backend-secret"
 
@@ -313,3 +315,34 @@ deal-beat:
   # Beat scheduler doesn't need PDB
   pdb:
     enabled: false
+
+# Flower (Celery monitoring UI)
+# Note: workers must have events enabled (set global.celery.enableEvents=true) for Flower to show task activity.
+flower:
+  enabled: false
+  replicaCount: 1
+  image:
+    repository: "mher/flower"
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 5555
+  ingress:
+    enabled: false
+    className: "nginx"
+    annotations: {}
+    hosts: []
+    tls: []
+  auth:
+    enabled: false
+    basicAuth: ""
+  config:
+    secretName: "" # defaults to global.secretName when empty
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "128Mi"
+    limits:
+      cpu: "250m"
+      memory: "256Mi"

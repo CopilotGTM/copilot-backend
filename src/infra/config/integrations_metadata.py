@@ -281,7 +281,7 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
         logo_url="https://api.nango.dev/images/template-logos/salesforce.svg",
         category="crm",
         category_name=IntegrationCategory.CRM_SALES,
-        availability_status=AvailabilityStatus.COMING_SOON,
+        availability_status=AvailabilityStatus.BETA,
         documentation_url="https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/",
         default_sync_frequency="daily",
         # Access Control - Organization wide CRM

@@ -10,10 +10,21 @@ from uuid import UUID
 from sqlalchemy import select
 from src.domain.models.organisation_tables.base_mixins import utcnow
 from src.domain.models.organisation_tables.sync import KnowledgeIntegration
-from src.domain.models.organisation_tables.sync.crm import CRMDeal, CRMDealTask
+from src.domain.models.organisation_tables.sync.crm import (
+    CRMActivityPriority,
+    CRMActivityStatus,
+    CRMActivityType,
+    CRMDeal,
+    CRMDealTask,
+)
 from src.infra.utils.logger import get_logger
 from src.service.integrations.core import BaseSyncService
 
+from .activity_enum_mappings import (
+    normalize_activity_priority,
+    normalize_activity_status,
+    normalize_activity_type,
+)
 from .task_enrichment_service import TaskEnrichmentService
 
 logger = get_logger(__name__)
@@ -94,7 +105,6 @@ class DealTaskSyncService(BaseSyncService[CRMDealTask]):
                 record.last_seen_at = now
                 is_archived = bool(task.get("archived"))
                 record.is_deleted = is_archived
-                record.is_deleted_remote = is_archived
 
                 self.db.add(record)
                 tasks_processed += 1
@@ -152,9 +162,30 @@ class DealTaskSyncService(BaseSyncService[CRMDealTask]):
         if provider == "hubspot":
             record.subject = props.get("hs_task_subject")
             record.body = props.get("hs_task_body")
-            record.status = props.get("hs_task_status")
-            record.task_type = props.get("hs_task_type")
-            record.priority = props.get("hs_task_priority")
+            # Normalize to canonical enum values for cross-CRM analytics
+            raw_status = props.get("hs_task_status")
+            raw_type = props.get("hs_task_type")
+            raw_priority = props.get("hs_task_priority")
+
+            normalized_status = normalize_activity_status(raw_status)
+            normalized_type = normalize_activity_type(raw_type)
+            normalized_priority = normalize_activity_priority(raw_priority)
+
+            record.status = normalized_status
+            record.task_type = normalized_type
+            record.priority = normalized_priority
+
+            # Preserve raw provider values when we fall back.
+            if raw_status and normalized_status is None:
+                props["_raw_activity_status"] = raw_status
+
+            if raw_type and normalized_type == CRMActivityType.OTHER.value:
+                if record.activity_subtype is None:
+                    record.activity_subtype = str(raw_type)
+                props["_raw_activity_type"] = raw_type
+
+            if raw_priority and normalized_priority == CRMActivityPriority.NONE.value:
+                props["_raw_activity_priority"] = raw_priority
 
             # Owner information
             record.owner_external_id = props.get("hubspot_owner_id")
@@ -275,14 +306,17 @@ class DealTaskSyncService(BaseSyncService[CRMDealTask]):
         metrics: dict[str, Any] = {}
         now = utcnow()
 
-        # Overdue status
-        if record.due_date and record.status not in ["COMPLETED", "DEFERRED"]:
+        # Overdue status (use canonical enum values)
+        if record.due_date and record.status not in [
+            CRMActivityStatus.COMPLETED.value,
+            CRMActivityStatus.DEFERRED.value,
+        ]:
             metrics["is_overdue"] = record.due_date < now
             if metrics["is_overdue"]:
                 metrics["days_overdue"] = (now - record.due_date).days
 
         # Completion metrics
-        if record.status == "COMPLETED" and record.completed_date:
+        if record.status == CRMActivityStatus.COMPLETED.value and record.completed_date:
             if record.due_date:
                 delta = (record.completed_date - record.due_date).days
                 metrics["completed_on_time"] = delta <= 0
@@ -296,9 +330,9 @@ class DealTaskSyncService(BaseSyncService[CRMDealTask]):
         if record.source_created_at:
             metrics["task_age_days"] = (now - record.source_created_at).days
 
-        # Priority flag
+        # Priority flag (use canonical enum value)
         if record.priority:
-            metrics["is_high_priority"] = record.priority == "HIGH"
+            metrics["is_high_priority"] = record.priority == CRMActivityPriority.HIGH.value
 
         return metrics
 
