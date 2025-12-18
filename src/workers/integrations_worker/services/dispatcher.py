@@ -70,7 +70,177 @@ async def _enrich_participants_after_crm_sync(
     return 0
 
 
-def _trigger_deal_tasks_on_initial_sync(
+async def _enrich_activities_after_crm_sync(
+    organisation_id: UUID,
+    integration_id: UUID,
+) -> None:
+    """
+    Re-enrich activities (tasks/tickets) after contacts/companies/deals sync.
+
+    When contacts, companies, or deals sync completes, we re-run activity enrichment
+    to populate FK references (contact_id, company_id, deal_id) that were stored
+    only as external IDs during the initial activity sync.
+
+    This enables bidirectional linking:
+    - Activities synced first → store external IDs, resolve local IDs later
+    - Related entities synced first → activities get enriched with local IDs
+
+    Args:
+        organisation_id: The organisation UUID
+        integration_id: The CRM integration UUID
+    """
+    from src.api.dependencies.organisation_dependencies import acquire_org_async_session
+    from src.service.integrations.crm.entities.task_enrichment_service import (
+        TaskEnrichmentService,
+    )
+
+    async for session in acquire_org_async_session(organisation_id):
+        enricher = TaskEnrichmentService(db=session, organisation_id=organisation_id)
+        await enricher.enrich_tasks_for_integration(integration_id)
+        await session.commit()
+        return
+
+
+async def _enrich_owners_after_users_sync(
+    organisation_id: UUID,
+    integration_id: UUID,
+) -> dict[str, int]:
+    """
+    Re-enrich owner_id FK after users sync completes.
+
+    In Salesforce (and HubSpot), the OwnerId field on any object points to a User record.
+    When users sync, we need to resolve owner_external_id → owner_id (FK to crm_users)
+    for entities that were synced before users were available.
+
+    This updates:
+    - crm_companies.owner_id
+    - crm_contacts.owner_id
+    - crm_deals.owner_id
+
+    Args:
+        organisation_id: The organisation UUID
+        integration_id: The CRM integration UUID
+
+    Returns:
+        Dictionary with counts of enriched records per entity type
+    """
+    from src.api.dependencies.organisation_dependencies import acquire_org_async_session
+    from src.service.integrations.crm.entities.owner_enrichment_service import (
+        OwnerEnrichmentService,
+    )
+
+    async for session in acquire_org_async_session(organisation_id):
+        enricher = OwnerEnrichmentService(db=session, organisation_id=organisation_id)
+        results = await enricher.enrich_owners_for_integration(integration_id)
+        await session.commit()
+        return results
+
+    return {"companies": 0, "contacts": 0, "deals": 0}
+
+
+async def _sync_salesforce_users_alongside_crm(
+    nango: NangoClient,
+    integration_meta: IntegrationMetadata,
+    provider_key: str,
+    organisation_id: UUID,
+    is_initial: bool,
+) -> dict[str, Any]:
+    """
+    Sync Salesforce users alongside other CRM syncs.
+
+    Since Nango doesn't have a built-in 'users' sync for Salesforce, we piggyback
+    on other CRM syncs (opportunities, contacts, accounts, etc.) to also sync users.
+
+    This ensures the crm_users table is populated with Salesforce User records,
+    which allows:
+    - Owner name/email resolution during activity enrichment
+    - Deal owner information display
+    - Participant matching for internal users
+
+    Uses a Redis lock to prevent redundant syncs when multiple CRM webhooks
+    arrive in quick succession (e.g., opportunities + contacts + accounts).
+
+    Args:
+        nango: Nango client instance
+        integration_meta: Integration metadata with connection details
+        provider_key: Nango provider config key (e.g., 'salesforce')
+        organisation_id: Organisation UUID
+        is_initial: Whether this is an initial (full) sync
+
+    Returns:
+        Dictionary with sync results
+    """
+    from src.workers.integrations_worker.providers.crm.salesforce import fetch_users
+
+    # Use lock to prevent redundant users sync when multiple CRM syncs happen
+    # Lock TTL of 300s (5 min) - users don't change often, so no need to sync more frequently
+    integration_id_str = str(integration_meta.integration_id)
+    lock_acquired = acquire_sync_lock(integration_id_str, "salesforce_users", ttl_seconds=300)
+    if not lock_acquired:
+        logger.debug(
+            "Skipping Salesforce users sync - already synced recently: org=%s",
+            organisation_id,
+        )
+        return {"users": 0, "status": "skipped", "reason": "recently_synced"}
+
+    logger.info(
+        "Syncing Salesforce users alongside CRM sync: org=%s connection=%s",
+        organisation_id,
+        integration_meta.connection_id,
+    )
+
+    try:
+        # Fetch users from Salesforce via SOQL
+        users = await fetch_users(
+            nango=nango,
+            connection_id=integration_meta.connection_id,
+            is_initial=is_initial,
+            last_synced_at=integration_meta.last_synced_at,
+            data_type="users",
+            provider_config_key=provider_key,
+        )
+
+        if not users:
+            logger.debug("No users returned from Salesforce for org=%s", organisation_id)
+            return {"users": 0, "status": "success", "reason": "no_records"}
+
+        # Sync users to database
+        async with _integration_session(organisation_id) as session:
+            integration_row = await _reload_integration(session, integration_meta.integration_id)
+            if not integration_row:
+                logger.warning(
+                    "Integration %s missing during Salesforce users sync",
+                    integration_meta.integration_id,
+                )
+                return {"users": 0, "status": "failed", "reason": "integration_missing"}
+
+            user_service = UserSyncService(db=session, organisation_id=organisation_id)
+            metrics = await user_service.sync(
+                integration=integration_row,
+                records=users,
+                provider="salesforce",
+            )
+
+            logger.info(
+                "Salesforce users sync completed: org=%s users=%d",
+                organisation_id,
+                metrics.get("users", 0),
+            )
+            return metrics
+
+    except Exception as e:
+        logger.warning(
+            "Failed to sync Salesforce users: org=%s error=%s",
+            organisation_id,
+            str(e),
+            exc_info=True,
+        )
+        # Release lock on failure so next sync attempt can try again
+        release_sync_lock(integration_id_str, "salesforce_users")
+        return {"users": 0, "status": "failed", "error": str(e)}
+
+
+async def _trigger_deal_tasks_on_initial_sync(
     organisation_id: UUID,
     integration_id: UUID | None,
     category: str,
@@ -118,8 +288,6 @@ def _trigger_deal_tasks_on_initial_sync(
         sync_name: Data type synced (events, emails, contacts, deals, users, etc.)
         was_successful: Whether the sync completed successfully
     """
-    from src.infra.utils.async_runner import run_async
-
     # Only trigger on INITIAL sync (full sync)
     if sync_type != "INITIAL":
         return
@@ -146,8 +314,9 @@ def _trigger_deal_tasks_on_initial_sync(
                     integration_id,
                 )
                 try:
-                    enriched = run_async(
-                        _enrich_participants_after_crm_sync(organisation_id, integration_id)
+                    enriched = await _enrich_participants_after_crm_sync(
+                        organisation_id,
+                        integration_id,
                     )
                     logger.info(
                         "Enriched %d participants after %s sync: org=%s",
@@ -170,6 +339,65 @@ def _trigger_deal_tasks_on_initial_sync(
             )
             process_deal_meetings_task.apply_async(args=[org_id_str], headers=correlation_headers())
             process_deal_emails_task.apply_async(args=[org_id_str], headers=correlation_headers())
+
+        # Re-enrich activities after contacts/companies/deals/users sync.
+        # Activities may have external IDs stored that couldn't be resolved
+        # to local IDs during the initial activity sync.
+        # - contacts/companies/deals: resolve contact_id, company_id, deal_id
+        # - users: resolve owner details (owner_name, owner_email, owner_id)
+        if (
+            category == "crm"
+            and sync_name in ("contacts", "companies", "deals", "users")
+            and integration_id
+        ):
+            logger.info(
+                "Re-enriching activities after CRM %s sync: org=%s integration=%s",
+                sync_name,
+                organisation_id,
+                integration_id,
+            )
+            try:
+                await _enrich_activities_after_crm_sync(
+                    organisation_id,
+                    integration_id,
+                )
+                logger.info(
+                    "Enriched activities after %s sync: org=%s",
+                    sync_name,
+                    organisation_id,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to re-enrich activities: org=%s error=%s",
+                    organisation_id,
+                    str(e),
+                )
+
+        # Re-enrich owner_id FK after users sync.
+        # In Salesforce (and HubSpot), Users ARE Owners. When users sync completes,
+        # resolve owner_external_id → owner_id for companies, contacts, and deals.
+        if category == "crm" and sync_name == "users" and integration_id:
+            logger.info(
+                "Re-enriching owner_id after CRM users sync: org=%s integration=%s",
+                organisation_id,
+                integration_id,
+            )
+            try:
+                results = await _enrich_owners_after_users_sync(
+                    organisation_id,
+                    integration_id,
+                )
+                logger.info(
+                    "Enriched owner_id after users sync: org=%s results=%s",
+                    organisation_id,
+                    results,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to re-enrich owner_id: org=%s error=%s",
+                    organisation_id,
+                    str(e),
+                )
 
         # Trigger deal-meeting matching after calendar events sync
         # This catches case where calendar is connected after CRM
@@ -226,10 +454,13 @@ def _create_crm_service(
         ],
     ] = {
         "deals": DealSyncService,
+        "opportunities": DealSyncService,  # Alias for Salesforce
         "deal_tasks": DealTaskSyncService,
         "tasks": DealTaskSyncService,  # Alias for backward compatibility
+        "tickets": DealTaskSyncService,  # Salesforce Cases alias
         "contacts": ContactSyncService,
         "companies": CompanySyncService,
+        "accounts": CompanySyncService,  # Alias for Salesforce (Account → companies)
         "owners": OwnerSyncService,
         "users": UserSyncService,
         "pipelines": PipelineSyncService,
@@ -884,6 +1115,49 @@ async def _execute_category_sync(
     )
 
     result.items[sync_data_type] = outcome.item_result
+
+    # For Salesforce CRM syncs, also sync users alongside
+    # This ensures crm_users table is populated even without a dedicated Nango 'users' sync
+    if (
+        request.category == "crm"
+        and integration_meta.integration_type == IntegrationType.SALESFORCE
+        and outcome.item_result.status == "success"
+        and sync_data_type != "users"  # Avoid infinite loop if users sync is triggered
+    ):
+        try:
+            users_result = await _sync_salesforce_users_alongside_crm(
+                nango=nango,
+                integration_meta=outcome.integration_meta or integration_meta,
+                provider_key=provider_key,
+                organisation_id=organisation_id,
+                is_initial=not request.incremental,
+            )
+            # Add users sync result to the overall result
+            users_synced = users_result.get("users", 0)
+            result.items["users"] = SyncItemResult(
+                status=users_result.get("status", "success"),
+                records_synced=users_synced,
+                reason=users_result.get("reason"),
+            )
+            logger.info(
+                "Salesforce users sync completed alongside %s: org=%s users=%d",
+                sync_data_type,
+                organisation_id,
+                users_synced,
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to sync Salesforce users alongside %s: org=%s error=%s",
+                sync_data_type,
+                organisation_id,
+                str(e),
+            )
+            # Don't fail the main sync if users sync fails
+            result.items["users"] = SyncItemResult(
+                status="failed",
+                reason="users_sync_error",
+            )
+
     return _apply_outcome(result, outcome)
 
 
@@ -992,7 +1266,7 @@ async def execute_sync(request: SyncJobRequest) -> dict[str, Any]:
         )
 
         # Trigger deal tasks on initial sync completion
-        _trigger_deal_tasks_on_initial_sync(
+        await _trigger_deal_tasks_on_initial_sync(
             organisation_id=organisation_id,
             integration_id=integration_id,
             category=request.category,

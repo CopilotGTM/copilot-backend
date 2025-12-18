@@ -45,6 +45,30 @@ from .crm.hubspot import (
 from .crm.hubspot import (
     fetch_users as hubspot_users_fetch,
 )
+from .crm.salesforce import (
+    fetch_accounts as salesforce_accounts_fetch,
+)
+from .crm.salesforce import (
+    fetch_contacts as salesforce_contacts_fetch,
+)
+from .crm.salesforce import (
+    fetch_deals as salesforce_deals_fetch,
+)
+from .crm.salesforce import (
+    fetch_leads as salesforce_leads_fetch,
+)
+from .crm.salesforce import (
+    fetch_pipelines as salesforce_pipelines_fetch,
+)
+from .crm.salesforce import (
+    fetch_tasks as salesforce_tasks_fetch,
+)
+from .crm.salesforce import (
+    fetch_tickets as salesforce_tickets_fetch,
+)
+from .crm.salesforce import (
+    fetch_users as salesforce_users_fetch,
+)
 from .email.outlook_email import fetch_folders as outlook_email_fetch_folders
 from .email.outlook_email import fetch_messages as outlook_email_fetch_messages
 from .messaging.teams import fetch_channels as teams_fetch_channels
@@ -77,6 +101,20 @@ def _init_defaults() -> None:
         "users": hubspot_users_fetch,
         "companies": hubspot_companies_fetch,
         "owners": hubspot_owners_fetch,
+    }
+    # CRM: Salesforce (Phase 1 scaffold)
+    _REGISTRY[("crm", "salesforce")] = {
+        "pipelines": salesforce_pipelines_fetch,
+        "deals": salesforce_deals_fetch,
+        "opportunities": salesforce_deals_fetch,  # Alias
+        "deal_tasks": salesforce_tasks_fetch,
+        "tickets": salesforce_tickets_fetch,  # Alias to Salesforce Task (Activities)
+        "contacts": salesforce_contacts_fetch,
+        "users": salesforce_users_fetch,
+        "owners": salesforce_users_fetch,  # Alias
+        "accounts": salesforce_accounts_fetch,
+        "companies": salesforce_accounts_fetch,  # Alias
+        "leads": salesforce_leads_fetch,
     }
     # Conversation Intelligence: Gong
     _REGISTRY[("conversation_intelligence", "gong")] = {

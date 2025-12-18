@@ -159,10 +159,17 @@ async def sync_crm_data(
     entity_handlers = {
         ("owners", OwnerSyncService): _sync_owners,
         ("deals", DealSyncService): _sync_deals,
+        ("opportunities", DealSyncService): _sync_deals,  # Alias for Salesforce
         ("deal_tasks", DealTaskSyncService): _sync_deal_tasks,
         ("tasks", DealTaskSyncService): _sync_deal_tasks,  # Alias for backward compatibility
+        ("tickets", DealTaskSyncService): _sync_deal_tasks,  # Salesforce Cases alias
         ("contacts", ContactSyncService): _sync_contacts,
+        ("leads", ContactSyncService): _sync_contacts,  # Treat leads as contact-like profiles
         ("companies", CompanySyncService): _sync_companies,
+        (
+            "accounts",
+            CompanySyncService,
+        ): _sync_companies,  # Alias for Salesforce (Account → companies)
         ("users", UserSyncService): _sync_users,
         ("pipelines", PipelineSyncService): _sync_pipelines,
     }

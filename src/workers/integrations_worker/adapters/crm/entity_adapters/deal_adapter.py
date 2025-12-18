@@ -118,24 +118,48 @@ async def _auto_sync_pipelines(
         Sync statistics for pipelines
     """
     from src.service.integrations import NangoClient
+    from src.service.integrations.nango_client import NangoConnectionError
+    from src.workers.integrations_worker.providers.registry import get_fetcher
 
     logger.info(
         "Fetching pipelines from %s (provider_config_key: %s)...", provider, provider_config_key
     )
 
-    # Fetch pipelines using Nango action
+    # Fetch pipelines.
+    #
+    # Preferred path (legacy): Nango action `fetch-pipelines`.
+    # Fallback path: provider fetcher via our registry (SOQL via Nango proxy).
     nango = NangoClient()
     try:
         if not integration.connection_id:
             logger.warning("No connection_id for integration %s", integration.integration_id)
             return {"pipelines": 0, "stages": 0, "error": "no_connection_id"}
 
-        # Call Nango action to fetch pipelines
-        response = await nango.action(
-            provider_config_key=provider_config_key,
-            connection_id=integration.connection_id,
-            action_name="fetch-pipelines",
-        )
+        response: Any
+        try:
+            response = await nango.action(
+                provider_config_key=provider_config_key,
+                connection_id=integration.connection_id,
+                action_name="fetch-pipelines",
+            )
+        except NangoConnectionError as exc:
+            # Nango returns 404 "Action not found" when the action isn't configured.
+            # Salesforce pipelines are already supported via our provider fetcher.
+            if getattr(exc, "status_code", None) == 404:
+                fetcher = get_fetcher("crm", provider, "pipelines")
+                if not fetcher:
+                    raise
+
+                response = await fetcher(
+                    nango,
+                    integration.connection_id,
+                    True,
+                    None,
+                    "pipelines",
+                    provider_config_key=provider_config_key,
+                )
+            else:
+                raise
 
         # Log the raw response structure for debugging
         logger.info("Nango action response type: %s", type(response))

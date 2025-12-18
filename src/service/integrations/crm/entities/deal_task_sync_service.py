@@ -209,6 +209,100 @@ class DealTaskSyncService(BaseSyncService[CRMDealTask]):
                 props.get("hs_lastmodifieddate")
             )
 
+        elif provider == "salesforce":
+            # Detect if this is a Case (Ticket) vs Task based on field presence
+            # Cases have case_number, case_origin; Tasks have activity_date, what_id
+            is_salesforce_ticket = props.get("case_number") is not None
+
+            record.subject = props.get("subject")
+            record.body = props.get("content") if is_salesforce_ticket else props.get("description")
+
+            # Status/Type/Priority mapping
+            raw_status = (
+                props.get("hs_pipeline_stage") if is_salesforce_ticket else props.get("status")
+            )
+            raw_type = props.get("case_type") if is_salesforce_ticket else props.get("type")
+            raw_priority = (
+                props.get("hs_ticket_priority") if is_salesforce_ticket else props.get("priority")
+            )
+
+            normalized_status = normalize_activity_status(raw_status)
+            normalized_type = normalize_activity_type(raw_type)
+            normalized_priority = normalize_activity_priority(raw_priority)
+
+            record.status = normalized_status
+            record.task_type = normalized_type
+            record.priority = normalized_priority
+
+            if raw_status and normalized_status is None:
+                props["_raw_activity_status"] = raw_status
+
+            if raw_type and normalized_type == CRMActivityType.OTHER.value:
+                if record.activity_subtype is None:
+                    record.activity_subtype = str(raw_type)
+                props["_raw_activity_type"] = raw_type
+
+            if raw_priority and normalized_priority == CRMActivityPriority.NONE.value:
+                props["_raw_activity_priority"] = raw_priority
+
+            # Owner information - both Cases and Tasks use hubspot_owner_id in canonical format
+            owner_id = props.get("hubspot_owner_id") or props.get("owner_id")
+            if owner_id is not None:
+                record.owner_external_id = str(owner_id)
+
+            # Dates - Cases use createdate/closed_date; Tasks use activity_date/created_date
+            if is_salesforce_ticket:
+                record.source_created_at = self._parse_salesforce_datetime(props.get("createdate"))
+                record.source_modified_at = self._parse_salesforce_datetime(
+                    props.get("hs_lastmodifieddate")
+                )
+                record.completed_date = self._parse_salesforce_datetime(props.get("closed_date"))
+                # For tickets, activity_type should be "OTHER" or a ticket-specific type
+                if record.task_type is None:
+                    record.activity_subtype = "TICKET"
+            else:
+                record.due_date = self._parse_salesforce_date(props.get("activity_date"))
+                record.source_created_at = self._parse_salesforce_datetime(
+                    props.get("created_date")
+                )
+                record.source_modified_at = self._parse_salesforce_datetime(
+                    props.get("last_modified_date")
+                )
+
+            # Association handling differs between Cases and Tasks
+            if is_salesforce_ticket:
+                # Cases have direct ContactId and AccountId fields
+                contact_id = props.get("contact_id")
+                if contact_id is not None:
+                    record.contact_external_id = str(contact_id)
+
+                account_id = props.get("account_id")
+                if account_id is not None:
+                    record.company_external_id = str(account_id)
+            else:
+                # Tasks use WhatId and WhoId - these are polymorphic fields
+                # WhatId can point to: Opportunity, Account, Campaign, Case, etc.
+                # WhoId can point to: Contact or Lead
+                # Salesforce ID prefixes: 006=Opportunity, 001=Account, 003=Contact, 00Q=Lead
+                what_id = props.get("what_id")
+                if what_id is not None:
+                    what_id_str = str(what_id)
+                    # Check if WhatId points to an Opportunity (prefix 006)
+                    if what_id_str.startswith("006"):
+                        record.deal_external_id = what_id_str
+                        record.deal_id = deal_map.get(what_id_str)
+                    # Check if WhatId points to an Account (prefix 001)
+                    elif what_id_str.startswith("001"):
+                        record.company_external_id = what_id_str
+
+                who_id = props.get("who_id")
+                if who_id is not None:
+                    who_id_str = str(who_id)
+                    # WhoId typically points to Contact (003) or Lead (00Q)
+                    # We store it as contact_external_id for both
+                    if who_id_str.startswith("003") or who_id_str.startswith("00Q"):
+                        record.contact_external_id = who_id_str
+
         # Resolve deal association
         # HubSpot returns associations in format: {"deals": {"results": [{"id": "...", "type": "..."}]}}
         associations = task.get("associations", {})
@@ -244,12 +338,83 @@ class DealTaskSyncService(BaseSyncService[CRMDealTask]):
                         deal_ext_id,
                     )
 
+        # Also resolve contact/company associations from canonical format
+        # (Salesforce Cases/Tickets include these in associations.contacts/companies)
+        contacts_data = associations.get("contacts", {})
+        if isinstance(contacts_data, dict):
+            contacts = contacts_data.get("results", [])
+        elif isinstance(contacts_data, list):
+            contacts = contacts_data
+        else:
+            contacts = []
+
+        if (
+            contacts
+            and isinstance(contacts, list)
+            and len(contacts) > 0
+            and not record.contact_external_id
+        ):
+            first_contact = contacts[0]
+            contact_ext_id = (
+                str(first_contact.get("id")) if isinstance(first_contact, dict) else None
+            )
+            if contact_ext_id:
+                record.contact_external_id = contact_ext_id
+
+        companies_data = associations.get("companies", {})
+        if isinstance(companies_data, dict):
+            companies = companies_data.get("results", [])
+        elif isinstance(companies_data, list):
+            companies = companies_data
+        else:
+            companies = []
+
+        if (
+            companies
+            and isinstance(companies, list)
+            and len(companies) > 0
+            and not record.company_external_id
+        ):
+            first_company = companies[0]
+            company_ext_id = (
+                str(first_company.get("id")) if isinstance(first_company, dict) else None
+            )
+            if company_ext_id:
+                record.company_external_id = company_ext_id
+
         # Calculate metrics
         record.metrics = self._calculate_metrics(record)
 
         # Store raw data
         record.properties = props
         record.data_payload = task
+
+    def _parse_salesforce_datetime(self, value: Any) -> datetime | None:
+        if value in (None, ""):
+            return None
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, str):
+            try:
+                return datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+        return None
+
+    def _parse_salesforce_date(self, value: Any) -> datetime | None:
+        if value in (None, ""):
+            return None
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, str):
+            # Salesforce Task.ActivityDate is often YYYY-MM-DD
+            try:
+                if len(value) == 10 and value[4] == "-" and value[7] == "-":
+                    return datetime.fromisoformat(value)
+                return datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+        return None
 
     async def _load_deal_map(self, integration_id: UUID) -> dict[str, UUID]:
         """Load deal external_id → deal_id mapping.

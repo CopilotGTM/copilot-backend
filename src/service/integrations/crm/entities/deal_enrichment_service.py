@@ -116,6 +116,10 @@ class DealEnrichmentService:
         if user.email and user.email != deal.owner_email:
             deal.owner_email = user.email
 
+        # Also set owner_id FK if not set
+        if not deal.owner_id:
+            deal.owner_id = user.user_id
+
     def _apply_contact_details(self, deal: CRMDeal, contact: CRMContact) -> None:
         full_name = contact.full_name or self._compose_name(contact.first_name, contact.last_name)
         if full_name and full_name != deal.primary_contact_name:
