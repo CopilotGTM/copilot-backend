@@ -466,3 +466,75 @@ class ContactListItem(BaseModel):
     company_name: str | None = None
 
     model_config = {"from_attributes": True}
+
+
+# -----------------------------------------------------------------------------
+# Deal Timeline Models
+# -----------------------------------------------------------------------------
+
+
+class EmailEventData(BaseModel):
+    """Email-specific data for timeline events."""
+
+    # --- List Preview (always present) ---
+    subject: str | None = None
+    snippet: str | None = None
+    from_email: str | None = None
+
+    # --- Detail Enrichment (populated on detail fetch) ---
+    to_emails: list[str] | None = None
+    cc_emails: list[str] | None = None
+    thread_id: str | None = None
+    has_attachments: bool | None = None
+
+
+class MeetingSummary(BaseModel):
+    """Meeting summary block with status and data."""
+
+    status: str | None = Field(None, description="PENDING, PROCESSING, COMPLETED, FAILED")
+    data: dict[str, Any] | None = None
+
+
+class MeetingEventData(BaseModel):
+    """Meeting-specific data for timeline events."""
+
+    # --- List Preview (always present) ---
+    title: str | None = None
+    duration_minutes: int | None = None
+    attendee_count: int | None = None
+
+    # --- Detail Enrichment (populated on detail fetch) ---
+    attendees: list[str] | None = None
+    meeting_summary: MeetingSummary | None = None
+
+
+class TimelineEvent(BaseModel):
+    """Unified timeline event model for both list and detail views.
+
+    List API returns preview data in event_data.
+    Detail API returns same structure with enriched event_data.
+    """
+
+    id: UUID = Field(..., description="Timeline event ID")
+    deal_id: UUID
+    event_type: str = Field(..., description="EMAIL or MEETING")
+    event_source: str = Field(..., description="EMAIL_GMAIL, CALENDAR_GOOGLE, etc.")
+    event_timestamp: datetime
+    event_data: dict[str, Any] = Field(
+        ...,
+        description="Type-specific data; shape varies by event_type (EmailEventData or MeetingEventData)",
+    )
+    excluded_at: datetime | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class TimelinePage(BaseModel):
+    """Paginated list of timeline events."""
+
+    deal_id: UUID
+    items: list[TimelineEvent]
+    total_count: int
+    cursor: str | None = Field(None, description="Cursor for next page; null if no more results")

@@ -89,6 +89,22 @@ class DealWorkerConfig(BaseWorkerConfig):
                 "queue": "deal",
                 "routing_key": "deal",
             },
+            "deal.trigger_timeline_sync_all_orgs": {
+                "queue": "deal",
+            },
+            # Timeline event tasks -> deal queue
+            "deal.sync_deal_timeline": {
+                "queue": "deal",
+                "routing_key": "deal",
+            },
+            "deal.sync_org_timeline": {
+                "queue": "deal",
+                "routing_key": "deal",
+            },
+            "deal.exclude_timeline_event": {
+                "queue": "deal",
+                "routing_key": "deal",
+            },
         }
 
         # Celery Beat schedule for periodic tasks

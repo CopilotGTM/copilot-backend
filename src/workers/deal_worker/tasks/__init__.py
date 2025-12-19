@@ -13,6 +13,12 @@ from .deal_tasks import (
     process_single_deal_task,
     trigger_deal_meeting_processing_all_orgs,
 )
+from .deal_timeline_tasks import (
+    exclude_timeline_event_task,
+    sync_deal_timeline_task,
+    sync_org_timeline_task,
+    trigger_timeline_sync_all_orgs,
+)
 from .stakeholder_analysis_tasks import (
     analyze_deal_stakeholders_task,
     analyze_org_stakeholders_task,
@@ -38,4 +44,9 @@ __all__ = [
     "analyze_deal_stakeholders_task",
     "analyze_org_stakeholders_task",
     "trigger_stakeholder_analysis_all_orgs",
+    # Timeline tasks
+    "sync_deal_timeline_task",
+    "sync_org_timeline_task",
+    "exclude_timeline_event_task",
+    "trigger_timeline_sync_all_orgs",
 ]

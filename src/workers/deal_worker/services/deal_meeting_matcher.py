@@ -22,6 +22,7 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMParticipantType,
 )
 from src.infra.utils.logger import get_logger
+from src.service.crm.deal_timeline_sync_service import build_meeting_timeline_event
 from src.workers.deal_worker.services.stakeholder_service import StakeholderService
 
 logger = get_logger(__name__)
@@ -507,6 +508,16 @@ class DealMeetingMatcher:
                     meeting_prep_status=GenerationStatus.NOT_STARTED,
                 )
                 self.session.add(new_assoc)
+
+                # Create timeline event inline (same transaction)
+                timeline_event = build_meeting_timeline_event(
+                    organisation_id=self.organisation_id,
+                    deal_id=deal.deal_id,
+                    association=new_assoc,
+                    event=event,
+                )
+                self.session.add(timeline_event)
+
                 linked_count += 1
                 linked_event_ids.add(event.event_id)
 
