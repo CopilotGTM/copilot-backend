@@ -22,6 +22,7 @@ from src.api.utils.http_response import Response
 from src.domain.models.organisation_tables.sync.timeline_models import (
     TimelineEventType,
 )
+from src.infra.config.timeline_event_metadata import get_timeline_event_source_metadata
 from src.infra.utils.logger import get_logger
 from src.service.crm.deal_timeline_service import (
     DealTimelineService,
@@ -50,7 +51,7 @@ async def get_deal_timeline(
     cursor: str | None = Query(None, description="Pagination cursor"),
     event_types: str | None = Query(
         None,
-        description="Comma-separated event types to filter (EMAIL,MEETING,STAGE_CHANGE)",
+        description="Comma-separated event types to filter (EMAIL,MEETING)",
     ),
     start_date: datetime | None = Query(None, description="Filter events after this date"),
     end_date: datetime | None = Query(None, description="Filter events before this date"),
@@ -60,13 +61,13 @@ async def get_deal_timeline(
     """
     Get timeline events for a deal.
 
-    Returns a paginated list of timeline events (emails, meetings, stage changes, etc.)
+    Returns a paginated list of timeline events (emails and meetings)
     sorted chronologically. Use cursor for pagination.
 
     Query parameters:
     - limit: Number of events per page (1-100, default 20)
     - cursor: Opaque cursor for pagination
-    - event_types: Comma-separated filter (EMAIL,MEETING,MESSAGE,STAGE_CHANGE,etc.)
+    - event_types: Comma-separated filter (EMAIL,MEETING)
     - start_date: Filter events after this date
     - end_date: Filter events before this date
     - include_excluded: Include events that were excluded/rejected
@@ -98,22 +99,32 @@ async def get_deal_timeline(
         )
 
         # Build unified TimelineEvent items with preview event_data
-        items = [
-            TimelineEvent(
-                id=e.timeline_event_id,
-                deal_id=e.deal_id,
-                event_type=e.event_type.value if hasattr(e.event_type, "value") else e.event_type,
-                event_source=e.event_source.value
-                if hasattr(e.event_source, "value")
-                else e.event_source,
-                event_timestamp=e.event_timestamp,
-                event_data=service._build_preview_event_data(e),
-                excluded_at=e.excluded_at,
-                created_at=e.created_at,
-                updated_at=e.updated_at,
+        items: list[TimelineEvent] = []
+        for e in events:
+            event_source_value = (
+                e.event_source.value if hasattr(e.event_source, "value") else e.event_source
             )
-            for e in events
-        ]
+            meta = get_timeline_event_source_metadata(event_source_value)
+            event_data = {
+                **service._build_preview_event_data(e),
+                "provider_logo_url": meta.logo_url if meta else None,
+            }
+
+            items.append(
+                TimelineEvent(
+                    id=e.timeline_event_id,
+                    deal_id=e.deal_id,
+                    event_type=e.event_type.value
+                    if hasattr(e.event_type, "value")
+                    else e.event_type,
+                    event_source=event_source_value,
+                    event_timestamp=e.event_timestamp,
+                    event_data=event_data,
+                    excluded_at=e.excluded_at,
+                    created_at=e.created_at,
+                    updated_at=e.updated_at,
+                )
+            )
 
         return Response.success_response(
             message="Timeline retrieved successfully",
@@ -156,6 +167,15 @@ async def get_timeline_event_detail(
         service = DealTimelineService(db, user.organisation_id)
 
         event_dict = await service.get_timeline_event_detail(timeline_event_id)
+
+        if meta := get_timeline_event_source_metadata(event_dict.get("event_source")):
+            event_data = dict(event_dict.get("event_data") or {})
+            event_data["provider_logo_url"] = meta.logo_url
+            event_dict["event_data"] = event_data
+        else:
+            event_data = dict(event_dict.get("event_data") or {})
+            event_data.setdefault("provider_logo_url", None)
+            event_dict["event_data"] = event_data
 
         return Response.success_response(
             message="Timeline event retrieved successfully", data=TimelineEvent(**event_dict)

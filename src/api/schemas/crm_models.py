@@ -476,6 +476,9 @@ class ContactListItem(BaseModel):
 class EmailEventData(BaseModel):
     """Email-specific data for timeline events."""
 
+    # Provider UI metadata (derived from TimelineEvent.event_source)
+    provider_logo_url: str | None = None
+
     # --- List Preview (always present) ---
     subject: str | None = None
     snippet: str | None = None
@@ -497,6 +500,9 @@ class MeetingSummary(BaseModel):
 
 class MeetingEventData(BaseModel):
     """Meeting-specific data for timeline events."""
+
+    # Provider UI metadata (derived from TimelineEvent.event_source)
+    provider_logo_url: str | None = None
 
     # --- List Preview (always present) ---
     title: str | None = None

@@ -69,6 +69,9 @@ export interface TimelineEvent {
 
 // EMAIL event_data
 export interface EmailEventData {
+  // Provider icon/logo URL (derived from event_source)
+  provider_logo_url?: string | null;
+
   // --- List Preview (always present) ---
   subject: string | null;
   snippet: string | null;
@@ -83,6 +86,9 @@ export interface EmailEventData {
 
 // MEETING event_data
 export interface MeetingEventData {
+  // Provider icon/logo URL (derived from event_source)
+  provider_logo_url?: string | null;
+
   // --- List Preview (always present) ---
   title: string | null;
   duration_minutes: number | null;
@@ -153,6 +159,7 @@ Authorization: Bearer <token>
         "event_source": "CALENDAR_GOOGLE",
         "event_timestamp": "2025-01-15T10:00:00Z",
         "event_data": {
+          "provider_logo_url": "https://api.nango.dev/images/template-logos/google-calendar.svg",
           "title": "Q1 Planning Call with Acme Corp",
           "duration_minutes": 60,
           "attendee_count": 4
@@ -168,6 +175,7 @@ Authorization: Bearer <token>
         "event_source": "EMAIL_GMAIL",
         "event_timestamp": "2025-01-14T15:30:00Z",
         "event_data": {
+          "provider_logo_url": "https://app.nango.dev/images/template-logos/google-mail.svg",
           "subject": "Re: Proposal Review",
           "snippet": "Thanks for sending over the proposal. I've reviewed it with...",
           "from_email": "jane@acme.com"
@@ -210,6 +218,7 @@ Authorization: Bearer <token>
     "event_source": "CALENDAR_GOOGLE",
     "event_timestamp": "2025-01-15T10:00:00Z",
     "event_data": {
+      "provider_logo_url": "https://api.nango.dev/images/template-logos/google-calendar.svg",
       "title": "Q1 Planning Call with Acme Corp",
       "duration_minutes": 60,
       "attendee_count": 4,
@@ -244,6 +253,7 @@ Authorization: Bearer <token>
     "event_source": "EMAIL_GMAIL",
     "event_timestamp": "2025-01-14T15:30:00Z",
     "event_data": {
+      "provider_logo_url": "https://app.nango.dev/images/template-logos/google-mail.svg",
       "subject": "Re: Proposal Review",
       "snippet": "Thanks for sending over the proposal. I've reviewed it with the team...",
       "from_email": "jane@acme.com",
@@ -287,6 +297,13 @@ Both list and detail endpoints return the same `TimelineEvent` interface. The di
   - Email: adds `to_emails`, `cc_emails`, `thread_id`, `has_attachments`
   - Meeting: adds `attendees[]`, `meeting_summary`
 
+### Provider Icons
+
+Backend includes `event_data.provider_logo_url` so clients can render provider icons/logos without hardcoding mappings.
+
+- `provider_logo_url` is derived from `event_source` (provider), so each event returns at most one provider logo.
+- If a provider is unknown/unmapped, `provider_logo_url` is `null` (clients can render a generic fallback).
+
 ### Type Guards
 
 ```typescript
@@ -302,6 +319,7 @@ function isMeetingEvent(event: TimelineEvent): event is TimelineEvent & { event_
 ### Caching Strategy
 
 Since list and detail share the same shape, frontend can:
+
 1. Cache list items
 2. On click, fetch detail and merge enriched `event_data` into cached item
 3. No separate data structures needed
