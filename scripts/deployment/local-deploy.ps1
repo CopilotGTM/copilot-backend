@@ -304,7 +304,7 @@ function Deploy-WithHelm {
         "--set", "api.secrets.REDIS_HOST=$($env:REDIS_HOST)",
         "--set", "api.secrets.REDIS_PORT=$($env:REDIS_PORT)",
         "--set", "api.secrets.REDIS_PASSWORD=$($env:REDIS_PASSWORD)",
-        "--set", "api.secrets.REDIS_SSL_CERT_REQS=CERT_NONE",
+        "--set", "api.secrets.REDIS_SSL_CERT_REQS=CERT_REQUIRED",
         "--set", "api.secrets.AZURE_OPENAI_API_KEY=$($env:AZURE_OPENAI_API_KEY)",
         "--set", "api.secrets.AZURE_OPENAI_ENDPOINT=$($env:AZURE_OPENAI_ENDPOINT)",
         "--set", "api.secrets.CLOUD_PROVIDER=$($env:CLOUD_PROVIDER)",
