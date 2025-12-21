@@ -218,7 +218,21 @@ Organizations often struggle with:
 
 - Evaluate current state against SOC 2 criteria
 - Identify gaps and risks
+
 - Document existing controls
+
+---
+
+## Infrastructure audit blockers (tracking)
+
+For the infrastructure-side SOC 2 blockers (e.g., **disable public access + Private Endpoints** for Key Vault/Storage/ACR/Postgres/Redis), we track implementation **module-by-module** here:
+
+- `docs/Development Documentation/private-access-implementation-tracker.md`
+
+Current status (Terraform):
+
+- **VNet module**: Implemented support for a dedicated private-endpoints subnet.
+- **Key Vault module**: Implemented optional Private Endpoint + forces public access off when enabled (rollout is gated behind an environment toggle to avoid breaking existing deployments).
 
 ### Phase 2: Documentation (Weeks 5-8)
 
