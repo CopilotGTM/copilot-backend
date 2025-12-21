@@ -8,6 +8,7 @@ import os
 import threading
 import time
 from collections.abc import Iterable
+from contextlib import suppress
 from dataclasses import asdict, dataclass
 from typing import Any
 from weakref import WeakValueDictionary
@@ -21,10 +22,8 @@ logger = get_logger("db_pool_monitor")
 # Allow env-based override of log level (e.g., DB_POOL_MONITOR_LOG_LEVEL=DEBUG)
 _lvl = os.getenv("DB_POOL_MONITOR_LOG_LEVEL")
 if _lvl:
-    try:
+    with suppress(Exception):
         logger.setLevel(getattr(logging, _lvl.upper(), logging.INFO))
-    except Exception:
-        pass
 
 
 _MONITOR_REGISTRY: WeakValueDictionary[int, SinglePoolMonitor] = WeakValueDictionary()
@@ -41,25 +40,12 @@ def _unregister_monitor(pool: Any) -> None:
         _MONITOR_REGISTRY.pop(id(pool), None)
 
 
-# Use a thread-safe cache to map connection_record id to monitor for faster lookup
-_LOOKUP_CACHE: dict[int, SinglePoolMonitor | None] = {}
-_LOOKUP_CACHE_LOCK = threading.RLock()
-
-
 def _lookup_monitor(connection_record: Any) -> SinglePoolMonitor | None:
-    key = id(connection_record)
-    with _LOOKUP_CACHE_LOCK:
-        if key in _LOOKUP_CACHE:
-            return _LOOKUP_CACHE[key]
     pool = getattr(connection_record, "pool", None) or getattr(connection_record, "_pool", None)
     if pool is None:
-        with _LOOKUP_CACHE_LOCK:
-            _LOOKUP_CACHE[key] = None
         return None
     with _MONITOR_REGISTRY_LOCK:
         monitor = _MONITOR_REGISTRY.get(id(pool))
-    with _LOOKUP_CACHE_LOCK:
-        _LOOKUP_CACHE[key] = monitor
     return monitor
 
 
@@ -139,7 +125,7 @@ class SinglePoolMonitor:
         _unregister_monitor(self.pool)
         self._listeners_attached = False
 
-    def on_checkout(self, dbapi_con: Any, con_record: Any, *args: Any) -> None:
+    def on_checkout(self, dbapi_con: Any, con_record: Any, *_args: Any) -> None:
         try:
             key = id(con_record)
         except Exception:
@@ -179,7 +165,7 @@ class SinglePoolMonitor:
         if self.engine is None or min_idle <= 0 or max_new <= 0:
             return
         try:
-            checked_in = self._call_maybe("checkedin")
+            checked_in = self._call_int("checkedin")
             current_idle = int(checked_in or 0)
         except Exception:
             return
@@ -195,12 +181,12 @@ class SinglePoolMonitor:
 
     def metrics(self, threshold_sec: float = 300.0) -> PoolMetrics:
         # pool API varies slightly; use getattr with defaults
-        size = self._call_maybe("size")
-        checked_in = self._call_maybe("checkedin")
-        checked_out = self._call_maybe("checkedout")
-        current_overflow = self._call_maybe("overflow")
+        size = self._call_int("size")
+        checked_in = self._call_int("checkedin")
+        checked_out = self._call_int("checkedout")
+        current_overflow = self._call_int("overflow")
         max_overflow = getattr(self.pool, "_max_overflow", None)
-        status = self._call_maybe("status")
+        status = self._call_str("status")
         now = time.monotonic()
         with self._lock:
             long_running = [
@@ -244,21 +230,20 @@ class SinglePoolMonitor:
                 for key, (t, rec, dbc) in self._checked_out.items()
                 if now - t > max_sec
             ]
-        for key, t, rec, dbc in to_handle:
+        for _key, _t, rec, dbc in to_handle:
             try:
                 # Mark to be closed on check-in
                 rec.invalidate()
-                count += 1
-                with self._lock:
-                    self._enforced_count += 1
-                if force_close and dbc is not None:
-                    try:
-                        dbc.close()
-                    except Exception:
-                        pass
-            except Exception:
-                # Ignore; keep observing
-                pass
+            except Exception as exc:
+                logger.debug("Failed to invalidate checked-out connection: %s", exc)
+                continue
+
+            count += 1
+            with self._lock:
+                self._enforced_count += 1
+            if force_close and dbc is not None:
+                with suppress(Exception):
+                    dbc.close()
         return count
 
     def maybe_probe(self, min_interval_sec: float = 120.0) -> None:
@@ -269,14 +254,11 @@ class SinglePoolMonitor:
         if now - last < min_interval_sec:
             return
         # Only probe when we have idle connections to avoid creating new ones
-        checked_in = self._call_maybe("checkedin")
-        try:
-            if isinstance(checked_in, int) and checked_in <= 0:
-                self._last_probe_ts = now
-                self._last_probe_ok = None
-                return
-        except Exception:
-            pass
+        checked_in = self._call_int("checkedin")
+        if isinstance(checked_in, int) and checked_in <= 0:
+            self._last_probe_ts = now
+            self._last_probe_ok = None
+            return
         ok = False
         try:
             # Use underlying sync engine to benefit from pool_pre_ping
@@ -287,12 +269,29 @@ class SinglePoolMonitor:
         self._last_probe_ts = now
         self._last_probe_ok = ok
 
-    def _call_maybe(self, name: str) -> int | str | None:
+    def _call_int(self, name: str) -> int | None:
+        """Best-effort: read an integer metric from the pool.
+
+        Pool implementations differ: attributes can be callables or properties.
+        We only accept real ints (excluding bool) and return None otherwise.
+        """
         try:
             attr = getattr(self.pool, name, None)
-            if callable(attr):
-                return attr()
-            return attr  # type: ignore[return-value]
+            value = attr() if callable(attr) else attr
+            if isinstance(value, bool):
+                return None
+            if isinstance(value, int):
+                return value
+            return None
+        except Exception:
+            return None
+
+    def _call_str(self, name: str) -> str | None:
+        """Best-effort: read a string metric from the pool."""
+        try:
+            attr = getattr(self.pool, name, None)
+            value = attr() if callable(attr) else attr
+            return value if isinstance(value, str) else None
         except Exception:
             return None
 
@@ -389,24 +388,26 @@ class DbPoolsMonitorService:
             except TimeoutError:
                 self._task.cancel()
         for mon in self._monitors.values():
-            try:
+            with suppress(Exception):
                 mon.detach()
-            except Exception:
-                pass
         self._monitors.clear()
 
     async def _run(self) -> None:
         while not self._stopping.is_set():
             try:
-                self._discover_and_attach()
-                snapshot = self.collect_snapshot()
-                self._log_snapshot(snapshot)
+                # IMPORTANT: do not run blocking DB/pool operations on the main
+                # asyncio event loop thread, otherwise the webserver can stop
+                # responding (including /health) and get restarted by probes.
+                await asyncio.to_thread(self._tick_once)
             except Exception as e:
                 logger.error("DB pool monitor tick failed: %s", e)
-            try:
+            with suppress(TimeoutError):
                 await asyncio.wait_for(self._stopping.wait(), timeout=self.interval_sec)
-            except TimeoutError:
-                pass
+
+    def _tick_once(self) -> None:
+        self._discover_and_attach()
+        snapshot = self.collect_snapshot()
+        self._log_snapshot(snapshot)
 
     def _discover_and_attach(self) -> None:
         self._warmup_master_engines()
@@ -418,14 +419,13 @@ class DbPoolsMonitorService:
         for provider_getter in (get_sync_provider, get_async_provider):
             try:
                 provider = provider_getter()
-            except Exception:
+            except Exception as exc:
+                logger.debug("Provider getter failed during warmup: %s", exc)
                 continue
             getme = getattr(provider, "_get_master_engine", None)
             if callable(getme):
-                try:
+                with suppress(Exception):
                     getme()
-                except Exception:
-                    pass
 
     def _get_warm_min_idle(self) -> int:
         try:
@@ -478,16 +478,12 @@ class DbPoolsMonitorService:
     def _maybe_prime_pool(self, monitor: SinglePoolMonitor, warm_min_idle: int) -> None:
         if warm_min_idle <= 0:
             return
-        try:
+        with suppress(Exception):
             monitor.ensure_min_idle(min_idle=warm_min_idle, max_new=1)
-        except Exception:
-            pass
 
     def _maybe_probe_pool(self, monitor: SinglePoolMonitor) -> None:
-        try:
+        with suppress(Exception):
             monitor.maybe_probe(min_interval_sec=max(self.interval_sec * 4.0, 120.0))
-        except Exception:
-            pass
 
     def _maybe_enforce_checkout(self, monitor: SinglePoolMonitor, label: str) -> None:
         if not self._enforce_max_checkout_sec or self._enforce_max_checkout_sec <= 0:
@@ -555,7 +551,7 @@ class DbPoolsMonitorService:
             return None
 
     def _summarize_metrics(self, metrics: list[dict[str, Any]]) -> dict[str, Any]:
-        summary = {
+        summary: dict[str, Any] = {
             "total_pools": len(metrics),
             "sync_pools": sum(1 for m in metrics if m.get("kind") == "sync"),
             "async_pools": sum(1 for m in metrics if m.get("kind") == "async"),
@@ -580,7 +576,7 @@ class DbPoolsMonitorService:
         logger.debug("DB Pool snapshot: %s", json.dumps(snapshot))
 
     def _log_summary(self, snapshot: dict[str, Any]) -> None:
-        try:
+        with suppress(Exception):
             summary = snapshot["summary"]
             health = summary["health"]
             logger.info(
@@ -598,15 +594,11 @@ class DbPoolsMonitorService:
                 health.get("WARN"),
                 health.get("CRITICAL"),
             )
-        except Exception:
-            pass
 
     def _log_pool_details(self, snapshot: dict[str, Any]) -> None:
-        try:
+        with suppress(Exception):
             for pool_metric in snapshot.get("pools", []):
                 self._log_pool_metric(pool_metric)
-        except Exception:
-            pass
 
     def _log_pool_metric(self, metric: dict[str, Any]) -> None:
         in_use = int(metric.get("in_use") or metric.get("checked_out") or 0)
@@ -649,24 +641,20 @@ class DbPoolsMonitorService:
         pools: list[tuple[Any, Any, str, str]] = []
 
         # Master engine (if created)
-        try:
+        with suppress(Exception):
             eng = getattr(provider, "_master_engine", None)
             if eng is not None:
                 pool = getattr(eng, "pool", None)
                 if pool is not None:
                     pools.append((pool, eng, "master(sync)", "sync"))
-        except Exception:
-            pass
 
         # Tenant engines (if any)
-        try:
+        with suppress(Exception):
             tdict: dict[Any, Any] = getattr(provider, "_tenant_engines", {})
             for org_id, eng in tdict.items():
                 pool = getattr(eng, "pool", None)
                 if pool is not None:
                     pools.append((pool, eng, f"tenant(sync):{org_id}", "sync"))
-        except Exception:
-            pass
 
         return pools
 
@@ -680,26 +668,22 @@ class DbPoolsMonitorService:
         pools: list[tuple[Any, Any, str, str]] = []
 
         # Master async engine (if created)
-        try:
+        with suppress(Exception):
             aeng = getattr(provider, "_master_engine", None)
             if aeng is not None:
                 seng = getattr(aeng, "sync_engine", None)
                 pool = getattr(seng, "pool", None)
                 if pool is not None:
                     pools.append((pool, seng, "master(async)", "async"))
-        except Exception:
-            pass
 
         # Tenant async engines (if any)
-        try:
+        with suppress(Exception):
             tdict: dict[Any, Any] = getattr(provider, "_tenant_engines", {})
             for org_id, aeng in tdict.items():
                 seng = getattr(aeng, "sync_engine", None)
                 pool = getattr(seng, "pool", None)
                 if pool is not None:
                     pools.append((pool, seng, f"tenant(async):{org_id}", "async"))
-        except Exception:
-            pass
 
         return pools
 

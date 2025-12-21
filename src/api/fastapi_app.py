@@ -12,7 +12,6 @@ load_dotenv(BASE_DIR / ".env", override=True)
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from scripts.monitoring.db_pool_monitor import start_pool_monitor, stop_pool_monitor
-from socketio import ASGIApp
 from src.api.routers.admin.admin_auth_handler import router as admin_auth_router
 from src.api.routers.admin.organizations_handler import router as admin_org_router
 from src.api.routers.admin.users_handler import router as admin_user_router
@@ -41,7 +40,6 @@ from src.api.routers.knowledge_base.upload_handler import (
 from src.api.routers.users.auth_handler import router as user_auth_router
 from starlette.middleware.sessions import SessionMiddleware
 
-from ..api.events.socket_app import sio
 from ..api.middleware.request_context import RequestContextMiddleware
 from ..infra.messaging.redis_client import close_redis_pool, initialize_redis_pool
 from ..infra.messaging.redis_streams import (
@@ -180,5 +178,4 @@ def create_fastapi_app():
     )
     fastapp.include_router(admin_user_router, prefix="/admin/users", tags=["admin", "users"])
 
-    # Wrap in Socket.IO
-    return ASGIApp(sio, other_asgi_app=fastapp)
+    return fastapp
