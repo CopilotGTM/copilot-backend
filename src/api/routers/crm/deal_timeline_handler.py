@@ -36,6 +36,21 @@ _UNEXPECTED_ERR_MSG = "An unexpected error occurred while processing your reques
 deal_timeline_router = APIRouter()
 
 
+async def get_deal_timeline_service(
+    user: UserIDs = Depends(get_current_user),
+    session: AsyncSession = Depends(get_org_async_session),
+):
+    """Dependency that yields a DealTimelineService instance for the current org."""
+    service = DealTimelineService(session, user.organisation_id)
+    try:
+        yield service
+    finally:
+        try:
+            await service.close()
+        except Exception:
+            logger.debug("DealTimelineService close failed", exc_info=True)
+
+
 @deal_timeline_router.get(
     "/{deal_id}/timeline",
     response_model=GenericResponse[TimelinePage],
@@ -45,8 +60,7 @@ deal_timeline_router = APIRouter()
 )
 async def get_deal_timeline(
     deal_id: UUID,
-    user: UserIDs = Depends(get_current_user),
-    db: AsyncSession = Depends(get_org_async_session),
+    service: DealTimelineService = Depends(get_deal_timeline_service),
     limit: int = Query(20, ge=1, le=100, description="Number of events per page"),
     cursor: str | None = Query(None, description="Pagination cursor"),
     event_types: str | None = Query(
@@ -74,8 +88,6 @@ async def get_deal_timeline(
     - sort: Sort order (desc = newest first, asc = oldest first)
     """
     try:
-        service = DealTimelineService(db, user.organisation_id)
-
         # Parse event types filter
         parsed_event_types = None
         if event_types:
@@ -153,8 +165,7 @@ async def get_deal_timeline(
 )
 async def get_timeline_event_detail(
     timeline_event_id: UUID,
-    user: UserIDs = Depends(get_current_user),
-    db: AsyncSession = Depends(get_org_async_session),
+    service: DealTimelineService = Depends(get_deal_timeline_service),
 ) -> GenericResponse[TimelineEvent]:
     """
     Get full details of a specific timeline event.
@@ -164,8 +175,6 @@ async def get_timeline_event_detail(
     meeting_summary data, to/cc emails for email events).
     """
     try:
-        service = DealTimelineService(db, user.organisation_id)
-
         event_dict = await service.get_timeline_event_detail(timeline_event_id)
 
         if meta := get_timeline_event_source_metadata(event_dict.get("event_source")):

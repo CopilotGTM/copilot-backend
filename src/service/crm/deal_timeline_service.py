@@ -64,6 +64,13 @@ class DealTimelineService:
         self.session = session
         self.organisation_id = organisation_id
 
+    async def close(self) -> None:
+        """Dispose the underlying session when the service is released."""
+        try:
+            await self.session.close()
+        except Exception:
+            logger.debug("DealTimelineService close exception", exc_info=True)
+
     # -------------------------------------------------------------------------
     # Query Methods (for API)
     # -------------------------------------------------------------------------

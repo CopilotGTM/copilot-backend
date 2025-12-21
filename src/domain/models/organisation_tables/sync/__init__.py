@@ -76,6 +76,14 @@ from .messaging_models import (
     MessagingThreadSummary,
 )
 from .participant_models import IntegrationParticipant, IntegrationParticipantIdentity
+from .risk_blocker_models import (
+    DealRiskBlocker,
+    RiskBlockerCategory,
+    RiskBlockerSeverity,
+    RiskBlockerSource,
+    RiskBlockerStatus,
+    RiskBlockerType,
+)
 from .timeline_models import (
     DealTimelineEvent,
     TimelineEventSource,
@@ -153,4 +161,11 @@ __all__ = [
     "TimelineEventType",
     "TimelineEventSource",
     "DealTimelineEvent",
+    # Risk & Blocker models
+    "RiskBlockerType",
+    "RiskBlockerStatus",
+    "RiskBlockerSeverity",
+    "RiskBlockerCategory",
+    "RiskBlockerSource",
+    "DealRiskBlocker",
 ]

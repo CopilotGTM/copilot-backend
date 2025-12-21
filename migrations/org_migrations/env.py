@@ -55,6 +55,7 @@ from src.domain.models.organisation_tables.sync.meeting_intelligence import (
     TranscriptSegment,
 )
 from src.domain.models.organisation_tables.sync.timeline_models import DealTimelineEvent
+from src.domain.models.organisation_tables.sync.risk_blocker_models import DealRiskBlocker
 
 load_dotenv()
 
@@ -132,6 +133,8 @@ all_org_models: list[type[Any]] = [
     TranscriptSegment,
     # Timeline tables
     DealTimelineEvent,
+    # Risk/Blocker tables
+    DealRiskBlocker,
 ]
 
 for model in all_org_models:

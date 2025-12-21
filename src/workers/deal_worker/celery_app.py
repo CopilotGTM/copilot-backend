@@ -70,6 +70,8 @@ from .tasks import (  # noqa: F401, E402
     deal_meeting_tasks,
     deal_summary_tasks,
     deal_tasks,
+    deal_timeline_tasks,
+    risk_blocker_extraction_tasks,
     stakeholder_analysis_tasks,
     stakeholder_tasks,
 )

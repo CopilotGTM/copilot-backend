@@ -142,6 +142,9 @@ class DealJobType(str, Enum):
     DEAL_RISK_ANALYSIS = "deal_risk_analysis"  # Risk assessment
     DEAL_NEXT_STEPS = "deal_next_steps"  # Recommended next steps
 
+    # Risk & Blocker extraction
+    RISK_BLOCKER_EXTRACTION = "risk_blocker_extraction"  # AI extraction of risks/blockers
+
     # Content generation jobs
     PROPOSAL_DRAFT = "proposal_draft"  # Draft proposal content
     EMAIL_DRAFT = "email_draft"  # Draft follow-up email

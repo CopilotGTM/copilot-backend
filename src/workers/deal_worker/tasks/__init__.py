@@ -19,6 +19,10 @@ from .deal_timeline_tasks import (
     sync_org_timeline_task,
     trigger_timeline_sync_all_orgs,
 )
+from .risk_blocker_extraction_tasks import (
+    extract_deal_risks_blockers_task,
+    trigger_extraction_all_orgs,
+)
 from .stakeholder_analysis_tasks import (
     analyze_deal_stakeholders_task,
     analyze_org_stakeholders_task,
@@ -44,6 +48,9 @@ __all__ = [
     "analyze_deal_stakeholders_task",
     "analyze_org_stakeholders_task",
     "trigger_stakeholder_analysis_all_orgs",
+    # Risk/blocker extraction tasks
+    "extract_deal_risks_blockers_task",
+    "trigger_extraction_all_orgs",
     # Timeline tasks
     "sync_deal_timeline_task",
     "sync_org_timeline_task",
