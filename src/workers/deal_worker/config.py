@@ -144,7 +144,7 @@ class DealWorkerConfig(BaseWorkerConfig):
             },
             "extract-risks-blockers-all-orgs": {
                 "task": "risk_blocker.trigger_extraction_all_orgs",
-                "schedule": crontab(hour=17, minute=0),  # Run daily at 5:00 PM
+                "schedule": crontab(hour=12, minute=0),  # Run daily at 5:00 PM
                 "options": {
                     "queue": "deal",
                     "routing_key": "deal",
@@ -152,7 +152,7 @@ class DealWorkerConfig(BaseWorkerConfig):
             },
             "sync-timeline-all-orgs": {
                 "task": "deal.trigger_timeline_sync_all_orgs",
-                "schedule": crontab(hour=18, minute=0),  # Run daily at 6:00 PM
+                "schedule": crontab(hour=12, minute=20),  # Run daily at 6:00 PM
                 "options": {
                     "queue": "deal",
                     "routing_key": "deal",
