@@ -43,14 +43,14 @@ All endpoints return the shared `GenericResponse` envelope.
 
 #### StakeholderStance
 
-| Value | Description |
-|-------|-------------|
-| `UNKNOWN` | Stance not yet determined |
-| `CHAMPION` | Actively advocates for the deal |
-| `SUPPORTER` | Generally supportive |
-| `NEUTRAL` | No strong opinion either way |
-| `DETRACTOR` | Has concerns or objections |
-| `BLOCKER` | Actively opposing the deal |
+| Value           | Description                   |
+|-----------------|------------------------------|
+| `UNKNOWN`       | Stance not yet determined     |
+| `CHAMPION`      | Actively advocates for the deal |
+| `SUPPORTER`     | Generally supportive          |
+| `NEUTRAL`       | No strong opinion either way  |
+| `DETRACTOR`     | Has concerns or objections    |
+| `BLOCKER`       | Actively opposing the deal    |
 
 #### DecisionPower
 
@@ -145,19 +145,19 @@ export interface AddContactsAsStakeholdersResponse {
 
 Retrieves all stakeholders associated with a specific deal.
 
-### Endpoint
+### Endpoint (Get Deal Stakeholders)
 
 ```http
 GET /{deal_id}/stakeholders
 ```
 
-### Path Parameters
+### Path Parameters (Get Deal Stakeholders)
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `deal_id` | UUID | Yes | The unique identifier of the deal |
 
-### Success Response (200)
+### Success Response (200) (Get Deal Stakeholders)
 
 ```json
 {
@@ -194,14 +194,14 @@ GET /{deal_id}/stakeholders
 }
 ```
 
-### Error Responses
+### Error Responses (Get Deal Stakeholders)
 
 | Code | Description |
 |------|-------------|
 | `401` | Missing or invalid authentication token |
 | `500` | Internal server error |
 
-### Example cURL
+### Example cURL (Get Deal Stakeholders)
 
 ```bash
 curl -X GET "$BASE_URL/users/crm/deals/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders" \
@@ -215,13 +215,13 @@ curl -X GET "$BASE_URL/users/crm/deals/3fa85f64-5717-4562-b3fc-2c963f66afa6/stak
 
 Lists CRM contacts that can be added as stakeholders for a deal. Only returns contacts with valid email addresses. Excludes contacts that are already stakeholders for this deal.
 
-### Endpoint
+### Endpoint (List Available Contacts)
 
 ```http
 GET /{deal_id}/stakeholders/available-contacts
 ```
 
-### Path Parameters
+### Path Parameters (List Available Contacts)
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -234,7 +234,7 @@ GET /{deal_id}/stakeholders/available-contacts
 | `query` | string | No | - | Search string to filter by name, email, or company |
 | `limit` | integer | No | 50 | Maximum number of results to return |
 
-### Success Response (200)
+### Success Response (200) (List Available Contacts)
 
 ```json
 {
@@ -264,14 +264,14 @@ GET /{deal_id}/stakeholders/available-contacts
 - **Search**: The `query` parameter searches across `first_name`, `last_name`, `full_name`, `email`, and `company_name`
 - **Exclusion**: Contacts already added as stakeholders for this deal are automatically excluded
 
-### Error Responses
+### Error Responses (List Available Contacts)
 
 | Code | Description |
 |------|-------------|
 | `401` | Missing or invalid authentication token |
 | `500` | Internal server error |
 
-### Example cURL
+### Example cURL (List Available Contacts)
 
 ```bash
 curl -X GET "$BASE_URL/users/crm/deals/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders/available-contacts?query=engineering&limit=20" \
@@ -285,13 +285,13 @@ curl -X GET "$BASE_URL/users/crm/deals/3fa85f64-5717-4562-b3fc-2c963f66afa6/stak
 
 Add selected CRM contacts as stakeholders to a deal. Only contacts with valid email addresses will be added. Contacts without emails or those that already exist as stakeholders are skipped.
 
-### Endpoint
+### Endpoint (Add Contacts as Stakeholders)
 
 ```http
 POST /{deal_id}/stakeholders/add-from-contacts
 ```
 
-### Path Parameters
+### Path Parameters (Add Contacts as Stakeholders)
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -315,7 +315,7 @@ POST /{deal_id}/stakeholders/add-from-contacts
 |-------|------|----------|-------------|
 | `contact_ids` | UUID[] | Yes | List of contact IDs to add as stakeholders (minimum 1) |
 
-### Success Response (200)
+### Success Response (200) (Add Contacts as Stakeholders)
 
 ```json
 {
@@ -358,13 +358,13 @@ POST /{deal_id}/stakeholders/add-from-contacts
 ### Skip Reasons
 
 | Reason | Description |
-|--------|-------------|
+| -------- | ------------- |
 | `Contact not found` | The contact ID does not exist in the CRM |
 | `Contact has no email address` | Contact exists but has no email |
 | `Stakeholder with this email already exists` | A stakeholder with the same email is already on this deal |
 | `Contact is already a stakeholder` | The contact is already linked to this deal |
 
-### Error Responses
+### Error Responses (Add Contacts as Stakeholders)
 
 | Code | Description |
 |------|-------------|
@@ -372,7 +372,7 @@ POST /{deal_id}/stakeholders/add-from-contacts
 | `422` | Validation error (e.g., empty contact_ids list) |
 | `500` | Internal server error |
 
-### Example cURL
+### Example cURL (Add Contacts as Stakeholders)
 
 ```bash
 curl -X POST "$BASE_URL/users/crm/deals/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders/add-from-contacts" \
@@ -391,7 +391,7 @@ curl -X POST "$BASE_URL/users/crm/deals/3fa85f64-5717-4562-b3fc-2c963f66afa6/sta
 ## Error Codes Summary
 
 | HTTP Code | Reason | Suggested Action |
-|-----------|--------|------------------|
+| ----------- | -------- | ------------------ |
 | 401 | Missing/invalid token | Ensure valid bearer token |
 | 422 | Validation failure | Fix request parameters |
 | 429 | Rate limit exceeded | Respect `Retry-After` header |
@@ -428,3 +428,4 @@ curl -X POST "$BASE_URL/users/crm/deals/3fa85f64-5717-4562-b3fc-2c963f66afa6/sta
 
 - CRM Deals API: `docs/API Documentation/deals/crm-deals-api.md`
 - Deal Meetings API: `docs/API Documentation/deals/deal-meetings-api.md`
+

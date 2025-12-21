@@ -840,3 +840,57 @@ KNOWN STAKEHOLDERS:
 MEETING TRANSCRIPT:
 {transcript}
 """
+
+
+async def count_deal_risks_blockers(
+    session: AsyncSession,
+    org_id: UUID,
+    deal_id: UUID,
+) -> dict[str, int]:
+    """Count existing risks and blockers for a deal.
+
+    Args:
+        session: Database session
+        org_id: Organisation ID
+        deal_id: Deal ID
+
+    Returns:
+        Dictionary with 'risks', 'blockers', and 'total' counts
+    """
+    from sqlalchemy import func
+    from src.domain.models.organisation_tables.sync.risk_blocker_models import (
+        DealRiskBlocker,
+        RiskBlockerStatus,
+        RiskBlockerType,
+    )
+
+    # Count active (non-dismissed) items by type
+    stmt = (
+        select(
+            DealRiskBlocker.item_type,
+            func.count().label("count"),
+        )
+        .where(
+            col(DealRiskBlocker.deal_id) == deal_id,
+            col(DealRiskBlocker.organisation_id) == org_id,
+            col(DealRiskBlocker.status).not_in(
+                [
+                    RiskBlockerStatus.DISMISSED,
+                    RiskBlockerStatus.AI_DISMISSED,
+                ]
+            ),
+        )
+        .group_by(DealRiskBlocker.item_type)
+    )
+    result = await session.execute(stmt)
+    rows = result.all()
+
+    counts = {"risks": 0, "blockers": 0, "total": 0}
+    for row in rows:
+        if row.item_type == RiskBlockerType.RISK:
+            counts["risks"] = row.count
+        elif row.item_type == RiskBlockerType.BLOCKER:
+            counts["blockers"] = row.count
+    counts["total"] = counts["risks"] + counts["blockers"]
+
+    return counts

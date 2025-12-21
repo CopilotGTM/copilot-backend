@@ -36,6 +36,7 @@ from src.domain.models.organisation_tables.sync.email_models import (
     Email,
 )
 from src.infra.utils.logger import get_logger
+from src.service.crm.deal_timeline_sync_service import build_email_timeline_event
 
 logger = get_logger(__name__)
 
@@ -400,6 +401,8 @@ class DealEmailMatcher:
         """
         Create a DealEmailAssociation for a matched email-deal pair.
 
+        Also creates a corresponding timeline event in the same transaction.
+
         Returns the created association or None if it already exists.
         """
         # Check if association already exists (defensive)
@@ -427,6 +430,16 @@ class DealEmailMatcher:
         )
 
         self.session.add(association)
+
+        # Create timeline event inline (same transaction)
+        timeline_event = build_email_timeline_event(
+            organisation_id=self.organisation_id,
+            deal_id=match.deal_id,
+            association=association,
+            email=email,
+        )
+        self.session.add(timeline_event)
+
         return association
 
     async def process_organisation(self) -> dict[str, int]:

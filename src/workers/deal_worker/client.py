@@ -20,12 +20,16 @@ Usage:
     )
 """
 
+from __future__ import annotations
+
 import asyncio
 import contextvars
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from uuid import UUID
 
 from celery import Celery
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.infra.observability.context import correlation_headers
 from src.infra.utils.logger import get_logger
@@ -158,3 +162,25 @@ async def send_deal_task_async(
     )
 
     return task_id
+
+
+class DealWorkerAsyncClient:
+    """Async client for queueing deal worker jobs with job record creation.
+
+    This client creates job records in the database before queueing Celery tasks,
+    providing a job_id that can be used to track job status via the API.
+    """
+
+    def __init__(
+        self,
+        db_session: AsyncSession,
+        organisation_id: UUID,
+    ):
+        """Initialize the async client.
+
+        Args:
+            db_session: Async database session for job record creation
+            organisation_id: UUID of the organisation
+        """
+        self.db_session = db_session
+        self.organisation_id = organisation_id

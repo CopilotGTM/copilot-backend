@@ -7,7 +7,7 @@ Deal participants represent all people and organizations involved in a deal. Thi
 ## Participant Types
 
 | Type | Description | Source |
-|------|-------------|--------|
+| --- | --- | --- |
 | `CONTACT` | External people involved in the deal | HubSpot deal-to-contact associations |
 | `COMPANY` | Organizations involved in the deal | HubSpot deal-to-company associations |
 | `USER` | Internal team members (owners, SEs, collaborators) | HubSpot owner properties |
@@ -16,7 +16,7 @@ Deal participants represent all people and organizations involved in a deal. Thi
 
 ### CRMDealParticipant Table
 
-```
+```text
 crm_deal_participants
 ├── participant_id (UUID, PK)
 ├── deal_id (UUID, FK → crm_deals)
@@ -91,7 +91,7 @@ This ensures no duplicate participants for the same deal with the same type, ent
 **Source:** Deal properties
 
 | HubSpot Property | Role | Description |
-|-----------------|------|-------------|
+| --- | --- | --- |
 | `hubspot_owner_id` | `owner` | Primary deal owner/sales rep |
 | `hs_all_collaborator_owner_ids` | `collaborator` | Deal collaborators (semicolon-delimited) |
 | `hs_all_deal_split_owner_ids` | `split_owner` | Revenue split owners (Enterprise, semicolon-delimited) |
@@ -108,7 +108,7 @@ This ensures no duplicate participants for the same deal with the same type, ent
 
 ## Sync Flow
 
-```
+```text
 ┌─────────────────────┐
 │   HubSpot API       │
 │   (Deal + Assoc)    │
@@ -175,7 +175,7 @@ After sync, participants are enriched with data from related CRM tables:
 ### Key Files
 
 | File | Purpose |
-|------|---------|
+| --- | --- |
 | `src/service/integrations/crm/entities/deal_sync_service.py` | Main sync logic, participant extraction |
 | `src/service/integrations/crm/entities/deal_enrichment_service.py` | Participant enrichment |
 | `src/workers/integrations_worker/providers/crm/hubspot/fetchers/deal_fetcher.py` | HubSpot API fetcher |
@@ -277,7 +277,7 @@ WHERE p.participant_type = 'CONTACT'
 
 2. **Check sync logs:**
 
-   ```
+   ```bash
    grep "participants" logs/integrations.log
    ```
 

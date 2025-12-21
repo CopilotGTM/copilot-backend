@@ -76,6 +76,19 @@ from .messaging_models import (
     MessagingThreadSummary,
 )
 from .participant_models import IntegrationParticipant, IntegrationParticipantIdentity
+from .risk_blocker_models import (
+    DealRiskBlocker,
+    RiskBlockerCategory,
+    RiskBlockerSeverity,
+    RiskBlockerSource,
+    RiskBlockerStatus,
+    RiskBlockerType,
+)
+from .timeline_models import (
+    DealTimelineEvent,
+    TimelineEventSource,
+    TimelineEventType,
+)
 
 __all__ = [
     "SyncCategory",
@@ -144,4 +157,15 @@ __all__ = [
     "Email",
     "EmailThreadSummary",
     "DealEmailAssociation",
+    # Timeline models
+    "TimelineEventType",
+    "TimelineEventSource",
+    "DealTimelineEvent",
+    # Risk & Blocker models
+    "RiskBlockerType",
+    "RiskBlockerStatus",
+    "RiskBlockerSeverity",
+    "RiskBlockerCategory",
+    "RiskBlockerSource",
+    "DealRiskBlocker",
 ]

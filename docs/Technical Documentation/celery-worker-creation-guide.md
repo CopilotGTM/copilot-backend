@@ -194,7 +194,7 @@ def create_celery_app(worker_name, config, tasks_module):
 **Critical Configuration:**
 
 | Setting | Value | Purpose |
-|---------|-------|---------|
+| --------- | ------- | --------- |
 | `worker_prefetch_multiplier` | 1 | Fair task distribution (worker takes 1 task at a time) |
 | `task_acks_late` | True | Acknowledge after completion (prevents task loss on crash) |
 | `task_track_started` | True | Track when task starts execution |
@@ -863,7 +863,7 @@ async def trigger_endpoint(organisation_id: UUID, item_id: UUID):
 #### Key Benefits of Async Client Pattern
 
 | Aspect | Direct Import | Async Client |
-|--------|---------------|--------------|
+| -------- | --------------- | -------------- |
 | Module Load | Initializes full Celery app | No initialization until first use |
 | Event Loop | Blocks on `send_task()` | Runs in thread pool |
 | Cold Start | Can hang indefinitely | Has connection timeout (10s) |
@@ -873,7 +873,7 @@ async def trigger_endpoint(organisation_id: UUID, item_id: UUID):
 #### Existing Async Clients
 
 | Worker | Client Module | Key Functions |
-|--------|---------------|---------------|
+| -------- | --------------- | --------------- |
 | chat_worker | `src/workers/chat_worker/client.py` | `send_chat_task_async()` |
 | knowledge_worker | `src/workers/knowledge_worker/client.py` | `send_knowledge_task_async()` |
 | deal_worker | `src/workers/deal_worker/client.py` | `send_deal_task_async()` |
@@ -1017,7 +1017,7 @@ def task_with_storage(self, org_id: str, source_id: str):
 ### Available Signals
 
 | Signal | When Fired | Use Case |
-|--------|-----------|----------|
+| -------- | ----------- | ---------- |
 | `worker_ready` | Worker finished startup | Initialize pools, connections |
 | `worker_shutdown` | Worker is shutting down | Close connections, cleanup |
 | `task_received` | Task received from broker | Logging, metrics |
@@ -1201,7 +1201,7 @@ xadd_json_frame(stream_key, frame, maxlen=500, approximate=True)
 ### 9.4 Channel Naming Conventions
 
 | Purpose | Pattern | Example |
-|---------|---------|---------|
+| --------- | --------- | --------- |
 | Attachments | `att:{org_id}:attachments` | `att:123e4567:attachments` |
 | Knowledge Sources | `kb:{org_id}:sources` | `kb:123e4567:sources` |
 | Chat Streaming | `stream:{org_id}:chat:{job_id}` | `stream:123e4567:chat:abc123` |
@@ -1274,7 +1274,7 @@ celery -A src.workers.my_worker.celery_app inspect ping
 ### Worker Comparison Table
 
 | Worker | Queues | Time Limit | Purpose |
-|--------|--------|------------|---------|
+| -------- | -------- | ------------ | --------- |
 | **chat_worker** | `attachments`, `chat_processing`, `chat_messages` | 5 min | File processing, message handling, AI streaming |
 | **knowledge_worker** | `knowledge_upload`, `knowledge_extract` | 30 min | Document parsing, embeddings, vector storage |
 | **integrations_worker** | `integrations`, `integrations_priority` | 5 min | OAuth refresh, data sync from external APIs |
@@ -1428,7 +1428,7 @@ SELECT COUNT(*) FROM organisation_documents WHERE source_id IN (
 ### Common Issues
 
 | Issue | Cause | Solution |
-|-------|-------|----------|
+| ------- | ------- | ---------- |
 | **API request hangs on send_task** | Synchronous `send_task()` blocking asyncio event loop | Use async client (`client.py`) with `send_task_async()` |
 | **Intermittent send_task hangs** | Cold start - Redis connection not established | Use async client with `broker_connection_timeout=10` |
 | **"Scheduling" log but no "Enqueued"** | `send_task()` blocking on SSL handshake to Redis | Use thread pool executor in async client |
@@ -1443,6 +1443,7 @@ SELECT COUNT(*) FROM organisation_documents WHERE source_id IN (
 ### API Request Hanging on Task Submission
 
 **Symptoms:**
+
 - API endpoint logs "Scheduling task..." but never logs "Enqueued"
 - Request times out or hangs indefinitely
 - Works locally but fails in production (Kubernetes/Azure)
@@ -1450,12 +1451,14 @@ SELECT COUNT(*) FROM organisation_documents WHERE source_id IN (
 
 **Root Cause:**
 Celery's `send_task()` is synchronous. When called from an async FastAPI endpoint, it blocks the asyncio event loop while:
+
 1. Establishing TCP connection to Redis
 2. Performing SSL/TLS handshake (production Redis uses SSL)
 3. Authenticating with Redis password
 
 **Solution:**
 Use the async client pattern (see Step 7 in Section 5):
+
 ```python
 # ❌ Don't do this in async endpoints
 from src.workers.my_worker.celery_app import app
@@ -1597,7 +1600,7 @@ from datetime import datetime, UTC
 When implementing Celery workers, always adhere to these fundamental principles:
 
 | Principle | Description |
-|-----------|-------------|
+| ----------- | ------------- |
 | **Idempotency** | Check state before processing. Tasks may be retried or re-delivered. |
 | **Resilience** | Retry transient errors with backoff. Fail fast on validation errors. |
 | **Observability** | Log milestones at key points. Publish status updates for UI feedback. |

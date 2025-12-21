@@ -7,13 +7,14 @@ Purpose
 
 Quickstart (Checklist)
 
-- Scope: user routes (tenant) vs admin routes (master).
-- Import: `get_current_user`, `get_org_session` or async variants, `Response`, `GenericResponse[T]`.
-- Bind services to an org session and user/org IDs.
-- For uploads/downloads: use `AzureOrganisationBlobStorage` to issue SAS.
-- For long jobs: enqueue Celery; publish updates over Redis; expose SSE if needed.
-- Wrap responses using the standard envelope `GenericResponse[T]`.
-- Always scope queries by `organisation_id` and, where applicable, `user_id`.
+1. **Scope**: Determine if user routes (tenant) or admin routes (master).
+2. **Service**: Create service class with `__init__(session, org_id)` and `close()` method.
+3. **Dependency**: Create a dependency function (`get_my_service`) that yields the service with `try/finally` cleanup.
+4. **Endpoints**: Inject service via `Depends(get_my_service)`; no direct session handling.
+5. **Auth**: Use `get_current_user` dependency to get `UserIDs(user_id, organisation_id)`.
+6. **Response**: Wrap all responses with `GenericResponse[T]` and `Response.*` helpers.
+7. **Scope queries**: Always filter by `organisation_id` and, where applicable, `user_id`.
+8. **Background jobs**: Enqueue Celery tasks; publish updates over Redis; expose SSE if needed.
 
 What To Use (by Concern)
 
@@ -72,62 +73,40 @@ Secrets & Credentials
 
 Redis, Channels, and Streams
 
-- Configuration: `src/infra/config/constant.py:1` and `src/infra/config/configs.py:1` (ENV‑aware host/port/password; TLS in non‑local).
- Sync connections via `src/infra/messaging/redis_client.py:1` (connection pool).
-- Async Pub/Sub for real‑time broadcast: `src/infra/messaging/redis_pubsub.py:1`.
-- Redis Streams for replayable frames (chat): `src/infra/messaging/redis_streams.py:1`.
-- Channel helpers (import where needed): `src/infra/messaging/redis_channels.py:1`.
+- Configuration: `src/infra/config/configs.py:1` (ENV‑aware host/port/password; TLS in non‑local).
+- Sync client: `src/infra/messaging/redis_client.py:1` (`get_redis_client()` returns pooled client).
+- Async Pub/Sub: `src/infra/messaging/redis_pubsub.py:1` (`AsyncRedisPubSub` for SSE services).
+- Redis Streams: `src/infra/messaging/redis_streams.py:1` (replayable frames for chat).
+- Channel helpers: `src/infra/messaging/redis_channels.py:1`.
 
-Redis Client (how to use it effectively)
-Entry points:
+Redis Client Usage
 
-- get a pooled, sync client with `from src.infra.messaging.redis_client import get_redis_client`.
-- close pool during shutdown/tests with `close_redis_pool()`.
-Connection model:
-- Lazy, module‑level singleton `RedisConnectionManager` creates a redis‑py `ConnectionPool`.
-- Pool is initialized on first call; a `PING` verifies connectivity. On failure, the pool is discarded and error is logged.
-- TLS is automatically enabled when `ENV != local` using `SSLConnection`. Cert requirements can be set with `REDIS_SSL_CERT_REQS` (CERT_NONE|CERT_OPTIONAL|CERT_REQUIRED).
-- Timeouts set for resilience: `socket_timeout=30`, `socket_connect_timeout=30`, `retry_on_timeout=True`, `health_check_interval=30`, `socket_keepalive=True`, `max_connections=20`.
-Usage patterns:
-- Counters/TTL (rate limiting, locks):
-  - Use `client.incr(key)` and set TTL only on first hit (`expire(key, seconds)` when result is 1).
-  - Always wrap calls with try/except; on infrastructure issues, prefer fail‑open for non‑critical paths (e.g., rate limits) and fail‑closed for critical locks.
-- TTL/readiness:
-  - Use `client.ttl(key)`; remember -2 means missing and -1 means no expiry.
-- Pub/Sub:
-  - Prefer async pub/sub helper `AsyncRedisPubSub` for SSE services; for simple sync publications, keep payloads small and JSON‑serializable.
-- Streams:
-  - Use `redis_streams.py` helpers (xadd_json_frame, consumer groups) for ordered frames and replay.
-Best practices:
-- Do not construct raw clients; always use `get_redis_client()` to reuse the pool.
-- Namespace keys consistently: `rl:{subject}:{id}:...` for rate limits, `sse:{org}:{topic}:...` for pub/sub, `stream:{org}:{type}:{id}` for streams.
-- Keep keys short but descriptive; include time bucket suffixes when implementing fixed windows.
-- Validate retry logic in workers where operations are idempotent; avoid retry storms from the API layer.
-- In cloud, validate TLS handshake by setting `REDIS_SSL_CERT_REQS=CERT_REQUIRED` where CA trust is configured.
-Examples:
-- Get a client and increment with TTL:
+```python
+from src.infra.messaging.redis_client import get_redis_client
 
-    ```python
-    from src.infra.messaging.redis_client import get_redis_client
-    client = get_redis_client()
-    count = client.incr(key)
-    if count == 1:
-        client.expire(key, 60)
-    ```
+client = get_redis_client()  # Always use this, never construct raw clients
 
-- Check TTL safely:
+# Increment with TTL (rate limiting)
+count = client.incr(key)
+if count == 1:
+    client.expire(key, 60)
 
-    ```python
-    ttl = client.ttl(key)
-    ttl = None if ttl is None or ttl < 0 else int(ttl)
-    ```
+# Publish event (sync)
+import json
+client.publish(channel, json.dumps(payload))
+```
 
-- Publish a small JSON event (sync):
+Key conventions:
 
-    ```python
-    import json
-    client.publish(channel, json.dumps(payload))
-    ```
+- Rate limits: `rl:{subject}:{id}:...`
+- Pub/Sub: `sse:{org}:{topic}:...`
+- Streams: `stream:{org}:{type}:{id}`
+
+Connection notes:
+
+- Lazy singleton pool with auto-TLS in non‑local environments.
+- Wrap calls in try/except; fail‑open for non‑critical paths, fail‑closed for critical locks.
+- `client.ttl(key)`: returns -2 (missing) or -1 (no expiry).
 
 SSE Patterns
 
@@ -181,33 +160,92 @@ Response Envelope
 - Helpers: `Response.success_response`, `Response.accepted_response`, `Response.error_response`, etc. in `src/api/utils/http_response.py:1`.
 - Type your responses with `GenericResponse[T]` in `src/api/schemas/base_models.py:1`.
 
-Router Skeleton (Tenant route)
+Service Dependency Pattern (IMPORTANT)
+
+**Always create services as FastAPI dependencies with proper cleanup.** This ensures database connections are properly released and prevents connection pool exhaustion.
+
+Why this pattern:
+
+- Prevents DB connection leaks across requests.
+- Ensures `session.close()` is called even if the endpoint raises.
+- Keeps endpoint code clean and focused on business logic.
+
+Service class requirement:
 
 ```python
-from fastapi import APIRouter, Depends, Body
-from sqlalchemy.orm import Session
-from src.api.utils.http_response import Response
-from src.api.schemas.base_models import GenericResponse
+# src/service/my_domain/my_service.py
+class MyService:
+    def __init__(self, session: AsyncSession, organisation_id: UUID):
+        self.session = session
+        self.organisation_id = organisation_id
+
+    async def close(self) -> None:
+        """Close the database session."""
+        await self.session.close()
+
+    async def do_something(self, payload) -> MyResult:
+        # business logic here
+        ...
+```
+
+Handler pattern (create dependency, use in endpoints):
+
+```python
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.organisation_dependencies import (
-    get_current_user, get_org_session, UserIDs
+    UserIDs, get_current_user, get_org_async_session,
 )
+from src.api.schemas.base_models import GenericResponse
+from src.api.utils.http_response import Response
+from src.infra.utils.logger import get_logger
+from src.service.my_domain.my_service import MyService, MyServiceError
 
 router = APIRouter()
+logger = get_logger(__name__)
 
-@router.post("/example", response_model=GenericResponse[MyResponseModel])
-def example(
-    payload: MyRequestModel = Body(...),
-    user: UserIDs = Depends(get_current_user),
-    db: Session = Depends(get_org_session),
+
+# 1. Define service dependency with cleanup
+async def get_my_service(
+    user_ids: UserIDs = Depends(get_current_user),
+    session: AsyncSession = Depends(get_org_async_session),
 ):
+    """Dependency that yields a MyService instance for the current org."""
+    service = MyService(session, user_ids.organisation_id)
     try:
-        result = do_something(db, user.organisation_id, user.user_id, payload)
-        return Response.success_response("ok", result)
-    except DomainError as e:
+        yield service
+    finally:
+        try:
+            await service.close()
+        except Exception:
+            logger.debug("MyService close failed", exc_info=True)
+
+
+# 2. Use service dependency in endpoints (clean, no session management)
+@router.post("/example", response_model=GenericResponse[MyResponseModel])
+async def example(
+    payload: MyRequestModel,
+    service: MyService = Depends(get_my_service),
+):
+    """Endpoint uses injected service; cleanup handled by dependency."""
+    try:
+        result = await service.do_something(payload)
+        return Response.success_response("Operation successful", result)
+    except MyServiceError as e:
         return Response.error_response(e.status_code, e.message)
+    except HTTPException:
+        raise
     except Exception:
+        logger.exception("Unexpected error in example endpoint")
         return Response.internal_server_error_response("An unexpected error occurred")
 ```
+
+Key points:
+
+- Service dependency uses `try/finally` to guarantee cleanup.
+- Endpoint receives a ready-to-use service instance.
+- Multiple endpoints can share the same service dependency.
+- For sync routes, use `get_org_session()` and a sync `close()` method.
 
 Reusable Permission Rules
 
@@ -265,14 +303,21 @@ API Surface (FastAPI)
 - Admin Organisations: `POST /admin/organisations/create_organisation`, `GET /admin/organisations/list_organisations`, `GET /admin/organisations/all_organisations_history`, `GET /admin/organisations/{organisation_id}`, `PUT /admin/organisations/{organisation_id}/update`, `PUT /admin/organisations/{organisation_id}/status`, `GET /admin/organisations/{organisation_id}/history` in `src/api/routers/admin/organizations_handler.py:1`.
 - Admin Users: `POST /admin/users/create_user`, `GET /admin/users/{user_id}/profile`, `GET /admin/users/list_users`, `PUT /admin/users/{user_id}/admin_status`, `GET /admin/users/history/organisation/{organisation_id}`, `PUT /admin/users/{user_id}/update` in `src/api/routers/admin/users_handler.py:1`.
 
-Workers & Tasks
+Workers & Tasks (Celery)
 
-- Chat Worker: `src/workers/chat_worker/celery_app.py:1`; tasks — `attachments.post_upload` (`src/workers/chat_worker/tasks/post_upload.py:1`), `chat.process_message` (`src/workers/chat_worker/tasks/message_processing.py:1`).
-- Knowledge Worker: `src/workers/knowledge_worker/celery_app.py:1`; tasks — `knowledge.post_upload_process`, `knowledge.document_extraction`, `knowledge.delete_source` in `src/workers/knowledge_worker/tasks/*:1`.
-- Content Worker: `src/workers/content_worker/celery_app.py:1`; tasks — slide/technical deck generation in `src/workers/content_worker/tasks/*:1`.
-- Organization Worker: `src/workers/organization_worker/celery_app.py:1`; tasks — `organization.create` in `src/workers/organization_worker/tasks/organization.py:1`.
-- Shared Base: Celery app factory and routing in `src/workers/base/celery_base.py:1`, `src/workers/base/worker_config.py:1`.
-- Messaging Contracts: Redis Pub/Sub channels and Streams utilities in `src/infra/messaging/*:1` (used by tasks and SSE services).
+- **Base**: `src/workers/base/celery_base.py:1` creates Celery apps; configs in `src/workers/base/worker_config.py:1`.
+- **Chat Worker** (`src/workers/chat_worker/`): Exchange `chat`, queues `attachments`, `chat_messages`.
+  - `attachments.post_upload` → queue `attachments`
+  - `chat.process_message` → queue `chat_messages`
+- **Knowledge Worker** (`src/workers/knowledge_worker/`): Exchange `knowledge`, queues `knowledge_upload`, `knowledge_extract`.
+  - `knowledge.post_upload_process`, `knowledge.delete_source` → queue `knowledge_upload`
+  - `knowledge.document_extraction` → queue `knowledge_extract`
+- **Content Worker** (`src/workers/content_worker/`): Queues `content_generation`, `deck_generation`, `slides`.
+- **Organization Worker** (`src/workers/organization_worker/`): Exchange `organization`, queue `organization`.
+  - `organization.create` → queue `organization`
+- **Deal Worker** (`src/workers/deal_worker/`): Exchange `deal`, queues `deal`, `deal_jobs`.
+  - `risk_blocker.extract_deal_risks_blockers_task` → queue `deal`
+  - `deal_timeline.*` → queue `deal_jobs`
 
 Core Utilities (Quick Index)
 
@@ -317,16 +362,6 @@ Schemas (Primary Models)
 - Uploads (attachments): `src/api/schemas/upload_models.py:1` — `PresignRequest/Response`, `FinalizeRequest`, batch models, `AttachmentEventUpdate`.
 - Knowledge upload/access: `src/api/schemas/knowledge_upload_models.py:1`, `src/api/schemas/knowledge_access_models.py:1` — presign/finalize/status/list/stats, `KnowledgeSourceEventUpdate`.
 - Technical content: `src/api/schemas/technical_deck_models.py:1`.
-
-Queues & Routing (Celery)
-
-- Chat Worker exchange `chat`: queues `attachments`, `chat_processing`, `chat_messages`.
-  - Tasks: `attachments.post_upload` → `attachments`; `chat.process_message` → `chat_messages`.
-- Knowledge Worker exchange `knowledge`: queues `knowledge_upload`, `knowledge_extract`.
-  - Tasks: `knowledge.post_upload_process` → `knowledge_upload`; `knowledge.document_extraction` → `knowledge_extract`; `knowledge.delete_source` → `knowledge_upload`.
-- Content Worker: queues `content_generation`, `deck_generation`, `slides` (default `content_generation`).
-- Organization Worker exchange `organization`: queue `organization`.
-  - Tasks: `organization.create` → `organization`.
 
 Event Contracts (Streams/PubSub)
 

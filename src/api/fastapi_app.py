@@ -23,8 +23,10 @@ from src.api.routers.chat_attachments.access_handler import (
 )
 from src.api.routers.chat_attachments.upload_handler import upload_router
 from src.api.routers.crm import (
+    deal_timeline_router,
     deals_router,
     meetings_router,
+    risks_blockers_router,
     stakeholders_router,
     tasks_router,
 )
@@ -160,12 +162,14 @@ def create_fastapi_app():
     fastapp.include_router(integrations_router, prefix="/users/integrations", tags=["integrations"])
 
     # CRM routers
-    fastapp.include_router(deals_router, prefix="/users/crm", tags=["crm", "deals"])
+    fastapp.include_router(deals_router, prefix="/users/crm", tags=["deals"])
+    fastapp.include_router(stakeholders_router, prefix="/users/crm/deals", tags=["stakeholders"])
+    fastapp.include_router(meetings_router, prefix="/users/crm/deals", tags=["meetings"])
+    fastapp.include_router(tasks_router, prefix="/users/crm", tags=["tasks"])
+    fastapp.include_router(deal_timeline_router, prefix="/users/crm/deals", tags=["timeline"])
     fastapp.include_router(
-        stakeholders_router, prefix="/users/crm/deals", tags=["crm", "stakeholders"]
+        risks_blockers_router, prefix="/users/crm/deals", tags=["risks-blockers"]
     )
-    fastapp.include_router(meetings_router, prefix="/users/crm/deals", tags=["crm", "meetings"])
-    fastapp.include_router(tasks_router, prefix="/users/crm", tags=["crm", "tasks"])
 
     # Admin routers
     fastapp.include_router(

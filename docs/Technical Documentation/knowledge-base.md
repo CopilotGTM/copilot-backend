@@ -160,17 +160,17 @@ Examples
 }
 ```
 
-Architecture and Dependencies
+## Architecture and Dependencies
 
 - Routers: `upload_handler.py`, `access_handler.py`.
 - Services: `KnowledgeUploadService`, `KnowledgeAccessService`, `KnowledgeSourceSSEService`.
 - Infra: `AzureOrganisationBlobStorage` (SAS read/write, thumbnails), `AsyncRedisPubSub` (channels `kb:{org_id}:sources`).
 - Background: Celery `src/workers/knowledge_worker/celery_app.py` tasks.
 
-### Background Worker Tasks
+## Background Worker Tasks
 
-| Task | Purpose | Trigger |
-|------|---------|--------|
+|Task|Purpose|Trigger|
+|-----|---------|--------|
 | `knowledge.post_upload_process` | Checksum validation, thumbnail generation | `finalize/batch` API |
 | `knowledge.document_extraction` | PDF/DOC text extraction, chunking, embeddings | After post_upload_process |
 | `knowledge.delete_source` | Blob cleanup, DB hard-delete | `DELETE /source/{id}` API |
@@ -192,7 +192,7 @@ flowchart TD
 
 ### Key Services (src/workers/knowledge_worker/services/)
 
-| Service | Responsibility |
+|Service|Responsibility|
 |---------|---------------|
 | `ExtractionService` | Orchestrates parse → process → store pipeline |
 | `ChunkProcessor` | Handles embedding generation, multimodal analysis |
@@ -233,7 +233,7 @@ sequenceDiagram
 
 ### SSE Event Types
 
-| Event Type | Purpose | Payload |
+|Event Type|Purpose|Payload|
 |------------|---------|--------|
 | `status` | Source status/progress update | `KnowledgeSourceEventUpdate[]` |
 | `deleted` | Source permanently removed | `[{source_id, status: "deleted", progress: 100}]` |
@@ -259,7 +259,7 @@ DELETION_COMPLETE_STATUSES = {"deleted"}
 
 During `extracting` status, `progress` field updates through these stages:
 
-| Progress | Stage | Description |
+|Progress|Stage|Description|
 |----------|-------|-------------|
 | 5% | Job started | Task picked up by Celery worker |
 | 20% | Document parsed | PDF/DOC parsed, pages extracted |

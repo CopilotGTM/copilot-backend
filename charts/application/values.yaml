@@ -288,9 +288,11 @@ deal-worker:
 
 # Deal Beat Scheduler (Celery Beat for scheduled deal tasks)
 # Runs periodic tasks defined in DealWorkerConfig.beat_schedule:
-# - deal.trigger_deal_meeting_processing_all_orgs: Every 2 hours
-# - deal.trigger_deal_email_processing_all_orgs: Every hour at :30
-# - stakeholder.trigger_analysis_all_orgs: Daily at 2 AM
+# - deal.trigger_deal_meeting_processing_all_orgs: Every hour at :00
+# - deal.trigger_deal_email_processing_all_orgs: Every hour at :00
+# - stakeholder.trigger_analysis_all_orgs: Every hour at :00
+# - risk_blocker.trigger_extraction_all_orgs: Daily at 5:00 PM
+# - deal.trigger_timeline_sync_all_orgs: Daily at 6:00 PM
 deal-beat:
   enabled: true
   replicaCount: 1
