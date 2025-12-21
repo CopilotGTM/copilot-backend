@@ -1,5 +1,7 @@
 # CRM Deals API Documentation
 
+<!-- markdownlint-disable MD033 MD060 -->
+
 ## Base URL
 
 ```text
@@ -1485,3 +1487,5 @@ Returns the full payload for a single task (body, reminders, metadata). Use when
 - CRM Sync Architecture: `docs/Technical Documentation/integration-architecture-proposal.md`
 - Integration Management: `docs/API Documentation/integrations-api.md`
 - OAuth Flow: `docs/API Documentation/oauth-data-flow.md`
+
+<!-- markdownlint-enable MD033 MD060 -->
