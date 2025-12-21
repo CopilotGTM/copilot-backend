@@ -8,6 +8,7 @@ from src.api.events.socket_app import sio
 from src.domain.models.authentication import Authentication
 from src.domain.models.master_tables import User
 from src.infra.utils.logger import get_logger
+from starlette.concurrency import run_in_threadpool
 
 logger = get_logger()
 auth_class = Authentication()
@@ -54,8 +55,12 @@ async def connect(sid, environ, auth):
         User.user_id == user_id,
         User.organisation_id == organisation_id,
     )
-    with MasterSession() as session:
-        user = session.exec(stmt).one_or_none()
+
+    def _fetch_user() -> User | None:
+        with MasterSession() as session:
+            return session.exec(stmt).one_or_none()
+
+    user = await run_in_threadpool(_fetch_user)
 
     if not user:
         logger.warning(f"Connect refused: no matching user in DB (user_id={user_id})")

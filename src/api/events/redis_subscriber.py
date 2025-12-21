@@ -68,8 +68,14 @@ def redis_subscriber():
             continue
 
 
-# Start the Redis subscriber in a background thread
-logger.info("Starting Redis subscriber thread...")
-subscriber_thread = threading.Thread(target=redis_subscriber, daemon=True)
-subscriber_thread.start()
-logger.info("Redis subscriber thread started")
+def start_redis_subscriber_thread() -> threading.Thread:
+    """Start the Redis subscriber in a background thread.
+
+    This is intentionally not started at import-time to avoid unexpected
+    background threads in webserver processes.
+    """
+    logger.info("Starting Redis subscriber thread...")
+    subscriber_thread = threading.Thread(target=redis_subscriber, daemon=True)
+    subscriber_thread.start()
+    logger.info("Redis subscriber thread started")
+    return subscriber_thread
