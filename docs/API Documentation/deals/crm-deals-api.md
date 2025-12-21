@@ -42,15 +42,12 @@ All endpoints return the shared `GenericResponse` envelope.
 
 ## Deal Status Values
 
-| Status   | Meaning                                     | UI Guidance                     |
-
-|----------|---------------------------------------------|---------------------------------|
-| `open`   | Deal is active and in progress              | Show as active pipeline item    |
-| `won`    | Deal has been closed successfully           | Display with success indicator  |
-
-| `lost`   | Deal has been closed unsuccessfully         | Show as closed/lost             |
-
-| `closed` | Deal has been closed (generic)              | Mark as completed               |
+| Status   | Meaning                        | UI Guidance                |
+| ---      | ---                            | ---                        |
+| `open`   | Deal is active and in progress | Show as active pipeline item|
+| `won`    | Deal has been closed successfully| Display with success indicator|
+| `lost`   | Deal has been closed unsuccessfully| Show as closed/lost        |
+| `closed` | Deal has been closed (generic) | Mark as completed           |
 
 ---
 
@@ -484,19 +481,19 @@ Ordered by `created_at DESC, deal_id DESC` for consistent results.
 
 ### Query Parameters for List Deals
 
-| Parameter            | Type           | Required | Description                                                       |
-|---------------------|----------------|----------|-------------------------------------------------------------------|
-| `limit`             | integer        | No       | Items per page (1..100, default 50). Ignored if `fetch_all=true`  |
-| `cursor`            | string         | No       | Opaque cursor from previous response. Ignored if `fetch_all=true` |
-| `fetch_all`         | boolean        | No       | Fetch all deals in one request (max 500). Default: `false`        |
-| `statuses`          | array&lt;string&gt;  | No       | Filter by status (`open`, `won`, `lost`, `closed`; repeat param) |
-| `pipeline_ids`      | array&lt;UUID&gt;    | No       | Filter by pipeline UUIDs (repeat parameter)                       |
-| `owner_external_ids`| array&lt;string&gt;  | No       | Filter by owner external IDs from CRM (repeat parameter)          |
-| `min_amount`        | number         | No       | Filter by minimum deal amount                                     |
-| `max_amount`        | number         | No       | Filter by maximum deal amount                                     |
-| `min_close_date`    | string         | No       | Filter by minimum close date (ISO8601)                            |
-| `max_close_date`    | string         | No       | Filter by maximum close date (ISO8601)                            |
-| `q`                 | string         | No       | Case-insensitive substring match on deal name                     |
+| Parameter           | Type           | Required | Description                                                |
+| ---                | ---            | ---      | ---                                                        |
+| `limit`            | integer        | No       | Items per page (1..100, default 50). Ignored if `fetch_all=true` |
+| `cursor`           | string         | No       | Opaque cursor from previous response. Ignored if `fetch_all=true` |
+| `fetch_all`        | boolean        | No       | Fetch all deals in one request (max 500). Default: `false`        |
+| `statuses`         | array<string>  | No       | Filter by status (`open`, `won`, `lost`, `closed`; repeat param) |
+| `pipeline_ids`     | array<UUID>    | No       | Filter by pipeline UUIDs (repeat parameter)                       |
+| `owner_external_ids`| array<string> | No       | Filter by owner external IDs from CRM (repeat parameter)          |
+| `min_amount`       | number         | No       | Filter by minimum deal amount                                     |
+| `max_amount`       | number         | No       | Filter by maximum deal amount                                     |
+| `min_close_date`   | string         | No       | Filter by minimum close date (ISO8601)                            |
+| `max_close_date`   | string         | No       | Filter by maximum close date (ISO8601)                            |
+| `q`                | string         | No       | Case-insensitive substring match on deal name                     |
 
 ### Success Response (200) for List Deals
 
@@ -671,13 +668,13 @@ Required
 
 ### Response Fields
 
-| Field            | Type                  | Description                                          |
-|------------------|-----------------------|------------------------------------------------------|
-| `total`          | integer               | Total count of active deals (excludes soft-deleted)  |
-| `by_status`      | object                | Count grouped by deal status                         |
-| `by_pipeline`    | object                | Count grouped by pipeline name                       |
-| `total_amount`   | number \| null        | Sum of all deal amounts (null if no amounts)         |
-| `average_amount` | number \| null        | Average deal amount (null if no amounts)             |
+| Field            | Type           | Description                                     |
+| ---              | ---            | ---                                               |
+| `total`          | integer        | Total count of active deals (excludes soft-deleted)  |
+| `by_status`      | object         | Count grouped by deal status                         |
+| `by_pipeline`    | object         | Count grouped by pipeline name                       |
+| `total_amount`   | number \| null | Sum of all deal amounts (null if no amounts)         |
+| `average_amount` | number \| null | Average deal amount (null if no amounts)             |
 
 ### Notes for Get Deal Statistics
 
@@ -737,7 +734,7 @@ Required
 ### Path Parameters for Get Deal Details
 
 | Parameter | Type | Required | Description                 |
-|-----------|------|----------|-----------------------------|
+| --- | --- | --- | --- |
 | `deal_id` | UUID | Yes      | Internal deal UUID          |
 
 ### Success Response (200) for Get Deal
@@ -940,7 +937,7 @@ async function getDealById(dealId: string): Promise<DealDetail> {
 ## Error Codes Summary
 
 | HTTP Code | Reason                                              | Suggested Action                         |
-|-----------|------------------------------------------------------|------------------------------------------|
+| --- | --- | --- |
 | 400       | Validation failure (invalid cursor, bad filter)      | Fix request parameters                   |
 | 401       | Missing/invalid token                                | Ensure valid bearer token                |
 | 403       | Access denied (cross-org access)                     | Confirm user permissions                 |
@@ -1042,7 +1039,7 @@ Required
 ### Path Parameters for Generate Deal Summary
 
 | Parameter | Type | Required | Description                 |
-|-----------|------|----------|-----------------------------|
+| --- | --- | --- | --- |
 | `deal_id` | UUID | Yes      | Internal deal UUID          |
 
 ### Success Response (202 Accepted) for Generate Deal Summary
@@ -1076,10 +1073,10 @@ Required
 ### Response Fields for Generate Deal Summary
 
 | Field      | Type   | Description                                                |
-|------------|--------|------------------------------------------------------------|
+| --- | --- | --- |
 | `job_id`   | UUID   | Job ID to use for SSE stream subscription                  |
 | `job_type` | string | Type of job (`deal_summary`)                               |
-| `status`   | string | Job status: `PENDING`, `IN_PROGRESS`, `COMPLETED`, `FAILED`|
+| `status`   | string | Job status: `PENDING`, `IN_PROGRESS`, `COMPLETED`, `FAILED` |
 
 ### Error Responses for Generate Deal Summary
 
@@ -1146,15 +1143,15 @@ Required
 
 ### Path Parameters for Deal Summary SSE Stream
 
-| Parameter | Type | Required | Description                                           |
-|-----------|------|----------|-------------------------------------------------------|
-| `deal_id` | UUID | Yes      | Internal deal UUID                                    |
-| `job_id`  | UUID | Yes      | Job ID from POST `/deal-summary/generate` response    |
+| Parameter      | Type | Required | Description                                     |
+| ---            | ---  | ---      | ---                                              |
+| `deal_id`      | UUID | Yes      | Internal deal UUID                                    |
+| `job_id`       | UUID | Yes      | Job ID from POST `/deal-summary/generate` response    |
 
 ### SSE Event Types
 
 | Event Type  | Description                                              |
-|-------------|----------------------------------------------------------|
+| --- | --- |
 | `ready`     | Initial event when stream connects, contains job_id      |
 | `ping`      | Heartbeat (every ~25s) to keep connection alive          |
 | `frame`     | Progress updates, content chunks, or finalize signal     |
@@ -1165,8 +1162,8 @@ Required
 ### Frame Types (within `frame` event)
 
 | Frame Type       | Description                                         |
-|------------------|-----------------------------------------------------|
-| `progress.update`| Progress updates with message, stage, and percentage|
+| --- | --- |
+| `progress.update` | Progress updates with message, stage, and percentage |
 | `answer.replace` | Final result content (full summary data)            |
 | `error`          | Error during processing                             |
 | `finalize`       | Signals job completion, stream will close           |
@@ -1213,13 +1210,13 @@ data: {"job_id": "a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d"}
 
 ### Progress Stages
 
-| Stage            | Progress | Description                         |
-|------------------|----------|-------------------------------------|
+| Stage            | Progress | Description                    |
+| ---              | ---      | ---                              |
 | `context`        | 0.10     | Loading deal context                |
 | `stakeholders`   | 0.15     | Loading stakeholders                |
 | `meetings`       | 0.20     | Loading meeting history             |
 | `transcripts`    | 0.25     | Starting transcript fetch           |
-| `transcript_fetch`| 0.25-0.60| Fetching individual transcripts    |
+| `transcript_fetch` | 0.25-0.60 | Fetching individual transcripts    |
 | `analysis`       | 0.60     | Analyzing transcripts               |
 | `generation`     | 0.70     | Generating AI summary               |
 | `saving`         | 0.90     | Saving results to database          |
@@ -1383,13 +1380,13 @@ Returns a cursor-paginated list of all tasks linked to the specified deal. Use t
 
 ### Query Parameters for List Deal Tasks
 
-| Parameter   | Type         | Required | Description                                     |
-|-------------|--------------|----------|-------------------------------------------------|
-| `limit`     | integer      | No       | Items per page (1..100, default 50)             |
-| `cursor`    | string       | No       | Opaque cursor from previous response            |
-| `statuses`  | array&lt;string&gt; | No      | Filter by task status (repeat parameter)        |
-| `priorities`| array&lt;string&gt; | No      | Filter by priority (repeat parameter)           |
-| `task_types`| array&lt;string&gt; | No      | Filter by task type/category (repeat parameter) |
+| Parameter   | Type         | Required | Description                                |
+| ---         | ---           | ---      | ---                                         |
+| `limit`     | integer       | No       | Items per page (1..100, default 50)             |
+| `cursor`    | string        | No       | Opaque cursor from previous response            |
+| `statuses`  | array<string> | No       | Filter by task status (repeat parameter)        |
+| `priorities`| array<string> | No       | Filter by priority (repeat parameter)           |
+| `task_types`| array<string> | No       | Filter by task type/category (repeat parameter) |
 
 ### Success Response (200) for List Deal Tasks
 

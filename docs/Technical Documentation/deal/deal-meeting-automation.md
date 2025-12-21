@@ -21,6 +21,7 @@
 ### Step 0: Handle Cancelled Meetings FIRST
 
 Before matching any new meetings, the system:
+
 1. Finds all previously-linked meetings that are now cancelled
 2. Updates their association status to `REJECTED`
 3. This ensures cancelled meetings are cleaned up before new matching begins
@@ -45,7 +46,7 @@ The system uses a **two-pass approach** with different confidence scores:
 #### Pass 1: Team Member is ORGANIZER (Score: 1.0)
 
 | Criteria | Description |
-|----------|-------------|
+| --- | --- |
 | Team Role | Team member is the **meeting organizer** |
 | Contact | At least ONE customer contact is an attendee |
 | Status | Meeting is NOT cancelled |
@@ -54,7 +55,7 @@ The system uses a **two-pass approach** with different confidence scores:
 #### Pass 2: Team Member is ATTENDEE (Score: 0.8)
 
 | Criteria | Description |
-|----------|-------------|
+| --- | --- |
 | Team Role | Team member is an **attendee** (someone else organized) |
 | Contact | At least ONE customer contact is an attendee |
 | Status | Meeting is NOT cancelled |
@@ -130,7 +131,7 @@ flowchart TD
 ### Flow Summary for Business Users
 
 | Step | What Happens | Why It Matters |
-|------|-------------|----------------|
+| --- | --- | --- |
 | **0. Cleanup** | Mark cancelled meetings as rejected | Ensures stale data is cleaned before new matching |
 | **1. Identify Team** | Find all internal users on the deal | Meetings with ANY team member are captured |
 | **2. Identify Contacts** | Find all customer contacts on the deal | Only ONE contact needs to be in the meeting |
@@ -140,7 +141,7 @@ flowchart TD
 ### Match Score Explanation
 
 | Score | Meaning | When Applied |
-|-------|---------|--------------|
+| --- | --- | --- |
 | **1.0** | High Confidence | Team member **organized** the meeting with customer |
 | **0.8** | Medium Confidence | Team member **attended** meeting with customer (someone else organized) |
 
@@ -176,11 +177,12 @@ flowchart TD
 
 Cancelled events are handled **BEFORE** matching new ones:
 
-```
+```text
 1. Handle Cancelled → 2. Collect Team → 3. Collect Contacts → 4. Match Meetings
 ```
 
 This ensures:
+
 - Stale associations are cleaned up first
 - New matching works with accurate data
 - Previously-matched cancelled meetings are properly rejected
@@ -188,7 +190,7 @@ This ensures:
 ### How Cancellations are Detected
 
 | Provider | Field | Cancelled Value |
-|----------|-------|-----------------|
+| --- | --- | --- |
 | Google Calendar | `status` | `"cancelled"` |
 | Microsoft/Outlook | `isCancelled` | `true` → translated to `status="cancelled"` |
 

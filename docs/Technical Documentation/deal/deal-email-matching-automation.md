@@ -15,7 +15,7 @@ This document describes the automated process of linking email messages to CRM d
 
 For efficient hourly processing, we use an **Email-First** approach with batched deal loading:
 
-```
+```text
 1. Load all active deals with stakeholders → Build map: {stakeholder_email: [deal_ids]}
 2. Fetch unprocessed emails (not yet in any association)
 3. For each email:
@@ -27,7 +27,7 @@ For efficient hourly processing, we use an **Email-First** approach with batched
 **Why Email-First?**
 
 | Aspect | Deal-First (iterate deals) | Email-First (iterate emails) |
-|--------|---------------------------|------------------------------|
+| --- | --------------------------- | ------------------------------ |
 | **DB Queries** | N deals × M emails | 2 queries (deals + emails) |
 | **Hourly Fit** | ❌ Re-scans ALL emails every hour | ✅ Only new emails processed |
 | **Scaling** | O(deals × emails) | O(new_emails) with in-memory lookup |
@@ -35,7 +35,7 @@ For efficient hourly processing, we use an **Email-First** approach with batched
 ## Core Components
 
 | Layer | Location | Responsibility |
-|-------|----------|----------------|
+| --- | --- | --- |
 | **Model** | `DealEmailAssociation` (`src/domain/models/organisation_tables/sync/email_models.py`) | Store deal-email associations using `internet_message_id` |
 | **Service** | `DealEmailMatcher` (`src/workers/deal_worker/services/deal_email_matcher.py`) | Stakeholder lookup, email matching logic |
 | **Celery Tasks** | `deal.process_deal_emails_task`, `deal.trigger_deal_email_processing_all_orgs` | Invoke matcher for org-wide and scheduled runs |
@@ -116,7 +116,7 @@ class DealEmailAssociation(SQLModel, table=True):
 ### Comparison with Related Tables
 
 | Aspect | `CalendarEventDealAssociation` | `DealEmailAssociation` | `DealStakeholder` |
-|--------|-------------------------------|------------------------|-------------------|
+| --- | ------------------------------- | ------------------------ | ------------------- |
 | **Links to** | `event_id` → CalendarEvent | `internet_message_id` → Email (logical) | `deal_id` → CRMDeal |
 | **Status** | `AssociationStatus` enum | `AssociationStatus` enum (reused) | N/A |
 | **Score** | `match_score` | `match_score` | `engagement_score` |
@@ -127,7 +127,7 @@ class DealEmailAssociation(SQLModel, table=True):
 ### Why `internet_message_id` instead of `email_id`?
 
 | Approach | Problem |
-|----------|---------|
+| --- | --- |
 | Use `email_id` | If User A's copy is mapped, User B's copy is not. Need N associations for N users. |
 | Use `internet_message_id` | **One association covers ALL copies.** Query returns all users' email records. |
 
@@ -188,7 +188,7 @@ For each unprocessed email:
 **Scoring Logic:**
 
 | Condition | Score | Reason |
-|-----------|-------|--------|
+| --- | --- | --- |
 | Team member is **sender** AND contact is recipient | **1.0** | Outbound to customer - high relevance |
 | Contact is **sender** AND team member is recipient | **1.0** | Inbound from customer - high relevance |
 | Team member in CC, contact is sender/recipient | **0.7** | Team is looped in on customer communication |
@@ -275,7 +275,7 @@ def process_single_deal_emails_task(organisation_id: str, deal_id: str) -> dict[
 ### Schedule
 
 | Task | Schedule | Description |
-|------|----------|-------------|
+| --- | --- | --- |
 | `trigger_deal_email_processing_all_orgs` | **Hourly** | Process all orgs (incremental) |
 | `process_deal_emails_task` | On-demand | Single org processing |
 | `process_single_deal_emails_task` | On-demand | Single deal processing |
@@ -283,7 +283,7 @@ def process_single_deal_emails_task(organisation_id: str, deal_id: str) -> dict[
 ## Configuration Parameters
 
 | Parameter | Default | Description |
-|-----------|---------|-------------|
+| --- | --- | --- |
 | `MIN_MATCH_SCORE` | 0.7 | Minimum score to create association |
 | `BATCH_SIZE` | 500 | Emails to process per batch |
 
@@ -319,7 +319,7 @@ email_counts = await session.execute(
 ## Error Handling
 
 | Error | Action |
-|-------|--------|
+| --- | --- |
 | Missing `internet_message_id` | Skip email (log warning) |
 | Database constraint violation | Skip (already associated) |
 | Stakeholder query fails | Retry task with exponential backoff |
