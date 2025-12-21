@@ -395,8 +395,10 @@ class RiskBlockerService:
         if not item:
             raise RiskBlockerNotFoundError(risk_blocker_id)
 
-        if item.status != RiskBlockerStatus.AI_SUGGESTED:
-            raise InvalidStatusTransitionError(item.status.value, "OPEN")
+        # Handle status as either enum or string (SQLAlchemy may return string)
+        current_status = item.status.value if hasattr(item.status, "value") else str(item.status)
+        if current_status != RiskBlockerStatus.AI_SUGGESTED.value:
+            raise InvalidStatusTransitionError(current_status, "OPEN")
 
         item.status = RiskBlockerStatus.OPEN
         item.user_confirmed_at = datetime.now(UTC)
@@ -425,7 +427,8 @@ class RiskBlockerService:
         if not item:
             raise RiskBlockerNotFoundError(risk_blocker_id)
 
-        previous_status = item.status.value
+        # Handle status as either enum or string (SQLAlchemy may return string)
+        previous_status = item.status.value if hasattr(item.status, "value") else str(item.status)
         item.status = RiskBlockerStatus.DISMISSED
         item.last_modified_by_user_id = self.user_id
         item.last_modified_by_user_name = self.user_name
@@ -456,7 +459,8 @@ class RiskBlockerService:
         if not item:
             raise RiskBlockerNotFoundError(risk_blocker_id)
 
-        previous_status = item.status.value
+        # Handle status as either enum or string (SQLAlchemy may return string)
+        previous_status = item.status.value if hasattr(item.status, "value") else str(item.status)
         item.status = RiskBlockerStatus.RESOLVED
         item.resolution_notes = resolution_notes
         item.resolved_at = datetime.now(UTC)
@@ -493,10 +497,15 @@ class RiskBlockerService:
         if not item:
             raise RiskBlockerNotFoundError(risk_blocker_id)
 
-        if item.status not in [RiskBlockerStatus.RESOLVED, RiskBlockerStatus.DISMISSED]:
-            raise InvalidStatusTransitionError(item.status.value, "OPEN")
+        # Handle status as either enum or string (SQLAlchemy may return string)
+        current_status = item.status.value if hasattr(item.status, "value") else str(item.status)
+        if current_status not in [
+            RiskBlockerStatus.RESOLVED.value,
+            RiskBlockerStatus.DISMISSED.value,
+        ]:
+            raise InvalidStatusTransitionError(current_status, "OPEN")
 
-        previous_status = item.status.value
+        previous_status = current_status
         item.status = RiskBlockerStatus.OPEN
         item.resolved_at = None
         item.resolved_by = None

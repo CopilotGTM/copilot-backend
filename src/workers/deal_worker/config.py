@@ -105,6 +105,15 @@ class DealWorkerConfig(BaseWorkerConfig):
                 "queue": "deal",
                 "routing_key": "deal",
             },
+            # Risk/Blocker extraction tasks
+            "risk_blocker.extract_deal_risks_blockers_task": {
+                "queue": "deal_jobs",
+                "routing_key": "deal_jobs",
+            },
+            "risk_blocker.trigger_extraction_all_orgs": {
+                "queue": "deal",
+                "routing_key": "deal",
+            },
         }
 
         # Celery Beat schedule for periodic tasks
@@ -128,6 +137,22 @@ class DealWorkerConfig(BaseWorkerConfig):
             "process-deal-emails-all-orgs": {
                 "task": "deal.trigger_deal_email_processing_all_orgs",
                 "schedule": crontab(minute=0),  # Run every hour at :00
+                "options": {
+                    "queue": "deal",
+                    "routing_key": "deal",
+                },
+            },
+            "extract-risks-blockers-all-orgs": {
+                "task": "risk_blocker.trigger_extraction_all_orgs",
+                "schedule": crontab(hour=17, minute=0),  # Run daily at 5:00 PM
+                "options": {
+                    "queue": "deal",
+                    "routing_key": "deal",
+                },
+            },
+            "sync-timeline-all-orgs": {
+                "task": "deal.trigger_timeline_sync_all_orgs",
+                "schedule": crontab(hour=18, minute=0),  # Run daily at 6:00 PM
                 "options": {
                     "queue": "deal",
                     "routing_key": "deal",
