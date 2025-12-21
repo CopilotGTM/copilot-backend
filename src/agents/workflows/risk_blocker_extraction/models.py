@@ -43,7 +43,21 @@ class ExtractedRiskBlocker(BaseModel):
     deal success. The agent extracts these from meeting transcripts,
     emails, and other communication sources.
 
-    Enum fields (item_type, category, severity, source_type):
+    **RISK vs BLOCKER Classification (B2B Sales Industry Standard)**:
+
+    RISK (potential issue, probability-based):
+    - May occur and impact the deal negatively
+    - Deal can still move forward, but needs monitoring
+    - Examples: "need to check with boss", "also looking at competitors",
+      "budget not approved yet", "CTO is skeptical", "not top priority"
+
+    BLOCKER (active impediment, certainty-based):
+    - IS currently preventing deal progress
+    - Deal CANNOT move forward until resolved
+    - Examples: "locked into competitor contract", "not authorized to sign",
+      "legal freeze on new vendors", "budget exhausted", "champion left company"
+
+    Enum fields:
     - item_type: RISK (potential issue) or BLOCKER (active impediment)
     - category: TECHNICAL, BUDGET, TIMELINE, COMPETITION, STAKEHOLDER, etc.
     - severity: CRITICAL, HIGH, MEDIUM, or LOW
