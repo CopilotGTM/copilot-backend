@@ -1,10 +1,5 @@
-locals {
-  effective_db_admin_password = var.store_password_in_key_vault ? azurerm_key_vault_secret.db_password[0].value : var.db_admin_password
-}
-
 resource "azurerm_key_vault_secret" "db_password" {
-  count        = var.store_password_in_key_vault ? 1 : 0
-  name         = var.db_password_secret_name
+  name         = "db-admin-password"
   value        = var.db_admin_password
   key_vault_id = var.key_vault_id
 }
@@ -20,7 +15,7 @@ resource "azurerm_postgresql_flexible_server" "db" {
   public_network_access_enabled = true
 
   administrator_login    = var.db_admin_user
-  administrator_password = local.effective_db_admin_password
+  administrator_password = azurerm_key_vault_secret.db_password.value
 
   tags = var.tags
 }
