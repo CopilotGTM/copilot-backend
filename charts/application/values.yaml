@@ -291,7 +291,7 @@ deal-worker:
 # - deal.trigger_deal_meeting_processing_all_orgs: Every hour at :00
 # - deal.trigger_deal_email_processing_all_orgs: Every hour at :00
 # - stakeholder.trigger_analysis_all_orgs: Every hour at :00
-# - risk_blocker.trigger_extraction_all_orgs: Daily at 5:00 PM
+# - risk_blocker.trigger_extraction_all_orgs: Daily at 10:00 AM IST
 # - deal.trigger_timeline_sync_all_orgs: Daily at 6:00 PM
 deal-beat:
   enabled: true

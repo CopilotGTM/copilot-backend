@@ -43,6 +43,8 @@ logger = get_logger(__name__)
     name="risk_blocker.extract_deal_risks_blockers_task",
     acks_late=True,
     max_retries=3,
+    soft_time_limit=600,  # 10 minutes soft limit (AI extraction per deal)
+    time_limit=660,  # 11 minutes hard limit
 )
 def extract_deal_risks_blockers_task(
     self: Task,
@@ -104,6 +106,8 @@ def extract_deal_risks_blockers_task(
     bind=True,
     name="risk_blocker.trigger_extraction_all_orgs",
     acks_late=True,
+    soft_time_limit=1800,  # 30 minutes soft limit
+    time_limit=1860,  # 31 minutes hard limit
 )
 def trigger_extraction_all_orgs(self: Task) -> dict[str, int]:
     """Trigger risk/blocker extraction for all active organisations.
@@ -117,11 +121,11 @@ def trigger_extraction_all_orgs(self: Task) -> dict[str, int]:
     logger.info("Starting risk/blocker extraction trigger for all orgs")
 
     async def _run() -> dict[str, int]:
-        provider = await get_async_provider()
-        async with provider.session() as master_session:
+        provider = get_async_provider()
+        async with provider.master_session() as master_session:
             # Get all active organisations
             result = await master_session.execute(
-                select(Organisation).where(Organisation.status == OrganisationStatus.ACTIVE)
+                select(Organisation).where(Organisation.status == OrganisationStatus.APPROVED)
             )
             orgs = result.scalars().all()
 
@@ -132,14 +136,18 @@ def trigger_extraction_all_orgs(self: Task) -> dict[str, int]:
                 async for session in acquire_org_async_session(org.organisation_id):
                     from sqlmodel import col
 
-                    from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
+                    from src.domain.models.organisation_tables.sync.crm.deals import (
+                        CRMDeal,
+                        CRMDealStatus,
+                    )
 
-                    # Get deals with potential content
+                    # Get only OPEN deals (skip won/lost/closed deals)
                     deal_result = await session.execute(
                         select(CRMDeal.deal_id)
                         .where(
                             col(CRMDeal.organisation_id) == org.organisation_id,
                             col(CRMDeal.is_deleted).is_(False),
+                            col(CRMDeal.deal_status) == CRMDealStatus.OPEN,
                         )
                         .limit(100)
                     )
