@@ -1,17 +1,19 @@
 # =========================================================================
-# Terraform Infrastructure Pipeline
+# Terraform Infrastructure Pipeline - Best Practices
 # =========================================================================
-# - PRs: terraform plan only (validation)
-# - main branch: terraform plan + apply (with manual approval)
+# - Any branch push: terraform validate + plan (validation only)
+# - PR to main: terraform plan (review what will change)
+# - Merge to main: terraform plan + apply (with manual approval)
 # =========================================================================
 
 trigger:
   branches:
     include:
-      - main
+      - '*'  # Trigger on ALL branches
   paths:
     include:
       - terraform/**
+      - pipelines/**
 
 pr:
   branches:
@@ -20,6 +22,7 @@ pr:
   paths:
     include:
       - terraform/**
+      - pipelines/**
 
 parameters:
   - name: environment
@@ -31,14 +34,10 @@ parameters:
       - uat
       - prod
 
-  - name: action
-    displayName: Terraform Action
-    type: string
-    default: plan
-    values:
-      - plan
-      - apply
-      - destroy
+  - name: forceApply
+    displayName: Force Apply (use with caution)
+    type: boolean
+    default: false
 
 variables:
   - name: TF_VERSION
@@ -47,13 +46,12 @@ variables:
     value: 'terraform/azure/${{ parameters.environment }}'
   - name: ARM_USE_OIDC
     value: false
-  # Service connection name (must match what's in Azure DevOps)
   - name: AZURE_SERVICE_CONNECTION
     value: 'copilotgtm-arc-ci-cd-service--${{ parameters.environment }}'
 
 stages:
   # -------------------------------------------------------------------------
-  # Stage 1: Terraform Plan
+  # Stage 1: Validate & Plan (runs on EVERY push)
   # -------------------------------------------------------------------------
   - stage: Plan
     displayName: 'Terraform Plan (${{ parameters.environment }})'
@@ -61,7 +59,7 @@ stages:
       name: StaticAgentPool  # Self-hosted agent inside VNet
     jobs:
       - job: TerraformPlan
-        displayName: 'Run Terraform Plan'
+        displayName: 'Validate & Plan'
         steps:
           - checkout: self
             fetchDepth: 1
@@ -72,7 +70,7 @@ stages:
               terraformVersion: $(TF_VERSION)
 
           - task: AzureCLI@2
-            displayName: 'Terraform Init & Plan'
+            displayName: 'Terraform Init, Validate & Plan'
             inputs:
               azureSubscription: $(AZURE_SERVICE_CONNECTION)
               scriptType: 'pscore'
@@ -91,9 +89,29 @@ stages:
 
                 Write-Host "=== Terraform Validate ==="
                 terraform validate
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Host "##vso[task.logissue type=error]Terraform validation failed!"
+                    exit 1
+                }
+
+                Write-Host "=== Terraform Format Check ==="
+                terraform fmt -check -recursive
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Host "##vso[task.logissue type=warning]Terraform files are not formatted. Run 'terraform fmt -recursive'"
+                }
 
                 Write-Host "=== Terraform Plan ==="
-                terraform plan -var-file="terraform.tfvars" -out=tfplan -input=false
+                terraform plan -var-file="terraform.tfvars" -out=tfplan -input=false -detailed-exitcode
+                $planExitCode = $LASTEXITCODE
+                
+                if ($planExitCode -eq 0) {
+                    Write-Host "##vso[task.logissue type=info]No changes detected."
+                } elseif ($planExitCode -eq 2) {
+                    Write-Host "##vso[task.logissue type=warning]Changes detected - review plan output."
+                } else {
+                    Write-Host "##vso[task.logissue type=error]Terraform plan failed!"
+                    exit 1
+                }
 
                 Write-Host "=== Plan Summary ==="
                 terraform show -no-color tfplan
@@ -103,24 +121,27 @@ stages:
             displayName: 'Publish Plan Artifact'
 
   # -------------------------------------------------------------------------
-  # Stage 2: Terraform Apply (only on main, with approval)
+  # Stage 2: Apply (only on main branch, with approval)
   # -------------------------------------------------------------------------
   - stage: Apply
     displayName: 'Terraform Apply (${{ parameters.environment }})'
     dependsOn: Plan
-    # Only run apply on main branch AND when action is 'apply'
+    # Only run apply on main branch OR when forceApply is true
     condition: |
       and(
         succeeded(),
-        eq(variables['Build.SourceBranch'], 'refs/heads/main'),
-        eq('${{ parameters.action }}', 'apply')
+        or(
+          eq(variables['Build.SourceBranch'], 'refs/heads/main'),
+          eq('${{ parameters.forceApply }}', 'true')
+        ),
+        ne(variables['Build.Reason'], 'PullRequest')
       )
     pool:
       name: StaticAgentPool
     jobs:
       - deployment: TerraformApply
         displayName: 'Apply Infrastructure Changes'
-        # Environment with approval gates configured in Azure DevOps
+        # Environment with approval gates - create this in Azure DevOps
         environment: 'terraform-${{ parameters.environment }}'
         strategy:
           runOnce:
@@ -147,7 +168,6 @@ stages:
                     workingDirectory: $(TF_WORKING_DIR)
                     addSpnToEnvironment: true
                     inlineScript: |
-                      # Export ARM credentials for Terraform
                       $env:ARM_CLIENT_ID = $env:servicePrincipalId
                       $env:ARM_CLIENT_SECRET = $env:servicePrincipalKey
                       $env:ARM_TENANT_ID = $env:tenantId
@@ -163,54 +183,3 @@ stages:
                       terraform apply -input=false -auto-approve tfplan
 
                       Write-Host "=== Apply Complete ==="
-
-  # -------------------------------------------------------------------------
-  # Stage 3: Terraform Destroy (manual trigger only, with approval)
-  # -------------------------------------------------------------------------
-  - stage: Destroy
-    displayName: 'Terraform Destroy (${{ parameters.environment }})'
-    dependsOn: Plan
-    condition: |
-      and(
-        succeeded(),
-        eq('${{ parameters.action }}', 'destroy')
-      )
-    pool:
-      name: StaticAgentPool
-    jobs:
-      - deployment: TerraformDestroy
-        displayName: 'Destroy Infrastructure'
-        environment: 'terraform-${{ parameters.environment }}-destroy'
-        strategy:
-          runOnce:
-            deploy:
-              steps:
-                - checkout: self
-                  fetchDepth: 1
-
-                - task: TerraformInstaller@1
-                  displayName: 'Install Terraform $(TF_VERSION)'
-                  inputs:
-                    terraformVersion: $(TF_VERSION)
-
-                - task: AzureCLI@2
-                  displayName: 'Terraform Init & Destroy'
-                  inputs:
-                    azureSubscription: $(AZURE_SERVICE_CONNECTION)
-                    scriptType: 'pscore'
-                    scriptLocation: 'inlineScript'
-                    workingDirectory: $(TF_WORKING_DIR)
-                    addSpnToEnvironment: true
-                    inlineScript: |
-                      $env:ARM_CLIENT_ID = $env:servicePrincipalId
-                      $env:ARM_CLIENT_SECRET = $env:servicePrincipalKey
-                      $env:ARM_TENANT_ID = $env:tenantId
-                      $env:ARM_SUBSCRIPTION_ID = (az account show --query id -o tsv)
-
-                      Write-Host "=== Terraform Init ==="
-                      terraform init -input=false
-
-                      Write-Host "=== Terraform Destroy ==="
-                      terraform destroy -var-file="terraform.tfvars" -auto-approve
-
-                      Write-Host "=== Destroy Complete ==="
