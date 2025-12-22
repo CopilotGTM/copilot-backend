@@ -65,6 +65,24 @@ variable "vnet_private_subnets" {
   default     = ["10.0.2.0/24", "10.0.3.0/24"]
 }
 
+variable "vnet_private_endpoints_subnet" {
+  description = "CIDR for a dedicated private endpoints subnet (used for Private Link endpoints)."
+  type        = string
+  default     = "10.0.4.0/24"
+}
+
+variable "enable_key_vault_private_endpoints" {
+  description = "Enable Private Link private endpoints for Key Vaults and disable their public network access. This is mandatory for the Key Vault module."
+  type        = bool
+  default     = true
+}
+
+variable "enable_storage_private_endpoints" {
+  description = "Enable Private Link private endpoints for Storage Accounts and disable their public network access. Keep false until workloads are confirmed to access Storage via VNet + Private DNS."
+  type        = bool
+  default     = true
+}
+
 # -----------------------------------------------------------------
 # Azure Kubernetes Service (AKS)
 # -----------------------------------------------------------------
@@ -301,6 +319,13 @@ variable "azuredevops_pat" {
   description = "Personal Access Token for Azure DevOps automation. Pass via environment variable or .tfvars (DO NOT hardcode in source for security)."
   type        = string
   sensitive   = true
+  default     = ""
+}
+
+variable "azuredevops_pat_secret_name" {
+  description = "Optional: name of an existing Key Vault secret that holds the Azure DevOps PAT. If azuredevops_pat is empty and this is set, Terraform will read the PAT from Key Vault (requires Key Vault access)."
+  type        = string
+  default     = ""
 }
 
 variable "sp_name" {

@@ -36,9 +36,27 @@ variable "db_name" {
   default     = ""
 }
 
+variable "store_password_in_key_vault" {
+  description = "When true, store the DB admin password in Key Vault as a secret (requires Key Vault data-plane access; for private-only vaults this must run from inside the VNet)."
+  type        = bool
+  default     = false
+}
+
 variable "key_vault_id" {
-  description = "The ID of the Key Vault to store the database password."
+  description = "The ID of the Key Vault to store the database password (required when store_password_in_key_vault=true)."
   type        = string
+  default     = null
+
+  validation {
+    condition     = var.store_password_in_key_vault == false || (var.key_vault_id != null && trimspace(var.key_vault_id) != "")
+    error_message = "key_vault_id must be set when store_password_in_key_vault=true."
+  }
+}
+
+variable "db_password_secret_name" {
+  description = "Key Vault secret name to use when store_password_in_key_vault=true."
+  type        = string
+  default     = "db-admin-password"
 }
 
 

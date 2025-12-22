@@ -47,3 +47,13 @@ output "nat_gateway_public_ip" {
   description = "The public IP address of the NAT Gateway."
   value       = azurerm_public_ip.nat_gw.ip_address
 }
+
+output "private_endpoints_subnet_id" {
+  description = "ID of the dedicated private endpoints subnet (if created)."
+  value       = try(azurerm_subnet.private_endpoints[0].id, null)
+}
+
+output "private_endpoints_subnet_name" {
+  description = "Name of the dedicated private endpoints subnet (if created)."
+  value       = try(azurerm_subnet.private_endpoints[0].name, null)
+}

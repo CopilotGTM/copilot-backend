@@ -31,6 +31,36 @@ variable "tags" {
   default     = {}
 }
 
+variable "public_network_access_enabled" {
+  description = "Whether public network access is enabled for the Storage Account. If private endpoints are enabled, this is forced to false."
+  type        = bool
+  default     = true
+}
+
+variable "private_endpoint_enabled" {
+  description = "Whether to create a Private Endpoint for the Storage Account."
+  type        = bool
+  default     = false
+}
+
+variable "private_endpoint_subnet_id" {
+  description = "Subnet ID where the Storage Account Private Endpoint should be created (required when private_endpoint_enabled=true)."
+  type        = string
+  default     = null
+}
+
+variable "private_endpoint_subresource_names" {
+  description = "Storage subresources for the Private Endpoint (e.g., blob, file, queue, table)."
+  type        = list(string)
+  default     = ["blob"]
+}
+
+variable "private_dns_zone_ids" {
+  description = "Private DNS Zone IDs to attach via the Private Endpoint zone group (e.g., privatelink.blob.core.windows.net)."
+  type        = list(string)
+  default     = null
+}
+
 # Optional list of allowed origins for a single blob service CORS rule.
 # If empty, no CORS rule will be created.
 variable "allowed_blob_cors_origins" {

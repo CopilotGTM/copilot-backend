@@ -43,6 +43,10 @@ Notable remaining gaps:
 - No WAF/DDoS protections or private AKS API server
 - No HA/zone redundancy for DB, Redis, App Service, or AKS (options now available in modules)
 
+Recently completed (dev):
+
+- Key Vault: Private Endpoints enabled + public network access disabled + Private DNS zone linked to VNet (applied 2025-12-22)
+
 ## SOC 2 control register
 
 ### Security (CC)
@@ -117,8 +121,10 @@ Notable remaining gaps:
   - Private endpoints + service endpoints + firewall
 - Best option: Private endpoints + public access disabled + private DNS zones.
 - Implemented?: **Partial**.
-  - Implemented (Terraform): VNet now supports a dedicated private-endpoints subnet; Key Vault module supports private endpoints + public access disable.
-  - Not enabled (dev): the Key Vault private endpoint rollout is gated behind `enable_key_vault_private_endpoints` to avoid breaking Terraform runners until they run inside the VNet.
+  - Completed (dev, applied 2025-12-22):
+    - Key Vault: public access disabled + Private Endpoints created + Private DNS zone (`privatelink.vaultcore.azure.net`) linked to the VNet.
+    - Evidence: `terraform/azure/dev` now has `enable_key_vault_private_endpoints = true` and the Key Vault module enforces Private Link.
+  - Remaining (not done yet): Storage, ACR, Postgres, Redis private endpoints + public access disable + Private DNS zones.
   - Tracking: see `docs/Development Documentation/private-access-implementation-tracker.md`.
 - Priority: P0
 
@@ -318,7 +324,9 @@ Notable remaining gaps:
   - Private endpoint
   - Private endpoint + firewall
 - Best option: Private endpoint + firewall.
-- Implemented?: **No**. Key Vault private endpoints and network ACL deny-by-default are not confirmed enabled in the current dev Terraform.
+- Implemented?: **Partial**.
+  - Completed (dev, applied 2025-12-22): Key Vault public network access disabled and Private Endpoints enabled.
+  - Remaining: add explicit Key Vault network ACL hardening (deny-by-default / bypass rules) as a separate step if desired.
 - Priority: P0
 
 #### C-3: Data access audit logging
@@ -364,7 +372,7 @@ Notable remaining gaps:
 Phase 0 (P0, audit blockers):
 
 - Remove secrets from `terraform.tfvars`; move to Key Vault and rotate.
-- Disable public access + add private endpoints for Key Vault, Storage, ACR, Postgres, Redis.
+- Disable public access + add private endpoints for Key Vault (DONE in dev, 2025-12-22), Storage (TODO), ACR (TODO), Postgres (TODO), Redis (TODO).
 - Harden Postgres (no public access, firewall restricted, SSL required).
 - Create Log Analytics + diagnostics for all services.
 - Replace subscription Contributor for CI/CD with least-privilege roles.
@@ -392,4 +400,4 @@ Phase 2 (P2, maturity):
 - To enable private endpoints in production, set `enable_private_endpoints = true` in terraform.tfvars.
 - See [Private Endpoints Implementation Guide](private-endpoints-implementation.md) for detailed configuration.
 
-**Last Updated**: 2025-12-21
+**Last Updated**: 2025-12-22

@@ -18,6 +18,7 @@ module "vnet" {
   resource_group_name = module.resource_group.resource_group_name
   public_subnets      = var.vnet_public_subnets
   private_subnets     = var.vnet_private_subnets
+  private_endpoints_subnet_prefix = var.vnet_private_endpoints_subnet
   env                 = var.env
   depends_on          = [
     module.resource_group
@@ -51,6 +52,51 @@ data "azurerm_client_config" "current" {}
 data "azuread_client_config" "current" {}
 
 # -----------------------------------------------------------------
+# Private DNS: Key Vault Private Link
+# Created once per environment; individual Key Vaults attach via zone groups.
+# -----------------------------------------------------------------
+resource "azurerm_private_dns_zone" "key_vault" {
+  count               = var.enable_key_vault_private_endpoints ? 1 : 0
+  name                = "privatelink.vaultcore.azure.net"
+  resource_group_name = module.resource_group.resource_group_name
+  tags = {
+    environment = var.env
+    project     = var.project_name
+  }
+}
+
+resource "azurerm_private_dns_zone_virtual_network_link" "key_vault" {
+  count                 = var.enable_key_vault_private_endpoints ? 1 : 0
+  name                  = "kv-${var.env}-vnet-link"
+  resource_group_name   = module.resource_group.resource_group_name
+  private_dns_zone_name = azurerm_private_dns_zone.key_vault[0].name
+  virtual_network_id    = module.vnet.vnet_id
+  registration_enabled  = false
+}
+
+# -----------------------------------------------------------------
+# Private DNS: Storage Account (Blob) Private Link
+# -----------------------------------------------------------------
+resource "azurerm_private_dns_zone" "storage_blob" {
+  count               = var.enable_storage_private_endpoints ? 1 : 0
+  name                = "privatelink.blob.core.windows.net"
+  resource_group_name = module.resource_group.resource_group_name
+  tags = {
+    environment = var.env
+    project     = var.project_name
+  }
+}
+
+resource "azurerm_private_dns_zone_virtual_network_link" "storage_blob" {
+  count                 = var.enable_storage_private_endpoints ? 1 : 0
+  name                  = "stblob-${var.env}-vnet-link"
+  resource_group_name   = module.resource_group.resource_group_name
+  private_dns_zone_name = azurerm_private_dns_zone.storage_blob[0].name
+  virtual_network_id    = module.vnet.vnet_id
+  registration_enabled  = false
+}
+
+# -----------------------------------------------------------------
 # Azure Key Vault
 # -----------------------------------------------------------------
 module "database_key_vault" {
@@ -60,6 +106,10 @@ module "database_key_vault" {
   resource_group_name = module.resource_group.resource_group_name
   tenant_id           = data.azurerm_client_config.current.tenant_id
   admin_object_id     = data.azurerm_client_config.current.object_id
+  public_network_access_enabled = var.enable_key_vault_private_endpoints ? false : true
+  private_endpoint_enabled      = var.enable_key_vault_private_endpoints
+  private_endpoint_subnet_id    = module.vnet.private_endpoints_subnet_id
+  private_dns_zone_id           = var.enable_key_vault_private_endpoints ? azurerm_private_dns_zone.key_vault[0].id : null
   tags = {
     environment = var.env
     project     = var.project_name
@@ -79,6 +129,10 @@ module "master_key_vault" {
   resource_group_name = module.resource_group.resource_group_name
   tenant_id           = data.azurerm_client_config.current.tenant_id
   admin_object_id     = data.azurerm_client_config.current.object_id
+  public_network_access_enabled = var.enable_key_vault_private_endpoints ? false : true
+  private_endpoint_enabled      = var.enable_key_vault_private_endpoints
+  private_endpoint_subnet_id    = module.vnet.private_endpoints_subnet_id
+  private_dns_zone_id           = var.enable_key_vault_private_endpoints ? azurerm_private_dns_zone.key_vault[0].id : null
   tags = {
     environment = var.env
     project     = var.project_name
@@ -98,6 +152,11 @@ module "master_storage_account" {
   location                = var.location
   account_tier            = "Standard"
   account_replication_type = "LRS"
+  public_network_access_enabled = var.enable_storage_private_endpoints ? false : true
+  private_endpoint_enabled      = var.enable_storage_private_endpoints
+  private_endpoint_subnet_id    = module.vnet.private_endpoints_subnet_id
+  private_endpoint_subresource_names = ["blob"]
+  private_dns_zone_ids          = var.enable_storage_private_endpoints ? [azurerm_private_dns_zone.storage_blob[0].id] : null
   allowed_blob_cors_origins = [
     "https://${var.frontend_dns_a_record_name}.copilotgtm.com",
     "https://${var.frontend_admin_dns_a_record_name}.copilotgtm.com",
@@ -119,6 +178,11 @@ module "org_storage_account" {
   location                 = var.location
   account_tier             = "Standard"
   account_replication_type = "LRS"
+  public_network_access_enabled = var.enable_storage_private_endpoints ? false : true
+  private_endpoint_enabled      = var.enable_storage_private_endpoints
+  private_endpoint_subnet_id    = module.vnet.private_endpoints_subnet_id
+  private_endpoint_subresource_names = ["blob"]
+  private_dns_zone_ids          = var.enable_storage_private_endpoints ? [azurerm_private_dns_zone.storage_blob[0].id] : null
   allowed_blob_cors_origins = [
     "https://${var.frontend_dns_a_record_name}.copilotgtm.com",
     "https://${var.frontend_admin_dns_a_record_name}.copilotgtm.com",

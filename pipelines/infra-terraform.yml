@@ -1,0 +1,216 @@
+# =========================================================================
+# Terraform Infrastructure Pipeline
+# =========================================================================
+# - PRs: terraform plan only (validation)
+# - main branch: terraform plan + apply (with manual approval)
+# =========================================================================
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - terraform/**
+
+pr:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - terraform/**
+
+parameters:
+  - name: environment
+    displayName: Target Environment
+    type: string
+    default: dev
+    values:
+      - dev
+      - uat
+      - prod
+
+  - name: action
+    displayName: Terraform Action
+    type: string
+    default: plan
+    values:
+      - plan
+      - apply
+      - destroy
+
+variables:
+  - name: TF_VERSION
+    value: '1.9.0'
+  - name: TF_WORKING_DIR
+    value: 'terraform/azure/${{ parameters.environment }}'
+  - name: ARM_USE_OIDC
+    value: false
+  # Service connection name (must match what's in Azure DevOps)
+  - name: AZURE_SERVICE_CONNECTION
+    value: 'copilotgtm-arc-ci-cd-service--${{ parameters.environment }}'
+
+stages:
+  # -------------------------------------------------------------------------
+  # Stage 1: Terraform Plan
+  # -------------------------------------------------------------------------
+  - stage: Plan
+    displayName: 'Terraform Plan (${{ parameters.environment }})'
+    pool:
+      name: StaticAgentPool  # Self-hosted agent inside VNet
+    jobs:
+      - job: TerraformPlan
+        displayName: 'Run Terraform Plan'
+        steps:
+          - checkout: self
+            fetchDepth: 1
+
+          - task: TerraformInstaller@1
+            displayName: 'Install Terraform $(TF_VERSION)'
+            inputs:
+              terraformVersion: $(TF_VERSION)
+
+          - task: AzureCLI@2
+            displayName: 'Terraform Init & Plan'
+            inputs:
+              azureSubscription: $(AZURE_SERVICE_CONNECTION)
+              scriptType: 'pscore'
+              scriptLocation: 'inlineScript'
+              workingDirectory: $(TF_WORKING_DIR)
+              addSpnToEnvironment: true
+              inlineScript: |
+                # Export ARM credentials for Terraform
+                $env:ARM_CLIENT_ID = $env:servicePrincipalId
+                $env:ARM_CLIENT_SECRET = $env:servicePrincipalKey
+                $env:ARM_TENANT_ID = $env:tenantId
+                $env:ARM_SUBSCRIPTION_ID = (az account show --query id -o tsv)
+
+                Write-Host "=== Terraform Init ==="
+                terraform init -input=false
+
+                Write-Host "=== Terraform Validate ==="
+                terraform validate
+
+                Write-Host "=== Terraform Plan ==="
+                terraform plan -var-file="terraform.tfvars" -out=tfplan -input=false
+
+                Write-Host "=== Plan Summary ==="
+                terraform show -no-color tfplan
+
+          - publish: $(TF_WORKING_DIR)/tfplan
+            artifact: tfplan-${{ parameters.environment }}
+            displayName: 'Publish Plan Artifact'
+
+  # -------------------------------------------------------------------------
+  # Stage 2: Terraform Apply (only on main, with approval)
+  # -------------------------------------------------------------------------
+  - stage: Apply
+    displayName: 'Terraform Apply (${{ parameters.environment }})'
+    dependsOn: Plan
+    # Only run apply on main branch AND when action is 'apply'
+    condition: |
+      and(
+        succeeded(),
+        eq(variables['Build.SourceBranch'], 'refs/heads/main'),
+        eq('${{ parameters.action }}', 'apply')
+      )
+    pool:
+      name: StaticAgentPool
+    jobs:
+      - deployment: TerraformApply
+        displayName: 'Apply Infrastructure Changes'
+        # Environment with approval gates configured in Azure DevOps
+        environment: 'terraform-${{ parameters.environment }}'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                  fetchDepth: 1
+
+                - task: TerraformInstaller@1
+                  displayName: 'Install Terraform $(TF_VERSION)'
+                  inputs:
+                    terraformVersion: $(TF_VERSION)
+
+                - download: current
+                  artifact: tfplan-${{ parameters.environment }}
+                  displayName: 'Download Plan Artifact'
+
+                - task: AzureCLI@2
+                  displayName: 'Terraform Init & Apply'
+                  inputs:
+                    azureSubscription: $(AZURE_SERVICE_CONNECTION)
+                    scriptType: 'pscore'
+                    scriptLocation: 'inlineScript'
+                    workingDirectory: $(TF_WORKING_DIR)
+                    addSpnToEnvironment: true
+                    inlineScript: |
+                      # Export ARM credentials for Terraform
+                      $env:ARM_CLIENT_ID = $env:servicePrincipalId
+                      $env:ARM_CLIENT_SECRET = $env:servicePrincipalKey
+                      $env:ARM_TENANT_ID = $env:tenantId
+                      $env:ARM_SUBSCRIPTION_ID = (az account show --query id -o tsv)
+
+                      Write-Host "=== Terraform Init ==="
+                      terraform init -input=false
+
+                      # Copy plan file from artifact
+                      Copy-Item "$(Pipeline.Workspace)/tfplan-${{ parameters.environment }}/tfplan" -Destination "./tfplan"
+
+                      Write-Host "=== Terraform Apply ==="
+                      terraform apply -input=false -auto-approve tfplan
+
+                      Write-Host "=== Apply Complete ==="
+
+  # -------------------------------------------------------------------------
+  # Stage 3: Terraform Destroy (manual trigger only, with approval)
+  # -------------------------------------------------------------------------
+  - stage: Destroy
+    displayName: 'Terraform Destroy (${{ parameters.environment }})'
+    dependsOn: Plan
+    condition: |
+      and(
+        succeeded(),
+        eq('${{ parameters.action }}', 'destroy')
+      )
+    pool:
+      name: StaticAgentPool
+    jobs:
+      - deployment: TerraformDestroy
+        displayName: 'Destroy Infrastructure'
+        environment: 'terraform-${{ parameters.environment }}-destroy'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                  fetchDepth: 1
+
+                - task: TerraformInstaller@1
+                  displayName: 'Install Terraform $(TF_VERSION)'
+                  inputs:
+                    terraformVersion: $(TF_VERSION)
+
+                - task: AzureCLI@2
+                  displayName: 'Terraform Init & Destroy'
+                  inputs:
+                    azureSubscription: $(AZURE_SERVICE_CONNECTION)
+                    scriptType: 'pscore'
+                    scriptLocation: 'inlineScript'
+                    workingDirectory: $(TF_WORKING_DIR)
+                    addSpnToEnvironment: true
+                    inlineScript: |
+                      $env:ARM_CLIENT_ID = $env:servicePrincipalId
+                      $env:ARM_CLIENT_SECRET = $env:servicePrincipalKey
+                      $env:ARM_TENANT_ID = $env:tenantId
+                      $env:ARM_SUBSCRIPTION_ID = (az account show --query id -o tsv)
+
+                      Write-Host "=== Terraform Init ==="
+                      terraform init -input=false
+
+                      Write-Host "=== Terraform Destroy ==="
+                      terraform destroy -var-file="terraform.tfvars" -auto-approve
+
+                      Write-Host "=== Destroy Complete ==="
