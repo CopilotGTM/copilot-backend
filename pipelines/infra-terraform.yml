@@ -56,7 +56,7 @@ stages:
   - stage: Plan
     displayName: 'Terraform Plan (${{ parameters.environment }})'
     pool:
-      name: StaticAgentPool  # Self-hosted agent inside VNet
+      vmImage: 'ubuntu-latest'
     jobs:
       - job: TerraformPlan
         displayName: 'Validate & Plan'
@@ -137,7 +137,7 @@ stages:
         ne(variables['Build.Reason'], 'PullRequest')
       )
     pool:
-      name: StaticAgentPool
+      vmImage: 'ubuntu-latest'
     jobs:
       - deployment: TerraformApply
         displayName: 'Apply Infrastructure Changes'
