@@ -120,7 +120,7 @@ class DealWorkerConfig(BaseWorkerConfig):
         self.beat_schedule = {
             "process-deal-meetings-all-orgs": {
                 "task": "deal.trigger_deal_meeting_processing_all_orgs",
-                "schedule": crontab(minute=0),  # Run every hour at :00
+                "schedule": crontab(minute=0, hour="*/6"),  # Run every 6 hours at :00
                 "options": {
                     "queue": "deal",
                     "routing_key": "deal",
@@ -128,7 +128,7 @@ class DealWorkerConfig(BaseWorkerConfig):
             },
             "analyze-stakeholders-all-orgs": {
                 "task": "stakeholder.trigger_analysis_all_orgs",
-                "schedule": crontab(minute=0),  # Run every hour at :00
+                "schedule": crontab(minute=0, hour="*/6"),  # Run every 6 hours at :00
                 "options": {
                     "queue": "deal",
                     "routing_key": "deal",
@@ -136,7 +136,7 @@ class DealWorkerConfig(BaseWorkerConfig):
             },
             "process-deal-emails-all-orgs": {
                 "task": "deal.trigger_deal_email_processing_all_orgs",
-                "schedule": crontab(minute=0),  # Run every hour at :00
+                "schedule": crontab(minute=0, hour="*/6"),  # Run every 6 hours at :00
                 "options": {
                     "queue": "deal",
                     "routing_key": "deal",
@@ -144,7 +144,9 @@ class DealWorkerConfig(BaseWorkerConfig):
             },
             "extract-risks-blockers-all-orgs": {
                 "task": "risk_blocker.trigger_extraction_all_orgs",
-                "schedule": crontab(hour=12, minute=0),  # Run daily at 5:00 PM
+                # NOTE: Celery Beat uses the worker timezone (typically UTC in k8s).
+                # 10:00 AM IST = 04:30 UTC.
+                "schedule": crontab(hour=5, minute=25),  # Run daily at 10:00 AM IST
                 "options": {
                     "queue": "deal",
                     "routing_key": "deal",
@@ -152,7 +154,7 @@ class DealWorkerConfig(BaseWorkerConfig):
             },
             "sync-timeline-all-orgs": {
                 "task": "deal.trigger_timeline_sync_all_orgs",
-                "schedule": crontab(hour=12, minute=20),  # Run daily at 6:00 PM
+                "schedule": crontab(minute=30),  # Run every hour at :00
                 "options": {
                     "queue": "deal",
                     "routing_key": "deal",

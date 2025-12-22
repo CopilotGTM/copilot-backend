@@ -89,6 +89,8 @@ def analyze_deal_stakeholders_task(
     name="stakeholder.analyze_org_stakeholders_task",
     acks_late=True,
     max_retries=3,
+    soft_time_limit=900,  # 15 minutes soft limit (org-wide analysis)
+    time_limit=960,  # 16 minutes hard limit
 )
 def analyze_org_stakeholders_task(self: Task, organisation_id: str) -> dict[str, int]:
     """Analyze all stakeholders across all deals for an organisation.
