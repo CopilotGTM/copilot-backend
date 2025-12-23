@@ -308,8 +308,7 @@ async def list_user_action_history(
         )
 
         logger.info(
-            f"Successfully retrieved {len(paginated_history.history)} "
-            "user action history records."
+            f"Successfully retrieved {len(paginated_history.history)} user action history records."
         )
         return Response.success_response(
             message="User action history retrieved successfully", data=paginated_history
