@@ -67,7 +67,7 @@ class AppConfig:
     ]
 
     # App URL
-    APP_URL: str = os.getenv("APP_URL")
+    APP_URL: str = os.getenv("APP_URL", "")
 
     # Security settings
     SECRET_KEY: str = os.getenv("SECRET_KEY", "your-secret-key-here")

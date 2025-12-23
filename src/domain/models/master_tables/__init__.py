@@ -19,6 +19,11 @@ with type checking handled via `if TYPE_CHECKING:` blocks to prevent circular im
 
 from .base_mixins import CreatedAtMixin, TimestampMixin
 from .organisation_integration_models import OrganisationIntegrationDetails
+from .organisation_job_models import (
+    OrganisationJob,
+    OrganisationJobStatus,
+    OrganisationJobType,
+)
 from .organisation_models import (
     Organisation,
     OrganisationActionHistory,
@@ -49,6 +54,10 @@ __all__ = [
     "OrganisationActionHistory",
     "OrganisationEventType",
     "OrganisationIntegrationDetails",
+    # Organisation Job Models
+    "OrganisationJob",
+    "OrganisationJobStatus",
+    "OrganisationJobType",
     # User Models
     "User",
     "UserAppRole",

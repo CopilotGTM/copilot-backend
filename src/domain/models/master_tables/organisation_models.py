@@ -65,9 +65,7 @@ class Organisation(TimestampMixin, table=True):
         description="Unique UUID for the organisation.",
     )
     organisation_name: str = Field(
-        sa_type=String(255),
-        nullable=False,
-        unique=True,
+        sa_column=Column(String(255), nullable=False, unique=True),
         description="Organisation/company name. Unique.",
     )
     domain: list[str] | None = Field(

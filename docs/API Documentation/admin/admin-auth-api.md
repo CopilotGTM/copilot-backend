@@ -32,20 +32,20 @@ All endpoints return the standard envelope:
 
 ## 1) Admin Login
 
-**Endpoint**
+### Endpoint — Admin Login
 
 ```http
 POST /login
 ```
 
-**Body**
+#### Body — Admin Login
 
 | Field | Type | Required | Description |
-|-------|------|----------|-------------|
+| --- | --- | --- | --- |
 | `email` | string (email) | Yes | Admin email |
 | `password` | string | Yes | Admin password |
 
-**Success (active admin)**
+#### Success (active admin) — Admin Login
 
 ```json
 {
@@ -68,7 +68,7 @@ POST /login
 }
 ```
 
-**Success (pending setup / first login)**
+#### Success (pending setup / first login) — Admin Login
 
 If Supabase metadata requires a password change, login succeeds with state `PENDING_SETUP` and a reset link:
 
@@ -83,7 +83,7 @@ If Supabase metadata requires a password change, login succeeds with state `PEND
 }
 ```
 
-**Error examples**
+#### Error examples — Admin Login
 
 - `401 Unauthorized` for invalid credentials
 - `403 Forbidden` if the account is not approved or not active
@@ -93,19 +93,19 @@ If Supabase metadata requires a password change, login succeeds with state `PEND
 
 ## 2) Forgot Password (send reset email)
 
-**Endpoint**
+### Endpoint — Forgot Password
 
 ```http
 POST /forgot-password
 ```
 
-**Body**
+#### Body — Forgot Password
 
 | Field | Type | Required | Description |
-|-------|------|----------|-------------|
+| --- | --- | --- | --- |
 | `email` | string (email) | Yes | Admin email to receive the reset link |
 
-**Response**
+#### Response — Forgot Password
 
 Always returns a generic success message to avoid user enumeration:
 
@@ -125,22 +125,22 @@ Rate limited (3 per 15 minutes, 10 per hour).
 
 Use the Supabase recovery token (from email) to set a new password.
 
-**Endpoint**
+### Endpoint — Reset Password with Recovery Token
 
 ```http
 POST /reset-password
 ```
 
-**Body**
+#### Body — Reset Password
 
 | Field | Type | Required | Description |
-|-------|------|----------|-------------|
+| --- | --- | --- | --- |
 | `token_hash` | string | Yes | Supabase recovery token hash |
 | `new_password` | string | Yes | New password to set |
-| `confirm_password` | string | No | Must match `new_password` when provided |
-| `action` | `"forgot"` \| `"force_change"` | No (default: `"forgot"`) | Use `force_change` for first-time setup to clear the pending setup flag |
+| `confirm_password` | string | Yes | Must match `new_password` |
+| `action` | "forgot" or "force_change" | No (default: "forgot") | Use `force_change` for first-time setup to clear the pending setup flag |
 
-**Success**
+#### Success — Reset Password
 
 ```json
 {
@@ -150,7 +150,7 @@ POST /reset-password
 }
 ```
 
-**Error examples**
+#### Error examples — Reset Password
 
 - `400 Bad Request` if token/password is missing or passwords do not match
 - `400 Bad Request` for invalid or expired token
@@ -159,19 +159,19 @@ POST /reset-password
 
 ## 4) Refresh Access Token
 
-**Endpoint**
+### Endpoint — Refresh Access Token
 
 ```http
 POST /refresh-token
 ```
 
-**Body**
+#### Body — Refresh Access Token
 
 | Field | Type | Required | Description |
-|-------|------|----------|-------------|
+| --- | --- | --- | --- |
 | `refresh_token` | string | Yes | Refresh token issued at login |
 
-**Success**
+#### Success — Refresh Access Token
 
 ```json
 {
@@ -184,7 +184,7 @@ POST /refresh-token
 }
 ```
 
-**Error examples**
+#### Error examples — Refresh Access Token
 
 - `401 Unauthorized` for invalid/expired refresh token
 - `400/404/409/500` depending on Supabase error (see message)
@@ -195,27 +195,29 @@ POST /refresh-token
 
 Logs out of the current session by default; supports global logout for a specific admin.
 
-**Endpoint**
+### Endpoint — Logout
 
 ```http
 POST /logout
 ```
 
-**Headers**: `Authorization: Bearer <admin_access_token>`
+#### Headers — Logout
 
-**Body**
+`Authorization: Bearer <admin_access_token>`
+
+#### Body — Logout
 
 | Field | Type | Required | Description |
-|-------|------|----------|-------------|
+| --- | --- | --- | --- |
 | `global_logout` | boolean | No (default: `false`) | When `true`, signs the target admin out of all sessions |
 | `email` | string (email) | Required if `global_logout` is `true` | Email of the admin to sign out globally |
 
-**Responses**
+#### Responses — Logout
 
 - Current session logout: `"Successfully logged out."`
 - Global logout: `"Successfully logged out user <email> from all sessions."`
 
-**Error examples**
+#### Error examples — Logout
 
 - `400 Bad Request` if `global_logout=true` without `email`
 - `404 Not Found` if the target admin email does not exist
@@ -227,22 +229,24 @@ POST /logout
 
 Requires the current password to verify identity, then revokes existing sessions.
 
-**Endpoint**
+### Endpoint — Change Password
 
 ```http
 POST /change-password
 ```
 
-**Headers**: `Authorization: Bearer <admin_access_token>`
+#### Headers — Change Password
 
-**Body**
+`Authorization: Bearer <admin_access_token>`
+
+#### Body — Change Password
 
 | Field | Type | Required | Description |
-|-------|------|----------|-------------|
+| --- | --- | --- | --- |
 | `current_password` | string | Yes | Existing password |
 | `new_password` | string | Yes | New password to set |
 
-**Success**
+#### Success — Change Password
 
 ```json
 {
@@ -252,7 +256,7 @@ POST /change-password
 }
 ```
 
-**Error examples**
+#### Error examples — Change Password
 
 - `401 Unauthorized` if the current password is wrong
 - `500 Internal Server Error` for unexpected failures

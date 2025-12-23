@@ -76,9 +76,16 @@ db_url = (
 # Alembic requires % to be escaped as %%
 config.set_main_option("sqlalchemy.url", db_url.replace("%", "%%"))
 
-# set up Python-side logging per alembic.ini
-if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+# Only configure logging via fileConfig when NOT running inside Celery worker.
+# Celery has its own logging setup and fileConfig can cause conflicts/blocking.
+# Check for CELERY_WORKER environment variable or skip if already configured.
+_skip_file_config = os.getenv("CELERY_SKIP_ALEMBIC_FILECONFIG", "").lower() in ("1", "true", "yes")
+if config.config_file_name is not None and not _skip_file_config:
+    # Only apply fileConfig if we're not in a Celery worker context
+    import logging
+    # Check if root logger already has handlers (indicates logging is already configured)
+    if not logging.root.handlers:
+        fileConfig(config.config_file_name)
 
 # Create org-specific metadata by importing only org models
 # This ensures we only track org-specific tables
@@ -198,26 +205,31 @@ def run_migrations_online() -> None:
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
-    with connectable.connect() as connection:
-        # Use the connection's transaction context manager.
-        # This will automatically commit on success or rollback on error.
-        with connection.begin():
-            if target_schema:
-                # Set search_path inside the transaction.
-                connection.execute(text(f"SET search_path TO {target_schema}, public"))
+    
+    try:
+        with connectable.connect() as connection:
+            # Use the connection's transaction context manager.
+            # This will automatically commit on success or rollback on error.
+            with connection.begin():
+                if target_schema:
+                    # Set search_path inside the transaction.
+                    connection.execute(text(f"SET search_path TO {target_schema}, public"))
 
-            # Configure context within the transaction block.
-            context.configure(
-                connection=connection,
-                target_metadata=target_metadata,
-                compare_type=True,
-                include_schemas=False,
-                version_table_schema=target_schema,
-                include_object=lambda obj, name, type_, reflected, compare_to: (
-                    type_ != "table" or name in target_metadata.tables
-                ),
-            )
-            context.run_migrations()
+                # Configure context within the transaction block.
+                context.configure(
+                    connection=connection,
+                    target_metadata=target_metadata,
+                    compare_type=True,
+                    include_schemas=False,
+                    version_table_schema=target_schema,
+                    include_object=lambda obj, name, type_, reflected, compare_to: (
+                        type_ != "table" or name in target_metadata.tables
+                    ),
+                )
+                context.run_migrations()
+    finally:
+        # Explicitly dispose the engine to release all resources
+        connectable.dispose()
 
 
 if context.is_offline_mode():

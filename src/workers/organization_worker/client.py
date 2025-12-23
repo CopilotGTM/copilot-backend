@@ -10,19 +10,31 @@ IMPORTANT: The send_task() call in Celery is synchronous and can block when
 connecting to Redis (especially with SSL). This module provides async wrappers
 that run send_task in a thread pool to avoid blocking the asyncio event loop.
 
-Usage:
-    from src.workers.organization_worker.client import send_organization_task_async
+Usage (New Async Pattern - Preferred):
+    from src.workers.organization_worker.client import send_organization_create_task
 
-    task_id = await send_organization_task_async(
+    task_id = await send_organization_create_task(
+        job_id="job-uuid",
+        admin_id="admin-uuid",
+        organisation_name="Acme Corp",
+        org_details={"country": "US"},
+    )
+    # Returns immediately, client uses SSE to track progress
+
+Usage (Legacy - Deprecated):
+    from src.workers.organization_worker.client import send_organization_task_and_wait_async
+
+    result = await send_organization_task_and_wait_async(
         "organization.create",
         kwargs={"admin_id": admin_id, "organisation_name": name},
-        queue="organization"
+        timeout=120,  # Blocks for up to 2 minutes!
     )
 """
 
 import asyncio
 import contextvars
 import threading
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 
 from celery import Celery
@@ -141,7 +153,16 @@ def send_organization_task_and_wait(
     Send a task and wait for the result (synchronous version).
 
     WARNING: This is a blocking call. In async contexts, use send_organization_task_and_wait_async().
+
+    DEPRECATED: Use send_organization_create_task() with SSE streaming instead.
+    This function blocks the event loop for up to `timeout` seconds.
     """
+    warnings.warn(
+        "send_organization_task_and_wait is deprecated. "
+        "Use send_organization_create_task() with SSE streaming instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     client = get_organization_celery_client()
 
     result = client.send_task(
@@ -203,7 +224,16 @@ async def send_organization_task_and_wait_async(
     This runs the blocking send_task().get() call in a thread pool to avoid
     blocking the asyncio event loop. Use this in FastAPI async endpoints
     when you need to wait for the task result.
+
+    DEPRECATED: Use send_organization_create_task() with SSE streaming instead.
+    This function blocks for up to `timeout` seconds waiting for result.
     """
+    warnings.warn(
+        "send_organization_task_and_wait_async is deprecated. "
+        "Use send_organization_create_task() with SSE streaming instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     loop = asyncio.get_event_loop()
     ctx = contextvars.copy_context()
 
@@ -222,3 +252,46 @@ async def send_organization_task_and_wait_async(
     result = await loop.run_in_executor(_executor, ctx.run, _send_and_wait)
 
     return result
+
+
+# =============================================================================
+# NEW ASYNC PATTERN - Fire-and-forget with SSE streaming
+# =============================================================================
+
+
+async def send_organization_create_task(
+    job_id: str,
+    admin_id: str,
+    organisation_name: str,
+    org_details: dict,
+    queue: str = "organization",
+    headers: dict | None = None,
+) -> str:
+    """
+    Send organization create task (fire-and-forget).
+
+    Returns immediately after enqueuing task. Client should use SSE endpoint
+    to stream job status updates.
+
+    Args:
+        job_id: UUID of the OrganisationJob record (created before calling)
+        admin_id: UUID of the admin creating the organisation
+        organisation_name: Name for the new organisation
+        org_details: Additional organisation configuration
+        queue: Celery queue name (default: organization)
+        headers: Optional headers to pass to the task
+
+    Returns:
+        Celery task ID (not the job_id)
+    """
+    return await send_organization_task_async(
+        task_name="organization.create",
+        kwargs={
+            "job_id": job_id,
+            "admin_id": admin_id,
+            "organisation_name": organisation_name,
+            "org_details": org_details,
+        },
+        queue=queue,
+        headers=headers,
+    )
