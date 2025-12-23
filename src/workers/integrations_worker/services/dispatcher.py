@@ -427,6 +427,59 @@ async def _trigger_deal_tasks_on_initial_sync(
         )
 
 
+async def _trigger_crm_notes_after_deals_sync(
+    *,
+    request: SyncJobRequest,
+    was_successful: bool,
+) -> None:
+    """Trigger a CRM notes sync after deals/opportunities sync.
+
+    This ensures deal/opportunity notes are fetched alongside the core deal sync,
+    even if Nango is not configured to emit a separate notes webhook.
+    """
+
+    if not was_successful:
+        return
+
+    if request.category != "crm":
+        return
+
+    if request.sync_name not in {"deals", "opportunities"}:
+        return
+
+    try:
+        from src.workers.integrations_worker.tasks.sync_tasks import sync_integration_data_task
+
+        sync_integration_data_task.apply_async(
+            kwargs={
+                "organisation_id": str(request.organisation_id),
+                "integration_id": str(request.integration_id),
+                "category": request.category,
+                "provider": request.provider,
+                "provider_config_key": request.provider_config_key,
+                "sync_name": "notes",
+                "sync_type": request.sync_type,
+                "sync_variant": request.sync_variant,
+                "incremental": request.incremental,
+            },
+            headers=correlation_headers(),
+        )
+
+        logger.info(
+            "Triggered CRM notes sync after %s sync: org=%s integration=%s",
+            request.sync_name,
+            request.organisation_id,
+            request.integration_id,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Failed to trigger CRM notes sync: org=%s integration=%s error=%s",
+            request.organisation_id,
+            request.integration_id,
+            str(exc),
+        )
+
+
 def _create_crm_service(
     data_type: str,
     session: AsyncSession,
@@ -458,6 +511,7 @@ def _create_crm_service(
         "deal_tasks": DealTaskSyncService,
         "tasks": DealTaskSyncService,  # Alias for backward compatibility
         "tickets": DealTaskSyncService,  # Salesforce Cases alias
+        "notes": DealTaskSyncService,
         "contacts": ContactSyncService,
         "companies": CompanySyncService,
         "accounts": CompanySyncService,  # Alias for Salesforce (Account → companies)
@@ -1272,6 +1326,12 @@ async def execute_sync(request: SyncJobRequest) -> dict[str, Any]:
             category=request.category,
             sync_type=request.sync_type,
             sync_name=request.sync_name,
+            was_successful=(result.status == "success"),
+        )
+
+        # Trigger CRM notes sync after deals/opportunities sync (best-effort)
+        await _trigger_crm_notes_after_deals_sync(
+            request=request,
             was_successful=(result.status == "success"),
         )
 

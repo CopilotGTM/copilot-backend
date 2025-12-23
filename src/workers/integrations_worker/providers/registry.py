@@ -37,6 +37,9 @@ from .crm.hubspot import (
     fetch_deals as hubspot_deals_fetch,
 )
 from .crm.hubspot import (
+    fetch_notes as hubspot_notes_fetch,
+)
+from .crm.hubspot import (
     fetch_owners as hubspot_owners_fetch,
 )
 from .crm.hubspot import (
@@ -56,6 +59,9 @@ from .crm.salesforce import (
 )
 from .crm.salesforce import (
     fetch_leads as salesforce_leads_fetch,
+)
+from .crm.salesforce import (
+    fetch_notes as salesforce_notes_fetch,
 )
 from .crm.salesforce import (
     fetch_pipelines as salesforce_pipelines_fetch,
@@ -97,6 +103,7 @@ def _init_defaults() -> None:
         "pipelines": hubspot_pipelines_fetch,
         "deals": hubspot_deals_fetch,
         "deal_tasks": hubspot_deal_tasks_fetch,
+        "notes": hubspot_notes_fetch,
         "contacts": hubspot_contacts_fetch,
         "users": hubspot_users_fetch,
         "companies": hubspot_companies_fetch,
@@ -108,6 +115,7 @@ def _init_defaults() -> None:
         "deals": salesforce_deals_fetch,
         "opportunities": salesforce_deals_fetch,  # Alias
         "deal_tasks": salesforce_tasks_fetch,
+        "notes": salesforce_notes_fetch,
         "tickets": salesforce_tickets_fetch,  # Alias to Salesforce Task (Activities)
         "contacts": salesforce_contacts_fetch,
         "users": salesforce_users_fetch,
