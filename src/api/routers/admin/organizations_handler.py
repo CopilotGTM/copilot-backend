@@ -1,88 +1,166 @@
+from collections.abc import AsyncGenerator
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from src.api.dependencies.master_dependencies import get_master_async_session
+from src.api.dependencies.master_dependencies import (
+    acquire_master_async_session,
+    get_master_async_session,
+)
+from src.api.dependencies.rate_limit import rate_limit_admin_read
+from src.api.schemas.admin_job_models import (
+    OrganisationJobCreateResponse,
+)
 from src.api.schemas.base_models import GenericResponse
 from src.api.utils.http_response import Response
+from src.domain.metadata.countries_metadata import get_allowed_org_countries
 from src.domain.models.admin_org_models import (
+    CountriesResponse,
+    CountryOption,
     CreateOrganizationRequest,
     CreateOrganizationResponse,
     ListOrganizationResponse,
-    PaginatedOrganisationActionHistoryResponse,
     PaginationOrganizations,
     UpdateOrganisationStatusRequest,
     UpdateOrganisationStatusResponse,
     UpdateOrganizationRequest,
 )
-from src.domain.models.master_tables import AdminRole, Organisation, SuperAdmin
+from src.domain.models.master_tables import AdminRole, SuperAdmin
+from src.domain.models.master_tables.organisation_job_models import (
+    OrganisationJobType,
+)
 from src.infra.auth.admin_auth import admin_auth
 from src.infra.config.constant import AdminOrganizationErrors
-from src.infra.utils.cursor import decode_cursor, encode_cursor
 from src.infra.utils.logger import get_logger
-from src.service.orgnisation.organization_management import (
-    organization_management_service,
+from src.service.admin.admin_organisation_service import (
+    AdminOrganisationService,
+    NoUpdateDataError,
+    OrganisationNotFoundError,
 )
-from src.workers.organization_worker.client import send_organization_task_and_wait_async
+from src.service.admin.organisation_job_sse_service import OrganisationJobSSEService
+from src.workers.organization_worker.client import (
+    send_organization_create_task,
+    send_organization_task_and_wait_async,
+)
+from sse_starlette.sse import EventSourceResponse
 
 logger = get_logger("admin_organisations_handler")
 router = APIRouter()
 
 
+async def get_admin_organisation_service(
+    session: AsyncSession = Depends(get_master_async_session),
+) -> AsyncGenerator[AdminOrganisationService, None]:
+    """Dependency that provides AdminOrganisationService with session ownership.
+
+    The service owns the session and closes it in the finally block.
+    """
+    service = AdminOrganisationService(session)
+    try:
+        yield service
+    finally:
+        try:
+            await service.close()
+        except Exception:
+            logger.debug("AdminOrganisationService close failed", exc_info=True)
+
+
+@router.get(
+    "/countries",
+    response_model=GenericResponse[CountriesResponse],
+    tags=["admin_organisations"],
+)
+async def list_allowed_countries(
+    current_admin: SuperAdmin = Depends(admin_auth),
+    _rl_admin_read: None = Depends(rate_limit_admin_read),
+):
+    """Return the list of allowed countries for organisation provisioning.
+
+    Backed by a code-owned metadata registry for now; future: DB-backed table.
+    """
+    if current_admin.role not in [AdminRole.SUPER_ADMIN, AdminRole.ADMIN]:
+        return Response.forbidden_error_response(AdminOrganizationErrors.ADMIN_ACCESS_REQUIRED)
+
+    allowed = get_allowed_org_countries()
+    countries = [CountryOption(code=c.code, name=c.name) for c in allowed]
+    return Response.success_response(
+        message="Countries retrieved successfully",
+        data=CountriesResponse(countries=countries),
+    )
+
+
 @router.post(
     "/create_organisation",
-    response_model=GenericResponse[CreateOrganizationResponse],
+    response_model=GenericResponse[OrganisationJobCreateResponse],
+    status_code=202,
     tags=["admin_organisations"],
 )
 async def create_organization(
     request: CreateOrganizationRequest,
     current_admin: SuperAdmin = Depends(admin_auth),
-    master_session: AsyncSession = Depends(get_master_async_session),
+    service: AdminOrganisationService = Depends(get_admin_organisation_service),
 ):
     """
     Create a new organization with a dedicated schema, role, and database user.
     This endpoint is restricted to super admins.
+
+    Returns 202 Accepted with job_id for tracking. Use the SSE endpoint
+    /jobs/{job_id}/stream to receive real-time status updates.
     """
     try:
         current_user = current_admin.admin_id
         logger.info(f"Creating organization for admin: {current_user}")
         logger.info(
-            f"Organization creation request for '{request.organisation_name}' by admin: {current_admin.email}"
+            f"Organization creation request for '{request.organisation_name}' "
+            f"by admin: {current_admin.email}"
         )
 
-        # Ensure the user has super admin role
         if current_admin.role not in [AdminRole.SUPER_ADMIN]:
             logger.warning(
-                f"Unauthorized attempt to create organization by user: {current_user}. Super admin access required."
+                f"Unauthorized attempt to create organization by user: {current_user}. "
+                "Super admin access required."
             )
             return Response.forbidden_error_response(
                 AdminOrganizationErrors.SUPER_ADMIN_ACCESS_REQUIRED
             )
 
-        # details for the organization
         org_details = request.model_dump(exclude_unset=True, exclude={"organisation_name"})
         logger.info(f"Organization details: {org_details}")
 
-        task_result = await send_organization_task_and_wait_async(
-            "organization.create",
-            kwargs={
-                "admin_id": str(current_user),
+        # Create job record for tracking
+        job_result = await service.create_job(
+            job_type=OrganisationJobType.CREATE,
+            admin_id=current_user,
+            organisation_id=None,
+            request_payload={
                 "organisation_name": request.organisation_name,
-                "org_details": org_details,
+                **org_details,
             },
-            queue="organization",
-            routing_key="organization",
-            timeout=120,  # 2-minute timeout for the synchronous task
         )
 
-        response_data = CreateOrganizationResponse(**task_result)
+        # Fire task (no wait)
+        await send_organization_create_task(
+            job_id=str(job_result.job_id),
+            admin_id=str(current_user),
+            organisation_name=request.organisation_name,
+            org_details=org_details,
+        )
+
+        response_data = OrganisationJobCreateResponse(
+            job_id=job_result.job_id,
+            job_type=job_result.job_type,
+            status=job_result.status,
+            message="Organisation creation job accepted",
+            stream_url=f"/admin/organisations/jobs/{job_result.job_id}/stream",
+        )
 
         logger.info(
-            f"Successfully created organization: {response_data.organisation_name} with ID: {response_data.organisation_id}"
+            f"Organisation creation job accepted: {job_result.job_id} "
+            f"for '{request.organisation_name}'"
         )
-        return Response.success_response(
-            message="Organization created successfully", data=response_data
+        return Response.accepted_response(
+            message="Organisation creation job accepted",
+            data=response_data.model_dump(mode="json"),
         )
 
     except Exception as e:
@@ -90,6 +168,64 @@ async def create_organization(
             f"Error creating organization '{request.organisation_name}': {e}",
             exc_info=True,
         )
+        return Response.internal_server_error_response(
+            message=f"Failed to create organization - {e}", data={}
+        )
+
+
+@router.post(
+    "/create_organisation_sync",
+    response_model=GenericResponse[CreateOrganizationResponse],
+    tags=["admin_organisations"],
+    deprecated=True,
+)
+async def create_organization_sync(
+    request: CreateOrganizationRequest,
+    current_admin: SuperAdmin = Depends(admin_auth),
+    master_session: AsyncSession = Depends(get_master_async_session),
+):
+    """
+    Create a new organization synchronously (DEPRECATED).
+
+    This endpoint waits for the organisation to be fully provisioned before
+    returning. Use POST /create_organisation instead with SSE streaming
+    for better UX and no request timeouts.
+    """
+    try:
+        current_user = current_admin.admin_id
+        logger.info(f"[DEPRECATED] Sync creating organization for admin: {current_user}")
+
+        if current_admin.role not in [AdminRole.SUPER_ADMIN]:
+            return Response.forbidden_error_response(
+                AdminOrganizationErrors.SUPER_ADMIN_ACCESS_REQUIRED
+            )
+
+        org_details = request.model_dump(exclude_unset=True, exclude={"organisation_name"})
+
+        # Use deprecated wait function
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            task_result = await send_organization_task_and_wait_async(
+                "organization.create",
+                kwargs={
+                    "admin_id": str(current_user),
+                    "organisation_name": request.organisation_name,
+                    "org_details": org_details,
+                },
+                queue="organization",
+                routing_key="organization",
+                timeout=120,
+            )
+
+        response_data = CreateOrganizationResponse(**task_result)
+        return Response.success_response(
+            message="Organization created successfully", data=response_data
+        )
+
+    except Exception as e:
+        logger.error(f"Error creating organization: {e}", exc_info=True)
         return Response.internal_server_error_response(
             message=f"Failed to create organization - {e}", data={}
         )
@@ -107,7 +243,7 @@ async def list_organizations(
         description="Opaque cursor returned by the previous call (omit for first page)",
     ),
     current_admin: SuperAdmin = Depends(admin_auth),
-    master_session: AsyncSession = Depends(get_master_async_session),
+    service: AdminOrganisationService = Depends(get_admin_organisation_service),
 ):
     """
     Retrieve a list of all organizations with pagination.
@@ -116,7 +252,6 @@ async def list_organizations(
     try:
         logger.info(f"Request to list organizations by admin: {current_admin.email}")
 
-        # Ensure the user has super admin role
         if current_admin.role not in [AdminRole.SUPER_ADMIN, AdminRole.ADMIN]:
             logger.warning(
                 f"Unauthorized attempt to list organizations by user: {current_admin.admin_id}."
@@ -125,40 +260,14 @@ async def list_organizations(
                 AdminOrganizationErrors.SUPER_ADMIN_ACCESS_REQUIRED
             )
 
-        filters = []
-        if cursor:
-            ts, org_id = decode_cursor(cursor)
-            filters.append(
-                or_(
-                    Organisation.created_at < ts,
-                    and_(
-                        Organisation.created_at == ts,
-                        Organisation.organisation_id < org_id,
-                    ),
-                )
-            )
-
-        stmt = (
-            select(Organisation)
-            .where(*filters)
-            .order_by(Organisation.created_at.desc(), Organisation.organisation_id.desc())
-            .limit(limit + 1)
+        paginated_orgs = await service.list_organisations(
+            limit=limit,
+            cursor=cursor,
         )
 
-        result = await master_session.execute(stmt)
-        organizations: list[Organisation] = result.scalars().all()
-        has_more = len(organizations) == limit + 1
-        items = organizations[:limit]
-
-        next_cursor = (
-            encode_cursor(items[-1].created_at, items[-1].organisation_id) if has_more else None
-        )
-
-        response_data = PaginationOrganizations(organizations=items, cursor=next_cursor)
-
-        logger.info(f"Successfully retrieved {len(items)} organizations.")
+        logger.info(f"Successfully retrieved {len(paginated_orgs.organizations)} organizations.")
         return Response.success_response(
-            message="Organizations retrieved successfully", data=response_data
+            message="Organizations retrieved successfully", data=paginated_orgs
         )
 
     except Exception as e:
@@ -176,10 +285,10 @@ async def list_organizations(
     tags=["admin_organisations"],
 )
 async def get_all_organisation_history(
-    limit: int = Query(20, ge=1, le=100),
+    limit: int = Query(20, ge=1, le=20),
     cursor: str | None = None,
     current_admin: SuperAdmin = Depends(admin_auth),
-    master_session: AsyncSession = Depends(get_master_async_session),
+    service: AdminOrganisationService = Depends(get_admin_organisation_service),
 ):
     """
     Retrieve the action history for all organizations.
@@ -190,22 +299,14 @@ async def get_all_organisation_history(
                 AdminOrganizationErrors.SUPER_ADMIN_ACCESS_REQUIRED
             )
 
-        history_items = await organization_management_service.get_all_organization_history(
-            session=master_session,
+        paginated_history = await service.get_all_organisations_history(
             limit=limit,
             cursor=cursor,
         )
 
-        has_more = len(history_items) == limit + 1
-        items = history_items[:limit]
-        next_cursor = encode_cursor(items[-1].created_at, items[-1].id) if has_more else None
-
-        response_data = PaginatedOrganisationActionHistoryResponse(
-            history=items, cursor=next_cursor
-        )
         return Response.success_response(
             message="All organization history retrieved successfully",
-            data=response_data,
+            data=paginated_history,
         )
 
     except Exception as e:
@@ -223,7 +324,7 @@ async def get_all_organisation_history(
 async def get_organization(
     organisation_id: UUID,
     current_admin: SuperAdmin = Depends(admin_auth),
-    master_session: AsyncSession = Depends(get_master_async_session),
+    service: AdminOrganisationService = Depends(get_admin_organisation_service),
 ):
     """
     Retrieve a single organization by its ID.
@@ -234,31 +335,22 @@ async def get_organization(
             f"Request to get organization '{organisation_id}' by admin: {current_admin.email}"
         )
 
-        # Ensure the user has super admin or admin role
         if current_admin.role not in [AdminRole.SUPER_ADMIN, AdminRole.ADMIN]:
             logger.warning(
                 f"Unauthorized attempt to get organization by user: {current_admin.admin_id}."
             )
             return Response.forbidden_error_response(AdminOrganizationErrors.ADMIN_ACCESS_REQUIRED)
 
-        # Fetch organization by ID
-        statement = select(Organisation).where(Organisation.organisation_id == organisation_id)
-        result = await master_session.execute(statement)
-        organization = result.scalars().first()
+        org_response = await service.get_organisation(organisation_id=organisation_id)
 
-        if not organization:
-            logger.warning(f"Organization with ID '{organisation_id}' not found.")
-            return Response.not_found_error_response(AdminOrganizationErrors.ORGANIZATION_NOT_FOUND)
-
-        response_data = ListOrganizationResponse.from_orm(organization)
-
-        logger.info(
-            f"Successfully retrieved organization: {organization.organisation_name} with ID: {organization.organisation_id}"
-        )
+        logger.info(f"Successfully retrieved organization with ID: {organisation_id}")
         return Response.success_response(
-            message="Organization retrieved successfully", data=response_data
+            message="Organization retrieved successfully", data=org_response
         )
 
+    except OrganisationNotFoundError:
+        logger.warning(f"Organization with ID '{organisation_id}' not found.")
+        return Response.not_found_error_response(AdminOrganizationErrors.ORGANIZATION_NOT_FOUND)
     except Exception as e:
         logger.error(
             f"Error retrieving organization '{organisation_id}': {e}",
@@ -278,7 +370,7 @@ async def update_organization(
     organisation_id: UUID,
     request: UpdateOrganizationRequest,
     current_admin: SuperAdmin = Depends(admin_auth),
-    master_session: AsyncSession = Depends(get_master_async_session),
+    service: AdminOrganisationService = Depends(get_admin_organisation_service),
 ):
     """
     Update an organization's details.
@@ -289,7 +381,6 @@ async def update_organization(
             f"Update request for organization '{organisation_id}' by admin: {current_admin.email}"
         )
 
-        # Ensure the user has super admin role
         if current_admin.role not in [AdminRole.SUPER_ADMIN, AdminRole.ADMIN]:
             logger.warning(
                 f"Unauthorized attempt to update organization by user: {current_admin.admin_id}."
@@ -302,19 +393,24 @@ async def update_organization(
         if not update_data:
             return Response.bad_request_error_response(AdminOrganizationErrors.NO_UPDATE_DATA)
 
-        organization = await organization_management_service.update_organization(
-            session=master_session,
-            admin_id=current_admin.admin_id,
+        org_response = await service.update_organisation(
             organisation_id=organisation_id,
+            admin_id=current_admin.admin_id,
             update_data=update_data,
         )
 
-        logger.info(f"Successfully updated organization: {organization.organisation_name}")
+        logger.info(f"Successfully updated organization: {org_response.organisation_name}")
         return Response.success_response(
             message="Organization updated successfully",
-            data=ListOrganizationResponse.from_orm(organization),
+            data=org_response,
         )
 
+    except OrganisationNotFoundError:
+        logger.warning(f"Organization with ID '{organisation_id}' not found.")
+        return Response.not_found_error_response(AdminOrganizationErrors.ORGANIZATION_NOT_FOUND)
+    except NoUpdateDataError:
+        logger.warning(f"No update data provided for organization '{organisation_id}'.")
+        return Response.bad_request_error_response(AdminOrganizationErrors.NO_UPDATE_DATA)
     except ValueError as ve:
         logger.warning(f"Value error while updating organization: {ve}")
         return Response.bad_request_error_response(message=str(ve))
@@ -337,7 +433,7 @@ async def update_organisation_status(
     organisation_id: UUID,
     request: UpdateOrganisationStatusRequest,
     current_admin: SuperAdmin = Depends(admin_auth),
-    master_session: AsyncSession = Depends(get_master_async_session),
+    service: AdminOrganisationService = Depends(get_admin_organisation_service),
 ):
     """
     Update the status of an organization (e.g., approve, reject, suspend).
@@ -356,30 +452,22 @@ async def update_organisation_status(
                 AdminOrganizationErrors.SUPER_ADMIN_ACCESS_REQUIRED
             )
 
-        organization = await organization_management_service.update_organisation_status(
-            session=master_session,
+        status_result = await service.update_organisation_status(
             organisation_id=organisation_id,
             admin_id=current_admin.admin_id,
             new_status=request.status,
             note=request.note,
         )
 
-        response_data = UpdateOrganisationStatusResponse(
-            organisation_id=organization.organisation_id,
-            status=organization.status,
-            updated_at=organization.updated_at,
-            approved_at=organization.approved_at,
-            approved_by=organization.approved_by,
-        )
-
-        logger.info(
-            f"Successfully updated status for organization: {organization.organisation_name} to {organization.status}"
-        )
+        logger.info(f"Successfully updated status for organization to {status_result.status}")
         return Response.success_response(
-            message=f"Organization status updated to '{organization.status.value}'",
-            data=response_data,
+            message=f"Organization status updated to '{status_result.status.value}'",
+            data=status_result,
         )
 
+    except OrganisationNotFoundError:
+        logger.warning(f"Organization with ID '{organisation_id}' not found.")
+        return Response.not_found_error_response(AdminOrganizationErrors.ORGANIZATION_NOT_FOUND)
     except ValueError as ve:
         logger.warning(f"Value error while updating organization status: {ve}")
         return Response.bad_request_error_response(message=str(ve))
@@ -399,10 +487,10 @@ async def update_organisation_status(
 )
 async def get_organisation_history(
     organisation_id: UUID,
-    limit: int = Query(20, ge=1, le=100),
+    limit: int = Query(20, ge=1, le=20),
     cursor: str | None = None,
     current_admin: SuperAdmin = Depends(admin_auth),
-    master_session: AsyncSession = Depends(get_master_async_session),
+    service: AdminOrganisationService = Depends(get_admin_organisation_service),
 ):
     """
     Retrieve the action history for a specific organization.
@@ -411,24 +499,19 @@ async def get_organisation_history(
         if current_admin.role not in [AdminRole.SUPER_ADMIN, AdminRole.ADMIN]:
             return Response.forbidden_error_response(AdminOrganizationErrors.ADMIN_ACCESS_REQUIRED)
 
-        history_items = await organization_management_service.get_organization_history(
-            session=master_session,
+        paginated_history = await service.get_organisation_history(
             organisation_id=organisation_id,
             limit=limit,
             cursor=cursor,
         )
 
-        has_more = len(history_items) == limit + 1
-        items = history_items[:limit]
-        next_cursor = encode_cursor(items[-1].created_at, items[-1].id) if has_more else None
-
-        response_data = PaginatedOrganisationActionHistoryResponse(
-            history=items, cursor=next_cursor
-        )
         return Response.success_response(
-            message="Organization history retrieved successfully", data=response_data
+            message="Organization history retrieved successfully", data=paginated_history
         )
 
+    except OrganisationNotFoundError:
+        logger.warning(f"Organization with ID '{organisation_id}' not found.")
+        return Response.not_found_error_response(AdminOrganizationErrors.ORGANIZATION_NOT_FOUND)
     except Exception as e:
         logger.error(
             f"Error retrieving history for organization '{organisation_id}': {e}",
@@ -437,3 +520,78 @@ async def get_organisation_history(
         return Response.internal_server_error_response(
             message="Failed to retrieve organization history"
         )
+
+
+# =============================================================================
+# SSE STREAMING ENDPOINT
+# =============================================================================
+
+
+@router.get(
+    "/jobs/{job_id}/stream",
+    tags=["admin_organisation_jobs"],
+)
+async def stream_job_status(
+    job_id: UUID,
+    current_admin: SuperAdmin = Depends(admin_auth),
+):
+    """
+    Stream organisation job status updates via SSE.
+
+    Subscribes to Redis pub/sub channel for real-time job progress updates.
+    Stream ends when job reaches terminal state (completed/failed/cancelled).
+
+    Event types:
+        - status: Job status update with progress
+        - complete: Job finished (terminal state)
+        - ping: Heartbeat (every 25 seconds)
+        - error: Error occurred
+        - timeout: Stream timeout (10 minutes default)
+    """
+    logger.info(f"Starting SSE stream for job {job_id}, admin {current_admin.admin_id}")
+
+    if current_admin.role not in [AdminRole.SUPER_ADMIN, AdminRole.ADMIN]:
+        # For SSE, we return an error event instead of a JSON response
+        async def error_gen():
+            yield {
+                "event": "error",
+                "data": '{"message": "Access denied", "code": "FORBIDDEN"}',
+            }
+
+        return EventSourceResponse(
+            error_gen(),
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    async def event_generator():
+        # Long-lived stream: use imperative acquisition to control lifetime
+        sess_gen = acquire_master_async_session()
+        session = await anext(sess_gen)
+        service = OrganisationJobSSEService(session, current_admin.admin_id)
+        try:
+            async for evt in service.stream_job_events(
+                job_id=job_id,
+                timeout_seconds=600,  # 10 minutes
+                heartbeat_interval=25.0,
+            ):
+                yield evt
+        finally:
+            try:
+                await service.close()
+            except Exception:
+                logger.debug("SSE service close failed", exc_info=True)
+            try:
+                await sess_gen.aclose()
+            except Exception:
+                logger.debug("SSE session generator finalization failed", exc_info=True)
+
+    return EventSourceResponse(
+        event_generator(),
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )

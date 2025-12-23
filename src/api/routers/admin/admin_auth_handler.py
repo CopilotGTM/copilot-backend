@@ -1,8 +1,6 @@
-from datetime import UTC, datetime
-from typing import TYPE_CHECKING, cast
+from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, Depends, Request
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.master_dependencies import get_master_async_session
 from src.api.dependencies.rate_limit import rate_limit_admin_login, rate_limit_password_reset
@@ -17,44 +15,61 @@ from src.domain.models.admin_models import (
     AdminRefreshTokenRequest,
     AdminRefreshTokenResponse,
     AdminResetPasswordRequest,
-    PasswordResetAction,
 )
-from src.domain.models.master_tables import AdminUserStatus, SupabaseAdminStatus, SuperAdmin
+from src.domain.models.master_tables import SuperAdmin
 from src.infra.auth.admin_auth import admin_auth
-from src.infra.auth.email_service import email_service
 from src.infra.auth.supabase_admin_client import (
     SupabaseAuthError,
     supabase_admin_client,
 )
 from src.infra.config.constant import AdminAuthErrors
-from src.infra.security.token_revocation import token_revocation_service
 from src.infra.utils.logger import get_logger
-from src.service.admin.admin_auth_service import admin_auth_service
+from src.service.admin.admin_auth_service import (
+    ActiveLoginResult,
+    AdminAuthService,
+    AdminAuthServiceError,
+    AdminNotActiveError,
+    AdminNotApprovedError,
+    AdminNotFoundError,
+    InvalidCredentialsError,
+    InvalidRecoveryTokenError,
+    PasswordMismatchError,
+    PendingSetupResult,
+)
 
 logger = get_logger("admin_auth_handler")
 router = APIRouter()
 
 
 def _extract_bearer_token(request: Request) -> str | None:
+    """Extract bearer token from request Authorization header."""
     auth_header = request.headers.get("Authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
         return None
     return auth_header.split(" ", 1)[1].strip() or None
 
 
-if TYPE_CHECKING:
-    from sqlalchemy.sql.schema import Table
+async def get_admin_auth_service(
+    session: AsyncSession = Depends(get_master_async_session),
+) -> AsyncGenerator[AdminAuthService, None]:
+    """Dependency that provides AdminAuthService with session ownership.
 
-_super_admin_table = getattr(SuperAdmin, "__table__", None)
-if _super_admin_table is None:
-    raise RuntimeError("SuperAdmin table metadata is not initialized")
-SuperAdminTable = cast("Table", _super_admin_table)
+    The service owns the session and closes it in the finally block.
+    """
+    service = AdminAuthService(session)
+    try:
+        yield service
+    finally:
+        try:
+            await service.close()
+        except Exception:
+            logger.debug("AdminAuthService close failed", exc_info=True)
 
 
 @router.post("/login", response_model=GenericResponse[AdminLoginResponse], tags=["admin_auth"])
 async def admin_login(
     login_request: AdminLoginRequest,
-    master_session: AsyncSession = Depends(get_master_async_session),
+    service: AdminAuthService = Depends(get_admin_auth_service),
     _rl_admin_login: None = Depends(rate_limit_admin_login),
 ):
     """
@@ -63,69 +78,31 @@ async def admin_login(
     Rate limited to 3 attempts per minute, 20 per hour.
     """
     try:
-        super_admin = await admin_auth_service.get_super_admin_by_email(
-            master_session, login_request.email
-        )
-        if not super_admin:
-            logger.warning(f"Super admin not found for email: {login_request.email}")
-            return Response.unauthorized_error_response(AdminAuthErrors.USER_NOT_FOUND)
+        result = await service.login(login_request.email, login_request.password)
 
-        if super_admin.admin_status != AdminUserStatus.APPROVED:
-            logger.warning(
-                "Login blocked for %s: admin_status=%s",
-                super_admin.email,
-                super_admin.admin_status,
+        if isinstance(result, PendingSetupResult):
+            response_data = {
+                "state": result.state,
+                "password_reset_link": result.password_reset_link,
+            }
+            return Response.success_response(message="Login successful", data=response_data)
+
+        if isinstance(result, ActiveLoginResult):
+            return Response.success_response(
+                message="Login successful", data=result.to_response_data()
             )
-            token_revocation_service.revoke_user(super_admin.supabase_user_id)
-            return Response.forbidden_error_response(AdminAuthErrors.ACCOUNT_NOT_APPROVED)
 
-        if super_admin.status == SupabaseAdminStatus.INACTIVE:
-            logger.warning(
-                "Login blocked for %s: supabase status inactive",
-                super_admin.email,
-            )
-            token_revocation_service.revoke_user(super_admin.supabase_user_id)
-            return Response.forbidden_error_response(AdminAuthErrors.ACCOUNT_NOT_ACTIVE)
-
-        try:
-            supabase_response = supabase_admin_client.sign_in_with_password(
-                email=login_request.email, password=login_request.password
-            )
-        except Exception:
-            logger.warning(f"Invalid credentials for super admin: {login_request.email}")
-            return Response.unauthorized_error_response(AdminAuthErrors.INVALID_CREDENTIALS)
-
-        session_data = supabase_response.get("session", {})
-        if not session_data or not session_data.get("access_token"):
-            logger.warning(f"Supabase login failed for super admin: {login_request.email}")
-            return Response.unauthorized_error_response(AdminAuthErrors.INVALID_CREDENTIALS)
-
-        user_data = supabase_response.get("user", {})
-        user_metadata = user_data.get("user_metadata", {})
-        requires_password_change = user_metadata.get("requires_password_change", False)
-
-        if requires_password_change:
-            return admin_auth_service.handle_pending_setup_login(super_admin.email)
-
-        if super_admin.status != SupabaseAdminStatus.ACTIVE:
-            logger.warning(
-                "Login blocked for %s: supabase status %s",
-                super_admin.email,
-                super_admin.status,
-            )
-            token_revocation_service.revoke_user(super_admin.supabase_user_id)
-            return Response.forbidden_error_response(AdminAuthErrors.ACCOUNT_NOT_ACTIVE)
-
-        tokens = {
-            "access_token": session_data.get("access_token"),
-            "refresh_token": session_data.get("refresh_token"),
-        }
-        email_verified = user_metadata.get("email_verified", False)
-
-        return await admin_auth_service.handle_active_user_login(
-            master_session, super_admin, tokens, email_verified
-        )
-
+    except AdminNotFoundError:
+        return Response.unauthorized_error_response(AdminAuthErrors.USER_NOT_FOUND)
+    except AdminNotApprovedError:
+        return Response.forbidden_error_response(AdminAuthErrors.ACCOUNT_NOT_APPROVED)
+    except AdminNotActiveError:
+        return Response.forbidden_error_response(AdminAuthErrors.ACCOUNT_NOT_ACTIVE)
+    except InvalidCredentialsError:
+        return Response.unauthorized_error_response(AdminAuthErrors.INVALID_CREDENTIALS)
+    except AdminAuthServiceError as e:
+        logger.error("Login service error: %s", e.message)
+        return Response.internal_server_error_response(message=e.message)
     except Exception as e:
         logger.error(
             "Error during super admin login for email %s: %s",
@@ -139,80 +116,31 @@ async def admin_login(
 @router.post("/reset-password", tags=["admin_auth"])
 async def reset_password(
     password_request: AdminResetPasswordRequest,
-    master_session: AsyncSession = Depends(get_master_async_session),
+    service: AdminAuthService = Depends(get_admin_auth_service),
 ):
     """
     First-time or forgot-password reset endpoint for Super Admin.
     Requires a Supabase recovery token.
     """
     try:
-        if not all([password_request.token_hash, password_request.new_password]):
-            return Response.bad_request_error_response(AdminAuthErrors.RECOVERY_TOKEN_REQUIRED)
-
-        if (
-            password_request.confirm_password
-            and password_request.new_password != password_request.confirm_password
-        ):
-            return Response.bad_request_error_response(AdminAuthErrors.PASSWORD_MISMATCH)
-
-        try:
-            user_id = supabase_admin_client.reset_password_with_token(
-                token_hash=password_request.token_hash,
-                new_password=password_request.new_password,
-            )
-        except Exception as e:
-            logger.error(f"Failed to reset password with recovery token: {str(e)}")
-            return Response.bad_request_error_response(AdminAuthErrors.INVALID_RECOVERY_TOKEN)
-
-        if password_request.action == PasswordResetAction.FORCE_CHANGE and user_id:
-            statement = select(SuperAdmin).where(SuperAdminTable.c.supabase_user_id == user_id)
-            result = await master_session.execute(statement)
-            current_admin = result.scalars().first()
-
-            if not current_admin:
-                logger.warning(f"Admin not found for user_id: {user_id}")
-                return Response.unauthorized_error_response(AdminAuthErrors.UNAUTHORIZED)
-
-            # Update Supabase metadata and local database
-            updated_metadata = {
-                "requires_password_change": False,
-                "email_verified": True,
-                "first_name": current_admin.first_name,
-                "last_name": current_admin.last_name,
-                "role": current_admin.role,
-            }
-            if current_admin.supabase_user_id:
-                supabase_admin_client.update_user_metadata(
-                    user_id=current_admin.supabase_user_id, metadata=updated_metadata
-                )
-
-            current_admin.status = SupabaseAdminStatus.ACTIVE
-            current_admin.email_verified = True
-            current_admin.last_login_at = datetime.now(UTC)
-            master_session.add(current_admin)
-            await master_session.commit()
-            logger.info("Local DB updated for user_id: %s", user_id)
-        else:
-            logger.info(
-                "Password reset completed for user_id %s (forgot action - no metadata update)",
-                user_id,
-            )
-
-        if user_id:
-            try:
-                supabase_admin_client.sign_out_user(user_id=user_id, global_signout=True)
-            except Exception as exc:  # noqa: BLE001 - suppressing broad exception per Supabase SDK
-                logger.warning(
-                    "Global sign-out failed for admin %s after password reset: %s",
-                    user_id,
-                    exc,
-                )
-            token_revocation_service.revoke_user(user_id)
-
+        await service.reset_password(
+            token_hash=password_request.token_hash,
+            new_password=password_request.new_password,
+            confirm_password=password_request.confirm_password,
+            action=password_request.action,
+        )
         return Response.success_response(
             message="Password changed successfully. You can now log in."
         )
 
+    except PasswordMismatchError:
+        return Response.bad_request_error_response(AdminAuthErrors.PASSWORD_MISMATCH)
+    except InvalidRecoveryTokenError:
+        return Response.bad_request_error_response(AdminAuthErrors.INVALID_RECOVERY_TOKEN)
+    except AdminNotFoundError:
+        return Response.unauthorized_error_response(AdminAuthErrors.UNAUTHORIZED)
+    except AdminAuthServiceError as e:
+        return Response.bad_request_error_response(e.message)
     except Exception as e:
         logger.error("Error during password reset: %s", str(e), exc_info=True)
         return Response.internal_server_error_response(AdminAuthErrors.PASSWORD_RESET_FAILED)
@@ -242,7 +170,6 @@ async def refresh_token(refresh_request: AdminRefreshTokenRequest):
         return Response.unauthorized_error_response(AdminAuthErrors.REFRESH_TOKEN_INVALID)
     except SupabaseAuthError as e:
         logger.error(f"Token refresh failed: {e.message}")
-        # Use the status code and message from the custom exception
         if e.status_code == 400:
             return Response.bad_request_error_response(e.message)
         elif e.status_code == 401:
@@ -261,37 +188,14 @@ async def refresh_token(refresh_request: AdminRefreshTokenRequest):
 @router.post("/forgot-password", tags=["admin_auth"])
 async def forgot_password(
     forgot_password_request: AdminForgotPasswordRequest,
-    master_session: AsyncSession = Depends(get_master_async_session),
+    service: AdminAuthService = Depends(get_admin_auth_service),
     _rl_password_reset: None = Depends(rate_limit_password_reset),
 ):
     """Triggers a password reset email for a super admin.
     Rate limited to 3 requests per 15 minutes, 10 per hour.
     """
     try:
-        super_admin = await admin_auth_service.get_super_admin_by_email(
-            master_session, forgot_password_request.email
-        )
-
-        if not super_admin:
-            logger.warning(
-                "Password reset requested for non-existent user: %s",
-                forgot_password_request.email,
-            )
-            # Return a generic success response to avoid user enumeration
-            return Response.success_response(
-                message="If an account with this email exists, a password reset link has been sent."
-            )
-
-        password_reset_link = supabase_admin_client.generate_password_reset_link(
-            email=super_admin.email
-        )
-
-        email_service.send_password_reset_email(
-            to_email=super_admin.email,
-            first_name=super_admin.first_name,
-            reset_url=password_reset_link,
-        )
-
+        await service.forgot_password(forgot_password_request.email)
         return Response.success_response(
             message="If an account with this email exists, a password reset link has been sent."
         )
@@ -310,42 +214,27 @@ async def admin_logout(
     logout_request: AdminLogoutRequest,
     request: Request,
     current_admin: SuperAdmin = Depends(admin_auth),
-    master_session: AsyncSession = Depends(get_master_async_session),
+    service: AdminAuthService = Depends(get_admin_auth_service),
 ):
     """Unified logout endpoint for super admin."""
     try:
-        user_to_logout: SuperAdmin | None = current_admin
-        if logout_request.global_logout:
-            if not logout_request.email:
-                return Response.bad_request_error_response(
-                    AdminAuthErrors.EMAIL_REQUIRED_FOR_LOGOUT
-                )
-            user_to_logout = await admin_auth_service.get_super_admin_by_email(
-                master_session, logout_request.email
-            )
-            if not user_to_logout:
-                return Response.not_found_error_response(AdminAuthErrors.USER_NOT_FOUND)
-
-        if user_to_logout and user_to_logout.supabase_user_id:
-            supabase_admin_client.sign_out_user(
-                user_id=user_to_logout.supabase_user_id,
-                global_signout=logout_request.global_logout,
-            )
-            if logout_request.global_logout:
-                token_revocation_service.revoke_user(user_to_logout.supabase_user_id)
-        else:
-            return Response.unauthorized_error_response(AdminAuthErrors.UNAUTHORIZED)
-
-        message = (
-            f"Successfully logged out user {user_to_logout.email} from all sessions."
-            if logout_request.global_logout
-            else "Successfully logged out."
+        bearer_token = _extract_bearer_token(request)
+        message = await service.logout(
+            current_admin=current_admin,
+            logout_email=logout_request.email,
+            global_logout=logout_request.global_logout,
+            bearer_token=bearer_token,
         )
-        token = _extract_bearer_token(request)
-        if token:
-            token_revocation_service.revoke_token(token)
         return Response.success_response(message=message)
 
+    except AdminNotFoundError:
+        return Response.not_found_error_response(AdminAuthErrors.USER_NOT_FOUND)
+    except AdminAuthServiceError as e:
+        if e.error_code == "EMAIL_REQUIRED":
+            return Response.bad_request_error_response(e.message)
+        if e.error_code == "UNAUTHORIZED":
+            return Response.unauthorized_error_response(e.message)
+        return Response.internal_server_error_response(e.message)
     except Exception as e:
         logger.error("Error during logout: %s", str(e), exc_info=True)
         return Response.internal_server_error_response(AdminAuthErrors.LOGOUT_FAILED)
@@ -356,33 +245,23 @@ async def change_password(
     password_request: AdminChangePasswordRequest,
     request: Request,
     current_admin: SuperAdmin = Depends(admin_auth),
+    service: AdminAuthService = Depends(get_admin_auth_service),
 ):
     """Change password for an active, logged-in Super Admin."""
     try:
-        # Verify the current password first
-        try:
-            supabase_admin_client.sign_in_with_password(
-                email=current_admin.email,
-                password=password_request.current_password,
-            )
-        except Exception:
-            logger.warning("Incorrect current password for user: %s", current_admin.email)
-            return Response.unauthorized_error_response(AdminAuthErrors.INCORRECT_CURRENT_PASSWORD)
-
-        # Update the password
-        supabase_admin_client.update_user_password(
-            user_id=current_admin.supabase_user_id,
+        bearer_token = _extract_bearer_token(request)
+        await service.change_password(
+            current_admin=current_admin,
+            current_password=password_request.current_password,
             new_password=password_request.new_password,
+            bearer_token=bearer_token,
         )
-
-        token = _extract_bearer_token(request)
-        admin_auth_service.invalidate_admin_sessions(current_admin, token=token)
-
-        logger.info("Password changed for %s and existing sessions revoked", current_admin.email)
         return Response.success_response(
             message="Password changed successfully. Please sign in again."
         )
 
+    except InvalidCredentialsError:
+        return Response.unauthorized_error_response(AdminAuthErrors.INCORRECT_CURRENT_PASSWORD)
     except Exception as e:
         logger.error(
             "Error during password change for email %s: %s",

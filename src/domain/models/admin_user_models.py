@@ -95,11 +95,23 @@ class UpdateUserStatusResponse(BaseModel):
 class UserActionHistoryResponse(BaseModel):
     id: UUID
     user_id: UUID
+    user_email: EmailStr | None = None
+    user_first_name: str | None = None
+    user_last_name: str | None = None
+    organisation_id: UUID | None = None
+    organisation_name: str | None = None
     action: str
     note: str | None = None
     details: dict | None = None
     created_at: datetime
     actor_admin_id: UUID | None = None
+    actor_admin_name: str | None = None
+    actor_admin_email: EmailStr | None = None
 
     class Config:
         from_attributes = True
+
+
+class PaginatedUserActionHistoryResponse(BaseModel):
+    history: list[UserActionHistoryResponse]
+    cursor: str | None = None

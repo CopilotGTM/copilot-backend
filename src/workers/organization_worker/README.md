@@ -5,6 +5,7 @@ This worker handles organization-related background tasks, specifically administ
 ## Tasks
 
 ### organization.create
+
 - **Queue**: `organization`
 - **Purpose**: Create new organization records and initialize related resources.
 - **Args**: `organisation_id: str, ...`
@@ -14,6 +15,7 @@ This worker handles organization-related background tasks, specifically administ
   - Can trigger provisioning of DB schemas, roles, or integrations.
 
 ### organization.test_task
+
 - **Queue**: `organization`
 - **Purpose**: Simple test task for queue connectivity.
 - **Args**: `message: str`
@@ -21,6 +23,7 @@ This worker handles organization-related background tasks, specifically administ
   - Verifies that the worker and task routing is functional.
 
 ### organization.ping
+
 - **Queue**: `organization`
 - **Purpose**: Connectivity check.
 - **Args**: none
@@ -34,12 +37,14 @@ This worker handles organization-related background tasks, specifically administ
 
 ## Usage
 
-### Start the worker:
+### Start the worker
+
 ```powershell
 celery -A src.workers.organization_worker.celery_app worker -l info -Q organization,admin --pool=solo
 ```
 
-### Test connectivity:
+### Test connectivity
+
 ```powershell
 python -c "from src.workers.organization_worker.celery_app import app; result = app.send_task('organization.ping'); print(result.get())"
 ```
@@ -68,6 +73,7 @@ The worker uses a dedicated `organization` exchange with proper routing keys to 
 ## Task Separation
 
 This worker focuses on organization-level operations:
+
 - Administrative setup and provisioning.
 - Background tasks for organization lifecycle.
 - Organizational health checks and connectivity tests.
@@ -81,7 +87,6 @@ For quick startup reference, here’s how to run **all** workers, including this
 ```powershell
 celery -A src.workers.organization_worker.celery_app worker -l info -Q organization,admin --pool=solo
 ```
-
 
 - **SQLAlchemy**: For database operations
 - **Celery**: For task queue management

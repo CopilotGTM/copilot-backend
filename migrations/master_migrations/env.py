@@ -39,9 +39,14 @@ db_url = (
 # Alembic requires % to be escaped as %%
 config.set_main_option("sqlalchemy.url", db_url.replace("%", "%%"))
 
-# set up Python-side logging per alembic.ini
-if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+# Only configure logging via fileConfig when NOT running inside Celery worker.
+# Celery has its own logging setup and fileConfig can cause conflicts/blocking.
+_skip_file_config = os.getenv("CELERY_SKIP_ALEMBIC_FILECONFIG", "").lower() in ("1", "true", "yes")
+if config.config_file_name is not None and not _skip_file_config:
+    import logging
+    # Check if root logger already has handlers (indicates logging is already configured)
+    if not logging.root.handlers:
+        fileConfig(config.config_file_name)
 
 # Create master-specific metadata by importing only master models
 # This ensures we only track master-specific tables
@@ -122,22 +127,26 @@ def run_migrations_online() -> None:
         poolclass=pool.NullPool,
     )
 
-    with connectable.connect() as connection:
-        if target_schema:
-            # ensure unqualified DDL goes into the right schema
-            connection.execute(text(f"SET search_path TO {target_schema}, public"))
+    try:
+        with connectable.connect() as connection:
+            if target_schema:
+                # ensure unqualified DDL goes into the right schema
+                connection.execute(text(f"SET search_path TO {target_schema}, public"))
 
-        context.configure(
-            connection=connection,
-            target_metadata=target_metadata,
-            compare_type=True,
-            include_schemas=False,  # Explicitly set to False
-            include_object=include_object,  # Use the custom include_object function
-            version_table_schema=target_schema,
-        )
+            context.configure(
+                connection=connection,
+                target_metadata=target_metadata,
+                compare_type=True,
+                include_schemas=False,  # Explicitly set to False
+                include_object=include_object,  # Use the custom include_object function
+                version_table_schema=target_schema,
+            )
 
-        with context.begin_transaction():
-            context.run_migrations()
+            with context.begin_transaction():
+                context.run_migrations()
+    finally:
+        # Explicitly dispose the engine to release all resources
+        connectable.dispose()
 
 
 if context.is_offline_mode():

@@ -11,15 +11,10 @@ Fix notes:
 """
 
 import json
-
-try:  # redis >= 4.2 provides redis.asyncio; >=5 recommended
-    import redis.asyncio as redis  # type: ignore
-except ImportError:  # pragma: no cover - fallback path
-    redis = None  # type: ignore
-
 from collections.abc import AsyncGenerator
 from typing import Any
 
+import redis.asyncio as redis
 from src.infra.config.configs import Config
 from src.infra.utils.logger import get_logger
 
@@ -63,7 +58,7 @@ class AsyncRedisPubSub:
                 retry_on_timeout=True,
                 health_check_interval=0,  # disable client PING health check
                 socket_keepalive=True,
-            )  # type: ignore[attr-defined]
+            )
             await self._redis.ping()  # connectivity check
         return self._redis
 
@@ -94,6 +89,49 @@ class AsyncRedisPubSub:
 
         except Exception as e:
             logger.error(f"Redis pub/sub error for channel {channel}: {e}")
+            raise
+
+    async def subscribe_and_poll(
+        self, channel: str, poll_timeout: float = 1.0
+    ) -> AsyncGenerator[dict[str, Any] | None, None]:
+        """Subscribe to a Redis channel and poll for messages with a timeout.
+
+        This is intended for SSE-style consumers that need to perform periodic work
+        (e.g., emitting heartbeats) even when no messages arrive.
+
+        Yields:
+            - dict: parsed message payload when a message is received
+            - None: when no message is received within poll_timeout
+        """
+        try:
+            redis_client = await self._get_redis_client()
+            self._pubsub = redis_client.pubsub()
+            await self._pubsub.subscribe(channel)
+
+            logger.info(f"Subscribed to Redis channel (polling): {channel}")
+
+            while True:
+                message = await self._pubsub.get_message(
+                    ignore_subscribe_messages=True,
+                    timeout=poll_timeout,
+                )
+
+                if message is None:
+                    yield None
+                    continue
+
+                if message.get("type") != "message":
+                    continue
+
+                try:
+                    data = json.loads(message["data"])
+                    yield data
+                except (json.JSONDecodeError, TypeError) as e:
+                    logger.warning(f"Failed to parse message from {channel}: {e}")
+                    continue
+
+        except Exception as e:
+            logger.error(f"Redis pub/sub polling error for channel {channel}: {e}")
             raise
 
     async def publish_message(self, channel: str, data: dict[str, Any]) -> None:

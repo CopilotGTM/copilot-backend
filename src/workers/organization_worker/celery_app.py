@@ -6,6 +6,9 @@ from dotenv import load_dotenv
 os.environ["MAX_TENANT_ENGINES"] = "1"
 os.environ["TENANT_POOL_MULTIPLIER"] = "1.0"
 
+# Skip Alembic's fileConfig to avoid logging conflicts in Celery worker
+os.environ["CELERY_SKIP_ALEMBIC_FILECONFIG"] = "1"
+
 from celery.signals import worker_ready, worker_shutdown
 
 # Redis connection pool management

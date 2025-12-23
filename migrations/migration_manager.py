@@ -112,7 +112,11 @@ class ProductionMigrationManager:
         validate_schema: bool = True,
     ) -> MigrationResult:
         """Run migrations for a specific organization schema"""
+        import sys
+        
         logger.info(f"Starting migration for schema: {schema_name}")
+        sys.stdout.flush()
+        sys.stderr.flush()
         start_time = time.time()
 
         try:
@@ -128,12 +132,29 @@ class ProductionMigrationManager:
             current_rev = self._get_current_revision(schema_name)
             logger.info(f"Current revision for {schema_name}: {current_rev}")
 
+            # Get head revision to check if migration needed
+            head_rev = self._get_head_revision()
+            if current_rev == head_rev:
+                logger.info(f"Schema {schema_name} already at head revision {head_rev}, skipping migration")
+                return MigrationResult(
+                    schema_name=schema_name,
+                    success=True,
+                    duration=time.time() - start_time,
+                    applied_migrations=[],
+                )
+
             # Run migration
             logger.info(
-                f"Running migration upgrade for {schema_name} to {target_revision}"
+                f"Running migration upgrade for {schema_name} to {target_revision} (this may take a while for new schemas)"
             )
+            sys.stdout.flush()
+            sys.stderr.flush()
+            
             command.upgrade(cfg, target_revision)
+            
             logger.info(f"Migration upgrade completed for {schema_name}")
+            sys.stdout.flush()
+            sys.stderr.flush()
 
             # Don't try to get the new revision immediately as it might interfere with the transaction
             # The migration success is determined by the fact that command.upgrade didn't throw an exception
@@ -314,6 +335,17 @@ class ProductionMigrationManager:
         except Exception as e:
             logger.error(f"Failed to validate schema {schema_name}: {str(e)}")
             return False
+
+    def _get_head_revision(self) -> str | None:
+        """Get the head revision from alembic scripts"""
+        try:
+            cfg = Config("migrations/org_migrations/alembic.ini")
+            script_dir = ScriptDirectory.from_config(cfg)
+            head = script_dir.get_current_head()
+            return head
+        except Exception as e:
+            logger.warning(f"Could not get head revision: {e}")
+            return None
 
     def _validate_migration_environment(self, migration_type: str) -> bool:
         """Validate migration environment setup"""

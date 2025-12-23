@@ -19,14 +19,19 @@ Admin-facing user management: create users, update roles/status, and review hist
   - `super_admin` only: update admin status.
   - `super_admin` or `admin`: create, list, fetch profile, update user details, and view history.
 
+## Rate Limits
+
+- These endpoints are not explicitly rate-limited at the handler level today.
+- If rate limiting is enabled at gateway/proxy level, expect `429 Too Many Requests`.
+
 ## Key Enums
 
-| Enum | Values |
-|------|--------|
-| `UserAppRole` | `member`, `admin` |
-| `SupabaseUserStatus` | `ACTIVE`, `INACTIVE`, `PASSWORD_CHANGE_REQUIRED` |
-| `AdminUserStatus` | `pending`, `approved`, `rejected`, `suspended`, `deactivated` |
-| `UserEventType` | `created`, `updated`, `status_changed`, `role_changed`, `deleted`, `login`, `password_reset`, `email_verified`, `field_changed` |
+| Enum                 | Values                                                                                                                           |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `UserAppRole`        | `member`, `admin`                                                                                                                |
+| `SupabaseUserStatus` | `ACTIVE`, `INACTIVE`, `PASSWORD_CHANGE_REQUIRED`                                                                                 |
+| `AdminUserStatus`    | `pending`, `approved`, `rejected`, `suspended`, `deactivated`                                                                    |
+| `UserEventType`      | `created`, `updated`, `status_changed`, `role_changed`, `deleted`, `login`, `password_reset`, `email_verified`, `field_changed`  |
 
 ---
 
@@ -34,29 +39,29 @@ Admin-facing user management: create users, update roles/status, and review hist
 
 Creates a Supabase user and sends a temporary password email.
 
-### Endpoint
+### Endpoint — Create User
 
 ```http
 POST /create_user
 ```
 
-### Role
+#### Role — Create User
 
 `super_admin` or `admin`
 
-### Body
+#### Body — Create User
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `first_name` | string | Yes | User first name |
-| `last_name` | string | Yes | User last name |
-| `email` | string (email) | Yes | Unique user email |
-| `organisation_id` | UUID | Yes | Organisation the user belongs to |
-| `user_role` | `member` \| `admin` | Yes | App role |
-| `organisation_role` | string | Yes | Job/role title inside the org |
-| `job_title` | string | No | Optional job title |
+| Field               | Type                | Required | Description                      |
+| ------------------- | ------------------- | -------- | -------------------------------- |
+| `first_name`        | string              | Yes      | User first name                  |
+| `last_name`         | string              | Yes      | User last name                   |
+| `email`             | string (email)      | Yes      | Unique user email                |
+| `organisation_id`   | UUID                | Yes      | Organisation the user belongs to |
+| `user_role`         | `member` or `admin` | Yes      | App role                         |
+| `organisation_role` | string              | Yes      | Job/role title inside the org    |
+| `job_title`         | string              | No       | Optional job title               |
 
-### Success
+#### Success — Create User
 
 ```json
 {
@@ -78,17 +83,17 @@ Errors: `400` for missing fields/invalid role, `403` if role is insufficient, `4
 
 Only returns approved users; non-approved users yield `403`.
 
-**Endpoint**
+### Endpoint — Get User Profile
 
 ```http
 GET /{user_id}/profile
 ```
 
-### Role
+#### Role — Get User Profile
 
 `super_admin` or `admin`
 
-### Success
+#### Success — Get User Profile
 
 ```json
 {
@@ -114,25 +119,25 @@ GET /{user_id}/profile
 
 ## 3) List Users (paginated)
 
-**Endpoint**
+### Endpoint — List Users
 
 ```http
 GET /list_users?limit=20&cursor=<opaque>&organisation_id=<uuid>
 ```
 
-### Role
+#### Role — List Users
 
 `super_admin` or `admin`
 
-### Query params
+#### Query params — List Users
 
-| Param | Type | Default | Description |
-|-------|------|---------|-------------|
-| `limit` | integer (1-100) | 20 | Page size |
-| `cursor` | string | null | Opaque cursor from previous page |
-| `organisation_id` | UUID | null | Filter to a single organisation |
+| Param             | Type            | Default | Description                      |
+| ----------------- | --------------- | ------- | -------------------------------- |
+| `limit`           | integer (1-100) | 20      | Page size                        |
+| `cursor`          | string          | null    | Opaque cursor from previous page |
+| `organisation_id` | UUID            | null    | Filter to a single organisation  |
 
-### Response
+#### Response — List Users
 
 ```json
 {
@@ -165,24 +170,24 @@ GET /list_users?limit=20&cursor=<opaque>&organisation_id=<uuid>
 
 Approve/reject/suspend a user; records history and approval metadata.
 
-**Endpoint**
+### Endpoint — Update User Admin Status
 
 ```http
 PUT /{user_id}/admin_status
 ```
 
-### Role
+#### Role — Update User Admin Status
 
 `super_admin`
 
-### Body
+#### Body — Update User Admin Status
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `admin_status` | `AdminUserStatus` | Yes | New admin status |
-| `note` | string | No | Optional audit note |
+| Field          | Type              | Required | Description         |
+| -------------- | ----------------- | -------- | ------------------- |
+| `admin_status` | `AdminUserStatus` | Yes      | New admin status    |
+| `note`         | string            | No       | Optional audit note |
 
-### Success
+#### Success — Update User Admin Status
 
 ```json
 {
@@ -203,29 +208,29 @@ PUT /{user_id}/admin_status
 
 ## 5) Update User Details
 
-**Endpoint**
+### Endpoint — Update User Details
 
 ```http
 PUT /{user_id}/update
 ```
 
-### Role
+#### Role — Update User Details
 
 `super_admin` or `admin`
 
-### Body
+#### Body — Update User Details (all fields optional; at least one required)
 
 All fields optional; at least one required.
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `first_name` | string | Updated first name |
-| `last_name` | string | Updated last name |
-| `job_title` | string | Job title |
-| `organisation_role` | string | Org role/title |
-| `user_role` | `member` \| `admin` | App role |
+| Field               | Type                | Description        |
+| ------------------- | ------------------- | ------------------ |
+| `first_name`        | string              | Updated first name |
+| `last_name`         | string              | Updated last name  |
+| `job_title`         | string              | Job title          |
+| `organisation_role` | string              | Org role/title     |
+| `user_role`         | `member` or `admin` | App role           |
 
-### Response
+#### Response — Update User Details
 
 ```json
 {
@@ -241,17 +246,19 @@ Errors: `400` if no update fields; `404` if user not found.
 
 ## 6) User Action History by Organisation (paginated)
 
-**Endpoint**
+### Endpoint — User Action History by Organisation
 
 ```http
 GET /history/organisation/{organisation_id}?limit=20&cursor=<opaque>
 ```
 
-### Role
+Note: `limit` is capped at `20` (even if a higher value is provided).
+
+#### Role — User Action History by Organisation
 
 `super_admin` or `admin`
 
-### Response data
+#### Response data — User Action History by Organisation
 
 ```json
 {
@@ -259,11 +266,18 @@ GET /history/organisation/{organisation_id}?limit=20&cursor=<opaque>
     {
       "id": "uuid",
       "user_id": "uuid",
+      "user_email": "user@acme.com",
+      "user_first_name": "Jane",
+      "user_last_name": "Doe",
+      "organisation_id": "uuid",
+      "organisation_name": "Acme Inc",
       "action": "status_changed",
       "note": "Admin status changed to approved",
       "details": { "new_status": "approved" },
       "created_at": "2025-11-25T12:00:00Z",
-      "actor_admin_id": "admin-uuid"
+      "actor_admin_id": "admin-uuid",
+      "actor_admin_name": "Jane Admin",
+      "actor_admin_email": "admin@company.com"
     }
   ],
   "cursor": "eyJjcmVhdGVkX2F0Ijoi..."

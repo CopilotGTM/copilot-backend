@@ -239,15 +239,11 @@ class SyncSqlAlchemyProvider(SyncDatabaseProvider):
         finally:
             session.close()
 
-    def invalidate_tenant(self, org_id: str) -> None:
-        try:
-            org_uuid = uuid.UUID(org_id)
-        except Exception:
-            return
+    def invalidate_tenant(self, org_id: UUID) -> None:
         with self._lock:
-            eng = self._tenant_engines.pop(org_uuid, None)
-            if org_uuid in self._tenant_pool_order:
-                self._tenant_pool_order.remove(org_uuid)
+            eng = self._tenant_engines.pop(org_id, None)
+            if org_id in self._tenant_pool_order:
+                self._tenant_pool_order.remove(org_id)
         if eng:
             with suppress(Exception):
                 eng.dispose()

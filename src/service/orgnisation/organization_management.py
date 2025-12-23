@@ -3,7 +3,8 @@ import os
 import secrets
 import time
 from collections.abc import Callable
-from typing import Any
+from datetime import UTC, datetime
+from typing import Any, Protocol, cast
 from uuid import UUID, uuid4
 
 from azure.identity import (
@@ -40,6 +41,10 @@ from src.infra.utils.resource_naming import (
 )
 
 logger = get_logger("organization_management_service")
+
+
+class _HasTable(Protocol):
+    __table__: Any
 
 
 class ProvisioningError(Exception):
@@ -90,8 +95,10 @@ class OrganizationManagementService:
         logger.info(f"Starting creation process for organization: {organisation_name}")
 
         # Check for an existing organization
+        org_table = cast(_HasTable, Organisation).__table__
+        org_name_col = cast(Any, org_table.c.organisation_name)
         result = await session.execute(
-            select(Organisation).where(Organisation.organisation_name == organisation_name)
+            select(Organisation).where(org_name_col == organisation_name)
         )
         existing_org = result.scalars().first()
 
@@ -183,7 +190,7 @@ class OrganizationManagementService:
             return {"organization": organization, "schema_name": schema_name}
         except ProvisioningError:
             # already wrapped
-            session.rollback()
+            await session.rollback()
             organization.status = OrganisationStatus.FAILED
             session.add(
                 OrganisationActionHistory(
@@ -307,7 +314,7 @@ class OrganizationManagementService:
                 with contextlib.suppress(Exception):
                     session.close()
                 with contextlib.suppress(Exception):
-                    session_gen.close()
+                    cast(Any, session_gen).close()
 
             logger.info(
                 f"Successfully created and configured role '{role_name}' and schema '{schema_name}'."
@@ -456,7 +463,7 @@ class OrganizationManagementService:
                 with contextlib.suppress(Exception):
                     session.close()
                 with contextlib.suppress(Exception):
-                    session_gen.close()
+                    cast(Any, session_gen).close()
         except SQLAlchemyError as e:
             logger.warning(f"Could not check/create vector extension: {e}")
             logger.warning("Continuing without vector extension verification")
@@ -491,7 +498,7 @@ class OrganizationManagementService:
                     f"Organization must be in PENDING state to be approved, but is in {organisation.status} state."
                 )
             organisation.approved_by = admin_id
-            organisation.approved_at = text("CURRENT_TIMESTAMP")
+            organisation.approved_at = datetime.now(UTC)
             event_type = OrganisationEventType.APPROVED
         elif new_status == OrganisationStatus.REJECTED:
             if organisation.status != OrganisationStatus.PENDING:
@@ -563,11 +570,14 @@ class OrganizationManagementService:
 
         if "organisation_name" in update_data:
             new_name = update_data["organisation_name"]
+            org_table = cast(_HasTable, Organisation).__table__
+            org_name_col = cast(Any, org_table.c.organisation_name)
+            org_id_col = cast(Any, org_table.c.organisation_id)
             with session.no_autoflush:
                 result = await session.execute(
                     select(Organisation).where(
-                        Organisation.organisation_name == new_name,
-                        Organisation.organisation_id != organisation_id,
+                        org_name_col == new_name,
+                        org_id_col != organisation_id,
                     )
                 )
                 if result.scalars().first():
@@ -604,15 +614,21 @@ class OrganizationManagementService:
         """
         logger.info(f"Fetching action history for organization {organisation_id}")
 
-        filters = [OrganisationActionHistory.organisation_id == organisation_id]
+        oah_table = cast(_HasTable, OrganisationActionHistory).__table__
+        oah_cols = oah_table.c
+        org_id_col = cast(Any, oah_cols.organisation_id)
+        created_at_col = cast(Any, oah_cols.created_at)
+        history_id_col = cast(Any, oah_cols.id)
+
+        filters: list[Any] = [org_id_col == organisation_id]
         if cursor:
             ts, history_id = decode_cursor(cursor)
             filters.append(
                 or_(
-                    OrganisationActionHistory.created_at < ts,
+                    created_at_col < ts,
                     and_(
-                        OrganisationActionHistory.created_at == ts,
-                        OrganisationActionHistory.id < history_id,
+                        created_at_col == ts,
+                        history_id_col < history_id,
                     ),
                 )
             )
@@ -621,15 +637,15 @@ class OrganizationManagementService:
             select(OrganisationActionHistory)
             .where(*filters)
             .order_by(
-                OrganisationActionHistory.created_at.desc(),
-                OrganisationActionHistory.id.desc(),
+                created_at_col.desc(),
+                history_id_col.desc(),
             )
             .limit(limit + 1)
         )
 
         result = await session.execute(stmt)
         history = result.scalars().all()
-        return history
+        return list(history)
 
     async def get_all_organization_history(
         self,
@@ -642,15 +658,20 @@ class OrganizationManagementService:
         """
         logger.info("Fetching action history for all organizations")
 
-        filters = []
+        oah_table = cast(_HasTable, OrganisationActionHistory).__table__
+        oah_cols = oah_table.c
+        created_at_col = cast(Any, oah_cols.created_at)
+        history_id_col = cast(Any, oah_cols.id)
+
+        filters: list[Any] = []
         if cursor:
             ts, history_id = decode_cursor(cursor)
             filters.append(
                 or_(
-                    OrganisationActionHistory.created_at < ts,
+                    created_at_col < ts,
                     and_(
-                        OrganisationActionHistory.created_at == ts,
-                        OrganisationActionHistory.id < history_id,
+                        created_at_col == ts,
+                        history_id_col < history_id,
                     ),
                 )
             )
@@ -659,15 +680,15 @@ class OrganizationManagementService:
             select(OrganisationActionHistory)
             .where(*filters)
             .order_by(
-                OrganisationActionHistory.created_at.desc(),
-                OrganisationActionHistory.id.desc(),
+                created_at_col.desc(),
+                history_id_col.desc(),
             )
             .limit(limit + 1)
         )
 
         result = await session.execute(stmt)
         history = result.scalars().all()
-        return history
+        return list(history)
 
     async def delete_organization(
         self, session: AsyncSession, organisation_id: UUID, admin_id: UUID
@@ -702,7 +723,7 @@ class OrganizationManagementService:
 
         # Delete the organization record from the master database.
         # Users will be cascade deleted due to the relationship setting.
-        session.delete(organisation)
+        await session.delete(organisation)
         await session.commit()
 
         logger.info(f"Deleted organization record for '{organisation.organisation_name}'")
@@ -723,7 +744,7 @@ class OrganizationManagementService:
                 with contextlib.suppress(Exception):
                     master_sess.close()
                 with contextlib.suppress(Exception):
-                    session_gen.close()
+                    cast(Any, session_gen).close()
         except SQLAlchemyError as e:
             logger.error(
                 f"Failed to drop schema/role for organization {organisation_id}: {e}",
@@ -811,7 +832,7 @@ class OrganizationManagementService:
                 with contextlib.suppress(Exception):
                     master_sess.close()
                 with contextlib.suppress(Exception):
-                    session_gen.close()
+                    cast(Any, session_gen).close()
             self._store_password_in_key_vault(organisation_id, new_password)
             session.add(
                 OrganisationActionHistory(

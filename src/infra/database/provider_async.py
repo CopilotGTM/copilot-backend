@@ -59,7 +59,7 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
             return lock
 
     # Master -----------------------------------------------------------
-    def _get_master_engine(self):
+    def _get_master_engine(self) -> AsyncEngine:
         if self._master_engine is not None:
             return self._master_engine
         with self._lock:
@@ -77,7 +77,7 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
                         "timeout": database_config.DATABASE_CONNECT_TIMEOUT_SEC,
                     },
                 )
-                return self._master_engine
+            return self._master_engine
 
     def _build_master_url(self) -> str:
         """Build the async database URL for the master connection."""
