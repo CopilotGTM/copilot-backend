@@ -163,6 +163,7 @@ async def sync_crm_data(
         ("deal_tasks", DealTaskSyncService): _sync_deal_tasks,
         ("tasks", DealTaskSyncService): _sync_deal_tasks,  # Alias for backward compatibility
         ("tickets", DealTaskSyncService): _sync_deal_tasks,  # Salesforce Cases alias
+        ("notes", DealTaskSyncService): _sync_deal_tasks,
         ("contacts", ContactSyncService): _sync_contacts,
         ("leads", ContactSyncService): _sync_contacts,  # Treat leads as contact-like profiles
         ("companies", CompanySyncService): _sync_companies,

@@ -17,6 +17,7 @@ from .fetchers import (
     SalesforceContactFetcher,
     SalesforceContactRoleFetcher,
     SalesforceLeadFetcher,
+    SalesforceNoteFetcher,
     SalesforceOpportunityFetcher,
     SalesforcePipelineFetcher,
     SalesforceTaskFetcher,
@@ -33,9 +34,48 @@ __all__ = [
     "fetch_leads",
     "fetch_users",
     "fetch_tasks",
+    "fetch_notes",
     "fetch_tickets",
     "fetch_pipelines",
 ]
+
+
+def _sf_to_canonical_note(raw: dict[str, Any]) -> dict[str, Any]:
+    """Transform a Salesforce Note into the canonical activity payload.
+
+    We map ParentId -> what_id so the existing DealTaskSyncService logic links
+    Opportunity notes (ParentId prefix 006) to deals.
+    """
+
+    owner_data = raw.get("Owner") or {}
+    owner_name = owner_data.get("Name") if isinstance(owner_data, dict) else None
+    owner_email = owner_data.get("Email") if isinstance(owner_data, dict) else None
+
+    props: dict[str, Any] = {
+        "subject": raw.get("Title"),
+        "description": raw.get("Body"),
+        "owner_id": raw.get("OwnerId"),
+        "hubspot_owner_id": raw.get("OwnerId"),
+        "hubspot_owner_name": owner_name,
+        "hubspot_owner_email": owner_email,
+        # Linkage: treat ParentId like WhatId for activities.
+        "what_id": raw.get("ParentId"),
+        # Date fields expected by DealTaskSyncService
+        "created_date": _as_iso(raw.get("CreatedDate")),
+        "last_modified_date": _as_iso(raw.get("LastModifiedDate")),
+        # Force activity type normalization to NOTE.
+        "type": "NOTE",
+    }
+
+    return {
+        "id": raw.get("Id"),
+        "createdAt": _as_iso(raw.get("CreatedDate")),
+        "updatedAt": _as_iso(raw.get("LastModifiedDate")),
+        "archived": bool(raw.get("IsDeleted")),
+        "properties": {k: v for k, v in props.items() if v is not None},
+        "associations": {},
+        "data_payload": raw,
+    }
 
 
 def _as_iso(value: Any) -> str | None:
@@ -549,6 +589,27 @@ async def fetch_tasks(
         last_synced_at=last_synced_at,
     )
     return [_sf_to_canonical_task(r) for r in rows]
+
+
+async def fetch_notes(
+    nango: NangoClient,
+    connection_id: str,
+    is_initial: bool,
+    last_synced_at: Any,
+    data_type: str | None,
+    provider_config_key: str,
+) -> list[dict[str, Any]]:
+    """Fetch legacy Salesforce Notes.
+
+    Notes attached to Opportunities will be linked to deals during sync.
+    """
+    _ = data_type
+    fetcher = SalesforceNoteFetcher(nango, provider_config_key, connection_id)
+    rows = await fetcher.fetch_all(
+        incremental=not is_initial,
+        last_synced_at=last_synced_at,
+    )
+    return [_sf_to_canonical_note(r) for r in rows]
 
 
 async def fetch_tickets(

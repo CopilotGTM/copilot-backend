@@ -103,9 +103,21 @@ The Integrations Worker is a specialized Celery worker that handles:
 - **Data Types**:
   - `pipelines` - Deal pipelines and stages
   - `deals` - Sales opportunities with participants and stage history
+  - `notes` - Notes (stored as CRM activities)
   - `contacts` - Contact profiles with lifecycle stages
   - `users` - CRM owners/users
   - `companies` - Company/account records ✨ **NEW**
+
+#### Salesforce
+
+- **Category**: `crm`
+- **Provider**: `salesforce`
+- **Data Types**:
+  - `pipelines` - Opportunity stages (as a pipeline)
+  - `opportunities` / `deals` - Opportunities (stored as deals)
+  - `notes` - Notes attached to Opportunities (stored as CRM activities)
+  - `deal_tasks` / `tasks` - Tasks/activities
+  - `tickets` - Cases
 
 **Company Sync Features**:
 

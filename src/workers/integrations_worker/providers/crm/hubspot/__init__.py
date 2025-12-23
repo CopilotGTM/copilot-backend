@@ -11,6 +11,7 @@ from .fetchers import (
     HubSpotContactFetcher,
     HubSpotDealFetcher,
     HubSpotDealTaskFetcher,
+    HubSpotNoteFetcher,
     HubSpotOwnerFetcher,
     HubSpotPipelineFetcher,
     HubSpotUserFetcher,
@@ -21,6 +22,7 @@ __all__ = [
     "HubSpotContactFetcher",
     "HubSpotDealFetcher",
     "HubSpotDealTaskFetcher",
+    "HubSpotNoteFetcher",
     "HubSpotOwnerFetcher",
     "HubSpotPipelineFetcher",
     "HubSpotUserFetcher",
@@ -28,6 +30,7 @@ __all__ = [
     "fetch_contacts",
     "fetch_deals",
     "fetch_deal_tasks",
+    "fetch_notes",
     "fetch_owners",
     "fetch_pipelines",
     "fetch_users",
@@ -133,3 +136,55 @@ async def fetch_deal_tasks(
     _ = last_synced_at, data_type
     fetcher = HubSpotDealTaskFetcher(nango, provider_config_key, connection_id)
     return await fetcher.fetch_all(incremental=not is_initial)
+
+
+def _hs_note_to_canonical_activity(note: dict[str, Any]) -> dict[str, Any]:
+    """Convert a HubSpot note object into our canonical activity payload.
+
+    We intentionally shape it like the existing HubSpot task payload so the
+    existing DealTaskSyncService can persist it into crm_activities.
+    """
+
+    props = note.get("properties") if isinstance(note.get("properties"), dict) else {}
+    body = props.get("hs_note_body")
+
+    canonical_props: dict[str, Any] = dict(props)
+    # Populate task-like fields expected by DealTaskSyncService.
+    canonical_props.setdefault("hs_task_subject", None)
+    canonical_props["hs_task_body"] = body
+    # Force activity type normalization to NOTE.
+    canonical_props["hs_task_type"] = canonical_props.get("hs_task_type") or "NOTE"
+
+    return {
+        "id": note.get("id"),
+        "createdAt": note.get("createdAt"),
+        "updatedAt": note.get("updatedAt"),
+        "archived": bool(note.get("archived")),
+        "properties": {k: v for k, v in canonical_props.items() if v is not None},
+        "associations": note.get("associations") or {},
+        "data_payload": note,
+    }
+
+
+async def fetch_notes(
+    nango: NangoClient,
+    connection_id: str,
+    is_initial: bool,
+    last_synced_at: Any,
+    data_type: str | None,
+    provider_config_key: str,
+) -> list[dict[str, Any]]:
+    """Fetch notes from HubSpot.
+
+    Notes are returned as canonical activities (NOTE) and stored in crm_activities.
+    """
+
+    _ = data_type
+    fetcher = HubSpotNoteFetcher(nango, provider_config_key, connection_id)
+    # Keep parity with other HubSpot CRM fetchers: incremental based on integration sync.
+    # last_synced_at is passed through for potential future use.
+    notes = await fetcher.fetch_all(
+        incremental=not is_initial,
+        last_sync_time=str(last_synced_at) if last_synced_at is not None else None,
+    )
+    return [_hs_note_to_canonical_activity(n) for n in notes if isinstance(n, dict)]

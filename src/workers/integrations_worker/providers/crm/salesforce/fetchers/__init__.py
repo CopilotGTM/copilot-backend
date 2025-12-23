@@ -7,6 +7,7 @@ from .case_fetcher import SalesforceCaseFetcher
 from .contact_fetcher import SalesforceContactFetcher
 from .contact_role_fetcher import SalesforceContactRoleFetcher
 from .lead_fetcher import SalesforceLeadFetcher
+from .note_fetcher import SalesforceNoteFetcher
 from .opportunity_fetcher import SalesforceOpportunityFetcher
 from .pipeline_fetcher import SalesforcePipelineFetcher
 from .task_fetcher import SalesforceTaskFetcher
@@ -20,6 +21,7 @@ __all__ = [
     "SalesforceLeadFetcher",
     "SalesforceOpportunityFetcher",
     "SalesforcePipelineFetcher",
+    "SalesforceNoteFetcher",
     "SalesforceTaskFetcher",
     "SalesforceUserFetcher",
 ]
