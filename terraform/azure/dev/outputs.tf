@@ -212,3 +212,26 @@ output "master_key_vault_uri" {
   description = "URI of the master Key Vault (should belong to active tenant)."
   value       = module.master_key_vault.key_vault_uri
 }
+
+# -----------------------------------------------------------------
+# DevOps Agent VM Outputs
+# -----------------------------------------------------------------
+output "devops_agent_vm_name" {
+  description = "Name of the self-hosted DevOps agent VM."
+  value       = module.devops_agent.vm_name
+}
+
+output "devops_agent_private_ip" {
+  description = "Private IP address of the DevOps agent VM."
+  value       = module.devops_agent.private_ip_address
+}
+
+output "devops_agent_pool" {
+  description = "Name of the Azure DevOps agent pool."
+  value       = module.devops_agent.agent_pool
+}
+
+output "devops_agent_name" {
+  description = "Name of the registered Azure DevOps agent."
+  value       = module.devops_agent.agent_name
+}

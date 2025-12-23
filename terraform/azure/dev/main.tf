@@ -11,16 +11,16 @@ module "resource_group" {
 # Virtual Network: Provides networking and subnets for AKS and App Services
 # -----------------------------------------------------------------
 module "vnet" {
-  source              = "../modules/vnet"
-  vnet_name           = "${var.vnet_name}-${var.env}"
-  address_space       = var.vnet_address_space
-  location            = module.resource_group.resource_group_location
-  resource_group_name = module.resource_group.resource_group_name
-  public_subnets      = var.vnet_public_subnets
-  private_subnets     = var.vnet_private_subnets
+  source                          = "../modules/vnet"
+  vnet_name                       = "${var.vnet_name}-${var.env}"
+  address_space                   = var.vnet_address_space
+  location                        = module.resource_group.resource_group_location
+  resource_group_name             = module.resource_group.resource_group_name
+  public_subnets                  = var.vnet_public_subnets
+  private_subnets                 = var.vnet_private_subnets
   private_endpoints_subnet_prefix = var.vnet_private_endpoints_subnet
-  env                 = var.env
-  depends_on          = [
+  env                             = var.env
+  depends_on = [
     module.resource_group
   ]
 }
@@ -100,12 +100,12 @@ resource "azurerm_private_dns_zone_virtual_network_link" "storage_blob" {
 # Azure Key Vault
 # -----------------------------------------------------------------
 module "database_key_vault" {
-  source              = "../modules/key_vault"
-  key_vault_name      = "app-database-vault-${var.env}"
-  location            = var.location
-  resource_group_name = module.resource_group.resource_group_name
-  tenant_id           = data.azurerm_client_config.current.tenant_id
-  admin_object_id     = data.azurerm_client_config.current.object_id
+  source                        = "../modules/key_vault"
+  key_vault_name                = "app-database-vault-${var.env}"
+  location                      = var.location
+  resource_group_name           = module.resource_group.resource_group_name
+  tenant_id                     = data.azurerm_client_config.current.tenant_id
+  admin_object_id               = data.azurerm_client_config.current.object_id
   public_network_access_enabled = var.enable_key_vault_private_endpoints ? false : true
   private_endpoint_enabled      = var.enable_key_vault_private_endpoints
   private_endpoint_subnet_id    = module.vnet.private_endpoints_subnet_id
@@ -123,12 +123,12 @@ module "database_key_vault" {
 # Azure Key Vault
 # -----------------------------------------------------------------
 module "master_key_vault" {
-  source              = "../modules/key_vault"
-  key_vault_name      = "app-master-vault-${var.env}"
-  location            = var.location
-  resource_group_name = module.resource_group.resource_group_name
-  tenant_id           = data.azurerm_client_config.current.tenant_id
-  admin_object_id     = data.azurerm_client_config.current.object_id
+  source                        = "../modules/key_vault"
+  key_vault_name                = "app-master-vault-${var.env}"
+  location                      = var.location
+  resource_group_name           = module.resource_group.resource_group_name
+  tenant_id                     = data.azurerm_client_config.current.tenant_id
+  admin_object_id               = data.azurerm_client_config.current.object_id
   public_network_access_enabled = var.enable_key_vault_private_endpoints ? false : true
   private_endpoint_enabled      = var.enable_key_vault_private_endpoints
   private_endpoint_subnet_id    = module.vnet.private_endpoints_subnet_id
@@ -146,17 +146,17 @@ module "master_key_vault" {
 # Azure Storage Account: General purpose blob/file storage
 # -----------------------------------------------------------------
 module "master_storage_account" {
-  source                  = "../modules/storage_account"
-  storage_account_name    = "${var.storage_account_name}${var.env}"
-  resource_group_name     = module.resource_group.resource_group_name
-  location                = var.location
-  account_tier            = "Standard"
-  account_replication_type = "LRS"
-  public_network_access_enabled = var.enable_storage_private_endpoints ? false : true
-  private_endpoint_enabled      = var.enable_storage_private_endpoints
-  private_endpoint_subnet_id    = module.vnet.private_endpoints_subnet_id
+  source                             = "../modules/storage_account"
+  storage_account_name               = "${var.storage_account_name}${var.env}"
+  resource_group_name                = module.resource_group.resource_group_name
+  location                           = var.location
+  account_tier                       = "Standard"
+  account_replication_type           = "LRS"
+  public_network_access_enabled      = var.enable_storage_private_endpoints ? false : true
+  private_endpoint_enabled           = var.enable_storage_private_endpoints
+  private_endpoint_subnet_id         = module.vnet.private_endpoints_subnet_id
   private_endpoint_subresource_names = ["blob"]
-  private_dns_zone_ids          = var.enable_storage_private_endpoints ? [azurerm_private_dns_zone.storage_blob[0].id] : null
+  private_dns_zone_ids               = var.enable_storage_private_endpoints ? [azurerm_private_dns_zone.storage_blob[0].id] : null
   allowed_blob_cors_origins = [
     "https://${var.frontend_dns_a_record_name}.copilotgtm.com",
     "https://${var.frontend_admin_dns_a_record_name}.copilotgtm.com",
@@ -172,17 +172,17 @@ module "master_storage_account" {
 # Organisation Data Storage Account: dedicated per-organisation data store
 # -----------------------------------------------------------------
 module "org_storage_account" {
-  source                   = "../modules/storage_account"
-  storage_account_name     = "${var.org_storage_account_name}${var.env}"
-  resource_group_name      = module.resource_group.resource_group_name
-  location                 = var.location
-  account_tier             = "Standard"
-  account_replication_type = "LRS"
-  public_network_access_enabled = var.enable_storage_private_endpoints ? false : true
-  private_endpoint_enabled      = var.enable_storage_private_endpoints
-  private_endpoint_subnet_id    = module.vnet.private_endpoints_subnet_id
+  source                             = "../modules/storage_account"
+  storage_account_name               = "${var.org_storage_account_name}${var.env}"
+  resource_group_name                = module.resource_group.resource_group_name
+  location                           = var.location
+  account_tier                       = "Standard"
+  account_replication_type           = "LRS"
+  public_network_access_enabled      = var.enable_storage_private_endpoints ? false : true
+  private_endpoint_enabled           = var.enable_storage_private_endpoints
+  private_endpoint_subnet_id         = module.vnet.private_endpoints_subnet_id
   private_endpoint_subresource_names = ["blob"]
-  private_dns_zone_ids          = var.enable_storage_private_endpoints ? [azurerm_private_dns_zone.storage_blob[0].id] : null
+  private_dns_zone_ids               = var.enable_storage_private_endpoints ? [azurerm_private_dns_zone.storage_blob[0].id] : null
   allowed_blob_cors_origins = [
     "https://${var.frontend_dns_a_record_name}.copilotgtm.com",
     "https://${var.frontend_admin_dns_a_record_name}.copilotgtm.com",
@@ -206,7 +206,7 @@ module "acr" {
   sku                 = var.acr_type
   subnet_id           = module.vnet.private_subnet_ids[0]
   vnet_id             = module.vnet.vnet_id
-  depends_on          = [
+  depends_on = [
     module.resource_group,
     module.vnet
   ]
@@ -216,18 +216,18 @@ module "acr" {
 # Azure Kubernetes Service: Managed Kubernetes cluster for containers
 # -----------------------------------------------------------------
 module "aks" {
-  source               = "../modules/aks"
-  aks_name             = "${var.aks_name}-${var.env}"
-  dns_prefix           = "${var.aks_dns_prefix}-${var.env}"
-  location             = module.resource_group.resource_group_location
-  resource_group_name  = module.resource_group.resource_group_name
-  vnet_subnet_ids      = module.vnet.private_subnet_ids
-  agent_count          = var.aks_node_count
-  vm_size              = var.aks_vm_size
-  os_disk_size_gb      = var.aks_os_disk_size_gb
-  service_cidr         = var.aks_service_cidr
-  dns_service_ip       = var.aks_dns_service_ip
-  env                  = var.env
+  source                 = "../modules/aks"
+  aks_name               = "${var.aks_name}-${var.env}"
+  dns_prefix             = "${var.aks_dns_prefix}-${var.env}"
+  location               = module.resource_group.resource_group_location
+  resource_group_name    = module.resource_group.resource_group_name
+  vnet_subnet_ids        = module.vnet.private_subnet_ids
+  agent_count            = var.aks_node_count
+  vm_size                = var.aks_vm_size
+  os_disk_size_gb        = var.aks_os_disk_size_gb
+  service_cidr           = var.aks_service_cidr
+  dns_service_ip         = var.aks_dns_service_ip
+  env                    = var.env
   enable_gpu_worker_pool = var.enable_gpu_worker_pool
   gpu_node_pool_name     = var.gpu_node_pool_name
   gpu_vm_size            = var.gpu_vm_size
@@ -235,7 +235,7 @@ module "aks" {
   gpu_max_count          = var.gpu_max_count
   gpu_node_labels        = var.gpu_node_labels
   gpu_node_taints        = var.gpu_node_taints
-  depends_on           = [
+  depends_on = [
     module.vnet,
     module.acr
   ]
@@ -247,11 +247,11 @@ module "aks" {
 # Role Assignment: Allow AKS kubelet to pull images from ACR
 # -----------------------------------------------------------------
 resource "azurerm_role_assignment" "aks_kubelet_acr_pull" {
-  principal_id         = module.aks.kubelet_identity_object_id
-  role_definition_name = "AcrPull"
-  scope                = module.acr.acr_id
+  principal_id                     = module.aks.kubelet_identity_object_id
+  role_definition_name             = "AcrPull"
+  scope                            = module.acr.acr_id
   skip_service_principal_aad_check = true
-  depends_on           = [
+  depends_on = [
     module.acr,
     module.aks
   ]
@@ -398,15 +398,15 @@ resource "random_password" "db_admin" {
 # PostgreSQL Flexible Server
 # -----------------------------------------------------------------
 module "application_database" {
-  source                   = "../modules/postgresql"
-  env                      = var.env
-  resource_group_name      = module.resource_group.resource_group_name
-  location                 = var.db_location
-  db_name                  = var.db_name
-  db_admin_user            = "CopilotGTMAdmin"
-  db_admin_password        = random_password.db_admin.result
-  key_vault_id             = module.database_key_vault.key_vault_id
-  tags                     = {
+  source              = "../modules/postgresql"
+  env                 = var.env
+  resource_group_name = module.resource_group.resource_group_name
+  location            = var.db_location
+  db_name             = var.db_name
+  db_admin_user       = "CopilotGTMAdmin"
+  db_admin_password   = random_password.db_admin.result
+  key_vault_id        = module.database_key_vault.key_vault_id
+  tags = {
     environment = var.env
     project     = var.project_name
   }
@@ -429,67 +429,67 @@ module "application_database" {
 
 
 resource "azuredevops_variable_group" "secrets" {
-  project_id = data.azuredevops_project.project.id
-  name       = "app-secrets-${var.env}"
+  project_id  = data.azuredevops_project.project.id
+  name        = "app-secrets-${var.env}"
   description = "Service-principal creds and other secrets for ${var.env}"
 
   variable {
-    name         = "ENV"
-    value        = "dev"
+    name  = "ENV"
+    value = "dev"
   }
 
   variable {
-    name         = "CLOUD_PROVIDER"
-    value        = "azure"
+    name  = "CLOUD_PROVIDER"
+    value = "azure"
   }
 
   variable {
-    name         = "APPLICATION_REGION"
-    value        = module.resource_group.resource_group_location
+    name  = "APPLICATION_REGION"
+    value = module.resource_group.resource_group_location
   }
 
   variable {
-    name         = "AZURE_RESOURCE_GROUP"
-    value        = module.resource_group.resource_group_name
+    name  = "AZURE_RESOURCE_GROUP"
+    value = module.resource_group.resource_group_name
   }
 
   variable {
-    name         = "APPLICATION_STORAGE_NAME"
-    value        = module.master_storage_account.storage_account_name
+    name  = "APPLICATION_STORAGE_NAME"
+    value = module.master_storage_account.storage_account_name
   }
 
   variable {
-    name         = "ORGANISATION_STORAGE_NAME"
-    value        = module.org_storage_account.storage_account_name
+    name  = "ORGANISATION_STORAGE_NAME"
+    value = module.org_storage_account.storage_account_name
   }
 
   variable {
-    name        = "AZURE_KEY_VAULT_URL"
-    value        = module.database_key_vault.key_vault_uri
+    name  = "AZURE_KEY_VAULT_URL"
+    value = module.database_key_vault.key_vault_uri
   }
 
   variable {
-    name         = "AZURE_SUBSCRIPTION_ID"
-    value        = var.subscription_id
+    name  = "AZURE_SUBSCRIPTION_ID"
+    value = var.subscription_id
   }
   variable {
-    name         = "DATABASE_HOST"
-    value        = module.application_database.db_host
-  }
-
-  variable {
-    name         = "DATABASE_USER"
-    value        = module.application_database.db_user
+    name  = "DATABASE_HOST"
+    value = module.application_database.db_host
   }
 
   variable {
-    name         = "DATABASE_PORT"
-    value        = tostring(module.application_database.db_port)
+    name  = "DATABASE_USER"
+    value = module.application_database.db_user
   }
 
   variable {
-    name         = "DATABASE_NAME"
-    value        = module.application_database.db_name
+    name  = "DATABASE_PORT"
+    value = tostring(module.application_database.db_port)
+  }
+
+  variable {
+    name  = "DATABASE_NAME"
+    value = module.application_database.db_name
   }
 
   variable {
@@ -499,18 +499,18 @@ resource "azuredevops_variable_group" "secrets" {
   }
 
   variable {
-    name         = "DATABASE_SSL_MODE"
+    name  = "DATABASE_SSL_MODE"
     value = "prefer"
   }
 
   variable {
-    name         = "REDIS_HOST"
-    value        = module.redis.hostname
+    name  = "REDIS_HOST"
+    value = module.redis.hostname
   }
 
   variable {
-    name         = "REDIS_PORT"
-    value        = tostring(module.redis.port)
+    name  = "REDIS_PORT"
+    value = tostring(module.redis.port)
   }
 
   variable {
@@ -520,8 +520,8 @@ resource "azuredevops_variable_group" "secrets" {
   }
 
   variable {
-    name         = "AZURE_OPENAI_ENDPOINT"
-    value        = module.foundry.openai_endpoint_url
+    name  = "AZURE_OPENAI_ENDPOINT"
+    value = module.foundry.openai_endpoint_url
   }
 
   variable {
@@ -531,13 +531,13 @@ resource "azuredevops_variable_group" "secrets" {
   }
 
   variable {
-    name         = "AZURE_EMBEDDER_OPENAI_ENDPOINT"
-    value        = module.foundry.openai_endpoint_url
+    name  = "AZURE_EMBEDDER_OPENAI_ENDPOINT"
+    value = module.foundry.openai_endpoint_url
   }
-  
+
   variable {
-    name         = "AZURE_EMBEDDER_DEPLOYMENT"
-    value        = module.foundry.embedder_deployment_name
+    name  = "AZURE_EMBEDDER_DEPLOYMENT"
+    value = module.foundry.embedder_deployment_name
   }
 
   variable {
@@ -547,7 +547,7 @@ resource "azuredevops_variable_group" "secrets" {
   }
 
   variable {
-    name = "SUPER_ADMIN_EMAIL"
+    name  = "SUPER_ADMIN_EMAIL"
     value = var.super_admin_email
   }
 
@@ -557,19 +557,19 @@ resource "azuredevops_variable_group" "secrets" {
   }
 
   variable {
-    name  = "SUPABASE_ANON_KEY"
+    name         = "SUPABASE_ANON_KEY"
     secret_value = var.supabase_anon_key
     is_secret    = true
   }
 
   variable {
-    name  = "SUPABASE_SERVICE_ROLE_KEY"
+    name         = "SUPABASE_SERVICE_ROLE_KEY"
     secret_value = var.supabase_service_role_key
     is_secret    = true
   }
 
   variable {
-    name  = "SUPABASE_JWT_SECRET"
+    name         = "SUPABASE_JWT_SECRET"
     secret_value = var.supabase_jwt_secret
     is_secret    = true
   }
@@ -595,12 +595,12 @@ resource "azuredevops_variable_group" "secrets" {
   }
 
   variable {
-    name = "FROM_EMAIL"
+    name  = "FROM_EMAIL"
     value = var.resend_email
   }
 
   variable {
-    name  = "RESEND_API_KEY"
+    name         = "RESEND_API_KEY"
     secret_value = var.resend_api_key
     is_secret    = true
   }
@@ -638,7 +638,7 @@ resource "azuredevops_variable_group" "secrets" {
   }
 
   variable {
-    name  = "NANGO_SECRET_KEY"
+    name         = "NANGO_SECRET_KEY"
     secret_value = var.nango_secret
     is_secret    = true
   }
@@ -693,4 +693,48 @@ resource "azuredevops_pipeline_authorization" "service_connection_acr_authorizat
   project_id  = data.azuredevops_project.project.id
   resource_id = module.service_connection_acr.acr_service_connection_id
   type        = "endpoint"
+}
+
+# -----------------------------------------------------------------
+# Self-Hosted DevOps Agent VM
+# Placed in private subnet to access Key Vault/Storage via Private Link
+# -----------------------------------------------------------------
+module "devops_agent" {
+  source              = "../modules/devops_agent"
+  resource_group_name = module.resource_group.resource_group_name
+  location            = var.location
+  vm_name             = "${var.agent_name}-${var.env}"
+  vm_size             = "Standard_B2s"
+  admin_username      = var.admin_username
+  admin_password      = var.admin_password
+
+  # Place in private subnet for Private Link access
+  subnet_id = module.vnet.private_subnet_ids[0]
+
+  # Azure DevOps configuration
+  azuredevops_url = var.org_service_url
+  azuredevops_pat = local.effective_azuredevops_pat
+  agent_pool      = var.agent_pool
+  agent_name      = var.agent_name
+
+  # Pre-install tools for CI/CD pipelines
+  install_docker    = true
+  install_terraform = true
+  terraform_version = "1.9.0"
+  install_kubectl   = true
+  install_azure_cli = true
+
+  # No public IP needed - agent communicates outbound only
+  enable_public_ip = false
+
+  tags = {
+    environment = var.env
+    project     = var.project_name
+    purpose     = "azure-devops-agent"
+  }
+
+  depends_on = [
+    module.vnet,
+    module.resource_group
+  ]
 }
