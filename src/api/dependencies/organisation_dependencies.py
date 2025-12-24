@@ -27,6 +27,8 @@ class UserIDs(BaseModel):
 
     user_id: UUID
     organisation_id: UUID
+    user_name: str | None = None
+    user_email: str | None = None
 
 
 def get_current_user(user: User = Depends(user_auth)) -> UserIDs:
@@ -36,7 +38,18 @@ def get_current_user(user: User = Depends(user_auth)) -> UserIDs:
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Invalid or missing user credentials.",
         )
-    return UserIDs(user_id=user.user_id, organisation_id=user.organisation_id)
+
+    # Build user display name from first and last name
+    user_name = None
+    if user.first_name or user.last_name:
+        user_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
+
+    return UserIDs(
+        user_id=user.user_id,
+        organisation_id=user.organisation_id,
+        user_name=user_name,
+        user_email=str(user.email) if user.email else None,
+    )
 
 
 # ---- SYNC ----

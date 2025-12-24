@@ -15,12 +15,12 @@ from enum import Enum
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, Column, DateTime, Index, String, UniqueConstraint, text
+from sqlalchemy import Boolean, Column, DateTime, Index, String, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field
 
 from ...base_mixins import utcnow
-from ..base import SyncedRecordMixin
+from ..base import FlexibleSyncedRecordMixin
 from ..integration_models import EMPTY_JSONB_SQL
 
 
@@ -89,7 +89,7 @@ CRMTaskType = CRMActivityType
 CRMTaskPriority = CRMActivityPriority
 
 
-class CRMActivity(SyncedRecordMixin, table=True):
+class CRMActivity(FlexibleSyncedRecordMixin, table=True):
     """Canonical activity record across CRMs.
 
     Supports activities from CRM providers (tasks, calls, meetings, emails, notes)
@@ -101,6 +101,7 @@ class CRMActivity(SyncedRecordMixin, table=True):
     - Backwards-compatible `deal_id`/`deal_external_id` for deal-specific queries
     - Attendee/participant storage in `attendees` JSONB
     - Rich metadata in `properties`, `metrics`, `data_payload`
+    - User-created notes: integration_id=NULL with unique external_id per org
 
     Migration note: This replaces the former `crm_deal_tasks` table, with the
     table renamed to `crm_activities` and new polymorphic columns added.
@@ -108,7 +109,22 @@ class CRMActivity(SyncedRecordMixin, table=True):
 
     __tablename__ = "crm_activities"
     __table_args__ = (
-        UniqueConstraint("integration_id", "external_id", name="uq_crm_activity_external"),
+        # Unique constraint for CRM-synced activities (integration_id NOT NULL)
+        Index(
+            "uq_crm_activity_external",
+            "integration_id",
+            "external_id",
+            unique=True,
+            postgresql_where=text("integration_id IS NOT NULL"),
+        ),
+        # Unique constraint for user-created activities (integration_id IS NULL)
+        Index(
+            "uq_crm_activity_external_user",
+            "organisation_id",
+            "external_id",
+            unique=True,
+            postgresql_where=text("integration_id IS NULL"),
+        ),
         # Legacy deal-focused indexes (renamed from deal_tasks)
         Index("ix_crm_activity_deal", "deal_id"),
         Index("ix_crm_activity_org_status", "organisation_id", "status"),

@@ -19,6 +19,8 @@ def dependency_overrides(test_user_ids):
         return UserIDs(
             user_id=test_user_ids["user_id"],
             organisation_id=test_user_ids["organisation_id"],
+            user_name=test_user_ids.get("user_name", "Test User"),
+            user_email=test_user_ids.get("user_email", "test@example.com"),
         )
 
     async def _override_service():

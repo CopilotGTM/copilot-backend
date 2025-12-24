@@ -124,6 +124,8 @@ def dependency_overrides(client, test_user_ids):
         return UserIDs(
             user_id=test_user_ids["user_id"],
             organisation_id=test_user_ids["organisation_id"],
+            user_name=test_user_ids.get("user_name", "Test User"),
+            user_email=test_user_ids.get("user_email", "test@example.com"),
         )
 
     # Create a single service instance per test function to preserve state

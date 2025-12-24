@@ -22,6 +22,7 @@ from src.api.routers.chat_attachments.access_handler import (
 )
 from src.api.routers.chat_attachments.upload_handler import upload_router
 from src.api.routers.crm import (
+    deal_notes_router,
     deal_timeline_router,
     deals_router,
     meetings_router,
@@ -165,6 +166,7 @@ def create_fastapi_app():
     fastapp.include_router(meetings_router, prefix="/users/crm/deals", tags=["meetings"])
     fastapp.include_router(tasks_router, prefix="/users/crm", tags=["tasks"])
     fastapp.include_router(deal_timeline_router, prefix="/users/crm/deals", tags=["timeline"])
+    fastapp.include_router(deal_notes_router, prefix="/users/crm/deals", tags=["deal-notes"])
     fastapp.include_router(
         risks_blockers_router, prefix="/users/crm/deals", tags=["risks-blockers"]
     )
