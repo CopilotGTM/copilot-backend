@@ -165,6 +165,14 @@ class DealListItem(BaseModel):
     primary_contact_external_id: str | None
     primary_contact_name: str | None = None
     primary_contact_email: str | None = None
+    deal_health: str | None = Field(
+        None,
+        description="AI-assessed health for the deal: ON_TRACK, NEEDS_ATTENTION, AT_RISK, CRITICAL, or STALLED.",
+    )
+    deal_health_reason: str | None = Field(
+        None,
+        description="Brief explanation for the AI-assessed deal health.",
+    )
     created_at: datetime
     updated_at: datetime
     synced_at: datetime

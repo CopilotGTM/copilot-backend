@@ -59,6 +59,11 @@ class DealJobService:
         self.organisation_id = organisation_id
         self.user_id = user_id
 
+    async def close(self) -> None:
+        """Clean up resources (placeholder for future async cleanup)."""
+        # Session lifecycle is managed by the caller/dependency
+        pass
+
     async def create_job(
         self,
         job_type: DealJobType,
