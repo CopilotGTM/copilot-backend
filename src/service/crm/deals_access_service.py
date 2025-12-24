@@ -486,3 +486,41 @@ class DealsAccessService:
         except Exception as e:
             logger.error("Failed to calculate deals stats: %s", e, exc_info=True)
             raise DealsAccessServiceError("Failed to calculate statistics") from e
+
+
+def extract_deal_health(deal_summary_data: dict | None) -> str | None:
+    """Extract the AI-assessed deal health from deal summary data.
+
+    Args:
+        deal_summary_data: The deal_summary_data JSONB field from CRMDeal
+
+    Returns:
+        The deal health status string, or None if not available
+    """
+    if not deal_summary_data:
+        return None
+
+    data = deal_summary_data.get("data") if isinstance(deal_summary_data, dict) else None
+    if not isinstance(data, dict):
+        return None
+
+    return data.get("deal_health")
+
+
+def extract_deal_health_reason(deal_summary_data: dict | None) -> str | None:
+    """Extract the rationale for the AI-assessed deal health from deal summary data.
+
+    Args:
+        deal_summary_data: The deal_summary_data JSONB field from CRMDeal
+
+    Returns:
+        The deal health reason string, or None if not available
+    """
+    if not deal_summary_data:
+        return None
+
+    data = deal_summary_data.get("data") if isinstance(deal_summary_data, dict) else None
+    if not isinstance(data, dict):
+        return None
+
+    return data.get("deal_health_reason")

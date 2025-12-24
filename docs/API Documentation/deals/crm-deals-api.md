@@ -117,6 +117,11 @@ export interface DealListItem {
   primary_contact_external_id: string | null;
   primary_contact_name: string | null;
   primary_contact_email: string | null;
+  
+  // AI-generated deal health (from deal_summary_data if available)
+  deal_health: "HEALTHY" | "AT_RISK" | "STALLED" | "CHAMPION_WEAK" | "BLOCKED" | "MISALIGNED" | "UNVALIDATED" | "COLD" | "LATE_STAGE_RISK" | "LIKELY_LOST" | "ARTIFICIALLY_HEALTHY" | null;
+  deal_health_reason: string | null;  // Captured but NOT displayed in UI for now
+  
   created_at: string;  // ISO8601
 
   updated_at: string;  // ISO8601
@@ -203,7 +208,15 @@ export interface DealDetail {
 
   // Deal Summary (AI-generated)
   deal_summary_status: string | null;  // NOT_STARTED, IN_PROGRESS, COMPLETED, FAILED
-  deal_summary_data: Record<string, unknown> | null;  // AI-generated summary data
+  deal_summary_data: {
+    schema_version: string;  // Currently "1.0"
+    generated_at: string;  // ISO8601
+    data: {
+      deal_summary: string | null;
+      deal_health: "HEALTHY" | "AT_RISK" | "STALLED" | "CHAMPION_WEAK" | "BLOCKED" | "MISALIGNED" | "UNVALIDATED" | "COLD" | "LATE_STAGE_RISK" | "LIKELY_LOST" | "ARTIFICIALLY_HEALTHY" | null;
+      deal_health_reason: string | null;  // Captured but NOT displayed in UI for now
+    };
+  } | null;  // AI-generated summary data; fields may be null for older summaries
 
   // Active deal-level jobs (for SSE reconnection)
   active_deal_jobs: DealSummaryJobsStatus | null;
@@ -518,6 +531,8 @@ Ordered by `created_at DESC, deal_id DESC` for consistent results.
         "stage_label": "Contract Review",
         "pipeline_name": "Sales Pipeline",
         "pipeline_label": "Standard Sales Process",
+        "deal_health": "HEALTHY",
+        "deal_health_reason": null,
         "owner_name": "Alex Fin",
         "owner_email": "alex.fin@example.com",
         "company_external_id": "company_789",
@@ -870,13 +885,12 @@ Required
     },
     "deal_summary_status": "COMPLETED",
     "deal_summary_data": {
-      "schema_version": "1.0.0",
+      "schema_version": "1.0",
       "generated_at": "2025-10-25T10:30:00Z",
       "data": {
-        "overview": "Enterprise software license deal with Acme Corp...",
-        "key_stakeholders": ["Alex Fin", "John Smith"],
-        "next_steps": ["Schedule technical review", "Send proposal"],
-        "risks": ["Timeline concerns", "Budget constraints"]
+        "deal_summary": "Enterprise software license deal with Acme Corp. Strong engagement across recent meetings with clear technical fit; security review pending.",
+        "deal_health": "HEALTHY",
+        "deal_health_reason": "Multiple recent meetings with the buyer group present. Only open item is security review; no clear negative signals detected."
       }
     },
     "active_deal_jobs": null
@@ -886,7 +900,8 @@ Required
 
 ### Notes for Get Deal Details
 
-- **Deal Summary**: When `deal_summary_status` is `COMPLETED`, the `deal_summary_data` field contains AI-generated summary data including overview, key stakeholders, next steps, and risks.
+- **Deal Summary**: When `deal_summary_status` is `COMPLETED`, the `deal_summary_data` field contains AI-generated summary data including `deal_summary` and an AI-classified `deal_health`.
+- **Deal Health Reason (capture-only)**: `deal_health_reason` is stored for internal traceability but is **not displayed in the UI** for the current release.
 - **Active Jobs**: The `active_deal_jobs` field contains any currently running deal-level jobs (e.g., deal summary generation). Use this for SSE reconnection - if a job is `IN_PROGRESS`, subscribe to the SSE stream for real-time updates.
 - **Job Statuses**: `PENDING` (queued), `IN_PROGRESS` (running), `COMPLETED` (done), `FAILED` (error).
 
@@ -1234,25 +1249,9 @@ The `answer.replace` frame contains the full summary data in the `content` field
     "schema_version": "1.0",
     "generated_at": "2025-12-03T10:30:00Z",
     "data": {
-      "overview": "Enterprise software license deal with Acme Corp spanning 5 meetings over 3 months...",
-      "key_stakeholders": [
-        {"name": "John Smith", "role": "Decision Maker", "sentiment": "positive"},
-        {"name": "Jane Doe", "role": "Technical Lead", "sentiment": "neutral"}
-      ],
-      "meeting_timeline": [
-        {"date": "2025-09-15", "type": "Discovery", "key_points": ["Initial requirements gathered"]},
-        {"date": "2025-10-01", "type": "Demo", "key_points": ["Product demo well received"]}
-      ],
-      "next_steps": [
-        "Schedule technical deep-dive with engineering team",
-        "Send updated proposal with custom pricing"
-      ],
-      "risks": [
-        "Budget approval pending Q1 review",
-        "Competitor evaluation ongoing"
-      ],
-      "overall_sentiment": "positive",
-      "deal_health": "on_track"
+      "deal_summary": "Enterprise software license deal with Acme Corp. Strong engagement across 5 meetings with clear technical fit; security review pending.",
+      "deal_health": "HEALTHY",
+      "deal_health_reason": "Three meetings in the last two weeks with decision-maker present. Pending security questionnaire is the only open item; no negative sentiment detected."
     }
   },
   "sequence": 8,
@@ -1262,7 +1261,11 @@ The `answer.replace` frame contains the full summary data in the `content` field
 }
 ```
 
-**Note:** The `content` field contains the same structure as `deal_summary_data` in the Deal Detail response. Frontend should extract this from `frame.content` when `frame.type === "answer.replace"`.
+**Notes:**
+
+- The `content` field contains the same structure as `deal_summary_data` in the Deal Detail response. Frontend should extract this from `frame.content` when `frame.type === "answer.replace"`.
+- `deal_health_reason` is captured but **not displayed in the UI** for the current release.
+- For deals with older summaries (or no summary generated), `deal_health` and `deal_health_reason` will be `null`.
 
 ### Example TypeScript for Deal Summary SSE Stream
 

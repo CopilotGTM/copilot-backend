@@ -36,6 +36,8 @@ from src.service.crm.deal_job_sse_service import DealJobSSEService
 from src.service.crm.deals_access_service import (
     DealsAccessService,
     DealsAccessServiceError,
+    extract_deal_health,
+    extract_deal_health_reason,
 )
 from src.workers.deal_worker.client import send_deal_task_async
 from sse_starlette.sse import EventSourceResponse
@@ -149,7 +151,7 @@ async def _build_deal_context(
     # Get pipeline info
     pipeline_name = "Default Pipeline"
     pipeline_id = None
-    all_stages = []
+    all_stages: list[PipelineStage] = []
 
     if deal.stage and deal.stage.pipeline:
         pipeline_name = deal.stage.pipeline.name
@@ -389,6 +391,10 @@ async def list_deals(
                 "primary_contact_external_id": deal.primary_contact_external_id,
                 "primary_contact_name": getattr(deal, "primary_contact_name", None),
                 "primary_contact_email": getattr(deal, "primary_contact_email", None),
+                "deal_health": extract_deal_health(getattr(deal, "deal_summary_data", None)),
+                "deal_health_reason": extract_deal_health_reason(
+                    getattr(deal, "deal_summary_data", None)
+                ),
                 "created_at": deal.created_at,
                 "updated_at": deal.updated_at,
                 "synced_at": deal.synced_at,
@@ -575,13 +581,13 @@ async def trigger_deal_meeting_processing(
             queue="deal",
             routing_key="deal",
         )
-        return Response.success_response(
+        return Response.success_response(  # type: ignore[return-value]
             message="Deal meeting processing triggered successfully",
             data={"task_id": task_id},
         )
     except Exception as e:
         logger.error(f"Failed to trigger deal meeting processing: {e}", exc_info=True)
-        return Response.error_response(
+        return Response.error_response(  # type: ignore[return-value]
             message="Failed to trigger processing",
             status_code=500,
         )

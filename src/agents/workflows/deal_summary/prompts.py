@@ -33,6 +33,25 @@ Generate a **100-200 word** summary with these specific sections:
 - **Technical Scope**: Specific product requirements, integrations, security needs, or technical blockers identified.
 - **Deal Health**: Current momentum (advancing/stalled), engagement level, and recommended next steps.
 
+# Deal Health Assessment
+Classify deal health using ONE of these categories based on observable signals:
+
+| Category | When to Use |
+|----------|-------------|
+| **HEALTHY** | Deal progressing with validated value, active ownership, forward momentum |
+| **AT_RISK** | Weak negative signals emerging without a single blocking issue |
+| **STALLED** | Deal stopped advancing without explicit rejection |
+| **CHAMPION_WEAK** | No effective internal advocate driving the deal forward |
+| **BLOCKED** | Deal stopped by a known, explicit external dependency |
+| **MISALIGNED** | Stakeholders do not share a common definition of success |
+| **UNVALIDATED** | Interest exists but value not proven in customer's context |
+| **COLD** | Engagement dropped sharply with no active dialogue |
+| **LATE_STAGE_RISK** | Deal appears close but exhibits fragility threatening closure |
+| **LIKELY_LOST** | Deal trajectory strongly indicates loss despite no formal rejection |
+| **ARTIFICIALLY_HEALTHY** | Surface metrics look healthy but lacks structural buying readiness |
+
+When producing the health section, summarize the reasoning (engagement recency, stakeholder signals, blockers, sentiment) in 2-3 sentences suitable for `deal_health_reason`.
+
 # Source Attribution
 Integrate source references naturally into the narrative:
 - "Per the Oct 16 Teams call..."
@@ -98,8 +117,8 @@ Generate a 100-200 word deal briefing for a Solution Engineer.
 
 ## Instructions
 1. Review stakeholders, meetings, and emails to understand the full picture.
-2. Focus on technical requirements, business pain points, and deal momentum.
-3. Produce a concise briefing covering: Business Context, Technical Scope, and Deal Health.
+2. Focus on technical requirements, business pain points, deal momentum, and blockers.
+3. Produce a concise briefing covering: Business Context, Technical Scope, and Deal Health (including the health label and rationale).
 4. **IMPORTANT**: Never include raw URLs or meeting links in the output. Reference meetings by date and type only.
 
 Include source references (Teams/Zoom/Outlook) when citing information.
