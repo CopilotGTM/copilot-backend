@@ -15,128 +15,27 @@ from src.domain.models.organisation_tables.sync.crm.stakeholders import (
 )
 
 
-class PipelineStage(BaseModel):
-    """Definition of a stage within a pipeline."""
+class DealTeamMember(BaseModel):
+    """A team member associated with a deal (owner, collaborator, split_owner, etc.)."""
 
-    stage_id: UUID
-    external_id: str
-    name: str
-    label: str | None = None
-    display_order: int | None = None
-    probability: float | None = None
-    is_closed: bool = False
-
-    # Merged history context
-    status: str = "upcoming"  # upcoming, active, completed, skipped
-    entered_at: datetime | None = None
-    exited_at: datetime | None = None
-    duration_days: int | None = None
+    external_id: str = Field(description="CRM external ID of the user")
+    name: str | None = Field(None, description="Display name of the team member")
+    email: str | None = Field(None, description="Email address of the team member")
+    role: str = Field(description="Role in the deal: owner, collaborator, split_owner, etc.")
 
     model_config = {"from_attributes": True}
 
 
-class DealPipelineContext(BaseModel):
-    """Snapshot of the pipeline and stage for a deal."""
+class DealOwnerDetail(BaseModel):
+    """Owner details for a deal.
 
-    pipeline_id: UUID | None = None
-    pipeline_external_id: str | None = None
-    pipeline_name: str | None = None
-    pipeline_label: str | None = None
-    stage_id: UUID | None = None
-    stage_external_id: str | None = None
-    stage_name: str | None = None
-    stage_label: str | None = None
-    forecast_category: str | None = None
-    deal_type: str | None = None
-    priority: str | None = None
-    lead_source: str | None = None
-    stages: list[PipelineStage] | None = None
+    This is exposed as a list in list responses for forward compatibility
+    (e.g., multiple owners in some CRMs).
+    """
 
-    model_config = {"from_attributes": True}
-
-
-class DealTimelineContext(BaseModel):
-    """Key timeline markers for a deal."""
-
-    source_created_at: datetime | None = None
-    close_date: datetime | None = None
-    expected_close_date: datetime | None = None
-    closed_won_at: datetime | None = None
-    closed_lost_at: datetime | None = None
-    last_activity_at: datetime | None = None
-    stage_entered_at: datetime | None = None
-    stage_updated_at: datetime | None = None
-    synced_at: datetime | None = None
-    source_modified_at: datetime | None = None
-    last_seen_at: datetime | None = None
-    days_to_close: int | None = None
-    deal_age_days: int | None = None
-
-    model_config = {"from_attributes": True}
-
-
-class DealFinancialContext(BaseModel):
-    """Financial snapshot for a deal."""
-
-    amount: float | None = None
-    currency: str | None = None
-    amount_home_currency: float | None = None
-    predicted_amount: float | None = None
-    probability: float | None = None
-
-    model_config = {"from_attributes": True}
-
-
-class DealAssociationsContext(BaseModel):
-    """External entities linked to a deal."""
-
-    owner_external_id: str | None = None
-    owner_name: str | None = None
-    owner_email: str | None = None
-    technical_owner_external_id: str | None = None
-    technical_owner_name: str | None = None
-    technical_owner_email: str | None = None
-    company_external_id: str | None = None
-    company_name: str | None = None
-    company_domain: str | None = None
-    company_industry: str | None = None
-    primary_contact_external_id: str | None = None
-    primary_contact_name: str | None = None
-    primary_contact_email: str | None = None
-
-    model_config = {"from_attributes": True}
-
-
-class DealStageHistoryItem(BaseModel):
-    """Single stage transition in deal history."""
-
-    history_id: UUID
-    stage_external_id: str | None = None
-    stage_name: str | None = None
-    stage_label: str | None = None
-    from_stage_external_id: str | None = None
-    entered_at: datetime
-    exited_at: datetime | None = None
-    duration_days: int | None = None
-    amount_at_stage: float | None = None
-    probability_at_stage: float | None = None
-    source: str | None = None
-
-    model_config = {"from_attributes": True}
-
-
-class DealContext(BaseModel):
-    """Composite context block used by deal responses."""
-
-    pipeline: DealPipelineContext | None = None
-    timeline: DealTimelineContext | None = None
-    financials: DealFinancialContext | None = None
-    associations: DealAssociationsContext | None = None
-    stage_history: list[DealStageHistoryItem] | None = None
-    metrics: dict[str, Any] | None = None
-    properties: dict[str, Any] | None = None
-    health: str | None = None
-    time_tracked: str | None = None
+    external_id: str = Field(description="CRM external ID of the owner")
+    name: str | None = Field(None, description="Display name of the owner")
+    email: str | None = Field(None, description="Email address of the owner")
 
     model_config = {"from_attributes": True}
 
@@ -156,15 +55,13 @@ class DealListItem(BaseModel):
     stage_label: str | None
     pipeline_name: str | None
     pipeline_label: str | None
-    owner_external_id: str | None = None
-    owner_name: str | None
-    owner_email: str | None
+    owner_details: list[DealOwnerDetail] = Field(
+        default_factory=list,
+        description="Owner details as a list (typically 0..1 items).",
+    )
     company_external_id: str | None
     company_name: str | None = None
     company_domain: str | None = None
-    primary_contact_external_id: str | None
-    primary_contact_name: str | None = None
-    primary_contact_email: str | None = None
     deal_health: str | None = Field(
         None,
         description="AI-assessed health for the deal: ON_TRACK, NEEDS_ATTENTION, AT_RISK, CRITICAL, or STALLED.",
@@ -172,6 +69,10 @@ class DealListItem(BaseModel):
     deal_health_reason: str | None = Field(
         None,
         description="Brief explanation for the AI-assessed deal health.",
+    )
+    deal_team: list[DealTeamMember] = Field(
+        default_factory=list,
+        description="List of team members (owners, collaborators, split_owners) associated with the deal.",
     )
     created_at: datetime
     updated_at: datetime
@@ -188,71 +89,54 @@ class DealsPage(BaseModel):
 
 
 class DealDetail(BaseModel):
-    """Detailed deal information including all available fields."""
+    """Detailed deal information - streamlined for frontend needs."""
 
     # Identity
     deal_id: UUID
     external_id: str
-
-    # Core business context
     name: str | None
+
+    # Deal value
     amount: float | None
     currency: str | None
-    amount_home_currency: float | None
-    deal_status: str
-    probability: float | None
-    predicted_amount: float | None
-    close_date: datetime | None
-    expected_close_date: datetime | None
-    closed_won_at: datetime | None
-    closed_lost_at: datetime | None
-    closed_reason: str | None
 
-    # Sales process snapshot
-    stage_external_id: str | None
+    # Status & Stage
+    deal_status: str
     stage_name: str | None
     stage_label: str | None
-    pipeline_external_id: str | None
-    pipeline_name: str | None
-    pipeline_label: str | None
-    pipeline_id: UUID | None
-    stage_id: UUID | None
-    forecast_category: str | None
-    deal_type: str | None
-    priority: str | None
-    lead_source: str | None
 
-    # Ownership & associations
-    owner_external_id: str | None
-    owner_name: str | None
-    owner_email: str | None
-    company_external_id: str | None
-    company_name: str | None = None
-    company_domain: str | None = None
-    primary_contact_external_id: str | None
-    primary_contact_name: str | None = None
-    primary_contact_email: str | None = None
-
-    # Activity & timing
+    # Timeline (frontend: Creation Date, Close Date, Deal Age, Last Communication)
     source_created_at: datetime | None
+    close_date: datetime | None
     last_activity_at: datetime | None
-    stage_entered_at: datetime | None
-    stage_updated_at: datetime | None
-    synced_at: datetime
-    source_modified_at: datetime | None
-    last_seen_at: datetime | None
+    deal_age_days: int | None = Field(None, description="Days since deal was created")
 
-    # Freeform details
-    description: str | None
+    # Owner & Team
+    owner_details: list[DealOwnerDetail] = Field(
+        default_factory=list,
+        description="Owner details as a list (typically 0..1 items).",
+    )
+    deal_team: list[DealTeamMember] = Field(
+        default_factory=list,
+        description="List of team members associated with the deal.",
+    )
 
-    # Integration metadata
-    integration_id: UUID
-    organisation_id: UUID
+    # Company/Industry
+    company_name: str | None = None
+    company_industry: str | None = Field(None, description="Industry of the associated company")
 
-    # Timestamps
-    created_at: datetime
-    updated_at: datetime
-    context: DealContext | None = None
+    # Deal health assessment
+    deal_health: str | None = Field(
+        None,
+        description="AI-assessed health: ON_TRACK, NEEDS_ATTENTION, AT_RISK, CRITICAL, or STALLED.",
+    )
+    deal_health_reason: str | None = Field(
+        None,
+        description="Brief explanation for the AI-assessed deal health.",
+    )
+
+    # Time tracked (placeholder for future implementation)
+    time_tracked: str | None = Field(None, description="Total time tracked on this deal")
 
     # Deal Summary (AI-generated)
     deal_summary_status: str | None = Field(

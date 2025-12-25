@@ -13,9 +13,11 @@ from sqlalchemy.orm import joinedload
 from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDeal,
+    CRMDealParticipant,
     CRMDealStage,
     CRMDealStageHistory,
     CRMDealStatus,
+    CRMParticipantType,
 )
 from src.infra.utils.cursor import decode_cursor, encode_cursor
 from src.infra.utils.logger import get_logger
@@ -486,6 +488,79 @@ class DealsAccessService:
         except Exception as e:
             logger.error("Failed to calculate deals stats: %s", e, exc_info=True)
             raise DealsAccessServiceError("Failed to calculate statistics") from e
+
+    async def get_deal_team_members_batch(
+        self, deal_ids: list[UUID]
+    ) -> dict[UUID, list[dict[str, Any]]]:
+        """Retrieve USER-type participants (team members) for multiple deals, excluding owners.
+
+        This returns collaborators, split_owners, and other user participants
+        associated with the given deals. Owners are excluded since they are
+        returned separately in owner_details. Results are grouped by deal_id.
+
+        Args:
+            deal_ids: List of deal UUIDs to fetch team members for
+
+        Returns:
+            Dictionary mapping deal_id to list of team members.
+            Each team member dict contains:
+                - external_id: CRM user ID
+                - name: Display name (if known)
+                - email: Email address (if known)
+                - role: Relationship role (collaborator, split_owner, etc.)
+
+        Raises:
+            DealsAccessServiceError: If database error occurs
+        """
+        if not deal_ids:
+            return {}
+
+        try:
+            c = cast(Any, CRMDealParticipant).__table__.c
+            stmt = (
+                select(
+                    c.deal_id,
+                    c.related_external_id,
+                    c.related_name,
+                    c.related_email,
+                    c.relationship_role,
+                )
+                .where(
+                    c.organisation_id == self.organisation_id,
+                    c.deal_id.in_(deal_ids),
+                    c.participant_type == CRMParticipantType.USER.value,
+                    c.relationship_role != "owner",  # Exclude owners (shown in owner_details)
+                    c.is_deleted.is_(False),
+                )
+                .order_by(
+                    c.deal_id,
+                    c.relationship_role,
+                )
+            )
+
+            result = await self.org_session.execute(stmt)
+            rows = result.all()
+
+            # Group by deal_id
+            team_by_deal: dict[UUID, list[dict[str, Any]]] = {deal_id: [] for deal_id in deal_ids}
+
+            for row in rows:
+                deal_id = row.deal_id
+                if deal_id in team_by_deal:
+                    team_by_deal[deal_id].append(
+                        {
+                            "external_id": row.related_external_id,
+                            "name": row.related_name,
+                            "email": row.related_email,
+                            "role": row.relationship_role or "member",
+                        }
+                    )
+
+            return team_by_deal
+
+        except Exception as e:
+            logger.error("Failed to get deal team members: %s", e, exc_info=True)
+            raise DealsAccessServiceError("Failed to retrieve deal team members") from e
 
 
 def extract_deal_health(deal_summary_data: dict | None) -> str | None:

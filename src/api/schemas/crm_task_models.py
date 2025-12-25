@@ -84,7 +84,7 @@ class TaskDetail(BaseModel):
     metrics: dict[str, Any] | None = None
 
     # Integration metadata
-    integration_id: UUID
+    integration_id: UUID | None
     organisation_id: UUID
 
     # Timestamps

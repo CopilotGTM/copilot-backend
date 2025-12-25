@@ -14,6 +14,8 @@ from src.infra.utils.logger import get_logger
 
 logger = get_logger("tasks_access_service")
 
+_TASK_ACTIVITY_TYPES: set[str] = {"TASK", "TODO"}
+
 
 class TasksAccessServiceError(Exception):
     """Custom exception for tasks access service errors."""
@@ -60,14 +62,23 @@ class TasksAccessService:
             or_(c.is_deleted.is_(False), c.is_deleted.is_(None)),
         )
 
+        # This service powers the "Tasks" API; restrict to task-like activity types.
+        if task_types:
+            requested = {t for t in task_types if t}
+            allowed = requested & _TASK_ACTIVITY_TYPES
+            # If client provided only non-task types, return an empty page rather than
+            # accidentally returning non-task activities.
+            if not allowed:
+                return [], None
+            stmt = stmt.where(c.activity_type.in_(list(allowed)))
+        else:
+            stmt = stmt.where(c.activity_type.in_(list(_TASK_ACTIVITY_TYPES)))
+
         if statuses:
             stmt = stmt.where(c.status.in_(list(statuses)))
 
         if priorities:
             stmt = stmt.where(c.priority.in_(list(priorities)))
-
-        if task_types:
-            stmt = stmt.where(c.activity_type.in_(list(task_types)))
 
         if cursor:
             try:
@@ -105,7 +116,8 @@ class TasksAccessService:
             stmt = select(CRMActivity).where(
                 c.activity_id == task_id,
                 c.organisation_id == self.organisation_id,
-                c.is_deleted.is_(False),
+                or_(c.is_deleted.is_(False), c.is_deleted.is_(None)),
+                c.activity_type.in_(list(_TASK_ACTIVITY_TYPES)),
             )
             res = await self.org_session.execute(stmt)
             return res.scalar_one_or_none()

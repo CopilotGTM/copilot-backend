@@ -15,17 +15,13 @@ from src.api.dependencies.organisation_dependencies import (
 from src.api.dependencies.rate_limit import rate_limit_user_read
 from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.crm_models import (
-    DealAssociationsContext,
-    DealContext,
     DealDetail,
-    DealFinancialContext,
     DealJobResponse,
-    DealPipelineContext,
+    DealOwnerDetail,
     DealsPage,
     DealsStats,
     DealSummaryJobsStatus,
-    DealTimelineContext,
-    PipelineStage,
+    DealTeamMember,
 )
 from src.api.utils.http_response import Response
 from src.domain.models.organisation_tables.job_models import JobStatus
@@ -48,209 +44,6 @@ logger = get_logger("deals_handler")
 _UNEXPECTED_ERR_MSG = "An unexpected error occurred while processing your request"
 
 deals_router = APIRouter()
-
-
-async def _build_deal_context(
-    deal, deals_service: DealsAccessService, stage_history: list | None = None
-) -> DealContext:
-    """Assemble the composite context block for a deal response."""
-
-    # Calculate Deal Age
-    deal_age_days = None
-    if getattr(deal, "source_created_at", None):
-        created_at = deal.source_created_at
-        if created_at.tzinfo is None:
-            created_at = created_at.replace(tzinfo=UTC)
-        deal_age_days = (datetime.now(UTC) - created_at).days
-
-    timeline = DealTimelineContext(
-        source_created_at=getattr(deal, "source_created_at", None),
-        close_date=getattr(deal, "close_date", None),
-        expected_close_date=getattr(deal, "expected_close_date", None),
-        closed_won_at=getattr(deal, "closed_won_at", None),
-        closed_lost_at=getattr(deal, "closed_lost_at", None),
-        last_activity_at=getattr(deal, "last_activity_at", None),
-        stage_entered_at=getattr(deal, "stage_entered_at", None),
-        stage_updated_at=getattr(deal, "stage_updated_at", None),
-        synced_at=getattr(deal, "synced_at", None),
-        source_modified_at=getattr(deal, "source_modified_at", None),
-        last_seen_at=getattr(deal, "last_seen_at", None),
-        days_to_close=getattr(deal, "days_to_close", None),
-        deal_age_days=deal_age_days,
-    )
-
-    financials = DealFinancialContext(
-        amount=getattr(deal, "amount", None),
-        currency=getattr(deal, "currency", None),
-        amount_home_currency=getattr(deal, "amount_home_currency", None),
-        predicted_amount=getattr(deal, "predicted_amount", None),
-        probability=getattr(deal, "probability", None),
-    )
-
-    # Try to find technical owner in participants first
-    tech_owner_participant = next(
-        (
-            p
-            for p in getattr(deal, "participants", [])
-            if getattr(p, "relationship_role", "") == "technical_owner"
-        ),
-        None,
-    )
-
-    if tech_owner_participant:
-        tech_owner_id = getattr(tech_owner_participant, "related_external_id", None)
-        tech_owner_name = getattr(tech_owner_participant, "related_name", None)
-        tech_owner_email = getattr(tech_owner_participant, "related_email", None)
-    else:
-        tech_owner_id = None
-        tech_owner_name = None
-        tech_owner_email = None
-
-    # Fetch Company Industry
-    company_industry = None
-    company_external_id = getattr(deal, "company_external_id", None)
-    if company_external_id:
-        company = await deals_service.get_company_by_external_id(company_external_id)
-        if company:
-            company_industry = company.industry
-
-    associations = DealAssociationsContext(
-        owner_external_id=getattr(deal, "owner_external_id", None),
-        owner_name=getattr(deal, "owner_name", None),
-        owner_email=getattr(deal, "owner_email", None),
-        technical_owner_external_id=tech_owner_id,
-        technical_owner_name=tech_owner_name,
-        technical_owner_email=tech_owner_email,
-        company_external_id=company_external_id,
-        company_name=getattr(deal, "company_name", None),
-        company_domain=getattr(deal, "company_domain", None),
-        company_industry=company_industry,
-        primary_contact_external_id=getattr(deal, "primary_contact_external_id", None),
-        primary_contact_name=getattr(deal, "primary_contact_name", None),
-        primary_contact_email=getattr(deal, "primary_contact_email", None),
-    )
-
-    # Calculate Health
-    health = "HEALTHY"
-    deal_status = getattr(deal, "deal_status", "open")
-    if deal_status in ["won", "lost", "closed"]:
-        health = deal_status.upper()
-    elif not getattr(deal, "last_activity_at", None):
-        health = "STALLED"
-    else:
-        last_activity = deal.last_activity_at
-        if last_activity.tzinfo is None:
-            last_activity = last_activity.replace(tzinfo=UTC)
-        days_since_activity = (datetime.now(UTC) - last_activity).days
-        if days_since_activity > 14:
-            health = "STALLED"
-
-    # Time Tracked (Mocked for now as per image requirement)
-    time_tracked = "47 hours"
-
-    # Get pipeline info
-    pipeline_name = "Default Pipeline"
-    pipeline_id = None
-    all_stages: list[PipelineStage] = []
-
-    if deal.stage and deal.stage.pipeline:
-        pipeline_name = deal.stage.pipeline.name
-        pipeline_id = deal.stage.pipeline.pipeline_id
-
-        # Fetch all stages for this pipeline
-        stages_db = await deals_service.get_pipeline_stages(pipeline_id)
-
-        # Map history by stage_external_id (or stage_id if available in history)
-        # stage_history is a list of dicts
-        history_map = {}
-        if stage_history:
-            for h in stage_history:
-                # Prefer matching by external_id as it's more robust across syncs
-                # But we need to check what keys are in h.
-                # Based on get_deal_stage_history: "stage_external_id", "stage_name", etc.
-                eid = h.get("stage_external_id")
-                if eid:
-                    history_map[eid] = h
-
-        current_stage_order = deal.stage.display_order or 0
-
-        all_stages = []
-        for s in stages_db:
-            # Determine status and history
-            status = "upcoming"
-            entered_at = None
-            exited_at = None
-            duration_days = None
-
-            # Check history
-            hist_item = history_map.get(s.external_id)
-            if hist_item:
-                entered_at = hist_item.get("entered_at")
-                exited_at = hist_item.get("exited_at")
-                duration_days = hist_item.get("duration_days")
-
-                if s.stage_id == deal.stage_id:
-                    status = "active"
-                elif exited_at:
-                    status = "completed"
-                else:
-                    # In history but not active and no exit time?
-                    # Could be a previous visit that wasn't closed properly, or current.
-                    # If it matches current ID, it's active.
-                    status = "completed"  # Fallback
-            else:
-                # No history record
-                if s.stage_id == deal.stage_id:
-                    status = "active"
-                elif (s.display_order or 0) < current_stage_order:
-                    status = "skipped"
-                else:
-                    status = "upcoming"
-
-            all_stages.append(
-                PipelineStage(
-                    stage_id=s.stage_id,
-                    external_id=s.external_id or str(s.stage_id),
-                    name=s.name,
-                    label=s.label,
-                    display_order=s.display_order or 0,
-                    probability=s.probability,
-                    is_closed=s.is_closed or False,
-                    status=status,
-                    entered_at=entered_at,
-                    exited_at=exited_at,
-                    duration_days=duration_days,
-                )
-            )
-
-    pipeline_context = DealPipelineContext(
-        pipeline_id=pipeline_id,
-        pipeline_external_id=getattr(deal, "pipeline_external_id", None),
-        pipeline_name=pipeline_name,
-        pipeline_label=getattr(deal, "pipeline_label", None),
-        stage_id=deal.stage_id,
-        stage_external_id=getattr(deal, "stage_external_id", None),
-        stage_name=deal.stage.name if deal.stage else None,
-        stage_label=getattr(deal, "stage_label", None),
-        forecast_category=getattr(deal, "forecast_category", None),
-        deal_type=getattr(deal, "deal_type", None),
-        priority=getattr(deal, "priority", None),
-        lead_source=getattr(deal, "lead_source", None),
-        stages=all_stages,
-    )
-
-    context = DealContext(
-        pipeline=pipeline_context,
-        timeline=timeline,
-        financials=financials,
-        associations=associations,
-        stage_history=stage_history or [],
-        metrics=getattr(deal, "metrics", None) or None,
-        properties=getattr(deal, "properties", None) or None,
-        health=health,
-        time_tracked=time_tracked,
-    )
-    return context
 
 
 async def get_deals_access_service(
@@ -367,6 +160,10 @@ async def list_deals(
                 q=q,
             )
 
+        # Fetch deal team members (owners, collaborators, split_owners) in one batch query
+        deal_ids = [deal.deal_id for deal in deals]
+        team_by_deal = await service.get_deal_team_members_batch(deal_ids) if deal_ids else {}
+
         # Convert to response models
         items = [
             {
@@ -382,19 +179,33 @@ async def list_deals(
                 "stage_label": deal.stage_label,
                 "pipeline_name": deal.pipeline_name,
                 "pipeline_label": deal.pipeline_label,
-                "owner_external_id": deal.owner_external_id,
-                "owner_name": deal.owner_name,
-                "owner_email": deal.owner_email,
+                "owner_details": (
+                    [
+                        DealOwnerDetail(
+                            external_id=str(deal.owner_external_id),
+                            name=deal.owner_name,
+                            email=deal.owner_email,
+                        )
+                    ]
+                    if getattr(deal, "owner_external_id", None)
+                    else []
+                ),
                 "company_external_id": deal.company_external_id,
                 "company_name": getattr(deal, "company_name", None),
                 "company_domain": getattr(deal, "company_domain", None),
-                "primary_contact_external_id": deal.primary_contact_external_id,
-                "primary_contact_name": getattr(deal, "primary_contact_name", None),
-                "primary_contact_email": getattr(deal, "primary_contact_email", None),
                 "deal_health": extract_deal_health(getattr(deal, "deal_summary_data", None)),
                 "deal_health_reason": extract_deal_health_reason(
                     getattr(deal, "deal_summary_data", None)
                 ),
+                "deal_team": [
+                    DealTeamMember(
+                        external_id=member["external_id"],
+                        name=member.get("name"),
+                        email=member.get("email"),
+                        role=member.get("role", "member"),
+                    )
+                    for member in team_by_deal.get(deal.deal_id, [])
+                ],
                 "created_at": deal.created_at,
                 "updated_at": deal.updated_at,
                 "synced_at": deal.synced_at,
@@ -494,8 +305,7 @@ async def get_deal(
         deal_id: UUID of the deal to retrieve
 
     Returns:
-        GenericResponse containing DealDetail with full deal information,
-        including active deal-level jobs and summary data when available.
+        GenericResponse containing DealDetail with streamlined deal information.
     """
     try:
         deal = await service.get_deal_by_id(deal_id)
@@ -506,49 +316,98 @@ async def get_deal(
                 status_code=404,
             )
 
-        # Fetch stage history for the deal
-        stage_history = await service.get_deal_stage_history(deal_id)
+        # Fetch deal team members (owners, collaborators, split_owners)
+        team_by_deal = await service.get_deal_team_members_batch([deal_id])
+        deal_team_data = team_by_deal.get(deal_id, [])
 
-        # Build context while deal is still attached to session
-        context = await _build_deal_context(deal, service, stage_history)
+        # Build owner_details list
+        owner_details = (
+            [
+                DealOwnerDetail(
+                    external_id=str(deal.owner_external_id),
+                    name=deal.owner_name,
+                    email=deal.owner_email,
+                )
+            ]
+            if getattr(deal, "owner_external_id", None)
+            else []
+        )
 
-        # Convert to detailed response model BEFORE checking jobs
-        # (in case the jobs query fails and requires rollback)
-        base_detail = DealDetail.model_validate(deal)
+        # Build deal_team list
+        deal_team = [
+            DealTeamMember(
+                external_id=member["external_id"],
+                name=member.get("name"),
+                email=member.get("email"),
+                role=member.get("role", "member"),
+            )
+            for member in deal_team_data
+        ]
+
+        # Extract deal health from summary data
+        deal_health = extract_deal_health(getattr(deal, "deal_summary_data", None))
+        deal_health_reason = extract_deal_health_reason(getattr(deal, "deal_summary_data", None))
+
+        # Calculate deal age in days
+        deal_age_days = None
+        source_created_at = deal.source_created_at
+        if source_created_at is not None:
+            created_at = source_created_at
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=UTC)
+            deal_age_days = (datetime.now(UTC) - created_at).days
+
+        # Fetch company industry from associated company (industry is on CRMCompany, not CRMDeal)
+        company_industry = None
+        if deal.company_external_id:
+            company = await service.get_company_by_external_id(deal.company_external_id)
+            if company:
+                company_industry = company.industry
 
         # Check for active deal-level jobs (for SSE reconnection)
-        # This is done LAST because if the table doesn't exist, we need to rollback
-        # which would invalidate the deal object
         active_deal_jobs = None
         try:
             active_jobs_data = await deal_job_service.get_active_deal_jobs_status(deal_id)
             if active_jobs_data:
                 active_deal_jobs = DealSummaryJobsStatus.model_validate(active_jobs_data)
         except Exception as jobs_err:
-            # Log but don't fail - table may not exist yet
-            # No rollback needed since we've already extracted all data from deal
             logger.debug("Could not fetch active deal jobs for %s: %s", deal_id, jobs_err)
 
-        # Compute deal_summary_status dynamically (no DB column needed):
-        # 1. Active job exists → IN_PROGRESS
-        # 2. deal_summary_data exists → COMPLETED
-        # 3. Otherwise → NOT_STARTED
+        # Compute deal_summary_status dynamically
         deal_summary_status = "NOT_STARTED"
+        deal_summary_data = getattr(deal, "deal_summary_data", None)
         if active_deal_jobs and active_deal_jobs.deal_summary:
             deal_summary_status = "IN_PROGRESS"
-        elif base_detail.deal_summary_data:
+        elif deal_summary_data:
             deal_summary_status = "COMPLETED"
 
-        detail_with_context = base_detail.model_copy(
-            update={
-                "context": context,
-                "active_deal_jobs": active_deal_jobs,
-                "deal_summary_status": deal_summary_status,
-            }
+        # Build streamlined response
+        detail = DealDetail(
+            deal_id=deal.deal_id,
+            external_id=deal.external_id,
+            name=deal.name,
+            amount=deal.amount,
+            currency=deal.currency,
+            deal_status=deal.deal_status,
+            stage_name=deal.stage_name,
+            stage_label=deal.stage_label,
+            source_created_at=deal.source_created_at,
+            close_date=deal.close_date,
+            last_activity_at=deal.last_activity_at,
+            deal_age_days=deal_age_days,
+            owner_details=owner_details,
+            deal_team=deal_team,
+            company_name=deal.company_name,
+            company_industry=company_industry,
+            deal_health=deal_health,
+            deal_health_reason=deal_health_reason,
+            time_tracked=None,  # Placeholder for future implementation
+            deal_summary_status=deal_summary_status,
+            deal_summary_data=deal_summary_data,
+            active_deal_jobs=active_deal_jobs,
         )
-        return Response.success_response(
-            message="Deal retrieved successfully", data=detail_with_context
-        )
+
+        return Response.success_response(message="Deal retrieved successfully", data=detail)
 
     except DealsAccessServiceError as e:
         logger.warning("Deal access error: %s", e.message, exc_info=True)
