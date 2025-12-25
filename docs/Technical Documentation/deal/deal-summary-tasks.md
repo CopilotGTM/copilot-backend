@@ -280,6 +280,6 @@ process_deal_summary_job.delay(str(org_id), str(job.job_id))
 
 ## Related Documentation
 
-- [Deal Tasks](./deal-tasks.md) - Deal-meeting matching tasks
+- [Deal Activities](./deal-activities.md) - Canonical CRM activities (tasks/calls/meetings/etc.)
 - [Stakeholder Analysis Tasks](./stakeholder-analysis-tasks.md) - AI stakeholder analysis
 - [Celery Worker Creation Guide](../celery-worker-creation-guide.md) - How to create new workers

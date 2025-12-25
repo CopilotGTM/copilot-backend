@@ -73,7 +73,10 @@ async def list_deal_tasks(
     cursor: str | None = Query(None, description="Pagination cursor from a previous response"),
     statuses: list[str] | None = Query(None, description="Filter by task statuses"),
     priorities: list[str] | None = Query(None, description="Filter by task priorities"),
-    task_types: list[str] | None = Query(None, description="Filter by task types"),
+    task_types: list[str] | None = Query(
+        None,
+        description="Filter by task types (TASK/TODO only). Non-task activity types are not returned.",
+    ),
     service: TasksAccessService = Depends(get_tasks_access_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ):

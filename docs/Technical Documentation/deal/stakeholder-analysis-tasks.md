@@ -320,5 +320,5 @@ Stakeholders are skipped (not analyzed) when:
 
 - [Stakeholder Operations](./stakeholder-operations.md) - Stakeholder discovery and sync logic
 - [Deal Summary Tasks](./deal-summary-tasks.md) - AI deal summary generation
-- [Deal Tasks](./deal-tasks.md) - Deal-meeting matching tasks
+- [Deal Activities](./deal-activities.md) - Canonical CRM activities (tasks/calls/meetings/etc.)
 - [Celery Worker Creation Guide](../celery-worker-creation-guide.md) - How to create new workers

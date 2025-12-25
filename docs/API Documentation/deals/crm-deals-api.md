@@ -62,8 +62,9 @@ All endpoints return the shared `GenericResponse` envelope.
 ### Request Query Parameters (TypeScript)
 
 ```ts
-
 type UUID = string;
+
+export type CRMDealStatus = "open" | "won" | "lost" | "closed";
 
 
 export interface ListDealsParams {
@@ -87,257 +88,6 @@ export interface ListDealsParams {
 ### Response Models (TypeScript)
 
 ```ts
-export interface DealListItem {
-  deal_id: UUID;
-
-  external_id: string;
-
-  name: string | null;
-  amount: number | null;
-  currency: string | null;
-  deal_status: CRMDealStatus;
-
-  probability: number | null;
-
-  close_date: string | null;  // ISO8601
-  stage_name: string | null;
-  stage_label: string | null;
-  pipeline_name: string | null;
-
-  pipeline_label: string | null;
-
-  owner_external_id: string | null;  // Required for owner_external_ids filter
-  owner_name: string | null;
-  owner_email: string | null;
-  company_external_id: string | null;
-  company_name: string | null;
-
-  company_domain: string | null;
-
-  primary_contact_external_id: string | null;
-  primary_contact_name: string | null;
-  primary_contact_email: string | null;
-  
-  // AI-generated deal health (from deal_summary_data if available)
-  deal_health: "HEALTHY" | "AT_RISK" | "STALLED" | "CHAMPION_WEAK" | "BLOCKED" | "MISALIGNED" | "UNVALIDATED" | "COLD" | "LATE_STAGE_RISK" | "LIKELY_LOST" | "ARTIFICIALLY_HEALTHY" | null;
-  deal_health_reason: string | null;  // Captured but NOT displayed in UI for now
-  
-  created_at: string;  // ISO8601
-
-  updated_at: string;  // ISO8601
-
-  synced_at: string;   // ISO8601
-}
-
-export interface DealsPage {
-
-  items: DealListItem[];
-  cursor: string | null;  // null if no more results
-}
-
-
-export interface DealDetail {
-  // Identity
-  deal_id: UUID;
-  external_id: string;
-
-  
-  // Core business context
-  name: string | null;
-
-  amount: number | null;
-  currency: string | null;
-  amount_home_currency: number | null;
-  deal_status: CRMDealStatus;
-  probability: number | null;
-  predicted_amount: number | null;
-  close_date: string | null;  // ISO8601
-  expected_close_date: string | null;  // ISO8601
-  closed_won_at: string | null;  // ISO8601
-  closed_lost_at: string | null;  // ISO8601
-
-  closed_reason: string | null;
-  
-  // Sales process snapshot
-  stage_external_id: string | null;
-  stage_name: string | null;
-  stage_label: string | null;
-  pipeline_external_id: string | null;
-  pipeline_name: string | null;
-  pipeline_label: string | null;
-  pipeline_id: UUID | null;
-  stage_id: UUID | null;
-  forecast_category: string | null;
-  deal_type: string | null;
-  priority: string | null;
-  lead_source: string | null;
-  
-  // Ownership & associations
-  owner_external_id: string | null;
-  owner_name: string | null;
-  owner_email: string | null;
-  company_external_id: string | null;
-  company_name: string | null;
-  company_domain: string | null;
-  primary_contact_external_id: string | null;
-  primary_contact_name: string | null;
-  primary_contact_email: string | null;
-  
-  // Activity & timing
-  source_created_at: string | null;  // ISO8601
-  last_activity_at: string | null;  // ISO8601
-  stage_entered_at: string | null;  // ISO8601
-  stage_updated_at: string | null;  // ISO8601
-  synced_at: string;  // ISO8601
-  source_modified_at: string | null;  // ISO8601
-
-  last_seen_at: string | null;  // ISO8601
-  
-  // Freeform details
-  description: string | null;
-  
-  // Integration metadata
-  integration_id: UUID;
-
-  organisation_id: UUID;
-  
-  // Timestamps
-  created_at: string;  // ISO8601
-  updated_at: string;  // ISO8601
-  context: DealContext | null;
-
-  // Deal Summary (AI-generated)
-  deal_summary_status: string | null;  // NOT_STARTED, IN_PROGRESS, COMPLETED, FAILED
-  deal_summary_data: {
-    schema_version: string;  // Currently "1.0"
-    generated_at: string;  // ISO8601
-    data: {
-      deal_summary: string | null;
-      deal_health: "HEALTHY" | "AT_RISK" | "STALLED" | "CHAMPION_WEAK" | "BLOCKED" | "MISALIGNED" | "UNVALIDATED" | "COLD" | "LATE_STAGE_RISK" | "LIKELY_LOST" | "ARTIFICIALLY_HEALTHY" | null;
-      deal_health_reason: string | null;  // Captured but NOT displayed in UI for now
-    };
-  } | null;  // AI-generated summary data; fields may be null for older summaries
-
-  // Active deal-level jobs (for SSE reconnection)
-  active_deal_jobs: DealSummaryJobsStatus | null;
-}
-
-// Active deal-level jobs status
-export interface DealSummaryJobsStatus {
-  deal_summary: DealJobResponse | null;  // Active deal summary job, if any
-  // Future: stakeholder_analysis, deal_risk_analysis, etc.
-}
-
-// Job response for active job tracking
-export interface DealJobResponse {
-  job_id: UUID;
-  job_type: string;
-  status: string;  // PENDING, IN_PROGRESS, COMPLETED, FAILED
-}
-
-export interface DealContext {
-  pipeline: DealPipelineContext | null;
-  timeline: DealTimelineContext | null;
-  financials: DealFinancialContext | null;
-  associations: DealAssociationsContext | null;
-  stage_history: DealStageHistoryItem[] | null;
-  metrics: Record<string, unknown> | null;
-  properties: Record<string, unknown> | null;
-  health: string | null;
-  time_tracked: string | null;
-}
-
-export interface PipelineStage {
-  stage_id: UUID;
-  external_id: string;
-  name: string;
-  label: string | null;
-  display_order: number | null;
-  probability: number | null;
-  is_closed: boolean;
-  
-  // Merged history fields
-  status: "upcoming" | "active" | "completed" | "skipped";
-  entered_at: string | null;    // ISO8601
-  exited_at: string | null;     // ISO8601
-  duration_days: number | null;
-}
-
-export interface DealPipelineContext {
-  pipeline_id: UUID | null;
-  pipeline_external_id: string | null;
-  pipeline_name: string | null;
-  pipeline_label: string | null;
-
-  stage_id: UUID | null;
-  stage_external_id: string | null;
-  stage_name: string | null;
-  stage_label: string | null;
-  forecast_category: string | null;
-  deal_type: string | null;
-  priority: string | null;
-
-  lead_source: string | null;
-  stages: PipelineStage[] | null;
-}
-
-export interface DealTimelineContext {
-  source_created_at: string | null;
-  close_date: string | null;
-  expected_close_date: string | null;
-  closed_won_at: string | null;
-  closed_lost_at: string | null;
-  last_activity_at: string | null;
-  stage_entered_at: string | null;
-  stage_updated_at: string | null;
-  synced_at: string | null;
-  source_modified_at: string | null;
-  last_seen_at: string | null;
-  days_to_close: number | null;
-  deal_age_days: number | null;
-}
-
-export interface DealFinancialContext {
-  amount: number | null;
-  currency: string | null;
-  amount_home_currency: number | null;
-  predicted_amount: number | null;
-  probability: number | null;
-
-}
-
-export interface DealStageHistoryItem {
-  history_id: UUID;
-  stage_external_id: string | null;
-  stage_name: string | null;
-  stage_label: string | null;
-  from_stage_external_id: string | null;
-  entered_at: string;           // ISO8601
-  exited_at: string | null;     // ISO8601, null if still in this stage
-  duration_days: number | null; // Whole days spent in this stage (approx.)
-  amount_at_stage: number | null;
-  probability_at_stage: number | null;
-  source: string | null;        // e.g. "hubspot", "system"
-}
-
-export interface DealAssociationsContext {
-  owner_external_id: string | null;
-  owner_name: string | null;
-  owner_email: string | null;
-  technical_owner_external_id: string | null;
-  technical_owner_name: string | null;
-  technical_owner_email: string | null;
-  company_external_id: string | null;
-  company_name: string | null;
-  company_domain: string | null;
-  company_industry: string | null;
-  primary_contact_external_id: string | null;
-
-  primary_contact_name: string | null;
-
-  primary_contact_email: string | null;
-}
-
 export interface DealsStats {
   total: number;
   by_status: Record<string, number>;
@@ -346,12 +96,110 @@ export interface DealsStats {
   average_amount: number | null;
 }
 
+export type ApiStatus = "SUCCESS" | "ERROR";
+
 // Standard envelope used by all endpoints
 export interface ApiEnvelope<T> {
-  status: "SUCCESS" | "ERROR";
+  status: ApiStatus;
   message: string;
   data: T | null;
 }
+
+export interface DealOwnerDetail {
+  external_id: string;
+  name: string | null;
+  email: string | null;
+}
+
+export interface DealTeamMember {
+  external_id: string;
+  name: string | null;
+  email: string | null;
+  role: string; // "collaborator", "split_owner", etc. (excludes "owner")
+}
+
+export interface DealListItem {
+  deal_id: UUID;
+  external_id: string;
+
+  name: string | null;
+  amount: number | null;
+  currency: string | null;
+  deal_status: CRMDealStatus;
+  probability: number | null;
+
+  close_date: string | null; // ISO8601
+  stage_name: string | null;
+  stage_label: string | null;
+  pipeline_name: string | null;
+  pipeline_label: string | null;
+
+  owner_details: DealOwnerDetail[]; // Typically 0..1 items
+  company_external_id: string | null;
+  company_name: string | null;
+  company_domain: string | null;
+
+  deal_health: string | null;
+  deal_health_reason: string | null;
+
+  deal_team: DealTeamMember[];
+
+  created_at: string; // ISO8601
+  updated_at: string; // ISO8601
+  synced_at: string; // ISO8601
+}
+
+export interface DealsPage {
+  items: DealListItem[];
+  cursor: string | null; // null if no more results
+}
+
+// Job response for active job tracking
+export interface DealJobResponse {
+  job_id: UUID | null;
+  job_type: string;
+  status: string; // PENDING, IN_PROGRESS, COMPLETED, FAILED
+}
+
+// Active deal-level jobs status
+export interface DealSummaryJobsStatus {
+  deal_summary: DealJobResponse | null;
+}
+
+export interface DealDetail {
+  deal_id: UUID;
+  external_id: string;
+  name: string | null;
+
+  amount: number | null;
+  currency: string | null;
+
+  deal_status: CRMDealStatus;
+  stage_name: string | null;
+  stage_label: string | null;
+
+  source_created_at: string | null; // ISO8601
+  close_date: string | null; // ISO8601
+  last_activity_at: string | null; // ISO8601
+  deal_age_days: number | null;
+
+  owner_details: DealOwnerDetail[];
+  deal_team: DealTeamMember[];
+
+  company_name: string | null;
+  company_industry: string | null;
+
+  deal_health: string | null;
+  deal_health_reason: string | null;
+
+  time_tracked: string | null;
+
+  deal_summary_status: string | null;
+  deal_summary_data: Record<string, unknown> | null;
+
+  active_deal_jobs: DealSummaryJobsStatus | null;
+}
+
 ```
 
 ---
@@ -377,7 +225,7 @@ export interface ApiEnvelope<T> {
 ### Enrichment & Optional Fields
 
 - `owner_name`/`owner_email` are denormalized from the users directory when available; otherwise null.
-- `company_name`/`company_domain` and `primary_contact_name`/`primary_contact_email` are populated via enrichment after deal sync; they may be null on the first read and appear after enrichment completes.
+- `company_name`/`company_domain` are populated via enrichment after deal sync; they may be null on the first read and appear after enrichment completes.
 - Stage IDs (`stage_external_id`) reflect HubSpot's internal slugs (e.g., `qualifiedtobuy`, `appointmentscheduled`). Use `stage_label` for display text.
 
 ### Soft Deletes
@@ -533,10 +381,28 @@ Ordered by `created_at DESC, deal_id DESC` for consistent results.
         "pipeline_label": "Standard Sales Process",
         "deal_health": "HEALTHY",
         "deal_health_reason": null,
-        "owner_name": "Alex Fin",
-        "owner_email": "alex.fin@example.com",
+        "owner_details": [
+          {
+            "external_id": "user_123",
+            "name": "Alex Fin",
+            "email": "alex.fin@example.com"
+          }
+        ],
         "company_external_id": "company_789",
-        "primary_contact_external_id": "contact_456",
+        "deal_team": [
+          {
+            "external_id": "user_123",
+            "name": "Alex Fin",
+            "email": "alex.fin@example.com",
+            "role": "owner"
+          },
+          {
+            "external_id": "user_456",
+            "name": "Sam Chen",
+            "email": "sam.chen@example.com",
+            "role": "collaborator"
+          }
+        ],
         "created_at": "2025-10-01T08:00:00Z",
         "updated_at": "2025-10-24T15:30:00Z",
         "synced_at": "2025-10-25T10:00:00Z"
@@ -742,7 +608,7 @@ GET /users/crm/deals/{deal_id}
 
 ### Description for Get Deal Details
 
-Retrieves full details for a specific CRM deal by its internal UUID. Returns all available fields including metadata, associations, activity timeline, AI-generated deal summary (if completed), and active deal-level jobs (for SSE reconnection).
+Retrieves streamlined details for a specific CRM deal by its internal UUID. Returns the fields needed by the frontend overview (value, stage, key dates, owner/team, company/industry, deal health), plus AI-generated deal summary (if completed) and active deal-level jobs (for SSE reconnection).
 
 ### Authentication for Get Deal Details
 
@@ -766,131 +632,47 @@ Required
     "name": "Enterprise Software License",
     "amount": 250000.00,
     "currency": "USD",
-    "amount_home_currency": 250000.00,
     "deal_status": "open",
-    "probability": 75.0,
-    "predicted_amount": 187500.00,
-    "close_date": "2025-12-31T23:59:59Z",
-    "expected_close_date": "2025-12-15T23:59:59Z",
-    "closed_won_at": null,
-    "closed_lost_at": null,
-    "closed_reason": null,
-    "stage_external_id": "stage_001",
-    "stage_name": "Negotiation",
-    "stage_label": "Contract Review",
-    "pipeline_external_id": "pipeline_001",
-    "pipeline_name": "Sales Pipeline",
-    "pipeline_label": "Standard Sales Process",
-    "pipeline_id": "a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d",
-    "stage_id": "b2c3d4e5-f6a7-4b5c-9d0e-1f2a3b4c5d6e",
-    "forecast_category": "Best Case",
-    "deal_type": "New Business",
-    "priority": "High",
-    "lead_source": "Inbound Marketing",
-    "owner_external_id": "user_123",
-    "owner_name": "Alex Fin",
-    "owner_email": "alex.fin@example.com",
-    "company_external_id": "company_789",
-    "primary_contact_external_id": "contact_456",
-    "source_created_at": "2025-09-15T10:00:00Z",
-    "last_activity_at": "2025-10-24T15:30:00Z",
-    "stage_entered_at": "2025-10-20T09:00:00Z",
-    "stage_updated_at": "2025-10-24T15:30:00Z",
-    "synced_at": "2025-10-25T10:00:00Z",
-    "source_modified_at": "2025-10-24T15:30:00Z",
-    "last_seen_at": "2025-10-25T10:00:00Z",
-    "description": "Annual enterprise software license for 500 users with premium support",
-    "integration_id": "c3d4e5f6-a7b8-4c5d-9e0f-1a2b3c4d5e6f",
-    "organisation_id": "d4e5f6a7-b8c9-4d5e-0f1a-2b3c4d5e6f7a",
-    "created_at": "2025-10-01T08:00:00Z",
-    "updated_at": "2025-10-24T15:30:00Z",
-    "context": {
-      "pipeline": {
-        "pipeline_id": "a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d",
-        "pipeline_label": "Standard Sales Process",
-        "stage_label": "Contract Review",
-        "stages": [
-          {
-            "stage_id": "b2c3d4e5-f6a7-4b5c-9d0e-1f2a3b4c5d6e",
-            "external_id": "stage_001",
-            "name": "Discovery",
-            "label": "Discovery",
-            "display_order": 0,
-            "probability": 0.1,
-            "is_closed": false,
-            "status": "completed",
-            "entered_at": "2025-05-12T00:00:00Z",
-            "exited_at": "2025-05-24T00:00:00Z",
-            "duration_days": 12
-          },
-          {
-            "stage_id": "c3d4e5f6-a7b8-4c5d-9e0f-1a2b3c4d5e6f",
-            "external_id": "stage_002",
-            "name": "Technical Validation",
-            "label": "Technical Validation",
-            "display_order": 1,
-            "probability": 0.4,
-            "is_closed": false,
-            "status": "active",
-            "entered_at": "2025-05-24T00:00:00Z",
-            "exited_at": null,
-            "duration_days": 25
-          }
-        ]
+    "stage_name": "POC",
+    "stage_label": "Proof of Concept",
+    "source_created_at": "2025-12-23T10:00:00Z",
+    "close_date": "2025-12-15T23:59:59Z",
+    "last_activity_at": "2025-12-22T15:30:00Z",
+    "deal_age_days": 1,
+    "owner_details": [
+      {
+        "external_id": "user_123",
+        "name": "Saksham Bhutani",
+        "email": "saksham.bhutani@example.com"
+      }
+    ],
+    "deal_team": [
+      {
+        "external_id": "user_123",
+        "name": "Saksham Bhutani",
+        "email": "saksham.bhutani@example.com",
+        "role": "owner"
       },
-      "timeline": {
-        "source_created_at": "2025-09-15T10:00:00Z",
-        "last_activity_at": "2025-10-24T15:30:00Z",
-        "days_to_close": 13,
-        "deal_age_days": 40
-      },
-      "financials": {
-        "amount": 250000.00,
-        "currency": "USD",
-        "probability": 75.0
-      },
-      "associations": {
-        "owner_name": "Alex Fin",
-        "owner_email": "alex.fin@example.com",
-        "technical_owner_name": "Mrinmoy N",
-        "technical_owner_email": null,
-        "company_name": "Acme Corp",
-        "company_industry": "Cyber Security"
-      },
-      "stage_history": [
-        {
-          "history_id": "h1",
-          "stage_label": "Discovery",
-          "entered_at": "2025-05-12T00:00:00Z",
-          "exited_at": "2025-05-24T00:00:00Z",
-          "duration_days": 12
-        },
-        {
-          "history_id": "h2",
-          "stage_label": "Technical Validation",
-          "entered_at": "2025-05-24T00:00:00Z",
-          "exited_at": null,
-          "duration_days": 25
-        }
-      ],
-      "metrics": {
-        "health_status": "STALLED",
-        "time_tracked_hours": 47
-      },
-      "properties": {
-        "industry": "Cyber Security"
-      },
-      "health": "STALLED",
-      "time_tracked": "47 hours"
-    },
+      {
+        "external_id": "user_456",
+        "name": "Sarah Tech",
+        "email": "sarah.tech@example.com",
+        "role": "collaborator"
+      }
+    ],
+    "company_name": "Acme Corp",
+    "company_industry": "Cyber Security",
+    "deal_health": "ON_TRACK",
+    "deal_health_reason": "Multiple recent meetings with the buyer group present.",
+    "time_tracked": null,
     "deal_summary_status": "COMPLETED",
     "deal_summary_data": {
       "schema_version": "1.0",
-      "generated_at": "2025-10-25T10:30:00Z",
+      "generated_at": "2025-12-24T10:30:00Z",
       "data": {
         "deal_summary": "Enterprise software license deal with Acme Corp. Strong engagement across recent meetings with clear technical fit; security review pending.",
         "deal_health": "HEALTHY",
-        "deal_health_reason": "Multiple recent meetings with the buyer group present. Only open item is security review; no clear negative signals detected."
+        "deal_health_reason": "Multiple recent meetings with the buyer group present."
       }
     },
     "active_deal_jobs": null
