@@ -20,10 +20,12 @@ See docs/Development Documentation/deal-timeline-feature.md for design details.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any, cast
 from uuid import UUID
 
 from celery import Task
 from sqlalchemy import select
+from sqlalchemy.sql.schema import Table
 
 from src.api.dependencies.organisation_dependencies import acquire_org_async_session
 from src.domain.models.master_tables.organisation_models import Organisation, OrganisationStatus
@@ -54,13 +56,13 @@ def trigger_timeline_sync_all_orgs() -> dict[str, int]:
 
     It enqueues one `deal.sync_org_timeline` task per approved organisation.
     """
-
     logger.info("Triggering org-wide timeline sync for all organisations")
 
     async def _run() -> int:
         provider = get_async_provider()
         async with provider.master_session() as session:
-            stmt = select(Organisation).where(Organisation.status == OrganisationStatus.APPROVED)
+            org_c = cast(Table, cast(Any, Organisation).__table__).c
+            stmt = select(Organisation).where(org_c.status == OrganisationStatus.APPROVED)
             result = await session.execute(stmt)
             orgs = result.scalars().all()
 
@@ -109,9 +111,11 @@ def sync_deal_timeline_task(
     """
     logger.info(f"Starting timeline sync for deal {deal_id} in org {organisation_id}")
 
+    org_uuid = UUID(organisation_id)
+    deal_uuid = UUID(deal_id)
+
     async def _run():
-        org_uuid = UUID(organisation_id)
-        deal_uuid = UUID(deal_id)
+        session: Any
 
         # Convert string event types to enum if provided
         parsed_types = None
@@ -124,8 +128,10 @@ def sync_deal_timeline_task(
             await session.commit()
             return result
 
+        return {"emails_synced": 0, "meetings_synced": 0, "total_created": 0, "total_skipped": 0}
+
     try:
-        result = run_async(_run())
+        result = cast(dict[str, int], run_async(_run()))
         logger.info(f"Timeline sync completed for deal {deal_id}: {result}")
         return result
     except Exception as e:
@@ -164,19 +170,31 @@ def sync_org_timeline_task(
         f"(deals={len(deal_ids) if deal_ids else 'all'}, batch_size={batch_size})"
     )
 
+    org_uuid = UUID(organisation_id)
+
     async def _run():
-        org_uuid = UUID(organisation_id)
+        session: Any
         parsed_deal_ids = [UUID(d) for d in deal_ids] if deal_ids else None
 
         async for session in acquire_org_async_session(org_uuid):
             service = DealTimelineSyncService(session, org_uuid)
-            return await service.sync_organisation_timeline(
+            result = await service.sync_organisation_timeline(
                 deal_ids=parsed_deal_ids,
                 batch_size=batch_size,
             )
+            await session.commit()
+            return result
+
+        return {
+            "deals_processed": 0,
+            "emails_synced": 0,
+            "meetings_synced": 0,
+            "total_created": 0,
+            "total_skipped": 0,
+        }
 
     try:
-        result = run_async(_run())
+        result = cast(dict[str, int], run_async(_run()))
         logger.info(f"Org timeline sync completed for {organisation_id}: {result}")
         return result
     except Exception as e:
@@ -209,8 +227,9 @@ def exclude_timeline_event_task(
     """
     logger.info(f"Excluding timeline event {timeline_event_id}")
 
+    org_uuid = UUID(organisation_id)
+
     async def _run():
-        org_uuid = UUID(organisation_id)
         event_uuid = UUID(timeline_event_id)
 
         async for session in acquire_org_async_session(org_uuid):
@@ -219,8 +238,10 @@ def exclude_timeline_event_task(
             await session.commit()
             return {"success": updated}
 
+        return {"success": False}
+
     try:
-        result = run_async(_run())
+        result = cast(dict[str, bool], run_async(_run()))
         logger.info(f"Timeline event exclusion result: {result}")
         return result
     except Exception as e:

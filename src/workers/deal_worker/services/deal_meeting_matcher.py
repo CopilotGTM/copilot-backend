@@ -21,8 +21,10 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDealStatus,
     CRMParticipantType,
 )
+from src.domain.models.organisation_tables.sync.integration_models import KnowledgeIntegration
 from src.infra.utils.logger import get_logger
 from src.service.crm.deal_timeline_sync_service import build_meeting_timeline_event
+from src.service.crm.timeline_event_source_resolver import resolve_meeting_event_source
 from src.workers.deal_worker.services.stakeholder_service import StakeholderService
 
 logger = get_logger(__name__)
@@ -359,12 +361,14 @@ class DealMeetingMatcher:
             Number of new associations created.
         """
         attendees_relationship = cast(Any, CalendarEvent.attendees)
+        user_states_relationship = cast(Any, CalendarEvent.user_states)
         contact_attendee = aliased(CalendarAttendee)
 
         # Query: Team member is ORGANIZER + contact is attendee + not cancelled
         events_stmt = (
             select(CalendarEvent)
             .options(selectinload(attendees_relationship))
+            .options(selectinload(user_states_relationship))
             .join(contact_attendee, col(contact_attendee.event_id) == col(CalendarEvent.event_id))
             .where(col(CalendarEvent.organisation_id) == self.organisation_id)
             # Filter out cancelled events
@@ -418,6 +422,7 @@ class DealMeetingMatcher:
             Number of new associations created.
         """
         attendees_relationship = cast(Any, CalendarEvent.attendees)
+        user_states_relationship = cast(Any, CalendarEvent.user_states)
         team_attendee = aliased(CalendarAttendee)
         contact_attendee = aliased(CalendarAttendee)
 
@@ -426,6 +431,7 @@ class DealMeetingMatcher:
         events_stmt = (
             select(CalendarEvent)
             .options(selectinload(attendees_relationship))
+            .options(selectinload(user_states_relationship))
             .join(team_attendee, col(team_attendee.event_id) == col(CalendarEvent.event_id))
             .join(contact_attendee, col(contact_attendee.event_id) == col(CalendarEvent.event_id))
             .where(col(CalendarEvent.organisation_id) == self.organisation_id)
@@ -484,6 +490,24 @@ class DealMeetingMatcher:
         """
         linked_count = 0
 
+        # Preload integration types for this batch (avoid N+1 queries)
+        integration_ids: set[UUID] = set()
+        for event in events:
+            if getattr(event, "integration_id", None):
+                integration_ids.add(event.integration_id)
+            for state in getattr(event, "user_states", None) or []:
+                if getattr(state, "integration_id", None):
+                    integration_ids.add(state.integration_id)
+
+        integration_type_by_id: dict[UUID, Any] = {}
+        if integration_ids:
+            it_stmt = select(
+                KnowledgeIntegration.integration_id,
+                KnowledgeIntegration.integration_type,
+            ).where(KnowledgeIntegration.integration_id.in_(integration_ids))
+            it_result = await self.session.execute(it_stmt)
+            integration_type_by_id = dict(it_result.all())
+
         for event in events:
             # Skip if already linked in a previous pass
             if event.event_id in linked_event_ids:
@@ -510,11 +534,27 @@ class DealMeetingMatcher:
                 self.session.add(new_assoc)
 
                 # Create timeline event inline (same transaction)
+                calendar_integration_type = None
+                if getattr(event, "integration_id", None) in integration_type_by_id:
+                    calendar_integration_type = integration_type_by_id.get(event.integration_id)
+                else:
+                    user_states = getattr(event, "user_states", None) or []
+                    sorted_states = sorted(
+                        (s for s in user_states if getattr(s, "integration_id", None)),
+                        key=lambda s: str(s.integration_id),
+                    )
+                    if sorted_states:
+                        calendar_integration_type = integration_type_by_id.get(
+                            sorted_states[0].integration_id
+                        )
+
+                resolved_source = resolve_meeting_event_source(event, calendar_integration_type)
                 timeline_event = build_meeting_timeline_event(
                     organisation_id=self.organisation_id,
                     deal_id=deal.deal_id,
                     association=new_assoc,
                     event=event,
+                    event_source=resolved_source,
                 )
                 self.session.add(timeline_event)
 

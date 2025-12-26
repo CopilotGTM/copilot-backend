@@ -15,13 +15,14 @@ See docs/Development Documentation/deal-timeline-feature.md for design details.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import QueryableAttribute, selectinload
+from sqlalchemy.sql.schema import Table
 from src.domain.models.organisation_tables.sync.calendar import (
     CalendarEvent,
     CalendarEventDealAssociation,
@@ -31,14 +32,32 @@ from src.domain.models.organisation_tables.sync.email_models import (
     DealEmailAssociation,
     Email,
 )
+from src.domain.models.organisation_tables.sync.integration_models import KnowledgeIntegration
 from src.domain.models.organisation_tables.sync.timeline_models import (
     DealTimelineEvent,
     TimelineEventSource,
     TimelineEventType,
 )
 from src.infra.utils.logger import get_logger
+from src.service.crm.timeline_event_source_resolver import (
+    resolve_email_event_source,
+    resolve_meeting_event_source,
+)
 
 logger = get_logger("deal_timeline_sync_service")
+
+
+def _table(model: Any) -> Table:
+    """Safely extract the SQLAlchemy table for a mapped model."""
+    table_name = getattr(model, "__tablename__", None)
+    if table_name is None:
+        raise ValueError(f"Model {model} missing __tablename__ for table lookup")
+
+    table = model.metadata.tables.get(table_name)
+    if table is None:
+        raise ValueError(f"Table not found for model {model}")
+
+    return cast(Table, table)
 
 
 def _enum_value(val: Enum | str | None) -> str | None:
@@ -51,7 +70,7 @@ def _enum_value(val: Enum | str | None) -> str | None:
         return None
     if isinstance(val, str):
         return val
-    return val.value
+    return str(val.value)
 
 
 class DealTimelineSyncService:
@@ -157,9 +176,10 @@ class DealTimelineSyncService:
         if deal_ids:
             ids_to_process = deal_ids
         else:
-            stmt = select(CRMDeal.deal_id).where(
-                CRMDeal.organisation_id == self.organisation_id,
-                CRMDeal.is_deleted.is_(False),
+            deal_table: Table = _table(CRMDeal)
+            stmt = select(deal_table.c.deal_id).where(
+                deal_table.c.organisation_id == self.organisation_id,
+                deal_table.c.is_deleted.is_(False),
             )
             result = await self.session.execute(stmt)
             ids_to_process = list(result.scalars().all())
@@ -196,12 +216,13 @@ class DealTimelineSyncService:
 
     async def _get_existing_event_keys(self, deal_id: UUID) -> set[tuple[str, str]]:
         """Get existing (event_type, source_record_id) pairs for a deal."""
+        t: Table = _table(DealTimelineEvent)
         stmt = select(
-            DealTimelineEvent.event_type,
-            DealTimelineEvent.source_record_id,
+            t.c.event_type,
+            t.c.source_record_id,
         ).where(
-            DealTimelineEvent.organisation_id == self.organisation_id,
-            DealTimelineEvent.deal_id == deal_id,
+            t.c.organisation_id == self.organisation_id,
+            t.c.deal_id == deal_id,
         )
         result = await self.session.execute(stmt)
         # Normalise event_type to a string so callers can safely compare keys
@@ -243,22 +264,31 @@ class DealTimelineSyncService:
         """Batch sync email associations → timeline events."""
         stats = {"synced": 0, "created": 0, "skipped": 0}
 
-        # Fetch all email associations for this deal with email data
+        assoc_table: Table = _table(DealEmailAssociation)
+        email_table: Table = _table(Email)
+        integration_table: Table = _table(KnowledgeIntegration)
+
+        # Fetch all email associations for this deal with email data.
+        # Also pull the owning integration type so we can set event_source correctly.
         stmt = (
-            select(DealEmailAssociation, Email)
+            select(DealEmailAssociation, Email, KnowledgeIntegration)
             .outerjoin(
                 Email,
-                (DealEmailAssociation.internet_message_id == Email.internet_message_id)
-                & (Email.organisation_id == self.organisation_id),
+                (assoc_table.c.internet_message_id == email_table.c.internet_message_id)
+                & (email_table.c.organisation_id == self.organisation_id),
+            )
+            .outerjoin(
+                KnowledgeIntegration,
+                email_table.c.integration_id == integration_table.c.integration_id,
             )
             .where(
-                DealEmailAssociation.organisation_id == self.organisation_id,
-                DealEmailAssociation.deal_id == deal_id,
+                assoc_table.c.organisation_id == self.organisation_id,
+                assoc_table.c.deal_id == deal_id,
             )
         )
         result = await self.session.execute(stmt)
 
-        for assoc, email in result:
+        for assoc, email, integration in result:
             stats["synced"] += 1
             key = (TimelineEventType.EMAIL.value, str(assoc.association_id))
 
@@ -267,11 +297,14 @@ class DealTimelineSyncService:
                 continue
 
             # Create timeline event
+            integration_type = getattr(integration, "integration_type", None)
+            resolved_source = resolve_email_event_source(integration_type)
             timeline_event = build_email_timeline_event(
                 organisation_id=self.organisation_id,
                 deal_id=deal_id,
                 association=assoc,
                 email=email,
+                event_source=resolved_source,
             )
             created = await self._insert_timeline_event_ignore_conflict(timeline_event)
             if created:
@@ -291,24 +324,54 @@ class DealTimelineSyncService:
         """Batch sync meeting associations → timeline events."""
         stats = {"synced": 0, "created": 0, "skipped": 0}
 
-        # Fetch all meeting associations for this deal with event data
-        # Use selectinload for attendees to avoid lazy-load issues in async context
+        assoc_table: Table = _table(CalendarEventDealAssociation)
+        event_table: Table = _table(CalendarEvent)
+        integration_table: Table = _table(KnowledgeIntegration)
+
+        # Fetch all meeting associations for this deal with event data.
+        # Use selectinload for attendees/user_states to avoid lazy-load issues in async context.
+        attendees_attr: QueryableAttribute[Any] = CalendarEvent.attendees  # type: ignore[assignment]
+        user_states_attr: QueryableAttribute[Any] = CalendarEvent.user_states  # type: ignore[assignment]
         stmt = (
             select(CalendarEventDealAssociation, CalendarEvent)
             .outerjoin(
                 CalendarEvent,
-                (CalendarEventDealAssociation.event_id == CalendarEvent.event_id)
-                & (CalendarEvent.organisation_id == self.organisation_id),
+                (assoc_table.c.event_id == event_table.c.event_id)
+                & (event_table.c.organisation_id == self.organisation_id),
             )
-            .options(selectinload(CalendarEvent.attendees))
+            .options(selectinload(attendees_attr))
+            .options(selectinload(user_states_attr))
             .where(
-                CalendarEventDealAssociation.organisation_id == self.organisation_id,
-                CalendarEventDealAssociation.deal_id == deal_id,
+                assoc_table.c.organisation_id == self.organisation_id,
+                assoc_table.c.deal_id == deal_id,
             )
         )
         result = await self.session.execute(stmt)
+        rows = list(result.all())
 
-        for assoc, event in result:
+        # Bulk fetch integration types for all integration_ids referenced by these events.
+        integration_ids: set[UUID] = set()
+        for _, event in rows:
+            if not event:
+                continue
+            if getattr(event, "integration_id", None):
+                integration_ids.add(event.integration_id)
+            user_states = getattr(event, "user_states", None) or []
+            for state in user_states:
+                if getattr(state, "integration_id", None):
+                    integration_ids.add(state.integration_id)
+
+        integration_type_by_id: dict[UUID, Any] = {}
+        if integration_ids:
+            it_stmt = select(KnowledgeIntegration).where(
+                integration_table.c.integration_id.in_(integration_ids)
+            )
+            it_result = await self.session.execute(it_stmt)
+            integration_type_by_id = {
+                row.integration_id: row.integration_type for row in it_result.scalars().all()
+            }
+
+        for assoc, event in rows:
             stats["synced"] += 1
             key = (TimelineEventType.MEETING.value, str(assoc.association_id))
 
@@ -317,11 +380,29 @@ class DealTimelineSyncService:
                 continue
 
             # Create timeline event
+            calendar_integration_type = None
+            if event:
+                if getattr(event, "integration_id", None) in integration_type_by_id:
+                    calendar_integration_type = integration_type_by_id.get(event.integration_id)
+                else:
+                    user_states = getattr(event, "user_states", None) or []
+                    # Deterministic pick: sort by integration_id string.
+                    sorted_states = sorted(
+                        (s for s in user_states if getattr(s, "integration_id", None)),
+                        key=lambda s: str(s.integration_id),
+                    )
+                    if sorted_states:
+                        calendar_integration_type = integration_type_by_id.get(
+                            sorted_states[0].integration_id
+                        )
+
+            resolved_source = resolve_meeting_event_source(event, calendar_integration_type)
             timeline_event = build_meeting_timeline_event(
                 organisation_id=self.organisation_id,
                 deal_id=deal_id,
                 association=assoc,
                 event=event,
+                event_source=resolved_source,
             )
             created = await self._insert_timeline_event_ignore_conflict(timeline_event)
             if created:
@@ -344,7 +425,7 @@ def build_email_timeline_event(
     deal_id: UUID,
     association: DealEmailAssociation,
     email: Email | None = None,
-    event_source: TimelineEventSource = TimelineEventSource.EMAIL_GMAIL,
+    event_source: TimelineEventSource | None = None,
 ) -> DealTimelineEvent:
     """
     Build a timeline event for an email association.
@@ -406,11 +487,13 @@ def build_email_timeline_event(
         metadata["has_attachments"] = email.has_attachments
         metadata["thread_id"] = email.thread_id
 
+    resolved_source = event_source or TimelineEventSource.EMAIL_GMAIL
+
     return DealTimelineEvent(
         organisation_id=organisation_id,
         deal_id=deal_id,
         event_type=TimelineEventType.EMAIL,
-        event_source=event_source,
+        event_source=resolved_source,
         event_timestamp=email_date,
         source_record_id=str(association.association_id),
         title=subject[:500] if subject else "(No Subject)",
@@ -428,7 +511,7 @@ def build_meeting_timeline_event(
     deal_id: UUID,
     association: CalendarEventDealAssociation,
     event: CalendarEvent | None = None,
-    event_source: TimelineEventSource = TimelineEventSource.CALENDAR_GOOGLE,
+    event_source: TimelineEventSource | None = None,
 ) -> DealTimelineEvent:
     """
     Build a timeline event for a meeting association.
@@ -495,11 +578,13 @@ def build_meeting_timeline_event(
     if association.meeting_summary_status:
         metadata["meeting_summary_status"] = _enum_value(association.meeting_summary_status)
 
+    resolved_source = event_source or TimelineEventSource.CALENDAR_GOOGLE
+
     return DealTimelineEvent(
         organisation_id=organisation_id,
         deal_id=deal_id,
         event_type=TimelineEventType.MEETING,
-        event_source=event_source,
+        event_source=resolved_source,
         event_timestamp=start_at,
         source_record_id=str(association.association_id),
         title=title[:500] if title else "Meeting",
