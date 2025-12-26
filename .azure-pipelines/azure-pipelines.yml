@@ -42,6 +42,21 @@ variables:
   - name: PYTHON_VERSION
     value: '3.11'
 
+  # Optional: enable Flower UI + Celery events during deploy
+  # Keep default false to avoid extra overhead in non-dev envs.
+  - name: ENABLE_FLOWER
+    value: 'true'
+
+  # Image repositories (separated images by component)
+  - name: API_IMAGE_REPOSITORY
+    value: 'copilot-backend-api'
+  - name: KNOWLEDGE_IMAGE_REPOSITORY
+    value: 'copilot-backend-knowledge-worker'
+  - name: LIGHT_IMAGE_REPOSITORY
+    value: 'copilot-backend-light-worker'
+  - name: INTEGRATIONS_IMAGE_REPOSITORY
+    value: 'copilot-backend-integrations-worker'
+
 stages:
   # ==========================================================================
   # Stage 1: Code Quality & Testing
@@ -302,12 +317,91 @@ stages:
 
           - script: |
               echo "##[section]🚀 Pulling cache images from ACR for faster builds..."
-              docker pull $(ACR_LOGIN_SERVER)/copilot-backend:latest || echo "⚠️ No latest image found, building from scratch"
+              docker pull $(ACR_LOGIN_SERVER)/copilot-backend:latest || echo "⚠️ No latest full image found"
+              docker pull $(ACR_LOGIN_SERVER)/$(API_IMAGE_REPOSITORY):latest || echo "⚠️ No latest api image found"
+              docker pull $(ACR_LOGIN_SERVER)/$(KNOWLEDGE_IMAGE_REPOSITORY):latest || echo "⚠️ No latest knowledge image found"
+              docker pull $(ACR_LOGIN_SERVER)/$(LIGHT_IMAGE_REPOSITORY):latest || echo "⚠️ No latest light-worker image found"
+              docker pull $(ACR_LOGIN_SERVER)/$(INTEGRATIONS_IMAGE_REPOSITORY):latest || echo "⚠️ No latest integrations image found"
               echo "##[section]✅ Cache pull complete"
             displayName: 'Pull Cache Images from ACR'
             env:
               DOCKER_BUILDKIT: '1'
             continueOnError: 'true'
+
+          # ===================================================================
+          # Build & Push Separated Images (Dockerfile targets)
+          # ===================================================================
+          - task: Docker@2
+            displayName: 'Build & Push API Image (target: api)'
+            inputs:
+              containerRegistry: '$(ACR_SERVICE_CONNECTION)'
+              repository: '$(API_IMAGE_REPOSITORY)'
+              command: 'buildAndPush'
+              Dockerfile: '**/Dockerfile'
+              tags: |
+                $(Build.BuildId)
+                latest
+              arguments: |
+                --target api
+                --build-arg BUILDKIT_INLINE_CACHE=1
+                --cache-from=$(ACR_LOGIN_SERVER)/$(API_IMAGE_REPOSITORY):latest
+                --cache-from=$(ACR_LOGIN_SERVER)/copilot-backend:latest
+            env:
+              DOCKER_BUILDKIT: 1
+
+          - task: Docker@2
+            displayName: 'Build & Push Knowledge Worker Image (target: knowledge-worker)'
+            inputs:
+              containerRegistry: '$(ACR_SERVICE_CONNECTION)'
+              repository: '$(KNOWLEDGE_IMAGE_REPOSITORY)'
+              command: 'buildAndPush'
+              Dockerfile: '**/Dockerfile'
+              tags: |
+                $(Build.BuildId)
+                latest
+              arguments: |
+                --target knowledge-worker
+                --build-arg BUILDKIT_INLINE_CACHE=1
+                --cache-from=$(ACR_LOGIN_SERVER)/$(KNOWLEDGE_IMAGE_REPOSITORY):latest
+                --cache-from=$(ACR_LOGIN_SERVER)/copilot-backend:latest
+            env:
+              DOCKER_BUILDKIT: 1
+
+          - task: Docker@2
+            displayName: 'Build & Push Light Worker Image (target: light-worker)'
+            inputs:
+              containerRegistry: '$(ACR_SERVICE_CONNECTION)'
+              repository: '$(LIGHT_IMAGE_REPOSITORY)'
+              command: 'buildAndPush'
+              Dockerfile: '**/Dockerfile'
+              tags: |
+                $(Build.BuildId)
+                latest
+              arguments: |
+                --target light-worker
+                --build-arg BUILDKIT_INLINE_CACHE=1
+                --cache-from=$(ACR_LOGIN_SERVER)/$(LIGHT_IMAGE_REPOSITORY):latest
+                --cache-from=$(ACR_LOGIN_SERVER)/copilot-backend:latest
+            env:
+              DOCKER_BUILDKIT: 1
+
+          - task: Docker@2
+            displayName: 'Build & Push Integrations Worker Image (target: integrations-worker)'
+            inputs:
+              containerRegistry: '$(ACR_SERVICE_CONNECTION)'
+              repository: '$(INTEGRATIONS_IMAGE_REPOSITORY)'
+              command: 'buildAndPush'
+              Dockerfile: '**/Dockerfile'
+              tags: |
+                $(Build.BuildId)
+                latest
+              arguments: |
+                --target integrations-worker
+                --build-arg BUILDKIT_INLINE_CACHE=1
+                --cache-from=$(ACR_LOGIN_SERVER)/$(INTEGRATIONS_IMAGE_REPOSITORY):latest
+                --cache-from=$(ACR_LOGIN_SERVER)/copilot-backend:latest
+            env:
+              DOCKER_BUILDKIT: 1
 
           - task: Docker@2
             displayName: 'Build Docker Image with Cache'
@@ -329,6 +423,10 @@ stages:
               echo "##[section]✅ Build Complete!"
               echo "📦 Image: $(ACR_LOGIN_SERVER)/copilot-backend:$(Build.BuildId)"
               echo "📦 Latest: $(ACR_LOGIN_SERVER)/copilot-backend:latest"
+              echo "📦 API: $(ACR_LOGIN_SERVER)/$(API_IMAGE_REPOSITORY):$(Build.BuildId)"
+              echo "📦 Knowledge: $(ACR_LOGIN_SERVER)/$(KNOWLEDGE_IMAGE_REPOSITORY):$(Build.BuildId)"
+              echo "📦 Light Worker: $(ACR_LOGIN_SERVER)/$(LIGHT_IMAGE_REPOSITORY):$(Build.BuildId)"
+              echo "📦 Integrations: $(ACR_LOGIN_SERVER)/$(INTEGRATIONS_IMAGE_REPOSITORY):$(Build.BuildId)"
               echo "⚡ Next build will reuse cached layers for faster builds"
               echo ""
               echo "##[section]📊 Final disk space check:"
@@ -375,6 +473,11 @@ stages:
                   displayName: 'Clean up previous startup Job and Pods'
 
                 - script: |
+                    EXTRA_HELM_ARGS=""
+                    if [ "$(ENABLE_FLOWER)" = "true" ]; then
+                      EXTRA_HELM_ARGS="$EXTRA_HELM_ARGS --set flower.enabled=true --set global.celery.enableEvents=true"
+                    fi
+
                     helm upgrade --install "$HELM_RELEASE_NAME" "$CHART_PATH" \
                       --namespace copilotgtm \
                       --set api.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_BACKEND_CLIENT_ID)" \
@@ -383,26 +486,27 @@ stages:
                       --set global.redis.port="$REDIS_PORT" \
                       --set global.redis.enableTLS=true \
                       --set global.redis.usePassword=true \
-                      --set api.image.repository="$ACR_LOGIN_SERVER/copilot-backend" \
+                      $EXTRA_HELM_ARGS \
+                      --set api.image.repository="$ACR_LOGIN_SERVER/$(API_IMAGE_REPOSITORY)" \
                       --set api.image.tag="$BUILD_BUILDID" \
-                      --set knowledge-extract-worker.image.repository="$ACR_LOGIN_SERVER/copilot-backend" \
+                      --set knowledge-extract-worker.image.repository="$ACR_LOGIN_SERVER/$(KNOWLEDGE_IMAGE_REPOSITORY)" \
                       --set knowledge-extract-worker.image.tag="$BUILD_BUILDID" \
                       --set knowledge-extract-worker.autoscaling.enabled=true \
                       --set knowledge-extract-worker.gpu.enabled=true \
-                      --set knowledge-upload-worker.image.repository="$ACR_LOGIN_SERVER/copilot-backend" \
+                      --set knowledge-upload-worker.image.repository="$ACR_LOGIN_SERVER/$(KNOWLEDGE_IMAGE_REPOSITORY)" \
                       --set knowledge-upload-worker.image.tag="$BUILD_BUILDID" \
                       --set knowledge-upload-worker.autoscaling.enabled=true \
                       --set integrations-worker.autoscaling.enabled=true \
-                      --set chat-worker.image.repository="$ACR_LOGIN_SERVER/copilot-backend" \
+                      --set chat-worker.image.repository="$ACR_LOGIN_SERVER/$(LIGHT_IMAGE_REPOSITORY)" \
                       --set chat-worker.image.tag="$BUILD_BUILDID" \
-                      --set organization-worker.image.repository="$ACR_LOGIN_SERVER/copilot-backend" \
+                      --set organization-worker.image.repository="$ACR_LOGIN_SERVER/$(LIGHT_IMAGE_REPOSITORY)" \
                       --set organization-worker.image.tag="$BUILD_BUILDID" \
-                      --set integrations-worker.image.repository="$ACR_LOGIN_SERVER/copilot-backend" \
+                      --set integrations-worker.image.repository="$ACR_LOGIN_SERVER/$(INTEGRATIONS_IMAGE_REPOSITORY)" \
                       --set integrations-worker.image.tag="$BUILD_BUILDID" \
-                      --set deal-worker.image.repository="$ACR_LOGIN_SERVER/copilot-backend" \
+                      --set deal-worker.image.repository="$ACR_LOGIN_SERVER/$(LIGHT_IMAGE_REPOSITORY)" \
                       --set deal-worker.image.tag="$BUILD_BUILDID" \
                       --set deal-worker.autoscaling.enabled=true \
-                      --set deal-beat.image.repository="$ACR_LOGIN_SERVER/copilot-backend" \
+                      --set deal-beat.image.repository="$ACR_LOGIN_SERVER/$(LIGHT_IMAGE_REPOSITORY)" \
                       --set deal-beat.image.tag="$BUILD_BUILDID" \
                       --set api.secrets.DATABASE_HOST="$(DATABASE_HOST)" \
                       --set api.secrets.DATABASE_USER="$(DATABASE_USER)" \

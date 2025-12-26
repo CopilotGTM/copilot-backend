@@ -72,10 +72,7 @@ class DealSummaryData(BaseModel):
         description="Comprehensive narrative summary of the entire deal, synthesizing all meeting discussions, key decisions, stakeholder dynamics, and deal progression.",
     )
 
-    deal_health: DealHealthStatus = Field(
-        ...,
-        description="AI-assessed health status: HEALTHY, AT_RISK, STALLED, CHAMPION_WEAK, BLOCKED, MISALIGNED, UNVALIDATED, COLD, LATE_STAGE_RISK, LIKELY_LOST, or ARTIFICIALLY_HEALTHY.",
-    )
+    deal_health: DealHealthStatus = Field(...)
 
     deal_health_reason: str = Field(
         ...,
