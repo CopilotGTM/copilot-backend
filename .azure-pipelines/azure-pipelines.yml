@@ -42,6 +42,11 @@ variables:
   - name: PYTHON_VERSION
     value: '3.11'
 
+  # Optional: enable Flower UI + Celery events during deploy
+  # Keep default false to avoid extra overhead in non-dev envs.
+  - name: ENABLE_FLOWER
+    value: 'true'
+
   # Image repositories (separated images by component)
   - name: API_IMAGE_REPOSITORY
     value: 'copilot-backend-api'
@@ -468,6 +473,11 @@ stages:
                   displayName: 'Clean up previous startup Job and Pods'
 
                 - script: |
+                    EXTRA_HELM_ARGS=""
+                    if [ "$(ENABLE_FLOWER)" = "true" ]; then
+                      EXTRA_HELM_ARGS="$EXTRA_HELM_ARGS --set flower.enabled=true --set global.celery.enableEvents=true"
+                    fi
+
                     helm upgrade --install "$HELM_RELEASE_NAME" "$CHART_PATH" \
                       --namespace copilotgtm \
                       --set api.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_BACKEND_CLIENT_ID)" \
@@ -476,6 +486,7 @@ stages:
                       --set global.redis.port="$REDIS_PORT" \
                       --set global.redis.enableTLS=true \
                       --set global.redis.usePassword=true \
+                      $EXTRA_HELM_ARGS \
                       --set api.image.repository="$ACR_LOGIN_SERVER/$(API_IMAGE_REPOSITORY)" \
                       --set api.image.tag="$BUILD_BUILDID" \
                       --set knowledge-extract-worker.image.repository="$ACR_LOGIN_SERVER/$(KNOWLEDGE_IMAGE_REPOSITORY)" \
