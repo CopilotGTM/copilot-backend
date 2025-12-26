@@ -17,6 +17,7 @@
 param(
     [string]$DeployEnvironment = "dev",
     [switch]$EnableFlower,
+    [switch]$UseSeparatedImages,
     [switch]$Help
 )
 
@@ -84,7 +85,11 @@ $HELM_RELEASE_NAME = "copilot-backend"
 $CHART_PATH = "$PSScriptRoot\..\..\charts\application"
 
 # Image Configuration
-$IMAGE_REPOSITORY = "copilot-backend"
+$IMAGE_REPOSITORY = "copilot-backend"  # legacy/full image repository
+$API_IMAGE_REPOSITORY = "copilot-backend-api"
+$KNOWLEDGE_IMAGE_REPOSITORY = "copilot-backend-knowledge-worker"
+$LIGHT_IMAGE_REPOSITORY = "copilot-backend-light-worker"
+$INTEGRATIONS_IMAGE_REPOSITORY = "copilot-backend-integrations-worker"
 $IMAGE_TAG = "local-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
 
 # =============================================================================
@@ -188,19 +193,47 @@ function Connect-ToACR {
 function Build-AndPushImage {
     Write-Header "Building and Pushing Docker Image"
 
-    # Build image
-    Write-Host "Building image: $ACR_LOGIN_SERVER/$IMAGE_REPOSITORY`:$IMAGE_TAG"
-    docker build -t "$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY`:$IMAGE_TAG" $PSScriptRoot\..\..
+    if (-not $UseSeparatedImages) {
+        # Legacy behavior: build single full image (default Dockerfile target)
+        Write-Host "Building image: $ACR_LOGIN_SERVER/$IMAGE_REPOSITORY`:$IMAGE_TAG"
+        docker build -t "$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY`:$IMAGE_TAG" $PSScriptRoot\..\..
 
-    # Also tag as latest for this local deployment
-    docker tag "$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY`:$IMAGE_TAG" "$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY`:latest"
+        # Also tag as latest for this local deployment
+        docker tag "$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY`:$IMAGE_TAG" "$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY`:latest"
 
-    # Push image
-    Write-Host "Pushing image to ACR..."
-    docker push "$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY`:$IMAGE_TAG"
-    docker push "$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY`:latest"
+        Write-Host "Pushing image to ACR..."
+        docker push "$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY`:$IMAGE_TAG"
+        docker push "$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY`:latest"
 
-    Write-Success "Image pushed: $ACR_LOGIN_SERVER/$IMAGE_REPOSITORY`:$IMAGE_TAG"
+        Write-Success "Image pushed: $ACR_LOGIN_SERVER/$IMAGE_REPOSITORY`:$IMAGE_TAG"
+        return
+    }
+
+    # Separated images: build Dockerfile targets and push to distinct repositories
+    Write-Host "Building separated images (Dockerfile targets) with tag: $IMAGE_TAG"
+
+    $repoToTarget = @(
+        @{ Repo = $API_IMAGE_REPOSITORY; Target = "api" },
+        @{ Repo = $KNOWLEDGE_IMAGE_REPOSITORY; Target = "knowledge-worker" },
+        @{ Repo = $LIGHT_IMAGE_REPOSITORY; Target = "light-worker" },
+        @{ Repo = $INTEGRATIONS_IMAGE_REPOSITORY; Target = "integrations-worker" }
+    )
+
+    foreach ($item in $repoToTarget) {
+        $repo = $item.Repo
+        $target = $item.Target
+
+        Write-Host "Building $repo (target: $target) => $ACR_LOGIN_SERVER/$repo`:$IMAGE_TAG"
+        docker build --target $target -t "$ACR_LOGIN_SERVER/$repo`:$IMAGE_TAG" $PSScriptRoot\..\..
+
+        docker tag "$ACR_LOGIN_SERVER/$repo`:$IMAGE_TAG" "$ACR_LOGIN_SERVER/$repo`:latest"
+
+        Write-Host "Pushing $repo to ACR..."
+        docker push "$ACR_LOGIN_SERVER/$repo`:$IMAGE_TAG"
+        docker push "$ACR_LOGIN_SERVER/$repo`:latest"
+    }
+
+    Write-Success "Separated images pushed with tag: $IMAGE_TAG"
 }
 
 function Get-AzureKeyVaultSecrets {
@@ -262,6 +295,11 @@ function Deploy-WithHelm {
     # Deploy with Helm using the same configuration as Azure DevOps pipeline
     Write-Host "Deploying with Helm release: $HELM_RELEASE_NAME"
 
+    $apiRepo = if ($UseSeparatedImages) { "$ACR_LOGIN_SERVER/$API_IMAGE_REPOSITORY" } else { "$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY" }
+    $knowledgeRepo = if ($UseSeparatedImages) { "$ACR_LOGIN_SERVER/$KNOWLEDGE_IMAGE_REPOSITORY" } else { "$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY" }
+    $lightRepo = if ($UseSeparatedImages) { "$ACR_LOGIN_SERVER/$LIGHT_IMAGE_REPOSITORY" } else { "$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY" }
+    $integrationsRepo = if ($UseSeparatedImages) { "$ACR_LOGIN_SERVER/$INTEGRATIONS_IMAGE_REPOSITORY" } else { "$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY" }
+
     $helmArgs = @(
         "upgrade", "--install", $HELM_RELEASE_NAME, $CHART_PATH,
         "--namespace", $NAMESPACE,
@@ -272,27 +310,27 @@ function Deploy-WithHelm {
         "--set", "global.redis.port=$($env:REDIS_PORT)",
         "--set", "global.redis.enableTLS=true",
         "--set", "global.redis.usePassword=true",
-        "--set", "api.image.repository=$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY",
+        "--set", "api.image.repository=$apiRepo",
         "--set", "api.image.tag=$IMAGE_TAG",
-        "--set", "knowledge-extract-worker.image.repository=$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY",
+        "--set", "knowledge-extract-worker.image.repository=$knowledgeRepo",
         "--set", "knowledge-extract-worker.image.tag=$IMAGE_TAG",
         "--set", "knowledge-extract-worker.autoscaling.enabled=true",
         "--set", "knowledge-extract-worker.gpu.enabled=true",
-        "--set", "knowledge-upload-worker.image.repository=$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY",
+        "--set", "knowledge-upload-worker.image.repository=$knowledgeRepo",
         "--set", "knowledge-upload-worker.image.tag=$IMAGE_TAG",
         "--set", "knowledge-upload-worker.autoscaling.enabled=true",
-        "--set", "organization-worker.image.repository=$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY",
+        "--set", "organization-worker.image.repository=$lightRepo",
         "--set", "organization-worker.image.tag=$IMAGE_TAG",
         "--set", "organization-worker.autoscaling.enabled=true",
-        "--set", "chat-worker.image.repository=$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY",
+        "--set", "chat-worker.image.repository=$lightRepo",
         "--set", "chat-worker.image.tag=$IMAGE_TAG",
-        "--set", "integrations-worker.image.repository=$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY",
+        "--set", "integrations-worker.image.repository=$integrationsRepo",
         "--set", "integrations-worker.image.tag=$IMAGE_TAG",
         "--set", "integrations-worker.autoscaling.enabled=true",
-        "--set", "deal-worker.image.repository=$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY",
+        "--set", "deal-worker.image.repository=$lightRepo",
         "--set", "deal-worker.image.tag=$IMAGE_TAG",
         "--set", "deal-worker.autoscaling.enabled=true",
-        "--set", "deal-beat.image.repository=$ACR_LOGIN_SERVER/$IMAGE_REPOSITORY",
+        "--set", "deal-beat.image.repository=$lightRepo",
         "--set", "deal-beat.image.tag=$IMAGE_TAG",
         "--set", "chat-worker.autoscaling.enabled=true",
         "--set", "api.secrets.DATABASE_HOST=$($env:DATABASE_HOST)",
