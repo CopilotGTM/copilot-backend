@@ -192,5 +192,5 @@ test-local-scripts/
 cache/
 .github/instructions/
 docs/Task List/
-docs/Development Documentation/
 docs/Future Functionality Documentation/
+docs/LLM Development Documentation/
