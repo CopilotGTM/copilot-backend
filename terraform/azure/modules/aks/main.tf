@@ -34,6 +34,14 @@ resource "azurerm_kubernetes_cluster" "this" {
   oidc_issuer_enabled = var.oidc_issuer_enabled
   workload_identity_enabled = var.workload_identity_enabled
 
+  # Enable AGIC if app_gateway_id is provided
+  dynamic "ingress_application_gateway" {
+    for_each = var.app_gateway_id != null ? [1] : []
+    content {
+      gateway_id = var.app_gateway_id
+    }
+  }
+
   key_vault_secrets_provider {
     secret_rotation_enabled  = true
     secret_rotation_interval = "2m"

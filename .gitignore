@@ -53,3 +53,5 @@ terraform/tfplan
 Thumbs.db
 tfplan
 charts
+tools/
+scripts/

@@ -1,53 +1,4 @@
 # -----------------------------------------------------------------
-# 1) Helm chart: nginx-ingress
-# -----------------------------------------------------------------
-moved {
-  from = azurerm_dns_a_record.devapi
-  to   = azurerm_dns_a_record.api
-}
-
-moved {
-  from = kubernetes_manifest.devapi_certificate
-  to   = kubernetes_manifest.api_certificate
-}
-
-resource "helm_release" "ingress_nginx" {
-  name             = "ingress-nginx"
-  repository       = "https://kubernetes.github.io/ingress-nginx"
-  chart            = "ingress-nginx"
-  namespace        = var.ingress_namespace
-  version          = "4.9.0"
-  create_namespace = true
-
-  set = [
-    {
-      name  = "controller.replicaCount"
-      value = "2"
-    },
-    {
-      name  = "controller.ingressClassResource.name"
-      value = "nginx"
-    },
-    {
-      name  = "controller.ingressClassResource.enabled"
-      value = "true"
-    },
-    {
-      name  = "controller.service.type"
-      value = "LoadBalancer"
-    },
-    {
-      name  = "controller.service.externalTrafficPolicy"
-      value = "Local"
-    },
-    {
-      name  = "controller.service.annotations.service\\.beta\\.kubernetes\\.io/azure-load-balancer-internal"
-      value = "false"
-    }
-  ]
-}
-
-# -----------------------------------------------------------------
 # 2) Helm chart: cert-manager
 # -----------------------------------------------------------------
 resource "helm_release" "cert_manager" {
@@ -64,6 +15,8 @@ resource "helm_release" "cert_manager" {
       value = "true"
     }
   ]
+
+  depends_on = [module.aks]
 }
 
 # -----------------------------------------------------------------
@@ -111,6 +64,8 @@ resource "helm_release" "keda" {
       value = "1000Mi"
     }
   ]
+
+  depends_on = [module.aks]
 }
 
 # -----------------------------------------------------------------
@@ -142,7 +97,7 @@ resource "kubernetes_manifest" "letsencrypt_issuer" {
           {
             "http01" = {
               "ingress" = {
-                "class" = "nginx"
+                "class" = "azure-application-gateway"
               }
             }
           },
@@ -170,43 +125,14 @@ resource "kubernetes_manifest" "letsencrypt_issuer" {
 }
 
 # -----------------------------------------------------------------
-# 4) Wait for the nginx-ingress Service to exist & grab its IP
-# -----------------------------------------------------------------
-data "kubernetes_service" "nginx_ingress" {
-  # force Terraform to create the Helm release first
-  depends_on = [helm_release.ingress_nginx]
-
-  metadata {
-    name      = var.ingress_service_name
-    namespace = var.ingress_namespace
-  }
-}
-
-# -----------------------------------------------------------------
 # 5) Create the application namespace
 # -----------------------------------------------------------------
 resource "kubernetes_namespace" "app_namespace" {
   metadata {
     name = var.app_namespace
   }
-}
 
-# -----------------------------------------------------------------
-# 6) Create the DNS A record pointing at that IP
-# -----------------------------------------------------------------
-resource "azurerm_dns_a_record" "api" {
-  name                = var.api_subdomain
-  zone_name           = var.dns_zone_name
-  resource_group_name = var.dns_zone_resource_group
-  ttl                 = 300
-
-  records = [
-    data.kubernetes_service.nginx_ingress
-      .status[0]
-      .load_balancer[0]
-      .ingress[0]
-      .ip
-  ]
+  depends_on = [module.aks]
 }
 
 # -----------------------------------------------------------------

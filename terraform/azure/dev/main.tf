@@ -19,9 +19,29 @@ module "vnet" {
   public_subnets                  = var.vnet_public_subnets
   private_subnets                 = var.vnet_private_subnets
   private_endpoints_subnet_prefix = var.vnet_private_endpoints_subnet
+  waf_subnet_prefix               = var.vnet_waf_subnet
   env                             = var.env
   depends_on = [
     module.resource_group
+  ]
+}
+
+# -----------------------------------------------------------------
+# Application Gateway (WAF)
+# -----------------------------------------------------------------
+module "waf" {
+  source              = "../modules/waf"
+  waf_name            = "${var.waf_name}-${var.env}"
+  resource_group_name = module.resource_group.resource_group_name
+  location            = var.location
+  subnet_id           = module.vnet.waf_subnet_id
+  
+  tags = {
+    environment = var.env
+    project     = var.project_name
+  }
+  depends_on = [
+    module.vnet
   ]
 }
 
@@ -235,9 +255,14 @@ module "aks" {
   gpu_max_count          = var.gpu_max_count
   gpu_node_labels        = var.gpu_node_labels
   gpu_node_taints        = var.gpu_node_taints
+  
+  # Enable AGIC
+  app_gateway_id         = module.waf.waf_id
+
   depends_on = [
     module.vnet,
-    module.acr
+    module.acr,
+    module.waf
   ]
 }
 
@@ -368,7 +393,7 @@ module "foundry" {
   prefix              = "foundry"
   resource_group_name = module.resource_group.resource_group_name
   resource_group_id   = module.resource_group.resource_group_id
-  location            = var.location
+  location            = "eastus2" # OpenAI models are available in East US 2
   use_openai          = true
   depends_on = [
     module.resource_group
@@ -495,6 +520,12 @@ resource "azuredevops_variable_group" "secrets" {
   variable {
     name         = "DATABASE_PASSWORD"
     secret_value = random_password.db_admin.result
+    is_secret    = true
+  }
+
+  variable {
+    name         = "AGENT_PASSWORD"
+    secret_value = random_password.agent_admin.result
     is_secret    = true
   }
 
@@ -696,6 +727,18 @@ resource "azuredevops_pipeline_authorization" "service_connection_acr_authorizat
 }
 
 # -----------------------------------------------------------------
+# Generate a strong, random Agent admin password
+# -----------------------------------------------------------------
+resource "random_password" "agent_admin" {
+  length           = 32
+  override_special = "!@#$%&*()-_=+[]"
+  special          = true
+  upper            = true
+  lower            = true
+  numeric          = true
+}
+
+# -----------------------------------------------------------------
 # Self-Hosted DevOps Agent VM
 # Placed in private subnet to access Key Vault/Storage via Private Link
 # -----------------------------------------------------------------
@@ -704,9 +747,9 @@ module "devops_agent" {
   resource_group_name = module.resource_group.resource_group_name
   location            = var.location
   vm_name             = "${var.agent_name}-${var.env}"
-  vm_size             = "Standard_B2s"
+  vm_size             = "Standard_B2ms"
   admin_username      = var.admin_username
-  admin_password      = var.admin_password
+  admin_password      = random_password.agent_admin.result
 
   # Place in private subnet for Private Link access
   subnet_id = module.vnet.private_subnet_ids[0]

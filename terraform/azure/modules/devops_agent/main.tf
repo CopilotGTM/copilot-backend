@@ -144,6 +144,11 @@ resource "azurerm_linux_virtual_machine" "agent" {
   disable_password_authentication = var.ssh_public_key != "" ? true : false
   admin_password                  = var.ssh_public_key == "" ? var.admin_password : null
 
+  # Spot Instance Configuration (Cost Saving)
+  priority        = "Spot"
+  eviction_policy = "Deallocate"
+  max_bid_price   = -1 # Use current on-demand price as max limit
+
   network_interface_ids = [azurerm_network_interface.agent.id]
 
   custom_data = base64encode(local.cloud_init)

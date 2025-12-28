@@ -442,11 +442,7 @@ variable "admin_username" {
   default     = "azureuser"
 }
 
-variable "admin_password" {
-  description = "Admin password for the static DevOps agent VM."
-  type        = string
-  sensitive   = true
-}
+
 
 # -----------------------------------------------------------------
 # DNS
@@ -472,11 +468,7 @@ variable "frontend_dns_a_record_name" {
 # Secrets & Certificates
 # -----------------------------------------------------------------
 
-variable "db_password" {
-  description = "Database password"
-  type        = string
-  default     = ""
-}
+
 
 variable "db_location" {
   description = "The Azure region for the Database."
@@ -522,29 +514,34 @@ variable "certificates" {
 variable "super_admin_email" {
   description = "Email address for the super admin user."
   type        = string
+  default     = ""
 }
 
 variable "supabase_url" {
   description = "URL for the Supabase instance."
   type        = string
+  default     = ""
 }
 
 variable "supabase_anon_key" {
   description = "API key for the Supabase instance."
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 variable "supabase_service_role_key" {
   description = "Service role key for the Supabase instance."
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 variable "supabase_jwt_secret" {
   description = "JWT secret for the Supabase instance."
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 # -----------------------------------------------------------------
@@ -555,6 +552,7 @@ variable "resend_api_key" {
   description = "API key for the Resend service."
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 variable "resend_email" {
