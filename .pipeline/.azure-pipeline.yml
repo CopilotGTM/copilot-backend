@@ -65,36 +65,36 @@ stages:
   # -------------------------------------------------------------------------
   # UAT: Triggered on release/* branch push (plan + apply)
   # -------------------------------------------------------------------------
-  - template: templates/terraform-env-stage.yml
-    parameters:
-      stageName: Uat
-      envName: uat
-      tfWorkingDir: terraform/azure/uat
-      azureServiceConnection: copilotgtm-arc-ci-cd-service--uat
-      variableGroupName: copilot-infra-secrets-uat
-      agentPoolName: $(SELF_HOSTED_AGENT_POOL)
-      tfVersion: $(TF_VERSION)
-      dependsOn: []
-      stageCondition: and(succeeded(), eq(variables['DEPLOY_ENVIRONMENT'], 'uat'), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/'), ne(variables['Build.Reason'], 'PullRequest'))
-      applyCondition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/'), ne(variables['Build.Reason'], 'PullRequest'))
-      approvalEnvironment: terraform-uat
-      artifactName: tfplan-uat
+  # - template: templates/terraform-env-stage.yml
+  #   parameters:
+  #     stageName: Uat
+  #     envName: uat
+  #     tfWorkingDir: terraform/azure/uat
+  #     azureServiceConnection: copilotgtm-arc-ci-cd-service--uat
+  #     variableGroupName: copilot-infra-secrets-uat
+  #     agentPoolName: $(SELF_HOSTED_AGENT_POOL)
+  #     tfVersion: $(TF_VERSION)
+  #     dependsOn: []
+  #     stageCondition: and(succeeded(), eq(variables['DEPLOY_ENVIRONMENT'], 'uat'), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/'), ne(variables['Build.Reason'], 'PullRequest'))
+  #     applyCondition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/'), ne(variables['Build.Reason'], 'PullRequest'))
+  #     approvalEnvironment: terraform-uat
+  #     artifactName: tfplan-uat
 
   # -------------------------------------------------------------------------
   # PROD: Triggered on release/* branch, requires approval via environment gate
   # -------------------------------------------------------------------------
-  - template: templates/terraform-env-stage.yml
-    parameters:
-      stageName: Prod
-      envName: prod
-      tfWorkingDir: terraform/azure/prod
-      azureServiceConnection: copilotgtm-arc-ci-cd-service--prod
-      variableGroupName: copilot-infra-secrets-prod
-      agentPoolName: $(SELF_HOSTED_AGENT_POOL)
-      tfVersion: $(TF_VERSION)
-      dependsOn:
-        - Uat
-      stageCondition: and(succeeded(), eq(variables['DEPLOY_ENVIRONMENT'], 'prod'), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/'), ne(variables['Build.Reason'], 'PullRequest'))
-      applyCondition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/'), ne(variables['Build.Reason'], 'PullRequest'))
-      approvalEnvironment: terraform-prod
-      artifactName: tfplan-prod
+  # - template: templates/terraform-env-stage.yml
+  #   parameters:
+  #     stageName: Prod
+  #     envName: prod
+  #     tfWorkingDir: terraform/azure/prod
+  #     azureServiceConnection: copilotgtm-arc-ci-cd-service--prod
+  #     variableGroupName: copilot-infra-secrets-prod
+  #     agentPoolName: $(SELF_HOSTED_AGENT_POOL)
+  #     tfVersion: $(TF_VERSION)
+  #     dependsOn:
+  #       - Uat
+  #     stageCondition: and(succeeded(), eq(variables['DEPLOY_ENVIRONMENT'], 'prod'), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/'), ne(variables['Build.Reason'], 'PullRequest'))
+  #     applyCondition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/'), ne(variables['Build.Reason'], 'PullRequest'))
+  #     approvalEnvironment: terraform-prod
+  #     artifactName: tfplan-prod
