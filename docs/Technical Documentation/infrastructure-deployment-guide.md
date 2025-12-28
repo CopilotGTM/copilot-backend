@@ -61,8 +61,8 @@ Run the following command to deploy **only** the components needed for the agent
 # Initialize Terraform
 terraform init
 
-# Apply the Agent, Networking, and Pipeline definitions
-terraform apply -target="module.resource_group" -target="module.vnet" -target="module.devops_agent" -target="module.infra_pipeline" -target="azuredevops_variable_group.infra_secrets" -var-file="terraform.tfvars"
+# Apply the Agent, Networking, Pipeline, and Service Connection
+terraform apply -target="module.resource_group" -target="module.vnet" -target="module.devops_agent" -target="module.infra_pipeline" -target="azuredevops_variable_group.infra_secrets" -target="module.service_principal" -target="module.service_connection" -var-file="terraform.tfvars"
 ```
 
 **Verification & Secret Configuration:**

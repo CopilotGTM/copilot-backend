@@ -218,8 +218,8 @@ gpu_node_taints = ["dedicated=gpu:NoSchedule"]
 # -----------------------------------------------------------------
 # Terraform Pipeline
 # -----------------------------------------------------------------
-terraform_repo_name     = "copilot-infra"
-terraform_pipeline_name = "copilot-infra-pipeline"
+terraform_repo_name     = "copilot-app-infra"
+terraform_pipeline_name = "copilot-app-infra-pipeline"
 terraform_yml_path      = ".pipeline/.azure-pipeline.yml"
 
 

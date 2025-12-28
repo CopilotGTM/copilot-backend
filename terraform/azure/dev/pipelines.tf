@@ -12,9 +12,9 @@ resource "azuredevops_variable_group" "infra_secrets" {
   allow_access = true
 
   variable {
-    name      = "azuredevops_pat"
-    value     = "CHANGE_ME_MANUALLY" # Placeholder, update in ADO portal
-    is_secret = true
+    name         = "TF_VAR_azuredevops_pat"
+    secret_value = local.effective_azuredevops_pat
+    is_secret    = true
   }
 }
 
@@ -47,6 +47,7 @@ module "infra_pipeline" {
 # -----------------------------------------------------------------
 # Azure DevOps Pipeline (CI/CD)
 # -----------------------------------------------------------------
+/*
 data "azuredevops_git_repository" "repo" {
   project_id = data.azuredevops_project.project.id
   name       = var.backend_repo_name
@@ -67,10 +68,12 @@ module "pipeline" {
     ACR_SERVICE_CONNECTION = module.service_connection_acr.acr_service_connection_name
   }
 }
+*/
 
 # -----------------------------------------------------------------
 # Azure DevOps Secure File for Kubeconfig
 # -----------------------------------------------------------------
+/*
 module "secure_file" {
   source              = "../modules/secure_file"
   devops_project_id   = data.azuredevops_project.project.id
@@ -82,6 +85,7 @@ module "secure_file" {
     module.aks
   ]
 }
+*/
 
 # =================================================================
 # Frontend App & Pipeline
@@ -90,6 +94,7 @@ module "secure_file" {
 # -----------------------------------------------------------------
 # App Service: Azure Web App for frontend hosting (Node.js)
 # -----------------------------------------------------------------
+/*
 module "frontend_app_service" {
   source                  = "../modules/app_service"
   app_service_plan_name   = "${var.frontend_app_service_plan_name}-${var.env}"
@@ -116,10 +121,12 @@ module "frontend_app_service" {
     module.acr
   ]
 }
+*/
 
 # -----------------------------------------------------------------
 # Azure DevOps Pipeline (CI/CD) for Frontend
 # -----------------------------------------------------------------
+/*
 data "azuredevops_git_repository" "frontend_repo" {
   project_id = data.azuredevops_project.project.id
   name       = var.frontend_repo_name
@@ -141,6 +148,7 @@ module "frontend_pipeline" {
     RESOURCE_GROUP         = module.resource_group.resource_group_name
   }
 }
+*/
 
 # =================================================================
 # Frontend Admin App & Pipeline
@@ -149,6 +157,7 @@ module "frontend_pipeline" {
 # -----------------------------------------------------------------
 # Admin App Service: Azure Web App for frontend hosting
 # -----------------------------------------------------------------
+/*
 module "frontend_admin_app_service" {
   source                  = "../modules/app_service"
   app_service_plan_name   = "${var.frontend_admin_app_service_plan_name}-${var.env}"
@@ -175,10 +184,12 @@ module "frontend_admin_app_service" {
     module.acr
   ]
 }
+*/
 
 # -----------------------------------------------------------------
 # Azure DevOps Pipeline (CI/CD) for Admin Frontend
 # -----------------------------------------------------------------
+/*
 data "azuredevops_git_repository" "frontend_admin_repo" {
   project_id = data.azuredevops_project.project.id
   name       = var.frontend_admin_repo_name
@@ -200,3 +211,4 @@ module "frontend_admin_pipeline" {
     RESOURCE_GROUP       = module.resource_group.resource_group_name
   }
 }
+*/

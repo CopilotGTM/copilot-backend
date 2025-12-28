@@ -53,11 +53,11 @@ stages:
       envName: dev
       tfWorkingDir: terraform/azure/dev
       azureServiceConnection: copilotgtm-arc-ci-cd-service--dev
-      variableGroupName: terraform-dev-vars
+      variableGroupName: copilot-infra-secrets-dev
       agentPoolName: $(SELF_HOSTED_AGENT_POOL)
       tfVersion: $(TF_VERSION)
       dependsOn: []
-      stageCondition: succeeded()
+      stageCondition: and(succeeded(), eq(variables['DEPLOY_ENVIRONMENT'], 'dev'))
       applyCondition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'), ne(variables['Build.Reason'], 'PullRequest'))
       approvalEnvironment: terraform-dev
       artifactName: tfplan-dev
@@ -71,11 +71,11 @@ stages:
       envName: uat
       tfWorkingDir: terraform/azure/uat
       azureServiceConnection: copilotgtm-arc-ci-cd-service--uat
-      variableGroupName: terraform-uat-vars
+      variableGroupName: copilot-infra-secrets-uat
       agentPoolName: $(SELF_HOSTED_AGENT_POOL)
       tfVersion: $(TF_VERSION)
       dependsOn: []
-      stageCondition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/'), ne(variables['Build.Reason'], 'PullRequest'))
+      stageCondition: and(succeeded(), eq(variables['DEPLOY_ENVIRONMENT'], 'uat'), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/'), ne(variables['Build.Reason'], 'PullRequest'))
       applyCondition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/'), ne(variables['Build.Reason'], 'PullRequest'))
       approvalEnvironment: terraform-uat
       artifactName: tfplan-uat
@@ -89,12 +89,12 @@ stages:
       envName: prod
       tfWorkingDir: terraform/azure/prod
       azureServiceConnection: copilotgtm-arc-ci-cd-service--prod
-      variableGroupName: terraform-prod-vars
+      variableGroupName: copilot-infra-secrets-prod
       agentPoolName: $(SELF_HOSTED_AGENT_POOL)
       tfVersion: $(TF_VERSION)
       dependsOn:
         - Uat
-      stageCondition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/'), ne(variables['Build.Reason'], 'PullRequest'))
+      stageCondition: and(succeeded(), eq(variables['DEPLOY_ENVIRONMENT'], 'prod'), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/'), ne(variables['Build.Reason'], 'PullRequest'))
       applyCondition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/'), ne(variables['Build.Reason'], 'PullRequest'))
       approvalEnvironment: terraform-prod
       artifactName: tfplan-prod

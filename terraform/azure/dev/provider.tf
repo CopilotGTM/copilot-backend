@@ -52,7 +52,7 @@ provider "azurerm" {
 data "azurerm_key_vault_secret" "azuredevops_pat" {
   count        = var.azuredevops_pat == "" && var.azuredevops_pat_secret_name != "" ? 1 : 0
   name         = var.azuredevops_pat_secret_name
-  key_vault_id = module.master_key_vault.key_vault_id
+  key_vault_id = "/subscriptions/${var.subscription_id}/resourceGroups/${var.resource_group_name}-${var.env}/providers/Microsoft.KeyVault/vaults/copilot-gtm-kv-${var.env}"
 }
 
 locals {

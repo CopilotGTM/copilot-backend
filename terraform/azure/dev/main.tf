@@ -29,6 +29,7 @@ module "vnet" {
 # -----------------------------------------------------------------
 # Application Gateway (WAF)
 # -----------------------------------------------------------------
+/*
 module "waf" {
   source              = "../modules/waf"
   waf_name            = "${var.waf_name}-${var.env}"
@@ -44,10 +45,12 @@ module "waf" {
     module.vnet
   ]
 }
+*/
 
 # -----------------------------------------------------------------
 # Azure Redis Cache: In-memory data store for caching and sessions
 # -----------------------------------------------------------------
+/*
 module "redis" {
   source              = "../modules/redis"
   redis_name          = "${var.redis_name}-${var.env}"
@@ -65,6 +68,7 @@ module "redis" {
     module.vnet
   ]
 }
+*/
 
 data "azurerm_client_config" "current" {}
 
@@ -75,6 +79,7 @@ data "azuread_client_config" "current" {}
 # Private DNS: Key Vault Private Link
 # Created once per environment; individual Key Vaults attach via zone groups.
 # -----------------------------------------------------------------
+/*
 resource "azurerm_private_dns_zone" "key_vault" {
   count               = var.enable_key_vault_private_endpoints ? 1 : 0
   name                = "privatelink.vaultcore.azure.net"
@@ -93,10 +98,12 @@ resource "azurerm_private_dns_zone_virtual_network_link" "key_vault" {
   virtual_network_id    = module.vnet.vnet_id
   registration_enabled  = false
 }
+*/
 
 # -----------------------------------------------------------------
 # Private DNS: Storage Account (Blob) Private Link
 # -----------------------------------------------------------------
+/*
 resource "azurerm_private_dns_zone" "storage_blob" {
   count               = var.enable_storage_private_endpoints ? 1 : 0
   name                = "privatelink.blob.core.windows.net"
@@ -115,13 +122,15 @@ resource "azurerm_private_dns_zone_virtual_network_link" "storage_blob" {
   virtual_network_id    = module.vnet.vnet_id
   registration_enabled  = false
 }
+*/
 
 # -----------------------------------------------------------------
 # Azure Key Vault
 # -----------------------------------------------------------------
+/*
 module "database_key_vault" {
   source                        = "../modules/key_vault"
-  key_vault_name                = "app-database-vault-${var.env}"
+  key_vault_name                = "copilot-gtm-database-kv-${var.env}"
   location                      = var.location
   resource_group_name           = module.resource_group.resource_group_name
   tenant_id                     = data.azurerm_client_config.current.tenant_id
@@ -138,13 +147,15 @@ module "database_key_vault" {
     module.resource_group
   ]
 }
+*/
 
 # -----------------------------------------------------------------
 # Azure Key Vault
 # -----------------------------------------------------------------
+/*
 module "master_key_vault" {
   source                        = "../modules/key_vault"
-  key_vault_name                = "app-master-vault-${var.env}"
+  key_vault_name                = "copilot-gtm-master-kv-${var.env}"
   location                      = var.location
   resource_group_name           = module.resource_group.resource_group_name
   tenant_id                     = data.azurerm_client_config.current.tenant_id
@@ -161,10 +172,12 @@ module "master_key_vault" {
     module.resource_group
   ]
 }
+*/
 
 # -----------------------------------------------------------------
 # Azure Storage Account: General purpose blob/file storage
 # -----------------------------------------------------------------
+/*
 module "master_storage_account" {
   source                             = "../modules/storage_account"
   storage_account_name               = "${var.storage_account_name}${var.env}"
@@ -187,10 +200,12 @@ module "master_storage_account" {
     project     = var.project_name
   }
 }
+*/
 
 # -----------------------------------------------------------------
 # Organisation Data Storage Account: dedicated per-organisation data store
 # -----------------------------------------------------------------
+/*
 module "org_storage_account" {
   source                             = "../modules/storage_account"
   storage_account_name               = "${var.org_storage_account_name}${var.env}"
@@ -214,10 +229,12 @@ module "org_storage_account" {
     purpose     = "organisation-data"
   }
 }
+*/
 
 # -----------------------------------------------------------------
 # Azure Container Registry: Stores container images for AKS and DevOps pipelines
 # -----------------------------------------------------------------
+/*
 module "acr" {
   source              = "../modules/acr"
   acr_name            = "${var.acr_name}${var.env}"
@@ -231,10 +248,12 @@ module "acr" {
     module.vnet
   ]
 }
+*/
 
 # -----------------------------------------------------------------
 # Azure Kubernetes Service: Managed Kubernetes cluster for containers
 # -----------------------------------------------------------------
+/*
 module "aks" {
   source                 = "../modules/aks"
   aks_name               = "${var.aks_name}-${var.env}"
@@ -265,12 +284,14 @@ module "aks" {
     module.waf
   ]
 }
+*/
 
 
 
 # -----------------------------------------------------------------
 # Role Assignment: Allow AKS kubelet to pull images from ACR
 # -----------------------------------------------------------------
+/*
 resource "azurerm_role_assignment" "aks_kubelet_acr_pull" {
   principal_id                     = module.aks.kubelet_identity_object_id
   role_definition_name             = "AcrPull"
@@ -281,11 +302,13 @@ resource "azurerm_role_assignment" "aks_kubelet_acr_pull" {
     module.aks
   ]
 }
+*/
 
 # -----------------------------------------------------------------
 # Workload Identity (AAD application + federated identity for ServiceAccount)
 # Replaces UAMI + federated identity credential resources
 # -----------------------------------------------------------------
+/*
 module "workload_identity_backend" {
   source                    = "../modules/workload_identity"
   name                      = "copilot-backend-wi-${var.env}"
@@ -297,8 +320,10 @@ module "workload_identity_backend" {
     module.aks
   ]
 }
+*/
 
 # Separate workload identity for workers (shared ServiceAccount for all workers)
+/*
 module "workload_identity_workers" {
   source                    = "../modules/workload_identity"
   name                      = "copilot-workers-wi-${var.env}"
@@ -310,8 +335,10 @@ module "workload_identity_workers" {
     module.aks
   ]
 }
+*/
 
 # Role assignments for workload identity SP (least privilege scopes similar to prior UAMI)
+/*
 resource "azurerm_role_assignment" "wi_kv_database_secrets_user" {
   scope                = module.database_key_vault.key_vault_id
   role_definition_name = "Key Vault Secrets Officer" # upgraded from Secrets User for create/update/delete
@@ -384,10 +411,12 @@ resource "azurerm_role_assignment" "wi_workers_org_storage_blob_delegator" {
   role_definition_name = "Storage Blob Delegator"
   principal_id         = module.workload_identity_workers.object_id
 }
+*/
 
 # -----------------------------------------------------------------
 # Azure AI Foundry
 # -----------------------------------------------------------------
+/*
 module "foundry" {
   source              = "../modules/foundry"
   prefix              = "foundry"
@@ -399,6 +428,7 @@ module "foundry" {
     module.resource_group
   ]
 }
+*/
 
 # -----------------------------------------------------------------
 # Backend DEVELOPMENT Identity - Permissions provided via AKS kubelet identity  
@@ -422,6 +452,7 @@ resource "random_password" "db_admin" {
 # -----------------------------------------------------------------
 # PostgreSQL Flexible Server
 # -----------------------------------------------------------------
+/*
 module "application_database" {
   source              = "../modules/postgresql"
   env                 = var.env
@@ -440,6 +471,7 @@ module "application_database" {
     module.database_key_vault
   ]
 }
+*/
 
 # # -----------------------------------------------------------------
 # # Create the DNS CNAME record pointing at the frontend app service
@@ -480,17 +512,17 @@ resource "azuredevops_variable_group" "secrets" {
 
   variable {
     name  = "APPLICATION_STORAGE_NAME"
-    value = module.master_storage_account.storage_account_name
+    value = "placeholder" # module.master_storage_account.storage_account_name
   }
 
   variable {
     name  = "ORGANISATION_STORAGE_NAME"
-    value = module.org_storage_account.storage_account_name
+    value = "placeholder" # module.org_storage_account.storage_account_name
   }
 
   variable {
     name  = "AZURE_KEY_VAULT_URL"
-    value = module.database_key_vault.key_vault_uri
+    value = "placeholder" # module.database_key_vault.key_vault_uri
   }
 
   variable {
@@ -499,22 +531,22 @@ resource "azuredevops_variable_group" "secrets" {
   }
   variable {
     name  = "DATABASE_HOST"
-    value = module.application_database.db_host
+    value = "placeholder" # module.application_database.db_host
   }
 
   variable {
     name  = "DATABASE_USER"
-    value = module.application_database.db_user
+    value = "placeholder" # module.application_database.db_user
   }
 
   variable {
     name  = "DATABASE_PORT"
-    value = tostring(module.application_database.db_port)
+    value = "5432" # tostring(module.application_database.db_port)
   }
 
   variable {
     name  = "DATABASE_NAME"
-    value = module.application_database.db_name
+    value = "placeholder" # module.application_database.db_name
   }
 
   variable {
@@ -536,23 +568,23 @@ resource "azuredevops_variable_group" "secrets" {
 
   variable {
     name  = "REDIS_HOST"
-    value = module.redis.hostname
+    value = "placeholder" # module.redis.hostname
   }
 
   variable {
     name  = "REDIS_PORT"
-    value = tostring(module.redis.port)
+    value = "6379" # tostring(module.redis.port)
   }
 
   variable {
     name         = "REDIS_PASSWORD"
-    secret_value = module.redis.primary_access_key
+    secret_value = "placeholder" # module.redis.primary_access_key
     is_secret    = true
   }
 
   variable {
     name  = "AZURE_OPENAI_ENDPOINT"
-    value = module.foundry.openai_endpoint_url
+    value = "placeholder" # module.foundry.openai_endpoint_url
   }
 
   variable {
@@ -563,12 +595,12 @@ resource "azuredevops_variable_group" "secrets" {
 
   variable {
     name  = "AZURE_EMBEDDER_OPENAI_ENDPOINT"
-    value = module.foundry.openai_endpoint_url
+    value = "placeholder" # module.foundry.openai_endpoint_url
   }
 
   variable {
     name  = "AZURE_EMBEDDER_DEPLOYMENT"
-    value = module.foundry.embedder_deployment_name
+    value = "placeholder" # module.foundry.embedder_deployment_name
   }
 
   variable {
@@ -638,7 +670,7 @@ resource "azuredevops_variable_group" "secrets" {
 
   variable {
     name  = "WEB_APP_NAME"
-    value = module.frontend_app_service.app_service_name
+    value = "placeholder" # module.frontend_app_service.app_service_name
   }
 
   variable {
@@ -649,12 +681,12 @@ resource "azuredevops_variable_group" "secrets" {
   # Workload Identity client IDs (for Helm ServiceAccount annotations)
   variable {
     name  = "WORKLOAD_IDENTITY_BACKEND_CLIENT_ID"
-    value = module.workload_identity_backend.client_id
+    value = "placeholder" # module.workload_identity_backend.client_id
   }
 
   variable {
     name  = "WORKLOAD_IDENTITY_WORKERS_CLIENT_ID"
-    value = module.workload_identity_workers.client_id
+    value = "placeholder" # module.workload_identity_workers.client_id
   }
 
   # Workload Identity tenant IDs (for Azure SDK authentication)
@@ -727,8 +759,17 @@ resource "azuredevops_pipeline_authorization" "service_connection_acr_authorizat
 }
 
 # -----------------------------------------------------------------
-# Generate a strong, random Agent admin password
+# Test Resource: Simple resource to verify pipeline execution
 # -----------------------------------------------------------------
+resource "random_string" "test_resource" {
+  length  = 8
+  special = false
+  upper   = false
+}
+
+output "test_resource_value" {
+  value = random_string.test_resource.result
+}
 resource "random_password" "agent_admin" {
   length           = 32
   override_special = "!@#$%&*()-_=+[]"
@@ -747,7 +788,7 @@ module "devops_agent" {
   resource_group_name = module.resource_group.resource_group_name
   location            = var.location
   vm_name             = "${var.agent_name}-${var.env}"
-  vm_size             = "Standard_B2ms"
+  vm_size             = "Standard_D2as_v4"
   admin_username      = var.admin_username
   admin_password      = random_password.agent_admin.result
 
