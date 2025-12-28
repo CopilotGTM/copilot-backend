@@ -597,23 +597,6 @@ api = [
     { name = "uvicorn", extra = ["standard"] },
     { name = "werkzeug" },
 ]
-dev = [
-    { name = "bandit" },
-    { name = "black" },
-    { name = "fakeredis" },
-    { name = "flower" },
-    { name = "httpx" },
-    { name = "mypy" },
-    { name = "pre-commit" },
-    { name = "pymupdf" },
-    { name = "pyngrok" },
-    { name = "pyperclip" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-cov" },
-    { name = "pytest-mock" },
-    { name = "ruff" },
-]
 docs = [
     { name = "mkdocs" },
     { name = "mkdocs-material" },
@@ -623,6 +606,7 @@ full = [
     { name = "aiohttp" },
     { name = "azure-mgmt-storage" },
     { name = "azure-storage-blob" },
+    { name = "defusedxml" },
     { name = "docling" },
     { name = "duckduckgo-search" },
     { name = "eventlet" },
@@ -657,11 +641,11 @@ full = [
 integrations = [
     { name = "aiohttp" },
     { name = "fsspec" },
-    { name = "openai" },
 ]
 knowledge = [
     { name = "agno" },
     { name = "azure-storage-blob" },
+    { name = "defusedxml" },
     { name = "docling" },
     { name = "huggingface-hub", extra = ["hf-xet"] },
     { name = "lxml" },
@@ -699,8 +683,21 @@ workers-light = [
 [package.dev-dependencies]
 dev = [
     { name = "bandit" },
+    { name = "black" },
     { name = "detect-secrets" },
+    { name = "fakeredis" },
+    { name = "flower" },
+    { name = "httpx" },
+    { name = "mypy" },
     { name = "pre-commit" },
+    { name = "pymupdf" },
+    { name = "pyngrok" },
+    { name = "pyperclip" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-cov" },
+    { name = "pytest-mock" },
+    { name = "ruff" },
 ]
 quality = [
     { name = "bandit" },
@@ -726,24 +723,21 @@ requires-dist = [
     { name = "azure-storage-blob", marker = "extra == 'full'", specifier = "==12.25.1" },
     { name = "azure-storage-blob", marker = "extra == 'knowledge'", specifier = "==12.25.1" },
     { name = "azure-storage-blob", marker = "extra == 'workers-light'", specifier = "==12.25.1" },
-    { name = "bandit", marker = "extra == 'dev'", specifier = ">=1.7.5" },
-    { name = "black", marker = "extra == 'dev'", specifier = "==25.1.0" },
     { name = "celery", specifier = "~=5.5.3" },
+    { name = "defusedxml", marker = "extra == 'full'", specifier = ">=0.7.1" },
+    { name = "defusedxml", marker = "extra == 'knowledge'", specifier = ">=0.7.1" },
     { name = "docling", marker = "extra == 'full'", specifier = "~=2.47.1" },
     { name = "docling", marker = "extra == 'knowledge'", specifier = "~=2.47.1" },
     { name = "duckduckgo-search", marker = "extra == 'full'", specifier = "~=8.1.1" },
     { name = "duckduckgo-search", marker = "extra == 'workers-light'", specifier = "~=8.1.1" },
     { name = "eventlet", marker = "extra == 'api'", specifier = "==0.40.2" },
     { name = "eventlet", marker = "extra == 'full'", specifier = "==0.40.2" },
-    { name = "fakeredis", marker = "extra == 'dev'", specifier = ">=2.20.0" },
     { name = "fakeredis", marker = "extra == 'test'", specifier = ">=2.20.0" },
     { name = "fastapi", marker = "extra == 'api'", specifier = "==0.116.1" },
     { name = "fastapi", marker = "extra == 'full'", specifier = "==0.116.1" },
-    { name = "flower", marker = "extra == 'dev'", specifier = "==2.0.1" },
     { name = "fsspec", marker = "extra == 'full'", specifier = "~=2025.7.0" },
     { name = "fsspec", marker = "extra == 'integrations'", specifier = "~=2025.7.0" },
     { name = "httpx", specifier = ">=0.28.1" },
-    { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.28.1" },
     { name = "httpx", marker = "extra == 'test'", specifier = ">=0.28.1" },
     { name = "huggingface-hub", extras = ["hf-xet"], marker = "extra == 'full'", specifier = "==0.35.3" },
     { name = "huggingface-hub", extras = ["hf-xet"], marker = "extra == 'knowledge'", specifier = "==0.35.3" },
@@ -753,37 +747,27 @@ requires-dist = [
     { name = "lxml", marker = "extra == 'knowledge'" },
     { name = "mkdocs", marker = "extra == 'docs'", specifier = ">=1.5.3" },
     { name = "mkdocs-material", marker = "extra == 'docs'", specifier = ">=9.5.0" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.8.0" },
     { name = "openai", marker = "extra == 'full'", specifier = "==1.101.0" },
-    { name = "openai", marker = "extra == 'integrations'", specifier = "==1.101.0" },
     { name = "openai", marker = "extra == 'knowledge'", specifier = "==1.101.0" },
     { name = "openai", marker = "extra == 'workers-light'", specifier = "==1.101.0" },
     { name = "packaging", specifier = "==23.2" },
     { name = "pgvector", specifier = "==0.4.1" },
     { name = "pillow", marker = "extra == 'full'", specifier = "==10.4.0" },
     { name = "pillow", marker = "extra == 'knowledge'", specifier = "==10.4.0" },
-    { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.5.0" },
     { name = "psycopg2-binary", specifier = "==2.9.10" },
     { name = "pydantic", specifier = "~=2.11.7" },
     { name = "pydantic", extras = ["email"] },
     { name = "pyjwt", marker = "extra == 'api'", specifier = "==2.10.1" },
     { name = "pyjwt", marker = "extra == 'full'", specifier = "==2.10.1" },
-    { name = "pymupdf", marker = "extra == 'dev'" },
     { name = "pymupdf", marker = "extra == 'full'", specifier = "==1.26.3" },
     { name = "pymupdf", marker = "extra == 'knowledge'", specifier = "==1.26.3" },
-    { name = "pyngrok", marker = "extra == 'dev'", specifier = ">=6.0.0" },
     { name = "pypdf", marker = "extra == 'full'", specifier = "==5.9.0" },
     { name = "pypdf", marker = "extra == 'knowledge'", specifier = "==5.9.0" },
     { name = "pypdf2", marker = "extra == 'full'", specifier = "==3.0.1" },
     { name = "pypdf2", marker = "extra == 'knowledge'", specifier = "==3.0.1" },
-    { name = "pyperclip", marker = "extra == 'dev'" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0.0" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
     { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=0.23.0" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.1.0" },
     { name = "pytest-cov", marker = "extra == 'test'", specifier = ">=4.1.0" },
-    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.12.0" },
     { name = "pytest-mock", marker = "extra == 'test'", specifier = ">=3.12.0" },
     { name = "python-docx", marker = "extra == 'full'", specifier = "~=1.2.0" },
     { name = "python-docx", marker = "extra == 'knowledge'", specifier = "~=1.2.0" },
@@ -798,7 +782,6 @@ requires-dist = [
     { name = "requests", specifier = ">=2.32.4" },
     { name = "resend", marker = "extra == 'api'", specifier = "==2.11.0" },
     { name = "resend", marker = "extra == 'full'", specifier = "==2.11.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8.0" },
     { name = "sqlalchemy", specifier = "==2.0.42" },
     { name = "sqlmodel", specifier = "==0.0.24" },
     { name = "sse-starlette", marker = "extra == 'api'", specifier = "==3.0.2" },
@@ -819,13 +802,26 @@ requires-dist = [
     { name = "werkzeug", marker = "extra == 'api'", specifier = "==3.1.3" },
     { name = "werkzeug", marker = "extra == 'full'", specifier = "==3.1.3" },
 ]
-provides-extras = ["api", "knowledge", "workers-light", "integrations", "full", "dev", "test", "docs"]
+provides-extras = ["api", "knowledge", "workers-light", "integrations", "full", "test", "docs"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "bandit", specifier = ">=1.8.6" },
+    { name = "black", specifier = "==25.1.0" },
     { name = "detect-secrets", specifier = ">=1.5.0" },
+    { name = "fakeredis", specifier = ">=2.20.0" },
+    { name = "flower", specifier = "==2.0.1" },
+    { name = "httpx", specifier = ">=0.28.1" },
+    { name = "mypy", specifier = ">=1.8.0" },
     { name = "pre-commit", specifier = ">=4.3.0" },
+    { name = "pymupdf" },
+    { name = "pyngrok", specifier = ">=6.0.0" },
+    { name = "pyperclip" },
+    { name = "pytest", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", specifier = ">=0.23.0" },
+    { name = "pytest-cov", specifier = ">=4.1.0" },
+    { name = "pytest-mock", specifier = ">=3.12.0" },
+    { name = "ruff", specifier = ">=0.8.0" },
 ]
 quality = [
     { name = "bandit", specifier = ">=1.8.6" },
@@ -918,6 +914,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/99/55/181022996c4063fc0e7666a47049a1ca705abb9c8a13830f074edb347495/cryptography-46.0.3-pp311-pypy311_pp73-manylinux_2_34_aarch64.whl", hash = "sha256:9394673a9f4de09e28b5356e7fff97d778f8abad85c9d5ac4a4b7e25a0de7717", size = 4242957, upload-time = "2025-10-15T23:18:22.18Z" },
     { url = "https://files.pythonhosted.org/packages/ba/af/72cd6ef29f9c5f731251acadaeb821559fe25f10852f44a63374c9ca08c1/cryptography-46.0.3-pp311-pypy311_pp73-manylinux_2_34_x86_64.whl", hash = "sha256:94cd0549accc38d1494e1f8de71eca837d0509d0d44bf11d158524b0e12cebf9", size = 4409447, upload-time = "2025-10-15T23:18:24.209Z" },
     { url = "https://files.pythonhosted.org/packages/0d/c3/e90f4a4feae6410f914f8ebac129b9ae7a8c92eb60a638012dde42030a9d/cryptography-46.0.3-pp311-pypy311_pp73-win_amd64.whl", hash = "sha256:6b5063083824e5509fdba180721d55909ffacccc8adbec85268b48439423d78c", size = 3438528, upload-time = "2025-10-15T23:18:26.227Z" },
+]
+
+[[package]]
+name = "defusedxml"
+version = "0.7.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/0f/d5/c66da9b79e5bdb124974bfe172b4daf3c984ebd9c2a06e2b8a4dc7331c72/defusedxml-0.7.1.tar.gz", hash = "sha256:1bb3032db185915b62d7c6209c5a8792be6a32ab2fedacc84e01b52c51aa3e69", size = 75520, upload-time = "2021-03-08T10:59:26.269Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/07/6c/aa3f2f849e01cb6a001cd8554a88d4c77c5c1a31c95bdf1cf9301e6d9ef4/defusedxml-0.7.1-py2.py3-none-any.whl", hash = "sha256:a352e7e428770286cc899e2542b6cdaedb2b4953ff269a210103ec58f6198a61", size = 25604, upload-time = "2021-03-08T10:59:24.45Z" },
 ]
 
 [[package]]

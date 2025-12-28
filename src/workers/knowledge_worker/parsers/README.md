@@ -42,19 +42,22 @@ The Document Parser System is a production-grade, extensible framework for parsi
 ## Key Components
 
 ### 1. Parser Factory (`parser_factory.py`)
+
 - **Purpose**: Routes documents to appropriate parsers based on MIME type
-- **Features**: 
+- **Features**:
   - Automatic parser registration
   - Error handling for unsupported formats
   - Easy extensibility for new parsers
 
 ### 2. Base Parser (`base_parser.py`)
+
 - **Purpose**: Abstract base class defining parser interface
 - **Features**: Consistent API across all parsers
 
 ### 3. Utility Services
 
 #### Embedding Service (`utils/embedding_service.py`)
+
 - **Purpose**: Generate embeddings for document content
 - **Features**:
   - Azure OpenAI integration
@@ -63,6 +66,7 @@ The Document Parser System is a production-grade, extensible framework for parsi
   - Error handling with fallback
 
 #### Content Processor (`utils/content_processor.py`)
+
 - **Purpose**: Process and clean document content
 - **Features**:
   - Text cleaning and normalization
@@ -71,6 +75,7 @@ The Document Parser System is a production-grade, extensible framework for parsi
   - Content validation
 
 #### Document Store (`utils/document_store.py`)
+
 - **Purpose**: Store processed documents in database
 - **Features**:
   - Batch document storage
@@ -163,16 +168,19 @@ All errors are logged with appropriate detail levels and don't crash the entire 
 ## Performance Considerations
 
 ### PDF Parser
+
 - Uses PyMuPDF for better performance and accuracy
 - Falls back to pypdf for compatibility
 - Processes pages individually to handle large documents
 
 ### PPT Parser
+
 - Supports parallel slide processing (configurable workers)
 - Handles image compression for optimal storage
 - Extracts text, tables, and image metadata
 
 ### DOC Parser
+
 - Chunks large documents for better embedding quality
 - Extracts table content preserving structure
 - Processes embedded images and metadata
@@ -202,6 +210,7 @@ All parsers use structured logging with the following levels:
 - **DEBUG**: Detailed processing information
 
 Log example:
+
 ```
 2025-08-25 10:30:45 INFO [pdf_parser] Starting PDF parsing for file: /path/to/document.pdf
 2025-08-25 10:30:46 INFO [pdf_parser] Processing PDF with 25 pages using PyMuPDF
