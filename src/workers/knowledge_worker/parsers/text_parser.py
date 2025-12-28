@@ -16,7 +16,6 @@ from src.infra.utils.logger import get_logger
 from src.workers.knowledge_worker.models import ChunkData, ParsedContent, ProcessingContext
 from src.workers.knowledge_worker.parsers.protocol import IDocumentParser
 from src.workers.knowledge_worker.parsers.registry import ParserRegistry
-from src.workers.knowledge_worker.utils.content_processor import ContentProcessor
 
 logger = get_logger("text_parser")
 
@@ -64,12 +63,7 @@ class TextParser(IDocumentParser):
         """Return MIME types this parser supports."""
         return [
             "text/plain",
-            "text/markdown",
             "text/csv",
-            "text/html",
-            "application/json",
-            "application/xml",
-            "text/xml",
         ]
 
     def parse(
@@ -110,8 +104,10 @@ class TextParser(IDocumentParser):
                     supports_images=False,
                 )
 
-            # Clean the content
-            clean_content = ContentProcessor.clean_text(content)
+            # Clean the content (preserve newlines for structure)
+            # ContentProcessor.clean_text strips newlines, which is bad for structure.
+            # For plain text/CSV, we just want to normalize some whitespace but keep lines.
+            clean_content = content.strip()
 
             # Split into chunks
             chunks = self._split_into_chunks(clean_content)

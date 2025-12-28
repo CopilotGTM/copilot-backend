@@ -1,12 +1,13 @@
-"""PDF Parser - Clean implementation using IDocumentParser protocol.
+"""Docling Parser - Unified parser for PDF and Word documents.
 
-This module provides the primary PDF parser that:
+This module provides a unified parser that:
 1. Implements IDocumentParser protocol
-2. Returns ParsedContent (raw chunks)
-3. Does NOT handle embeddings or storage (delegated to ChunkProcessor)
+2. Uses Docling to handle both PDF and DOCX formats
+3. Returns ParsedContent (raw chunks)
+4. Does NOT handle embeddings or storage (delegated to ChunkProcessor)
 
 This is designed to work with the ExtractionService pipeline:
-    PDFParser → ParsedContent → ChunkProcessor → OrganisationDocument[]
+    DoclingParser → ParsedContent → ChunkProcessor → OrganisationDocument[]
 """
 
 from __future__ import annotations
@@ -31,16 +32,16 @@ if TYPE_CHECKING:
     from docling.chunking import HybridChunker
     from docling.document_converter import DocumentConverter
 
-logger = get_logger("pdf_parser")
+logger = get_logger("docling_parser")
 
 
 @ParserRegistry.register
-class PDFParser(IDocumentParser):
+class DoclingParser(IDocumentParser):
     """
-    PDF parser implementing the IDocumentParser protocol.
+    Unified parser for PDF and Word documents using Docling.
 
     This parser is responsible ONLY for:
-    1. Converting PDF to structured representation (via Docling)
+    1. Converting PDF/DOCX to structured representation (via Docling)
     2. Chunking the document
     3. Extracting text and multimodal references (tables, images)
 
@@ -54,7 +55,7 @@ class PDFParser(IDocumentParser):
         to avoid loading them until actually needed.
 
     Usage:
-        parser = PDFParser()
+        parser = DoclingParser()
         result = parser.parse(file_path, context)
 
         # result.chunks contains ChunkData with:
@@ -65,14 +66,26 @@ class PDFParser(IDocumentParser):
     """
 
     def __init__(self):
-        """Initialize PDF parser with lazy-loaded resources."""
+        """Initialize Docling parser with lazy-loaded resources."""
         self._converter: DocumentConverter | None = None
         self._chunker: HybridChunker | None = None
 
     @classmethod
     def supported_mimetypes(cls) -> list[str]:
         """Return MIME types this parser supports."""
-        return ["application/pdf"]
+        return [
+            "application/pdf",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "text/html",
+            "text/markdown",
+            "image/png",
+            "image/jpeg",
+            "image/tiff",
+            "image/bmp",
+            "image/gif",
+        ]
 
     @property
     def converter(self) -> Any:
@@ -94,10 +107,10 @@ class PDFParser(IDocumentParser):
         context: ProcessingContext,
     ) -> ParsedContent:
         """
-        Parse a PDF file and return structured content.
+        Parse a PDF or Word file and return structured content.
 
         Args:
-            file_path: Path to the PDF file
+            file_path: Path to the file
             context: Processing context with org/source/user info
 
         Returns:
@@ -111,10 +124,10 @@ class PDFParser(IDocumentParser):
                 chunks=[], metadata={}, supports_tables=False, supports_images=False
             )
 
-        logger.info(f"Parsing PDF: {file_path.name} (source: {context.source_id})")
+        logger.info(f"Parsing document: {file_path.name} (source: {context.source_id})")
 
         try:
-            # 1. Convert PDF using Docling
+            # 1. Convert document using Docling
             result = self.converter.convert(str(file_path))
             dl_doc = result.document
 
@@ -151,7 +164,7 @@ class PDFParser(IDocumentParser):
             )
 
         except Exception as e:
-            logger.error(f"Failed to parse PDF {file_path}: {e}")
+            logger.error(f"Failed to parse document {file_path}: {e}")
             return ParsedContent(
                 chunks=[], metadata={}, supports_tables=False, supports_images=False
             )

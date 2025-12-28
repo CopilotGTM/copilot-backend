@@ -31,7 +31,15 @@ class DocumentConverterService:
 
     def __init__(self) -> None:
         self._converter = DocumentConverter(
-            allowed_formats=[InputFormat.PDF, InputFormat.DOCX],
+            allowed_formats=[
+                InputFormat.PDF,
+                InputFormat.DOCX,
+                InputFormat.PPTX,
+                InputFormat.XLSX,
+                InputFormat.HTML,
+                InputFormat.IMAGE,
+                InputFormat.MD,
+            ],
             format_options={
                 InputFormat.PDF: PdfFormatOption(
                     pipeline_options=PdfPipelineOptions(
