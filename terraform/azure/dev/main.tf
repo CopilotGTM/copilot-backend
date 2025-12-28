@@ -813,7 +813,7 @@ module "devops_agent" {
   install_azure_cli = true
 
   # No public IP needed - agent communicates outbound only
-  enable_public_ip = false
+  enable_public_ip = true
 
   tags = {
     environment = var.env
