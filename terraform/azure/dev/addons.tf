@@ -1,3 +1,4 @@
+/*
 # -----------------------------------------------------------------
 # 2) Helm chart: cert-manager
 # -----------------------------------------------------------------
@@ -18,7 +19,9 @@ resource "helm_release" "cert_manager" {
 
   depends_on = [module.aks]
 }
+*/
 
+/*
 # -----------------------------------------------------------------
 # 2.1) Helm chart: KEDA (Kubernetes Event-driven Autoscaling)
 # -----------------------------------------------------------------
@@ -67,7 +70,9 @@ resource "helm_release" "keda" {
 
   depends_on = [module.aks]
 }
+*/
 
+/*
 # -----------------------------------------------------------------
 # 3) cert-manager ClusterIssuer (Let’s Encrypt)
 # -----------------------------------------------------------------
@@ -123,7 +128,9 @@ resource "kubernetes_manifest" "letsencrypt_issuer" {
     time_sleep.wait_for_cert_manager_crd
   ]
 }
+*/
 
+/*
 # -----------------------------------------------------------------
 # 5) Create the application namespace
 # -----------------------------------------------------------------
@@ -134,11 +141,14 @@ resource "kubernetes_namespace" "app_namespace" {
 
   depends_on = [module.aks]
 }
+*/
 
+/*
 # -----------------------------------------------------------------
 # 7) Create a certificate for the API
 # -----------------------------------------------------------------
 resource "kubernetes_manifest" "api_certificate" {
+/*
   manifest = {
     "apiVersion" = "cert-manager.io/v1"
     "kind"       = "Certificate"
@@ -162,3 +172,4 @@ resource "kubernetes_manifest" "api_certificate" {
     kubernetes_namespace.app_namespace
   ]
 }
+*/

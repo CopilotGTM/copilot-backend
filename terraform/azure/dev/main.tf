@@ -737,6 +737,7 @@ module "service_connection" {
 # -----------------------------------------------------------------
 # Azure DevOps Service Connection for ACR (Docker Registry)
 # -----------------------------------------------------------------
+/*
 module "service_connection_acr" {
   source                = "../modules/service_connection_acr"
   devops_project_id     = data.azuredevops_project.project.id
@@ -745,6 +746,7 @@ module "service_connection_acr" {
   acr_sp_app_id         = module.service_principal.client_id
   acr_sp_app_secret     = module.service_principal.client_secret
 }
+*/
 
 resource "azuredevops_pipeline_authorization" "service_connection_authorization" {
   project_id  = data.azuredevops_project.project.id
@@ -752,11 +754,13 @@ resource "azuredevops_pipeline_authorization" "service_connection_authorization"
   type        = "endpoint"
 }
 
+/*
 resource "azuredevops_pipeline_authorization" "service_connection_acr_authorization" {
   project_id  = data.azuredevops_project.project.id
   resource_id = module.service_connection_acr.acr_service_connection_id
   type        = "endpoint"
 }
+*/
 
 # -----------------------------------------------------------------
 # Test Resource: Simple resource to verify pipeline execution

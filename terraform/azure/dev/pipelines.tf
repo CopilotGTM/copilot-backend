@@ -3,6 +3,26 @@
 # =================================================================
 
 # -----------------------------------------------------------------
+# Azure DevOps Agent Pool & Queue
+# -----------------------------------------------------------------
+resource "azuredevops_agent_pool" "pool" {
+  name           = var.agent_pool
+  auto_provision = false
+  pool_type      = "automation"
+}
+
+resource "azuredevops_agent_queue" "queue" {
+  project_id    = data.azuredevops_project.project.id
+  agent_pool_id = azuredevops_agent_pool.pool.id
+}
+
+resource "azuredevops_pipeline_authorization" "queue_auth" {
+  project_id  = data.azuredevops_project.project.id
+  resource_id = azuredevops_agent_queue.queue.id
+  type        = "queue"
+}
+
+# -----------------------------------------------------------------
 # Azure DevOps Variable Group (Secrets)
 # -----------------------------------------------------------------
 resource "azuredevops_variable_group" "infra_secrets" {
