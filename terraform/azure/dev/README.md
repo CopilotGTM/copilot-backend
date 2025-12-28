@@ -2,30 +2,27 @@
 
 This folder contains the **core Azure foundation** stack for the dev environment.
 
-## Deploy (two-step)
+## Deploy (Bootstrap + Pipeline)
 
-1) Core:
+The deployment is now a single-stage Terraform process, bootstrapped from a local machine.
+
+### 1. Bootstrap (Local)
+
+Deploy the networking, agent, and pipeline definitions first:
 
 ```sh
 cd terraform/azure/dev
 terraform init
-terraform plan -var-file="terraform.tfvars" -out=tfplan
-terraform apply tfplan
+terraform apply -target="module.resource_group" -target="module.vnet" -target="module.devops_agent" -target="module.infra_pipeline" -target="azuredevops_variable_group.infra_secrets" -var-file="terraform.tfvars"
 ```
 
-2) AKS add-ons:
+### 2. Full Deploy (Azure DevOps)
 
-```sh
-cd terraform/azure/dev/k8s
-terraform init
-terraform plan -var-file="terraform.tfvars" -out=tfplan
-terraform apply tfplan
-```
+Once the agent is online and secrets are configured in the `copilot-infra-secrets-dev` variable group, run the `copilot-infra-pipeline-dev` in Azure DevOps to deploy the rest of the stack (AKS, DBs, WAF, etc.).
 
 ## Dev-specific notes
 
 - Core state key is `azure/dev/terraform.tfstate` (configured in `provider.tf`).
-- The k8s stack reads remote state from `azure/dev/terraform.tfstate` and writes its own state using the backend key in `k8s/provider.tf`.
 - DNS naming in dev typically uses hosts like `devapp.<zone>`, `devadmin.<zone>`, `devapi.<zone>` (see `terraform.tfvars`).
 
 ## Secrets

@@ -214,3 +214,12 @@ gpu_node_taints = ["dedicated=gpu:NoSchedule"]
 
 # Nango Config
 # nango_secret is provided via Azure DevOps Variable Group (TF_VAR_nango_secret)
+
+# -----------------------------------------------------------------
+# Terraform Pipeline
+# -----------------------------------------------------------------
+terraform_repo_name     = "copilot-infra"
+terraform_pipeline_name = "copilot-infra-pipeline"
+terraform_yml_path      = ".pipeline/.azure-pipeline.yml"
+
+

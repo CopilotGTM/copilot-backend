@@ -33,7 +33,7 @@ Ensure your `terraform.tfvars` is configured with the correct regions.
 
 ```hcl
 location            = "centralus"
-openai_location     = "eastus2"
+# openai_location is hardcoded to "eastus2" in main.tf
 ```
 
 **Handling the Azure DevOps PAT:**
@@ -61,15 +61,19 @@ Run the following command to deploy **only** the components needed for the agent
 # Initialize Terraform
 terraform init
 
-# Apply only the Agent and its dependencies (RG, VNet)
-terraform apply -target="module.resource_group" -target="module.vnet" -target="module.devops_agent" -var-file="terraform.tfvars"
+# Apply the Agent, Networking, and Pipeline definitions
+terraform apply -target="module.resource_group" -target="module.vnet" -target="module.devops_agent" -target="module.infra_pipeline" -target="azuredevops_variable_group.infra_secrets" -var-file="terraform.tfvars"
 ```
 
-**Verification:**
+**Verification & Secret Configuration:**
 
-1. Go to Azure DevOps -> Project Settings -> Agent Pools.
-2. Check the `Default` (or configured) pool.
-3. Verify the agent `vm-agent-dev` is **Online**.
+1. **Agent Status**: Go to Azure DevOps -> Project Settings -> Agent Pools. Verify `vm-agent-dev` is **Online**.
+2. **Configure Secrets**:
+   * Go to **Azure DevOps -> Pipelines -> Library**.
+   * Open the variable group `copilot-infra-secrets-dev`.
+   * Update the `azuredevops_pat` variable with your actual PAT token (and any other required secrets).
+   * **Save** the variable group.
+3. **Pipeline Created**: Verify the `copilot-infra-pipeline-dev` exists in the Pipelines section.
 
 ---
 

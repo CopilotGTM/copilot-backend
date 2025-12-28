@@ -365,6 +365,38 @@ variable "backend_branch" {
 }
 
 # -----------------------------------------------------------------
+# Terraform Pipeline
+# -----------------------------------------------------------------
+
+variable "terraform_repo_name" {
+  description = "Azure DevOps repository name containing the Terraform code."
+  type        = string
+}
+
+variable "terraform_pipeline_name" {
+  description = "Name of the Azure DevOps pipeline for Terraform."
+  type        = string
+}
+
+variable "infra_variable_group_name" {
+  description = "Name of the Azure DevOps variable group for infrastructure secrets."
+  type        = string
+  default     = "copilot-infra-secrets"
+}
+
+variable "terraform_yml_path" {
+  description = "Path to the Azure Pipelines YAML file for Terraform."
+  type        = string
+  default     = ".pipeline/.azure-pipeline.yml"
+}
+
+variable "terraform_branch" {
+  description = "Branch for Terraform pipeline"
+  type        = string
+  default     = "main"
+}
+
+# -----------------------------------------------------------------
 # Frontend Pipeline
 # -----------------------------------------------------------------
 
@@ -638,3 +670,48 @@ variable "nango_secret" {
   type        = string
   default     = ""
 }
+
+# -----------------------------------------------------------------
+# K8s Addons Variables (Migrated from k8s/variables.tf)
+# -----------------------------------------------------------------
+
+variable "azure_dns_managed_identity_client_id" {
+  type        = string
+  description = "Client ID of the managed identity used by cert-manager to solve Azure DNS challenges"
+  default     = "" # Will be populated from AKS module output if not provided
+}
+
+variable "api_subdomain" {
+  type        = string
+  description = "API subdomain (e.g. api, devapi)"
+  default     = "api"
+}
+
+variable "app_namespace" {
+  type    = string
+  default = "default"
+}
+
+# KEDA Configuration
+variable "keda_namespace" {
+  type        = string
+  description = "Namespace for KEDA system components"
+  default     = "keda-system"
+}
+
+# -----------------------------------------------------------------
+# WAF Variables
+# -----------------------------------------------------------------
+
+variable "vnet_waf_subnet" {
+  description = "CIDR for the Application Gateway subnet."
+  type        = string
+  default     = "10.0.5.0/24"
+}
+
+variable "waf_name" {
+  description = "Name of the Application Gateway"
+  type        = string
+  default     = "copilot-gtm-waf"
+}
+
