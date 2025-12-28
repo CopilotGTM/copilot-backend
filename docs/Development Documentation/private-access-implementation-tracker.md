@@ -30,24 +30,29 @@ This tracker records the **module-by-module** rollout of the audit-blocker item:
 ### 1) Networking prerequisite — VNet module (IMPLEMENTED)
 
 **Where**:
+
 - `terraform/azure/modules/vnet`
 - `terraform/azure/dev`
 
 **Changes**:
+
 - Added optional `private_endpoints_subnet_prefix` to create a dedicated subnet named `${vnet_name}-private-endpoints`.
 - The subnet has `private_endpoint_network_policies_enabled = false` which is required by Azure for Private Endpoints.
 - Dev VNet now sets `vnet_private_endpoints_subnet = "10.0.4.0/24"`.
 
 **Accessibility**:
+
 - This subnet is intended only for Private Endpoints; workloads (AKS/App Service) continue to run in existing private subnets.
 
 ### 2) Key Vault module (IMPLEMENTED)
 
 **Where**:
+
 - `terraform/azure/modules/key_vault`
 - `terraform/azure/dev`
 
 **Changes**:
+
 - Key Vault module now supports:
   - Disabling public network access (`public_network_access_enabled = false`)
   - Creating a Private Endpoint (subresource: `vault`)
@@ -56,16 +61,19 @@ This tracker records the **module-by-module** rollout of the audit-blocker item:
   - `enable_key_vault_private_endpoints` (default: `false`)
 
 **Accessibility / runtime safety**:
+
 - When the toggle is enabled, Key Vault becomes reachable via Private Link from resources inside the VNet.
 - **Applied in dev** (2025-12-22): Key Vault private endpoints are now mandatory; module enforces Private Link.
 
 ### 3) Storage Account module (IMPLEMENTED)
 
 **Where**:
+
 - `terraform/azure/modules/storage_account`
 - `terraform/azure/dev`
 
 **Changes**:
+
 - Storage Account module now supports:
   - Disabling public network access (`public_network_access_enabled`, default `true`)
   - Creating a Private Endpoint (currently for `blob` subresource)
@@ -75,15 +83,18 @@ This tracker records the **module-by-module** rollout of the audit-blocker item:
 - Private DNS zone (`privatelink.blob.core.windows.net`) and VNet link created when toggle is ON.
 
 **Accessibility / runtime safety**:
+
 - When enabled, Storage becomes reachable only via Private Link from inside the VNet.
 - Plan validated locally; pending `terraform apply`.
 
 ### 4) PostgreSQL module (UPDATED)
 
 **Where**:
+
 - `terraform/azure/modules/postgresql`
 
 **Changes**:
+
 - Made Key Vault secret storage optional (`store_password_in_key_vault`, default `false`).
 - This allows Terraform to run locally (outside VNet) without hitting Key Vault data-plane 403 errors.
 - The secret already exists in Key Vault; apps still read it from there.
@@ -91,9 +102,11 @@ This tracker records the **module-by-module** rollout of the audit-blocker item:
 ### 5) Terraform Pipeline (NEW)
 
 **Where**:
+
 - `pipelines/infra-terraform.yml`
 
 **Purpose**:
+
 - Run `terraform plan` on PRs (validation).
 - Run `terraform plan + apply` on `main` merges with manual approval.
 - Uses `StaticAgentPool` (self-hosted agent inside VNet) so it can access Private Link resources.
