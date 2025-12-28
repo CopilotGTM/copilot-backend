@@ -43,3 +43,22 @@ variable "db_name" {
   description = "The name of the PostgreSQL database."
   type        = string
 }
+# -----------------------------------------------------------------------------
+# Network Security
+# -----------------------------------------------------------------------------
+variable "public_ip_range_start" {
+  description = "Start IP address for the public allowlist range."
+  type        = string
+}
+
+variable "public_ip_range_end" {
+  description = "End IP address for the public allowlist range."
+  type        = string
+}
+
+variable "allowed_public_ips" {
+  description = "List of specific public IPs/CIDRs to allow (for future use)."
+  type        = list(string)
+  default     = []
+}
+

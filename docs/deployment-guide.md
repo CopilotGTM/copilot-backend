@@ -200,6 +200,7 @@ Each environment has its own:
 ## Azure DevOps Setup Requirements
 
 ### 1. Agent Pool
+
 - **Name:** `StaticAgentPool`
 - **Type:** Self-hosted (VM inside VNet)
 - **Why:** Key Vault and Storage use Private Endpoints; agents must be inside VNet to access them
@@ -208,6 +209,7 @@ Each environment has its own:
 ### 2. Self-Hosted Agent VM (Created by Terraform)
 
 The `devops_agent` module in `terraform/azure/modules/devops_agent/` creates:
+
 - A Linux VM (Ubuntu 22.04) in the private subnet
 - Pre-installed tools: Docker, Terraform, kubectl, Azure CLI, Helm, Node.js
 - Azure DevOps agent auto-registered to `StaticAgentPool`
@@ -238,27 +240,66 @@ The `devops_agent` module in `terraform/azure/modules/devops_agent/` creates:
 ```
 
 ### 3. Variable Groups
+
 Create these in **Pipelines → Library → Variable Groups**:
+
 - `terraform-dev-vars`
 - `terraform-uat-vars`
 - `terraform-prod-vars`
 
-Each must contain all `TF_VAR_*` variables (see existing tfvars for reference).
+**⚠️ IMPORTANT: Only add SECRETS to Variable Groups!**
+
+Non-sensitive values stay in `terraform.tfvars` (committed in repo).
+
+#### Required Secrets (mark each as 🔒 secret)
+
+| Variable Name | Description |
+|---------------|-------------|
+| `TF_VAR_db_password` | PostgreSQL database password |
+| `TF_VAR_azuredevops_pat` | Azure DevOps Personal Access Token |
+| `TF_VAR_admin_password` | DevOps agent VM admin password |
+| `TF_VAR_azure_openai_key` | Azure OpenAI API key |
+| `TF_VAR_supabase_anon_key` | Supabase anonymous key |
+| `TF_VAR_supabase_service_role_key` | Supabase service role key |
+| `TF_VAR_supabase_jwt_secret` | Supabase JWT secret |
+| `TF_VAR_resend_api_key` | Resend email API key |
+| `TF_VAR_nango_secret` | Nango integration secret |
+
+#### How Terraform Reads Variables
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  Terraform automatically reads variables from:                       │
+│                                                                      │
+│  1. terraform.tfvars file (in repo)                                 │
+│     → Non-sensitive config: location, sku, node counts, etc.        │
+│                                                                      │
+│  2. TF_VAR_* environment variables (from Variable Group)            │
+│     → Secrets: passwords, API keys, tokens                          │
+│     → Azure DevOps exports Variable Group vars as env vars          │
+│     → Terraform picks up TF_VAR_* automatically!                    │
+└─────────────────────────────────────────────────────────────────────┘
+```
 
 ### 4. Environments
+
 Create these in **Pipelines → Environments**:
+
 - `terraform-dev` (no approvals)
 - `terraform-uat` (no approvals)
 - `terraform-prod` (**add approval gate**)
 
 To add approval on `terraform-prod`:
+
 1. Go to Environments → terraform-prod
 2. Click "..." → Approvals and checks
 3. Add "Approvals" check
 4. Add approvers (yourself, team lead, etc.)
 
 ### 5. Service Connections
+
 Create these in **Project Settings → Service connections**:
+
 - `copilotgtm-arc-ci-cd-service--dev`
 - `copilotgtm-arc-ci-cd-service--uat`
 - `copilotgtm-arc-ci-cd-service--prod`
@@ -272,6 +313,7 @@ Each should be an Azure Resource Manager connection with appropriate subscriptio
 If a deployment causes issues:
 
 ### Option 1: Revert commit (recommended)
+
 ```bash
 # Find the bad commit
 git log --oneline
@@ -283,6 +325,7 @@ git push origin main  # or release/x.x.x
 ```
 
 ### Option 2: Manual terraform apply
+
 ```bash
 # SSH to self-hosted agent or VPN into VNet
 cd terraform/azure/<env>
@@ -296,18 +339,22 @@ terraform apply
 ## Troubleshooting
 
 ### Pipeline fails with "Key Vault access denied"
+
 - **Cause:** Agent is not inside VNet, cannot reach private endpoint
 - **Fix:** Ensure pipeline uses `StaticAgentPool` (self-hosted agent in VNet)
 
 ### Pipeline fails with "Variable not found"
+
 - **Cause:** Variable group missing or variable not defined
 - **Fix:** Check `terraform-<env>-vars` variable group in Azure DevOps Library
 
 ### Prod deployment not starting
+
 - **Cause:** Waiting for approval
 - **Fix:** Go to Azure DevOps → Pipelines → click the run → approve the `terraform-prod` environment
 
 ### UAT/Prod stages skipped
+
 - **Cause:** Not on a `release/*` branch
 - **Fix:** Create and push a `release/x.x.x` branch
 
@@ -323,12 +370,93 @@ terraform apply
 
 ---
 
+## Deploying to Production (Any Region)
+
+### Example: Deploying to Nigeria or any new region
+
+#### Step 1: Create terraform.tfvars for prod
+
+Copy from dev and update non-sensitive values:
+
+```hcl
+# terraform/azure/prod/terraform.tfvars
+env                 = "prod"
+location            = "South Africa North"  # Closest to Nigeria
+resource_group_name = "copilot-gtm-app"
+# ... other config values (not secrets!)
+```
+
+#### Step 2: Create Variable Group `terraform-prod-vars`
+
+In Azure DevOps → Pipelines → Library:
+
+1. Click **+ Variable group**
+2. Name: `terraform-prod-vars`
+3. Add each secret (click 🔒 padlock to mark as secret):
+
+| Name | Value | Secret? |
+|------|-------|---------|
+| `TF_VAR_db_password` | (prod password) | 🔒 Yes |
+| `TF_VAR_azuredevops_pat` | (PAT token) | 🔒 Yes |
+| `TF_VAR_admin_password` | (VM password) | 🔒 Yes |
+| `TF_VAR_azure_openai_key` | (API key) | 🔒 Yes |
+| `TF_VAR_supabase_anon_key` | (key) | 🔒 Yes |
+| `TF_VAR_supabase_service_role_key` | (key) | 🔒 Yes |
+| `TF_VAR_supabase_jwt_secret` | (secret) | 🔒 Yes |
+| `TF_VAR_resend_api_key` | (API key) | 🔒 Yes |
+| `TF_VAR_nango_secret` | (secret) | 🔒 Yes |
+
+#### Step 3: (Optional) Link to Azure Key Vault
+
+For **maximum security**, link your Variable Group to Azure Key Vault:
+
+1. In Variable Group, click **Link secrets from an Azure key vault**
+2. Select your Key Vault
+3. Map secrets: `db-password` → `TF_VAR_db_password`
+
+```
+┌─────────────────┐      ┌──────────────────┐      ┌────────────┐
+│  Azure Key Vault│ ───► │  Variable Group  │ ───► │  Pipeline  │
+│  (prod-secrets) │      │  (linked to KV)  │      │            │
+│                 │      │                  │      │            │
+│  db-password    │      │ TF_VAR_db_password│     │ terraform  │
+│  api-key        │      │ TF_VAR_api_key   │      │ plan/apply │
+└─────────────────┘      └──────────────────┘      └────────────┘
+```
+
+#### Step 4: Create Service Connection
+
+In Project Settings → Service connections:
+
+1. New service connection → Azure Resource Manager
+2. Name: `copilotgtm-arc-ci-cd-service--prod`
+3. Select production subscription
+4. Grant access to all pipelines
+
+#### Step 5: Deploy
+
+```bash
+# Create release branch
+git checkout main
+git checkout -b release/1.0.0
+git push origin release/1.0.0
+
+# Pipeline will:
+# 1. Deploy to UAT (auto)
+# 2. Wait for approval
+# 3. Deploy to Prod (after approval)
+```
+
+---
+
 ## DevOps Agent Module Reference
 
 ### Module Location
+
 `terraform/azure/modules/devops_agent/`
 
 ### What it Creates
+
 | Resource | Description |
 |----------|-------------|
 | Linux VM | Ubuntu 22.04 LTS in private subnet |
@@ -337,6 +465,7 @@ terraform apply
 | Cloud-init | Auto-installs DevOps agent + tools |
 
 ### Pre-installed Tools
+
 - Azure DevOps Agent (latest version)
 - Docker CE
 - Terraform 1.9.0
@@ -347,6 +476,7 @@ terraform apply
 - Git
 
 ### Module Variables
+
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `vm_name` | Name of the VM | Required |
@@ -363,6 +493,7 @@ terraform apply
 | `install_azure_cli` | Install Azure CLI | `true` |
 
 ### Example Usage
+
 ```hcl
 module "devops_agent" {
   source              = "../modules/devops_agent"
@@ -392,6 +523,7 @@ module "devops_agent" {
 **Solution - One-time manual bootstrap:**
 
 1. **First run**: Apply Terraform locally or from Azure Cloud Shell (which has network access):
+
    ```bash
    cd terraform/azure/dev
    terraform init
@@ -411,6 +543,7 @@ module "devops_agent" {
 ### Troubleshooting Agent Issues
 
 **Agent not appearing in pool:**
+
 ```bash
 # SSH into the VM (if you have access)
 ssh azureuser@<private-ip>
@@ -424,6 +557,7 @@ cd /opt/azure-devops-agent
 ```
 
 **Agent offline:**
+
 ```bash
 # Restart the agent service
 cd /opt/azure-devops-agent
@@ -432,6 +566,7 @@ sudo ./svc.sh start
 ```
 
 **Re-register agent:**
+
 ```bash
 cd /opt/azure-devops-agent
 ./config.sh remove --auth pat --token <PAT>

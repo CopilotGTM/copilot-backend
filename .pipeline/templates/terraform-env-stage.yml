@@ -1,5 +1,24 @@
 # Template: Terraform stage (plan + apply)
 # Runs on a self-hosted agent (required for Private Link resources like Key Vault).
+#
+# ============================================================================
+# VARIABLE STRATEGY (Simpler & More Secure)
+# ============================================================================
+# - Non-sensitive values: Committed in terraform.tfvars (per environment folder)
+# - Sensitive values ONLY: Passed via Variable Group as TF_VAR_* 
+#   Terraform automatically picks up TF_VAR_* environment variables!
+#
+# Required secrets in Variable Group (mark as 🔒 secret):
+#   - TF_VAR_db_password
+#   - TF_VAR_azuredevops_pat  
+#   - TF_VAR_admin_password
+#   - TF_VAR_azure_openai_key
+#   - TF_VAR_supabase_anon_key
+#   - TF_VAR_supabase_service_role_key
+#   - TF_VAR_supabase_jwt_secret
+#   - TF_VAR_resend_api_key
+#   - TF_VAR_nango_secret
+# ============================================================================
 
 parameters:
   - name: stageName
@@ -41,8 +60,7 @@ stages:
         value: ${{ parameters.tfVersion }}
       - name: TF_WORKING_DIR
         value: ${{ parameters.tfWorkingDir }}
-      - name: AZURE_SERVICE_CONNECTION
-        value: ${{ parameters.azureServiceConnection }}
+      # Import secrets from Variable Group - they become TF_VAR_* env vars automatically
       - group: ${{ parameters.variableGroupName }}
 
     jobs:
@@ -62,7 +80,7 @@ stages:
           - task: AzureCLI@2
             displayName: 'Terraform Init, Validate & Plan'
             inputs:
-              azureSubscription: $(AZURE_SERVICE_CONNECTION)
+              azureSubscription: ${{ parameters.azureServiceConnection }}
               scriptType: 'bash'
               scriptLocation: 'inlineScript'
               workingDirectory: $(TF_WORKING_DIR)
@@ -70,8 +88,9 @@ stages:
               inlineScript: |
                 set -euo pipefail
 
-                # Export ARM credentials for Terraform.
-                # Supports both classic SP secret auth and federated (OIDC) service connections.
+                # ============================================================
+                # ARM credentials for Terraform AzureRM provider
+                # ============================================================
                 export ARM_CLIENT_ID="$servicePrincipalId"
                 export ARM_TENANT_ID="$tenantId"
                 export ARM_SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
@@ -84,140 +103,14 @@ stages:
                   export ARM_OIDC_TOKEN="$(cat "$AZURE_FEDERATED_TOKEN_FILE")"
                 fi
 
-                # Generate terraform.tfvars from pipeline variables
-                cat > terraform.tfvars << 'EOF'
-                # Auto-generated from Azure DevOps Variable Group
-                env                 = "$(TF_VAR_env)"
-                subscription_id     = "$(TF_VAR_subscription_id)"
-                resource_group_name = "$(TF_VAR_resource_group_name)"
-                location            = "$(TF_VAR_location)"
-                project_name        = "$(TF_VAR_project_name)"
-                db_location         = "$(TF_VAR_db_location)"
-                db_name             = "$(TF_VAR_db_name)"
-                db_password         = "$(TF_VAR_db_password)"
-
-                # Networking
-                vnet_name          = "$(TF_VAR_vnet_name)"
-                vnet_address_space = $(TF_VAR_vnet_address_space)
-                vnet_public_subnets = $(TF_VAR_vnet_public_subnets)
-                vnet_private_subnets = $(TF_VAR_vnet_private_subnets)
-                vnet_private_endpoints_subnet = "$(TF_VAR_vnet_private_endpoints_subnet)"
-
-                # Private Link
-                enable_key_vault_private_endpoints = $(TF_VAR_enable_key_vault_private_endpoints)
-                enable_storage_private_endpoints = $(TF_VAR_enable_storage_private_endpoints)
-
-                # AKS
-                aks_name           = "$(TF_VAR_aks_name)"
-                aks_dns_prefix     = "$(TF_VAR_aks_dns_prefix)"
-                aks_node_count     = $(TF_VAR_aks_node_count)
-                aks_vm_size        = "$(TF_VAR_aks_vm_size)"
-                aks_service_cidr   = "$(TF_VAR_aks_service_cidr)"
-                aks_dns_service_ip = "$(TF_VAR_aks_dns_service_ip)"
-                aks_os_disk_size_gb = $(TF_VAR_aks_os_disk_size_gb)
-                aks_main_app_namespace = "$(TF_VAR_aks_main_app_namespace)"
-                aks_main_app_service_account = "$(TF_VAR_aks_main_app_service_account)"
-
-                # ACR
-                acr_name = "$(TF_VAR_acr_name)"
-                acr_type = "$(TF_VAR_acr_type)"
-
-                # Redis
-                redis_name = "$(TF_VAR_redis_name)"
-                redis_sku_name = "$(TF_VAR_redis_sku_name)"
-                redis_capacity = $(TF_VAR_redis_capacity)
-                redis_family = "$(TF_VAR_redis_family)"
-
-                # Frontend App
-                frontend_app_service_plan_name = "$(TF_VAR_frontend_app_service_plan_name)"
-                frontend_app_service_name      = "$(TF_VAR_frontend_app_service_name)"
-                frontend_docker_image_name     = "$(TF_VAR_frontend_docker_image_name)"
-                frontend_docker_image_tag      = "$(TF_VAR_frontend_docker_image_tag)"
-                frontend_sku_name = "$(TF_VAR_frontend_sku_name)"
-                frontend_os_type = "$(TF_VAR_frontend_os_type)"
-                frontend_https_only = $(TF_VAR_frontend_https_only)
-
-                # Frontend Admin App
-                frontend_admin_app_service_plan_name = "$(TF_VAR_frontend_admin_app_service_plan_name)"
-                frontend_admin_app_service_name      = "$(TF_VAR_frontend_admin_app_service_name)"
-                frontend_admin_docker_image_name     = "$(TF_VAR_frontend_admin_docker_image_name)"
-                frontend_admin_docker_image_tag      = "$(TF_VAR_frontend_admin_docker_image_tag)"
-                frontend_admin_sku_name = "$(TF_VAR_frontend_admin_sku_name)"
-                frontend_admin_os_type = "$(TF_VAR_frontend_admin_os_type)"
-                frontend_admin_https_only = $(TF_VAR_frontend_admin_https_only)
-
-                # Storage
-                storage_account_name = "$(TF_VAR_storage_account_name)"
-
-                # DevOps
-                org_service_url     = "$(TF_VAR_org_service_url)"
-                devops_project_name = "$(TF_VAR_devops_project_name)"
-                devops_environment_name = "$(TF_VAR_devops_environment_name)"
-                sp_name            = "$(TF_VAR_sp_name)"
-                azuredevops_pat    = "$(TF_VAR_azuredevops_pat)"
-                azuredevops_sp_display_name = "$(TF_VAR_azuredevops_sp_display_name)"
-
-                # Repos & Pipelines
-                backend_repo_name     = "$(TF_VAR_backend_repo_name)"
-                backend_pipeline_name = "$(TF_VAR_backend_pipeline_name)"
-                backend_yml_path      = "$(TF_VAR_backend_yml_path)"
-                backend_branch        = "$(TF_VAR_backend_branch)"
-                frontend_repo_name    = "$(TF_VAR_frontend_repo_name)"
-                frontend_pipeline_name = "$(TF_VAR_frontend_pipeline_name)"
-                frontend_yml_path     = "$(TF_VAR_frontend_yml_path)"
-                frontend_branch       = "$(TF_VAR_frontend_branch)"
-                frontend_dns_a_record_name = "$(TF_VAR_frontend_dns_a_record_name)"
-                dns_zone_name         = "$(TF_VAR_dns_zone_name)"
-                dns_zone_resource_group = "$(TF_VAR_dns_zone_resource_group)"
-                frontend_admin_repo_name = "$(TF_VAR_frontend_admin_repo_name)"
-                frontend_admin_pipeline_name = "$(TF_VAR_frontend_admin_pipeline_name)"
-                frontend_admin_yml_path = "$(TF_VAR_frontend_admin_yml_path)"
-                frontend_admin_branch = "$(TF_VAR_frontend_admin_branch)"
-                frontend_admin_dns_a_record_name = "$(TF_VAR_frontend_admin_dns_a_record_name)"
-
-                # Agent VM
-                admin_username = "$(TF_VAR_admin_username)"
-                admin_password = "$(TF_VAR_admin_password)"
-                agent_pool     = "$(TF_VAR_agent_pool)"
-                agent_name     = "$(TF_VAR_agent_name)"
-
-                # Azure OpenAI
-                azure_openai_key = "$(TF_VAR_azure_openai_key)"
-
-                # Cert Manager
-                letsencrypt_email = "$(TF_VAR_letsencrypt_email)"
-
-                # Supabase
-                super_admin_email = "$(TF_VAR_super_admin_email)"
-                supabase_url = "$(TF_VAR_supabase_url)"
-                supabase_anon_key = "$(TF_VAR_supabase_anon_key)"
-                supabase_service_role_key = "$(TF_VAR_supabase_service_role_key)"
-                supabase_jwt_secret = "$(TF_VAR_supabase_jwt_secret)"
-
-                # Resend
-                resend_api_key = "$(TF_VAR_resend_api_key)"
-                resend_email = "$(TF_VAR_resend_email)"
-
-                # KEDA
-                enable_keda_autoscaling = $(TF_VAR_enable_keda_autoscaling)
-                keda_polling_interval = $(TF_VAR_keda_polling_interval)
-                keda_cooldown_period = $(TF_VAR_keda_cooldown_period)
-
-                # GPU Node Pool
-                enable_gpu_worker_pool = $(TF_VAR_enable_gpu_worker_pool)
-                gpu_node_pool_name = "$(TF_VAR_gpu_node_pool_name)"
-                gpu_vm_size = "$(TF_VAR_gpu_vm_size)"
-                gpu_min_count = $(TF_VAR_gpu_min_count)
-                gpu_max_count = $(TF_VAR_gpu_max_count)
-                gpu_node_labels = $(TF_VAR_gpu_node_labels)
-                gpu_node_taints = $(TF_VAR_gpu_node_taints)
-
-                # Nango
-                nango_secret = "$(TF_VAR_nango_secret)"
-
-                # Certificates
-                certificates = $(TF_VAR_certificates)
-                EOF
+                # ============================================================
+                # Terraform Variable Strategy:
+                # 1. terraform.tfvars (in repo) - non-sensitive config values
+                # 2. TF_VAR_* env vars (from Variable Group) - secrets only
+                # 
+                # Azure DevOps automatically exports Variable Group variables
+                # as environment variables. Terraform reads TF_VAR_* automatically!
+                # ============================================================
 
                 echo "=== Terraform Init ==="
                 terraform init -input=false
@@ -226,20 +119,18 @@ stages:
                 terraform validate
 
                 echo "=== Terraform Format Check ==="
-                terraform fmt -check -recursive || echo "##vso[task.logissue type=warning]Terraform files are not formatted. Run 'terraform fmt -recursive'"
+                terraform fmt -check -recursive || echo "##vso[task.logissue type=warning]Terraform files are not formatted."
 
                 echo "=== Terraform Plan ==="
-                terraform plan -var-file="terraform.tfvars" -out=tfplan -input=false -detailed-exitcode
-                planExitCode=$?
-
-                if [ $planExitCode -eq 0 ]; then
-                  echo "##vso[task.logissue type=info]No changes detected."
-                elif [ $planExitCode -eq 2 ]; then
-                  echo "##vso[task.logissue type=warning]Changes detected - review plan output."
-                else
-                  echo "##vso[task.logissue type=error]Terraform plan failed!"
-                  exit 1
-                fi
+                # Uses terraform.tfvars from repo + TF_VAR_* env vars for secrets
+                terraform plan -var-file="terraform.tfvars" -out=tfplan -input=false -detailed-exitcode || {
+                  exitCode=$?
+                  if [ $exitCode -eq 1 ]; then
+                    echo "##vso[task.logissue type=error]Terraform plan failed!"
+                    exit 1
+                  fi
+                  # Exit code 2 means changes detected - continue
+                }
 
                 echo "=== Plan Summary ==="
                 terraform show -no-color tfplan
@@ -274,7 +165,7 @@ stages:
                 - task: AzureCLI@2
                   displayName: 'Terraform Init & Apply'
                   inputs:
-                    azureSubscription: $(AZURE_SERVICE_CONNECTION)
+                    azureSubscription: ${{ parameters.azureServiceConnection }}
                     scriptType: 'bash'
                     scriptLocation: 'inlineScript'
                     workingDirectory: $(TF_WORKING_DIR)

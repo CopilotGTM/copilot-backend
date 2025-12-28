@@ -46,6 +46,12 @@ resource "azurerm_key_vault" "database_key_vault" {
 
   public_network_access_enabled = true
 
+  network_acls {
+    bypass         = "AzureServices"
+    default_action = "Allow"
+    ip_rules       = []
+  }
+
   tags = {
     environment = var.env
     project     = var.project_name
@@ -84,6 +90,12 @@ resource "azurerm_key_vault" "master_key_vault" {
 
   public_network_access_enabled = true
 
+  network_acls {
+    bypass         = "AzureServices"
+    default_action = "Allow"
+    ip_rules       = []
+  }
+
   tags = {
     environment = var.env
     project     = var.project_name
@@ -114,6 +126,12 @@ resource "azurerm_storage_account" "master_storage_account" {
 
   public_network_access_enabled = true
 
+  network_rules {
+    default_action = "Allow"
+    bypass         = ["AzureServices"]
+    ip_rules       = []
+  }
+
   dynamic "blob_properties" {
     for_each = length(local.allowed_blob_cors_origins) > 0 ? [1] : []
     content {
@@ -136,6 +154,12 @@ resource "azurerm_storage_account" "master_storage_account" {
 resource "azurerm_storage_account" "org_storage_account" {
   name                     = "organisationstorage${var.env}"
   resource_group_name      = module.resource_group.resource_group_name
+  network_rules {
+    default_action = "Allow"
+    bypass         = ["AzureServices"]
+    ip_rules       = []
+  }
+
   location                 = var.location
   account_tier             = "Standard"
   account_replication_type = "LRS"
@@ -246,8 +270,8 @@ resource "azurerm_postgresql_flexible_server_configuration" "vector_extension" {
 resource "azurerm_postgresql_flexible_server_firewall_rule" "allow_all" {
   name             = "allow-all-ips"
   server_id        = azurerm_postgresql_flexible_server.db.id
-  start_ip_address = "0.0.0.0"
-  end_ip_address   = "255.255.255.255"
+  start_ip_address = var.public_ip_range_start
+  end_ip_address   = var.public_ip_range_end
 }
 
 # -----------------------------------------------------------------
@@ -258,6 +282,11 @@ resource "azurerm_cognitive_account" "openai" {
   name = "openai-${var.project_name}-${var.env}"
   # Keep in eastus. Note: gpt-5.1 deployments require regions like eastus2/swedencentral.
   location                      = "eastus"
+  network_acls {
+    default_action = "Allow"
+    ip_rules       = []
+  }
+
   resource_group_name           = module.resource_group.resource_group_name
   kind                          = "OpenAI"
   sku_name                      = "S0"
