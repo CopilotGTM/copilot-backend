@@ -28,6 +28,16 @@ resource "azurerm_subnet" "private" {
   ]
 }
 
+resource "azurerm_subnet" "private_endpoints" {
+  count                = var.private_endpoints_subnet_prefix != "" ? 1 : 0
+  name                 = "${var.vnet_name}-private-endpoints"
+  resource_group_name  = var.resource_group_name
+  virtual_network_name = azurerm_virtual_network.this.name
+  address_prefixes     = [var.private_endpoints_subnet_prefix]
+
+  private_endpoint_network_policies = "Disabled"
+}
+
 # Add NAT Gateway and Public IP for Internet egress from private subnet
 resource "azurerm_public_ip" "nat_gw" {
   name                = "${var.vnet_name}-nat-gw-pip"

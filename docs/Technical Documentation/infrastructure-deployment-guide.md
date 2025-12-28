@@ -1,194 +1,117 @@
-# Azure Infrastructure Deployment (Terraform)
+# Azure Infrastructure Deployment Guide
 
-This repository deploys Azure infrastructure via Terraform in **two steps**:
+This document outlines the deployment process for the Copilot GTM infrastructure. The architecture uses a **single-stage Terraform deployment** that is bootstrapped by a self-hosted DevOps agent.
 
-1. **Core Azure foundation** (`terraform/azure/<env>/`)
-2. **AKS add-ons / in-cluster platform** (`terraform/azure/<env>/k8s/`)
+## Architecture Overview
 
-The guidance below is **environment-agnostic**. Use it for any environment folder (`dev`, `uat`, `prod`) by swapping `<env>` and supplying the appropriate inputs.
+* **Primary Region (Central US)**: Hosts the core infrastructure including AKS, PostgreSQL, Redis, and the DevOps Agent. This region is selected for optimal compute capacity and US-wide latency.
+* **AI Region (East US 2)**: Hosts the Azure OpenAI Service to provide access to specific model previews (e.g., GPT-5) via Private Link.
+* **Ingress**: Traffic is managed by **Azure Application Gateway (WAF v2)** integrated with AKS via the Application Gateway Ingress Controller (AGIC).
+* **Security**: All deployments run on a private self-hosted agent within the VNet to ensure secure access to Private Link resources.
 
-## Repo structure
+---
 
-```text
-terraform/
-    azure/
-        <env>/
-            main.tf
-            provider.tf
-            variables.tf
-            outputs.tf
-            terraform.tfvars        # keep local / secure (do not commit)
-            k8s/
-                main.tf
-                provider.tf
-                varibales.tf
-                terraform.tfvars      # keep local / secure (do not commit)
-        modules/
-            ...
-docs/
-    infrastructure-deployment-guide.md
-    keda-autoscaling-guide.md
-charts/
-    ...
+## Phase 1: Bootstrap (Local Machine)
+
+Because the Terraform pipeline runs on a self-hosted agent inside the VNet, we must first deploy the networking and the agent itself from a local machine.
+
+### 1. Prerequisites
+
+* Azure CLI installed and logged in (`az login`).
+* Terraform installed (v1.9.0+).
+* **Azure DevOps PAT Token** with "Agent Pools (Read & Manage)" scope.
+
+### 2. Configuration
+
+Navigate to the environment directory (e.g., `dev`):
+
+```bash
+cd terraform/azure/dev
 ```
 
-Why two steps:
+Ensure your `terraform.tfvars` is configured with the correct regions.
 
-- Step 1 must create AKS, ACR, networking, identity, data services, and DevOps automation.
-- Step 2 depends on AKS being up (it uses remote state outputs to connect via the Kubernetes/Helm providers).
-
-## What this deploys (service inventory)
-
-### Step 1: Core Azure foundation (`terraform/azure/<env>/`)
-
-Provisioned services and capabilities:
-
-- **Resource group** (environment-suffixed)
-- **Networking** via VNet module
-  - VNet, public + private subnets
-  - NAT/public IP outputs (as exposed by the module)
-- **Azure Cache for Redis**
-- **Key Vaults**
-  - database Key Vault (DB secrets)
-  - master Key Vault (shared/master secrets)
-- **Storage accounts**
-  - master storage (general)
-  - organisation storage (per-organisation data)
-  - blob CORS configured for frontend origins
-- **Azure Container Registry (ACR)**
-- **Azure Kubernetes Service (AKS)**
-  - optional GPU/compute node pool settings (controlled by variables)
-  - OIDC issuer enabled (required for workload identity)
-- **Workload identity (Entra ID)**
-  - backend workload identity principal
-  - workers workload identity principal
-- **RBAC role assignments**
-  - AKS kubelet gets `AcrPull` on ACR
-  - workload identities get scoped access to Key Vault + Storage
-- **PostgreSQL Flexible Server** (module-managed)
-  - admin password generated via `random_password`
-  - connection details exported for app usage
-- **Azure AI Foundry** (module-managed)
-  - OpenAI endpoint details exported for app usage
-- **App Services** (Linux, container-based)
-  - frontend web app
-  - admin frontend web app
-  - optional custom domain + DNS record creation (module-controlled)
-- **Azure DevOps automation**
-  - service principal for pipelines/service connections
-  - Azure DevOps service connections (Azure RM + ACR)
-  - variable group for runtime config + secrets
-  - pipelines (backend, frontend, admin)
-  - secure file for kubeconfig (generated from AKS outputs)
-
-### Step 2: AKS add-ons (`terraform/azure/<env>/k8s/`)
-
-Provisioned in-cluster components and DNS wiring:
-
-- **NGINX Ingress Controller** (`ingress-nginx`) with a public LoadBalancer service
-- **cert-manager** (installs CRDs)
-- **Let’s Encrypt ClusterIssuer**
-- **TLS Certificate** for the API hostname (pattern typically: `<env>api.<zone>`)
-- **Application namespace**
-- **KEDA** (Kubernetes Event-driven Autoscaling) when enabled
-- **DNS A record** pointing at the ingress LoadBalancer IP
-
-For KEDA operational guidance, also see `docs/keda-autoscaling-guide.md`.
-
-## Prerequisites
-
-- Terraform `>= 1.3`
-- Azure CLI
-- (Recommended) `kubectl` for verification
-
-You also need permissions to:
-
-- create/manage Azure resources in the subscription
-- edit DNS records for the application DNS zone
-- create/manage Azure DevOps pipelines, variable groups, secure files, and service connections
-
-## Terraform state backend (required)
-
-Both stacks use the AzureRM backend. Create the backend resources once:
-
-```sh
-az group create --name gtm-tfstate --location eastus
-az storage account create --name <globally-unique-name> --resource-group gtm-tfstate --location eastus --sku Standard_LRS
-az storage container create --name tfstate --account-name <globally-unique-name>
+```hcl
+location            = "centralus"
+# openai_location is hardcoded to "eastus2" in main.tf
 ```
 
-State key conventions:
+**Handling the Azure DevOps PAT:**
+You can provide the `azuredevops_pat` in one of two ways:
 
-- Core: `azure/<env>/terraform.tfstate`
-- K8s: **recommended** `azure/<env>/k8s/terraform.tfstate`
+**Option A: Environment Variable (Recommended)**
+Set the variable in your terminal session to avoid writing secrets to disk.
 
-If the k8s stack uses a shared key (example: `k8s.terraform.tfstate`), different environments can overwrite each other’s state.
-
-## Inputs and secrets (important)
-
-Do not commit real secrets into `terraform.tfvars`.
-
-Preferred patterns:
-
-- pass sensitive values from CI using environment variables (`TF_VAR_*`)
-- store secrets in Azure DevOps variable groups / secret variables
-- check in a `terraform.tfvars.example` file containing placeholders only
-
-Note: `.gitignore` already ignores `*.tfvars`, but git will still track a file if it was committed before the ignore rule existed.
-
-If a real `terraform.tfvars` (or any `.tfstate`) was accidentally committed, remove it from the index and rotate the secrets:
-
-```sh
-git rm --cached terraform/azure/<env>/terraform.tfvars
-git rm --cached terraform/azure/<env>/k8s/terraform.tfvars
-git commit -m "Stop tracking tfvars"
+```powershell
+$env:TF_VAR_azuredevops_pat = "<YOUR_PAT_TOKEN>"
 ```
 
-## Deploy: two-step process
+**Option B: Temporary `terraform.tfvars` Entry**
+Add it to your `terraform.tfvars` file, but **ensure you do not commit this file**.
 
-### Step 1 — Core Azure foundation
+```hcl
+azuredevops_pat = "<YOUR_PAT_TOKEN>"
+```
 
-```sh
-cd terraform/azure/<env>
+### 3. Targeted Apply (The Bootstrap Command)
+
+Run the following command to deploy **only** the components needed for the agent to come online. This skips the heavy resources (AKS, DBs) that might time out or require the agent's private network context.
+
+```bash
+# Initialize Terraform
 terraform init
-terraform plan -var-file="terraform.tfvars" -out=tfplan
-terraform apply tfplan
+
+# Apply the Agent, Networking, Pipeline, and Service Connection
+terraform apply -target="module.resource_group" -target="module.vnet" -target="module.devops_agent" -target="module.infra_pipeline" -target="azuredevops_variable_group.infra_secrets" -target="module.service_principal" -target="module.service_connection" -var-file="terraform.tfvars"
 ```
 
-Verification you should do after Step 1:
+**Verification & Secret Configuration:**
 
-- confirm AKS created and outputs are present
-- confirm ACR created
-- confirm DevOps service connections and variable group exist
+1. **Agent Status**: Go to Azure DevOps -> Project Settings -> Agent Pools. Verify `vm-agent-dev` is **Online**.
+2. **Configure Secrets**:
+   * Go to **Azure DevOps -> Pipelines -> Library**.
+   * Open the variable group `copilot-infra-secrets-dev`.
+   * Update the `azuredevops_pat` variable with your actual PAT token (and any other required secrets).
+   * **Save** the variable group.
+3. **Pipeline Created**: Verify the `copilot-infra-pipeline-dev` exists in the Pipelines section.
 
-### Step 2 — AKS add-ons
+---
 
-```sh
-cd terraform/azure/<env>/k8s
-terraform init
-terraform plan -var-file="terraform.tfvars" -out=tfplan
-terraform apply tfplan
-```
+## Phase 2: Full Deployment (Azure DevOps Pipeline)
 
-Recommended verification:
+Once the agent is online, the rest of the infrastructure is deployed via the Azure DevOps pipeline. This ensures that Terraform state locking and execution happen in a controlled environment.
 
-```sh
-kubectl get ns
-kubectl get pods -n ingress-nginx
-kubectl get pods -n cert-manager
-kubectl get pods -n keda-system
-kubectl get clusterissuer
-kubectl get certificate -A
-```
+### 1. Pipeline Execution
 
-## Destroy / teardown
+* Trigger the `infra-terraform` pipeline in Azure DevOps.
+* **Agent Selection**: Ensure the pipeline is configured to run on the pool where your self-hosted agent is registered.
 
-Destroy in reverse order:
+### 2. What Gets Deployed
 
-```sh
-cd terraform/azure/<env>/k8s
-terraform destroy -var-file="terraform.tfvars"
+The pipeline will run `terraform apply` (without targets), provisioning:
 
-cd ../
-terraform destroy -var-file="terraform.tfvars"
-```
+* **AKS Cluster**: Integrated with the pre-created VNet.
+* **WAF (Application Gateway)**: Deployed into the `waf` subnet and linked to AKS via AGIC.
+* **Databases**: PostgreSQL and Redis (Private Link enabled).
+* **Azure OpenAI**: Deployed in **East US 2** (connected via Private Endpoint).
+* **Key Vaults & Storage**: With strict network rules (accessible only from VNet).
+
+### 3. What about the "Step 2" (K8s Folder)?
+
+The previous "Step 2" (deploying Nginx/Cert-Manager via the `k8s` folder) has been **eliminated**.
+
+* **Ingress**: Now handled by the Azure Application Gateway (WAF), which is deployed as a native Azure resource in the main Terraform step.
+* **AGIC**: The connection between the WAF and AKS is handled by the `ingress_application_gateway` add-on enabled in the AKS module.
+* **Certificates**: Managed certificates on the Application Gateway or via Azure Key Vault integration, removing the need for in-cluster Cert-Manager for ingress.
+
+---
+
+## Troubleshooting
+
+### Agent Capacity Issues ("SkuNotAvailable")
+
+If the agent fails to deploy due to regional capacity constraints:
+
+1. Edit `terraform/azure/modules/devops_agent/main.tf`.
+2. Change `vm_size` to an alternative available SKU (e.g., `Standard_D2s_v3` or `Standard_B4ms`).
+3. Re-run the targeted apply command.

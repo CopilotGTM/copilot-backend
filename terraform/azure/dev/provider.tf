@@ -49,13 +49,23 @@ provider "azurerm" {
   subscription_id = var.subscription_id
 }
 
+data "azurerm_key_vault_secret" "azuredevops_pat" {
+  count        = var.azuredevops_pat == "" && var.azuredevops_pat_secret_name != "" ? 1 : 0
+  name         = var.azuredevops_pat_secret_name
+  key_vault_id = "/subscriptions/${var.subscription_id}/resourceGroups/${var.resource_group_name}-${var.env}/providers/Microsoft.KeyVault/vaults/copilot-gtm-kv-${var.env}"
+}
+
+locals {
+  effective_azuredevops_pat = var.azuredevops_pat != "" ? var.azuredevops_pat : try(data.azurerm_key_vault_secret.azuredevops_pat[0].value, null)
+}
+
 # AzureAD provider required for workload identity (AAD app + federated credential)
 provider "azuread" {}
 
 # Azure DevOps provider for pipeline/resource automation
 provider "azuredevops" {
   org_service_url       = var.org_service_url   # Set via tfvars or command line
-  personal_access_token = var.azuredevops_pat   # Pass securely via environment variable or tfvars (never hardcode)
+  personal_access_token = local.effective_azuredevops_pat
 }
 
 

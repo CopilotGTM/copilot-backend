@@ -38,3 +38,9 @@ variable "private_subnet_dependencies" {
   type        = any
   default     = []
 }
+
+variable "private_endpoints_subnet_prefix" {
+  description = "Optional CIDR prefix for a dedicated private endpoints subnet. If empty, no dedicated subnet is created."
+  type        = string
+  default     = ""
+}

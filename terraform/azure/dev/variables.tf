@@ -65,6 +65,24 @@ variable "vnet_private_subnets" {
   default     = ["10.0.2.0/24", "10.0.3.0/24"]
 }
 
+variable "vnet_private_endpoints_subnet" {
+  description = "CIDR for a dedicated private endpoints subnet (used for Private Link endpoints)."
+  type        = string
+  default     = "10.0.4.0/24"
+}
+
+variable "enable_key_vault_private_endpoints" {
+  description = "Enable Private Link private endpoints for Key Vaults and disable their public network access. This is mandatory for the Key Vault module."
+  type        = bool
+  default     = true
+}
+
+variable "enable_storage_private_endpoints" {
+  description = "Enable Private Link private endpoints for Storage Accounts and disable their public network access. Keep false until workloads are confirmed to access Storage via VNet + Private DNS."
+  type        = bool
+  default     = true
+}
+
 # -----------------------------------------------------------------
 # Azure Kubernetes Service (AKS)
 # -----------------------------------------------------------------
@@ -301,6 +319,13 @@ variable "azuredevops_pat" {
   description = "Personal Access Token for Azure DevOps automation. Pass via environment variable or .tfvars (DO NOT hardcode in source for security)."
   type        = string
   sensitive   = true
+  default     = ""
+}
+
+variable "azuredevops_pat_secret_name" {
+  description = "Optional: name of an existing Key Vault secret that holds the Azure DevOps PAT. If azuredevops_pat is empty and this is set, Terraform will read the PAT from Key Vault (requires Key Vault access)."
+  type        = string
+  default     = ""
 }
 
 variable "sp_name" {
@@ -337,6 +362,38 @@ variable "backend_branch" {
   description = "Branch for backend pipeline"
   type        = string
   default     = "dev"
+}
+
+# -----------------------------------------------------------------
+# Terraform Pipeline
+# -----------------------------------------------------------------
+
+variable "terraform_repo_name" {
+  description = "Azure DevOps repository name containing the Terraform code."
+  type        = string
+}
+
+variable "terraform_pipeline_name" {
+  description = "Name of the Azure DevOps pipeline for Terraform."
+  type        = string
+}
+
+variable "infra_variable_group_name" {
+  description = "Name of the Azure DevOps variable group for infrastructure secrets."
+  type        = string
+  default     = "copilot-infra-secrets"
+}
+
+variable "terraform_yml_path" {
+  description = "Path to the Azure Pipelines YAML file for Terraform."
+  type        = string
+  default     = ".pipeline/.azure-pipeline.yml"
+}
+
+variable "terraform_branch" {
+  description = "Branch for Terraform pipeline"
+  type        = string
+  default     = "main"
 }
 
 # -----------------------------------------------------------------
@@ -417,11 +474,7 @@ variable "admin_username" {
   default     = "azureuser"
 }
 
-variable "admin_password" {
-  description = "Admin password for the static DevOps agent VM."
-  type        = string
-  sensitive   = true
-}
+
 
 # -----------------------------------------------------------------
 # DNS
@@ -447,11 +500,7 @@ variable "frontend_dns_a_record_name" {
 # Secrets & Certificates
 # -----------------------------------------------------------------
 
-variable "db_password" {
-  description = "Database password"
-  type        = string
-  default     = ""
-}
+
 
 variable "db_location" {
   description = "The Azure region for the Database."
@@ -497,29 +546,34 @@ variable "certificates" {
 variable "super_admin_email" {
   description = "Email address for the super admin user."
   type        = string
+  default     = ""
 }
 
 variable "supabase_url" {
   description = "URL for the Supabase instance."
   type        = string
+  default     = ""
 }
 
 variable "supabase_anon_key" {
   description = "API key for the Supabase instance."
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 variable "supabase_service_role_key" {
   description = "Service role key for the Supabase instance."
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 variable "supabase_jwt_secret" {
   description = "JWT secret for the Supabase instance."
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 # -----------------------------------------------------------------
@@ -530,6 +584,7 @@ variable "resend_api_key" {
   description = "API key for the Resend service."
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 variable "resend_email" {
@@ -615,3 +670,48 @@ variable "nango_secret" {
   type        = string
   default     = ""
 }
+
+# -----------------------------------------------------------------
+# K8s Addons Variables (Migrated from k8s/variables.tf)
+# -----------------------------------------------------------------
+
+variable "azure_dns_managed_identity_client_id" {
+  type        = string
+  description = "Client ID of the managed identity used by cert-manager to solve Azure DNS challenges"
+  default     = "" # Will be populated from AKS module output if not provided
+}
+
+variable "api_subdomain" {
+  type        = string
+  description = "API subdomain (e.g. api, devapi)"
+  default     = "api"
+}
+
+variable "app_namespace" {
+  type    = string
+  default = "default"
+}
+
+# KEDA Configuration
+variable "keda_namespace" {
+  type        = string
+  description = "Namespace for KEDA system components"
+  default     = "keda-system"
+}
+
+# -----------------------------------------------------------------
+# WAF Variables
+# -----------------------------------------------------------------
+
+variable "vnet_waf_subnet" {
+  description = "CIDR for the Application Gateway subnet."
+  type        = string
+  default     = "10.0.5.0/24"
+}
+
+variable "waf_name" {
+  description = "Name of the Application Gateway"
+  type        = string
+  default     = "copilot-gtm-waf"
+}
+
