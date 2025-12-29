@@ -823,6 +823,7 @@ module "devops_agent" {
 
   depends_on = [
     module.vnet,
-    module.resource_group
+    module.resource_group,
+    azuredevops_agent_pool.pool
   ]
 }

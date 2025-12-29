@@ -84,6 +84,7 @@ apt-get install -y terraform=${var.terraform_version}-1
 
 %{if var.install_kubectl}
 # Install kubectl
+mkdir -p /etc/apt/keyrings
 curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.29/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
 echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.29/deb/ /" | tee /etc/apt/sources.list.d/kubernetes.list
 apt-get update
@@ -143,11 +144,6 @@ resource "azurerm_linux_virtual_machine" "agent" {
   # Use password auth if no SSH key provided
   disable_password_authentication = var.ssh_public_key != "" ? true : false
   admin_password                  = var.ssh_public_key == "" ? var.admin_password : null
-
-  # Spot Instance Configuration (Cost Saving)
-  priority        = "Spot"
-  eviction_policy = "Deallocate"
-  max_bid_price   = -1 # Use current on-demand price as max limit
 
   network_interface_ids = [azurerm_network_interface.agent.id]
 
