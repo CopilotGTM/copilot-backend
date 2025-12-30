@@ -65,15 +65,11 @@ terraform init
 terraform apply -target="module.resource_group" -target="module.vnet" -target="module.devops_agent" -target="module.infra_pipeline" -target="azuredevops_variable_group.infra_secrets" -target="module.service_principal" -target="module.service_connection" -target="azuredevops_agent_pool.pool" -target="azuredevops_agent_queue.queue" -target="azuredevops_pipeline_authorization.queue_auth" -var-file="terraform.tfvars"
 ```
 
-**Verification & Secret Configuration:**
+**Verification:**
 
-1. **Agent Status**: Go to Azure DevOps -> Project Settings -> Agent Pools. Verify `vm-agent-dev` is **Online**.
-2. **Configure Secrets**:
-   * Go to **Azure DevOps -> Pipelines -> Library**.
-   * Open the variable group `copilot-infra-secrets-dev`.
-   * Update the `azuredevops_pat` variable with your actual PAT token (and any other required secrets).
-   * **Save** the variable group.
-3. **Pipeline Created**: Verify the `copilot-infra-pipeline-dev` exists in the Pipelines section.
+1. **Agent Status**: Go to Azure DevOps -> Project Settings -> Agent Pools. Verify `gtm-devops-agent-01-dev` is **Online**.
+2. **Variable Group**: The `copilot-infra-secrets-dev` variable group is automatically created with `TF_VAR_azuredevops_pat` pre-configured.
+3. **Pipeline Created**: Verify the `copilot-app-infra-pipeline-dev` exists in the Pipelines section.
 
 ### 4. CRITICAL: Grant Permissions (Least Privilege)
 
@@ -86,17 +82,24 @@ Run these commands locally:
 ```bash
 # 1. Get the Service Principal's Object ID
 # Note: The SP name comes from 'sp_name' in terraform.tfvars
+# 1. Get Pipeline SP and App IDs
 PIPELINE_SP_ID=$(az ad sp list --display-name "copilot-gtm-devops-sp" --query "[0].id" -o tsv)
-
-# 2. Get the App Registrations created by Terraform (Workload Identities)
 BACKEND_APP_ID=$(az ad app list --display-name "copilot-backend-wi-dev" --query "[0].id" -o tsv)
 WORKERS_APP_ID=$(az ad app list --display-name "copilot-workers-wi-dev" --query "[0].id" -o tsv)
 
-# 3. Assign the Pipeline SP as an Owner of these apps
+# 2. Get Service Principal IDs (Enterprise Apps)
+BACKEND_SP_ID=$(az ad sp list --display-name "copilot-backend-wi-dev" --query "[0].id" -o tsv)
+WORKERS_SP_ID=$(az ad sp list --display-name "copilot-workers-wi-dev" --query "[0].id" -o tsv)
+
+# 3. Grant Ownership of App Registrations
 az ad app owner add --id $BACKEND_APP_ID --owner-object-id $PIPELINE_SP_ID
 az ad app owner add --id $WORKERS_APP_ID --owner-object-id $PIPELINE_SP_ID
 
-echo "Permissions granted. The pipeline can now manage these identities."
+# 4. Grant Ownership of Service Principals (Critical for Role Assignments)
+az ad sp owner add --id $BACKEND_SP_ID --owner-object-id $PIPELINE_SP_ID
+az ad sp owner add --id $WORKERS_SP_ID --owner-object-id $PIPELINE_SP_ID
+
+echo "Permissions granted successfully."
 ```
 
 ---
