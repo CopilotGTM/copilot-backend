@@ -75,6 +75,30 @@ terraform apply -target="module.resource_group" -target="module.vnet" -target="m
    * **Save** the variable group.
 3. **Pipeline Created**: Verify the `copilot-infra-pipeline-dev` exists in the Pipelines section.
 
+### 4. CRITICAL: Grant Permissions (Least Privilege)
+
+**Why is this needed?** The resources created in Step 3 (specifically the App Registrations for Identity) were created by **YOU** (your user account). The pipeline runs as a **Service Principal**. By default, the Service Principal cannot modify App Registrations owned by you.
+
+**The Fix:** Make the Pipeline Service Principal an **Owner** of the created App Registrations. This is safer than granting it a global Admin role.
+
+Run these commands locally:
+
+```bash
+# 1. Get the Service Principal's Object ID
+# Note: The SP name comes from 'sp_name' in terraform.tfvars
+PIPELINE_SP_ID=$(az ad sp list --display-name "copilot-gtm-devops-sp" --query "[0].id" -o tsv)
+
+# 2. Get the App Registrations created by Terraform (Workload Identities)
+BACKEND_APP_ID=$(az ad app list --display-name "copilot-backend-wi-dev" --query "[0].id" -o tsv)
+WORKERS_APP_ID=$(az ad app list --display-name "copilot-workers-wi-dev" --query "[0].id" -o tsv)
+
+# 3. Assign the Pipeline SP as an Owner of these apps
+az ad app owner add --id $BACKEND_APP_ID --owner-object-id $PIPELINE_SP_ID
+az ad app owner add --id $WORKERS_APP_ID --owner-object-id $PIPELINE_SP_ID
+
+echo "Permissions granted. The pipeline can now manage these identities."
+```
+
 ---
 
 ## Phase 2: Full Deployment (Azure DevOps Pipeline)

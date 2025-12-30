@@ -1,3 +1,5 @@
+
+
 # -----------------------------------------------------------------
 # Resource Group: Top-level container for all Azure resources
 # -----------------------------------------------------------------
@@ -801,7 +803,7 @@ module "devops_agent" {
 
   # Azure DevOps configuration
   azuredevops_url = var.org_service_url
-  azuredevops_pat = local.effective_azuredevops_pat
+  azuredevops_pat = var.azuredevops_pat
   agent_pool      = var.agent_pool
   agent_name      = var.agent_name
 
