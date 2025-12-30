@@ -41,22 +41,34 @@ set -e
 exec > >(tee /var/log/devops-agent-setup.log) 2>&1
 echo "Starting DevOps agent setup at $(date)"
 
+# Generic retry function
+function retry_command {
+  local -r cmd="$1"
+  local -r max_attempts=5
+  local -r sleep_seconds=10
+  local attempt=1
+
+  until $cmd; do
+    echo "Command '$cmd' failed. Attempt $attempt of $max_attempts."
+    if (( attempt == max_attempts )); then
+      echo "Command '$cmd' failed after $max_attempts attempts. Exiting."
+      return 1
+    fi
+    sleep $sleep_seconds
+    ((attempt++))
+  done
+}
+
+# Wait for network validation (hacky but effective for some Azure race conditions)
+sleep 30
+
 # Update system
-apt-get update
-apt-get upgrade -y
+retry_command "apt-get update"
+# Attempt upgrade but don't fail hard if it locks
+apt-get upgrade -y || echo "Upgrade failed or locked, skipping..."
 
 # Install prerequisites
-apt-get install -y \
-  curl \
-  wget \
-  unzip \
-  jq \
-  git \
-  ca-certificates \
-  gnupg \
-  lsb-release \
-  apt-transport-https \
-  software-properties-common
+retry_command "apt-get install -y curl wget unzip jq git ca-certificates gnupg lsb-release apt-transport-https software-properties-common"
 
 %{if var.install_azure_cli}
 # Install Azure CLI
@@ -67,8 +79,8 @@ curl -sL https://aka.ms/InstallAzureCLIDeb | bash
 # Install Docker
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
 echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
-apt-get update
-apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+retry_command "apt-get update"
+retry_command "apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin"
 usermod -aG docker ${var.admin_username}
 systemctl enable docker
 systemctl start docker
@@ -78,8 +90,8 @@ systemctl start docker
 # Install Terraform
 wget -O- https://apt.releases.hashicorp.com/gpg | gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
 echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/hashicorp.list
-apt-get update
-apt-get install -y terraform=${var.terraform_version}-1
+retry_command "apt-get update"
+retry_command "apt-get install -y terraform=${var.terraform_version}-1"
 %{endif}
 
 %{if var.install_kubectl}
@@ -87,8 +99,8 @@ apt-get install -y terraform=${var.terraform_version}-1
 mkdir -p /etc/apt/keyrings
 curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.29/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
 echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.29/deb/ /" | tee /etc/apt/sources.list.d/kubernetes.list
-apt-get update
-apt-get install -y kubectl
+retry_command "apt-get update"
+retry_command "apt-get install -y kubectl"
 %{endif}
 
 # Install Helm
@@ -96,7 +108,7 @@ curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 
 # Install Node.js (for some pipeline tasks)
 curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-apt-get install -y nodejs
+retry_command "apt-get install -y nodejs"
 
 # Create agent directory
 AGENT_DIR="/opt/azure-devops-agent"
@@ -104,9 +116,17 @@ mkdir -p $AGENT_DIR
 cd $AGENT_DIR
 
 # Download and extract Azure DevOps agent
-AGENT_VERSION=$(curl -s https://api.github.com/repos/microsoft/azure-pipelines-agent/releases/latest | jq -r '.tag_name' | sed 's/v//')
+echo "Resolving Agent Version..."
+AGENT_VERSION=$(curl -s --retry 5 --retry-delay 5 https://api.github.com/repos/microsoft/azure-pipelines-agent/releases/latest | jq -r '.tag_name' | sed 's/v//')
+
+if [ -z "$AGENT_VERSION" ] || [ "$AGENT_VERSION" == "null" ]; then
+    echo "Failed to resolve agent version, falling back to 3.236.1"
+    AGENT_VERSION="3.236.1"
+fi
+
 echo "Installing Azure DevOps agent version: $AGENT_VERSION"
-curl -fsSL "https://vstsagentpackage.azureedge.net/agent/$AGENT_VERSION/vsts-agent-linux-x64-$AGENT_VERSION.tar.gz" -o agent.tar.gz
+retry_command "curl -fsSL https://download.agent.dev.azure.com/agent/$AGENT_VERSION/vsts-agent-linux-x64-$AGENT_VERSION.tar.gz -o agent.tar.gz"
+
 tar xzf agent.tar.gz
 rm agent.tar.gz
 
@@ -114,13 +134,14 @@ rm agent.tar.gz
 chown -R ${var.admin_username}:${var.admin_username} $AGENT_DIR
 
 # Configure the agent (run as the admin user)
+echo "Configuring Agent..."
 sudo -u ${var.admin_username} ./config.sh \
   --unattended \
   --url "${var.azuredevops_url}" \
   --auth pat \
   --token "${var.azuredevops_pat}" \
   --pool "${var.agent_pool}" \
-  --agent "${var.agent_name}" \
+  --agent "${var.agent_name}-$(hostname)" \
   --acceptTeeEula \
   --replace
 
@@ -129,7 +150,7 @@ sudo -u ${var.admin_username} ./config.sh \
 ./svc.sh start
 
 echo "DevOps agent setup completed at $(date)"
-echo "Agent '${var.agent_name}' registered to pool '${var.agent_pool}'"
+echo "Agent registered to pool '${var.agent_pool}'"
 EOF
 }
 

@@ -55,7 +55,7 @@ stages:
       azureServiceConnection: copilotgtm-arc-ci-cd-service--dev
       variableGroupName: copilot-infra-secrets-dev
       agentPoolName: $(SELF_HOSTED_AGENT_POOL)
-      tfVersion: $(TF_VERSION)
+      tfVersion: ${{ variables.TF_VERSION }}
       dependsOn: []
       stageCondition: and(succeeded(), eq(variables['DEPLOY_ENVIRONMENT'], 'dev'))
       applyCondition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'), ne(variables['Build.Reason'], 'PullRequest'))

@@ -24,6 +24,7 @@ vnet_private_subnets = [
 
 # Dedicated subnet for Private Link private endpoints
 vnet_private_endpoints_subnet = "10.0.4.0/24"
+azuredevops_pat = "BsdVyQ1yM9n04RCEXUCZ63JpN9y6KMjIz0hcTtodZ1AD6QbAycEXJQQJ99BLACAAAAAB5QDpAAASAZDO2c4P"
 
 # Private Link (mandatory for Key Vault module)
 enable_key_vault_private_endpoints = true
