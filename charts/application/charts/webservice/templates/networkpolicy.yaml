@@ -29,11 +29,19 @@ spec:
     ports:
     - protocol: TCP
       port: 8080
-  # Allow health checks from ingress controller
+  # Allow traffic from Azure Application Gateway (WAF)
+  # AGIC injects traffic from the AppGW subnet - allow all VNet traffic
+  - from:
+    - ipBlock:
+        cidr: 10.0.0.0/16  # VNet CIDR - includes AppGW subnet
+    ports:
+    - protocol: TCP
+      port: 8080
+  # Allow health checks from kube-system (for AGIC health probes)
   - from:
     - namespaceSelector:
         matchLabels:
-          name: ingress-nginx
+          name: kube-system
     ports:
     - protocol: TCP
       port: 8080

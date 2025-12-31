@@ -48,13 +48,17 @@ networkPolicy:
 
 ingress:
   enabled: true
-  className: "nginx"
+  className: "azure-application-gateway"
   annotations:
-    nginx.ingress.kubernetes.io/websocket-services: copilot-backend
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
-    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
-    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
-    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    # Azure Application Gateway (WAF) annotations
+    appgw.ingress.kubernetes.io/backend-protocol: "http"
+    appgw.ingress.kubernetes.io/request-timeout: "3600"
+    appgw.ingress.kubernetes.io/connection-draining: "true"
+    appgw.ingress.kubernetes.io/connection-draining-timeout: "30"
+    appgw.ingress.kubernetes.io/cookie-based-affinity: "false"
+    # WebSocket support
+    appgw.ingress.kubernetes.io/backend-hostname: "copilot-backend"
+    # SSL/TLS - cert-manager creates the secret, AGIC uses it
     cert-manager.io/cluster-issuer: "letsencrypt"
   hosts:
     - host: "devapi.copilotgtm.com"
@@ -66,15 +70,15 @@ ingress:
         - "devapi.copilotgtm.com"
       secretName: "devapi-tls"
 
-# Internal ingress for health checks and monitoring (cluster-internal only)
+# Internal ingress - disabled by default with WAF
+# Use Kubernetes Services for internal communication instead
 internalIngress:
-  enabled: true
-  className: "nginx"
+  enabled: false
+  className: "azure-application-gateway"
   annotations:
-    # Additional security headers for internal endpoints
-    nginx.ingress.kubernetes.io/rewrite-target: /$1
+    appgw.ingress.kubernetes.io/backend-protocol: "http"
   hosts:
-    - host: "internal.copilotgtm.local"  # Use internal cluster DNS
+    - host: "internal.copilotgtm.local"
 
 autoscaling:
   enabled: false
