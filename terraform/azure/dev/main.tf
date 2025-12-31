@@ -123,7 +123,7 @@ resource "azurerm_private_dns_zone_virtual_network_link" "storage_blob" {
 # -----------------------------------------------------------------
 module "database_key_vault" {
   source                        = "../modules/key_vault"
-  key_vault_name                = "copilot-gtm-database-kv-${var.env}"
+  key_vault_name                = "copilot-db-kv-${var.env}"
   location                      = var.location
   resource_group_name           = module.resource_group.resource_group_name
   tenant_id                     = data.azurerm_client_config.current.tenant_id
@@ -146,7 +146,7 @@ module "database_key_vault" {
 # -----------------------------------------------------------------
 module "master_key_vault" {
   source                        = "../modules/key_vault"
-  key_vault_name                = "copilot-gtm-master-kv-${var.env}"
+  key_vault_name                = "copilot-master-kv-${var.env}"
   location                      = var.location
   resource_group_name           = module.resource_group.resource_group_name
   tenant_id                     = data.azurerm_client_config.current.tenant_id

@@ -130,16 +130,60 @@ stages:
                 echo "=== Terraform Format Check ==="
                 terraform fmt -check -recursive || echo "##vso[task.logissue type=warning]Terraform files are not formatted."
 
-                echo "=== Terraform Plan ==="
-                # Uses terraform.tfvars from repo + TF_VAR_* env vars for secrets
-                terraform plan -var-file="terraform.tfvars" -out=tfplan -input=false -detailed-exitcode || {
-                  exitCode=$?
-                  if [ $exitCode -eq 1 ]; then
-                    echo "##vso[task.logissue type=error]Terraform plan failed!"
-                    exit 1
-                  fi
-                  # Exit code 2 means changes detected - continue
-                }
+                # ============================================================
+                # Two-Step Plan for Fresh Infrastructure
+                # ============================================================
+                # Problem: Kubernetes/Helm providers need AKS to exist during plan.
+                # Solution: If AKS doesn't exist, plan only core infra (skip k8s resources).
+                # ============================================================
+
+                # Check if AKS exists in state
+                AKS_EXISTS=$(terraform state list 2>/dev/null | grep -c "module.aks.azurerm_kubernetes_cluster" || echo "0")
+
+                if [ "$AKS_EXISTS" -eq "0" ]; then
+                  echo "=== AKS Not Found - Running Targeted Plan (Core Infrastructure Only) ==="
+                  echo "Kubernetes/Helm resources will be planned after AKS is created."
+
+                  # Plan only core infrastructure (excludes helm_release, kubernetes_manifest, etc.)
+                  terraform plan -var-file="terraform.tfvars" -out=tfplan -input=false \
+                    -target="module.resource_group" \
+                    -target="module.vnet" \
+                    -target="module.waf" \
+                    -target="module.redis" \
+                    -target="module.acr" \
+                    -target="module.aks" \
+                    -target="module.database_key_vault" \
+                    -target="module.master_key_vault" \
+                    -target="module.master_storage_account" \
+                    -target="module.org_storage_account" \
+                    -target="module.application_database" \
+                    -target="module.azure_openai" \
+                    -target="module.workload_identity_backend" \
+                    -target="module.workload_identity_workers" \
+                    -target="azurerm_user_assigned_identity.cert_manager_dns" \
+                    -target="azurerm_role_assignment.cert_manager_dns_contributor" \
+                    -target="azurerm_federated_identity_credential.cert_manager" \
+                    -target="azurerm_role_assignment.aks_kubelet_acr_pull" \
+                    -target="azurerm_role_assignment.agic_appgw_contributor" \
+                    -target="azurerm_role_assignment.agic_rg_reader" \
+                    -target="azurerm_role_assignment.agic_vnet_network_contributor" || {
+                      exitCode=$?
+                      if [ $exitCode -eq 1 ]; then
+                        echo "##vso[task.logissue type=error]Terraform plan failed!"
+                        exit 1
+                      fi
+                    }
+                else
+                  echo "=== AKS Exists - Running Full Plan ==="
+                  terraform plan -var-file="terraform.tfvars" -out=tfplan -input=false -detailed-exitcode || {
+                    exitCode=$?
+                    if [ $exitCode -eq 1 ]; then
+                      echo "##vso[task.logissue type=error]Terraform plan failed!"
+                      exit 1
+                    fi
+                    # Exit code 2 means changes detected - continue
+                  }
+                fi
 
                 echo "=== Plan Summary ==="
                 terraform show -no-color tfplan
