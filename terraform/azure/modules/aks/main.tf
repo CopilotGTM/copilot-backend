@@ -5,13 +5,13 @@ resource "azurerm_kubernetes_cluster" "this" {
   dns_prefix          = var.dns_prefix
 
   default_node_pool {
-    name            = "agentpool"
-    node_count      = var.agent_count
-    vm_size         = var.vm_size
-    vnet_subnet_id  = var.vnet_subnet_ids[0]
-    os_disk_size_gb = var.os_disk_size_gb
+    name                        = "agentpool"
+    node_count                  = var.agent_count
+    vm_size                     = var.vm_size
+    vnet_subnet_id              = var.vnet_subnet_ids[0]
+    os_disk_size_gb             = var.os_disk_size_gb
     temporary_name_for_rotation = "tempnp"
-    
+
     upgrade_settings {
       drain_timeout_in_minutes      = 0
       max_surge                     = "10%"
@@ -20,18 +20,18 @@ resource "azurerm_kubernetes_cluster" "this" {
   }
 
   network_profile {
-    network_plugin     = "azure"
-    service_cidr       = var.service_cidr
-    dns_service_ip     = var.dns_service_ip
-    load_balancer_sku  = "standard"
-    outbound_type      = "loadBalancer"
+    network_plugin    = "azure"
+    service_cidr      = var.service_cidr
+    dns_service_ip    = var.dns_service_ip
+    load_balancer_sku = "standard"
+    outbound_type     = "loadBalancer"
   }
 
   identity {
     type = "SystemAssigned"
   }
-  
-  oidc_issuer_enabled = var.oidc_issuer_enabled
+
+  oidc_issuer_enabled       = var.oidc_issuer_enabled
   workload_identity_enabled = var.workload_identity_enabled
 
   # Enable AGIC if app_gateway_id is provided
@@ -62,18 +62,18 @@ resource "azurerm_kubernetes_cluster_node_pool" "gpu" {
   name                  = var.gpu_node_pool_name
   kubernetes_cluster_id = azurerm_kubernetes_cluster.this.id
   vm_size               = var.gpu_vm_size
-  
-  # Autoscaling configuration for scale-to-zero
-  auto_scaling_enabled  = true
-  min_count             = var.gpu_min_count  # 0 for scale-to-zero
-  max_count             = var.gpu_max_count  # 1 for single GPU worker
-  
-  os_disk_size_gb       = var.os_disk_size_gb
-  vnet_subnet_id        = var.vnet_subnet_ids[0]
-  orchestrator_version  = azurerm_kubernetes_cluster.this.kubernetes_version
 
-  node_labels           = var.gpu_node_labels
-  node_taints           = var.gpu_node_taints
+  # Autoscaling configuration for scale-to-zero
+  auto_scaling_enabled = true
+  min_count            = var.gpu_min_count # 0 for scale-to-zero
+  max_count            = var.gpu_max_count # 1 for single GPU worker
+
+  os_disk_size_gb      = var.os_disk_size_gb
+  vnet_subnet_id       = var.vnet_subnet_ids[0]
+  orchestrator_version = azurerm_kubernetes_cluster.this.kubernetes_version
+
+  node_labels = var.gpu_node_labels
+  node_taints = var.gpu_node_taints
 
   tags = {
     env       = var.env

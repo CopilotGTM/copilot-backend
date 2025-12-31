@@ -5,13 +5,13 @@ resource "azurerm_key_vault_secret" "db_password" {
 }
 
 resource "azurerm_postgresql_flexible_server" "db" {
-  name                   = var.db_name != "" ? "${var.db_name}-${var.env}" : "copilotgtm-postgresdb-${var.env}"
-  resource_group_name    = var.resource_group_name
-  location               = var.location
-  version                = var.db_version
-  sku_name               = "B_Standard_B1ms"
-  storage_mb             = 65536
-  backup_retention_days  = 7
+  name                          = var.db_name != "" ? "${var.db_name}-${var.env}" : "copilotgtm-postgresdb-${var.env}"
+  resource_group_name           = var.resource_group_name
+  location                      = var.location
+  version                       = var.db_version
+  sku_name                      = "B_Standard_B1ms"
+  storage_mb                    = 65536
+  backup_retention_days         = 7
   public_network_access_enabled = true
 
   administrator_login    = var.db_admin_user
@@ -27,10 +27,10 @@ resource "azurerm_postgresql_flexible_server_configuration" "vector_extension" {
 }
 
 resource "azurerm_postgresql_flexible_server_firewall_rule" "allow_all" {
-  name                = "allow-all-ips"
-  server_id           = azurerm_postgresql_flexible_server.db.id
-  start_ip_address    = "0.0.0.0"
-  end_ip_address      = "255.255.255.255"
+  name             = "allow-all-ips"
+  server_id        = azurerm_postgresql_flexible_server.db.id
+  start_ip_address = "0.0.0.0"
+  end_ip_address   = "255.255.255.255"
 }
 
 # resource "azurerm_postgresql_flexible_server_firewall_rule" "allow_pipeline" {

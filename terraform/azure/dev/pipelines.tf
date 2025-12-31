@@ -32,9 +32,20 @@ resource "azuredevops_variable_group" "infra_secrets" {
   allow_access = true
 
   variable {
+    name  = "MANAGED_BY"
+    value = "terraform"
+  }
+
+  # Azure DevOps PAT for Terraform provider authentication in pipelines
+  variable {
     name         = "TF_VAR_azuredevops_pat"
-    secret_value = local.effective_azuredevops_pat
+    secret_value = var.azuredevops_pat
     is_secret    = true
+  }
+
+  # Prevent subsequent Terraform runs from modifying manually added variables
+  lifecycle {
+    ignore_changes = [variable]
   }
 }
 
@@ -54,7 +65,7 @@ module "infra_pipeline" {
   branch_name        = var.terraform_branch
   yml_path           = var.terraform_yml_path
   variable_group_ids = [azuredevops_variable_group.infra_secrets.id]
-  
+
   pipeline_variables = {
     DEPLOY_ENVIRONMENT = var.env
   }

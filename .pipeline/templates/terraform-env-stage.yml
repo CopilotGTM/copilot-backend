@@ -90,17 +90,24 @@ stages:
 
                 # ============================================================
                 # ARM credentials for Terraform AzureRM provider
+                # Must be set BEFORE terraform init (for backend auth)
                 # ============================================================
                 export ARM_CLIENT_ID="$servicePrincipalId"
                 export ARM_TENANT_ID="$tenantId"
                 export ARM_SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
 
+                # Check for OIDC (Workload Identity Federation) vs secret-based auth
                 if [ -n "${servicePrincipalKey:-}" ]; then
+                  echo "Using Service Principal with client secret"
                   export ARM_CLIENT_SECRET="$servicePrincipalKey"
                   export ARM_USE_OIDC=false
-                elif [ -n "${AZURE_FEDERATED_TOKEN_FILE:-}" ] && [ -f "$AZURE_FEDERATED_TOKEN_FILE" ]; then
+                elif [ -n "${idToken:-}" ]; then
+                  echo "Using Workload Identity Federation (OIDC)"
                   export ARM_USE_OIDC=true
-                  export ARM_OIDC_TOKEN="$(cat "$AZURE_FEDERATED_TOKEN_FILE")"
+                  export ARM_OIDC_TOKEN="$idToken"
+                else
+                  echo "##vso[task.logissue type=error]No authentication method available. Ensure service connection is configured correctly."
+                  exit 1
                 fi
 
                 # ============================================================
@@ -173,16 +180,23 @@ stages:
                     inlineScript: |
                       set -euo pipefail
 
+                      # ARM credentials for Terraform (must be set before terraform init)
                       export ARM_CLIENT_ID="$servicePrincipalId"
                       export ARM_TENANT_ID="$tenantId"
                       export ARM_SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
 
+                      # Check for OIDC vs secret-based auth
                       if [ -n "${servicePrincipalKey:-}" ]; then
+                        echo "Using Service Principal with client secret"
                         export ARM_CLIENT_SECRET="$servicePrincipalKey"
                         export ARM_USE_OIDC=false
-                      elif [ -n "${AZURE_FEDERATED_TOKEN_FILE:-}" ] && [ -f "$AZURE_FEDERATED_TOKEN_FILE" ]; then
+                      elif [ -n "${idToken:-}" ]; then
+                        echo "Using Workload Identity Federation (OIDC)"
                         export ARM_USE_OIDC=true
-                        export ARM_OIDC_TOKEN="$(cat "$AZURE_FEDERATED_TOKEN_FILE")"
+                        export ARM_OIDC_TOKEN="$idToken"
+                      else
+                        echo "##vso[task.logissue type=error]No authentication method available."
+                        exit 1
                       fi
 
                       echo "=== Terraform Init ==="

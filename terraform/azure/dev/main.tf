@@ -1,3 +1,5 @@
+
+
 # -----------------------------------------------------------------
 # Resource Group: Top-level container for all Azure resources
 # -----------------------------------------------------------------
@@ -708,12 +710,20 @@ resource "azuredevops_variable_group" "secrets" {
 }
 
 # -----------------------------------------------------------------
-# Service Principal for Azure DevOps
+# Service Principal for Azure DevOps (with OIDC/Workload Identity Federation)
 # -----------------------------------------------------------------
+locals {
+  # Service connection name must match what we pass to service_connection module
+  service_connection_name = "copilotgtm-arc-ci-cd-service--${var.env}"
+}
+
 module "service_principal" {
   source          = "../modules/service_principal"
   sp_name         = var.sp_name
   subscription_id = var.subscription_id
+
+  create_password          = false # No secrets needed with OIDC
+  enable_user_access_admin = true  # Needed for Terraform RBAC assignments
 }
 
 # -----------------------------------------------------------------
@@ -726,25 +736,48 @@ data "azuredevops_project" "project" {
 module "service_connection" {
   source                  = "../modules/service_connection"
   devops_project_id       = data.azuredevops_project.project.id
-  service_connection_name = "copilotgtm-arc-ci-cd-service--${var.env}"
+  service_connection_name = local.service_connection_name
   subscription_id         = var.subscription_id
-  subscription_name       = "Copilot GTM Subscription"
+  subscription_name       = "Microsoft Azure Sponsorship" # Must match actual subscription name
   tenant_id               = module.service_principal.tenant_id
   client_id               = module.service_principal.client_id
-  client_secret           = module.service_principal.client_secret
+
+  # Use Workload Identity Federation (OIDC) - no secrets
+  use_workload_identity_federation = true
+  # client_secret not needed with OIDC
 }
 
 # -----------------------------------------------------------------
-# Azure DevOps Service Connection for ACR (Docker Registry)
+# Federated Identity Credential for Azure DevOps OIDC
+# Must be created AFTER service connection to use its issuer/subject values
+# -----------------------------------------------------------------
+resource "azuread_application_federated_identity_credential" "devops_oidc" {
+  application_id = module.service_principal.application_id
+  display_name   = "azuredevops-${var.env}"
+  description    = "Workload Identity Federation for Azure DevOps pipeline"
+
+  # Use the issuer/subject from the service connection output
+  issuer    = module.service_connection.workload_identity_federation_issuer
+  subject   = module.service_connection.workload_identity_federation_subject
+  audiences = ["api://AzureADTokenExchange"]
+}
+
+# -----------------------------------------------------------------
+# Azure DevOps Service Connection for ACR (OIDC - no secrets)
+# Uncomment when module.acr is enabled
 # -----------------------------------------------------------------
 /*
 module "service_connection_acr" {
   source                = "../modules/service_connection_acr"
   devops_project_id     = data.azuredevops_project.project.id
   service_endpoint_name = "copilotgtm-acr-connection-${var.env}"
-  acr_login_server      = module.acr.acr_login_server
-  acr_sp_app_id         = module.service_principal.client_id
-  acr_sp_app_secret     = module.service_principal.client_secret
+  resource_group_name   = module.resource_group.resource_group_name
+  acr_name              = module.acr.acr_name
+  subscription_id       = var.subscription_id
+  subscription_name     = "Microsoft Azure Sponsorship"
+  tenant_id             = module.service_principal.tenant_id
+  client_id             = module.service_principal.client_id
+  # Uses OIDC by default - no secrets to rotate!
 }
 */
 
@@ -801,7 +834,7 @@ module "devops_agent" {
 
   # Azure DevOps configuration
   azuredevops_url = var.org_service_url
-  azuredevops_pat = local.effective_azuredevops_pat
+  azuredevops_pat = var.azuredevops_pat
   agent_pool      = var.agent_pool
   agent_name      = var.agent_name
 
@@ -823,6 +856,7 @@ module "devops_agent" {
 
   depends_on = [
     module.vnet,
-    module.resource_group
+    module.resource_group,
+    azuredevops_agent_pool.pool
   ]
 }

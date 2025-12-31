@@ -2,7 +2,7 @@ terraform {
   required_providers {
     azurerm = {
       source  = "hashicorp/azurerm"
-      version = ">= 4.0.0"  # Required for node pool autoscaling
+      version = ">= 4.0.0" # Required for node pool autoscaling
     }
     azuread = {
       source  = "hashicorp/azuread"
@@ -37,7 +37,7 @@ terraform {
     container_name       = "tfstate"
     key                  = "azure/dev/terraform.tfstate"
   }
-  
+
 }
 
 provider "azurerm" {
@@ -47,6 +47,8 @@ provider "azurerm" {
     }
   }
   subscription_id = var.subscription_id
+  # OIDC auth is configured via ARM_* environment variables:
+  # ARM_USE_OIDC, ARM_OIDC_TOKEN, ARM_CLIENT_ID, ARM_TENANT_ID, ARM_SUBSCRIPTION_ID
 }
 
 data "azurerm_key_vault_secret" "azuredevops_pat" {
@@ -60,11 +62,12 @@ locals {
 }
 
 # AzureAD provider required for workload identity (AAD app + federated credential)
+# OIDC auth is configured via ARM_* environment variables (same as azurerm)
 provider "azuread" {}
 
 # Azure DevOps provider for pipeline/resource automation
 provider "azuredevops" {
-  org_service_url       = var.org_service_url   # Set via tfvars or command line
+  org_service_url       = var.org_service_url # Set via tfvars or command line
   personal_access_token = local.effective_azuredevops_pat
 }
 

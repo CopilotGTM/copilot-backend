@@ -56,7 +56,7 @@ resource "azurerm_role_assignment" "app_service_acr_pull" {
   role_definition_name = "AcrPull"
   scope                = var.acr_id
   principal_type       = "ServicePrincipal"
-  
+
   depends_on = [
     azurerm_linux_web_app.this
   ]
@@ -69,7 +69,7 @@ resource "azurerm_role_assignment" "app_service_acr_pull" {
 # DNS CNAME record pointing to the app service
 resource "azurerm_dns_cname_record" "this" {
   count               = var.create_dns_records && var.custom_domain_name != null ? 1 : 0
-  name                = split(".", var.custom_domain_name)[0]  # Extract subdomain
+  name                = split(".", var.custom_domain_name)[0] # Extract subdomain
   zone_name           = var.dns_zone_name
   resource_group_name = var.dns_zone_resource_group
   ttl                 = 300
@@ -83,7 +83,7 @@ resource "azurerm_dns_txt_record" "domain_verification" {
   zone_name           = var.dns_zone_name
   resource_group_name = var.dns_zone_resource_group
   ttl                 = 300
-  
+
   record {
     value = azurerm_linux_web_app.this.custom_domain_verification_id
   }
@@ -107,7 +107,7 @@ resource "azurerm_app_service_custom_hostname_binding" "this" {
 resource "azurerm_app_service_managed_certificate" "this" {
   count                      = var.custom_domain_name != null ? 1 : 0
   custom_hostname_binding_id = azurerm_app_service_custom_hostname_binding.this[0].id
-  
+
   depends_on = [
     azurerm_app_service_custom_hostname_binding.this
   ]

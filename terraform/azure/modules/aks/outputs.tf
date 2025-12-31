@@ -81,9 +81,9 @@ output "gpu_vm_size" {
 output "gpu_scaling_config" {
   description = "Autoscaling configuration for the GPU node pool."
   value = var.enable_gpu_worker_pool ? {
-    min_count      = var.gpu_min_count
-    max_count      = var.gpu_max_count
-    scale_to_zero  = var.gpu_min_count == 0
+    min_count     = var.gpu_min_count
+    max_count     = var.gpu_max_count
+    scale_to_zero = var.gpu_min_count == 0
     estimated_cost = {
       idle_per_hour   = var.gpu_min_count == 0 ? "$0.00" : "$${var.gpu_min_count * 0.526}"
       active_per_hour = "$${var.gpu_max_count * 0.526}"
