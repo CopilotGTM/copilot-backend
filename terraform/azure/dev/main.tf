@@ -31,14 +31,13 @@ module "vnet" {
 # -----------------------------------------------------------------
 # Application Gateway (WAF)
 # -----------------------------------------------------------------
-/*
 module "waf" {
   source              = "../modules/waf"
   waf_name            = "${var.waf_name}-${var.env}"
   resource_group_name = module.resource_group.resource_group_name
   location            = var.location
   subnet_id           = module.vnet.waf_subnet_id
-  
+
   tags = {
     environment = var.env
     project     = var.project_name
@@ -47,12 +46,10 @@ module "waf" {
     module.vnet
   ]
 }
-*/
 
 # -----------------------------------------------------------------
 # Azure Redis Cache: In-memory data store for caching and sessions
 # -----------------------------------------------------------------
-/*
 module "redis" {
   source              = "../modules/redis"
   redis_name          = "${var.redis_name}-${var.env}"
@@ -70,7 +67,6 @@ module "redis" {
     module.vnet
   ]
 }
-*/
 
 data "azurerm_client_config" "current" {}
 
@@ -81,7 +77,6 @@ data "azuread_client_config" "current" {}
 # Private DNS: Key Vault Private Link
 # Created once per environment; individual Key Vaults attach via zone groups.
 # -----------------------------------------------------------------
-/*
 resource "azurerm_private_dns_zone" "key_vault" {
   count               = var.enable_key_vault_private_endpoints ? 1 : 0
   name                = "privatelink.vaultcore.azure.net"
@@ -100,12 +95,10 @@ resource "azurerm_private_dns_zone_virtual_network_link" "key_vault" {
   virtual_network_id    = module.vnet.vnet_id
   registration_enabled  = false
 }
-*/
 
 # -----------------------------------------------------------------
 # Private DNS: Storage Account (Blob) Private Link
 # -----------------------------------------------------------------
-/*
 resource "azurerm_private_dns_zone" "storage_blob" {
   count               = var.enable_storage_private_endpoints ? 1 : 0
   name                = "privatelink.blob.core.windows.net"
@@ -124,12 +117,10 @@ resource "azurerm_private_dns_zone_virtual_network_link" "storage_blob" {
   virtual_network_id    = module.vnet.vnet_id
   registration_enabled  = false
 }
-*/
 
 # -----------------------------------------------------------------
 # Azure Key Vault
 # -----------------------------------------------------------------
-/*
 module "database_key_vault" {
   source                        = "../modules/key_vault"
   key_vault_name                = "copilot-gtm-database-kv-${var.env}"
@@ -149,12 +140,10 @@ module "database_key_vault" {
     module.resource_group
   ]
 }
-*/
 
 # -----------------------------------------------------------------
-# Azure Key Vault
+# Azure Key Vault (Master)
 # -----------------------------------------------------------------
-/*
 module "master_key_vault" {
   source                        = "../modules/key_vault"
   key_vault_name                = "copilot-gtm-master-kv-${var.env}"
@@ -174,12 +163,10 @@ module "master_key_vault" {
     module.resource_group
   ]
 }
-*/
 
 # -----------------------------------------------------------------
 # Azure Storage Account: General purpose blob/file storage
 # -----------------------------------------------------------------
-/*
 module "master_storage_account" {
   source                             = "../modules/storage_account"
   storage_account_name               = "${var.storage_account_name}${var.env}"
@@ -202,12 +189,10 @@ module "master_storage_account" {
     project     = var.project_name
   }
 }
-*/
 
 # -----------------------------------------------------------------
 # Organisation Data Storage Account: dedicated per-organisation data store
 # -----------------------------------------------------------------
-/*
 module "org_storage_account" {
   source                             = "../modules/storage_account"
   storage_account_name               = "${var.org_storage_account_name}${var.env}"
@@ -231,7 +216,6 @@ module "org_storage_account" {
     purpose     = "organisation-data"
   }
 }
-*/
 
 # -----------------------------------------------------------------
 # Azure Container Registry: Stores container images for AKS and DevOps pipelines
@@ -253,7 +237,6 @@ module "acr" {
 # -----------------------------------------------------------------
 # Azure Kubernetes Service: Managed Kubernetes cluster for containers
 # -----------------------------------------------------------------
-/*
 module "aks" {
   source                 = "../modules/aks"
   aks_name               = "${var.aks_name}-${var.env}"
@@ -274,9 +257,9 @@ module "aks" {
   gpu_max_count          = var.gpu_max_count
   gpu_node_labels        = var.gpu_node_labels
   gpu_node_taints        = var.gpu_node_taints
-  
+
   # Enable AGIC
-  app_gateway_id         = module.waf.waf_id
+  app_gateway_id = module.waf.waf_id
 
   depends_on = [
     module.vnet,
@@ -284,14 +267,12 @@ module "aks" {
     module.waf
   ]
 }
-*/
 
 
 
 # -----------------------------------------------------------------
 # Role Assignment: Allow AKS kubelet to pull images from ACR
 # -----------------------------------------------------------------
-/*
 resource "azurerm_role_assignment" "aks_kubelet_acr_pull" {
   principal_id                     = module.aks.kubelet_identity_object_id
   role_definition_name             = "AcrPull"
@@ -302,13 +283,48 @@ resource "azurerm_role_assignment" "aks_kubelet_acr_pull" {
     module.aks
   ]
 }
-*/
+
+# -----------------------------------------------------------------
+# AGIC Role Assignments (required for brownfield Application Gateway)
+# When using a pre-existing Application Gateway, AGIC needs explicit permissions
+# -----------------------------------------------------------------
+resource "azurerm_role_assignment" "agic_appgw_contributor" {
+  principal_id                     = module.aks.agic_identity_object_id
+  role_definition_name             = "Contributor"
+  scope                            = module.waf.waf_id
+  skip_service_principal_aad_check = true
+  depends_on = [
+    module.aks,
+    module.waf
+  ]
+}
+
+resource "azurerm_role_assignment" "agic_rg_reader" {
+  principal_id                     = module.aks.agic_identity_object_id
+  role_definition_name             = "Reader"
+  scope                            = module.resource_group.resource_group_id
+  skip_service_principal_aad_check = true
+  depends_on = [
+    module.aks,
+    module.resource_group
+  ]
+}
+
+resource "azurerm_role_assignment" "agic_vnet_network_contributor" {
+  principal_id                     = module.aks.agic_identity_object_id
+  role_definition_name             = "Network Contributor"
+  scope                            = module.vnet.vnet_id
+  skip_service_principal_aad_check = true
+  depends_on = [
+    module.aks,
+    module.vnet
+  ]
+}
 
 # -----------------------------------------------------------------
 # Workload Identity (AAD application + federated identity for ServiceAccount)
 # Replaces UAMI + federated identity credential resources
 # -----------------------------------------------------------------
-/*
 module "workload_identity_backend" {
   source                    = "../modules/workload_identity"
   name                      = "copilot-backend-wi-${var.env}"
@@ -320,10 +336,8 @@ module "workload_identity_backend" {
     module.aks
   ]
 }
-*/
 
 # Separate workload identity for workers (shared ServiceAccount for all workers)
-/*
 module "workload_identity_workers" {
   source                    = "../modules/workload_identity"
   name                      = "copilot-workers-wi-${var.env}"
@@ -335,10 +349,8 @@ module "workload_identity_workers" {
     module.aks
   ]
 }
-*/
 
 # Role assignments for workload identity SP (least privilege scopes similar to prior UAMI)
-/*
 resource "azurerm_role_assignment" "wi_kv_database_secrets_user" {
   scope                = module.database_key_vault.key_vault_id
   role_definition_name = "Key Vault Secrets Officer" # upgraded from Secrets User for create/update/delete
@@ -411,24 +423,49 @@ resource "azurerm_role_assignment" "wi_workers_org_storage_blob_delegator" {
   role_definition_name = "Storage Blob Delegator"
   principal_id         = module.workload_identity_workers.object_id
 }
-*/
 
 # -----------------------------------------------------------------
-# Azure AI Foundry
+# Azure OpenAI
 # -----------------------------------------------------------------
-/*
-module "foundry" {
-  source              = "../modules/foundry"
-  prefix              = "foundry"
-  resource_group_name = module.resource_group.resource_group_name
-  resource_group_id   = module.resource_group.resource_group_id
-  location            = "eastus2" # OpenAI models are available in East US 2
-  use_openai          = true
-  depends_on = [
-    module.resource_group
-  ]
+module "azure_openai" {
+  source            = "../modules/azure_openai"
+  prefix            = var.project_name
+  env               = var.env
+  resource_group_id = module.resource_group.resource_group_id
+  location          = "eastus2" # OpenAI models are available in East US 2
+
+  # Define all models to deploy - add/remove models as needed
+  models = {
+    gpt5 = {
+      deployment_name = "gpt-5"
+      model_name      = "gpt-5"
+      sku             = "GlobalStandard"
+      capacity        = 300
+      version         = "2025-08-07"
+    }
+    gpt5_mini = {
+      deployment_name = "gpt-5-mini"
+      model_name      = "gpt-5-mini"
+      sku             = "GlobalStandard"
+      capacity        = 300
+      version         = "2025-12-11"
+    }
+    embedder = {
+      deployment_name = "text-embedding-3-large"
+      model_name      = "text-embedding-3-large"
+      sku             = "Standard"
+      capacity        = 300
+      publisher       = "OpenAI"
+    }
+  }
+
+  tags = {
+    environment = var.env
+    project     = var.project_name
+  }
+
+  depends_on = [module.resource_group]
 }
-*/
 
 # -----------------------------------------------------------------
 # Backend DEVELOPMENT Identity - Permissions provided via AKS kubelet identity  
@@ -452,7 +489,6 @@ resource "random_password" "db_admin" {
 # -----------------------------------------------------------------
 # PostgreSQL Flexible Server
 # -----------------------------------------------------------------
-/*
 module "application_database" {
   source              = "../modules/postgresql"
   env                 = var.env
@@ -471,7 +507,6 @@ module "application_database" {
     module.database_key_vault
   ]
 }
-*/
 
 # # -----------------------------------------------------------------
 # # Create the DNS CNAME record pointing at the frontend app service
@@ -512,17 +547,17 @@ resource "azuredevops_variable_group" "secrets" {
 
   variable {
     name  = "APPLICATION_STORAGE_NAME"
-    value = "placeholder" # module.master_storage_account.storage_account_name
+    value = module.master_storage_account.storage_account_name
   }
 
   variable {
     name  = "ORGANISATION_STORAGE_NAME"
-    value = "placeholder" # module.org_storage_account.storage_account_name
+    value = module.org_storage_account.storage_account_name
   }
 
   variable {
     name  = "AZURE_KEY_VAULT_URL"
-    value = "placeholder" # module.database_key_vault.key_vault_uri
+    value = module.database_key_vault.key_vault_uri
   }
 
   variable {
@@ -531,22 +566,22 @@ resource "azuredevops_variable_group" "secrets" {
   }
   variable {
     name  = "DATABASE_HOST"
-    value = "placeholder" # module.application_database.db_host
+    value = module.application_database.db_host
   }
 
   variable {
     name  = "DATABASE_USER"
-    value = "placeholder" # module.application_database.db_user
+    value = module.application_database.db_user
   }
 
   variable {
     name  = "DATABASE_PORT"
-    value = "5432" # tostring(module.application_database.db_port)
+    value = tostring(module.application_database.db_port)
   }
 
   variable {
     name  = "DATABASE_NAME"
-    value = "placeholder" # module.application_database.db_name
+    value = module.application_database.db_name
   }
 
   variable {
@@ -568,44 +603,44 @@ resource "azuredevops_variable_group" "secrets" {
 
   variable {
     name  = "REDIS_HOST"
-    value = "placeholder" # module.redis.hostname
+    value = module.redis.hostname
   }
 
   variable {
     name  = "REDIS_PORT"
-    value = "6379" # tostring(module.redis.port)
+    value = tostring(module.redis.port)
   }
 
   variable {
     name         = "REDIS_PASSWORD"
-    secret_value = "placeholder" # module.redis.primary_access_key
+    secret_value = module.redis.primary_access_key
     is_secret    = true
   }
 
   variable {
     name  = "AZURE_OPENAI_ENDPOINT"
-    value = "placeholder" # module.foundry.openai_endpoint_url
+    value = module.azure_openai.openai_endpoint
   }
 
   variable {
     name         = "AZURE_OPENAI_API_KEY"
-    secret_value = var.azure_openai_key
+    secret_value = module.azure_openai.primary_key
     is_secret    = true
   }
 
   variable {
     name  = "AZURE_EMBEDDER_OPENAI_ENDPOINT"
-    value = "placeholder" # module.foundry.openai_endpoint_url
+    value = module.azure_openai.openai_endpoint
   }
 
   variable {
     name  = "AZURE_EMBEDDER_DEPLOYMENT"
-    value = "placeholder" # module.foundry.embedder_deployment_name
+    value = module.azure_openai.deployment_names["embedder"]
   }
 
   variable {
     name         = "AZURE_EMBEDDER_OPENAI_API_KEY"
-    secret_value = var.azure_openai_key
+    secret_value = module.azure_openai.primary_key
     is_secret    = true
   }
 
@@ -681,12 +716,12 @@ resource "azuredevops_variable_group" "secrets" {
   # Workload Identity client IDs (for Helm ServiceAccount annotations)
   variable {
     name  = "WORKLOAD_IDENTITY_BACKEND_CLIENT_ID"
-    value = "placeholder" # module.workload_identity_backend.client_id
+    value = module.workload_identity_backend.client_id
   }
 
   variable {
     name  = "WORKLOAD_IDENTITY_WORKERS_CLIENT_ID"
-    value = "placeholder" # module.workload_identity_workers.client_id
+    value = module.workload_identity_workers.client_id
   }
 
   # Workload Identity tenant IDs (for Azure SDK authentication)

@@ -72,7 +72,7 @@ output "nat_gateway_public_ip" {
 # -----------------------------------------------------------------
 # ACR Outputs
 # -----------------------------------------------------------------
-/*
+
 output "acr_login_server" {
   description = "The login server URL of the Azure Container Registry."
   value       = module.acr.acr_login_server
@@ -81,12 +81,12 @@ output "acr_id" {
   description = "The ID of the Azure Container Registry."
   value       = module.acr.acr_id
 }
-*/
+
 
 # -----------------------------------------------------------------
 # AKS Outputs
 # -----------------------------------------------------------------
-/*
+
 output "aks_name" {
   description = "The name of the AKS cluster."
   value       = module.aks.aks_name
@@ -129,12 +129,12 @@ output "aks_principal_id" {
   description = "The managed identity principal ID of the AKS cluster."
   value       = module.aks.aks_principal_id
 }
-*/
+
 
 # -----------------------------------------------------------------
 # Redis Outputs
 # -----------------------------------------------------------------
-/*
+
 output "redis_hostname" {
   description = "The hostname of the Redis cache."
   value       = module.redis.hostname
@@ -150,7 +150,7 @@ output "redis_port" {
   description = "The SSL port for the Redis cache."
   value       = module.redis.port
 }
-*/
+
 
 # # -----------------------------------------------------------------
 # # Service Connection Outputs
@@ -173,7 +173,7 @@ output "redis_port" {
 # -----------------------------------------------------------------
 # Workload Identity Outputs
 # -----------------------------------------------------------------
-/*
+
 output "workload_identity_backend_client_id" {
   description = "Client ID for backend workload identity (use for azure.workload.identity/client-id annotation)."
   value       = module.workload_identity_backend.client_id
@@ -193,17 +193,17 @@ output "workload_identity_workers_object_id" {
   description = "Service principal object ID for workers workload identity (used in role assignments)."
   value       = module.workload_identity_workers.object_id
 }
-*/
+
 
 # -----------------------------------------------------------------
 # Workload Identity / Tenant Diagnostics
 # -----------------------------------------------------------------
-/*
+
 output "aks_oidc_issuer_url" {
   description = "OIDC issuer URL for the AKS cluster (contains tenant ID)."
   value       = module.aks.oidc_issuer_url
 }
-*/
+
 
 output "azuread_provider_tenant_id" {
   description = "Tenant ID used by the AzureAD provider (validate matches AKS OIDC issuer tenant)."
@@ -213,7 +213,7 @@ output "azuread_provider_tenant_id" {
 # -----------------------------------------------------------------
 # Key Vault Validation Outputs (to confirm correct tenant vaults)
 # -----------------------------------------------------------------
-/*
+
 output "database_key_vault_uri" {
   description = "URI of the database Key Vault (should belong to active tenant)."
   value       = module.database_key_vault.key_vault_uri
@@ -223,7 +223,7 @@ output "master_key_vault_uri" {
   description = "URI of the master Key Vault (should belong to active tenant)."
   value       = module.master_key_vault.key_vault_uri
 }
-*/
+
 
 # -----------------------------------------------------------------
 # DevOps Agent VM Outputs

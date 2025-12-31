@@ -12,12 +12,14 @@
 #   - TF_VAR_db_password
 #   - TF_VAR_azuredevops_pat
 #   - TF_VAR_admin_password
-#   - TF_VAR_azure_openai_key
 #   - TF_VAR_supabase_anon_key
 #   - TF_VAR_supabase_service_role_key
 #   - TF_VAR_supabase_jwt_secret
 #   - TF_VAR_resend_api_key
 #   - TF_VAR_nango_secret
+#
+# NOTE: Azure OpenAI API key is now automatically retrieved from the
+#       Azure OpenAI resource via the azure_openai module.
 # ============================================================================
 
 parameters:
@@ -146,7 +148,6 @@ stages:
               TF_VAR_azuredevops_pat: $(TF_VAR_azuredevops_pat)
               TF_VAR_db_password: $(TF_VAR_db_password)
               TF_VAR_admin_password: $(TF_VAR_admin_password)
-              TF_VAR_azure_openai_key: $(TF_VAR_azure_openai_key)
               TF_VAR_supabase_anon_key: $(TF_VAR_supabase_anon_key)
               TF_VAR_supabase_service_role_key: $(TF_VAR_supabase_service_role_key)
               TF_VAR_supabase_jwt_secret: $(TF_VAR_supabase_jwt_secret)
@@ -213,11 +214,50 @@ stages:
                       echo "=== Terraform Init ==="
                       terraform init -input=false
 
-                      # Copy plan file from artifact
-                      cp "$(Pipeline.Workspace)/${{ parameters.artifactName }}/tfplan" "./tfplan"
+                      # ============================================================
+                      # Two-Step Deployment for Fresh Infrastructure
+                      # ============================================================
+                      # Problem: Helm/Kubernetes providers need AKS to exist during plan.
+                      # Solution: If AKS doesn't exist, create core infra first, then full apply.
+                      # ============================================================
 
-                      echo "=== Terraform Apply ==="
-                      terraform apply -input=false -auto-approve tfplan
+                      # Check if AKS exists in state
+                      AKS_EXISTS=$(terraform state list 2>/dev/null | grep -c "module.aks.azurerm_kubernetes_cluster" || echo "0")
+
+                      if [ "$AKS_EXISTS" -eq "0" ]; then
+                        echo "=== AKS Not Found - Running Two-Step Deployment ==="
+                        echo "Step 1: Creating core infrastructure (AKS, WAF, etc.)..."
+
+                        # First apply: Core infrastructure without Helm/K8s resources
+                        terraform apply -input=false -auto-approve \
+                          -target="module.resource_group" \
+                          -target="module.vnet" \
+                          -target="module.waf" \
+                          -target="module.redis" \
+                          -target="module.acr" \
+                          -target="module.aks" \
+                          -target="module.database_key_vault" \
+                          -target="module.master_key_vault" \
+                          -target="module.master_storage_account" \
+                          -target="module.org_storage_account" \
+                          -target="module.application_database" \
+                          -target="module.azure_openai" \
+                          -target="module.workload_identity_backend" \
+                          -target="module.workload_identity_workers" \
+                          -target="azurerm_user_assigned_identity.cert_manager_dns" \
+                          -target="azurerm_role_assignment.cert_manager_dns_contributor" \
+                          -target="azurerm_federated_identity_credential.cert_manager" \
+                          -var-file="terraform.tfvars"
+
+                        echo "Step 2: Creating Helm/Kubernetes resources..."
+                        # Second apply: Full infrastructure (now Helm providers can connect to AKS)
+                        terraform apply -input=false -auto-approve -var-file="terraform.tfvars"
+                      else
+                        echo "=== AKS Exists - Running Normal Apply ==="
+                        # Copy plan file from artifact
+                        cp "$(Pipeline.Workspace)/${{ parameters.artifactName }}/tfplan" "./tfplan"
+                        terraform apply -input=false -auto-approve tfplan
+                      fi
 
                       echo "=== Apply Complete ==="
                   env:
@@ -225,7 +265,6 @@ stages:
                     TF_VAR_azuredevops_pat: $(TF_VAR_azuredevops_pat)
                     TF_VAR_db_password: $(TF_VAR_db_password)
                     TF_VAR_admin_password: $(TF_VAR_admin_password)
-                    TF_VAR_azure_openai_key: $(TF_VAR_azure_openai_key)
                     TF_VAR_supabase_anon_key: $(TF_VAR_supabase_anon_key)
                     TF_VAR_supabase_service_role_key: $(TF_VAR_supabase_service_role_key)
                     TF_VAR_supabase_jwt_secret: $(TF_VAR_supabase_jwt_secret)

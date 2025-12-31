@@ -1,4 +1,44 @@
-/*
+# -----------------------------------------------------------------
+# 1) Managed Identity for cert-manager DNS challenges
+# -----------------------------------------------------------------
+resource "azurerm_user_assigned_identity" "cert_manager_dns" {
+  name                = "cert-manager-dns-${var.env}"
+  resource_group_name = module.resource_group.resource_group_name
+  location            = var.location
+
+  tags = {
+    environment = var.env
+    project     = var.project_name
+    purpose     = "cert-manager-dns-challenge"
+  }
+
+  depends_on = [module.resource_group]
+}
+
+# Grant DNS Zone Contributor role to cert-manager identity
+data "azurerm_dns_zone" "main" {
+  name                = var.dns_zone_name
+  resource_group_name = var.dns_zone_resource_group
+}
+
+resource "azurerm_role_assignment" "cert_manager_dns_contributor" {
+  scope                = data.azurerm_dns_zone.main.id
+  role_definition_name = "DNS Zone Contributor"
+  principal_id         = azurerm_user_assigned_identity.cert_manager_dns.principal_id
+}
+
+# Federated Identity Credential for cert-manager to use the managed identity via Workload Identity
+resource "azurerm_federated_identity_credential" "cert_manager" {
+  name                = "cert-manager-federation"
+  resource_group_name = module.resource_group.resource_group_name
+  parent_id           = azurerm_user_assigned_identity.cert_manager_dns.id
+  audience            = ["api://AzureADTokenExchange"]
+  issuer              = module.aks.oidc_issuer_url
+  subject             = "system:serviceaccount:cert-manager:cert-manager"
+
+  depends_on = [module.aks]
+}
+
 # -----------------------------------------------------------------
 # 2) Helm chart: cert-manager
 # -----------------------------------------------------------------
@@ -14,14 +54,34 @@ resource "helm_release" "cert_manager" {
     {
       name  = "installCRDs"
       value = "true"
+    },
+    # Enable Azure Workload Identity for cert-manager pods
+    {
+      name  = "podLabels.azure\\.workload\\.identity/use"
+      value = "true"
+    },
+    {
+      name  = "serviceAccount.labels.azure\\.workload\\.identity/use"
+      value = "true"
+    },
+    {
+      name  = "serviceAccount.annotations.azure\\.workload\\.identity/client-id"
+      value = azurerm_user_assigned_identity.cert_manager_dns.client_id
+    },
+    {
+      name  = "serviceAccount.annotations.azure\\.workload\\.identity/tenant-id"
+      value = data.azurerm_client_config.current.tenant_id
     }
   ]
 
-  depends_on = [module.aks]
+  depends_on = [
+    module.aks,
+    azurerm_federated_identity_credential.cert_manager
+  ]
 }
-*/
 
-/*
+
+
 # -----------------------------------------------------------------
 # 2.1) Helm chart: KEDA (Kubernetes Event-driven Autoscaling)
 # -----------------------------------------------------------------
@@ -30,7 +90,7 @@ resource "helm_release" "keda" {
   repository       = "https://kedacore.github.io/charts"
   chart            = "keda"
   namespace        = "keda-system"
-  version          = "2.15.1"  # Latest stable version as of 2024
+  version          = "2.15.1" # Latest stable version as of 2024
   create_namespace = true
 
   set = [
@@ -70,9 +130,9 @@ resource "helm_release" "keda" {
 
   depends_on = [module.aks]
 }
-*/
 
-/*
+
+
 # -----------------------------------------------------------------
 # 3) cert-manager ClusterIssuer (Let’s Encrypt)
 # -----------------------------------------------------------------
@@ -110,7 +170,7 @@ resource "kubernetes_manifest" "letsencrypt_issuer" {
             "dns01" = {
               "azureDNS" = {
                 "managedIdentity" = {
-                  "clientID" = var.azure_dns_managed_identity_client_id
+                  "clientID" = azurerm_user_assigned_identity.cert_manager_dns.client_id
                 }
                 "subscriptionID"    = var.subscription_id
                 "resourceGroupName" = var.dns_zone_resource_group
@@ -125,30 +185,31 @@ resource "kubernetes_manifest" "letsencrypt_issuer" {
   }
 
   depends_on = [
-    time_sleep.wait_for_cert_manager_crd
+    time_sleep.wait_for_cert_manager_crd,
+    azurerm_role_assignment.cert_manager_dns_contributor
   ]
 }
-*/
 
-/*
+
+
 # -----------------------------------------------------------------
 # 5) Create the application namespace
 # -----------------------------------------------------------------
-resource "kubernetes_namespace" "app_namespace" {
+resource "kubernetes_namespace_v1" "app_namespace" {
   metadata {
     name = var.app_namespace
   }
 
   depends_on = [module.aks]
 }
-*/
 
-/*
+
+
 # -----------------------------------------------------------------
 # 7) Create a certificate for the API
 # -----------------------------------------------------------------
 resource "kubernetes_manifest" "api_certificate" {
-/*
+
   manifest = {
     "apiVersion" = "cert-manager.io/v1"
     "kind"       = "Certificate"
@@ -169,7 +230,7 @@ resource "kubernetes_manifest" "api_certificate" {
 
   depends_on = [
     kubernetes_manifest.letsencrypt_issuer,
-    kubernetes_namespace.app_namespace
+    kubernetes_namespace_v1.app_namespace
   ]
 }
-*/
+

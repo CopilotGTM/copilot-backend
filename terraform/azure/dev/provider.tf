@@ -72,7 +72,7 @@ provider "azuredevops" {
 }
 
 
-/*
+
 provider "helm" {
   kubernetes = {
     host                   = module.aks.host
@@ -88,4 +88,4 @@ provider "kubernetes" {
   client_key             = base64decode(module.aks.client_key)
   cluster_ca_certificate = base64decode(module.aks.cluster_ca_certificate)
 }
-*/
+
