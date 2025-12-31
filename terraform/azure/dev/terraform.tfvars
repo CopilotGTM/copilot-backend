@@ -30,7 +30,7 @@ db_name     = "copilotgtm-postgresdb-centralus-dev"
 # vnet_private_endpoints_subnet = "10.0.4.0/24"           # Default
 # vnet_waf_subnet               = "10.0.5.0/24"           # Default
 
-# Private Link (disabled for initial deployment - can enable later)
+# Private Link (disabled for dev - enable for SOC2 compliance in prod)
 enable_key_vault_private_endpoints = false
 enable_storage_private_endpoints   = false
 

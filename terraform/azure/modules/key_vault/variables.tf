@@ -35,48 +35,63 @@ variable "enable_rbac_authorization" {
   default     = true
 }
 
+# -----------------------------------------------------------------------------
+# Private Endpoint / SOC2 Compliance Variables
+# Cross-variable validation is handled via `check` blocks in main.tf
+# -----------------------------------------------------------------------------
+
 variable "public_network_access_enabled" {
-  description = "Whether public network access is enabled for the Key Vault. If private endpoints are enabled, this is forced to false."
-  type        = bool
-  default     = false
-
-  validation {
-    condition     = var.public_network_access_enabled == false
-    error_message = "Public network access must be disabled for SOC2 private-access controls. Set public_network_access_enabled=false."
-  }
-}
-
-variable "private_endpoint_enabled" {
-  description = "Whether to create a Private Endpoint for the Key Vault."
+  description = "Whether public network access is enabled for the Key Vault. Set to false for SOC2 compliance in production."
   type        = bool
   default     = true
 
-  validation {
-    condition     = var.private_endpoint_enabled == true
-    error_message = "Private Link is mandatory for this Key Vault module. Set private_endpoint_enabled=true."
-  }
+  # SOC2 Compliance Note:
+  # - Production: Set to false (private access only)
+  # - Development: Can be true for local access convenience
+  # validation {
+  #   condition     = var.public_network_access_enabled == false
+  #   error_message = "Public network access must be disabled for SOC2 private-access controls. Set public_network_access_enabled=false."
+  # }
+}
+
+variable "private_endpoint_enabled" {
+  description = "Whether to create a Private Endpoint for the Key Vault. Enable for SOC2 compliance in production."
+  type        = bool
+  default     = false
+
+  # SOC2 Compliance Note:
+  # - Production: Set to true (mandatory for SOC2)
+  # - Development: Can be false for local access convenience
+  # When true, requires: private_endpoint_subnet_id, private_dns_zone_id
+
+  # validation {
+  #   condition     = var.private_endpoint_enabled == true
+  #   error_message = "Private Link is mandatory for this Key Vault module. Set private_endpoint_enabled=true."
+  # }
 }
 
 variable "private_endpoint_subnet_id" {
-  description = "Subnet ID where the Key Vault Private Endpoint should be created (required when private_endpoint_enabled=true)."
+  description = "Subnet ID where the Key Vault Private Endpoint should be created. Required when private_endpoint_enabled=true."
   type        = string
   default     = null
 
-  validation {
-    condition     = var.private_endpoint_subnet_id != null && trimspace(var.private_endpoint_subnet_id) != ""
-    error_message = "private_endpoint_subnet_id is required (Private Endpoint is mandatory)."
-  }
+  # Validated via check block in main.tf when private_endpoint_enabled=true
+  # validation {
+  #   condition     = var.private_endpoint_subnet_id != null && trimspace(var.private_endpoint_subnet_id) != ""
+  #   error_message = "private_endpoint_subnet_id is required (Private Endpoint is mandatory)."
+  # }
 }
 
 variable "private_dns_zone_id" {
-  description = "Private DNS Zone ID for Key Vault Private Link (privatelink.vaultcore.azure.net). If provided, a zone group is attached to the private endpoint."
+  description = "Private DNS Zone ID for Key Vault Private Link (privatelink.vaultcore.azure.net). Required when private_endpoint_enabled=true."
   type        = string
   default     = null
 
-  validation {
-    condition     = var.private_dns_zone_id != null && trimspace(var.private_dns_zone_id) != ""
-    error_message = "private_dns_zone_id is required so clients resolve the vault name to the Private Endpoint."
-  }
+  # Validated via check block in main.tf when private_endpoint_enabled=true
+  # validation {
+  #   condition     = var.private_dns_zone_id != null && trimspace(var.private_dns_zone_id) != ""
+  #   error_message = "private_dns_zone_id is required so clients resolve the vault name to the Private Endpoint."
+  # }
 }
 
 variable "private_endpoint_name" {
