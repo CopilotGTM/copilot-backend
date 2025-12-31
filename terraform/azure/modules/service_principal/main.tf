@@ -17,7 +17,7 @@ resource "azuread_application" "app" {
     }
 
     resource_access {
-      # Permission: Application.ReadWrite.All  
+      # Permission: Application.ReadWrite.All
       # Allows the app to manage all app registrations (needed for federated creds)
       id   = "1bfefb4e-e0b5-418b-a88f-73c46d2cc8e9"
       type = "Role"
@@ -29,16 +29,56 @@ resource "azuread_service_principal" "sp" {
   client_id = azuread_application.app.client_id
 }
 
+# -----------------------------------------------------------------------------
+# Client Secret (optional - only when not using OIDC)
+# -----------------------------------------------------------------------------
 resource "azuread_service_principal_password" "spp" {
+  count                = var.create_password ? 1 : 0
   service_principal_id = azuread_service_principal.sp.id
   end_date             = timeadd(timestamp(), "8760h")
 }
 
-resource "azurerm_role_assignment" "sp_role" {
+# -----------------------------------------------------------------------------
+# RBAC: Contributor role at subscription level
+# -----------------------------------------------------------------------------
+resource "azurerm_role_assignment" "sp_contributor" {
   scope                = "/subscriptions/${var.subscription_id}"
   role_definition_name = "Contributor"
   principal_id         = azuread_service_principal.sp.object_id
 }
+
+# -----------------------------------------------------------------------------
+# RBAC: User Access Administrator (optional - needed if Terraform assigns roles)
+# -----------------------------------------------------------------------------
+resource "azurerm_role_assignment" "sp_user_access_admin" {
+  count                = var.enable_user_access_admin ? 1 : 0
+  scope                = "/subscriptions/${var.subscription_id}"
+  role_definition_name = "User Access Administrator"
+  principal_id         = azuread_service_principal.sp.object_id
+}
+
+# -----------------------------------------------------------------------------
+# Federated Identity Credential for Azure DevOps OIDC
+# This allows the pipeline to authenticate without client secrets
+# -----------------------------------------------------------------------------
+resource "azuread_application_federated_identity_credential" "devops_oidc" {
+  count          = var.enable_oidc ? 1 : 0
+  application_id = azuread_application.app.id
+  display_name   = "azuredevops-${var.devops_project_name}"
+  description    = "Workload Identity Federation for Azure DevOps pipeline"
+
+  # Azure DevOps OIDC issuer
+  issuer = "https://vstoken.dev.azure.com/${data.azuread_client_config.current.tenant_id}"
+
+  # Subject format for Azure DevOps service connections
+  # Format: sc://<org>/<project>/<service-connection-name>
+  subject = "sc://${var.devops_org_name}/${var.devops_project_name}/${var.service_connection_name}"
+
+  audiences = ["api://AzureADTokenExchange"]
+}
+
+# Get tenant ID from AzureAD provider
+data "azuread_client_config" "current" {}
 
 # -----------------------------------------------------------------------------
 # Auto-grant Admin Consent (runs during bootstrap when admin is logged in)

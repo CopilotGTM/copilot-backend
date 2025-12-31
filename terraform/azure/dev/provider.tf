@@ -2,7 +2,7 @@ terraform {
   required_providers {
     azurerm = {
       source  = "hashicorp/azurerm"
-      version = ">= 4.0.0"  # Required for node pool autoscaling
+      version = ">= 4.0.0" # Required for node pool autoscaling
     }
     azuread = {
       source  = "hashicorp/azuread"
@@ -37,7 +37,7 @@ terraform {
     container_name       = "tfstate"
     key                  = "azure/dev/terraform.tfstate"
   }
-  
+
 }
 
 provider "azurerm" {
@@ -64,7 +64,7 @@ provider "azuread" {}
 
 # Azure DevOps provider for pipeline/resource automation
 provider "azuredevops" {
-  org_service_url       = var.org_service_url   # Set via tfvars or command line
+  org_service_url       = var.org_service_url # Set via tfvars or command line
   personal_access_token = local.effective_azuredevops_pat
 }
 

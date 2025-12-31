@@ -4,22 +4,36 @@ variable "devops_project_id" {
 }
 
 variable "service_endpoint_name" {
-  description = "The name for the Azure DevOps Docker registry service connection."
+  description = "The name for the Azure DevOps ACR service connection."
   type        = string
 }
 
-variable "acr_login_server" {
-  description = "The Azure Container Registry login server."
+variable "resource_group_name" {
+  description = "The resource group containing the ACR."
   type        = string
 }
 
-variable "acr_sp_app_id" {
-  description = "The service principal client ID for ACR authentication."
+variable "acr_name" {
+  description = "The Azure Container Registry name."
   type        = string
 }
 
-variable "acr_sp_app_secret" {
-  description = "The service principal client secret for ACR authentication."
+variable "subscription_id" {
+  description = "The Azure subscription ID."
   type        = string
-  sensitive   = true
+}
+
+variable "subscription_name" {
+  description = "The Azure subscription name."
+  type        = string
+}
+
+variable "tenant_id" {
+  description = "The Azure AD tenant ID."
+  type        = string
+}
+
+variable "client_id" {
+  description = "Service principal client (application) ID for OIDC authentication."
+  type        = string
 }

@@ -4,8 +4,8 @@ output "client_id" {
 }
 
 output "client_secret" {
-  description = "The client secret for the service principal."
-  value       = azuread_service_principal_password.spp.value
+  description = "The client secret for the service principal (empty if using OIDC)."
+  value       = var.create_password ? azuread_service_principal_password.spp[0].value : ""
   sensitive   = true
 }
 
@@ -17,4 +17,14 @@ output "tenant_id" {
 output "object_id" {
   description = "The Object ID of the service principal."
   value       = azuread_service_principal.sp.object_id
+}
+
+output "application_id" {
+  description = "The Application (object) ID of the app registration."
+  value       = azuread_application.app.id
+}
+
+output "oidc_enabled" {
+  description = "Whether OIDC/Workload Identity Federation is enabled."
+  value       = var.enable_oidc
 }

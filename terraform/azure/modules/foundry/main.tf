@@ -44,19 +44,19 @@ resource "azapi_resource" "embedder_deployment" {
   type                      = "Microsoft.CognitiveServices/accounts/deployments@2025-06-01"
   name                      = "text-embedding-3-large"
   parent_id                 = azapi_resource.openai.id
-  schema_validation_enabled = false   # until AzAPI ships the 2025-06 schema
+  schema_validation_enabled = false # until AzAPI ships the 2025-06 schema
 
   body = {
     properties = {
       model = {
         format    = "OpenAI"
         name      = "text-embedding-3-large"
-        publisher = "OpenAI"          # required since 2024-04-01 API
+        publisher = "OpenAI" # required since 2024-04-01 API
       }
     }
     sku = {
-      name     = "Standard"           # or "GlobalStandard" if you need cross-region
-      capacity = 200                    # 1 = ~100 TPM / 1 RPM for embeddings
+      name     = "Standard" # or "GlobalStandard" if you need cross-region
+      capacity = 200        # 1 = ~100 TPM / 1 RPM for embeddings
     }
   }
 }

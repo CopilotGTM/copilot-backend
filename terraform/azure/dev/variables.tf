@@ -651,7 +651,7 @@ variable "gpu_max_count" {
 variable "gpu_node_labels" {
   description = "Map of node labels for GPU pool"
   type        = map(string)
-  default     = {
+  default = {
     workload = "knowledge-gpu"
   }
 }
