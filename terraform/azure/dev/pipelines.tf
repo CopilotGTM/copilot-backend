@@ -25,10 +25,18 @@ resource "azuredevops_pipeline_authorization" "queue_auth" {
 # -----------------------------------------------------------------
 # Azure DevOps Variable Group (Secrets)
 # -----------------------------------------------------------------
+# NOTE: TF_VAR_azuredevops_pat must be added MANUALLY to this variable group
+# after Terraform creates it. This is intentional - the PAT is a sensitive
+# secret that should be managed by the user, not stored in Terraform state.
+#
+# After bootstrap, go to:
+#   Azure DevOps → Pipelines → Library → copilot-infra-secrets-<env>
+#   Add variable: TF_VAR_azuredevops_pat (mark as secret)
+# -----------------------------------------------------------------
 resource "azuredevops_variable_group" "infra_secrets" {
   project_id   = data.azuredevops_project.project.id
   name         = "${var.infra_variable_group_name}-${var.env}"
-  description  = "Managed by Terraform. Contains secrets for infrastructure deployment."
+  description  = "Managed by Terraform. Add TF_VAR_azuredevops_pat manually after creation."
   allow_access = true
 
   variable {
@@ -36,14 +44,8 @@ resource "azuredevops_variable_group" "infra_secrets" {
     value = "terraform"
   }
 
-  # Azure DevOps PAT for Terraform provider authentication in pipelines
-  variable {
-    name         = "TF_VAR_azuredevops_pat"
-    secret_value = var.azuredevops_pat
-    is_secret    = true
-  }
-
   # Prevent subsequent Terraform runs from modifying manually added variables
+  # This ensures TF_VAR_azuredevops_pat (added manually) is preserved
   lifecycle {
     ignore_changes = [variable]
   }

@@ -85,7 +85,7 @@ stages:
               scriptLocation: 'inlineScript'
               workingDirectory: $(TF_WORKING_DIR)
               addSpnToEnvironment: true
-              inlineScript: |
+            inlineScript: |
                 set -euo pipefail
 
                 # ============================================================
