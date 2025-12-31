@@ -236,7 +236,6 @@ module "org_storage_account" {
 # -----------------------------------------------------------------
 # Azure Container Registry: Stores container images for AKS and DevOps pipelines
 # -----------------------------------------------------------------
-/*
 module "acr" {
   source              = "../modules/acr"
   acr_name            = "${var.acr_name}${var.env}"
@@ -250,7 +249,6 @@ module "acr" {
     module.vnet
   ]
 }
-*/
 
 # -----------------------------------------------------------------
 # Azure Kubernetes Service: Managed Kubernetes cluster for containers
@@ -764,9 +762,7 @@ resource "azuread_application_federated_identity_credential" "devops_oidc" {
 
 # -----------------------------------------------------------------
 # Azure DevOps Service Connection for ACR (OIDC - no secrets)
-# Uncomment when module.acr is enabled
 # -----------------------------------------------------------------
-/*
 module "service_connection_acr" {
   source                = "../modules/service_connection_acr"
   devops_project_id     = data.azuredevops_project.project.id
@@ -779,7 +775,6 @@ module "service_connection_acr" {
   client_id             = module.service_principal.client_id
   # Uses OIDC by default - no secrets to rotate!
 }
-*/
 
 resource "azuredevops_pipeline_authorization" "service_connection_authorization" {
   project_id  = data.azuredevops_project.project.id
@@ -787,13 +782,24 @@ resource "azuredevops_pipeline_authorization" "service_connection_authorization"
   type        = "endpoint"
 }
 
-/*
 resource "azuredevops_pipeline_authorization" "service_connection_acr_authorization" {
   project_id  = data.azuredevops_project.project.id
   resource_id = module.service_connection_acr.acr_service_connection_id
   type        = "endpoint"
 }
-*/
+
+# -----------------------------------------------------------------
+# Federated Identity Credential for ACR Service Connection (OIDC)
+# -----------------------------------------------------------------
+resource "azuread_application_federated_identity_credential" "devops_acr_oidc" {
+  application_id = module.service_principal.application_id
+  display_name   = "azuredevops-acr-${var.env}"
+  description    = "Workload Identity Federation for Azure DevOps ACR service connection"
+
+  issuer    = module.service_connection_acr.workload_identity_federation_issuer
+  subject   = module.service_connection_acr.workload_identity_federation_subject
+  audiences = ["api://AzureADTokenExchange"]
+}
 
 # -----------------------------------------------------------------
 # Test Resource: Simple resource to verify pipeline execution
