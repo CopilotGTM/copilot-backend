@@ -47,6 +47,8 @@ provider "azurerm" {
     }
   }
   subscription_id = var.subscription_id
+  # OIDC auth is configured via ARM_* environment variables:
+  # ARM_USE_OIDC, ARM_OIDC_TOKEN, ARM_CLIENT_ID, ARM_TENANT_ID, ARM_SUBSCRIPTION_ID
 }
 
 data "azurerm_key_vault_secret" "azuredevops_pat" {
@@ -60,6 +62,7 @@ locals {
 }
 
 # AzureAD provider required for workload identity (AAD app + federated credential)
+# OIDC auth is configured via ARM_* environment variables (same as azurerm)
 provider "azuread" {}
 
 # Azure DevOps provider for pipeline/resource automation
