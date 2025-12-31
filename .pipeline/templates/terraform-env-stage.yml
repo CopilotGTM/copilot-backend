@@ -124,17 +124,13 @@ stages:
                 echo "=== Terraform Init ==="
                 terraform init -input=false
 
-                echo "=== Terraform Validate ==="
-                terraform validate
-
-                echo "=== Terraform Format Check ==="
-                terraform fmt -check -recursive || echo "##vso[task.logissue type=warning]Terraform files are not formatted."
-
                 # ============================================================
-                # Two-Step Plan for Fresh Infrastructure
+                # Fresh Infrastructure Detection
                 # ============================================================
-                # Problem: Kubernetes/Helm providers need AKS to exist during plan.
-                # Solution: If AKS doesn't exist, plan only core infra (skip k8s resources).
+                # Problem: Kubernetes/Helm providers require AKS credentials to initialize.
+                # Even with -target, terraform plan initializes ALL providers first.
+                # When AKS doesn't exist, provider init fails before plan even starts.
+                # Solution: Skip plan entirely and let apply stage handle two-step deployment.
                 # ============================================================
 
                 # Check if AKS exists in state
@@ -175,6 +171,14 @@ stages:
                     }
                 else
                   echo "=== AKS Exists - Running Full Plan ==="
+
+                  echo "=== Terraform Validate ==="
+                  terraform validate
+
+                  echo "=== Terraform Format Check ==="
+                  terraform fmt -check -recursive || echo "##vso[task.logissue type=warning]Terraform files are not formatted."
+
+                  echo "=== Terraform Plan ==="
                   terraform plan -var-file="terraform.tfvars" -out=tfplan -input=false -detailed-exitcode || {
                     exitCode=$?
                     if [ $exitCode -eq 1 ]; then
@@ -183,10 +187,10 @@ stages:
                     fi
                     # Exit code 2 means changes detected - continue
                   }
-                fi
 
-                echo "=== Plan Summary ==="
-                terraform show -no-color tfplan
+                  echo "=== Plan Summary ==="
+                  terraform show -no-color tfplan
+                fi
             env:
               # Secret variables must be explicitly mapped to be available in scripts
               TF_VAR_azuredevops_pat: $(TF_VAR_azuredevops_pat)
@@ -291,6 +295,10 @@ stages:
                           -target="azurerm_user_assigned_identity.cert_manager_dns" \
                           -target="azurerm_role_assignment.cert_manager_dns_contributor" \
                           -target="azurerm_federated_identity_credential.cert_manager" \
+                          -target="azurerm_role_assignment.aks_kubelet_acr_pull" \
+                          -target="azurerm_role_assignment.agic_appgw_contributor" \
+                          -target="azurerm_role_assignment.agic_rg_reader" \
+                          -target="azurerm_role_assignment.agic_vnet_network_contributor" \
                           -var-file="terraform.tfvars"
 
                         echo "Step 2: Creating Helm/Kubernetes resources..."
