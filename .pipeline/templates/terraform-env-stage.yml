@@ -144,6 +144,14 @@ stages:
             env:
               # Secret variables must be explicitly mapped to be available in scripts
               TF_VAR_azuredevops_pat: $(TF_VAR_azuredevops_pat)
+              TF_VAR_db_password: $(TF_VAR_db_password)
+              TF_VAR_admin_password: $(TF_VAR_admin_password)
+              TF_VAR_azure_openai_key: $(TF_VAR_azure_openai_key)
+              TF_VAR_supabase_anon_key: $(TF_VAR_supabase_anon_key)
+              TF_VAR_supabase_service_role_key: $(TF_VAR_supabase_service_role_key)
+              TF_VAR_supabase_jwt_secret: $(TF_VAR_supabase_jwt_secret)
+              TF_VAR_resend_api_key: $(TF_VAR_resend_api_key)
+              TF_VAR_nango_secret: $(TF_VAR_nango_secret)
 
           - publish: $(TF_WORKING_DIR)/tfplan
             artifact: ${{ parameters.artifactName }}
@@ -215,3 +223,11 @@ stages:
                   env:
                     # Secret variables must be explicitly mapped to be available in scripts
                     TF_VAR_azuredevops_pat: $(TF_VAR_azuredevops_pat)
+                    TF_VAR_db_password: $(TF_VAR_db_password)
+                    TF_VAR_admin_password: $(TF_VAR_admin_password)
+                    TF_VAR_azure_openai_key: $(TF_VAR_azure_openai_key)
+                    TF_VAR_supabase_anon_key: $(TF_VAR_supabase_anon_key)
+                    TF_VAR_supabase_service_role_key: $(TF_VAR_supabase_service_role_key)
+                    TF_VAR_supabase_jwt_secret: $(TF_VAR_supabase_jwt_secret)
+                    TF_VAR_resend_api_key: $(TF_VAR_resend_api_key)
+                    TF_VAR_nango_secret: $(TF_VAR_nango_secret)
