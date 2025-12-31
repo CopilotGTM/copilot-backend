@@ -20,11 +20,6 @@ output "object_id" {
 }
 
 output "application_id" {
-  description = "The Application (object) ID of the app registration."
+  description = "The Application (object) ID of the app registration (used for federated credentials)."
   value       = azuread_application.app.id
-}
-
-output "oidc_enabled" {
-  description = "Whether OIDC/Workload Identity Federation is enabled."
-  value       = var.enable_oidc
 }

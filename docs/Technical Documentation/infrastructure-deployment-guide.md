@@ -124,10 +124,11 @@ Terraform has been successfully initialized!
 ### Step 5: Create Service Principal (Requires Entra ID Admin)
 
 This creates the app registration + service principal with:
-- OIDC federated credential (for passwordless auth)
 - Contributor role on subscription
 - User Access Administrator role (for RBAC assignments)
 - Microsoft Graph API permissions (auto-consented)
+
+> **Note**: The OIDC federated credential is created in Step 6 (after the service connection) because Azure DevOps generates unique issuer/subject values.
 
 ```powershell
 terraform apply -target="module.service_principal" -var-file="terraform.tfvars"
@@ -138,11 +139,12 @@ terraform apply -target="module.service_principal" -var-file="terraform.tfvars"
 |----------|---------|
 | App Registration | Identity in Entra ID |
 | Service Principal | The "user account" for the app |
-| Federated Credential | Allows Azure DevOps to authenticate via OIDC |
 | RBAC Roles | Contributor + User Access Administrator |
 | Graph API Consent | Auto-granted Application.ReadWrite permissions |
 
-### Step 6: Create Bootstrap Resources
+### Step 6: Create Bootstrap Resources + OIDC Credential
+
+This step creates the infrastructure AND the OIDC federated credential (using values from the service connection).
 
 ```powershell
 terraform apply \
@@ -152,6 +154,7 @@ terraform apply \
   -target="module.infra_pipeline" \
   -target="azuredevops_variable_group.infra_secrets" \
   -target="module.service_connection" \
+  -target="azuread_application_federated_identity_credential.devops_oidc" \
   -target="azuredevops_agent_pool.pool" \
   -target="azuredevops_agent_queue.queue" \
   -target="azuredevops_pipeline_authorization.queue_auth" \
@@ -166,8 +169,11 @@ terraform apply \
 | DevOps Agent VM | Self-hosted agent for pipeline execution |
 | Agent Pool + Queue | Azure DevOps agent pool configuration |
 | Service Connection | OIDC-based connection to Azure (no secrets!) |
+| **Federated Credential** | Links service principal to service connection (enables OIDC) |
 | Variable Group | Stores `TF_VAR_azuredevops_pat` for pipeline |
 | Infra Pipeline | Pipeline definition for full deployment |
+
+> **Why this order?** The federated credential needs the `issuer` and `subject` values from the service connection. Azure DevOps generates these unique values, so we must create the service connection first.
 
 ### Step 7: Verify Bootstrap
 
@@ -329,7 +335,7 @@ cd terraform/azure/dev
 $env:TF_VAR_azuredevops_pat = "<YOUR_PAT_TOKEN>"
 terraform init
 terraform apply -target="module.service_principal" -var-file="terraform.tfvars"
-terraform apply -target="module.resource_group" -target="module.vnet" -target="module.devops_agent" -target="module.infra_pipeline" -target="azuredevops_variable_group.infra_secrets" -target="module.service_connection" -target="azuredevops_agent_pool.pool" -target="azuredevops_agent_queue.queue" -target="azuredevops_pipeline_authorization.queue_auth" -var-file="terraform.tfvars"
+terraform apply -target="module.resource_group" -target="module.vnet" -target="module.devops_agent" -target="module.infra_pipeline" -target="azuredevops_variable_group.infra_secrets" -target="module.service_connection" -target="azuread_application_federated_identity_credential.devops_oidc" -target="azuredevops_agent_pool.pool" -target="azuredevops_agent_queue.queue" -target="azuredevops_pipeline_authorization.queue_auth" -var-file="terraform.tfvars"
 ```
 
 ### Check Deployment Status

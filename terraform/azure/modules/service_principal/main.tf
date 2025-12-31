@@ -58,24 +58,10 @@ resource "azurerm_role_assignment" "sp_user_access_admin" {
 }
 
 # -----------------------------------------------------------------------------
-# Federated Identity Credential for Azure DevOps OIDC
-# This allows the pipeline to authenticate without client secrets
+# NOTE: Federated Identity Credential is created in main.tf AFTER the service
+# connection, using the issuer/subject values from the service connection output.
+# This is required because Azure DevOps generates unique issuer/subject values.
 # -----------------------------------------------------------------------------
-resource "azuread_application_federated_identity_credential" "devops_oidc" {
-  count          = var.enable_oidc ? 1 : 0
-  application_id = azuread_application.app.id
-  display_name   = "azuredevops-${var.devops_project_name}"
-  description    = "Workload Identity Federation for Azure DevOps pipeline"
-
-  # Azure DevOps OIDC issuer
-  issuer = "https://vstoken.dev.azure.com/${data.azuread_client_config.current.tenant_id}"
-
-  # Subject format for Azure DevOps service connections
-  # Format: sc://<org>/<project>/<service-connection-name>
-  subject = "sc://${var.devops_org_name}/${var.devops_project_name}/${var.service_connection_name}"
-
-  audiences = ["api://AzureADTokenExchange"]
-}
 
 # Get tenant ID from AzureAD provider
 data "azuread_client_config" "current" {}
