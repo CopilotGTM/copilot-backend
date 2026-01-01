@@ -56,13 +56,16 @@ resource "helm_release" "cert_manager" {
       value = "true"
     },
     # Enable Azure Workload Identity for cert-manager pods
+    # Use type = "string" to prevent boolean interpretation for labels
     {
       name  = "podLabels.azure\\.workload\\.identity/use"
       value = "true"
+      type  = "string"
     },
     {
       name  = "serviceAccount.labels.azure\\.workload\\.identity/use"
       value = "true"
+      type  = "string"
     },
     {
       name  = "serviceAccount.annotations.azure\\.workload\\.identity/client-id"
