@@ -40,6 +40,7 @@ variable "resource_group_name" {
 variable "vnet_name" {
   description = "The name of the Azure Virtual Network to create."
   type        = string
+  default     = "copilot-gtm-vnet"
 }
 
 variable "vnet_address_space" {
@@ -90,11 +91,13 @@ variable "enable_storage_private_endpoints" {
 variable "aks_name" {
   description = "The name of the AKS cluster."
   type        = string
+  default     = "copilot-gtm-aks"
 }
 
 variable "aks_dns_prefix" {
   description = "The DNS prefix for the AKS cluster."
   type        = string
+  default     = "aks"
 }
 
 variable "aks_node_count" {
@@ -157,6 +160,7 @@ variable "aks_workers_service_account" {
 variable "acr_name" {
   description = "The name of the Azure Container Registry to create."
   type        = string
+  default     = "copilotgtmacr"
 }
 
 variable "acr_type" {
@@ -172,6 +176,7 @@ variable "acr_type" {
 variable "redis_name" {
   description = "The name of the Azure Redis instance to create. May include a random or environment-specific suffix."
   type        = string
+  default     = "copilot-gtm-redis"
 }
 
 variable "redis_sku_name" {
@@ -199,11 +204,13 @@ variable "redis_capacity" {
 variable "frontend_app_service_plan_name" {
   description = "The name of the App Service Plan for the frontend app."
   type        = string
+  default     = "copilot-gtm-frontend-asp"
 }
 
 variable "frontend_app_service_name" {
   description = "The name of the Frontend App Service."
   type        = string
+  default     = "copilot-gtm-frontend-app"
 }
 
 variable "frontend_docker_image_name" {
@@ -243,11 +250,13 @@ variable "frontend_https_only" {
 variable "frontend_admin_app_service_plan_name" {
   description = "The name of the App Service Plan for the frontend admin app."
   type        = string
+  default     = "copilot-gtm-admin-asp"
 }
 
 variable "frontend_admin_app_service_name" {
   description = "The name of the Frontend Admin App Service."
   type        = string
+  default     = "copilot-gtm-admin-app"
 }
 
 variable "frontend_admin_docker_image_name" {
@@ -287,6 +296,7 @@ variable "frontend_admin_https_only" {
 variable "storage_account_name" {
   description = "Base name for the Azure Storage Account resource (without env suffix)."
   type        = string
+  default     = "copilotgtmstorage"
 }
 
 # Additional organisation data storage account (separate logical store)
@@ -331,11 +341,13 @@ variable "azuredevops_pat_secret_name" {
 variable "sp_name" {
   description = "The display name for the service principal for Azure DevOps."
   type        = string
+  default     = "copilot-gtm-devops-sp"
 }
 
 variable "azuredevops_sp_display_name" {
   description = "Display name of the Azure AD service principal used by the Azure DevOps service connection for the pipeline. Find this in Azure AD > App registrations."
   type        = string
+  default     = "TerraformSP"
 }
 
 # -----------------------------------------------------------------
@@ -350,6 +362,7 @@ variable "backend_repo_name" {
 variable "backend_pipeline_name" {
   description = "Name of the Azure DevOps pipeline resource. Cannot contain '/' or special characters."
   type        = string
+  default     = "backend-pipeline"
 }
 
 variable "backend_yml_path" {
@@ -376,6 +389,7 @@ variable "terraform_repo_name" {
 variable "terraform_pipeline_name" {
   description = "Name of the Azure DevOps pipeline for Terraform."
   type        = string
+  default     = "infra-pipeline"
 }
 
 variable "infra_variable_group_name" {
@@ -408,6 +422,7 @@ variable "frontend_repo_name" {
 variable "frontend_pipeline_name" {
   description = "Name of the Azure DevOps pipeline resource for the frontend. Cannot contain '/' or special characters."
   type        = string
+  default     = "frontend-pipeline"
 }
 
 variable "frontend_yml_path" {
@@ -434,6 +449,7 @@ variable "frontend_admin_repo_name" {
 variable "frontend_admin_pipeline_name" {
   description = "Name of the Azure DevOps pipeline resource for the frontend admin. Cannot contain '/' or special characters."
   type        = string
+  default     = "frontend-admin-pipeline"
 }
 
 variable "frontend_admin_yml_path" {
@@ -461,11 +477,13 @@ variable "frontend_admin_dns_a_record_name" {
 variable "agent_name" {
   description = "Name to assign to this DevOps agent instance."
   type        = string
+  default     = "gtm-devops-agent-01"
 }
 
 variable "agent_pool" {
   description = "Name of the Azure DevOps agent pool to register this agent in."
   type        = string
+  default     = "StaticAgentPool"
 }
 
 variable "admin_username" {
@@ -512,12 +530,6 @@ variable "db_name" {
   description = "The name of the Database."
   type        = string
   default     = "copilotgtm-postgresdb"
-}
-
-variable "azure_openai_key" {
-  description = "Database password"
-  type        = string
-  default     = ""
 }
 
 variable "letsencrypt_email" {

@@ -170,14 +170,29 @@ terraform apply \
 | Agent Pool + Queue | Azure DevOps agent pool configuration |
 | Service Connection | OIDC-based connection to Azure (no secrets!) |
 | **Federated Credential** | Links service principal to service connection (enables OIDC) |
-| Variable Group | Stores `TF_VAR_azuredevops_pat` for pipeline |
+| Variable Group | Empty group for secrets (PAT added manually in Step 7) |
 | Infra Pipeline | Pipeline definition for full deployment |
 
 > **Why this order?** The federated credential needs the `issuer` and `subject` values from the service connection. Azure DevOps generates these unique values, so we must create the service connection first.
 
-### Step 7: Verify Bootstrap
+### Step 7: Add PAT to Variable Group (Manual Step)
 
-#### 7.1 Check Agent is Online
+The variable group is created by Terraform but the PAT must be added manually (not stored in Terraform state for security).
+
+1. Go to: **Azure DevOps** → **Pipelines** → **Library**
+2. Click on `copilot-infra-secrets-dev`
+3. Click **+ Add**
+4. Add the following variable:
+   | Name | Value | Secret |
+   |------|-------|--------|
+   | `TF_VAR_azuredevops_pat` | `<your-pat-token>` | ✅ Yes |
+5. Click **Save**
+
+> **Important**: This PAT is required for the Terraform Azure DevOps provider to manage pipelines, variable groups, and service connections during pipeline execution.
+
+### Step 8: Verify Bootstrap
+
+#### 8.1 Check Agent is Online
 
 1. Go to: **Azure DevOps** → **Project Settings** → **Agent Pools**
 2. Click on `StaticAgentPool`
@@ -185,19 +200,19 @@ terraform apply \
 
 > **Note**: Agent may take 5-10 minutes to come online after VM creation.
 
-#### 7.2 Check Service Connection (OIDC)
+#### 8.2 Check Service Connection (OIDC)
 
 1. Go to: **Azure DevOps** → **Project Settings** → **Service Connections**
 2. Find `copilotgtm-arc-ci-cd-service--dev`
 3. Verify it shows **Workload Identity Federation** (not "Service Principal")
 
-#### 7.3 Check Variable Group
+#### 8.3 Check Variable Group
 
 1. Go to: **Azure DevOps** → **Pipelines** → **Library**
 2. Find `copilot-infra-secrets-dev`
-3. Verify `TF_VAR_azuredevops_pat` exists (shown as secret)
+3. Verify `TF_VAR_azuredevops_pat` exists (shown as secret) - you added this in Step 7
 
-#### 7.4 Check Pipeline Created
+#### 8.4 Check Pipeline Created
 
 1. Go to: **Azure DevOps** → **Pipelines**
 2. Find `copilot-app-infra-pipeline-dev`
@@ -337,6 +352,10 @@ terraform init
 terraform apply -target="module.service_principal" -var-file="terraform.tfvars"
 terraform apply -target="module.resource_group" -target="module.vnet" -target="module.devops_agent" -target="module.infra_pipeline" -target="azuredevops_variable_group.infra_secrets" -target="module.service_connection" -target="azuread_application_federated_identity_credential.devops_oidc" -target="azuredevops_agent_pool.pool" -target="azuredevops_agent_queue.queue" -target="azuredevops_pipeline_authorization.queue_auth" -var-file="terraform.tfvars"
 ```
+
+**After Terraform completes:** Add `TF_VAR_azuredevops_pat` to the variable group manually:
+1. Azure DevOps → Pipelines → Library → `copilot-infra-secrets-dev`
+2. Add variable `TF_VAR_azuredevops_pat` with your PAT token (mark as secret)
 
 ### Check Deployment Status
 

@@ -101,3 +101,19 @@ output "gpu_node_taints" {
   description = "Kubernetes taints applied to GPU nodes for workload isolation."
   value       = var.enable_gpu_worker_pool ? var.gpu_node_taints : null
 }
+
+# AGIC (Application Gateway Ingress Controller) Outputs
+output "agic_identity_object_id" {
+  description = "The object ID of the AGIC managed identity (for role assignments)."
+  value       = var.app_gateway_id != null ? azurerm_kubernetes_cluster.this.ingress_application_gateway[0].ingress_application_gateway_identity[0].object_id : null
+}
+
+output "agic_identity_client_id" {
+  description = "The client ID of the AGIC managed identity."
+  value       = var.app_gateway_id != null ? azurerm_kubernetes_cluster.this.ingress_application_gateway[0].ingress_application_gateway_identity[0].client_id : null
+}
+
+output "agic_identity_user_assigned_identity_id" {
+  description = "The user assigned identity ID of the AGIC managed identity."
+  value       = var.app_gateway_id != null ? azurerm_kubernetes_cluster.this.ingress_application_gateway[0].ingress_application_gateway_identity[0].user_assigned_identity_id : null
+}

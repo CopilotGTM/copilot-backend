@@ -72,20 +72,20 @@ provider "azuredevops" {
 }
 
 
-/*
+
 provider "helm" {
   kubernetes = {
-    host                   = module.aks.host
-    client_certificate     = base64decode(module.aks.client_certificate)
-    client_key             = base64decode(module.aks.client_key)
-    cluster_ca_certificate = base64decode(module.aks.cluster_ca_certificate)
+    host                   = try(module.aks.host, null)
+    client_certificate     = try(base64decode(module.aks.client_certificate), null)
+    client_key             = try(base64decode(module.aks.client_key), null)
+    cluster_ca_certificate = try(base64decode(module.aks.cluster_ca_certificate), null)
   }
 }
 
 provider "kubernetes" {
-  host                   = module.aks.host
-  client_certificate     = base64decode(module.aks.client_certificate)
-  client_key             = base64decode(module.aks.client_key)
-  cluster_ca_certificate = base64decode(module.aks.cluster_ca_certificate)
+  host                   = try(module.aks.host, null)
+  client_certificate     = try(base64decode(module.aks.client_certificate), null)
+  client_key             = try(base64decode(module.aks.client_key), null)
+  cluster_ca_certificate = try(base64decode(module.aks.cluster_ca_certificate), null)
 }
-*/
+

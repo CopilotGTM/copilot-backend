@@ -108,7 +108,7 @@ Create Azure DevOps Environments:
 
 - `terraform-dev` (optional approvals)
 - `terraform-uat` (usually no approvals)
-- `terraform-prod` (**approval required**) 
+- `terraform-prod` (**approval required**)
 
 Set `terraform-prod` to require manual approval (and optionally checks like branch controls).
 
