@@ -40,6 +40,7 @@ variable "resource_group_name" {
 variable "vnet_name" {
   description = "The name of the Azure Virtual Network to create."
   type        = string
+  default     = "copilot-gtm-vnet"
 }
 
 variable "vnet_address_space" {
@@ -56,13 +57,31 @@ variable "vnet_public_subnets" {
 
 variable "vnet_private_subnets" {
   description = <<-DESC
-		Address prefixes for private subnets (list of CIDRs).
-		Best practice: Use two:
-			- One for AKS/microservices (e.g., 10.0.2.0/24)
-			- One for data/stateful (Redis, DB) (e.g., 10.0.3.0/24)
-	DESC
+    Address prefixes for private subnets (list of CIDRs).
+    Best practice: Use two:
+      - One for AKS/microservices (e.g., 10.0.2.0/24)
+      - One for data/stateful (Redis, DB) (e.g., 10.0.3.0/24)
+  DESC
   type        = list(string)
   default     = ["10.0.2.0/24", "10.0.3.0/24"]
+}
+
+variable "vnet_private_endpoints_subnet" {
+  description = "CIDR for a dedicated private endpoints subnet (used for Private Link endpoints)."
+  type        = string
+  default     = "10.0.4.0/24"
+}
+
+variable "enable_key_vault_private_endpoints" {
+  description = "Enable Private Link private endpoints for Key Vaults and disable their public network access. This is mandatory for the Key Vault module."
+  type        = bool
+  default     = true
+}
+
+variable "enable_storage_private_endpoints" {
+  description = "Enable Private Link private endpoints for Storage Accounts and disable their public network access. Keep false until workloads are confirmed to access Storage via VNet + Private DNS."
+  type        = bool
+  default     = true
 }
 
 # -----------------------------------------------------------------
@@ -72,11 +91,13 @@ variable "vnet_private_subnets" {
 variable "aks_name" {
   description = "The name of the AKS cluster."
   type        = string
+  default     = "copilot-gtm-aks"
 }
 
 variable "aks_dns_prefix" {
   description = "The DNS prefix for the AKS cluster."
   type        = string
+  default     = "aks"
 }
 
 variable "aks_node_count" {
@@ -132,7 +153,6 @@ variable "aks_workers_service_account" {
   type        = string
   default     = "copilot-workers"
 }
-
 # -----------------------------------------------------------------
 # Azure Container Registry (ACR)
 # -----------------------------------------------------------------
@@ -140,6 +160,7 @@ variable "aks_workers_service_account" {
 variable "acr_name" {
   description = "The name of the Azure Container Registry to create."
   type        = string
+  default     = "copilotgtmacr"
 }
 
 variable "acr_type" {
@@ -155,6 +176,7 @@ variable "acr_type" {
 variable "redis_name" {
   description = "The name of the Azure Redis instance to create. May include a random or environment-specific suffix."
   type        = string
+  default     = "copilot-gtm-redis"
 }
 
 variable "redis_sku_name" {
@@ -182,11 +204,13 @@ variable "redis_capacity" {
 variable "frontend_app_service_plan_name" {
   description = "The name of the App Service Plan for the frontend app."
   type        = string
+  default     = "copilot-gtm-frontend-asp"
 }
 
 variable "frontend_app_service_name" {
   description = "The name of the Frontend App Service."
   type        = string
+  default     = "copilot-gtm-frontend-app"
 }
 
 variable "frontend_docker_image_name" {
@@ -226,11 +250,13 @@ variable "frontend_https_only" {
 variable "frontend_admin_app_service_plan_name" {
   description = "The name of the App Service Plan for the frontend admin app."
   type        = string
+  default     = "copilot-gtm-admin-asp"
 }
 
 variable "frontend_admin_app_service_name" {
   description = "The name of the Frontend Admin App Service."
   type        = string
+  default     = "copilot-gtm-admin-app"
 }
 
 variable "frontend_admin_docker_image_name" {
@@ -270,8 +296,10 @@ variable "frontend_admin_https_only" {
 variable "storage_account_name" {
   description = "Base name for the Azure Storage Account resource (without env suffix)."
   type        = string
+  default     = "copilotgtmstorage"
 }
 
+# Additional organisation data storage account (separate logical store)
 variable "org_storage_account_name" {
   description = "Base name for the organisation data Storage Account (without env suffix)."
   type        = string
@@ -301,16 +329,25 @@ variable "azuredevops_pat" {
   description = "Personal Access Token for Azure DevOps automation. Pass via environment variable or .tfvars (DO NOT hardcode in source for security)."
   type        = string
   sensitive   = true
+  default     = ""
+}
+
+variable "azuredevops_pat_secret_name" {
+  description = "Optional: name of an existing Key Vault secret that holds the Azure DevOps PAT. If azuredevops_pat is empty and this is set, Terraform will read the PAT from Key Vault (requires Key Vault access)."
+  type        = string
+  default     = ""
 }
 
 variable "sp_name" {
   description = "The display name for the service principal for Azure DevOps."
   type        = string
+  default     = "copilot-gtm-devops-sp"
 }
 
 variable "azuredevops_sp_display_name" {
   description = "Display name of the Azure AD service principal used by the Azure DevOps service connection for the pipeline. Find this in Azure AD > App registrations."
   type        = string
+  default     = "TerraformSP"
 }
 
 # -----------------------------------------------------------------
@@ -325,6 +362,7 @@ variable "backend_repo_name" {
 variable "backend_pipeline_name" {
   description = "Name of the Azure DevOps pipeline resource. Cannot contain '/' or special characters."
   type        = string
+  default     = "backend-pipeline"
 }
 
 variable "backend_yml_path" {
@@ -336,7 +374,40 @@ variable "backend_yml_path" {
 variable "backend_branch" {
   description = "Branch for backend pipeline"
   type        = string
-  default     = "dev"
+  default     = "main"
+}
+
+# -----------------------------------------------------------------
+# Terraform Pipeline
+# -----------------------------------------------------------------
+
+variable "terraform_repo_name" {
+  description = "Azure DevOps repository name containing the Terraform code."
+  type        = string
+}
+
+variable "terraform_pipeline_name" {
+  description = "Name of the Azure DevOps pipeline for Terraform."
+  type        = string
+  default     = "infra-pipeline"
+}
+
+variable "infra_variable_group_name" {
+  description = "Name of the Azure DevOps variable group for infrastructure secrets."
+  type        = string
+  default     = "copilot-infra-secrets"
+}
+
+variable "terraform_yml_path" {
+  description = "Path to the Azure Pipelines YAML file for Terraform."
+  type        = string
+  default     = ".pipeline/.azure-pipeline.yml"
+}
+
+variable "terraform_branch" {
+  description = "Branch for Terraform pipeline"
+  type        = string
+  default     = "main"
 }
 
 # -----------------------------------------------------------------
@@ -351,6 +422,7 @@ variable "frontend_repo_name" {
 variable "frontend_pipeline_name" {
   description = "Name of the Azure DevOps pipeline resource for the frontend. Cannot contain '/' or special characters."
   type        = string
+  default     = "frontend-pipeline"
 }
 
 variable "frontend_yml_path" {
@@ -362,7 +434,7 @@ variable "frontend_yml_path" {
 variable "frontend_branch" {
   description = "Branch of Repo"
   type        = string
-  default     = "dev"
+  default     = "main"
 }
 
 # -----------------------------------------------------------------
@@ -377,6 +449,7 @@ variable "frontend_admin_repo_name" {
 variable "frontend_admin_pipeline_name" {
   description = "Name of the Azure DevOps pipeline resource for the frontend admin. Cannot contain '/' or special characters."
   type        = string
+  default     = "frontend-admin-pipeline"
 }
 
 variable "frontend_admin_yml_path" {
@@ -388,13 +461,13 @@ variable "frontend_admin_yml_path" {
 variable "frontend_admin_branch" {
   description = "Branch of Repo for frontend admin"
   type        = string
-  default     = "dev"
+  default     = "main"
 }
 
 variable "frontend_admin_dns_a_record_name" {
   description = "The name of the A record for the frontend admin app service."
   type        = string
-  default     = "devadmin"
+  default     = "admin"
 }
 
 # -----------------------------------------------------------------
@@ -404,11 +477,13 @@ variable "frontend_admin_dns_a_record_name" {
 variable "agent_name" {
   description = "Name to assign to this DevOps agent instance."
   type        = string
+  default     = "gtm-devops-agent-01"
 }
 
 variable "agent_pool" {
   description = "Name of the Azure DevOps agent pool to register this agent in."
   type        = string
+  default     = "StaticAgentPool"
 }
 
 variable "admin_username" {
@@ -417,11 +492,7 @@ variable "admin_username" {
   default     = "azureuser"
 }
 
-variable "admin_password" {
-  description = "Admin password for the static DevOps agent VM."
-  type        = string
-  sensitive   = true
-}
+
 
 # -----------------------------------------------------------------
 # DNS
@@ -440,18 +511,14 @@ variable "dns_zone_resource_group" {
 variable "frontend_dns_a_record_name" {
   description = "The name of the A record for the frontend app service."
   type        = string
-  default     = "devapp"
+  default     = "app"
 }
 
 # -----------------------------------------------------------------
 # Secrets & Certificates
 # -----------------------------------------------------------------
 
-variable "db_password" {
-  description = "Database password"
-  type        = string
-  default     = ""
-}
+
 
 variable "db_location" {
   description = "The Azure region for the Database."
@@ -463,12 +530,6 @@ variable "db_name" {
   description = "The name of the Database."
   type        = string
   default     = "copilotgtm-postgresdb"
-}
-
-variable "azure_openai_key" {
-  description = "Database password"
-  type        = string
-  default     = ""
 }
 
 variable "letsencrypt_email" {
@@ -497,29 +558,34 @@ variable "certificates" {
 variable "super_admin_email" {
   description = "Email address for the super admin user."
   type        = string
+  default     = ""
 }
 
 variable "supabase_url" {
   description = "URL for the Supabase instance."
   type        = string
+  default     = ""
 }
 
 variable "supabase_anon_key" {
   description = "API key for the Supabase instance."
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 variable "supabase_service_role_key" {
   description = "Service role key for the Supabase instance."
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 variable "supabase_jwt_secret" {
   description = "JWT secret for the Supabase instance."
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 # -----------------------------------------------------------------
@@ -530,6 +596,7 @@ variable "resend_api_key" {
   description = "API key for the Resend service."
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 variable "resend_email" {
@@ -608,10 +675,55 @@ variable "gpu_node_taints" {
 }
 
 # -----------------------------------------------------------------
-# Nango Config
+# Nango Config 
 # ----------------------------------------------------------------
 variable "nango_secret" {
   description = "Nango Secret Key"
   type        = string
   default     = ""
 }
+
+# -----------------------------------------------------------------
+# K8s Addons Variables (Migrated from k8s/variables.tf)
+# -----------------------------------------------------------------
+
+variable "azure_dns_managed_identity_client_id" {
+  type        = string
+  description = "Client ID of the managed identity used by cert-manager to solve Azure DNS challenges"
+  default     = "" # Will be populated from AKS module output if not provided
+}
+
+variable "api_subdomain" {
+  type        = string
+  description = "API subdomain (e.g. api, devapi)"
+  default     = "api"
+}
+
+variable "app_namespace" {
+  type    = string
+  default = "default"
+}
+
+# KEDA Configuration
+variable "keda_namespace" {
+  type        = string
+  description = "Namespace for KEDA system components"
+  default     = "keda-system"
+}
+
+# -----------------------------------------------------------------
+# WAF Variables
+# -----------------------------------------------------------------
+
+variable "vnet_waf_subnet" {
+  description = "CIDR for the Application Gateway subnet."
+  type        = string
+  default     = "10.0.5.0/24"
+}
+
+variable "waf_name" {
+  description = "Name of the Application Gateway"
+  type        = string
+  default     = "copilot-gtm-waf"
+}
+
