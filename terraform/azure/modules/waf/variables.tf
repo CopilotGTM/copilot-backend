@@ -53,3 +53,13 @@ variable "log_retention_days" {
   type        = number
   default     = 30
 }
+
+variable "waf_mode" {
+  description = "WAF firewall mode: 'Prevention' blocks malicious requests, 'Detection' only logs them"
+  type        = string
+  default     = "Detection"
+  validation {
+    condition     = contains(["Prevention", "Detection"], var.waf_mode)
+    error_message = "WAF mode must be either 'Prevention' or 'Detection'."
+  }
+}

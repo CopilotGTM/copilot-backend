@@ -70,7 +70,7 @@ resource "azurerm_application_gateway" "waf" {
 
   waf_configuration {
     enabled          = true
-    firewall_mode    = "Prevention"
+    firewall_mode    = var.waf_mode
     rule_set_type    = "OWASP"
     rule_set_version = "3.2"
   }
