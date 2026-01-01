@@ -133,10 +133,14 @@ stages:
                 # Solution: Skip plan entirely and let apply stage handle two-step deployment.
                 # ============================================================
 
-                # Check if AKS exists in state
-                AKS_EXISTS=$(terraform state list 2>/dev/null | grep -c "module.aks.azurerm_kubernetes_cluster" || echo "0")
+                # Check if AKS exists in state (use -q flag to avoid output issues)
+                if terraform state list 2>/dev/null | grep -q "module.aks.azurerm_kubernetes_cluster"; then
+                  AKS_EXISTS=1
+                else
+                  AKS_EXISTS=0
+                fi
 
-                if [ "$AKS_EXISTS" -eq "0" ]; then
+                if [ "$AKS_EXISTS" -eq 0 ]; then
                   echo "=== AKS Not Found - Running Targeted Plan (Core Infrastructure Only) ==="
                   echo "Kubernetes/Helm resources will be planned after AKS is created."
 
@@ -273,10 +277,14 @@ stages:
                       #   1. Apply from artifact (full plan)
                       # ============================================================
 
-                      # Check if AKS exists in state
-                      AKS_EXISTS=$(terraform state list 2>/dev/null | grep -c "module.aks.azurerm_kubernetes_cluster" || echo "0")
+                      # Check if AKS exists in state (use -q flag to avoid output issues)
+                      if terraform state list 2>/dev/null | grep -q "module.aks.azurerm_kubernetes_cluster"; then
+                        AKS_EXISTS=1
+                      else
+                        AKS_EXISTS=0
+                      fi
 
-                      if [ "$AKS_EXISTS" -eq "0" ]; then
+                      if [ "$AKS_EXISTS" -eq 0 ]; then
                         echo "============================================================"
                         echo "=== FRESH INFRASTRUCTURE DEPLOYMENT (Two-Step Process) ==="
                         echo "============================================================"
