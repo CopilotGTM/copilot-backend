@@ -166,7 +166,7 @@ resource "kubectl_manifest" "letsencrypt_issuer" {
           {
             http01 = {
               ingress = {
-                class = "azure-application-gateway"
+                ingressClassName = "azure-application-gateway"
               }
             }
           },
