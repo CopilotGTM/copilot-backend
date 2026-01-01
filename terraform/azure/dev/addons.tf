@@ -210,6 +210,19 @@ resource "kubernetes_namespace_v1" "app_namespace" {
 
 
 # -----------------------------------------------------------------
+# 6) DNS A Record for API - points to WAF public IP
+# -----------------------------------------------------------------
+resource "azurerm_dns_a_record" "api" {
+  name                = var.api_subdomain
+  zone_name           = var.dns_zone_name
+  resource_group_name = var.dns_zone_resource_group
+  ttl                 = 300
+  records             = [module.waf.public_ip_address]
+
+  depends_on = [module.waf]
+}
+
+# -----------------------------------------------------------------
 # 7) Create a certificate for the API
 # -----------------------------------------------------------------
 # Using kubectl_manifest instead of kubernetes_manifest to avoid CRD validation during plan
