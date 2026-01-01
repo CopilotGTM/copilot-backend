@@ -448,7 +448,7 @@ module "azure_openai" {
       model_name      = "gpt-5-mini"
       sku             = "GlobalStandard"
       capacity        = 300
-      version         = "2025-12-11"
+      version         = "2025-08-07"
     }
     embedder = {
       deployment_name = "text-embedding-3-large"

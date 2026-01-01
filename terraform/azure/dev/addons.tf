@@ -144,45 +144,46 @@ resource "time_sleep" "wait_for_cert_manager_crd" {
   }
 }
 
-resource "kubernetes_manifest" "letsencrypt_issuer" {
-  manifest = {
-    "apiVersion" = "cert-manager.io/v1"
-    "kind"       = "ClusterIssuer"
-    "metadata" = {
-      "name" = "letsencrypt"
+# Using kubectl_manifest instead of kubernetes_manifest to avoid CRD validation during plan
+resource "kubectl_manifest" "letsencrypt_issuer" {
+  yaml_body = yamlencode({
+    apiVersion = "cert-manager.io/v1"
+    kind       = "ClusterIssuer"
+    metadata = {
+      name = "letsencrypt"
     }
-    "spec" = {
-      "acme" = {
-        "email"  = var.letsencrypt_email
-        "server" = "https://acme-v02.api.letsencrypt.org/directory"
-        "privateKeySecretRef" = {
-          "name" = "letsencrypt-account-key"
+    spec = {
+      acme = {
+        email  = var.letsencrypt_email
+        server = "https://acme-v02.api.letsencrypt.org/directory"
+        privateKeySecretRef = {
+          name = "letsencrypt-account-key"
         }
-        "solvers" = [
+        solvers = [
           {
-            "http01" = {
-              "ingress" = {
-                "class" = "azure-application-gateway"
+            http01 = {
+              ingress = {
+                class = "azure-application-gateway"
               }
             }
           },
           {
-            "dns01" = {
-              "azureDNS" = {
-                "managedIdentity" = {
-                  "clientID" = azurerm_user_assigned_identity.cert_manager_dns.client_id
+            dns01 = {
+              azureDNS = {
+                managedIdentity = {
+                  clientID = azurerm_user_assigned_identity.cert_manager_dns.client_id
                 }
-                "subscriptionID"    = var.subscription_id
-                "resourceGroupName" = var.dns_zone_resource_group
-                "hostedZoneName"    = var.dns_zone_name
-                "environment"       = "AzurePublicCloud"
+                subscriptionID    = var.subscription_id
+                resourceGroupName = var.dns_zone_resource_group
+                hostedZoneName    = var.dns_zone_name
+                environment       = "AzurePublicCloud"
               }
             }
           }
         ]
       }
     }
-  }
+  })
 
   depends_on = [
     time_sleep.wait_for_cert_manager_crd,
@@ -208,28 +209,28 @@ resource "kubernetes_namespace_v1" "app_namespace" {
 # -----------------------------------------------------------------
 # 7) Create a certificate for the API
 # -----------------------------------------------------------------
-resource "kubernetes_manifest" "api_certificate" {
-
-  manifest = {
-    "apiVersion" = "cert-manager.io/v1"
-    "kind"       = "Certificate"
-    "metadata" = {
-      "name"      = "${var.api_subdomain}-tls"
-      "namespace" = var.app_namespace
+# Using kubectl_manifest instead of kubernetes_manifest to avoid CRD validation during plan
+resource "kubectl_manifest" "api_certificate" {
+  yaml_body = yamlencode({
+    apiVersion = "cert-manager.io/v1"
+    kind       = "Certificate"
+    metadata = {
+      name      = "${var.api_subdomain}-tls"
+      namespace = var.app_namespace
     }
-    "spec" = {
-      "secretName" = "${var.api_subdomain}-tls"
-      "issuerRef" = {
-        "name" = "letsencrypt"
-        "kind" = "ClusterIssuer"
+    spec = {
+      secretName = "${var.api_subdomain}-tls"
+      issuerRef = {
+        name = "letsencrypt"
+        kind = "ClusterIssuer"
       }
-      "commonName" = "${var.api_subdomain}.${var.dns_zone_name}"
-      "dnsNames"   = ["${var.api_subdomain}.${var.dns_zone_name}"]
+      commonName = "${var.api_subdomain}.${var.dns_zone_name}"
+      dnsNames   = ["${var.api_subdomain}.${var.dns_zone_name}"]
     }
-  }
+  })
 
   depends_on = [
-    kubernetes_manifest.letsencrypt_issuer,
+    kubectl_manifest.letsencrypt_issuer,
     kubernetes_namespace_v1.app_namespace
   ]
 }
