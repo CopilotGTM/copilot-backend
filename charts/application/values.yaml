@@ -114,6 +114,10 @@ knowledge-extract-worker:
   config:
     queueName: "knowledge_extract"
     concurrency: 3
+  # Use shared ServiceAccount (created at parent chart level)
+  serviceAccount:
+    create: false
+    name: "copilot-workers"
 
   # High-Compute CPU Node Pool Configuration
   # Targets dedicated CPU node pool (kgpu) with high-compute resources
@@ -167,6 +171,10 @@ knowledge-upload-worker:
   config:
     queueName: "knowledge_upload"
     concurrency: 4
+  # Use shared ServiceAccount (created by knowledge-extract-worker)
+  serviceAccount:
+    create: false
+    name: "copilot-workers"
   resources:
     requests:
       cpu: "500m"
@@ -193,6 +201,10 @@ organization-worker:
   config:
     queueName: "organization"
     concurrency: 5
+  # Use shared ServiceAccount (created by knowledge-extract-worker)
+  serviceAccount:
+    create: false
+    name: "copilot-workers"
   resources:
     requests:
       cpu: "250m"
@@ -220,6 +232,10 @@ chat-worker:
     queueName: "attachments"
     additionalQueues: ["chat_processing", "chat_messages"]
     concurrency: 5
+  # Use shared ServiceAccount (created by knowledge-extract-worker)
+  serviceAccount:
+    create: false
+    name: "copilot-workers"
   resources:
     requests:
       cpu: "500m"
@@ -247,6 +263,10 @@ integrations-worker:
     queueName: "integrations"
     additionalQueues: ["integrations_priority"]
     concurrency: 8  # Reduced from 20 to prevent OOM
+  # Use shared ServiceAccount (created by knowledge-extract-worker)
+  serviceAccount:
+    create: false
+    name: "copilot-workers"
   resources:
     requests:
       cpu: "500m"
@@ -275,6 +295,10 @@ deal-worker:
     additionalQueues: ["deal_jobs"]
     concurrency: 4
     gracefulTimeout: 540  # 9 minutes for long-running deal processing
+  # Use shared ServiceAccount (created by knowledge-extract-worker)
+  serviceAccount:
+    create: false
+    name: "copilot-workers"
   resources:
     requests:
       cpu: "500m"
@@ -308,6 +332,10 @@ deal-beat:
     queueName: "deal"
     # Beat mode - runs scheduler instead of worker
     beatMode: true
+  # Use shared ServiceAccount (created by knowledge-extract-worker)
+  serviceAccount:
+    create: false
+    name: "copilot-workers"
   resources:
     requests:
       cpu: "100m"
