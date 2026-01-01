@@ -45,6 +45,7 @@ This document provides step-by-step instructions to deploy the Copilot GTM infra
 ### Authentication Model (OIDC - No Secrets!)
 
 All service connections use **Workload Identity Federation (OIDC)**:
+
 - No client secrets to manage or rotate
 - Tokens are short-lived and auto-refresh
 - Microsoft's recommended approach for production
@@ -72,6 +73,7 @@ All service connections use **Workload Identity Federation (OIDC)**:
 ### Azure DevOps PAT Token
 
 Create a Personal Access Token with these scopes:
+
 - `Agent Pools`: Read & Manage
 - `Build`: Read & Execute
 - `Variable Groups`: Read, Create & Manage
@@ -117,6 +119,7 @@ terraform init
 ```
 
 Expected output:
+
 ```
 Terraform has been successfully initialized!
 ```
@@ -124,6 +127,7 @@ Terraform has been successfully initialized!
 ### Step 5: Create Service Principal (Requires Entra ID Admin)
 
 This creates the app registration + service principal with:
+
 - Contributor role on subscription
 - User Access Administrator role (for RBAC assignments)
 - Microsoft Graph API permissions (auto-consented)
@@ -135,6 +139,7 @@ terraform apply -target="module.service_principal" -var-file="terraform.tfvars"
 ```
 
 **What gets created:**
+
 | Resource | Purpose |
 |----------|---------|
 | App Registration | Identity in Entra ID |
@@ -162,6 +167,7 @@ terraform apply \
 ```
 
 **What gets created:**
+
 | Resource | Purpose |
 |----------|---------|
 | Resource Group | Container for all Azure resources |
@@ -183,9 +189,11 @@ The variable group is created by Terraform but the PAT must be added manually (n
 2. Click on `copilot-infra-secrets-dev`
 3. Click **+ Add**
 4. Add the following variable:
+
    | Name | Value | Secret |
    |------|-------|--------|
    | `TF_VAR_azuredevops_pat` | `<your-pat-token>` | ✅ Yes |
+
 5. Click **Save**
 
 > **Important**: This PAT is required for the Terraform Azure DevOps provider to manage pipelines, variable groups, and service connections during pipeline execution.
@@ -282,27 +290,32 @@ git push origin main
 ### Agent Not Coming Online
 
 **Check VM status:**
+
 ```powershell
 az vm show -g "copilot-gtm-app-dev" -n "gtm-devops-agent-01-dev" --query "provisioningState" -o tsv
 ```
 
 **Check cloud-init logs (SSH into VM):**
+
 ```bash
 sudo cat /var/log/cloud-init-output.log | tail -50
 ```
 
 **Common fixes:**
+
 - VM SKU not available in region → Change `vm_size` in `modules/devops_agent/main.tf`
 - PAT token invalid → Regenerate and re-run Step 6
 
 ### Agent Capacity Issues ("SkuNotAvailable")
 
 Edit `terraform/azure/modules/devops_agent/main.tf` and change `vm_size`:
+
 ```hcl
 vm_size = "Standard_D2as_v4"  # Try different SKU
 ```
 
 Available SKUs by region:
+
 ```powershell
 az vm list-skus --location centralus --size Standard_D --output table
 ```
@@ -312,6 +325,7 @@ az vm list-skus --location centralus --size Standard_D --output table
 **Cause**: OIDC federated credential not matching or Graph permissions not granted.
 
 **Fix:**
+
 ```powershell
 # Re-run as Entra ID admin
 terraform apply -target="module.service_principal" -var-file="terraform.tfvars"
@@ -324,6 +338,7 @@ The service connection was created with old secret-based auth. Delete and recrea
 1. Azure DevOps → Project Settings → Service Connections
 2. Delete `copilotgtm-arc-ci-cd-service--dev`
 3. Re-run:
+
 ```powershell
 terraform apply -target="module.service_connection" -var-file="terraform.tfvars"
 ```
@@ -331,6 +346,7 @@ terraform apply -target="module.service_connection" -var-file="terraform.tfvars"
 ### Terraform State Issues
 
 If state is corrupted or out of sync:
+
 ```powershell
 # Import existing resource
 terraform import 'module.resource_group.azurerm_resource_group.this' '/subscriptions/<sub-id>/resourceGroups/copilot-gtm-app-dev'
@@ -354,6 +370,7 @@ terraform apply -target="module.resource_group" -target="module.vnet" -target="m
 ```
 
 **After Terraform completes:** Add `TF_VAR_azuredevops_pat` to the variable group manually:
+
 1. Azure DevOps → Pipelines → Library → `copilot-infra-secrets-dev`
 2. Add variable `TF_VAR_azuredevops_pat` with your PAT token (mark as secret)
 

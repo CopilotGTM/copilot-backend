@@ -124,77 +124,54 @@ stages:
                 echo "=== Terraform Init ==="
                 terraform init -input=false
 
+                echo "=== Terraform Validate ==="
+                terraform validate
+
+                echo "=== Terraform Format Check ==="
+                terraform fmt -check -recursive || echo "##vso[task.logissue type=warning]Terraform files are not formatted."
+
                 # ============================================================
-                # Fresh Infrastructure Detection
+                # Two-Step Deployment Strategy (Always)
                 # ============================================================
-                # Problem: Kubernetes/Helm providers require AKS credentials to initialize.
-                # Even with -target, terraform plan initializes ALL providers first.
-                # When AKS doesn't exist, provider init fails before plan even starts.
-                # Solution: Skip plan entirely and let apply stage handle two-step deployment.
+                # Step 1: Plan & Apply core infrastructure (AKS, databases, etc.)
+                # Step 2: Plan & Apply everything else (Helm, K8s manifests, etc.)
+                #
+                # This ensures AKS exists before Helm/K8s resources are deployed,
+                # avoiding provider initialization and CRD validation issues.
                 # ============================================================
 
-                # Check if AKS exists in state (use -q flag to avoid output issues)
-                if terraform state list 2>/dev/null | grep -q "module.aks.azurerm_kubernetes_cluster"; then
-                  AKS_EXISTS=1
-                else
-                  AKS_EXISTS=0
-                fi
-
-                if [ "$AKS_EXISTS" -eq 0 ]; then
-                  echo "=== AKS Not Found - Running Targeted Plan (Core Infrastructure Only) ==="
-                  echo "Kubernetes/Helm resources will be deployed after AKS is created."
-
-                  # Plan only core infrastructure (excludes helm_release, kubernetes_manifest, etc.)
-                  terraform plan -var-file="terraform.tfvars" -out=tfplan -input=false \
-                    -target="module.resource_group" \
-                    -target="module.vnet" \
-                    -target="module.waf" \
-                    -target="module.redis" \
-                    -target="module.acr" \
-                    -target="module.aks" \
-                    -target="module.database_key_vault" \
-                    -target="module.master_key_vault" \
-                    -target="module.master_storage_account" \
-                    -target="module.org_storage_account" \
-                    -target="module.application_database" \
-                    -target="module.azure_openai" \
-                    -target="module.workload_identity_backend" \
-                    -target="module.workload_identity_workers" \
-                    -target="azurerm_user_assigned_identity.cert_manager_dns" \
-                    -target="azurerm_role_assignment.cert_manager_dns_contributor" \
-                    -target="azurerm_federated_identity_credential.cert_manager" \
-                    -target="azurerm_role_assignment.aks_kubelet_acr_pull" \
-                    -target="azurerm_role_assignment.agic_appgw_contributor" \
-                    -target="azurerm_role_assignment.agic_rg_reader" \
-                    -target="azurerm_role_assignment.agic_vnet_network_contributor" || {
-                      exitCode=$?
-                      if [ $exitCode -eq 1 ]; then
-                        echo "##vso[task.logissue type=error]Terraform plan failed!"
-                        exit 1
-                      fi
-                    }
-                else
-                  echo "=== AKS Exists - Running Full Plan ==="
-
-                  echo "=== Terraform Validate ==="
-                  terraform validate
-
-                  echo "=== Terraform Format Check ==="
-                  terraform fmt -check -recursive || echo "##vso[task.logissue type=warning]Terraform files are not formatted."
-
-                  echo "=== Terraform Plan ==="
-                  terraform plan -var-file="terraform.tfvars" -out=tfplan -input=false -detailed-exitcode || {
+                echo "=== Step 1: Plan Core Infrastructure ==="
+                terraform plan -var-file="terraform.tfvars" -out=tfplan-core -input=false \
+                  -target="module.resource_group" \
+                  -target="module.vnet" \
+                  -target="module.waf" \
+                  -target="module.redis" \
+                  -target="module.acr" \
+                  -target="module.aks" \
+                  -target="module.database_key_vault" \
+                  -target="module.master_key_vault" \
+                  -target="module.master_storage_account" \
+                  -target="module.org_storage_account" \
+                  -target="module.application_database" \
+                  -target="module.azure_openai" \
+                  -target="module.workload_identity_backend" \
+                  -target="module.workload_identity_workers" \
+                  -target="azurerm_user_assigned_identity.cert_manager_dns" \
+                  -target="azurerm_role_assignment.cert_manager_dns_contributor" \
+                  -target="azurerm_federated_identity_credential.cert_manager" \
+                  -target="azurerm_role_assignment.aks_kubelet_acr_pull" \
+                  -target="azurerm_role_assignment.agic_appgw_contributor" \
+                  -target="azurerm_role_assignment.agic_rg_reader" \
+                  -target="azurerm_role_assignment.agic_vnet_network_contributor" || {
                     exitCode=$?
                     if [ $exitCode -eq 1 ]; then
                       echo "##vso[task.logissue type=error]Terraform plan failed!"
                       exit 1
                     fi
-                    # Exit code 2 means changes detected - continue
                   }
 
-                  echo "=== Plan Summary ==="
-                  terraform show -no-color tfplan
-                fi
+                # Rename to tfplan for artifact publishing
+                mv tfplan-core tfplan
             env:
               # Secret variables must be explicitly mapped to be available in scripts
               TF_VAR_azuredevops_pat: $(TF_VAR_azuredevops_pat)
@@ -267,51 +244,35 @@ stages:
                       terraform init -input=false
 
                       # ============================================================
-                      # Two-Step Deployment for Fresh Infrastructure
+                      # Two-Step Deployment Strategy (Always)
                       # ============================================================
-                      # Flow when AKS doesn't exist:
-                      #   1. Apply Step 1 (core infrastructure from artifact)
-                      #   2. Plan Full (now Kubernetes provider can connect to AKS)
-                      #   3. Apply Full
-                      # Flow when AKS exists:
-                      #   1. Apply from artifact (full plan)
+                      # Step 1: Apply core infrastructure (AKS, databases, etc.)
+                      # Step 2: Plan & Apply everything else (Helm, K8s manifests)
+                      #
+                      # This ensures AKS and cert-manager CRDs exist before
+                      # kubernetes manifests are deployed.
                       # ============================================================
 
-                      # Check if AKS exists in state (use -q flag to avoid output issues)
-                      if terraform state list 2>/dev/null | grep -q "module.aks.azurerm_kubernetes_cluster"; then
-                        AKS_EXISTS=1
-                      else
-                        AKS_EXISTS=0
-                      fi
-
-                      if [ "$AKS_EXISTS" -eq 0 ]; then
-                        echo "============================================================"
-                        echo "=== FRESH INFRASTRUCTURE DEPLOYMENT (Two-Step Process) ==="
-                        echo "============================================================"
-
-                        echo ""
-                        echo "=== Step 1/3: Apply Core Infrastructure (from plan artifact) ==="
-                        cp "$(Pipeline.Workspace)/${{ parameters.artifactName }}/tfplan" "./tfplan"
-                        terraform apply -input=false -auto-approve tfplan
-
-                        echo ""
-                        echo "=== Step 2/3: Plan Full Infrastructure (Kubernetes resources) ==="
-                        echo "AKS now exists - Kubernetes/Helm providers can connect."
-                        terraform plan -var-file="terraform.tfvars" -out=tfplan-full -input=false
-
-                        echo ""
-                        echo "=== Step 3/3: Apply Full Infrastructure ==="
-                        terraform apply -input=false -auto-approve tfplan-full
-
-                      else
-                        echo "=== AKS Exists - Running Standard Apply ==="
-                        # Copy plan file from artifact
-                        cp "$(Pipeline.Workspace)/${{ parameters.artifactName }}/tfplan" "./tfplan"
-                        terraform apply -input=false -auto-approve tfplan
-                      fi
+                      echo "============================================================"
+                      echo "=== TWO-STEP DEPLOYMENT ==="
+                      echo "============================================================"
 
                       echo ""
-                      echo "=== Apply Complete ==="
+                      echo "=== Step 1/3: Apply Core Infrastructure (from plan artifact) ==="
+                      cp "$(Pipeline.Workspace)/${{ parameters.artifactName }}/tfplan" "./tfplan"
+                      terraform apply -input=false -auto-approve tfplan
+
+                      echo ""
+                      echo "=== Step 2/3: Plan Full Infrastructure ==="
+                      echo "Core infrastructure applied. Now planning Helm/K8s resources..."
+                      terraform plan -var-file="terraform.tfvars" -out=tfplan-full -input=false
+
+                      echo ""
+                      echo "=== Step 3/3: Apply Full Infrastructure ==="
+                      terraform apply -input=false -auto-approve tfplan-full
+
+                      echo ""
+                      echo "=== Deployment Complete ==="
                   env:
                     # Secret variables must be explicitly mapped to be available in scripts
                     TF_VAR_azuredevops_pat: $(TF_VAR_azuredevops_pat)
