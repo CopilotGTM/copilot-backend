@@ -72,29 +72,29 @@ output "nat_gateway_public_ip" {
 # -----------------------------------------------------------------
 # ACR Outputs
 # -----------------------------------------------------------------
+
 output "acr_login_server" {
   description = "The login server URL of the Azure Container Registry."
   value       = module.acr.acr_login_server
 }
-
 output "acr_id" {
   description = "The ID of the Azure Container Registry."
   value       = module.acr.acr_id
 }
 
+
 # -----------------------------------------------------------------
 # AKS Outputs
 # -----------------------------------------------------------------
+
 output "aks_name" {
   description = "The name of the AKS cluster."
   value       = module.aks.aks_name
 }
-
 output "aks_id" {
   description = "The Azure resource ID of the AKS cluster."
   value       = module.aks.aks_id
 }
-
 output "aks_kube_config" {
   description = "Kube config to connect to the AKS cluster."
   value       = module.aks.kube_config
@@ -130,9 +130,11 @@ output "aks_principal_id" {
   value       = module.aks.aks_principal_id
 }
 
+
 # -----------------------------------------------------------------
 # Redis Outputs
 # -----------------------------------------------------------------
+
 output "redis_hostname" {
   description = "The hostname of the Redis cache."
   value       = module.redis.hostname
@@ -149,9 +151,29 @@ output "redis_port" {
   value       = module.redis.port
 }
 
+
+# # -----------------------------------------------------------------
+# # Service Connection Outputs
+# # -----------------------------------------------------------------
+# output "service_connection_id" {
+#   description = "Azure DevOps service connection ID used for ACR and AKS."
+#   value       = module.service_connection.service_connection_id
+# }
+
+# output "service_connection_name" {
+#   description = "Azure DevOps service connection name."
+#   value       = module.service_connection.service_connection_name
+# }
+
+# output "service_connection_subscription_id" {
+#   description = "Azure Subscription ID associated with service connection."
+#   value       = module.service_connection.subscription_id
+# }
+
 # -----------------------------------------------------------------
 # Workload Identity Outputs
 # -----------------------------------------------------------------
+
 output "workload_identity_backend_client_id" {
   description = "Client ID for backend workload identity (use for azure.workload.identity/client-id annotation)."
   value       = module.workload_identity_backend.client_id
@@ -172,13 +194,16 @@ output "workload_identity_workers_object_id" {
   value       = module.workload_identity_workers.object_id
 }
 
+
 # -----------------------------------------------------------------
 # Workload Identity / Tenant Diagnostics
 # -----------------------------------------------------------------
+
 output "aks_oidc_issuer_url" {
   description = "OIDC issuer URL for the AKS cluster (contains tenant ID)."
   value       = module.aks.oidc_issuer_url
 }
+
 
 output "azuread_provider_tenant_id" {
   description = "Tenant ID used by the AzureAD provider (validate matches AKS OIDC issuer tenant)."
@@ -188,6 +213,7 @@ output "azuread_provider_tenant_id" {
 # -----------------------------------------------------------------
 # Key Vault Validation Outputs (to confirm correct tenant vaults)
 # -----------------------------------------------------------------
+
 output "database_key_vault_uri" {
   description = "URI of the database Key Vault (should belong to active tenant)."
   value       = module.database_key_vault.key_vault_uri
@@ -196,4 +222,28 @@ output "database_key_vault_uri" {
 output "master_key_vault_uri" {
   description = "URI of the master Key Vault (should belong to active tenant)."
   value       = module.master_key_vault.key_vault_uri
+}
+
+
+# -----------------------------------------------------------------
+# DevOps Agent VM Outputs
+# -----------------------------------------------------------------
+output "devops_agent_vm_name" {
+  description = "Name of the self-hosted DevOps agent VM."
+  value       = module.devops_agent.vm_name
+}
+
+output "devops_agent_private_ip" {
+  description = "Private IP address of the DevOps agent VM."
+  value       = module.devops_agent.private_ip_address
+}
+
+output "devops_agent_pool" {
+  description = "Name of the Azure DevOps agent pool."
+  value       = module.devops_agent.agent_pool
+}
+
+output "devops_agent_name" {
+  description = "Name of the registered Azure DevOps agent."
+  value       = module.devops_agent.agent_name
 }

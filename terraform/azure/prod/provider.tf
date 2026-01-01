@@ -28,6 +28,10 @@ terraform {
       source  = "azure/azapi"
       version = ">= 2.5.0"
     }
+    kubectl = {
+      source  = "gavinbunney/kubectl"
+      version = ">= 1.14.0"
+    }
   }
   required_version = ">= 1.3.0"
 
@@ -37,6 +41,7 @@ terraform {
     container_name       = "tfstate"
     key                  = "azure/prod/terraform.tfstate"
   }
+
 }
 
 provider "azurerm" {
@@ -46,29 +51,54 @@ provider "azurerm" {
     }
   }
   subscription_id = var.subscription_id
+  # OIDC auth is configured via ARM_* environment variables:
+  # ARM_USE_OIDC, ARM_OIDC_TOKEN, ARM_CLIENT_ID, ARM_TENANT_ID, ARM_SUBSCRIPTION_ID
+}
+
+data "azurerm_key_vault_secret" "azuredevops_pat" {
+  count        = var.azuredevops_pat == "" && var.azuredevops_pat_secret_name != "" ? 1 : 0
+  name         = var.azuredevops_pat_secret_name
+  key_vault_id = "/subscriptions/${var.subscription_id}/resourceGroups/${var.resource_group_name}-${var.env}/providers/Microsoft.KeyVault/vaults/copilot-gtm-kv-${var.env}"
+}
+
+locals {
+  effective_azuredevops_pat = var.azuredevops_pat != "" ? var.azuredevops_pat : try(data.azurerm_key_vault_secret.azuredevops_pat[0].value, null)
 }
 
 # AzureAD provider required for workload identity (AAD app + federated credential)
+# OIDC auth is configured via ARM_* environment variables (same as azurerm)
 provider "azuread" {}
 
 # Azure DevOps provider for pipeline/resource automation
 provider "azuredevops" {
   org_service_url       = var.org_service_url # Set via tfvars or command line
-  personal_access_token = var.azuredevops_pat # Pass securely via environment variable or tfvars (never hardcode)
+  personal_access_token = local.effective_azuredevops_pat
 }
+
+
 
 provider "helm" {
   kubernetes = {
-    host                   = module.aks.host
-    client_certificate     = base64decode(module.aks.client_certificate)
-    client_key             = base64decode(module.aks.client_key)
-    cluster_ca_certificate = base64decode(module.aks.cluster_ca_certificate)
+    host                   = try(module.aks.host, null)
+    client_certificate     = try(base64decode(module.aks.client_certificate), null)
+    client_key             = try(base64decode(module.aks.client_key), null)
+    cluster_ca_certificate = try(base64decode(module.aks.cluster_ca_certificate), null)
   }
 }
 
 provider "kubernetes" {
-  host                   = module.aks.host
-  client_certificate     = base64decode(module.aks.client_certificate)
-  client_key             = base64decode(module.aks.client_key)
-  cluster_ca_certificate = base64decode(module.aks.cluster_ca_certificate)
+  host                   = try(module.aks.host, null)
+  client_certificate     = try(base64decode(module.aks.client_certificate), null)
+  client_key             = try(base64decode(module.aks.client_key), null)
+  cluster_ca_certificate = try(base64decode(module.aks.cluster_ca_certificate), null)
 }
+
+# kubectl provider for resources that depend on CRDs (doesn't validate during plan)
+provider "kubectl" {
+  host                   = try(module.aks.host, null)
+  client_certificate     = try(base64decode(module.aks.client_certificate), null)
+  client_key             = try(base64decode(module.aks.client_key), null)
+  cluster_ca_certificate = try(base64decode(module.aks.cluster_ca_certificate), null)
+  load_config_file       = false
+}
+

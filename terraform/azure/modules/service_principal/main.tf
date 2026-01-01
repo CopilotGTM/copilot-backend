@@ -68,12 +68,22 @@ data "azuread_client_config" "current" {}
 
 # -----------------------------------------------------------------------------
 # Auto-grant Admin Consent (runs during bootstrap when admin is logged in)
+# Note: This grants Graph API permissions so the SP can manage federated creds
+# in pipelines. During local bootstrap, user's own credentials are used.
 # -----------------------------------------------------------------------------
 resource "null_resource" "grant_admin_consent" {
-  depends_on = [azuread_application.app]
+  # Must wait for BOTH app and service principal to exist in Azure AD
+  depends_on = [
+    azuread_application.app,
+    azuread_service_principal.sp
+  ]
 
   provisioner "local-exec" {
-    command = "az ad app permission admin-consent --id ${azuread_application.app.client_id}"
+    # Add delay to allow Azure AD replication, then grant consent
+    # Use || true to prevent failure from blocking the deployment
+    # (admin consent can be granted manually later if needed)
+    command     = "powershell -Command \"Start-Sleep -Seconds 10; az ad app permission admin-consent --id ${azuread_application.app.client_id} 2>$null; exit 0\""
+    interpreter = ["cmd", "/C"]
   }
 
   # Re-run if the app changes

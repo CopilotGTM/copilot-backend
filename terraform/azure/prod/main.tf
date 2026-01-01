@@ -1,3 +1,5 @@
+
+
 # -----------------------------------------------------------------
 # Resource Group: Top-level container for all Azure resources
 # -----------------------------------------------------------------
@@ -11,16 +13,39 @@ module "resource_group" {
 # Virtual Network: Provides networking and subnets for AKS and App Services
 # -----------------------------------------------------------------
 module "vnet" {
-  source              = "../modules/vnet"
-  vnet_name           = "${var.vnet_name}-${var.env}"
-  address_space       = var.vnet_address_space
-  location            = module.resource_group.resource_group_location
-  resource_group_name = module.resource_group.resource_group_name
-  public_subnets      = var.vnet_public_subnets
-  private_subnets     = var.vnet_private_subnets
-  env                 = var.env
+  source                          = "../modules/vnet"
+  vnet_name                       = "${var.vnet_name}-${var.env}"
+  address_space                   = var.vnet_address_space
+  location                        = module.resource_group.resource_group_location
+  resource_group_name             = module.resource_group.resource_group_name
+  public_subnets                  = var.vnet_public_subnets
+  private_subnets                 = var.vnet_private_subnets
+  private_endpoints_subnet_prefix = var.vnet_private_endpoints_subnet
+  waf_subnet_prefix               = var.vnet_waf_subnet
+  env                             = var.env
   depends_on = [
     module.resource_group
+  ]
+}
+
+# -----------------------------------------------------------------
+# Application Gateway (WAF)
+# -----------------------------------------------------------------
+module "waf" {
+  source              = "../modules/waf"
+  waf_name            = "${var.waf_name}-${var.env}"
+  resource_group_name = module.resource_group.resource_group_name
+  location            = var.location
+  subnet_id           = module.vnet.waf_subnet_id
+  enable_diagnostics  = true
+  log_retention_days  = 30
+
+  tags = {
+    environment = var.env
+    project     = var.project_name
+  }
+  depends_on = [
+    module.vnet
   ]
 }
 
@@ -51,15 +76,64 @@ data "azurerm_client_config" "current" {}
 data "azuread_client_config" "current" {}
 
 # -----------------------------------------------------------------
+# Private DNS: Key Vault Private Link
+# Created once per environment; individual Key Vaults attach via zone groups.
+# -----------------------------------------------------------------
+resource "azurerm_private_dns_zone" "key_vault" {
+  count               = var.enable_key_vault_private_endpoints ? 1 : 0
+  name                = "privatelink.vaultcore.azure.net"
+  resource_group_name = module.resource_group.resource_group_name
+  tags = {
+    environment = var.env
+    project     = var.project_name
+  }
+}
+
+resource "azurerm_private_dns_zone_virtual_network_link" "key_vault" {
+  count                 = var.enable_key_vault_private_endpoints ? 1 : 0
+  name                  = "kv-${var.env}-vnet-link"
+  resource_group_name   = module.resource_group.resource_group_name
+  private_dns_zone_name = azurerm_private_dns_zone.key_vault[0].name
+  virtual_network_id    = module.vnet.vnet_id
+  registration_enabled  = false
+}
+
+# -----------------------------------------------------------------
+# Private DNS: Storage Account (Blob) Private Link
+# -----------------------------------------------------------------
+resource "azurerm_private_dns_zone" "storage_blob" {
+  count               = var.enable_storage_private_endpoints ? 1 : 0
+  name                = "privatelink.blob.core.windows.net"
+  resource_group_name = module.resource_group.resource_group_name
+  tags = {
+    environment = var.env
+    project     = var.project_name
+  }
+}
+
+resource "azurerm_private_dns_zone_virtual_network_link" "storage_blob" {
+  count                 = var.enable_storage_private_endpoints ? 1 : 0
+  name                  = "stblob-${var.env}-vnet-link"
+  resource_group_name   = module.resource_group.resource_group_name
+  private_dns_zone_name = azurerm_private_dns_zone.storage_blob[0].name
+  virtual_network_id    = module.vnet.vnet_id
+  registration_enabled  = false
+}
+
+# -----------------------------------------------------------------
 # Azure Key Vault
 # -----------------------------------------------------------------
 module "database_key_vault" {
-  source              = "../modules/key_vault"
-  key_vault_name      = "app-database-vault-${var.env}"
-  location            = var.location
-  resource_group_name = module.resource_group.resource_group_name
-  tenant_id           = data.azurerm_client_config.current.tenant_id
-  admin_object_id     = data.azurerm_client_config.current.object_id
+  source                        = "../modules/key_vault"
+  key_vault_name                = "copilot-db-kv-${var.env}"
+  location                      = var.location
+  resource_group_name           = module.resource_group.resource_group_name
+  tenant_id                     = data.azurerm_client_config.current.tenant_id
+  admin_object_id               = data.azurerm_client_config.current.object_id
+  public_network_access_enabled = var.enable_key_vault_private_endpoints ? false : true
+  private_endpoint_enabled      = var.enable_key_vault_private_endpoints
+  private_endpoint_subnet_id    = module.vnet.private_endpoints_subnet_id
+  private_dns_zone_id           = var.enable_key_vault_private_endpoints ? azurerm_private_dns_zone.key_vault[0].id : null
   tags = {
     environment = var.env
     project     = var.project_name
@@ -70,15 +144,19 @@ module "database_key_vault" {
 }
 
 # -----------------------------------------------------------------
-# Azure Key Vault
+# Azure Key Vault (Master)
 # -----------------------------------------------------------------
 module "master_key_vault" {
-  source              = "../modules/key_vault"
-  key_vault_name      = "app-master-vault-${var.env}"
-  location            = var.location
-  resource_group_name = module.resource_group.resource_group_name
-  tenant_id           = data.azurerm_client_config.current.tenant_id
-  admin_object_id     = data.azurerm_client_config.current.object_id
+  source                        = "../modules/key_vault"
+  key_vault_name                = "copilot-master-kv-${var.env}"
+  location                      = var.location
+  resource_group_name           = module.resource_group.resource_group_name
+  tenant_id                     = data.azurerm_client_config.current.tenant_id
+  admin_object_id               = data.azurerm_client_config.current.object_id
+  public_network_access_enabled = var.enable_key_vault_private_endpoints ? false : true
+  private_endpoint_enabled      = var.enable_key_vault_private_endpoints
+  private_endpoint_subnet_id    = module.vnet.private_endpoints_subnet_id
+  private_dns_zone_id           = var.enable_key_vault_private_endpoints ? azurerm_private_dns_zone.key_vault[0].id : null
   tags = {
     environment = var.env
     project     = var.project_name
@@ -92,12 +170,17 @@ module "master_key_vault" {
 # Azure Storage Account: General purpose blob/file storage
 # -----------------------------------------------------------------
 module "master_storage_account" {
-  source                   = "../modules/storage_account"
-  storage_account_name     = "${var.storage_account_name}${var.env}"
-  resource_group_name      = module.resource_group.resource_group_name
-  location                 = var.location
-  account_tier             = "Standard"
-  account_replication_type = "LRS"
+  source                             = "../modules/storage_account"
+  storage_account_name               = "${var.storage_account_name}${var.env}"
+  resource_group_name                = module.resource_group.resource_group_name
+  location                           = var.location
+  account_tier                       = "Standard"
+  account_replication_type           = "LRS"
+  public_network_access_enabled      = var.enable_storage_private_endpoints ? false : true
+  private_endpoint_enabled           = var.enable_storage_private_endpoints
+  private_endpoint_subnet_id         = module.vnet.private_endpoints_subnet_id
+  private_endpoint_subresource_names = ["blob"]
+  private_dns_zone_ids               = var.enable_storage_private_endpoints ? [azurerm_private_dns_zone.storage_blob[0].id] : null
   allowed_blob_cors_origins = [
     "https://${var.frontend_dns_a_record_name}.copilotgtm.com",
     "https://${var.frontend_admin_dns_a_record_name}.copilotgtm.com",
@@ -113,12 +196,17 @@ module "master_storage_account" {
 # Organisation Data Storage Account: dedicated per-organisation data store
 # -----------------------------------------------------------------
 module "org_storage_account" {
-  source                   = "../modules/storage_account"
-  storage_account_name     = "${var.org_storage_account_name}${var.env}"
-  resource_group_name      = module.resource_group.resource_group_name
-  location                 = var.location
-  account_tier             = "Standard"
-  account_replication_type = "LRS"
+  source                             = "../modules/storage_account"
+  storage_account_name               = "${var.org_storage_account_name}${var.env}"
+  resource_group_name                = module.resource_group.resource_group_name
+  location                           = var.location
+  account_tier                       = "Standard"
+  account_replication_type           = "LRS"
+  public_network_access_enabled      = var.enable_storage_private_endpoints ? false : true
+  private_endpoint_enabled           = var.enable_storage_private_endpoints
+  private_endpoint_subnet_id         = module.vnet.private_endpoints_subnet_id
+  private_endpoint_subresource_names = ["blob"]
+  private_dns_zone_ids               = var.enable_storage_private_endpoints ? [azurerm_private_dns_zone.storage_blob[0].id] : null
   allowed_blob_cors_origins = [
     "https://${var.frontend_dns_a_record_name}.copilotgtm.com",
     "https://${var.frontend_admin_dns_a_record_name}.copilotgtm.com",
@@ -171,11 +259,18 @@ module "aks" {
   gpu_max_count          = var.gpu_max_count
   gpu_node_labels        = var.gpu_node_labels
   gpu_node_taints        = var.gpu_node_taints
+
+  # Enable AGIC
+  app_gateway_id = module.waf.waf_id
+
   depends_on = [
     module.vnet,
-    module.acr
+    module.acr,
+    module.waf
   ]
 }
+
+
 
 # -----------------------------------------------------------------
 # Role Assignment: Allow AKS kubelet to pull images from ACR
@@ -188,6 +283,43 @@ resource "azurerm_role_assignment" "aks_kubelet_acr_pull" {
   depends_on = [
     module.acr,
     module.aks
+  ]
+}
+
+# -----------------------------------------------------------------
+# AGIC Role Assignments (required for brownfield Application Gateway)
+# When using a pre-existing Application Gateway, AGIC needs explicit permissions
+# -----------------------------------------------------------------
+resource "azurerm_role_assignment" "agic_appgw_contributor" {
+  principal_id                     = module.aks.agic_identity_object_id
+  role_definition_name             = "Contributor"
+  scope                            = module.waf.waf_id
+  skip_service_principal_aad_check = true
+  depends_on = [
+    module.aks,
+    module.waf
+  ]
+}
+
+resource "azurerm_role_assignment" "agic_rg_reader" {
+  principal_id                     = module.aks.agic_identity_object_id
+  role_definition_name             = "Reader"
+  scope                            = module.resource_group.resource_group_id
+  skip_service_principal_aad_check = true
+  depends_on = [
+    module.aks,
+    module.resource_group
+  ]
+}
+
+resource "azurerm_role_assignment" "agic_vnet_network_contributor" {
+  principal_id                     = module.aks.agic_identity_object_id
+  role_definition_name             = "Network Contributor"
+  scope                            = module.vnet.vnet_id
+  skip_service_principal_aad_check = true
+  depends_on = [
+    module.aks,
+    module.vnet
   ]
 }
 
@@ -295,19 +427,55 @@ resource "azurerm_role_assignment" "wi_workers_org_storage_blob_delegator" {
 }
 
 # -----------------------------------------------------------------
-# Azure AI Foundry
+# Azure OpenAI
 # -----------------------------------------------------------------
-module "foundry" {
-  source              = "../modules/foundry"
-  prefix              = "foundry"
-  resource_group_name = module.resource_group.resource_group_name
-  resource_group_id   = module.resource_group.resource_group_id
-  location            = var.location
-  use_openai          = true
-  depends_on = [
-    module.resource_group
-  ]
+module "azure_openai" {
+  source            = "../modules/azure_openai"
+  prefix            = var.project_name
+  env               = var.env
+  resource_group_id = module.resource_group.resource_group_id
+  location          = "eastus2" # OpenAI models are available in East US 2
+
+  # Define all models to deploy - add/remove models as needed
+  models = {
+    gpt5 = {
+      deployment_name = "gpt-5"
+      model_name      = "gpt-5"
+      sku             = "GlobalStandard"
+      capacity        = 300
+      version         = "2025-08-07"
+    }
+    gpt5_mini = {
+      deployment_name = "gpt-5-mini"
+      model_name      = "gpt-5-mini"
+      sku             = "GlobalStandard"
+      capacity        = 300
+      version         = "2025-08-07"
+    }
+    embedder = {
+      deployment_name = "text-embedding-3-large"
+      model_name      = "text-embedding-3-large"
+      sku             = "Standard"
+      capacity        = 300
+      version         = "1"
+      publisher       = "OpenAI"
+    }
+  }
+
+  tags = {
+    environment = var.env
+    project     = var.project_name
+  }
+
+  depends_on = [module.resource_group]
 }
+
+# -----------------------------------------------------------------
+# Backend DEVELOPMENT Identity - Permissions provided via AKS kubelet identity  
+# The aks_* resources provide the necessary permissions for pods to access
+# Key Vault secrets and storage accounts via the kubelet identity.
+# No additional backend_* resources needed as they would be duplicates.
+# -----------------------------------------------------------------
 
 # -----------------------------------------------------------------
 # Generate a strong, random DB admin password
@@ -342,6 +510,18 @@ module "application_database" {
     module.database_key_vault
   ]
 }
+
+# # -----------------------------------------------------------------
+# # Create the DNS CNAME record pointing at the frontend app service
+# # -----------------------------------------------------------------
+# resource "azurerm_dns_cname_record" "frontend_app" {
+#   name                = var.frontend_dns_a_record_name
+#   zone_name           = var.dns_zone_name
+#   resource_group_name = var.dns_zone_resource_group
+#   ttl                 = 300
+#   record              = module.frontend_app_service.app_service_default_hostname
+# }
+
 
 resource "azuredevops_variable_group" "secrets" {
   project_id  = data.azuredevops_project.project.id
@@ -387,7 +567,6 @@ resource "azuredevops_variable_group" "secrets" {
     name  = "AZURE_SUBSCRIPTION_ID"
     value = var.subscription_id
   }
-
   variable {
     name  = "DATABASE_HOST"
     value = module.application_database.db_host
@@ -415,6 +594,12 @@ resource "azuredevops_variable_group" "secrets" {
   }
 
   variable {
+    name         = "AGENT_PASSWORD"
+    secret_value = random_password.agent_admin.result
+    is_secret    = true
+  }
+
+  variable {
     name  = "DATABASE_SSL_MODE"
     value = "prefer"
   }
@@ -437,28 +622,28 @@ resource "azuredevops_variable_group" "secrets" {
 
   variable {
     name  = "AZURE_OPENAI_ENDPOINT"
-    value = module.foundry.openai_endpoint_url
+    value = module.azure_openai.openai_endpoint
   }
 
   variable {
     name         = "AZURE_OPENAI_API_KEY"
-    secret_value = var.azure_openai_key
+    secret_value = module.azure_openai.primary_key
     is_secret    = true
   }
 
   variable {
     name  = "AZURE_EMBEDDER_OPENAI_ENDPOINT"
-    value = module.foundry.openai_endpoint_url
+    value = module.azure_openai.openai_endpoint
   }
 
   variable {
     name  = "AZURE_EMBEDDER_DEPLOYMENT"
-    value = module.foundry.embedder_deployment_name
+    value = module.azure_openai.deployment_names["embedder"]
   }
 
   variable {
     name         = "AZURE_EMBEDDER_OPENAI_API_KEY"
-    secret_value = var.azure_openai_key
+    secret_value = module.azure_openai.primary_key
     is_secret    = true
   }
 
@@ -523,7 +708,7 @@ resource "azuredevops_variable_group" "secrets" {
 
   variable {
     name  = "WEB_APP_NAME"
-    value = module.frontend_app_service.app_service_name
+    value = "placeholder" # module.frontend_app_service.app_service_name
   }
 
   variable {
@@ -561,12 +746,20 @@ resource "azuredevops_variable_group" "secrets" {
 }
 
 # -----------------------------------------------------------------
-# Service Principal for Azure DevOps
+# Service Principal for Azure DevOps (with OIDC/Workload Identity Federation)
 # -----------------------------------------------------------------
+locals {
+  # Service connection name must match what we pass to service_connection module
+  service_connection_name = "copilotgtm-arc-ci-cd-service--${var.env}"
+}
+
 module "service_principal" {
   source          = "../modules/service_principal"
-  sp_name         = var.sp_name
+  sp_name         = "${var.sp_name}-${var.env}"
   subscription_id = var.subscription_id
+
+  create_password          = false # No secrets needed with OIDC
+  enable_user_access_admin = true  # Needed for Terraform RBAC assignments
 }
 
 # -----------------------------------------------------------------
@@ -579,24 +772,46 @@ data "azuredevops_project" "project" {
 module "service_connection" {
   source                  = "../modules/service_connection"
   devops_project_id       = data.azuredevops_project.project.id
-  service_connection_name = "copilotgtm-arc-ci-cd-service--${var.env}"
+  service_connection_name = local.service_connection_name
   subscription_id         = var.subscription_id
-  subscription_name       = "Copilot GTM Subscription"
+  subscription_name       = "Microsoft Azure Sponsorship" # Must match actual subscription name
   tenant_id               = module.service_principal.tenant_id
   client_id               = module.service_principal.client_id
-  client_secret           = module.service_principal.client_secret
+
+  # Use Workload Identity Federation (OIDC) - no secrets
+  use_workload_identity_federation = true
+  # client_secret not needed with OIDC
 }
 
 # -----------------------------------------------------------------
-# Azure DevOps Service Connection for ACR (Docker Registry)
+# Federated Identity Credential for Azure DevOps OIDC
+# Must be created AFTER service connection to use its issuer/subject values
+# -----------------------------------------------------------------
+resource "azuread_application_federated_identity_credential" "devops_oidc" {
+  application_id = module.service_principal.application_id
+  display_name   = "azuredevops-${var.env}"
+  description    = "Workload Identity Federation for Azure DevOps pipeline"
+
+  # Use the issuer/subject from the service connection output
+  issuer    = module.service_connection.workload_identity_federation_issuer
+  subject   = module.service_connection.workload_identity_federation_subject
+  audiences = ["api://AzureADTokenExchange"]
+}
+
+# -----------------------------------------------------------------
+# Azure DevOps Service Connection for ACR (OIDC - no secrets)
 # -----------------------------------------------------------------
 module "service_connection_acr" {
   source                = "../modules/service_connection_acr"
   devops_project_id     = data.azuredevops_project.project.id
   service_endpoint_name = "copilotgtm-acr-connection-${var.env}"
-  acr_login_server      = module.acr.acr_login_server
-  acr_sp_app_id         = module.service_principal.client_id
-  acr_sp_app_secret     = module.service_principal.client_secret
+  resource_group_name   = module.resource_group.resource_group_name
+  acr_name              = module.acr.acr_name
+  subscription_id       = var.subscription_id
+  subscription_name     = "Microsoft Azure Sponsorship"
+  tenant_id             = module.service_principal.tenant_id
+  client_id             = module.service_principal.client_id
+  # Uses OIDC by default - no secrets to rotate!
 }
 
 resource "azuredevops_pipeline_authorization" "service_connection_authorization" {
@@ -609,4 +824,83 @@ resource "azuredevops_pipeline_authorization" "service_connection_acr_authorizat
   project_id  = data.azuredevops_project.project.id
   resource_id = module.service_connection_acr.acr_service_connection_id
   type        = "endpoint"
+}
+
+# -----------------------------------------------------------------
+# Federated Identity Credential for ACR Service Connection (OIDC)
+# -----------------------------------------------------------------
+resource "azuread_application_federated_identity_credential" "devops_acr_oidc" {
+  application_id = module.service_principal.application_id
+  display_name   = "azuredevops-acr-${var.env}"
+  description    = "Workload Identity Federation for Azure DevOps ACR service connection"
+
+  issuer    = module.service_connection_acr.workload_identity_federation_issuer
+  subject   = module.service_connection_acr.workload_identity_federation_subject
+  audiences = ["api://AzureADTokenExchange"]
+}
+
+# -----------------------------------------------------------------
+# Test Resource: Simple resource to verify pipeline execution
+# -----------------------------------------------------------------
+resource "random_string" "test_resource" {
+  length  = 8
+  special = false
+  upper   = false
+}
+
+output "test_resource_value" {
+  value = random_string.test_resource.result
+}
+resource "random_password" "agent_admin" {
+  length           = 32
+  override_special = "!@#$%&*()-_=+[]"
+  special          = true
+  upper            = true
+  lower            = true
+  numeric          = true
+}
+
+# -----------------------------------------------------------------
+# Self-Hosted DevOps Agent VM
+# Placed in private subnet to access Key Vault/Storage via Private Link
+# -----------------------------------------------------------------
+module "devops_agent" {
+  source              = "../modules/devops_agent"
+  resource_group_name = module.resource_group.resource_group_name
+  location            = var.location
+  vm_name             = "${var.agent_name}-${var.env}"
+  vm_size             = "Standard_D2as_v4"
+  admin_username      = var.admin_username
+  admin_password      = random_password.agent_admin.result
+
+  # Place in private subnet for Private Link access
+  subnet_id = module.vnet.private_subnet_ids[0]
+
+  # Azure DevOps configuration
+  azuredevops_url = var.org_service_url
+  azuredevops_pat = var.azuredevops_pat
+  agent_pool      = var.agent_pool
+  agent_name      = var.agent_name
+
+  # Pre-install tools for CI/CD pipelines
+  install_docker    = true
+  install_terraform = true
+  terraform_version = "1.9.0"
+  install_kubectl   = true
+  install_azure_cli = true
+
+  # No public IP needed - agent communicates outbound only
+  enable_public_ip = true
+
+  tags = {
+    environment = var.env
+    project     = var.project_name
+    purpose     = "azure-devops-agent"
+  }
+
+  depends_on = [
+    module.vnet,
+    module.resource_group,
+    azuredevops_agent_pool.pool
+  ]
 }
