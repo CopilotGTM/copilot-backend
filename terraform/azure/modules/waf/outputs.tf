@@ -17,3 +17,13 @@ output "public_ip_id" {
   description = "The ID of the Public IP Address"
   value       = azurerm_public_ip.waf.id
 }
+
+output "log_analytics_workspace_id" {
+  description = "The ID of the Log Analytics Workspace for WAF logs"
+  value       = var.enable_diagnostics ? azurerm_log_analytics_workspace.waf_logs[0].id : null
+}
+
+output "log_analytics_workspace_name" {
+  description = "The name of the Log Analytics Workspace for WAF logs"
+  value       = var.enable_diagnostics ? azurerm_log_analytics_workspace.waf_logs[0].name : null
+}

@@ -37,6 +37,8 @@ module "waf" {
   resource_group_name = module.resource_group.resource_group_name
   location            = var.location
   subnet_id           = module.vnet.waf_subnet_id
+  enable_diagnostics  = true
+  log_retention_days  = 30
 
   tags = {
     environment = var.env

@@ -41,3 +41,15 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "enable_diagnostics" {
+  description = "Enable diagnostic logging for WAF"
+  type        = bool
+  default     = true
+}
+
+variable "log_retention_days" {
+  description = "Number of days to retain logs in Log Analytics"
+  type        = number
+  default     = 30
+}

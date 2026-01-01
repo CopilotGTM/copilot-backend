@@ -92,3 +92,35 @@ resource "azurerm_application_gateway" "waf" {
     ]
   }
 }
+
+# -----------------------------------------------------------------
+# Log Analytics Workspace for WAF diagnostics
+# -----------------------------------------------------------------
+resource "azurerm_log_analytics_workspace" "waf_logs" {
+  count               = var.enable_diagnostics ? 1 : 0
+  name                = "${var.waf_name}-logs"
+  location            = var.location
+  resource_group_name = var.resource_group_name
+  sku                 = "PerGB2018"
+  retention_in_days   = var.log_retention_days
+
+  tags = var.tags
+}
+
+# -----------------------------------------------------------------
+# WAF Diagnostic Settings - enables firewall and access logs
+# -----------------------------------------------------------------
+resource "azurerm_monitor_diagnostic_setting" "waf_diagnostics" {
+  count                      = var.enable_diagnostics ? 1 : 0
+  name                       = "${var.waf_name}-diagnostics"
+  target_resource_id         = azurerm_application_gateway.waf.id
+  log_analytics_workspace_id = azurerm_log_analytics_workspace.waf_logs[0].id
+
+  enabled_log {
+    category = "ApplicationGatewayFirewallLog"
+  }
+
+  enabled_log {
+    category = "ApplicationGatewayAccessLog"
+  }
+}
