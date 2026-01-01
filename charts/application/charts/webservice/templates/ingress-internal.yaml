@@ -1,4 +1,7 @@
 {{- if .Values.internalIngress.enabled -}}
+# Note: For Azure Application Gateway, internal endpoints should be accessed
+# via Kubernetes Services directly. This ingress is optional and can be
+# used with a private Application Gateway for internal-only access.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -7,8 +10,8 @@ metadata:
     {{- include "webservice.labels" . | nindent 4 }}
     app.kubernetes.io/component: internal-health
   annotations:
-    # Restrict to cluster-internal access only
-    nginx.ingress.kubernetes.io/whitelist-source-range: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+    # For private/internal Application Gateway only
+    appgw.ingress.kubernetes.io/backend-protocol: "http"
     {{- toYaml .Values.internalIngress.annotations | nindent 4 }}
 spec:
   ingressClassName: {{ .Values.internalIngress.className }}

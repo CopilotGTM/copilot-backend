@@ -39,13 +39,17 @@ api:
 
   ingress:
     enabled: true
-    className: "nginx"
+    className: "azure-application-gateway"
     annotations:
-      nginx.ingress.kubernetes.io/websocket-services: copilot-backend
-      nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
-      nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
-      nginx.ingress.kubernetes.io/proxy-body-size: "10m"
-      nginx.ingress.kubernetes.io/ssl-redirect: "true"
+      # Azure Application Gateway (WAF) annotations
+      appgw.ingress.kubernetes.io/backend-protocol: "http"
+      appgw.ingress.kubernetes.io/request-timeout: "3600"
+      appgw.ingress.kubernetes.io/connection-draining: "true"
+      appgw.ingress.kubernetes.io/connection-draining-timeout: "30"
+      appgw.ingress.kubernetes.io/cookie-based-affinity: "false"
+      # WebSocket support
+      appgw.ingress.kubernetes.io/backend-hostname: "copilot-backend"
+      # SSL/TLS - cert-manager creates the secret, AGIC uses it
       cert-manager.io/cluster-issuer: "letsencrypt"
     hosts:
       - host: "devapi.copilotgtm.com"
@@ -110,6 +114,10 @@ knowledge-extract-worker:
   config:
     queueName: "knowledge_extract"
     concurrency: 3
+  # Use shared ServiceAccount (created at parent chart level)
+  serviceAccount:
+    create: false
+    name: "copilot-workers"
 
   # High-Compute CPU Node Pool Configuration
   # Targets dedicated CPU node pool (kgpu) with high-compute resources
@@ -163,6 +171,10 @@ knowledge-upload-worker:
   config:
     queueName: "knowledge_upload"
     concurrency: 4
+  # Use shared ServiceAccount (created by knowledge-extract-worker)
+  serviceAccount:
+    create: false
+    name: "copilot-workers"
   resources:
     requests:
       cpu: "500m"
@@ -189,6 +201,10 @@ organization-worker:
   config:
     queueName: "organization"
     concurrency: 5
+  # Use shared ServiceAccount (created by knowledge-extract-worker)
+  serviceAccount:
+    create: false
+    name: "copilot-workers"
   resources:
     requests:
       cpu: "250m"
@@ -216,6 +232,10 @@ chat-worker:
     queueName: "attachments"
     additionalQueues: ["chat_processing", "chat_messages"]
     concurrency: 5
+  # Use shared ServiceAccount (created by knowledge-extract-worker)
+  serviceAccount:
+    create: false
+    name: "copilot-workers"
   resources:
     requests:
       cpu: "500m"
@@ -243,6 +263,10 @@ integrations-worker:
     queueName: "integrations"
     additionalQueues: ["integrations_priority"]
     concurrency: 8  # Reduced from 20 to prevent OOM
+  # Use shared ServiceAccount (created by knowledge-extract-worker)
+  serviceAccount:
+    create: false
+    name: "copilot-workers"
   resources:
     requests:
       cpu: "500m"
@@ -271,6 +295,10 @@ deal-worker:
     additionalQueues: ["deal_jobs"]
     concurrency: 4
     gracefulTimeout: 540  # 9 minutes for long-running deal processing
+  # Use shared ServiceAccount (created by knowledge-extract-worker)
+  serviceAccount:
+    create: false
+    name: "copilot-workers"
   resources:
     requests:
       cpu: "500m"
@@ -304,6 +332,10 @@ deal-beat:
     queueName: "deal"
     # Beat mode - runs scheduler instead of worker
     beatMode: true
+  # Use shared ServiceAccount (created by knowledge-extract-worker)
+  serviceAccount:
+    create: false
+    name: "copilot-workers"
   resources:
     requests:
       cpu: "100m"
@@ -332,8 +364,9 @@ flower:
     port: 5555
   ingress:
     enabled: false
-    className: "nginx"
-    annotations: {}
+    className: "azure-application-gateway"
+    annotations:
+      appgw.ingress.kubernetes.io/backend-protocol: "http"
     hosts: []
     tls: []
   auth:
