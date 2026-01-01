@@ -455,6 +455,7 @@ module "azure_openai" {
       model_name      = "text-embedding-3-large"
       sku             = "Standard"
       capacity        = 300
+      version         = "1"
       publisher       = "OpenAI"
     }
   }
