@@ -28,6 +28,10 @@ terraform {
       source  = "azure/azapi"
       version = ">= 2.5.0"
     }
+    kubectl = {
+      source  = "gavinbunney/kubectl"
+      version = ">= 1.14.0"
+    }
   }
   required_version = ">= 1.3.0"
 
@@ -87,5 +91,14 @@ provider "kubernetes" {
   client_certificate     = try(base64decode(module.aks.client_certificate), null)
   client_key             = try(base64decode(module.aks.client_key), null)
   cluster_ca_certificate = try(base64decode(module.aks.cluster_ca_certificate), null)
+}
+
+# kubectl provider for resources that depend on CRDs (doesn't validate during plan)
+provider "kubectl" {
+  host                   = try(module.aks.host, null)
+  client_certificate     = try(base64decode(module.aks.client_certificate), null)
+  client_key             = try(base64decode(module.aks.client_key), null)
+  cluster_ca_certificate = try(base64decode(module.aks.cluster_ca_certificate), null)
+  load_config_file       = false
 }
 

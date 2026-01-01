@@ -142,7 +142,7 @@ stages:
 
                 if [ "$AKS_EXISTS" -eq 0 ]; then
                   echo "=== AKS Not Found - Running Targeted Plan (Core Infrastructure Only) ==="
-                  echo "Kubernetes/Helm resources will be planned after AKS is created."
+                  echo "Kubernetes/Helm resources will be deployed after AKS is created."
 
                   # Plan only core infrastructure (excludes helm_release, kubernetes_manifest, etc.)
                   terraform plan -var-file="terraform.tfvars" -out=tfplan -input=false \
