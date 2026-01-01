@@ -708,7 +708,34 @@ resource "azuredevops_variable_group" "secrets" {
 
   variable {
     name  = "WEB_APP_NAME"
-    value = "placeholder" # module.frontend_app_service.app_service_name
+    value = module.frontend_app_service.app_service_name
+  }
+
+  variable {
+    name  = "ADMIN_WEB_APP_NAME"
+    value = module.frontend_admin_app_service.app_service_name
+  }
+
+  # ACR Configuration (for Docker builds)
+  variable {
+    name  = "ACR_LOGIN_SERVER"
+    value = module.acr.acr_login_server
+  }
+
+  variable {
+    name  = "ACR_SERVICE_CONNECTION"
+    value = module.service_connection_acr.acr_service_connection_name
+  }
+
+  # Backend/AKS Configuration
+  variable {
+    name  = "HELM_RELEASE_NAME"
+    value = "copilot-backend"
+  }
+
+  variable {
+    name  = "AKS_NAME"
+    value = module.aks.aks_name
   }
 
   variable {

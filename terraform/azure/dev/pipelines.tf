@@ -52,7 +52,11 @@ resource "azuredevops_variable_group" "infra_secrets" {
 }
 
 # -----------------------------------------------------------------
-# Terraform Pipeline
+# Terraform Pipeline (Shared - handles both Dev and Prod)
+# -----------------------------------------------------------------
+# This single pipeline handles all environments using branch conditions:
+#   - main branch      → Dev stage runs
+#   - release/* branch → Prod stage runs
 # -----------------------------------------------------------------
 data "azuredevops_git_repository" "terraform_repo" {
   project_id = data.azuredevops_project.project.id
@@ -62,23 +66,21 @@ data "azuredevops_git_repository" "terraform_repo" {
 module "infra_pipeline" {
   source             = "../modules/pipeline"
   devops_project_id  = data.azuredevops_project.project.id
-  pipeline_name      = "${var.terraform_pipeline_name}-${var.env}"
+  pipeline_name      = var.terraform_pipeline_name
   repo_id            = data.azuredevops_git_repository.terraform_repo.id
   branch_name        = var.terraform_branch
   yml_path           = var.terraform_yml_path
   variable_group_ids = [azuredevops_variable_group.infra_secrets.id]
 
   pipeline_variables = {
-    DEPLOY_ENVIRONMENT = var.env
+    # No DEPLOY_ENVIRONMENT - stages determine their own environment
   }
 }
 
 # =================================================================
-# Backend Pipeline
+# Backend Pipeline (Shared - handles both Dev and Prod)
 # =================================================================
-
-# -----------------------------------------------------------------
-# Azure DevOps Pipeline (CI/CD)
+# This single pipeline handles all environments using branch conditions.
 # -----------------------------------------------------------------
 
 data "azuredevops_git_repository" "repo" {
@@ -89,16 +91,13 @@ data "azuredevops_git_repository" "repo" {
 module "pipeline" {
   source             = "../modules/pipeline"
   devops_project_id  = data.azuredevops_project.project.id
-  pipeline_name      = "${var.backend_pipeline_name}-${var.env}"
+  pipeline_name      = var.backend_pipeline_name
   repo_id            = data.azuredevops_git_repository.repo.id
   branch_name        = var.backend_branch
   yml_path           = var.backend_yml_path
   variable_group_ids = [azuredevops_variable_group.secrets.id]
   pipeline_variables = {
-    DEPLOY_ENVIRONMENT     = var.env
-    ACR_LOGIN_SERVER       = module.acr.acr_login_server
-    HELM_RELEASE_NAME      = "copilot-backend"
-    ACR_SERVICE_CONNECTION = module.service_connection_acr.acr_service_connection_name
+    # Pipeline variables are set per stage in the YAML
   }
 }
 
@@ -157,7 +156,7 @@ module "frontend_app_service" {
 
 
 # -----------------------------------------------------------------
-# Azure DevOps Pipeline (CI/CD) for Frontend
+# Azure DevOps Pipeline (CI/CD) for Frontend (Shared - handles both Dev and Prod)
 # -----------------------------------------------------------------
 
 data "azuredevops_git_repository" "frontend_repo" {
@@ -168,17 +167,13 @@ data "azuredevops_git_repository" "frontend_repo" {
 module "frontend_pipeline" {
   source             = "../modules/pipeline"
   devops_project_id  = data.azuredevops_project.project.id
-  pipeline_name      = "${var.frontend_pipeline_name}-${var.env}"
+  pipeline_name      = var.frontend_pipeline_name
   repo_id            = data.azuredevops_git_repository.frontend_repo.id
   branch_name        = var.frontend_branch
   yml_path           = var.frontend_yml_path
   variable_group_ids = [azuredevops_variable_group.secrets.id]
   pipeline_variables = {
-    DEPLOY_ENVIRONMENT     = var.env
-    ACR_LOGIN_SERVER       = module.acr.acr_login_server
-    ACR_SERVICE_CONNECTION = module.service_connection_acr.acr_service_connection_name
-    WEB_APP_NAME           = module.frontend_app_service.app_service_name
-    RESOURCE_GROUP         = module.resource_group.resource_group_name
+    # Pipeline variables are set per stage in the YAML
   }
 }
 
@@ -220,7 +215,7 @@ module "frontend_admin_app_service" {
 
 
 # -----------------------------------------------------------------
-# Azure DevOps Pipeline (CI/CD) for Admin Frontend
+# Azure DevOps Pipeline (CI/CD) for Admin Frontend (Shared - handles both Dev and Prod)
 # -----------------------------------------------------------------
 
 data "azuredevops_git_repository" "frontend_admin_repo" {
@@ -231,17 +226,13 @@ data "azuredevops_git_repository" "frontend_admin_repo" {
 module "frontend_admin_pipeline" {
   source             = "../modules/pipeline"
   devops_project_id  = data.azuredevops_project.project.id
-  pipeline_name      = "${var.frontend_admin_pipeline_name}-${var.env}"
+  pipeline_name      = var.frontend_admin_pipeline_name
   repo_id            = data.azuredevops_git_repository.frontend_admin_repo.id
   branch_name        = var.frontend_admin_branch
   yml_path           = var.frontend_admin_yml_path
   variable_group_ids = [azuredevops_variable_group.secrets.id]
   pipeline_variables = {
-    DEPLOY_ENVIRONMENT     = var.env
-    ACR_LOGIN_SERVER       = module.acr.acr_login_server
-    ACR_SERVICE_CONNECTION = module.service_connection_acr.acr_service_connection_name
-    WEB_APP_NAME           = module.frontend_admin_app_service.app_service_name
-    RESOURCE_GROUP         = module.resource_group.resource_group_name
+    # Pipeline variables are set per stage in the YAML
   }
 }
 

@@ -362,7 +362,7 @@ variable "backend_repo_name" {
 variable "backend_pipeline_name" {
   description = "Name of the Azure DevOps pipeline resource. Cannot contain '/' or special characters."
   type        = string
-  default     = "backend-pipeline"
+  default     = "copilot-backend-pipeline"
 }
 
 variable "backend_yml_path" {
@@ -389,7 +389,7 @@ variable "terraform_repo_name" {
 variable "terraform_pipeline_name" {
   description = "Name of the Azure DevOps pipeline for Terraform."
   type        = string
-  default     = "infra-pipeline"
+  default     = "copilot-infra-pipeline"
 }
 
 variable "infra_variable_group_name" {
@@ -422,7 +422,7 @@ variable "frontend_repo_name" {
 variable "frontend_pipeline_name" {
   description = "Name of the Azure DevOps pipeline resource for the frontend. Cannot contain '/' or special characters."
   type        = string
-  default     = "frontend-pipeline"
+  default     = "copilot-frontend-pipeline"
 }
 
 variable "frontend_yml_path" {

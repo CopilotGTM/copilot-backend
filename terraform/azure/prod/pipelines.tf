@@ -54,31 +54,39 @@ resource "azuredevops_variable_group" "infra_secrets" {
 # -----------------------------------------------------------------
 # Terraform Pipeline
 # -----------------------------------------------------------------
+# NOTE: The infra pipeline is NOT created here.
+# A single pipeline (created by dev) handles both environments.
+# The pipeline YAML uses branch conditions:
+#   - main branch      → Dev stage runs
+#   - release/* branch → Prod stage runs
+#
+# Prod still needs: agent pool, variable group, service connection
+# -----------------------------------------------------------------
 data "azuredevops_git_repository" "terraform_repo" {
   project_id = data.azuredevops_project.project.id
   name       = var.terraform_repo_name
 }
 
-module "infra_pipeline" {
-  source             = "../modules/pipeline"
-  devops_project_id  = data.azuredevops_project.project.id
-  pipeline_name      = "${var.terraform_pipeline_name}-${var.env}"
-  repo_id            = data.azuredevops_git_repository.terraform_repo.id
-  branch_name        = var.terraform_branch
-  yml_path           = var.terraform_yml_path
-  variable_group_ids = [azuredevops_variable_group.infra_secrets.id]
-
-  pipeline_variables = {
-    DEPLOY_ENVIRONMENT = var.env
-  }
-}
+# COMMENTED OUT: Single pipeline in dev handles both environments
+# module "infra_pipeline" {
+#   source             = "../modules/pipeline"
+#   devops_project_id  = data.azuredevops_project.project.id
+#   pipeline_name      = "${var.terraform_pipeline_name}-${var.env}"
+#   repo_id            = data.azuredevops_git_repository.terraform_repo.id
+#   branch_name        = var.terraform_branch
+#   yml_path           = var.terraform_yml_path
+#   variable_group_ids = [azuredevops_variable_group.infra_secrets.id]
+#
+#   pipeline_variables = {
+#     DEPLOY_ENVIRONMENT = var.env
+#   }
+# }
 
 # =================================================================
 # Backend Pipeline
 # =================================================================
-
-# -----------------------------------------------------------------
-# Azure DevOps Pipeline (CI/CD)
+# NOTE: Pipeline is NOT created here - single pipeline in dev handles both environments.
+# The pipeline YAML uses branch conditions to determine which environment to deploy.
 # -----------------------------------------------------------------
 
 data "azuredevops_git_repository" "repo" {
@@ -86,21 +94,22 @@ data "azuredevops_git_repository" "repo" {
   name       = var.backend_repo_name
 }
 
-module "pipeline" {
-  source             = "../modules/pipeline"
-  devops_project_id  = data.azuredevops_project.project.id
-  pipeline_name      = "${var.backend_pipeline_name}-${var.env}"
-  repo_id            = data.azuredevops_git_repository.repo.id
-  branch_name        = var.backend_branch
-  yml_path           = var.backend_yml_path
-  variable_group_ids = [azuredevops_variable_group.secrets.id]
-  pipeline_variables = {
-    DEPLOY_ENVIRONMENT     = var.env
-    ACR_LOGIN_SERVER       = module.acr.acr_login_server
-    HELM_RELEASE_NAME      = "copilot-backend"
-    ACR_SERVICE_CONNECTION = module.service_connection_acr.acr_service_connection_name
-  }
-}
+# COMMENTED OUT: Single pipeline in dev handles both environments
+# module "pipeline" {
+#   source             = "../modules/pipeline"
+#   devops_project_id  = data.azuredevops_project.project.id
+#   pipeline_name      = "${var.backend_pipeline_name}-${var.env}"
+#   repo_id            = data.azuredevops_git_repository.repo.id
+#   branch_name        = var.backend_branch
+#   yml_path           = var.backend_yml_path
+#   variable_group_ids = [azuredevops_variable_group.secrets.id]
+#   pipeline_variables = {
+#     DEPLOY_ENVIRONMENT     = var.env
+#     ACR_LOGIN_SERVER       = module.acr.acr_login_server
+#     HELM_RELEASE_NAME      = "copilot-backend"
+#     ACR_SERVICE_CONNECTION = module.service_connection_acr.acr_service_connection_name
+#   }
+# }
 
 
 # -----------------------------------------------------------------
@@ -159,28 +168,30 @@ module "frontend_app_service" {
 # -----------------------------------------------------------------
 # Azure DevOps Pipeline (CI/CD) for Frontend
 # -----------------------------------------------------------------
+# NOTE: Pipeline is NOT created here - single pipeline in dev handles both environments.
 
 data "azuredevops_git_repository" "frontend_repo" {
   project_id = data.azuredevops_project.project.id
   name       = var.frontend_repo_name
 }
 
-module "frontend_pipeline" {
-  source             = "../modules/pipeline"
-  devops_project_id  = data.azuredevops_project.project.id
-  pipeline_name      = "${var.frontend_pipeline_name}-${var.env}"
-  repo_id            = data.azuredevops_git_repository.frontend_repo.id
-  branch_name        = var.frontend_branch
-  yml_path           = var.frontend_yml_path
-  variable_group_ids = [azuredevops_variable_group.secrets.id]
-  pipeline_variables = {
-    DEPLOY_ENVIRONMENT     = var.env
-    ACR_LOGIN_SERVER       = module.acr.acr_login_server
-    ACR_SERVICE_CONNECTION = module.service_connection_acr.acr_service_connection_name
-    WEB_APP_NAME           = module.frontend_app_service.app_service_name
-    RESOURCE_GROUP         = module.resource_group.resource_group_name
-  }
-}
+# COMMENTED OUT: Single pipeline in dev handles both environments
+# module "frontend_pipeline" {
+#   source             = "../modules/pipeline"
+#   devops_project_id  = data.azuredevops_project.project.id
+#   pipeline_name      = "${var.frontend_pipeline_name}-${var.env}"
+#   repo_id            = data.azuredevops_git_repository.frontend_repo.id
+#   branch_name        = var.frontend_branch
+#   yml_path           = var.frontend_yml_path
+#   variable_group_ids = [azuredevops_variable_group.secrets.id]
+#   pipeline_variables = {
+#     DEPLOY_ENVIRONMENT     = var.env
+#     ACR_LOGIN_SERVER       = module.acr.acr_login_server
+#     ACR_SERVICE_CONNECTION = module.service_connection_acr.acr_service_connection_name
+#     WEB_APP_NAME           = module.frontend_app_service.app_service_name
+#     RESOURCE_GROUP         = module.resource_group.resource_group_name
+#   }
+# }
 
 
 # =================================================================
@@ -222,26 +233,28 @@ module "frontend_admin_app_service" {
 # -----------------------------------------------------------------
 # Azure DevOps Pipeline (CI/CD) for Admin Frontend
 # -----------------------------------------------------------------
+# NOTE: Pipeline is NOT created here - single pipeline in dev handles both environments.
 
 data "azuredevops_git_repository" "frontend_admin_repo" {
   project_id = data.azuredevops_project.project.id
   name       = var.frontend_admin_repo_name
 }
 
-module "frontend_admin_pipeline" {
-  source             = "../modules/pipeline"
-  devops_project_id  = data.azuredevops_project.project.id
-  pipeline_name      = "${var.frontend_admin_pipeline_name}-${var.env}"
-  repo_id            = data.azuredevops_git_repository.frontend_admin_repo.id
-  branch_name        = var.frontend_admin_branch
-  yml_path           = var.frontend_admin_yml_path
-  variable_group_ids = [azuredevops_variable_group.secrets.id]
-  pipeline_variables = {
-    DEPLOY_ENVIRONMENT     = var.env
-    ACR_LOGIN_SERVER       = module.acr.acr_login_server
-    ACR_SERVICE_CONNECTION = module.service_connection_acr.acr_service_connection_name
-    WEB_APP_NAME           = module.frontend_admin_app_service.app_service_name
-    RESOURCE_GROUP         = module.resource_group.resource_group_name
-  }
-}
+# COMMENTED OUT: Single pipeline in dev handles both environments
+# module "frontend_admin_pipeline" {
+#   source             = "../modules/pipeline"
+#   devops_project_id  = data.azuredevops_project.project.id
+#   pipeline_name      = "${var.frontend_admin_pipeline_name}-${var.env}"
+#   repo_id            = data.azuredevops_git_repository.frontend_admin_repo.id
+#   branch_name        = var.frontend_admin_branch
+#   yml_path           = var.frontend_admin_yml_path
+#   variable_group_ids = [azuredevops_variable_group.secrets.id]
+#   pipeline_variables = {
+#     DEPLOY_ENVIRONMENT     = var.env
+#     ACR_LOGIN_SERVER       = module.acr.acr_login_server
+#     ACR_SERVICE_CONNECTION = module.service_connection_acr.acr_service_connection_name
+#     WEB_APP_NAME           = module.frontend_admin_app_service.app_service_name
+#     RESOURCE_GROUP         = module.resource_group.resource_group_name
+#   }
+# }
 
