@@ -18,6 +18,12 @@ resource "azurerm_postgresql_flexible_server" "db" {
   administrator_password = azurerm_key_vault_secret.db_password.value
 
   tags = var.tags
+
+  lifecycle {
+    # Azure assigns a zone at creation time. Ignore changes to prevent
+    # "zone can only be changed when exchanged with standby_availability_zone" errors.
+    ignore_changes = [zone]
+  }
 }
 
 resource "azurerm_postgresql_flexible_server_configuration" "vector_extension" {

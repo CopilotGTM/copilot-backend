@@ -16,6 +16,11 @@ resource "azapi_resource" "openai" {
   location  = var.location
   parent_id = var.resource_group_id
 
+  # Identity block required to prevent "Missing Resource Identity After Update" error
+  identity {
+    type = "SystemAssigned"
+  }
+
   body = {
     sku = {
       name = var.sku_name
