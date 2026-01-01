@@ -132,7 +132,7 @@ terraform_repo_name = "copilot-app-infra"
 # -----------------------------------------------------------------
 # Cert-Manager & K8s
 # -----------------------------------------------------------------
-letsencrypt_email = "nikhil@copilotgtm.com"
+letsencrypt_email = "tech@copilotgtm.com"
 api_subdomain     = "devapi"     # Override: devapi for dev environment
 app_namespace     = "copilotgtm" # Override: custom namespace
 # keda_namespace  = "keda-system"  # Default
@@ -155,7 +155,7 @@ gpu_vm_size            = "Standard_D8s_v3" # Override: high-performance compute
 # -----------------------------------------------------------------
 # External Services
 # -----------------------------------------------------------------
-super_admin_email = "nikhil@copilotgtm.com"
+super_admin_email = "tech@copilotgtm.com"
 supabase_url      = "https://mdpbmdnwwdkjcxefbbbk.supabase.co"
 resend_email      = "noreply@team.copilotgtm.com" # Override from default
 
