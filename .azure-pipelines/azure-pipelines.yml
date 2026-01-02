@@ -145,17 +145,13 @@ stages:
     displayName: Build & Push Docker Image to ACR
     dependsOn: QualityCheck
     condition: succeeded()
-    variables:
-      # Dynamic variable group: release/* -> prod, else -> dev
-      ${{ if startsWith(variables['Build.SourceBranch'], 'refs/heads/release/') }}:
-        - group: app-secrets-prod
-      ${{ else }}:
-        - group: app-secrets-dev
     jobs:
       - job: dockerBuildPush
         displayName: Build and Push to ACR
         pool:
           name: $(BUILD_AGENT_POOL)
+        variables:
+        - group: ${{ if startsWith(variables['Build.SourceBranch'], 'refs/heads/release/'), 'app-secrets-prod', 'app-secrets-dev' }}
         steps:
           - checkout: self
 
