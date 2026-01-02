@@ -882,12 +882,12 @@ resource "azuread_application_federated_identity_credential" "devops_acr_oidc" {
 # -----------------------------------------------------------------
 # Federated Identity Credential for Azure DevOps Pipeline (vstoken issuer)
 # Azure DevOps uses vstoken.dev.azure.com as an alternative token issuer.
-# This credential already exists (created manually) - adding to Terraform for management.
+# For dev: imported existing credential "azuredevops-app-copilotgtm" into Terraform state.
 # -----------------------------------------------------------------
 resource "azuread_application_federated_identity_credential" "devops_vstoken_oidc" {
   application_id = module.service_principal.application_id
-  display_name   = "azuredevops-app-copilotgtm-${var.env}"
-  description    = "Workload Identity Federation for Azure DevOps pipeline (vstoken issuer)"
+  display_name   = "azuredevops-app-copilotgtm"
+  description    = "Workload Identity Federation for Azure DevOps pipeline"
 
   issuer    = "https://vstoken.dev.azure.com/${data.azurerm_client_config.current.tenant_id}"
   subject   = "sc://copilotgtm/app-copilotgtm/${local.service_connection_name}"
