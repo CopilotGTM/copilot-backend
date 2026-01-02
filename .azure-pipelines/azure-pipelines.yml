@@ -258,7 +258,7 @@ stages:
               Dockerfile: '**/Dockerfile'
               tags: |
                 $(Build.BuildId)
-                ${{ if or(eq(variables['Build.SourceBranch'], 'refs/heads/main'), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/')) }}latest
+                latest
               arguments: |
                 --target api
                 --build-arg BUILDKIT_INLINE_CACHE=1
@@ -276,7 +276,7 @@ stages:
               Dockerfile: '**/Dockerfile'
               tags: |
                 $(Build.BuildId)
-                ${{ if or(eq(variables['Build.SourceBranch'], 'refs/heads/main'), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/')) }}latest
+                latest
               arguments: |
                 --target knowledge-worker
                 --build-arg BUILDKIT_INLINE_CACHE=1
@@ -294,7 +294,7 @@ stages:
               Dockerfile: '**/Dockerfile'
               tags: |
                 $(Build.BuildId)
-                ${{ if or(eq(variables['Build.SourceBranch'], 'refs/heads/main'), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/')) }}latest
+                latest
               arguments: |
                 --target light-worker
                 --build-arg BUILDKIT_INLINE_CACHE=1
@@ -312,7 +312,7 @@ stages:
               Dockerfile: '**/Dockerfile'
               tags: |
                 $(Build.BuildId)
-                ${{ if or(eq(variables['Build.SourceBranch'], 'refs/heads/main'), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/')) }}latest
+                latest
               arguments: |
                 --target integrations-worker
                 --build-arg BUILDKIT_INLINE_CACHE=1
@@ -330,7 +330,7 @@ stages:
               Dockerfile: '**/Dockerfile'
               tags: |
                 $(Build.BuildId)
-                ${{ if or(eq(variables['Build.SourceBranch'], 'refs/heads/main'), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/')) }}latest
+                latest
               arguments: |
                 --build-arg BUILDKIT_INLINE_CACHE=1
                 --cache-from=$(ACR_LOGIN_SERVER)/copilot-backend:latest
