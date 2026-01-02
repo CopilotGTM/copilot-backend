@@ -156,7 +156,7 @@ gpu_vm_size            = "Standard_D8s_v3" # Override: high-performance compute
 # External Services
 # -----------------------------------------------------------------
 super_admin_email = "tech@copilotgtm.com"
-supabase_url      = "https://mdpbmdnwwdkjcxefbbbk.supabase.co"
+supabase_url      = "https://zgdizeaxfsvqfwmdwtrp.supabase.co"
 resend_email      = "noreply@team.copilotgtm.com" # Override from default
 
 # -----------------------------------------------------------------
