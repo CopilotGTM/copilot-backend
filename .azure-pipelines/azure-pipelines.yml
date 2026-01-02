@@ -416,6 +416,11 @@ stages:
                       --set global.redis.enableTLS=true \
                       --set global.redis.usePassword=true \
                       $EXTRA_HELM_ARGS \
+                      --set 'api.ingress.hosts[0].host=devapi.copilotgtm.com' \
+                      --set 'api.ingress.hosts[0].paths[0].path=/' \
+                      --set 'api.ingress.hosts[0].paths[0].pathType=Prefix' \
+                      --set 'api.ingress.tls[0].hosts[0]=devapi.copilotgtm.com' \
+                      --set 'api.ingress.tls[0].secretName=devapi-tls' \
                       --set api.image.repository="$ACR_LOGIN_SERVER/$(API_IMAGE_REPOSITORY)" \
                       --set api.image.tag="$BUILD_BUILDID" \
                       --set knowledge-extract-worker.image.repository="$ACR_LOGIN_SERVER/$(KNOWLEDGE_IMAGE_REPOSITORY)" \
@@ -488,7 +493,7 @@ stages:
                       --set deal-beat.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)"
 
 
-                  displayName: Helm Upgrade/Install
+                  displayName: Helm Upgrade/Install (Dev)
                   env:
                     HELM_RELEASE_NAME: $(HELM_RELEASE_NAME)
                     CHART_PATH: $(CHART_PATH)
@@ -640,6 +645,12 @@ stages:
                       --set global.redis.enableTLS=true \
                       --set global.redis.usePassword=true \
                       $EXTRA_HELM_ARGS \
+                      --set 'api.ingress.hosts[0].host=api.copilotgtm.com' \
+                      --set 'api.ingress.hosts[0].paths[0].path=/' \
+                      --set 'api.ingress.hosts[0].paths[0].pathType=Prefix' \
+                      --set 'api.ingress.tls[0].hosts[0]=api.copilotgtm.com' \
+                      --set 'api.ingress.tls[0].secretName=api-tls' \
+                      --set api.environment=production \
                       --set api.image.repository="$ACR_LOGIN_SERVER/$(API_IMAGE_REPOSITORY)" \
                       --set api.image.tag="$BUILD_BUILDID" \
                       --set knowledge-extract-worker.image.repository="$ACR_LOGIN_SERVER/$(KNOWLEDGE_IMAGE_REPOSITORY)" \
@@ -712,7 +723,7 @@ stages:
                       --set deal-beat.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)"
 
 
-                  displayName: Helm Upgrade/Install
+                  displayName: Helm Upgrade/Install (Prod)
                   env:
                     HELM_RELEASE_NAME: $(HELM_RELEASE_NAME)
                     CHART_PATH: $(CHART_PATH)
