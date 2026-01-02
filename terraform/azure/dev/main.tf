@@ -895,6 +895,21 @@ resource "azuread_application_federated_identity_credential" "devops_vstoken_oid
 }
 
 # -----------------------------------------------------------------
+# Federated Identity Credential for ACR Service Connection (vstoken issuer)
+# Required for ACR push operations when using Workload Identity Federation.
+# Azure DevOps uses vstoken.dev.azure.com as an alternative token issuer.
+# -----------------------------------------------------------------
+resource "azuread_application_federated_identity_credential" "devops_acr_vstoken_oidc" {
+  application_id = module.service_principal.application_id
+  display_name   = "azuredevops-acr-vstoken-${var.env}"
+  description    = "Workload Identity Federation for Azure DevOps ACR service connection (vstoken issuer)"
+
+  issuer    = "https://vstoken.dev.azure.com/${data.azurerm_client_config.current.tenant_id}"
+  subject   = "sc://copilotgtm/app-copilotgtm/copilotgtm-acr-connection-${var.env}"
+  audiences = ["api://AzureADTokenExchange"]
+}
+
+# -----------------------------------------------------------------
 # Test Resource: Simple resource to verify pipeline execution
 # -----------------------------------------------------------------
 resource "random_string" "test_resource" {
