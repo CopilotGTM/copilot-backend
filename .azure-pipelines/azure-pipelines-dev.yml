@@ -1,0 +1,487 @@
+# ============================================================================
+# Azure DevOps Pipeline - Backend DEV Environment
+# ============================================================================
+# This pipeline handles DEV deployments only.
+# Triggers on: main, feature/*, hotfix/* branches
+# Deploys to: Dev AKS cluster via Helm
+# ============================================================================
+
+trigger:
+  branches:
+    include:
+      - main
+      - feature/*
+      - hotfix/*
+
+pr:
+  branches:
+    include:
+      - main
+
+variables:
+  # Use dev-specific variable group
+  - group: app-secrets-dev
+  - name: ENVIRONMENT
+    value: 'dev'
+  - name: AGENT_POOL
+    value: 'StaticAgentPool'
+
+  # Helm/Chart configuration
+  - name: CHART_PATH
+    value: ./charts/application
+  - name: PYTHON_VERSION
+    value: '3.11'
+
+  # Flower UI (Celery monitoring)
+  - name: ENABLE_FLOWER
+    value: 'true'
+
+  # Image repositories
+  - name: API_IMAGE_REPOSITORY
+    value: 'copilot-backend-api'
+  - name: KNOWLEDGE_IMAGE_REPOSITORY
+    value: 'copilot-backend-knowledge-worker'
+  - name: LIGHT_IMAGE_REPOSITORY
+    value: 'copilot-backend-light-worker'
+  - name: INTEGRATIONS_IMAGE_REPOSITORY
+    value: 'copilot-backend-integrations-worker'
+
+  # Kubeconfig for dev
+  - name: DEV_KUBECONFIG
+    value: 'kubeconfig.yaml'
+
+stages:
+  # ==========================================================================
+  # Stage 1: Code Quality & Testing
+  # ==========================================================================
+  - stage: QualityCheck
+    displayName: Code Quality & Tests
+    jobs:
+      - job: QualityAndSecurity
+        displayName: Quality Checks & Security Scan
+        pool:
+          name: $(AGENT_POOL)
+        steps:
+          - checkout: self
+
+          - script: |
+              curl -LsSf https://astral.sh/uv/install.sh | sh
+              echo "##vso[task.prependpath]$HOME/.local/bin"
+            displayName: 'Install UV'
+
+          - script: |
+              uv python install $(PYTHON_VERSION)
+            displayName: 'Install Python $(PYTHON_VERSION)'
+
+          - script: |
+              uv sync --frozen --no-install-project --no-dev --only-group quality
+              source .venv/bin/activate
+            displayName: 'Install Quality Tools Only (Ruff, Bandit, MyPy)'
+
+          - script: |
+              source .venv/bin/activate
+              ruff format --check src/ tests/
+            displayName: '✨ Code Formatting Check (Ruff Format)'
+
+          - script: |
+              source .venv/bin/activate
+              ruff check src/ tests/
+            displayName: '🔍 Linting Check (Ruff)'
+
+          - script: |
+              source .venv/bin/activate
+              mypy src/ || true
+            displayName: '📝 Type Checking (MyPy) - Advisory Only'
+
+          - script: |
+              source .venv/bin/activate
+              bandit -c pyproject.toml -r src/ -f json -o bandit-report.json || true
+              bandit -c pyproject.toml -r src/
+            displayName: '🔒 Security Scan (Bandit)'
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Upload Security Report'
+            inputs:
+              targetPath: 'bandit-report.json'
+              artifact: 'security-report'
+            condition: succeededOrFailed()
+
+  # ==========================================================================
+  # Stage 2: Build & Push Docker Image
+  # ==========================================================================
+  - stage: BuildAndPush
+    displayName: Build & Push Docker Image to ACR
+    dependsOn: QualityCheck
+    condition: succeeded()
+    jobs:
+      - job: dockerBuildPush
+        displayName: Build and Push to ACR
+        pool:
+          name: $(AGENT_POOL)
+        steps:
+          - checkout: self
+
+          - script: |
+              echo "##[section]📊 Checking disk space before cleanup..."
+              df -h
+              DISK_USAGE=$(df / | tail -1 | awk '{print $5}' | sed 's/%//')
+              echo "Current disk usage: ${DISK_USAGE}%"
+
+              echo ""
+              echo "##[section]🧹 Cleaning up Docker resources..."
+              docker container prune -f || true
+              docker image prune -a -f || true
+              docker volume prune -f || true
+              docker builder prune -a -f || true
+
+              echo ""
+              echo "##[section]✅ Disk space after cleanup:"
+              df -h
+              DISK_USAGE_AFTER=$(df / | tail -1 | awk '{print $5}' | sed 's/%//')
+              echo "Disk usage after cleanup: ${DISK_USAGE_AFTER}%"
+
+              if [ "$DISK_USAGE_AFTER" -gt 90 ]; then
+                echo "##[error]❌ Critical: Disk usage is ${DISK_USAGE_AFTER}% - aborting build"
+                exit 1
+              elif [ "$DISK_USAGE_AFTER" -gt 80 ]; then
+                echo "##[warning]⚠️ Warning: Disk usage is ${DISK_USAGE_AFTER}% - consider cleaning up agent"
+              else
+                echo "##[section]✅ Disk space is healthy (${DISK_USAGE_AFTER}% used)"
+              fi
+            displayName: 'Clean Up Disk Space & Check'
+
+          - script: |
+              echo "##[group]Verifying Environment Configuration"
+              echo "Environment: $(ENVIRONMENT)"
+              echo "ACR Login Server: $(ACR_LOGIN_SERVER)"
+              echo "Helm Release Name: $(HELM_RELEASE_NAME)"
+              echo "Build ID: $(Build.BuildId)"
+              echo "##[endgroup]"
+            displayName: 'Echo Environment Variables'
+
+          - task: Docker@2
+            displayName: 'Login to ACR'
+            inputs:
+              containerRegistry: '$(ACR_SERVICE_CONNECTION)'
+              command: 'login'
+
+          - script: |
+              echo "##[section]🚀 Pulling cache images from ACR for faster builds..."
+              docker pull $(ACR_LOGIN_SERVER)/copilot-backend:latest || echo "⚠️ No latest full image found"
+              docker pull $(ACR_LOGIN_SERVER)/$(API_IMAGE_REPOSITORY):latest || echo "⚠️ No latest api image found"
+              docker pull $(ACR_LOGIN_SERVER)/$(KNOWLEDGE_IMAGE_REPOSITORY):latest || echo "⚠️ No latest knowledge image found"
+              docker pull $(ACR_LOGIN_SERVER)/$(LIGHT_IMAGE_REPOSITORY):latest || echo "⚠️ No latest light-worker image found"
+              docker pull $(ACR_LOGIN_SERVER)/$(INTEGRATIONS_IMAGE_REPOSITORY):latest || echo "⚠️ No latest integrations image found"
+              echo "##[section]✅ Cache pull complete"
+            displayName: 'Pull Cache Images from ACR'
+            env:
+              DOCKER_BUILDKIT: '1'
+            continueOnError: 'true'
+
+          - task: Docker@2
+            displayName: 'Build & Push API Image (target: api)'
+            inputs:
+              containerRegistry: '$(ACR_SERVICE_CONNECTION)'
+              repository: '$(API_IMAGE_REPOSITORY)'
+              command: 'buildAndPush'
+              Dockerfile: '**/Dockerfile'
+              tags: |
+                $(Build.BuildId)
+                latest
+              arguments: |
+                --target api
+                --build-arg BUILDKIT_INLINE_CACHE=1
+                --cache-from=$(ACR_LOGIN_SERVER)/$(API_IMAGE_REPOSITORY):latest
+                --cache-from=$(ACR_LOGIN_SERVER)/copilot-backend:latest
+            env:
+              DOCKER_BUILDKIT: 1
+
+          - task: Docker@2
+            displayName: 'Build & Push Knowledge Worker Image (target: knowledge-worker)'
+            inputs:
+              containerRegistry: '$(ACR_SERVICE_CONNECTION)'
+              repository: '$(KNOWLEDGE_IMAGE_REPOSITORY)'
+              command: 'buildAndPush'
+              Dockerfile: '**/Dockerfile'
+              tags: |
+                $(Build.BuildId)
+                latest
+              arguments: |
+                --target knowledge-worker
+                --build-arg BUILDKIT_INLINE_CACHE=1
+                --cache-from=$(ACR_LOGIN_SERVER)/$(KNOWLEDGE_IMAGE_REPOSITORY):latest
+                --cache-from=$(ACR_LOGIN_SERVER)/copilot-backend:latest
+            env:
+              DOCKER_BUILDKIT: 1
+
+          - task: Docker@2
+            displayName: 'Build & Push Light Worker Image (target: light-worker)'
+            inputs:
+              containerRegistry: '$(ACR_SERVICE_CONNECTION)'
+              repository: '$(LIGHT_IMAGE_REPOSITORY)'
+              command: 'buildAndPush'
+              Dockerfile: '**/Dockerfile'
+              tags: |
+                $(Build.BuildId)
+                latest
+              arguments: |
+                --target light-worker
+                --build-arg BUILDKIT_INLINE_CACHE=1
+                --cache-from=$(ACR_LOGIN_SERVER)/$(LIGHT_IMAGE_REPOSITORY):latest
+                --cache-from=$(ACR_LOGIN_SERVER)/copilot-backend:latest
+            env:
+              DOCKER_BUILDKIT: 1
+
+          - task: Docker@2
+            displayName: 'Build & Push Integrations Worker Image (target: integrations-worker)'
+            inputs:
+              containerRegistry: '$(ACR_SERVICE_CONNECTION)'
+              repository: '$(INTEGRATIONS_IMAGE_REPOSITORY)'
+              command: 'buildAndPush'
+              Dockerfile: '**/Dockerfile'
+              tags: |
+                $(Build.BuildId)
+                latest
+              arguments: |
+                --target integrations-worker
+                --build-arg BUILDKIT_INLINE_CACHE=1
+                --cache-from=$(ACR_LOGIN_SERVER)/$(INTEGRATIONS_IMAGE_REPOSITORY):latest
+                --cache-from=$(ACR_LOGIN_SERVER)/copilot-backend:latest
+            env:
+              DOCKER_BUILDKIT: 1
+
+          - task: Docker@2
+            displayName: 'Build Docker Image with Cache'
+            inputs:
+              containerRegistry: '$(ACR_SERVICE_CONNECTION)'
+              repository: 'copilot-backend'
+              command: 'buildAndPush'
+              Dockerfile: '**/Dockerfile'
+              tags: |
+                $(Build.BuildId)
+                latest
+              arguments: |
+                --build-arg BUILDKIT_INLINE_CACHE=1
+                --cache-from=$(ACR_LOGIN_SERVER)/copilot-backend:latest
+            env:
+              DOCKER_BUILDKIT: 1
+
+          - script: |
+              echo "##[section]✅ Build Complete!"
+              echo "📦 Image: $(ACR_LOGIN_SERVER)/copilot-backend:$(Build.BuildId)"
+              echo "📦 API: $(ACR_LOGIN_SERVER)/$(API_IMAGE_REPOSITORY):$(Build.BuildId)"
+              echo "📦 Knowledge: $(ACR_LOGIN_SERVER)/$(KNOWLEDGE_IMAGE_REPOSITORY):$(Build.BuildId)"
+              echo "📦 Light Worker: $(ACR_LOGIN_SERVER)/$(LIGHT_IMAGE_REPOSITORY):$(Build.BuildId)"
+              echo "📦 Integrations: $(ACR_LOGIN_SERVER)/$(INTEGRATIONS_IMAGE_REPOSITORY):$(Build.BuildId)"
+            displayName: 'Build Summary'
+
+  # ==========================================================================
+  # Stage 3: Deploy to Dev AKS
+  # ==========================================================================
+  - stage: Deploy
+    displayName: Deploy to Dev AKS
+    dependsOn: BuildAndPush
+    condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
+    variables:
+      - name: KUBECONFIG_FILE
+        value: '$(Pipeline.Workspace)/kubeconfig.yaml'
+    jobs:
+      - deployment: HelmDeploy
+        displayName: Deploy to Dev AKS
+        environment: 'dev'
+        pool:
+          name: $(AGENT_POOL)
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: Kubernetes@1
+                  displayName: 'Login to Kubernetes cluster'
+                  inputs:
+                    connectionType: 'Kubernetes Service Connection'
+                    kubernetesServiceEndpoint: $(DEV_KUBECONFIG)
+                    command: 'login'
+
+                - script: |
+                    kubectl delete job copilot-backend-startup -n copilotgtm --ignore-not-found
+                    kubectl delete pods -n copilotgtm -l job-name=copilot-backend-startup --ignore-not-found
+                    sleep 10
+                  displayName: 'Clean up previous startup Job and Pods'
+
+                - script: |
+                    EXTRA_HELM_ARGS=""
+                    if [ "$(ENABLE_FLOWER)" = "true" ]; then
+                      EXTRA_HELM_ARGS="$EXTRA_HELM_ARGS --set flower.enabled=true --set global.celery.enableEvents=true"
+                    fi
+
+                    helm upgrade --install "$HELM_RELEASE_NAME" "$CHART_PATH" \
+                      --namespace copilotgtm \
+                      --set api.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_BACKEND_CLIENT_ID)" \
+                      --set api.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_API_TENANT_ID)" \
+                      --set global.redis.host="$REDIS_HOST" \
+                      --set global.redis.port="$REDIS_PORT" \
+                      --set global.redis.enableTLS=true \
+                      --set global.redis.usePassword=true \
+                      $EXTRA_HELM_ARGS \
+                      --set 'api.ingress.hosts[0].host=devapi.copilotgtm.com' \
+                      --set 'api.ingress.hosts[0].paths[0].path=/' \
+                      --set 'api.ingress.hosts[0].paths[0].pathType=Prefix' \
+                      --set 'api.ingress.tls[0].hosts[0]=devapi.copilotgtm.com' \
+                      --set 'api.ingress.tls[0].secretName=devapi-tls' \
+                      --set api.image.repository="$ACR_LOGIN_SERVER/$(API_IMAGE_REPOSITORY)" \
+                      --set api.image.tag="$BUILD_BUILDID" \
+                      --set knowledge-extract-worker.image.repository="$ACR_LOGIN_SERVER/$(KNOWLEDGE_IMAGE_REPOSITORY)" \
+                      --set knowledge-extract-worker.image.tag="$BUILD_BUILDID" \
+                      --set knowledge-extract-worker.autoscaling.enabled=true \
+                      --set knowledge-extract-worker.gpu.enabled=true \
+                      --set knowledge-upload-worker.image.repository="$ACR_LOGIN_SERVER/$(KNOWLEDGE_IMAGE_REPOSITORY)" \
+                      --set knowledge-upload-worker.image.tag="$BUILD_BUILDID" \
+                      --set knowledge-upload-worker.autoscaling.enabled=true \
+                      --set integrations-worker.autoscaling.enabled=true \
+                      --set chat-worker.image.repository="$ACR_LOGIN_SERVER/$(LIGHT_IMAGE_REPOSITORY)" \
+                      --set chat-worker.image.tag="$BUILD_BUILDID" \
+                      --set organization-worker.image.repository="$ACR_LOGIN_SERVER/$(LIGHT_IMAGE_REPOSITORY)" \
+                      --set organization-worker.image.tag="$BUILD_BUILDID" \
+                      --set integrations-worker.image.repository="$ACR_LOGIN_SERVER/$(INTEGRATIONS_IMAGE_REPOSITORY)" \
+                      --set integrations-worker.image.tag="$BUILD_BUILDID" \
+                      --set deal-worker.image.repository="$ACR_LOGIN_SERVER/$(LIGHT_IMAGE_REPOSITORY)" \
+                      --set deal-worker.image.tag="$BUILD_BUILDID" \
+                      --set deal-worker.autoscaling.enabled=true \
+                      --set deal-beat.image.repository="$ACR_LOGIN_SERVER/$(LIGHT_IMAGE_REPOSITORY)" \
+                      --set deal-beat.image.tag="$BUILD_BUILDID" \
+                      --set api.secrets.DATABASE_HOST="$(DATABASE_HOST)" \
+                      --set api.secrets.DATABASE_USER="$(DATABASE_USER)" \
+                      --set api.secrets.DATABASE_PORT="$(DATABASE_PORT)" \
+                      --set api.secrets.DATABASE_NAME="$(DATABASE_NAME)" \
+                      --set api.secrets.DATABASE_PASSWORD="$(DATABASE_PASSWORD)" \
+                      --set api.secrets.REDIS_HOST="$(REDIS_HOST)" \
+                      --set api.secrets.REDIS_PORT="$(REDIS_PORT)" \
+                      --set api.secrets.REDIS_PASSWORD="$(REDIS_PASSWORD)" \
+                      --set api.secrets.REDIS_SSL_CERT_REQS=CERT_REQUIRED \
+                      --set api.secrets.AZURE_OPENAI_API_KEY="$(AZURE_OPENAI_API_KEY)" \
+                      --set api.secrets.AZURE_OPENAI_ENDPOINT="$(AZURE_OPENAI_ENDPOINT)" \
+                      --set api.secrets.AZURE_EMBEDDER_OPENAI_API_KEY="$(AZURE_EMBEDDER_OPENAI_API_KEY)" \
+                      --set api.secrets.AZURE_EMBEDDER_OPENAI_ENDPOINT="$(AZURE_EMBEDDER_OPENAI_ENDPOINT)" \
+                      --set api.secrets.AZURE_EMBEDDER_DEPLOYMENT="$(AZURE_EMBEDDER_DEPLOYMENT)" \
+                      --set api.secrets.CLOUD_PROVIDER="$(CLOUD_PROVIDER)" \
+                      --set api.secrets.APPLICATION_STORAGE_NAME="$(APPLICATION_STORAGE_NAME)" \
+                      --set api.secrets.ORGANISATION_STORAGE_NAME="$(ORGANISATION_STORAGE_NAME)" \
+                      --set api.secrets.APPLICATION_REGION="$(APPLICATION_REGION)" \
+                      --set api.secrets.DATABASE_SSL_MODE="$(DATABASE_SSL_MODE)" \
+                      --set api.secrets.ENV="$(ENV)" \
+                      --set api.secrets.AZURE_KEY_VAULT_URL="$(AZURE_KEY_VAULT_URL)" \
+                      --set api.secrets.SUPER_ADMIN_EMAIL="$(SUPER_ADMIN_EMAIL)" \
+                      --set api.secrets.SUPABASE_URL="$(SUPABASE_URL)" \
+                      --set api.secrets.SUPABASE_ANON_KEY="$(SUPABASE_ANON_KEY)" \
+                      --set api.secrets.SUPABASE_SERVICE_ROLE_KEY="$(SUPABASE_SERVICE_ROLE_KEY)" \
+                      --set api.secrets.SUPABASE_JWT_SECRET="$(SUPABASE_JWT_SECRET)" \
+                      --set api.secrets.AZURE_RESOURCE_GROUP="$(AZURE_RESOURCE_GROUP)" \
+                      --set api.secrets.AZURE_SUBSCRIPTION_ID="$(AZURE_SUBSCRIPTION_ID)" \
+                      --set api.secrets.RESEND_API_KEY="$(RESEND_API_KEY)" \
+                      --set api.secrets.FROM_EMAIL="$(FROM_EMAIL)" \
+                      --set api.secrets.APP_NAME="$(APP_NAME)" \
+                      --set api.secrets.APP_URL="$(APP_URL)" \
+                      --set api.secrets.ADMIN_APP_URL="$(ADMIN_APP_URL)" \
+                      --set api.secrets.NANGO_SECRET_KEY="$(NANGO_SECRET_KEY)" \
+                      --set api.secrets.NANGO_BASE_URL="https://api.nango.dev" \
+                      --set knowledge-extract-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
+                      --set knowledge-upload-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
+                      --set organization-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
+                      --set chat-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
+                      --set integrations-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
+                      --set deal-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
+                      --set deal-beat.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
+                      --set knowledge-extract-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
+                      --set knowledge-upload-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
+                      --set organization-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
+                      --set chat-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
+                      --set integrations-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
+                      --set deal-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
+                      --set deal-beat.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)"
+                  displayName: Helm Upgrade/Install (Dev)
+                  env:
+                    HELM_RELEASE_NAME: $(HELM_RELEASE_NAME)
+                    CHART_PATH: $(CHART_PATH)
+                    WORKLOAD_IDENTITY_BACKEND_CLIENT_ID: $(WORKLOAD_IDENTITY_BACKEND_CLIENT_ID)
+                    WORKLOAD_IDENTITY_WORKERS_CLIENT_ID: $(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)
+                    ACR_LOGIN_SERVER: $(ACR_LOGIN_SERVER)
+                    BUILD_BUILDID: $(Build.BuildId)
+                    DATABASE_HOST: $(DATABASE_HOST)
+                    DATABASE_USER: $(DATABASE_USER)
+                    DATABASE_PORT: $(DATABASE_PORT)
+                    DATABASE_NAME: $(DATABASE_NAME)
+                    DATABASE_PASSWORD: $(DATABASE_PASSWORD)
+                    REDIS_HOST: $(REDIS_HOST)
+                    REDIS_PORT: $(REDIS_PORT)
+                    REDIS_PASSWORD: $(REDIS_PASSWORD)
+                    AZURE_OPENAI_API_KEY: $(AZURE_OPENAI_API_KEY)
+                    AZURE_OPENAI_ENDPOINT: $(AZURE_OPENAI_ENDPOINT)
+                    AZURE_EMBEDDER_OPENAI_API_KEY: $(AZURE_EMBEDDER_OPENAI_API_KEY)
+                    AZURE_EMBEDDER_OPENAI_ENDPOINT: $(AZURE_EMBEDDER_OPENAI_ENDPOINT)
+                    AZURE_EMBEDDER_DEPLOYMENT: $(AZURE_EMBEDDER_DEPLOYMENT)
+                    CLOUD_PROVIDER: $(CLOUD_PROVIDER)
+                    APPLICATION_STORAGE_NAME: $(APPLICATION_STORAGE_NAME)
+                    ORGANISATION_STORAGE_NAME: $(ORGANISATION_STORAGE_NAME)
+                    APPLICATION_REGION: $(APPLICATION_REGION)
+                    DATABASE_SSL_MODE: $(DATABASE_SSL_MODE)
+                    ENV: $(ENV)
+                    AZURE_KEY_VAULT_URL: $(AZURE_KEY_VAULT_URL)
+                    SUPER_ADMIN_EMAIL: $(SUPER_ADMIN_EMAIL)
+                    SUPABASE_URL: $(SUPABASE_URL)
+                    SUPABASE_ANON_KEY: $(SUPABASE_ANON_KEY)
+                    SUPABASE_SERVICE_ROLE_KEY: $(SUPABASE_SERVICE_ROLE_KEY)
+                    SUPABASE_JWT_SECRET: $(SUPABASE_JWT_SECRET)
+                    AZURE_RESOURCE_GROUP: $(AZURE_RESOURCE_GROUP)
+                    AZURE_SUBSCRIPTION_ID: $(AZURE_SUBSCRIPTION_ID)
+                    RESEND_API_KEY: $(RESEND_API_KEY)
+                    FROM_EMAIL: $(FROM_EMAIL)
+                    APP_NAME: $(APP_NAME)
+                    APP_URL: $(APP_URL)
+                    ADMIN_APP_URL: $(ADMIN_APP_URL)
+                    NANGO_SECRET_KEY: $(NANGO_SECRET_KEY)
+                    NANGO_BASE_URL: $(NANGO_BASE_URL)
+                    WORKLOAD_IDENTITY_API_TENANT_ID: $(WORKLOAD_IDENTITY_API_TENANT_ID)
+                    WORKLOAD_IDENTITY_WORKERS_TENANT_ID: $(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)
+
+                - script: |
+                    kubectl get pods -n copilotgtm
+                    kubectl get deployments -n copilotgtm
+                    kubectl get scaledobjects -n copilotgtm
+                  displayName: List AKS Deployments/Pods
+
+                - script: |
+                    echo "Restarting worker deployments to ensure latest values are applied..."
+                    kubectl rollout restart deployment copilot-backend-knowledge-extract-worker -n copilotgtm
+                    kubectl rollout restart deployment copilot-backend-knowledge-upload-worker -n copilotgtm
+                    kubectl rollout restart deployment copilot-backend-chat-worker -n copilotgtm
+                    kubectl rollout restart deployment copilot-backend-organization-worker -n copilotgtm
+                    kubectl rollout restart deployment copilot-backend-integrations-worker -n copilotgtm
+                    kubectl rollout restart deployment copilot-backend-deal-worker -n copilotgtm
+                    kubectl rollout restart deployment copilot-backend-deal-beat -n copilotgtm
+
+                    echo "Waiting for rollouts to complete..."
+                    kubectl rollout status deployment copilot-backend-knowledge-extract-worker -n copilotgtm --timeout=300s
+                    kubectl rollout status deployment copilot-backend-knowledge-upload-worker -n copilotgtm --timeout=300s
+                    kubectl rollout status deployment copilot-backend-chat-worker -n copilotgtm --timeout=300s
+                    kubectl rollout status deployment copilot-backend-organization-worker -n copilotgtm --timeout=300s
+                    kubectl rollout status deployment copilot-backend-integrations-worker -n copilotgtm --timeout=300s
+                    kubectl rollout status deployment copilot-backend-deal-worker -n copilotgtm --timeout=300s
+                    kubectl rollout status deployment copilot-backend-deal-beat -n copilotgtm --timeout=300s
+                  displayName: Force restart workers
+
+                - task: Bash@3
+                  displayName: Rollback on Helm Deploy Failure
+                  condition: failed()
+                  inputs:
+                    targetType: 'inline'
+                    script: |
+                      export KUBECONFIG=$(KUBECONFIG_FILE)
+                      if helm status $(HELM_RELEASE_NAME); then
+                        REVISION=$(helm history $(HELM_RELEASE_NAME) | awk 'NR==2{print $1}')
+                        if [ ! -z "$REVISION" ]; then
+                          echo "Rolling back to previous successful release (revision $REVISION)..."
+                          helm rollback $(HELM_RELEASE_NAME) $REVISION
+                        fi
+                      fi
