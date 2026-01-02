@@ -151,7 +151,10 @@ stages:
         pool:
           name: $(BUILD_AGENT_POOL)
         variables:
-          - group: ${{ if(startsWith(variables['Build.SourceBranch'], 'refs/heads/release/'), 'app-secrets-prod', 'app-secrets-dev') }}
+          ${{ if startsWith(variables['Build.SourceBranch'], 'refs/heads/release/') }}:
+            - group: app-secrets-prod
+          ${{ if not(startsWith(variables['Build.SourceBranch'], 'refs/heads/release/')) }}:
+            - group: app-secrets-dev
         steps:
           - checkout: self
 
