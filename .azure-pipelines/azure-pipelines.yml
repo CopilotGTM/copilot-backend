@@ -34,38 +34,33 @@ pr:
       - main
 
 variables:
-  - name: CHART_PATH
-    value: ./charts/application
+  CHART_PATH: ./charts/application
   # KUBECONFIG_FILE is defined per-stage (DeployDev, DeployProd) to use environment-specific kubeconfig
-  - name: PYTHON_VERSION
-    value: '3.11'
+  PYTHON_VERSION: '3.11'
 
   # Optional: enable Flower UI + Celery events during deploy
   # Keep default false to avoid extra overhead in non-dev envs.
-  - name: ENABLE_FLOWER
-    value: 'true'
+  ENABLE_FLOWER: 'true'
 
   # Image repositories (separated images by component)
-  - name: API_IMAGE_REPOSITORY
-    value: 'copilot-backend-api'
-  - name: KNOWLEDGE_IMAGE_REPOSITORY
-    value: 'copilot-backend-knowledge-worker'
-  - name: LIGHT_IMAGE_REPOSITORY
-    value: 'copilot-backend-light-worker'
-  - name: INTEGRATIONS_IMAGE_REPOSITORY
-    value: 'copilot-backend-integrations-worker'
+  API_IMAGE_REPOSITORY: 'copilot-backend-api'
+  KNOWLEDGE_IMAGE_REPOSITORY: 'copilot-backend-knowledge-worker'
+  LIGHT_IMAGE_REPOSITORY: 'copilot-backend-light-worker'
+  INTEGRATIONS_IMAGE_REPOSITORY: 'copilot-backend-integrations-worker'
 
   # Environment-specific agent pools (each env has its own VNet + agent)
-  - name: DEV_AGENT_POOL
-    value: 'StaticAgentPool'
-  - name: PROD_AGENT_POOL
-    value: 'StaticAgentPool-prod'
+  DEV_AGENT_POOL: 'StaticAgentPool'
+  PROD_AGENT_POOL: 'StaticAgentPool-prod'
+
+  # Dynamic Agent Pool for Build/Quality stages
+  ${{ if startsWith(variables['Build.SourceBranch'], 'refs/heads/release/') }}:
+    BUILD_AGENT_POOL: 'StaticAgentPool-prod'
+  ${{ else }}:
+    BUILD_AGENT_POOL: 'StaticAgentPool'
 
   # Environment-specific kubeconfig secure files
-  - name: DEV_KUBECONFIG
-    value: 'kubeconfig.yaml'
-  - name: PROD_KUBECONFIG
-    value: 'kubeconfig-prod.yaml'
+  DEV_KUBECONFIG: 'kubeconfig.yaml'
+  PROD_KUBECONFIG: 'kubeconfig-prod.yaml'
 
 stages:
   # ==========================================================================
@@ -80,11 +75,7 @@ stages:
       - job: QualityAndSecurity
         displayName: Quality Checks & Security Scan
         pool:
-          # Dynamic pool: release/* -> prod, else -> dev
-          ${{ if startsWith(variables['Build.SourceBranch'], 'refs/heads/release/') }}:
-            name: 'StaticAgentPool-prod'
-          ${{ else }}:
-            name: 'StaticAgentPool'
+          name: $(BUILD_AGENT_POOL)
         steps:
           - checkout: self
 
@@ -164,11 +155,7 @@ stages:
       - job: dockerBuildPush
         displayName: Build and Push to ACR
         pool:
-          # Dynamic pool: release/* -> prod, else -> dev
-          ${{ if startsWith(variables['Build.SourceBranch'], 'refs/heads/release/') }}:
-            name: 'StaticAgentPool-prod'
-          ${{ else }}:
-            name: 'StaticAgentPool'
+          name: $(BUILD_AGENT_POOL)
         steps:
           - checkout: self
 
