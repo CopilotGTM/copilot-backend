@@ -23,22 +23,20 @@
 trigger:
   branches:
     include:
-      - main
-      - dev
-      - uat
+      - main        # -> Dev environment
+      - release/*   # -> Prod environment
+      - feature/*
+      - hotfix/*
 
 pr:
   branches:
     include:
       - main
-      - dev
-      - uat
 
 variables:
   - name: CHART_PATH
     value: ./charts/application
-  - name: KUBECONFIG_FILE
-    value: $(Pipeline.Workspace)/kubeconfig.yaml
+  # KUBECONFIG_FILE is defined per-stage (DeployDev, DeployProd) to use environment-specific kubeconfig
   - name: PYTHON_VERSION
     value: '3.11'
 
@@ -57,6 +55,18 @@ variables:
   - name: INTEGRATIONS_IMAGE_REPOSITORY
     value: 'copilot-backend-integrations-worker'
 
+  # Environment-specific agent pools (each env has its own VNet + agent)
+  - name: DEV_AGENT_POOL
+    value: 'StaticAgentPool'
+  - name: PROD_AGENT_POOL
+    value: 'StaticAgentPool-prod'
+
+  # Environment-specific kubeconfig secure files
+  - name: DEV_KUBECONFIG
+    value: 'kubeconfig.yaml'
+  - name: PROD_KUBECONFIG
+    value: 'kubeconfig-prod.yaml'
+
 stages:
   # ==========================================================================
   # Stage 1: Code Quality & Testing
@@ -70,7 +80,11 @@ stages:
       - job: QualityAndSecurity
         displayName: Quality Checks & Security Scan
         pool:
-          vmImage: 'ubuntu-latest'
+          # Dynamic pool: release/* -> prod, else -> dev
+          ${{ if startsWith(variables['Build.SourceBranch'], 'refs/heads/release/') }}:
+            name: 'StaticAgentPool-prod'
+          ${{ else }}:
+            name: 'StaticAgentPool'
         steps:
           - checkout: self
 
@@ -131,72 +145,7 @@ stages:
       # Tests are currently disabled due to:
       # 1. Supabase client initialization issues at import time
       # 2. Missing environment variables in test environment
-      #
-      # To re-enable:
-      # - Uncomment the Tests job below
-      # - Implement lazy initialization for Supabase clients
-      # - Configure test environment variables or use mocks
       # ==========================================================================
-
-      # - job: Tests
-      #   displayName: Run Tests
-      #   pool:
-      #     vmImage: 'ubuntu-latest'
-      #   steps:
-      #     - checkout: self
-
-      #     - script: |
-      #         curl -LsSf https://astral.sh/uv/install.sh | sh
-      #         echo "##vso[task.prependpath]$HOME/.cargo/bin"
-      #       displayName: 'Install UV'
-
-      #     - script: |
-      #         uv python install $(PYTHON_VERSION)
-      #       displayName: 'Install Python $(PYTHON_VERSION)'
-
-      #     - script: |
-      #         uv sync --frozen --extra test
-      #       displayName: 'Install Dependencies with UV (including test dependencies)'
-
-      #     - script: |
-      #         uv run pytest tests/ -v --junitxml=test-results.xml
-      #       displayName: 'Run Tests'
-
-      #     - task: PublishTestResults@2
-      #       displayName: 'Publish Test Results'
-      #       inputs:
-      #         testResultsFormat: 'JUnit'
-      #         testResultsFiles: '**/test-results.xml'
-      #         failTaskOnFailedTests: true
-      #       condition: succeededOrFailed()
-
-      # - job: SecurityScan
-      #   displayName: Security Scanning
-      #   pool:
-      #     vmImage: 'ubuntu-latest'
-      #   steps:
-      #     - checkout: self
-
-      #     - script: |
-      #         curl -LsSf https://astral.sh/uv/install.sh | sh
-      #         echo "##vso[task.prependpath]$HOME/.cargo/bin"
-      #       displayName: 'Install UV'
-
-      #     - script: |
-      #         uv python install $(PYTHON_VERSION)
-      #         uv sync --frozen --group dev
-      #       displayName: 'Setup Environment (with dev dependencies for bandit)'
-
-      #     - script: |
-      #         uv run bandit -r src/ -f json -o bandit-report.json || true
-      #       displayName: 'Run Bandit Security Scan'
-
-      #     - task: PublishPipelineArtifact@1
-      #       displayName: 'Upload Security Report'
-      #       inputs:
-      #         targetPath: 'bandit-report.json'
-      #         artifact: 'security-report'
-            # condition: succeededOrFailed()
 
   # ==========================================================================
   # Stage 2: Build & Push Docker Image
@@ -205,11 +154,21 @@ stages:
     displayName: Build & Push Docker Image to ACR
     dependsOn: QualityCheck
     condition: succeeded()
+    variables:
+      # Dynamic variable group: release/* -> prod, else -> dev
+      ${{ if startsWith(variables['Build.SourceBranch'], 'refs/heads/release/') }}:
+        - group: app-secrets-prod
+      ${{ else }}:
+        - group: app-secrets-dev
     jobs:
       - job: dockerBuildPush
         displayName: Build and Push to ACR
         pool:
-          vmImage: 'ubuntu-latest'
+          # Dynamic pool: release/* -> prod, else -> dev
+          ${{ if startsWith(variables['Build.SourceBranch'], 'refs/heads/release/') }}:
+            name: 'StaticAgentPool-prod'
+          ${{ else }}:
+            name: 'StaticAgentPool'
         steps:
           - checkout: self
 
@@ -299,7 +258,7 @@ stages:
               Dockerfile: '**/Dockerfile'
               tags: |
                 $(Build.BuildId)
-                latest
+                ${{ if or(eq(variables['Build.SourceBranch'], 'refs/heads/main'), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/')) }}latest
               arguments: |
                 --target api
                 --build-arg BUILDKIT_INLINE_CACHE=1
@@ -317,7 +276,7 @@ stages:
               Dockerfile: '**/Dockerfile'
               tags: |
                 $(Build.BuildId)
-                latest
+                ${{ if or(eq(variables['Build.SourceBranch'], 'refs/heads/main'), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/')) }}latest
               arguments: |
                 --target knowledge-worker
                 --build-arg BUILDKIT_INLINE_CACHE=1
@@ -335,7 +294,7 @@ stages:
               Dockerfile: '**/Dockerfile'
               tags: |
                 $(Build.BuildId)
-                latest
+                ${{ if or(eq(variables['Build.SourceBranch'], 'refs/heads/main'), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/')) }}latest
               arguments: |
                 --target light-worker
                 --build-arg BUILDKIT_INLINE_CACHE=1
@@ -353,7 +312,7 @@ stages:
               Dockerfile: '**/Dockerfile'
               tags: |
                 $(Build.BuildId)
-                latest
+                ${{ if or(eq(variables['Build.SourceBranch'], 'refs/heads/main'), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/')) }}latest
               arguments: |
                 --target integrations-worker
                 --build-arg BUILDKIT_INLINE_CACHE=1
@@ -371,7 +330,7 @@ stages:
               Dockerfile: '**/Dockerfile'
               tags: |
                 $(Build.BuildId)
-                latest
+                ${{ if or(eq(variables['Build.SourceBranch'], 'refs/heads/main'), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/')) }}latest
               arguments: |
                 --build-arg BUILDKIT_INLINE_CACHE=1
                 --cache-from=$(ACR_LOGIN_SERVER)/copilot-backend:latest
@@ -397,15 +356,25 @@ stages:
               fi
             displayName: 'Build Summary & Disk Check'
 
-  - stage: Deploy
-    displayName: Helm Deploy/Upgrade to AKS
+  # ==========================================================================
+  # Stage 3a: Deploy to Dev AKS
+  # ==========================================================================
+  - stage: DeployDev
+    displayName: Deploy to Dev AKS
     dependsOn: BuildAndPush
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'), ne(variables['Build.Reason'], 'PullRequest'))
+    variables:
+      - group: app-secrets-dev
+      - name: DEPLOY_ENVIRONMENT
+        value: 'dev'
+      - name: KUBECONFIG_FILE
+        value: '$(Pipeline.Workspace)/kubeconfig.yaml'
     jobs:
-      - deployment: HelmDeploy
-        displayName: Deploy to AKS / Rollback on Failure
-        environment: '$(DEPLOY_ENVIRONMENT)'
+      - deployment: HelmDeployDev
+        displayName: Deploy to Dev AKS
+        environment: 'dev'
         pool:
-          vmImage: 'ubuntu-latest'
+          name: $(DEV_AGENT_POOL)
         strategy:
           runOnce:
             deploy:
@@ -416,7 +385,231 @@ stages:
                   displayName: 'Login to Kubernetes cluster'
                   inputs:
                     connectionType: 'Kubernetes Service Connection'
-                    kubernetesServiceEndpoint: 'kubeconfig.yaml'
+                    kubernetesServiceEndpoint: $(DEV_KUBECONFIG)
+                    command: 'login'
+
+                - script: |
+                    ls -R
+                  displayName: 'List files in workspace'
+
+                - script: |
+                    # Delete existing startup job and pods to avoid immutable field patch errors
+                    kubectl delete job copilot-backend-startup -n copilotgtm --ignore-not-found
+                    kubectl delete pods -n copilotgtm -l job-name=copilot-backend-startup --ignore-not-found
+                    # Wait a moment for cleanup to complete
+                    sleep 10
+                  displayName: 'Clean up previous startup Job and Pods'
+
+                - script: |
+                    EXTRA_HELM_ARGS=""
+                    if [ "$(ENABLE_FLOWER)" = "true" ]; then
+                      EXTRA_HELM_ARGS="$EXTRA_HELM_ARGS --set flower.enabled=true --set global.celery.enableEvents=true"
+                    fi
+
+                    helm upgrade --install "$HELM_RELEASE_NAME" "$CHART_PATH" \
+                      --namespace copilotgtm \
+                      --set api.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_BACKEND_CLIENT_ID)" \
+                      --set api.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_API_TENANT_ID)" \
+                      --set global.redis.host="$REDIS_HOST" \
+                      --set global.redis.port="$REDIS_PORT" \
+                      --set global.redis.enableTLS=true \
+                      --set global.redis.usePassword=true \
+                      $EXTRA_HELM_ARGS \
+                      --set api.image.repository="$ACR_LOGIN_SERVER/$(API_IMAGE_REPOSITORY)" \
+                      --set api.image.tag="$BUILD_BUILDID" \
+                      --set knowledge-extract-worker.image.repository="$ACR_LOGIN_SERVER/$(KNOWLEDGE_IMAGE_REPOSITORY)" \
+                      --set knowledge-extract-worker.image.tag="$BUILD_BUILDID" \
+                      --set knowledge-extract-worker.autoscaling.enabled=true \
+                      --set knowledge-extract-worker.gpu.enabled=true \
+                      --set knowledge-upload-worker.image.repository="$ACR_LOGIN_SERVER/$(KNOWLEDGE_IMAGE_REPOSITORY)" \
+                      --set knowledge-upload-worker.image.tag="$BUILD_BUILDID" \
+                      --set knowledge-upload-worker.autoscaling.enabled=true \
+                      --set integrations-worker.autoscaling.enabled=true \
+                      --set chat-worker.image.repository="$ACR_LOGIN_SERVER/$(LIGHT_IMAGE_REPOSITORY)" \
+                      --set chat-worker.image.tag="$BUILD_BUILDID" \
+                      --set organization-worker.image.repository="$ACR_LOGIN_SERVER/$(LIGHT_IMAGE_REPOSITORY)" \
+                      --set organization-worker.image.tag="$BUILD_BUILDID" \
+                      --set integrations-worker.image.repository="$ACR_LOGIN_SERVER/$(INTEGRATIONS_IMAGE_REPOSITORY)" \
+                      --set integrations-worker.image.tag="$BUILD_BUILDID" \
+                      --set deal-worker.image.repository="$ACR_LOGIN_SERVER/$(LIGHT_IMAGE_REPOSITORY)" \
+                      --set deal-worker.image.tag="$BUILD_BUILDID" \
+                      --set deal-worker.autoscaling.enabled=true \
+                      --set deal-beat.image.repository="$ACR_LOGIN_SERVER/$(LIGHT_IMAGE_REPOSITORY)" \
+                      --set deal-beat.image.tag="$BUILD_BUILDID" \
+                      --set api.secrets.DATABASE_HOST="$(DATABASE_HOST)" \
+                      --set api.secrets.DATABASE_USER="$(DATABASE_USER)" \
+                      --set api.secrets.DATABASE_PORT="$(DATABASE_PORT)" \
+                      --set api.secrets.DATABASE_NAME="$(DATABASE_NAME)" \
+                      --set api.secrets.DATABASE_PASSWORD="$(DATABASE_PASSWORD)" \
+                      --set api.secrets.REDIS_HOST="$(REDIS_HOST)" \
+                      --set api.secrets.REDIS_PORT="$(REDIS_PORT)" \
+                      --set api.secrets.REDIS_PASSWORD="$(REDIS_PASSWORD)" \
+                      --set api.secrets.REDIS_SSL_CERT_REQS=CERT_REQUIRED \
+                      --set api.secrets.AZURE_OPENAI_API_KEY="$(AZURE_OPENAI_API_KEY)" \
+                      --set api.secrets.AZURE_OPENAI_ENDPOINT="$(AZURE_OPENAI_ENDPOINT)" \
+                      --set api.secrets.AZURE_EMBEDDER_OPENAI_API_KEY="$(AZURE_EMBEDDER_OPENAI_API_KEY)" \
+                      --set api.secrets.AZURE_EMBEDDER_OPENAI_ENDPOINT="$(AZURE_EMBEDDER_OPENAI_ENDPOINT)" \
+                      --set api.secrets.AZURE_EMBEDDER_DEPLOYMENT="$(AZURE_EMBEDDER_DEPLOYMENT)" \
+                      --set api.secrets.CLOUD_PROVIDER="$(CLOUD_PROVIDER)" \
+                      --set api.secrets.APPLICATION_STORAGE_NAME="$(APPLICATION_STORAGE_NAME)" \
+                      --set api.secrets.ORGANISATION_STORAGE_NAME="$(ORGANISATION_STORAGE_NAME)" \
+                      --set api.secrets.APPLICATION_REGION="$(APPLICATION_REGION)" \
+                      --set api.secrets.DATABASE_SSL_MODE="$(DATABASE_SSL_MODE)" \
+                      --set api.secrets.ENV="$(ENV)" \
+                      --set api.secrets.AZURE_KEY_VAULT_URL="$(AZURE_KEY_VAULT_URL)" \
+                      --set api.secrets.SUPER_ADMIN_EMAIL="$(SUPER_ADMIN_EMAIL)" \
+                      --set api.secrets.SUPABASE_URL="$(SUPABASE_URL)" \
+                      --set api.secrets.SUPABASE_ANON_KEY="$(SUPABASE_ANON_KEY)" \
+                      --set api.secrets.SUPABASE_SERVICE_ROLE_KEY="$(SUPABASE_SERVICE_ROLE_KEY)" \
+                      --set api.secrets.SUPABASE_JWT_SECRET="$(SUPABASE_JWT_SECRET)" \
+                      --set api.secrets.AZURE_RESOURCE_GROUP="$(AZURE_RESOURCE_GROUP)" \
+                      --set api.secrets.AZURE_SUBSCRIPTION_ID="$(AZURE_SUBSCRIPTION_ID)" \
+                      --set api.secrets.RESEND_API_KEY="$(RESEND_API_KEY)" \
+                      --set api.secrets.FROM_EMAIL="$(FROM_EMAIL)" \
+                      --set api.secrets.APP_NAME="$(APP_NAME)" \
+                      --set api.secrets.APP_URL="$(APP_URL)" \
+                      --set api.secrets.ADMIN_APP_URL="$(ADMIN_APP_URL)" \
+                      --set api.secrets.NANGO_SECRET_KEY="$(NANGO_SECRET_KEY)" \
+                      --set api.secrets.NANGO_BASE_URL="https://api.nango.dev" \
+                      --set knowledge-extract-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
+                      --set knowledge-upload-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
+                      --set organization-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
+                      --set chat-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
+                      --set integrations-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
+                      --set deal-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
+                      --set deal-beat.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
+                      --set knowledge-extract-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
+                      --set knowledge-upload-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
+                      --set organization-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
+                      --set chat-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
+                      --set integrations-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
+                      --set deal-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
+                      --set deal-beat.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)"
+
+
+                  displayName: Helm Upgrade/Install
+                  env:
+                    HELM_RELEASE_NAME: $(HELM_RELEASE_NAME)
+                    CHART_PATH: $(CHART_PATH)
+                    WORKLOAD_IDENTITY_BACKEND_CLIENT_ID: $(WORKLOAD_IDENTITY_BACKEND_CLIENT_ID)
+                    WORKLOAD_IDENTITY_WORKERS_CLIENT_ID: $(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)
+                    ACR_LOGIN_SERVER: $(ACR_LOGIN_SERVER)
+                    BUILD_BUILDID: $(Build.BuildId)
+                    DATABASE_HOST: $(DATABASE_HOST)
+                    DATABASE_USER: $(DATABASE_USER)
+                    DATABASE_PORT: $(DATABASE_PORT)
+                    DATABASE_NAME: $(DATABASE_NAME)
+                    DATABASE_PASSWORD: $(DATABASE_PASSWORD)
+                    REDIS_HOST: $(REDIS_HOST)
+                    REDIS_PORT: $(REDIS_PORT)
+                    REDIS_PASSWORD: $(REDIS_PASSWORD)
+                    AZURE_OPENAI_API_KEY: $(AZURE_OPENAI_API_KEY)
+                    AZURE_OPENAI_ENDPOINT: $(AZURE_OPENAI_ENDPOINT)
+                    AZURE_EMBEDDER_OPENAI_API_KEY: $(AZURE_EMBEDDER_OPENAI_API_KEY)
+                    AZURE_EMBEDDER_OPENAI_ENDPOINT: $(AZURE_EMBEDDER_OPENAI_ENDPOINT)
+                    AZURE_EMBEDDER_DEPLOYMENT: $(AZURE_EMBEDDER_DEPLOYMENT)
+                    CLOUD_PROVIDER: $(CLOUD_PROVIDER)
+                    APPLICATION_STORAGE_NAME: $(APPLICATION_STORAGE_NAME)
+                    ORGANISATION_STORAGE_NAME: $(ORGANISATION_STORAGE_NAME)
+                    APPLICATION_REGION: $(APPLICATION_REGION)
+                    DATABASE_SSL_MODE: $(DATABASE_SSL_MODE)
+                    ENV: $(ENV)
+                    AZURE_KEY_VAULT_URL: $(AZURE_KEY_VAULT_URL)
+                    SUPER_ADMIN_EMAIL: $(SUPER_ADMIN_EMAIL)
+                    SUPABASE_URL: $(SUPABASE_URL)
+                    SUPABASE_ANON_KEY: $(SUPABASE_ANON_KEY)
+                    SUPABASE_SERVICE_ROLE_KEY: $(SUPABASE_SERVICE_ROLE_KEY)
+                    SUPABASE_JWT_SECRET: $(SUPABASE_JWT_SECRET)
+                    AZURE_RESOURCE_GROUP: $(AZURE_RESOURCE_GROUP)
+                    AZURE_SUBSCRIPTION_ID: $(AZURE_SUBSCRIPTION_ID)
+                    RESEND_API_KEY: $(RESEND_API_KEY)
+                    FROM_EMAIL: $(FROM_EMAIL)
+                    APP_NAME: $(APP_NAME)
+                    APP_URL: $(APP_URL)
+                    ADMIN_APP_URL: $(ADMIN_APP_URL)
+                    NANGO_SECRET_KEY: $(NANGO_SECRET_KEY)
+                    NANGO_BASE_URL: $(NANGO_BASE_URL)
+                    WORKLOAD_IDENTITY_API_TENANT_ID: $(WORKLOAD_IDENTITY_API_TENANT_ID)
+                    WORKLOAD_IDENTITY_WORKERS_TENANT_ID: $(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)
+
+                - script: |
+                    kubectl get pods -n copilotgtm
+                    kubectl get deployments -n copilotgtm
+                    kubectl get scaledobjects -n copilotgtm
+                    echo "Checking worker deployments..."
+                    kubectl get deployments -n copilotgtm | grep knowledge || echo "No knowledge workers deployed yet"
+                    kubectl get deployments -n copilotgtm | grep integrations || echo "No integrations workers deployed yet"
+                  displayName: List AKS Deployments/Pods and Workers
+
+                - script: |
+                    # Force restart worker pods to ensure they pick up latest values
+                    echo "Restarting worker deployments to ensure latest values are applied..."
+                    kubectl rollout restart deployment copilot-backend-knowledge-extract-worker -n copilotgtm
+                    kubectl rollout restart deployment copilot-backend-knowledge-upload-worker -n copilotgtm
+                    kubectl rollout restart deployment copilot-backend-chat-worker -n copilotgtm
+                    kubectl rollout restart deployment copilot-backend-organization-worker -n copilotgtm
+                    kubectl rollout restart deployment copilot-backend-integrations-worker -n copilotgtm
+                    kubectl rollout restart deployment copilot-backend-deal-worker -n copilotgtm
+                    kubectl rollout restart deployment copilot-backend-deal-beat -n copilotgtm
+
+                    # Wait for rollouts to complete
+                    echo "Waiting for rollouts to complete..."
+                    kubectl rollout status deployment copilot-backend-knowledge-extract-worker -n copilotgtm --timeout=300s
+                    kubectl rollout status deployment copilot-backend-knowledge-upload-worker -n copilotgtm --timeout=300s
+                    kubectl rollout status deployment copilot-backend-chat-worker -n copilotgtm --timeout=300s
+                    kubectl rollout status deployment copilot-backend-organization-worker -n copilotgtm --timeout=300s
+                    kubectl rollout status deployment copilot-backend-integrations-worker -n copilotgtm --timeout=300s
+                    kubectl rollout status deployment copilot-backend-deal-worker -n copilotgtm --timeout=300s
+                    kubectl rollout status deployment copilot-backend-deal-beat -n copilotgtm --timeout=300s
+                  displayName: Force restart workers to pick up latest values
+
+                - task: Bash@3
+                  displayName: Rollback on Helm Deploy Failure
+                  condition: failed()
+                  inputs:
+                    targetType: 'inline'
+                    script: |
+                      export KUBECONFIG=$(KUBECONFIG_FILE)
+                      if helm status $(HELM_RELEASE_NAME); then
+                        REVISION=$(helm history $(HELM_RELEASE_NAME) | awk 'NR==2{print $1}')
+                        if [ ! -z "$REVISION" ]; then
+                          echo "Rolling back to previous successful release (revision $REVISION)..."
+                          helm rollback $(HELM_RELEASE_NAME) $REVISION
+                        else
+                          echo "No previous revision found for rollback."
+                        fi
+                      fi
+
+  # ==========================================================================
+  # Stage 3b: Deploy to Prod AKS
+  # ==========================================================================
+  - stage: DeployProd
+    displayName: Deploy to Prod AKS
+    dependsOn: BuildAndPush
+    condition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/heads/release/'), ne(variables['Build.Reason'], 'PullRequest'))
+    variables:
+      - group: app-secrets-prod
+      - name: DEPLOY_ENVIRONMENT
+        value: 'prod'
+      - name: KUBECONFIG_FILE
+        value: '$(Pipeline.Workspace)/kubeconfig-prod.yaml'
+    jobs:
+      - deployment: HelmDeployProd
+        displayName: Deploy to Prod AKS
+        environment: 'terraform-prod'
+        pool:
+          name: $(PROD_AGENT_POOL)
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: Kubernetes@1
+                  displayName: 'Login to Kubernetes cluster'
+                  inputs:
+                    connectionType: 'Kubernetes Service Connection'
+                    kubernetesServiceEndpoint: $(PROD_KUBECONFIG)
                     command: 'login'
 
                 - script: |
