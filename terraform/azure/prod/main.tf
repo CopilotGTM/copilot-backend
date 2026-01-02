@@ -287,6 +287,19 @@ resource "azurerm_role_assignment" "aks_kubelet_acr_pull" {
 }
 
 # -----------------------------------------------------------------
+# Role Assignment: Allow DevOps Service Principal to push images to ACR
+# -----------------------------------------------------------------
+resource "azurerm_role_assignment" "devops_sp_acr_push" {
+  principal_id         = module.service_principal.object_id
+  role_definition_name = "AcrPush"
+  scope                = module.acr.acr_id
+  depends_on = [
+    module.acr,
+    module.service_principal
+  ]
+}
+
+# -----------------------------------------------------------------
 # AGIC Role Assignments (required for brownfield Application Gateway)
 # When using a pre-existing Application Gateway, AGIC needs explicit permissions
 # -----------------------------------------------------------------
@@ -863,6 +876,21 @@ resource "azuread_application_federated_identity_credential" "devops_acr_oidc" {
 
   issuer    = module.service_connection_acr.workload_identity_federation_issuer
   subject   = module.service_connection_acr.workload_identity_federation_subject
+  audiences = ["api://AzureADTokenExchange"]
+}
+
+# -----------------------------------------------------------------
+# Federated Identity Credential for Azure DevOps Pipeline (vstoken issuer)
+# Required because pipelines are created in dev but accessed from prod.
+# Azure DevOps uses vstoken.dev.azure.com as an alternative token issuer.
+# -----------------------------------------------------------------
+resource "azuread_application_federated_identity_credential" "devops_vstoken_oidc" {
+  application_id = module.service_principal.application_id
+  display_name   = "azuredevops-app-copilotgtm-${var.env}"
+  description    = "Workload Identity Federation for Azure DevOps pipeline (vstoken issuer)"
+
+  issuer    = "https://vstoken.dev.azure.com/${data.azurerm_client_config.current.tenant_id}"
+  subject   = "sc://copilotgtm/app-copilotgtm/${local.service_connection_name}"
   audiences = ["api://AzureADTokenExchange"]
 }
 
