@@ -456,7 +456,7 @@ module "azure_openai" {
       deployment_name = "text-embedding-3-large"
       model_name      = "text-embedding-3-large"
       sku             = "Standard"
-      capacity        = 300
+      capacity        = 49 # Reduced from 300 - subscription quota limit (350 TPM with 300 used by dev/uat)
       version         = "1"
       publisher       = "OpenAI"
     }
@@ -906,7 +906,7 @@ module "devops_agent" {
   # Azure DevOps configuration
   azuredevops_url = var.org_service_url
   azuredevops_pat = var.azuredevops_pat
-  agent_pool      = var.agent_pool
+  agent_pool      = "${var.agent_pool}-${var.env}"
   agent_name      = var.agent_name
 
   # Pre-install tools for CI/CD pipelines
