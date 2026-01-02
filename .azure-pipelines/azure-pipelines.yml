@@ -34,33 +34,53 @@ pr:
       - main
 
 variables:
-  CHART_PATH: ./charts/application
+  # Variable group for build stage (conditional based on branch)
+  - ${{ if startsWith(variables['Build.SourceBranch'], 'refs/heads/release/') }}:
+    - group: app-secrets-prod
+  - ${{ else }}:
+    - group: app-secrets-dev
+
+  # Static variables
+  - name: CHART_PATH
+    value: ./charts/application
   # KUBECONFIG_FILE is defined per-stage (DeployDev, DeployProd) to use environment-specific kubeconfig
-  PYTHON_VERSION: '3.11'
+  - name: PYTHON_VERSION
+    value: '3.11'
 
   # Optional: enable Flower UI + Celery events during deploy
   # Keep default false to avoid extra overhead in non-dev envs.
-  ENABLE_FLOWER: 'true'
+  - name: ENABLE_FLOWER
+    value: 'true'
 
   # Image repositories (separated images by component)
-  API_IMAGE_REPOSITORY: 'copilot-backend-api'
-  KNOWLEDGE_IMAGE_REPOSITORY: 'copilot-backend-knowledge-worker'
-  LIGHT_IMAGE_REPOSITORY: 'copilot-backend-light-worker'
-  INTEGRATIONS_IMAGE_REPOSITORY: 'copilot-backend-integrations-worker'
+  - name: API_IMAGE_REPOSITORY
+    value: 'copilot-backend-api'
+  - name: KNOWLEDGE_IMAGE_REPOSITORY
+    value: 'copilot-backend-knowledge-worker'
+  - name: LIGHT_IMAGE_REPOSITORY
+    value: 'copilot-backend-light-worker'
+  - name: INTEGRATIONS_IMAGE_REPOSITORY
+    value: 'copilot-backend-integrations-worker'
 
   # Environment-specific agent pools (each env has its own VNet + agent)
-  DEV_AGENT_POOL: 'StaticAgentPool'
-  PROD_AGENT_POOL: 'StaticAgentPool-prod'
+  - name: DEV_AGENT_POOL
+    value: 'StaticAgentPool'
+  - name: PROD_AGENT_POOL
+    value: 'StaticAgentPool-prod'
 
   # Dynamic Agent Pool for Build/Quality stages
-  ${{ if startsWith(variables['Build.SourceBranch'], 'refs/heads/release/') }}:
-    BUILD_AGENT_POOL: 'StaticAgentPool-prod'
-  ${{ else }}:
-    BUILD_AGENT_POOL: 'StaticAgentPool'
+  - ${{ if startsWith(variables['Build.SourceBranch'], 'refs/heads/release/') }}:
+    - name: BUILD_AGENT_POOL
+      value: 'StaticAgentPool-prod'
+  - ${{ else }}:
+    - name: BUILD_AGENT_POOL
+      value: 'StaticAgentPool'
 
   # Environment-specific kubeconfig secure files
-  DEV_KUBECONFIG: 'kubeconfig.yaml'
-  PROD_KUBECONFIG: 'kubeconfig-prod.yaml'
+  - name: DEV_KUBECONFIG
+    value: 'kubeconfig.yaml'
+  - name: PROD_KUBECONFIG
+    value: 'kubeconfig-prod.yaml'
 
 stages:
   # ==========================================================================
@@ -150,11 +170,6 @@ stages:
         displayName: Build and Push to ACR
         pool:
           name: $(BUILD_AGENT_POOL)
-        variables:
-          ${{ if startsWith(variables['Build.SourceBranch'], 'refs/heads/release/') }}:
-            - group: app-secrets-prod
-          ${{ if not(startsWith(variables['Build.SourceBranch'], 'refs/heads/release/')) }}:
-            - group: app-secrets-dev
         steps:
           - checkout: self
 
