@@ -56,6 +56,7 @@ ingress:
     appgw.ingress.kubernetes.io/connection-draining: "true"
     appgw.ingress.kubernetes.io/connection-draining-timeout: "30"
     appgw.ingress.kubernetes.io/cookie-based-affinity: "false"
+    appgw.ingress.kubernetes.io/health-probe-path: "/health"
     # WebSocket support
     appgw.ingress.kubernetes.io/backend-hostname: "copilot-backend"
     # SSL/TLS - cert-manager creates the secret, AGIC uses it
