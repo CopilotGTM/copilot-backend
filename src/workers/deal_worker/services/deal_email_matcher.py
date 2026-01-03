@@ -35,8 +35,10 @@ from src.domain.models.organisation_tables.sync.email_models import (
     DealEmailDirection,
     Email,
 )
+from src.domain.models.organisation_tables.sync.integration_models import KnowledgeIntegration
 from src.infra.utils.logger import get_logger
 from src.service.crm.deal_timeline_sync_service import build_email_timeline_event
+from src.service.crm.timeline_event_source_resolver import resolve_email_event_source
 
 logger = get_logger(__name__)
 
@@ -397,6 +399,7 @@ class DealEmailMatcher:
         self,
         email: Email,
         match: EmailMatchResult,
+        integration_type: Any | None = None,
     ) -> DealEmailAssociation | None:
         """
         Create a DealEmailAssociation for a matched email-deal pair.
@@ -432,11 +435,13 @@ class DealEmailMatcher:
         self.session.add(association)
 
         # Create timeline event inline (same transaction)
+        resolved_source = resolve_email_event_source(integration_type)
         timeline_event = build_email_timeline_event(
             organisation_id=self.organisation_id,
             deal_id=match.deal_id,
             association=association,
             email=email,
+            event_source=resolved_source,
         )
         self.session.add(timeline_event)
 
@@ -476,6 +481,17 @@ class DealEmailMatcher:
             logger.info(f"No unprocessed emails found for organisation {self.organisation_id}")
             return stats
 
+        # Preload integration types for this batch (avoid N+1 queries)
+        integration_ids = {e.integration_id for e in emails if getattr(e, "integration_id", None)}
+        integration_type_by_id: dict[UUID, Any] = {}
+        if integration_ids:
+            it_stmt = select(
+                KnowledgeIntegration.integration_id,
+                KnowledgeIntegration.integration_type,
+            ).where(KnowledgeIntegration.integration_id.in_(integration_ids))
+            it_result = await self.session.execute(it_stmt)
+            integration_type_by_id = dict(it_result.all())
+
         # Track which deals got matches
         deals_matched: set[UUID] = set()
 
@@ -489,7 +505,11 @@ class DealEmailMatcher:
                 stats["emails_matched"] += 1
 
                 for match in matches:
-                    association = await self._create_association(email, match)
+                    association = await self._create_association(
+                        email,
+                        match,
+                        integration_type=integration_type_by_id.get(email.integration_id),
+                    )
                     if association:
                         stats["associations_created"] += 1
                         deals_matched.add(match.deal_id)

@@ -4,20 +4,23 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import QueryableAttribute, selectinload
+from sqlalchemy.sql.schema import Table
 from src.domain.models.organisation_tables.sync.calendar import (
     CalendarEvent,
     CalendarEventDealAssociation,
+    CalendarEventUserState,
 )
 from src.domain.models.organisation_tables.sync.email_models import (
     DealEmailAssociation,
     Email,
 )
+from src.domain.models.organisation_tables.sync.integration_models import KnowledgeIntegration
 from src.domain.models.organisation_tables.sync.timeline_models import (
     DealTimelineEvent,
     TimelineEventSource,
@@ -25,8 +28,25 @@ from src.domain.models.organisation_tables.sync.timeline_models import (
 )
 from src.infra.utils.cursor import decode_cursor, encode_cursor
 from src.infra.utils.logger import get_logger
+from src.service.crm.timeline_event_source_resolver import (
+    resolve_email_event_source,
+    resolve_meeting_event_source,
+)
 
 logger = get_logger("deal_timeline_service")
+
+
+def _table(model: Any) -> Table:
+    """Safely extract the SQLAlchemy table for a mapped model."""
+    table_name = getattr(model, "__tablename__", None)
+    if table_name is None:
+        raise DealTimelineServiceError("Model missing __tablename__ for table lookup")
+
+    table = model.metadata.tables.get(table_name)
+    if table is None:
+        raise DealTimelineServiceError(f"Table not found for model {model}")
+
+    return cast(Table, table)
 
 
 def _enum_value(val: Enum | str | None) -> str | None:
@@ -39,7 +59,7 @@ def _enum_value(val: Enum | str | None) -> str | None:
         return None
     if isinstance(val, str):
         return val
-    return val.value
+    return str(val.value)
 
 
 class DealTimelineServiceError(Exception):
@@ -102,26 +122,28 @@ class DealTimelineService:
         Returns:
             Tuple of (events, next_cursor, total_count)
         """
+        t: Table = _table(DealTimelineEvent)
+
         # Base query
         stmt = select(DealTimelineEvent).where(
-            DealTimelineEvent.organisation_id == self.organisation_id,
-            DealTimelineEvent.deal_id == deal_id,
+            t.c.organisation_id == self.organisation_id,
+            t.c.deal_id == deal_id,
         )
 
         # Exclude hidden events by default
         if not include_excluded:
-            stmt = stmt.where(DealTimelineEvent.excluded_at.is_(None))
+            stmt = stmt.where(t.c.excluded_at.is_(None))
 
         # Filter by event types
         if event_types:
             type_values = [t.value if hasattr(t, "value") else str(t) for t in event_types]
-            stmt = stmt.where(DealTimelineEvent.event_type.in_(type_values))
+            stmt = stmt.where(t.c.event_type.in_(type_values))
 
         # Date range filters
         if start_date:
-            stmt = stmt.where(DealTimelineEvent.event_timestamp >= start_date)
+            stmt = stmt.where(t.c.event_timestamp >= start_date)
         if end_date:
-            stmt = stmt.where(DealTimelineEvent.event_timestamp <= end_date)
+            stmt = stmt.where(t.c.event_timestamp <= end_date)
 
         # Cursor-based pagination
         if cursor:
@@ -133,20 +155,20 @@ class DealTimelineService:
             if sort_order == "desc":
                 stmt = stmt.where(
                     or_(
-                        DealTimelineEvent.event_timestamp < ts,
+                        t.c.event_timestamp < ts,
                         and_(
-                            DealTimelineEvent.event_timestamp == ts,
-                            DealTimelineEvent.timeline_event_id < event_id,
+                            t.c.event_timestamp == ts,
+                            t.c.timeline_event_id < event_id,
                         ),
                     )
                 )
             else:
                 stmt = stmt.where(
                     or_(
-                        DealTimelineEvent.event_timestamp > ts,
+                        t.c.event_timestamp > ts,
                         and_(
-                            DealTimelineEvent.event_timestamp == ts,
-                            DealTimelineEvent.timeline_event_id > event_id,
+                            t.c.event_timestamp == ts,
+                            t.c.timeline_event_id > event_id,
                         ),
                     )
                 )
@@ -154,13 +176,13 @@ class DealTimelineService:
         # Apply ordering
         if sort_order == "desc":
             stmt = stmt.order_by(
-                DealTimelineEvent.event_timestamp.desc(),
-                DealTimelineEvent.timeline_event_id.desc(),
+                t.c.event_timestamp.desc(),
+                t.c.timeline_event_id.desc(),
             )
         else:
             stmt = stmt.order_by(
-                DealTimelineEvent.event_timestamp.asc(),
-                DealTimelineEvent.timeline_event_id.asc(),
+                t.c.event_timestamp.asc(),
+                t.c.timeline_event_id.asc(),
             )
 
         # Fetch one more than limit to determine if there are more results
@@ -177,14 +199,14 @@ class DealTimelineService:
             next_cursor = encode_cursor(last_event.event_timestamp, last_event.timeline_event_id)
 
         # Get total count (separate query for efficiency)
-        count_stmt = select(DealTimelineEvent.timeline_event_id).where(
-            DealTimelineEvent.organisation_id == self.organisation_id,
-            DealTimelineEvent.deal_id == deal_id,
+        count_stmt = select(t.c.timeline_event_id).where(
+            t.c.organisation_id == self.organisation_id,
+            t.c.deal_id == deal_id,
         )
         if not include_excluded:
-            count_stmt = count_stmt.where(DealTimelineEvent.excluded_at.is_(None))
+            count_stmt = count_stmt.where(t.c.excluded_at.is_(None))
         if event_types:
-            count_stmt = count_stmt.where(DealTimelineEvent.event_type.in_(type_values))
+            count_stmt = count_stmt.where(t.c.event_type.in_(type_values))
 
         count_result = await self.session.execute(
             select(func.count()).select_from(count_stmt.subquery())
@@ -195,9 +217,10 @@ class DealTimelineService:
 
     async def get_timeline_event_by_id(self, timeline_event_id: UUID) -> DealTimelineEvent | None:
         """Get a single timeline event by ID."""
+        t: Table = _table(DealTimelineEvent)
         stmt = select(DealTimelineEvent).where(
-            DealTimelineEvent.organisation_id == self.organisation_id,
-            DealTimelineEvent.timeline_event_id == timeline_event_id,
+            t.c.organisation_id == self.organisation_id,
+            t.c.timeline_event_id == timeline_event_id,
         )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
@@ -282,9 +305,10 @@ class DealTimelineService:
             logger.warning("Invalid email source_record_id: %s", event.source_record_id)
             return preview
 
+        association_table: Table = _table(DealEmailAssociation)
         stmt = select(DealEmailAssociation).where(
-            DealEmailAssociation.organisation_id == self.organisation_id,
-            DealEmailAssociation.association_id == association_id,
+            association_table.c.organisation_id == self.organisation_id,
+            association_table.c.association_id == association_id,
         )
         result = await self.session.execute(stmt)
         association = result.scalar_one_or_none()
@@ -294,11 +318,12 @@ class DealTimelineService:
         # Best-effort email message fetch
         email: Email | None = None
         if association.internet_message_id:
+            email_table: Table = _table(Email)
             email_stmt = (
                 select(Email)
                 .where(
-                    Email.organisation_id == self.organisation_id,
-                    Email.internet_message_id == association.internet_message_id,
+                    email_table.c.organisation_id == self.organisation_id,
+                    email_table.c.internet_message_id == association.internet_message_id,
                 )
                 .limit(1)
             )
@@ -330,17 +355,20 @@ class DealTimelineService:
             logger.warning("Invalid meeting source_record_id: %s", event.source_record_id)
             return preview
 
+        assoc_table: Table = _table(CalendarEventDealAssociation)
+        event_table: Table = _table(CalendarEvent)
+        attendees_attr = cast(QueryableAttribute[Any], CalendarEvent.attendees)
         stmt = (
             select(CalendarEventDealAssociation, CalendarEvent)
             .outerjoin(
                 CalendarEvent,
-                (CalendarEventDealAssociation.event_id == CalendarEvent.event_id)
-                & (CalendarEvent.organisation_id == self.organisation_id),
+                (assoc_table.c.event_id == event_table.c.event_id)
+                & (event_table.c.organisation_id == self.organisation_id),
             )
-            .options(selectinload(CalendarEvent.attendees))
+            .options(selectinload(attendees_attr))
             .where(
-                CalendarEventDealAssociation.organisation_id == self.organisation_id,
-                CalendarEventDealAssociation.association_id == association_id,
+                assoc_table.c.organisation_id == self.organisation_id,
+                assoc_table.c.association_id == association_id,
             )
         )
         result = await self.session.execute(stmt)
@@ -410,7 +438,7 @@ class DealTimelineService:
         from_email: str | None = None,
         participant_names: list[str] | None = None,
         participant_count: int = 0,
-        event_source: TimelineEventSource = TimelineEventSource.EMAIL_GMAIL,
+        event_source: TimelineEventSource | None = None,
     ) -> DealTimelineEvent:
         """
         Create a timeline event for an email association.
@@ -430,6 +458,17 @@ class DealTimelineService:
         Returns:
             Created DealTimelineEvent
         """
+        resolved_source = event_source
+        if resolved_source is None and email is not None:
+            it_stmt = select(KnowledgeIntegration).where(
+                _table(KnowledgeIntegration).c.integration_id == email.integration_id
+            )
+            it_result = await self.session.execute(it_stmt)
+            integration = it_result.scalar_one_or_none()
+            integration_type = getattr(integration, "integration_type", None)
+            resolved_source = resolve_email_event_source(integration_type)
+        resolved_source = resolved_source or TimelineEventSource.EMAIL_GMAIL
+
         # Extract data from email if provided
         subject = email_subject
         date = email_date
@@ -465,7 +504,7 @@ class DealTimelineService:
             organisation_id=self.organisation_id,
             deal_id=deal_id,
             event_type=TimelineEventType.EMAIL,
-            event_source=event_source,
+            event_source=resolved_source,
             event_timestamp=date,
             source_record_id=str(association.association_id),
             title=subject,
@@ -496,7 +535,7 @@ class DealTimelineService:
         duration_minutes: int | None = None,
         participant_names: list[str] | None = None,
         participant_count: int = 0,
-        event_source: TimelineEventSource = TimelineEventSource.CALENDAR_GOOGLE,
+        event_source: TimelineEventSource | None = None,
     ) -> DealTimelineEvent:
         """
         Create a timeline event for a meeting association.
@@ -515,6 +554,37 @@ class DealTimelineService:
         Returns:
             Created DealTimelineEvent
         """
+        resolved_source = event_source
+        if resolved_source is None and event is not None:
+            calendar_integration_type = None
+            if getattr(event, "integration_id", None):
+                it_stmt = select(KnowledgeIntegration).where(
+                    _table(KnowledgeIntegration).c.integration_id == event.integration_id
+                )
+                it_result = await self.session.execute(it_stmt)
+                integration = it_result.scalar_one_or_none()
+                calendar_integration_type = getattr(integration, "integration_type", None)
+            else:
+                # Fallback for shared calendar events: pick any user-state integration.
+                state_table: Table = _table(CalendarEventUserState)
+                state_stmt = (
+                    select(state_table.c.integration_id)
+                    .where(state_table.c.event_id == event.event_id)
+                    .limit(1)
+                )
+                state_result = await self.session.execute(state_stmt)
+                integration_id = state_result.scalar_one_or_none()
+                if integration_id is not None:
+                    it_stmt = select(KnowledgeIntegration).where(
+                        _table(KnowledgeIntegration).c.integration_id == integration_id
+                    )
+                    it_result = await self.session.execute(it_stmt)
+                    integration = it_result.scalar_one_or_none()
+                    calendar_integration_type = getattr(integration, "integration_type", None)
+
+            resolved_source = resolve_meeting_event_source(event, calendar_integration_type)
+        resolved_source = resolved_source or TimelineEventSource.CALENDAR_GOOGLE
+
         title = meeting_title
         start_at = meeting_start
         duration = duration_minutes
@@ -550,7 +620,7 @@ class DealTimelineService:
             organisation_id=self.organisation_id,
             deal_id=deal_id,
             event_type=TimelineEventType.MEETING,
-            event_source=event_source,
+            event_source=resolved_source,
             event_timestamp=start_at,
             source_record_id=str(association.association_id),
             title=title,
@@ -588,11 +658,12 @@ class DealTimelineService:
 
         excluded_at = excluded_at or datetime.now(UTC)
 
+        t: Table = _table(DealTimelineEvent)
         stmt = (
-            update(DealTimelineEvent)
+            update(t)
             .where(
-                DealTimelineEvent.organisation_id == self.organisation_id,
-                DealTimelineEvent.timeline_event_id == timeline_event_id,
+                t.c.organisation_id == self.organisation_id,
+                t.c.timeline_event_id == timeline_event_id,
             )
             .values(excluded_at=excluded_at, updated_at=datetime.now(UTC))
         )
@@ -613,11 +684,12 @@ class DealTimelineService:
         """
         from datetime import UTC
 
+        t: Table = _table(DealTimelineEvent)
         stmt = (
-            update(DealTimelineEvent)
+            update(t)
             .where(
-                DealTimelineEvent.organisation_id == self.organisation_id,
-                DealTimelineEvent.timeline_event_id == timeline_event_id,
+                t.c.organisation_id == self.organisation_id,
+                t.c.timeline_event_id == timeline_event_id,
             )
             .values(status=status, updated_at=datetime.now(UTC))
         )
@@ -642,11 +714,12 @@ class DealTimelineService:
         Returns:
             Existing timeline event or None
         """
+        t: Table = _table(DealTimelineEvent)
         stmt = select(DealTimelineEvent).where(
-            DealTimelineEvent.organisation_id == self.organisation_id,
-            DealTimelineEvent.deal_id == deal_id,
-            DealTimelineEvent.event_type == event_type.value,
-            DealTimelineEvent.source_record_id == source_record_id,
+            t.c.organisation_id == self.organisation_id,
+            t.c.deal_id == deal_id,
+            t.c.event_type == event_type.value,
+            t.c.source_record_id == source_record_id,
         )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
