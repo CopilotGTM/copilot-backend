@@ -95,9 +95,11 @@ class AsyncRedisConnectionManager:
         config = Config()
         redis_host, redis_port, redis_password = config.get_redis_client_details
 
-        # Determine if SSL should be used (enabled for non-local hosts)
+        # Determine if SSL should be used (disabled for local hosts and Docker containers)
         ssl_enabled = not (
-            redis_host in ["localhost", "127.0.0.1"] or redis_host.startswith("192.168.")
+            redis_host in ["localhost", "127.0.0.1", "redis"]
+            or redis_host.startswith("192.168.")
+            or config.env == "local"
         )
 
         # Use rediss:// protocol for SSL, redis:// for non-SSL

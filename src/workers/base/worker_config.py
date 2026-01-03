@@ -20,9 +20,11 @@ class BaseWorkerConfig:
         self.ssl_config = self._get_ssl_config()
 
     def _get_broker_url(self):
-        # Use redis (non-SSL) for localhost, even in dev/prod env
+        # Use redis (non-SSL) for localhost or local Docker containers
         ssl_enabled = not (
-            self.redis_host in ["localhost", "127.0.0.1"] or self.redis_host.startswith("192.168.")
+            self.redis_host in ["localhost", "127.0.0.1", "redis"]
+            or self.redis_host.startswith("192.168.")
+            or self.config.env == "local"
         )
         redis_scheme = "redis" if not ssl_enabled else "rediss"
 
@@ -31,9 +33,11 @@ class BaseWorkerConfig:
         return broker_url
 
     def _get_ssl_config(self):
-        # Only use SSL for remote Redis, not localhost
+        # Only use SSL for remote Redis, not localhost or local Docker containers
         ssl_enabled = not (
-            self.redis_host in ["localhost", "127.0.0.1"] or self.redis_host.startswith("192.168.")
+            self.redis_host in ["localhost", "127.0.0.1", "redis"]
+            or self.redis_host.startswith("192.168.")
+            or self.config.env == "local"
         )
         if ssl_enabled:
             # Default to CERT_REQUIRED for security (instead of CERT_NONE)
