@@ -1,0 +1,380 @@
+# =============================================================================
+# Docker Compose for Local Development
+# =============================================================================
+# This file sets up the Copilot Backend services for local development.
+#
+# Azure Authentication: Mounts your local ~/.azure credentials into containers
+# so they can authenticate with Azure services (Key Vault, Storage, etc.)
+#
+# Prerequisites:
+#   1. Run `az login` on your local machine before starting
+#   2. Copy .env to .env.local and adjust as needed
+#
+# Usage:
+#   docker-compose up -d              # Start all services
+#   docker-compose up api redis       # Start only API and Redis
+#   docker-compose logs -f api        # Follow API logs
+#   docker-compose down               # Stop all services
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Redis - Local instance (replaces Azure Redis for development)
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: copilot-redis
+    ports:
+      - "6379:6379"
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - copilot-network
+
+  # ---------------------------------------------------------------------------
+  # API Service (FastAPI Backend)
+  # ---------------------------------------------------------------------------
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+    container_name: copilot-api
+    ports:
+      - "8080:8080"
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    environment:
+      # Set to local environment for proper Redis SSL handling
+      - ENV=local
+      # Override Redis to use local instance
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_SSL=false
+      - REDIS_SSL_CERT_REQS=none
+      - REDIS_PASSWORD=
+      # Celery broker URL (local Redis, no SSL)
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    env_file:
+      - .env
+    volumes:
+      # Mount Azure CLI credentials for Azure service authentication
+      # Removed :ro to allow token refreshes or login from within container if needed
+      - azure-data:/home/appuser/.azure
+      # Mount source code for hot reload (optional - comment out for production-like testing)
+      - ./src:/app/src:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - copilot-network
+
+  # ---------------------------------------------------------------------------
+  # Knowledge Extract Worker
+  # ---------------------------------------------------------------------------
+  knowledge-extract-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+    container_name: copilot-knowledge-extract-worker
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    command: >
+      celery -A src.workers.knowledge_worker.celery_app worker
+      --queues=knowledge_extract
+      --concurrency=3
+      --loglevel=info
+      --hostname=knowledge-extract@%h
+    environment:
+      - ENV=local
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_SSL=false
+      - REDIS_SSL_CERT_REQS=none
+      - REDIS_PASSWORD=
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    env_file:
+      - .env
+    volumes:
+      - azure-data:/home/appuser/.azure
+      - ./src:/app/src:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - copilot-network
+
+  # ---------------------------------------------------------------------------
+  # Knowledge Upload Worker
+  # ---------------------------------------------------------------------------
+  knowledge-upload-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+    container_name: copilot-knowledge-upload-worker
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    command: >
+      celery -A src.workers.knowledge_worker.celery_app worker
+      --queues=knowledge_upload
+      --concurrency=4
+      --loglevel=info
+      --hostname=knowledge-upload@%h
+    environment:
+      - ENV=local
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_SSL=false
+      - REDIS_SSL_CERT_REQS=none
+      - REDIS_PASSWORD=
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    env_file:
+      - .env
+    volumes:
+      - azure-data:/home/appuser/.azure
+      - ./src:/app/src:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - copilot-network
+
+  # ---------------------------------------------------------------------------
+  # Organization Worker
+  # ---------------------------------------------------------------------------
+  organization-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+    container_name: copilot-organization-worker
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    command: >
+      celery -A src.workers.organization_worker.celery_app worker
+      --queues=organization
+      --concurrency=5
+      --loglevel=info
+      --hostname=organization@%h
+    environment:
+      - ENV=local
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_SSL=false
+      - REDIS_SSL_CERT_REQS=none
+      - REDIS_PASSWORD=
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    env_file:
+      - .env
+    volumes:
+      - azure-data:/home/appuser/.azure
+      - ./src:/app/src:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - copilot-network
+
+  # ---------------------------------------------------------------------------
+  # Chat Worker (handles attachments, chat_processing, chat_messages)
+  # ---------------------------------------------------------------------------
+  chat-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+    container_name: copilot-chat-worker
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    command: >
+      celery -A src.workers.chat_worker.celery_app worker
+      --queues=attachments,chat_processing,chat_messages
+      --concurrency=5
+      --loglevel=info
+      --hostname=chat@%h
+    environment:
+      - ENV=local
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_SSL=false
+      - REDIS_SSL_CERT_REQS=none
+      - REDIS_PASSWORD=
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    env_file:
+      - .env
+    volumes:
+      - azure-data:/home/appuser/.azure
+      - ./src:/app/src:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - copilot-network
+
+  # ---------------------------------------------------------------------------
+  # Integrations Worker (handles CRM/third-party sync)
+  # ---------------------------------------------------------------------------
+  integrations-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+    container_name: copilot-integrations-worker
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    command: >
+      celery -A src.workers.integrations_worker.celery_app worker
+      --queues=integrations,integrations_priority
+      --concurrency=8
+      --loglevel=info
+      --hostname=integrations@%h
+    environment:
+      - ENV=local
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_SSL=false
+      - REDIS_SSL_CERT_REQS=none
+      - REDIS_PASSWORD=
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    env_file:
+      - .env
+    volumes:
+      - azure-data:/home/appuser/.azure
+      - ./src:/app/src:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - copilot-network
+
+  # ---------------------------------------------------------------------------
+  # Deal Worker (handles deal-meeting matching, email matching, stakeholders)
+  # ---------------------------------------------------------------------------
+  deal-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+    container_name: copilot-deal-worker
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    command: >
+      celery -A src.workers.deal_worker.celery_app worker
+      --queues=deal,deal_jobs
+      --concurrency=4
+      --loglevel=info
+      --hostname=deal@%h
+    environment:
+      - ENV=local
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_SSL=false
+      - REDIS_SSL_CERT_REQS=none
+      - REDIS_PASSWORD=
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    env_file:
+      - .env
+    volumes:
+      - azure-data:/home/appuser/.azure
+      - ./src:/app/src:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - copilot-network
+
+  # ---------------------------------------------------------------------------
+  # Deal Beat Scheduler (Celery Beat for scheduled tasks)
+  # ---------------------------------------------------------------------------
+  deal-beat:
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+    container_name: copilot-deal-beat
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    command: >
+      celery -A src.workers.deal_worker.celery_app beat
+      --loglevel=info
+      --schedule=/tmp/celerybeat-schedule
+    environment:
+      - ENV=local
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_SSL=false
+      - REDIS_SSL_CERT_REQS=none
+      - REDIS_PASSWORD=
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    env_file:
+      - .env
+    volumes:
+      - azure-data:/home/appuser/.azure
+      - ./src:/app/src:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - copilot-network
+
+  # ---------------------------------------------------------------------------
+  # Flower - Celery Monitoring UI (Optional)
+  # ---------------------------------------------------------------------------
+  flower:
+    image: mher/flower:latest
+    container_name: copilot-flower
+    ports:
+      - "5555:5555"
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - FLOWER_PORT=5555
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - copilot-network
+    profiles:
+      - monitoring
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  copilot-network:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.enable_ip_masquerade: "true"
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  redis-data:
+    driver: local
+  azure-data:
+    driver: local
