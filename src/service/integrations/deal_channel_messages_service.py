@@ -1,0 +1,562 @@
+"""
+Deal channel messages sync service.
+
+This service handles syncing messages from Teams channels that users have linked to deals.
+It follows the existing service patterns in the codebase.
+
+Key features:
+- Query deal-linked channels with deduplication by external_channel_id
+- Random integration selection for rate limit distribution
+- Fetch messages via Teams Graph API (Nango proxy)
+- Store messages in messaging_messages table
+
+Architecture:
+- Service layer handles business logic and database operations
+- Provider layer (teams.py) handles external API calls
+- Task layer (deal_channel_messages_tasks.py) handles Celery orchestration
+"""
+
+# mypy: disable-error-code="arg-type,call-overload,union-attr"
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Any
+from uuid import UUID
+
+from bs4 import BeautifulSoup
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from src.domain.models.organisation_tables.sync import (
+    IntegrationType,
+    KnowledgeIntegration,
+    MessagingChannel,
+)
+from src.domain.models.organisation_tables.sync.messaging_models import (
+    ChannelType,
+    MessageType,
+    MessagingDealLink,
+    MessagingMessage,
+)
+from src.infra.utils.logger import get_logger
+from src.service.integrations.nango_client import NangoClient
+from src.workers.integrations_worker.providers.messaging.teams import (
+    fetch_chat_messages,
+    fetch_messages,
+)
+
+logger = get_logger(__name__)
+
+
+@dataclass
+class DealLinkedChannelInfo:
+    """Information about a deal-linked channel for sync."""
+
+    external_channel_id: str
+    channel_id: UUID
+    integration_id: UUID
+    channel_metadata: dict[str, Any]
+    channel_name: str | None
+    channel_type: str
+    last_synced_at: datetime | None
+    available_integrations: int
+
+
+@dataclass
+class ChannelSyncResult:
+    """Result of syncing a single channel."""
+
+    channel_id: UUID
+    channel_name: str | None
+    integration_id: UUID
+    messages_synced: int
+    status: str  # "success", "failed", "skipped"
+    error: str | None = None
+
+
+@dataclass
+class OrgSyncResult:
+    """Result of syncing all channels for an organization."""
+
+    status: str  # "completed", "partial", "failed"
+    channels_synced: int
+    channels_failed: int
+    channels_skipped: int
+    messages_synced: int
+    channel_results: list[ChannelSyncResult]
+    error: str | None = None
+
+
+class DealChannelMessagesService:
+    """
+    Service for syncing messages from deal-linked Teams channels.
+
+    This service:
+    1. Queries MessagingDealLink for user-selected channels
+    2. Groups by external_channel_id to avoid duplicate fetches
+    3. Randomly selects integration for load distribution
+    4. Fetches messages via Teams Graph API (Nango proxy)
+    5. Stores in messaging_messages table
+    """
+
+    def __init__(self, session: AsyncSession, organisation_id: UUID) -> None:
+        self.db = session
+        self.organisation_id = organisation_id
+        self.nango = NangoClient()
+
+    async def sync_all_deal_channels(self) -> OrgSyncResult:
+        """
+        Sync messages for all deal-linked channels in the organization.
+
+        This is the main entry point called by the Celery task.
+
+        Returns:
+            OrgSyncResult with summary of sync operation
+        """
+        logger.info(
+            "Starting deal channel messages sync for org: %s",
+            self.organisation_id,
+        )
+
+        # Get unique deal-linked channels
+        channels = await self.get_unique_deal_linked_channels()
+
+        if not channels:
+            logger.info("No deal-linked channels found for org: %s", self.organisation_id)
+            return OrgSyncResult(
+                status="completed",
+                channels_synced=0,
+                channels_failed=0,
+                channels_skipped=0,
+                messages_synced=0,
+                channel_results=[],
+            )
+
+        logger.info(
+            "Found %d unique deal-linked channel(s) to sync for org: %s",
+            len(channels),
+            self.organisation_id,
+        )
+
+        # Sync each channel
+        channel_results: list[ChannelSyncResult] = []
+        channels_synced = 0
+        channels_failed = 0
+        channels_skipped = 0
+        total_messages = 0
+
+        for channel_info in channels:
+            result = await self.sync_channel_messages(channel_info)
+            channel_results.append(result)
+
+            if result.status == "success":
+                channels_synced += 1
+                total_messages += result.messages_synced
+            elif result.status == "failed":
+                channels_failed += 1
+            else:
+                channels_skipped += 1
+
+        # Determine overall status
+        if channels_failed == 0:
+            status = "completed"
+        elif channels_synced > 0:
+            status = "partial"
+        else:
+            status = "failed"
+
+        logger.info(
+            "Deal channel messages sync completed for org %s: "
+            "synced=%d failed=%d skipped=%d messages=%d",
+            self.organisation_id,
+            channels_synced,
+            channels_failed,
+            channels_skipped,
+            total_messages,
+        )
+
+        return OrgSyncResult(
+            status=status,
+            channels_synced=channels_synced,
+            channels_failed=channels_failed,
+            channels_skipped=channels_skipped,
+            messages_synced=total_messages,
+            channel_results=channel_results,
+        )
+
+    async def get_unique_deal_linked_channels(self) -> list[DealLinkedChannelInfo]:
+        """
+        Get channels linked to deals that need message syncing.
+
+        Queries MessagingDealLink (source of truth for deal-channel relationships)
+        and joins to MessagingChannel/KnowledgeIntegration for channel details.
+
+        Uses DISTINCT ON external_channel_id to avoid duplicate fetches when
+        the same Teams channel exists across multiple integrations.
+
+        Returns:
+            List of DealLinkedChannelInfo for channels to sync
+        """
+        # Query channels that have active deal links
+        # MessagingDealLink is the source of truth for which channels to sync
+        stmt = (
+            select(
+                MessagingChannel.channel_id,
+                MessagingChannel.external_channel_id,
+                MessagingChannel.integration_id,
+                MessagingChannel.channel_metadata,
+                MessagingChannel.channel_name,
+                MessagingChannel.channel_type,
+                MessagingChannel.last_synced_at,
+            )
+            .select_from(MessagingDealLink)
+            .join(
+                MessagingChannel,
+                MessagingDealLink.channel_id == MessagingChannel.channel_id,
+            )
+            .join(
+                KnowledgeIntegration,
+                MessagingChannel.integration_id == KnowledgeIntegration.integration_id,
+            )
+            .where(
+                MessagingDealLink.organisation_id == self.organisation_id,
+                MessagingDealLink.channel_id.isnot(None),  # Channel-level links only
+                MessagingDealLink.is_deleted == False,  # noqa: E712
+                MessagingChannel.is_deleted == False,  # noqa: E712
+                KnowledgeIntegration.is_active == True,  # noqa: E712
+                KnowledgeIntegration.connection_id.isnot(None),
+                KnowledgeIntegration.integration_type == IntegrationType.TEAMS,
+            )
+            .distinct(MessagingChannel.external_channel_id)
+            .order_by(
+                MessagingChannel.external_channel_id,
+                MessagingChannel.last_synced_at.desc().nulls_last(),
+            )
+        )
+
+        result = await self.db.execute(stmt)
+        rows = result.all()
+
+        channels_to_sync: list[DealLinkedChannelInfo] = []
+        for row in rows:
+            channels_to_sync.append(
+                DealLinkedChannelInfo(
+                    external_channel_id=row.external_channel_id,
+                    channel_id=row.channel_id,
+                    integration_id=row.integration_id,
+                    channel_metadata=row.channel_metadata or {},
+                    channel_name=row.channel_name,
+                    channel_type=row.channel_type,
+                    last_synced_at=row.last_synced_at,
+                    available_integrations=1,  # Simplified - one per external_channel_id
+                )
+            )
+
+        return channels_to_sync
+
+    async def sync_channel_messages(
+        self,
+        channel_info: DealLinkedChannelInfo,
+    ) -> ChannelSyncResult:
+        """
+        Sync messages for a single deal-linked channel.
+
+        Args:
+            channel_info: Channel information from get_unique_deal_linked_channels
+
+        Returns:
+            ChannelSyncResult with sync outcome
+        """
+        try:
+            # Get integration details
+            integration = await self._get_integration(channel_info.integration_id)
+            if not integration or not integration.connection_id:
+                logger.warning(
+                    "Integration %s not found or has no connection for channel %s",
+                    channel_info.integration_id,
+                    channel_info.channel_name,
+                )
+                return ChannelSyncResult(
+                    channel_id=channel_info.channel_id,
+                    channel_name=channel_info.channel_name,
+                    integration_id=channel_info.integration_id,
+                    messages_synced=0,
+                    status="failed",
+                    error="Integration not found or has no connection",
+                )
+
+            # Fetch messages from Teams API
+            messages = await self._fetch_messages(channel_info, integration)
+
+            if not messages:
+                logger.debug(
+                    "No new messages for channel %s",
+                    channel_info.channel_name,
+                )
+                return ChannelSyncResult(
+                    channel_id=channel_info.channel_id,
+                    channel_name=channel_info.channel_name,
+                    integration_id=channel_info.integration_id,
+                    messages_synced=0,
+                    status="success",
+                )
+
+            # Store messages
+            messages_stored = await self._store_messages(
+                channel_id=channel_info.channel_id,
+                integration_id=channel_info.integration_id,
+                messages=messages,
+            )
+
+            # Update channel's last_synced_at
+            await self._update_channel_sync_timestamp(channel_info.channel_id)
+
+            logger.info(
+                "✅ Synced %d messages from channel %s (integration: %s)",
+                messages_stored,
+                channel_info.channel_name,
+                channel_info.integration_id,
+            )
+
+            return ChannelSyncResult(
+                channel_id=channel_info.channel_id,
+                channel_name=channel_info.channel_name,
+                integration_id=channel_info.integration_id,
+                messages_synced=messages_stored,
+                status="success",
+            )
+
+        except Exception as e:
+            logger.error(
+                "❌ Failed to sync channel %s: %s",
+                channel_info.channel_name,
+                str(e),
+                exc_info=True,
+            )
+            return ChannelSyncResult(
+                channel_id=channel_info.channel_id,
+                channel_name=channel_info.channel_name,
+                integration_id=channel_info.integration_id,
+                messages_synced=0,
+                status="failed",
+                error=str(e),
+            )
+
+    async def _get_integration(self, integration_id: UUID) -> KnowledgeIntegration | None:
+        """Get integration by ID."""
+        stmt = select(KnowledgeIntegration).where(
+            KnowledgeIntegration.integration_id == integration_id
+        )
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def _fetch_messages(
+        self,
+        channel_info: DealLinkedChannelInfo,
+        integration: KnowledgeIntegration,
+    ) -> list[dict[str, Any]]:
+        """
+        Fetch messages from Teams API via provider layer.
+
+        Args:
+            channel_info: Channel information
+            integration: Integration with Nango connection
+
+        Returns:
+            List of message dictionaries from Teams API
+        """
+        is_initial = channel_info.last_synced_at is None
+        channel_type = channel_info.channel_type
+
+        if channel_type in (ChannelType.PUBLIC, ChannelType.PRIVATE):
+            # Team channel - needs team_id from metadata
+            team_id = channel_info.channel_metadata.get("team_id")
+            if not team_id:
+                raise ValueError(
+                    f"Missing team_id in channel_metadata for channel {channel_info.channel_id}"
+                )
+
+            return await fetch_messages(
+                nango=self.nango,
+                connection_id=integration.connection_id,
+                team_id=team_id,
+                channel_id=channel_info.external_channel_id,
+                is_initial=is_initial,
+                last_synced_at=channel_info.last_synced_at,
+            )
+
+        elif channel_type in (ChannelType.GROUP_MESSAGE, ChannelType.MEETING):
+            # Chat - use chat_id directly (external_channel_id is the chat_id)
+            return await fetch_chat_messages(
+                nango=self.nango,
+                connection_id=integration.connection_id,
+                chat_id=channel_info.external_channel_id,
+                is_initial=is_initial,
+                last_synced_at=channel_info.last_synced_at,
+            )
+
+        elif channel_type == ChannelType.DIRECT_MESSAGE:
+            # Skip 1:1 DMs - excluded by design
+            logger.debug("Skipping 1:1 DM channel %s", channel_info.channel_id)
+            return []
+
+        else:
+            logger.warning(
+                "Unknown channel type %s for channel %s",
+                channel_type,
+                channel_info.channel_id,
+            )
+            return []
+
+    async def _store_messages(
+        self,
+        channel_id: UUID,
+        integration_id: UUID,
+        messages: list[dict[str, Any]],
+    ) -> int:
+        """
+        Store fetched messages in the database.
+
+        Uses upsert logic to avoid duplicates (based on external_message_id).
+
+        Args:
+            channel_id: Channel UUID (our internal ID)
+            integration_id: Integration UUID
+            messages: List of message dicts from Teams API
+
+        Returns:
+            Number of new messages stored
+        """
+        stored_count = 0
+
+        for msg in messages:
+            external_message_id = msg.get("id")
+            if not external_message_id:
+                continue
+
+            # Detect system event messages (user joined, call started, members added, etc.)
+            # These are stored for timeline/analytics but filtered out for chat display
+            # Detection methods:
+            # 1. messageType == "systemEventMessage"
+            # 2. eventDetail property exists (indicates system event)
+            # 3. body.content contains "<systemEventMessage/>" marker
+            msg_type_raw = msg.get("messageType", "message")
+            has_event_detail = msg.get("eventDetail") is not None
+            body = msg.get("body", {})
+            raw_content = body.get("content", "") if isinstance(body, dict) else ""
+
+            is_system_event = (
+                msg_type_raw == "systemEventMessage"
+                or has_event_detail
+                or raw_content.strip() == "<systemEventMessage/>"
+            )
+
+            # Check if message already exists
+            existing_stmt = select(MessagingMessage).where(
+                MessagingMessage.integration_id == integration_id,
+                MessagingMessage.external_message_id == external_message_id,
+            )
+            existing_result = await self.db.execute(existing_stmt)
+            existing = existing_result.scalar_one_or_none()
+
+            # Extract content type
+            content_type = body.get("contentType", "text") if isinstance(body, dict) else "text"
+
+            # Process content based on type:
+            # Teams API returns body.content which can be HTML or plain text
+            # - content: Always plain text (for search, preview, AI analysis)
+            # - formatted_content: Original HTML (for rich display in UI)
+            if content_type == "html" and raw_content:
+                # Extract plain text from HTML
+                soup = BeautifulSoup(raw_content, "html.parser")
+                # Replace <br> and </p> with newlines for better formatting
+                for br in soup.find_all("br"):
+                    br.replace_with("\n")
+                for p in soup.find_all("p"):
+                    p.append("\n")
+                plain_text = soup.get_text(separator=" ").strip()
+                # Clean up multiple spaces/newlines
+                plain_text = re.sub(r"\s+", " ", plain_text).strip()
+                content = plain_text
+                formatted_content = raw_content  # Keep original HTML
+            else:
+                # Plain text message
+                content = raw_content
+                formatted_content = None  # No HTML version
+
+            # Extract sender info
+            from_info = msg.get("from", {})
+            sender_user = from_info.get("user", {}) if isinstance(from_info, dict) else {}
+            sender_id = sender_user.get("id") if isinstance(sender_user, dict) else None
+            sender_name = sender_user.get("displayName") if isinstance(sender_user, dict) else None
+
+            # Parse timestamps
+            sent_at_str = msg.get("createdDateTime")
+            sent_at = (
+                datetime.fromisoformat(sent_at_str.replace("Z", "+00:00"))
+                if sent_at_str
+                else datetime.now(UTC)
+            )
+
+            if existing:
+                # Update existing message
+                existing.content = content
+                existing.formatted_content = formatted_content
+                existing.message_type = (
+                    MessageType.SYSTEM_EVENT if is_system_event else MessageType.TEXT
+                )
+                existing.updated_at = datetime.now(UTC)
+            else:
+                # Determine message type:
+                # - SYSTEM_EVENT: Call started, members added, etc. (for timeline/analytics)
+                # - TEXT: Regular user messages (for chat display and AI analysis)
+                message_type = MessageType.SYSTEM_EVENT if is_system_event else MessageType.TEXT
+
+                # For system events, store event details in metadata for future analytics
+                metadata = {
+                    "importance": msg.get("importance"),
+                    "webUrl": msg.get("webUrl"),
+                    "sender_display_name": sender_name,
+                }
+                if is_system_event and msg.get("eventDetail"):
+                    # Store event type (e.g., "callEndedEventMessageDetail")
+                    event_detail = msg.get("eventDetail", {})
+                    metadata["event_type"] = event_detail.get("@odata.type", "").replace(
+                        "#microsoft.graph.", ""
+                    )
+                    metadata["event_detail"] = event_detail
+
+                new_message = MessagingMessage(
+                    organisation_id=self.organisation_id,
+                    integration_id=integration_id,
+                    channel_id=channel_id,
+                    external_message_id=external_message_id,
+                    content=content,
+                    formatted_content=formatted_content,
+                    message_type=message_type,
+                    sent_at=sent_at,
+                    external_user_id=sender_id,
+                    attachments=msg.get("attachments", []),
+                    mentions=[m.get("id") for m in msg.get("mentions", []) if m.get("id")],
+                    reactions={"items": msg.get("reactions", [])},
+                    is_deleted=False,
+                    is_bot_message=False,
+                    is_important=msg.get("importance") == "high",
+                    message_metadata=metadata,
+                )
+                self.db.add(new_message)
+                stored_count += 1
+
+        await self.db.commit()
+        return stored_count
+
+    async def _update_channel_sync_timestamp(self, channel_id: UUID) -> None:
+        """Update the last_synced_at timestamp for a channel."""
+        channel_stmt = select(MessagingChannel).where(MessagingChannel.channel_id == channel_id)
+        channel_result = await self.db.execute(channel_stmt)
+        channel = channel_result.scalar_one_or_none()
+        if channel:
+            channel.last_synced_at = datetime.now(UTC)
+            await self.db.commit()

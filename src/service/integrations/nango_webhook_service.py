@@ -1,12 +1,15 @@
 """Service to process Nango webhooks (auth + sync)."""
 
+# mypy: disable-error-code="arg-type"
+
 from __future__ import annotations
 
 from enum import Enum
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from fastapi.responses import JSONResponse
+from sqlalchemy import desc, select
 from src.api.dependencies.master_dependencies import acquire_master_async_session
 from src.api.dependencies.organisation_dependencies import (
     acquire_org_async_session,
@@ -39,7 +42,7 @@ class NangoWebhookService:
     @staticmethod
     def _is_valid_signature(signature: str | None, payload: dict[str, Any]) -> bool:
         """Validate webhook signature using Nango client utility."""
-        if NangoClient.verify_webhook_signature(signature, payload):
+        if signature and NangoClient.verify_webhook_signature(signature, payload):
             return True
         logger.error("Invalid webhook signature. Header: %s", signature)
         return False
@@ -138,7 +141,7 @@ class NangoWebhookService:
 
     async def _handle_sync_webhook(
         self, payload: dict[str, Any], organisation_id: UUID, integration_id: UUID
-    ) -> Response:
+    ) -> JSONResponse:
         """
         Handle sync webhook - triggers data sync for the given connection.
         Args:
@@ -162,6 +165,17 @@ class NangoWebhookService:
 
         sync_type = payload.get("syncType")
         sync_name = payload.get("syncName")
+
+        logger.info(
+            "Sync webhook received: connection=%s sync_name=%s sync_type=%s "
+            "added=%d updated=%d deleted=%d",
+            connection_id,
+            sync_name,
+            sync_type,
+            added,
+            updated,
+            deleted,
+        )
 
         # Skip sync if no changes and this is an incremental sync
         # Always process INITIAL syncs regardless of responseResults
@@ -199,6 +213,14 @@ class NangoWebhookService:
                     message="No matching integration found for sync webhook"
                 )
 
+        # Guard: if async for didn't yield any sessions, integration is still None
+        if not integration:
+            logger.error(
+                "Failed to acquire org session for sync webhook: org %s",
+                organisation_id,
+            )
+            return Response.bad_request_error_response(message="Failed to process sync webhook")
+
         # Resolve Category and provider of the sync request
         category, provider = categorize_integration_type(integration.integration_type)
         logger.info(
@@ -221,10 +243,11 @@ class NangoWebhookService:
             deleted,
         )
 
-        # Import here to avoid circular import
-        from src.workers.integrations_worker.tasks.sync_tasks import sync_integration_data_task
+        # Use client to avoid importing celery_app in FastAPI process
+        from src.workers.integrations_worker.client import send_integrations_task
 
-        sync_integration_data_task.apply_async(
+        send_integrations_task(
+            task_name="integrations.sync_integration_data",
             kwargs={
                 "organisation_id": str(organisation_id),
                 "integration_id": str(integration.integration_id),
@@ -236,11 +259,12 @@ class NangoWebhookService:
                 "sync_variant": sync_variant,
                 "incremental": str(sync_type).upper() != "INITIAL" if sync_type else True,
             },
+            queue="integrations",
             headers=correlation_headers(),
         )
         return Response.success_response(message=SYNC_WEBHOOK_ACCEPTED_MSG, data=None)
 
-    async def _handle_authorization_webhook(self, payload: dict[str, Any]) -> Response:
+    async def _handle_authorization_webhook(self, payload: dict[str, Any]) -> JSONResponse:
         """
         Handle authorization webhook - reactivate existing or create new integration.
 
@@ -249,8 +273,8 @@ class NangoWebhookService:
         instead of creating a new integration_id which would cause duplicate records.
         """
         logger.info("Processing authorization webhook: %s", payload)
-        connection_id: str = payload.get("connectionId")
-        provider_config_key: str = payload.get("providerConfigKey")
+        connection_id = payload.get("connectionId")
+        provider_config_key = payload.get("providerConfigKey")
 
         if not connection_id or not provider_config_key:
             logger.error("Missing required fields in webhook: %s", payload)
@@ -259,9 +283,11 @@ class NangoWebhookService:
             )
 
         end_user = payload.get("endUser", {})
-        user_id: UUID = UUID(end_user.get("endUserId"))
+        end_user_id = end_user.get("endUserId") if isinstance(end_user, dict) else None
+        user_id = UUID(end_user_id) if end_user_id else None
         tags: dict[str, Any] = end_user.get("tags", {}) if isinstance(end_user, dict) else {}
-        organization_id: UUID = tags.get("organizationId") if isinstance(tags, dict) else None
+        org_id_str = tags.get("organizationId") if isinstance(tags, dict) else None
+        organization_id = UUID(org_id_str) if org_id_str else None
 
         if not user_id or not organization_id:
             logger.error("Missing user identifiers in webhook: %s", payload)
@@ -277,8 +303,8 @@ class NangoWebhookService:
             stmt = select(KnowledgeIntegration).where(
                 KnowledgeIntegration.connection_id == connection_id
             )
-            existing = await org_session.execute(stmt)
-            existing = existing.scalars().first()
+            existing_result = await org_session.execute(stmt)
+            existing = existing_result.scalars().first()
 
             if existing:
                 logger.info(
@@ -299,11 +325,11 @@ class NangoWebhookService:
                     KnowledgeIntegration.created_by_user_id == user_id,
                     KnowledgeIntegration.integration_type == integration_type,
                 )
-                .order_by(KnowledgeIntegration.updated_at.desc())
+                .order_by(desc(KnowledgeIntegration.updated_at))
                 .limit(1)
             )
-            reactivatable = await org_session.execute(reactivate_stmt)
-            reactivatable = reactivatable.scalars().first()
+            reactivatable_result = await org_session.execute(reactivate_stmt)
+            reactivatable = reactivatable_result.scalars().first()
 
             if reactivatable:
                 return await self._reactivate_integration(
@@ -327,7 +353,7 @@ class NangoWebhookService:
         integration: KnowledgeIntegration,
         new_connection_id: str,
         provider_config_key: str,
-    ) -> Response:
+    ) -> JSONResponse:
         """
         Reactivate an existing integration with a new OAuth connection.
 
@@ -389,7 +415,7 @@ class NangoWebhookService:
         provider_config_key: str,
         user_id: UUID,
         organization_id: UUID,
-    ) -> Response:
+    ) -> JSONResponse:
         """Handle authorization webhook for new integration creation."""
         try:
             # Special handling for outlook-bflm which is used for both calendar and email

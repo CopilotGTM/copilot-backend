@@ -350,6 +350,40 @@ deal-beat:
   pdb:
     enabled: false
 
+# Integrations Beat Scheduler (Celery Beat for scheduled integration tasks)
+# Runs periodic tasks defined in IntegrationsWorkerConfig.beat_schedule:
+# - integrations.sync_teams_channels_all_orgs: Every 3 hours at :00
+# - integrations.sync_deal_channel_messages_all_orgs: Every hour at :30
+# Note: OAuth token refresh is disabled until tested
+integrations-beat:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: "copilotgtmacrdev.azurecr.io/copilot-backend"
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  config:
+    queueName: "integrations"
+    # Beat mode - runs scheduler instead of worker
+    beatMode: true
+  # Use shared ServiceAccount (created by knowledge-extract-worker)
+  serviceAccount:
+    create: false
+    name: "copilot-workers"
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "128Mi"
+    limits:
+      cpu: "150m"
+      memory: "256Mi"
+  # Beat scheduler doesn't need autoscaling - single instance only
+  autoscaling:
+    enabled: false
+  # Beat scheduler doesn't need PDB
+  pdb:
+    enabled: false
+
 # Flower (Celery monitoring UI)
 # Note: workers must have events enabled (set global.celery.enableEvents=true) for Flower to show task activity.
 flower:

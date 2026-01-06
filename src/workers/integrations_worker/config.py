@@ -60,23 +60,42 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
                 "queue": "integrations",
                 "routing_key": "integrations",
             },
+            # Deal channel messages sync
+            "integrations.trigger_deal_channel_messages_sync_all_orgs": {
+                "queue": "integrations",
+                "routing_key": "integrations",
+            },
+            "integrations.sync_deal_channel_messages": {
+                "queue": "integrations",
+                "routing_key": "integrations",
+            },
         }
 
         # Celery Beat schedule for periodic tasks
         self.beat_schedule = {
-            "refresh-expiring-oauth-tokens": {
-                "task": "integrations.refresh_expiring_tokens",
-                "schedule": crontab(minute=0),  # Run every hour at minute 0
-                "kwargs": {"buffer_hours": 2},  # Refresh tokens expiring within 2 hours
+            # OAuth token refresh - DISABLED until tested
+            # "refresh-expiring-oauth-tokens": {
+            #     "task": "integrations.refresh_expiring_tokens",
+            #     "schedule": crontab(minute=0),  # Run every hour at minute 0
+            #     "kwargs": {"buffer_hours": 2},  # Refresh tokens expiring within 2 hours
+            #     "options": {
+            #         "queue": "integrations",
+            #         "routing_key": "integrations",
+            #     },
+            # },
+            "sync-teams-channels-all-orgs": {
+                "task": "integrations.sync_teams_channels",
+                "schedule": crontab(minute=0, hour="*/3"),  # Run every 3 hours
+                "kwargs": {},  # No args = sync all organizations
                 "options": {
                     "queue": "integrations",
                     "routing_key": "integrations",
                 },
             },
-            "sync-teams-channels-all-orgs": {
-                "task": "integrations.sync_teams_channels",
-                "schedule": crontab(minute=0, hour="*/3"),  # Run every 3 hours
-                "kwargs": {},  # No args = sync all organizations
+            "sync-deal-channel-messages-all-orgs": {
+                "task": "integrations.trigger_deal_channel_messages_sync_all_orgs",
+                "schedule": crontab(minute=30),  # Run every hour at :30
+                "kwargs": {},
                 "options": {
                     "queue": "integrations",
                     "routing_key": "integrations",

@@ -9,7 +9,9 @@ from .integration_schemas import (
     # Channels
     ChannelItem,
     ChannelLinkRequest,
+    ChannelLinkResponse,
     ChannelListResponse,
+    EmptyResponse,
     # Integration CRUD
     IntegrationCreate,
     # Errors

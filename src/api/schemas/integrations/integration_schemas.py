@@ -290,3 +290,20 @@ class ChannelLinkRequest(BaseModel):
     integration_id: UUID = Field(..., description="Integration ID")
     parent_id: str | None = Field(default=None, description="Parent ID (e.g. Team ID)")
     parent_name: str | None = Field(default=None, description="Parent Name")
+
+
+class ChannelLinkResponse(BaseModel):
+    """Response schema for linking a channel to a deal."""
+
+    channel_id: UUID = Field(..., description="Internal Channel UUID")
+    deal_id: UUID = Field(..., description="Deal UUID")
+    external_channel_id: str = Field(..., description="Provider's Channel ID")
+    name: str = Field(..., description="Channel Name")
+    type: str = Field(..., description="Channel Type")
+    integration_id: UUID = Field(..., description="Integration ID")
+
+
+class EmptyResponse(BaseModel):
+    """Empty response model for endpoints that don't return data."""
+
+    pass

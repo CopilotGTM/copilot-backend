@@ -7,6 +7,7 @@ Handles:
 - Removing channels from deals
 """
 
+from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends
@@ -21,11 +22,14 @@ from src.api.schemas.integrations import (
     AvailableIntegration,
     AvailableIntegrationsResponse,
     ChannelLinkRequest,
+    ChannelLinkResponse,
     ChannelListResponse,
+    EmptyResponse,
     IntegrationResponse,
     LinkedChannel,
 )
 from src.api.utils.http_response import Response
+from src.domain.models.organisation_tables.sync import KnowledgeIntegration
 from src.infra.config.integrations_metadata import get_all_integration_metadata
 from src.infra.utils.logger import get_logger
 from src.service.integrations import IntegrationService, NangoClient
@@ -77,7 +81,7 @@ async def list_available_deal_integrations(
         linked_channels = await service.get_deal_linked_channels(deal_id)
 
         # Group linked channels by integration type
-        linked_channels_by_type = {}
+        linked_channels_by_type: dict[str, list[dict[str, Any]]] = {}
         for channel in linked_channels:
             int_type = channel["integration_type"]
             if int_type not in linked_channels_by_type:
@@ -85,7 +89,7 @@ async def list_available_deal_integrations(
             linked_channels_by_type[int_type].append(channel)
 
         # Group connected integrations by type
-        connected_by_type = {}
+        connected_by_type: dict[str, list[KnowledgeIntegration]] = {}
         for integration in connected_integrations:
             int_type = integration.integration_type
             if int_type not in connected_by_type:
@@ -147,7 +151,7 @@ async def list_available_deal_integrations(
 
 @router.post(
     "/deals/{deal_id}/channels",
-    response_model=GenericResponse[dict],
+    response_model=GenericResponse[ChannelLinkResponse],
     summary="Link channel to deal",
     description="Link a messaging channel (Slack/Teams) to a deal for syncing.",
 )
@@ -156,7 +160,7 @@ async def link_channel_to_deal(
     channel_data: ChannelLinkRequest,
     service: IntegrationService = Depends(get_integration_service),
     user_ids: UserIDs = Depends(get_current_user),
-) -> GenericResponse[dict]:
+) -> GenericResponse[ChannelLinkResponse]:
     """
     Link a channel to a deal.
 
@@ -176,9 +180,18 @@ async def link_channel_to_deal(
             f"Linked channel {channel_data.id} to deal {deal_id} for user {user_ids.user_id}"
         )
 
+        response_data = ChannelLinkResponse(
+            channel_id=result["channel_id"],
+            deal_id=result["deal_id"],
+            external_channel_id=result["external_channel_id"],
+            name=result["name"],
+            type=result["type"],
+            integration_id=result["integration_id"],
+        )
+
         return Response.success_response(
             message="Channel linked successfully",
-            data=result,
+            data=response_data,
         )
     except ValueError as e:
         return Response.error_response(message=str(e), status_code=404)
@@ -192,7 +205,7 @@ async def link_channel_to_deal(
 
 @router.delete(
     "/deals/{deal_id}/channels/{channel_id}",
-    response_model=GenericResponse[dict],
+    response_model=GenericResponse[EmptyResponse],
     summary="Remove channel from deal",
     description="Unlink a messaging channel from a deal.",
 )
@@ -201,7 +214,7 @@ async def remove_channel_from_deal(
     channel_id: UUID,
     service: IntegrationService = Depends(get_integration_service),
     user_ids: UserIDs = Depends(get_current_user),
-) -> GenericResponse[dict]:
+) -> GenericResponse[EmptyResponse]:
     """
     Remove a channel link from a deal.
 
