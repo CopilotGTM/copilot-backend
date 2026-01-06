@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -63,20 +62,20 @@ class ExtractionService:
         organisation_id: str | UUID,
         storage_backend: Any | None = None,
         chunk_processor: ChunkProcessor | None = None,
-        loop: asyncio.AbstractEventLoop | None = None,
     ):
         """
         Initialize the extraction service.
+
+        Uses a persistent thread-local event loop via run_async() to prevent
+        memory leaks from creating new event loops per task.
 
         Args:
             organisation_id: The organisation ID for storage paths
             storage_backend: Azure blob storage backend (for legacy parsers)
             chunk_processor: Optional pre-configured ChunkProcessor (for testing)
-            loop: Event loop for async operations (creates one if not provided)
         """
         self.organisation_id = str(organisation_id)
         self.storage_backend = storage_backend
-        self._loop = loop or asyncio.new_event_loop()
 
         # Initialize services
         if chunk_processor:
@@ -85,8 +84,8 @@ class ExtractionService:
             # Create default ChunkProcessor with all services using direct blob storage
             storage = AzureOrganisationBlobStorage(organisation_id=organisation_id)
             self.chunk_processor = ChunkProcessor(
-                table_processor=TableProcessor(storage, self._loop),
-                image_processor=ImageProcessor(storage, self._loop),
+                table_processor=TableProcessor(storage),
+                image_processor=ImageProcessor(storage),
             )
 
     def extract(

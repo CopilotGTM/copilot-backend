@@ -12,7 +12,6 @@ All extraction logic is delegated to ExtractionService.
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import os
 from uuid import UUID
@@ -23,6 +22,7 @@ from celery.exceptions import MaxRetriesExceededError, SoftTimeLimitExceeded
 from src.api.dependencies.organisation_dependencies import acquire_org_session
 from src.domain.models.organisation_tables.knowledge_models import OrganisationSourceStatus
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
+from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.workers.knowledge_worker.celery_app import app
 from src.workers.knowledge_worker.models import ProcessingContext
@@ -76,8 +76,6 @@ def document_extraction(self, organisation_id: str, source_id: str):
     session_gen = acquire_org_session(org_uuid)
     session = next(session_gen)
     storage = AzureOrganisationBlobStorage(organisation_id=organisation_id_str)
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
 
     # Initialize services
     publisher = ProgressPublisher(organisation_id=organisation_id_str, source_id=source_id_str)
@@ -103,7 +101,7 @@ def document_extraction(self, organisation_id: str, source_id: str):
 
         # Download file from blob storage
         logger.info("Downloading file from storage: %s", source.storage_path)
-        temp_file_path = download_blob_to_temp(loop, storage, source)
+        temp_file_path = download_blob_to_temp(storage, source)
 
         try:
             # Build processing context
@@ -204,9 +202,6 @@ def document_extraction(self, organisation_id: str, source_id: str):
         with contextlib.suppress(Exception):
             session_gen.close()
 
-        try:
-            loop.run_until_complete(storage.close())
-        except Exception:
-            pass
-        finally:
-            loop.close()
+        # Close storage using persistent thread-local event loop
+        with contextlib.suppress(Exception):
+            run_async(storage.close())

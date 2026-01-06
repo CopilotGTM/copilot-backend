@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Deletion task for knowledge sources and related data.
 
 Performs idempotent cleanup of:
@@ -13,7 +11,8 @@ Enhanced with:
 - SSE status updates (0% start, 100% complete)
 """
 
-import asyncio
+from __future__ import annotations
+
 import contextlib
 from datetime import UTC, datetime
 
@@ -26,6 +25,7 @@ from src.domain.models.organisation_tables.job_models import (
 from src.domain.models.organisation_tables.knowledge_models import OrganisationSource
 from src.infra.messaging.knowledge_source_status_publish import publish_source_status
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
+from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.workers.knowledge_worker.celery_app import app
 from src.workers.knowledge_worker.utils import DocumentStore
@@ -126,12 +126,10 @@ def delete_source_task(
         job_id,
     )
 
-    # DB session & storage
+    # DB session & storage (async storage via run_async)
     session_gen = acquire_org_session(organisation_id)
     session = next(session_gen)
     storage = AzureOrganisationBlobStorage(organisation_id=organisation_id)
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
 
     # Track job for status updates
     job = _get_or_create_delete_job(session, source_id, job_id)
@@ -171,13 +169,13 @@ def delete_source_task(
         try:
             if src and src.storage_path:
                 # original
-                loop.run_until_complete(storage.delete_blob(src.storage_path))
+                run_async(storage.delete_blob(src.storage_path))
 
                 # thumbnails
                 if getattr(src, "thumbnail_small_path", None):
-                    loop.run_until_complete(storage.delete_blob(src.thumbnail_small_path))
+                    run_async(storage.delete_blob(src.thumbnail_small_path))
                 if getattr(src, "thumbnail_medium_path", None):
-                    loop.run_until_complete(storage.delete_blob(src.thumbnail_medium_path))
+                    run_async(storage.delete_blob(src.thumbnail_medium_path))
         except Exception as e:
             logger.warning("Failed deleting blobs for %s: %s", source_id, e)
 
@@ -225,10 +223,6 @@ def delete_source_task(
             session.close()
         with contextlib.suppress(Exception):
             session_gen.close()
-        # Close async Azure clients (run in event loop)
-        try:
-            loop.run_until_complete(storage.close())
-        except Exception:
-            pass
-        finally:
-            loop.close()
+        # Close async Azure clients using persistent thread-local event loop
+        with contextlib.suppress(Exception):
+            run_async(storage.close())

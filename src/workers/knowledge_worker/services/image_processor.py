@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import io
 from typing import TYPE_CHECKING, Any
 
 from agno.media import Image as AgnoImage
 
+from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.workers.knowledge_worker.agents.image_summary_agent import image_summary_agent
 from src.workers.knowledge_worker.services.storage_paths import plan_image_path_for_source
@@ -61,19 +61,18 @@ class ImageProcessor:
     def __init__(
         self,
         storage: AzureOrganisationBlobStorage | None = None,
-        loop: asyncio.AbstractEventLoop | None = None,
     ):
         """
         Initialize the image processor.
 
+        Uses a persistent thread-local event loop via run_async() to prevent
+        memory leaks from creating new event loops per task.
+
         Args:
             storage: Azure blob storage client for uploading images.
                     If None, images won't be stored.
-            loop: Event loop for running async operations.
-                 If None, will create a new loop when needed.
         """
         self._storage = storage
-        self._loop = loop
 
     def process_images(
         self,
@@ -322,11 +321,8 @@ class ImageProcessor:
                 idx=f"pic_{idx}",
             )
 
-            # Upload to blob storage using the event loop
-            loop = self._loop or asyncio.new_event_loop()
-            loop.run_until_complete(
-                self._storage.upload_bytes(blob_path, img_bytes, content_type="image/png")
-            )
+            # Upload to blob storage using persistent thread-local event loop
+            run_async(self._storage.upload_bytes(blob_path, img_bytes, content_type="image/png"))
 
             return {
                 "path": blob_path,

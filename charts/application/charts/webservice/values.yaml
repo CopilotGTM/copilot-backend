@@ -19,7 +19,7 @@ labels:
   instance: copilot-backend
 containerName: copilot-backend
 environment: development
-replicaCount: 1
+replicaCount: 2  # Minimum 2 for high availability during restarts
 
 image:
   repository: "copilotgtmacrdev.azurecr.io/copilot-backend"
@@ -81,10 +81,11 @@ internalIngress:
   hosts:
     - host: "internal.copilotgtm.local"
 
+# HPA for autoscaling - enabled for high availability
 autoscaling:
-  enabled: false
-  minReplicas: 1
-  maxReplicas: 3
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 5
   targetCPUUtilizationPercentage: 80
   targetMemoryUtilizationPercentage: 80
 

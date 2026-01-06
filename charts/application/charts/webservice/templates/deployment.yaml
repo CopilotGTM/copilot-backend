@@ -53,21 +53,35 @@ spec:
           envFrom:
             - secretRef:
                 name: {{ include "webservice.fullname" . }}-secret
+          # Startup probe: allows up to 5 minutes for application to start
+          # This prevents liveness probe from killing the pod during slow startup
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 30
+          # Liveness probe: checks if application is still running
+          # Increased timeout to 30s to handle GC pauses and memory pressure
           livenessProbe:
             httpGet:
               path: /health
               port: http
-            initialDelaySeconds: 60
+            initialDelaySeconds: 0
             periodSeconds: 30
-            timeoutSeconds: 10
+            timeoutSeconds: 30
             failureThreshold: 3
+          # Readiness probe: checks if application can accept traffic
+          # Increased timeout to 15s for better tolerance
           readinessProbe:
             httpGet:
               path: /health
               port: http
-            initialDelaySeconds: 30
+            initialDelaySeconds: 0
             periodSeconds: 15
-            timeoutSeconds: 5
+            timeoutSeconds: 15
             failureThreshold: 3
           resources:
             requests:

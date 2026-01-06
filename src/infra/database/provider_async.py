@@ -2,7 +2,8 @@
 
 Creates:
   - One master AsyncEngine
-  - Async tenant engines cached with simple LRU (reuse sync TenantPoolManager logic not yet async aware)
+  - Async tenant engines cached with simple LRU
+    (reuse sync TenantPoolManager logic not yet async aware)
 
 Each tenant engine uses asyncpg driver.
 """
@@ -36,6 +37,8 @@ logger = get_logger("async_db_provider")
 
 
 class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
+    """Async SQLAlchemy database provider with LRU-cached tenant engines."""
+
     def __init__(self, *, tenant_pool_max: int = 100, tenant_pool_multiplier: float = 1.0):
         # Global and per-tenant locks
         self._lock = threading.RLock()
@@ -102,7 +105,7 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
         with self._lock:
             engine = self._tenant_engines.get(org_id)
             if engine:
-                logger.debug(f"Reusing existing engine for org_id: {org_id}")
+                logger.debug("Reusing existing engine for org_id: %s", org_id)
                 if org_id in self._tenant_pool_order:
                     self._tenant_pool_order.remove(org_id)
                 self._tenant_pool_order.append(org_id)
@@ -115,14 +118,14 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
             with self._lock:
                 engine = self._tenant_engines.get(org_id)
                 if engine:
-                    logger.debug(f"Reusing existing engine after lock for org_id: {org_id}")
+                    logger.debug("Reusing existing engine after lock for org_id: %s", org_id)
                     if org_id in self._tenant_pool_order:
                         self._tenant_pool_order.remove(org_id)
                     self._tenant_pool_order.append(org_id)
                     return engine
 
             # Create new engine outside lock to avoid blocking other tenants
-            logger.debug(f"Creating new engine for org_id: {org_id}")
+            logger.debug("Creating new engine for org_id: %s", org_id)
             role_name = get_role_name(org_id)
             secret_name = get_key_vault_secret_name(org_id)
 
@@ -132,7 +135,7 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
                 password = await secrets_manager.get(secret_name)
 
             if not password:
-                logger.error(f"Password secret '{secret_name}' unavailable for org_id {org_id}")
+                logger.error("Password secret '%s' unavailable for org_id %s", secret_name, org_id)
                 raise RuntimeError(f"Tenant secret '{secret_name}' unavailable")
 
             url = self._build_tenant_url(role_name, password)
@@ -158,6 +161,7 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
             )
 
             # Add to cache and manage LRU eviction
+            engines_to_dispose: list[AsyncEngine] = []
             with self._lock:
                 self._tenant_engines[org_id] = engine
 
@@ -166,11 +170,26 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
                     self._tenant_pool_order.remove(org_id)
                 self._tenant_pool_order.append(org_id)
 
+                # LRU eviction: dispose oldest engines when pool exceeds max
+                while len(self._tenant_engines) > self._tenant_pool_max:
+                    evict_id = self._tenant_pool_order.pop(0)
+                    old_engine = self._tenant_engines.pop(evict_id, None)
+                    if old_engine:
+                        engines_to_dispose.append(old_engine)
+                        logger.debug("Evicting tenant engine for org_id: %s", evict_id)
+
+            # Dispose evicted engines outside lock to avoid blocking
+            for old_engine in engines_to_dispose:
+                try:
+                    await old_engine.dispose()
+                except Exception as e:  # pylint: disable=broad-exception-caught
+                    logger.warning("Failed to dispose evicted engine: %s", e)
+
             return engine
 
     # Public Provider API ---------------------------------------------
     @asynccontextmanager
-    async def master_session(self) -> AsyncIterator[AsyncSession]:
+    async def master_session(self) -> AsyncIterator[AsyncSession]:  # pylint: disable=invalid-overridden-method
         master_engine = self._get_master_engine()
         factory = async_sessionmaker(master_engine, expire_on_commit=False)
         session: AsyncSession = factory()
@@ -183,8 +202,8 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
             await session.close()
 
     @asynccontextmanager
-    async def tenant_session(self, org_id: UUID) -> AsyncIterator[AsyncSession]:
-        logger.debug(f"Acquiring tenant session for org_id: {org_id}")
+    async def tenant_session(self, org_id: UUID) -> AsyncIterator[AsyncSession]:  # pylint: disable=invalid-overridden-method
+        logger.debug("Acquiring tenant session for org_id: %s", org_id)
         engine = await self._get_tenant_engine(org_id)
         factory = async_sessionmaker(engine, expire_on_commit=False)
         session: AsyncSession = factory()

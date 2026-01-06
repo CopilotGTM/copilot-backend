@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import contextlib
 from uuid import UUID
 
@@ -19,6 +18,7 @@ from src.infra.media.thumbnail_generator import (
 )
 from src.infra.observability.context import correlation_headers
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
+from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.workers.knowledge_worker.celery_app import app
 from src.workers.knowledge_worker.services.progress import ProgressPublisher
@@ -36,18 +36,20 @@ def _assign_generated_thumbnails(source: OrganisationSource, created: dict[str, 
 
 
 def _compute_and_persist_checksum(
-    loop: asyncio.AbstractEventLoop,
     storage: AzureOrganisationBlobStorage,
     source: OrganisationSource,
     session,
 ):
     """Compute checksum early (if missing) and commit immediately.
 
+    Uses a persistent thread-local event loop via run_async() to prevent
+    memory leaks from creating new event loops per task.
+
     Doing this before thumbnail generation ensures we still retain a checksum
     even if later steps fail (mirrors chat worker approach)."""
     try:
         if source.storage_path and not source.checksum:
-            checksum = loop.run_until_complete(storage.compute_checksum(source.storage_path))
+            checksum = run_async(storage.compute_checksum(source.storage_path))
             source.checksum = checksum
             session.merge(source)
             session.commit()
@@ -117,18 +119,20 @@ def _handle_duplicate_if_any(
 
 @app.task(name="knowledge.post_upload_process", bind=True, acks_late=True, max_retries=3)
 def post_upload_process(self, organisation_id: UUID, source_id: UUID):
-    """Post-upload processing: checksum and thumbnail generation."""
+    """Post-upload processing: checksum and thumbnail generation.
+
+    Uses a persistent thread-local event loop via run_async() to prevent
+    memory leaks from creating new event loops per task.
+    """
     logger.info("post_upload_process started")
     logger.info("org=%s source=%s", organisation_id, source_id)
 
-    # Getting session and storage (sync DB session; async storage via local loop)
+    # Getting session and storage (sync DB session; async storage via run_async)
     organisation_id, source_id = str(organisation_id), str(source_id)
     session_gen = acquire_org_session(organisation_id)
     session = next(session_gen)
     storage = AzureOrganisationBlobStorage(organisation_id=organisation_id)
     publisher = ProgressPublisher(organisation_id=organisation_id, source_id=source_id)
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
 
     try:
         # Load source record
@@ -159,7 +163,7 @@ def post_upload_process(self, organisation_id: UUID, source_id: UUID):
         session.commit()
 
         # Compute checksum early (mirrors chat worker style)
-        _compute_and_persist_checksum(loop, storage, source, session)
+        _compute_and_persist_checksum(storage, source, session)
 
         # Duplicate detection and handling
         if _handle_duplicate_if_any(session, source, job, publisher):
@@ -167,7 +171,7 @@ def post_upload_process(self, organisation_id: UUID, source_id: UUID):
 
         # Thumbnail generation using shared service
         try:
-            created = loop.run_until_complete(
+            created = run_async(
                 generate_thumbnails(
                     storage=storage,
                     original_blob_path=source.storage_path or "",
@@ -186,7 +190,7 @@ def post_upload_process(self, organisation_id: UUID, source_id: UUID):
             thumbnail_small_url = None
             thumbnail_medium_url = None
             if source.thumbnail_small_path or source.thumbnail_medium_path:
-                thumbnail_small_url, thumbnail_medium_url = loop.run_until_complete(
+                thumbnail_small_url, thumbnail_medium_url = run_async(
                     generate_thumbnail_sas_urls(
                         storage=storage,
                         small_path=source.thumbnail_small_path,
@@ -231,10 +235,6 @@ def post_upload_process(self, organisation_id: UUID, source_id: UUID):
             session.close()
         with contextlib.suppress(Exception):
             session_gen.close()
-        # Close async Azure clients (run in event loop)
-        try:
-            loop.run_until_complete(storage.close())
-        except Exception:
-            pass
-        finally:
-            loop.close()
+        # Close async Azure clients using persistent thread-local event loop
+        with contextlib.suppress(Exception):
+            run_async(storage.close())

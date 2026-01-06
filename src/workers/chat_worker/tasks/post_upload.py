@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import contextlib
 
 from src.api.dependencies.organisation_dependencies import acquire_org_session
@@ -13,6 +12,7 @@ from src.infra.config.configs import thumbnail_config
 from src.infra.media.thumbnail_generator import generate_thumbnails
 from src.infra.messaging.attachment_status_publish import publish_attachment_status
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
+from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.workers.chat_worker.celery_app import app
 
@@ -42,15 +42,18 @@ def _attachment_already_processed(attachment: Attachment | None) -> bool:
 
 
 def _compute_and_persist_checksum(
-    loop: asyncio.AbstractEventLoop,
     storage: AzureOrganisationBlobStorage,
     attachment: Attachment,
     session,
 ) -> None:
-    """Compute checksum if missing and persist it; swallow and log errors."""
+    """Compute checksum if missing and persist it; swallow and log errors.
+
+    Uses a persistent thread-local event loop via run_async() to prevent
+    memory leaks from creating new event loops per task.
+    """
     try:
         if attachment.storage_path and not attachment.checksum:
-            checksum = loop.run_until_complete(storage.compute_checksum(attachment.storage_path))
+            checksum = run_async(storage.compute_checksum(attachment.storage_path))
             attachment.checksum = checksum
             session.merge(attachment)
             session.commit()
@@ -73,16 +76,19 @@ def _update_status_and_commit(
 
 
 def _generate_thumbnail_sas_url(
-    loop: asyncio.AbstractEventLoop,
     storage: AzureOrganisationBlobStorage,
     path: str | None,
     minutes: int = 120,
 ) -> str | None:
-    """Generate a read SAS URL for a thumbnail path; return None on failure or missing path."""
+    """Generate a read SAS URL for a thumbnail path; return None on failure or missing path.
+
+    Uses a persistent thread-local event loop via run_async() to prevent
+    memory leaks from creating new event loops per task.
+    """
     if not path:
         return None
     try:
-        return loop.run_until_complete(storage.generate_read_sas(path, minutes=minutes))
+        return run_async(storage.generate_read_sas(path, minutes=minutes))
     except Exception:
         logger.debug("Thumbnail SAS generation failed for path=%s", path, exc_info=True)
         return None
@@ -109,7 +115,8 @@ def _publish_status_event(
 def post_upload(self, organisation_id: str, attachment_id: str):
     """Post-upload processing: checksum and thumbnail generation.
 
-    Uses a dedicated event loop (mirrors knowledge worker) to avoid repeated loop creation issues.
+    Uses a persistent thread-local event loop via run_async() to prevent
+    memory leaks from creating new event loops per task.
     """
     logger.info(
         "Attachment post-upload task started org=%s attachment=%s",
@@ -119,8 +126,6 @@ def post_upload(self, organisation_id: str, attachment_id: str):
     session_gen = acquire_org_session(organisation_id)
     session = next(session_gen)
     storage = AzureOrganisationBlobStorage(organisation_id=organisation_id)  # type: ignore[arg-type]
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
 
     attachment: Attachment | None = None
     try:
@@ -134,13 +139,13 @@ def post_upload(self, organisation_id: str, attachment_id: str):
             return
 
         # Compute checksum if missing
-        _compute_and_persist_checksum(loop, storage, attachment, session)
+        _compute_and_persist_checksum(storage, attachment, session)
 
         # Thumbnails via shared service (guard using config to avoid unnecessary work)
         try:
             mt = (attachment.mimetype or "").lower()
             if thumbnail_config.is_supported(mt):
-                created = loop.run_until_complete(
+                created = run_async(
                     generate_thumbnails(
                         storage=storage,
                         original_blob_path=attachment.storage_path,
@@ -164,7 +169,7 @@ def post_upload(self, organisation_id: str, attachment_id: str):
 
         # Publish completion event with optional SAS
         thumbnail_small_url = _generate_thumbnail_sas_url(
-            loop, storage, attachment.thumbnail_small_path, minutes=120
+            storage, attachment.thumbnail_small_path, minutes=120
         )
         _publish_status_event(
             organisation_id, attachment, AttachmentStatus.COMPLETED, thumbnail_small_url
@@ -197,9 +202,6 @@ def post_upload(self, organisation_id: str, attachment_id: str):
             session.close()
         with contextlib.suppress(Exception):
             session_gen.close()
-        try:
-            loop.run_until_complete(storage.close())
-        except Exception:
-            pass
-        finally:
-            loop.close()
+        # Close async Azure clients using persistent thread-local event loop
+        with contextlib.suppress(Exception):
+            run_async(storage.close())
