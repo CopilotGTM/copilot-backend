@@ -191,7 +191,6 @@ workflows/deck_generation/test.py
 test-local-scripts/
 cache/
 .github/instructions/
-docs/Task List/
 docs/Future Functionality Documentation/
-docs/LLM Development Documentation/
 Dockerfile.local
+.vscode/
