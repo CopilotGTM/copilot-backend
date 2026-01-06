@@ -52,10 +52,64 @@ variables:
 
 stages:
   # ==========================================================================
+  # Stage 0: Check if only docs changed (skip pipeline if so)
+  # ==========================================================================
+  - stage: CheckChanges
+    displayName: Check for Code Changes
+    jobs:
+      - job: DetectChanges
+        displayName: Detect if only docs changed
+        pool:
+          name: $(AGENT_POOL)
+        steps:
+          - checkout: self
+            fetchDepth: '0'  # Need full history to compare commits
+
+          - script: |
+              echo "##[section]🔍 Checking what files changed..."
+
+              # Get the merge base (last common commit with target branch)
+              # For PRs, compare against the target branch
+              # For pushes, compare against the previous commit
+              if [ "$(Build.Reason)" = "PullRequest" ]; then
+                BASE_BRANCH="origin/$(System.PullRequest.TargetBranch)"
+                echo "PR detected - comparing against $BASE_BRANCH"
+              else
+                # For direct pushes, compare with parent commit
+                BASE_BRANCH="HEAD~1"
+                echo "Direct push detected - comparing against previous commit"
+              fi
+
+              # Get list of changed files
+              CHANGED_FILES=$(git diff --name-only $BASE_BRANCH HEAD 2>/dev/null || git diff --name-only HEAD~1 HEAD)
+
+              echo "Changed files:"
+              echo "$CHANGED_FILES"
+              echo ""
+
+              # Check if ALL changed files are in docs/ folder
+              NON_DOCS_CHANGES=$(echo "$CHANGED_FILES" | grep -v "^docs/" | grep -v "^$" || true)
+
+              if [ -z "$NON_DOCS_CHANGES" ]; then
+                echo "##[section]📚 Only documentation changes detected!"
+                echo "Changed files are all in docs/ folder. Skipping build and deploy."
+                echo "##vso[task.setvariable variable=SKIP_PIPELINE;isOutput=true]true"
+              else
+                echo "##[section]💻 Code changes detected!"
+                echo "Non-docs changes:"
+                echo "$NON_DOCS_CHANGES"
+                echo "##vso[task.setvariable variable=SKIP_PIPELINE;isOutput=true]false"
+              fi
+            name: CheckDocs
+            displayName: 'Check if only docs/ changed'
+
+  # ==========================================================================
   # Stage 1: Code Quality & Testing
   # ==========================================================================
   - stage: QualityCheck
     displayName: Code Quality & Tests
+    dependsOn: CheckChanges
+    condition: and(succeeded(), ne(dependencies.CheckChanges.outputs['DetectChanges.CheckDocs.SKIP_PIPELINE'], 'true'))
     jobs:
       - job: QualityAndSecurity
         displayName: Quality Checks & Security Scan
@@ -111,8 +165,10 @@ stages:
   # ==========================================================================
   - stage: BuildAndPush
     displayName: Build & Push Docker Image to ACR
-    dependsOn: QualityCheck
-    condition: succeeded()
+    dependsOn:
+      - CheckChanges
+      - QualityCheck
+    condition: and(succeeded(), ne(dependencies.CheckChanges.outputs['DetectChanges.CheckDocs.SKIP_PIPELINE'], 'true'))
     jobs:
       - job: dockerBuildPush
         displayName: Build and Push to ACR
@@ -275,13 +331,80 @@ stages:
               echo "📦 Integrations: $(ACR_LOGIN_SERVER)/$(INTEGRATIONS_IMAGE_REPOSITORY):$(Build.BuildId)"
             displayName: 'Build Summary'
 
+          # ===================================================================
+          # ACR Cleanup - Keep only last 10 images per repository
+          # ===================================================================
+          - script: |
+              echo "##[section]🧹 Cleaning up old images from ACR (keeping last 10)..."
+
+              # Function to cleanup a repository
+              cleanup_repo() {
+                REPO=$1
+                echo ""
+                echo "Processing repository: $REPO"
+
+                # Get all tags sorted by creation time (newest first), excluding 'latest'
+                TAGS=$(az acr repository show-tags \
+                  --name $ACR_NAME \
+                  --repository $REPO \
+                  --orderby time_desc \
+                  --output tsv 2>/dev/null | grep -v "^latest$" || echo "")
+
+                if [ -z "$TAGS" ]; then
+                  echo "  No tags found for $REPO"
+                  return
+                fi
+
+                # Count total tags
+                TOTAL_TAGS=$(echo "$TAGS" | wc -l)
+                echo "  Total tags (excluding 'latest'): $TOTAL_TAGS"
+
+                # Keep first 10, delete the rest
+                if [ "$TOTAL_TAGS" -gt 10 ]; then
+                  TAGS_TO_DELETE=$(echo "$TAGS" | tail -n +11)
+                  DELETE_COUNT=$(echo "$TAGS_TO_DELETE" | wc -l)
+                  echo "  Deleting $DELETE_COUNT old tags..."
+
+                  for TAG in $TAGS_TO_DELETE; do
+                    echo "    Deleting $REPO:$TAG"
+                    az acr repository delete \
+                      --name $ACR_NAME \
+                      --image "$REPO:$TAG" \
+                      --yes 2>/dev/null || echo "    Failed to delete $REPO:$TAG"
+                  done
+                  echo "  ✅ Cleanup complete for $REPO"
+                else
+                  echo "  ✅ No cleanup needed (only $TOTAL_TAGS tags)"
+                fi
+              }
+
+              # Cleanup each repository
+              cleanup_repo "copilot-backend"
+              cleanup_repo "$API_IMAGE_REPOSITORY"
+              cleanup_repo "$KNOWLEDGE_IMAGE_REPOSITORY"
+              cleanup_repo "$LIGHT_IMAGE_REPOSITORY"
+              cleanup_repo "$INTEGRATIONS_IMAGE_REPOSITORY"
+
+              echo ""
+              echo "##[section]✅ ACR cleanup complete!"
+            displayName: 'Cleanup Old ACR Images (Keep Last 10)'
+            env:
+              ACR_NAME: $(ACR_NAME)
+              API_IMAGE_REPOSITORY: $(API_IMAGE_REPOSITORY)
+              KNOWLEDGE_IMAGE_REPOSITORY: $(KNOWLEDGE_IMAGE_REPOSITORY)
+              LIGHT_IMAGE_REPOSITORY: $(LIGHT_IMAGE_REPOSITORY)
+              INTEGRATIONS_IMAGE_REPOSITORY: $(INTEGRATIONS_IMAGE_REPOSITORY)
+            continueOnError: true
+
   # ==========================================================================
   # Stage 3: Deploy to Dev AKS
   # ==========================================================================
   - stage: Deploy
     displayName: Deploy to Dev AKS
-    dependsOn: BuildAndPush
-    condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
+    dependsOn:
+      - CheckChanges
+      - BuildAndPush
+    condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'), ne(dependencies.CheckChanges.outputs['DetectChanges.CheckDocs.SKIP_PIPELINE'], 'true'))
     variables:
       - name: KUBECONFIG_FILE
         value: '$(Pipeline.Workspace)/kubeconfig.yaml'
