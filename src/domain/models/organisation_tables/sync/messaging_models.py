@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import Column, DateTime, Index, String, Text, UniqueConstraint, text
+from sqlalchemy import Boolean, Column, DateTime, Index, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, Relationship
 
@@ -399,17 +399,17 @@ class MessagingMessage(SyncedRecordMixin, table=True):
 
     is_deleted: bool = Field(
         default=False,
-        sa_column=Column(String, nullable=False, server_default=text("false")),
+        sa_column=Column(Boolean, nullable=False, server_default=text("false")),
         description="Whether the message was deleted.",
     )
     is_bot_message: bool = Field(
         default=False,
-        sa_column=Column(String, nullable=False, server_default=text("false")),
+        sa_column=Column(Boolean, nullable=False, server_default=text("false")),
         description="Whether the message was sent by a bot.",
     )
     is_important: bool = Field(
         default=False,
-        sa_column=Column(String, nullable=False, server_default=text("false"), index=True),
+        sa_column=Column(Boolean, nullable=False, server_default=text("false"), index=True),
         description="Flag for important messages (starred, pinned, or AI-detected priority).",
     )
 

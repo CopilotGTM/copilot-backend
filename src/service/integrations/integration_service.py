@@ -219,9 +219,9 @@ class IntegrationService:
                 {
                     "id": ch.external_channel_id,
                     "name": ch.channel_name,
-                    "type": str(ch.channel_type.value)
+                    "type": ch.channel_type.value
                     if hasattr(ch.channel_type, "value")
-                    else str(ch.channel_type),
+                    else ch.channel_type,
                     "parent_id": parent_id,
                     "parent_name": parent_name,
                 }
@@ -280,6 +280,9 @@ class IntegrationService:
     async def remove_channel_from_deal(self, deal_id: UUID, channel_id: UUID) -> bool:
         """
         Remove a channel link from a deal.
+
+        If the channel is no longer linked to any deals after removal,
+        sets is_monitored=false to stop message syncing.
         """
         stmt = select(MessagingDealLink).where(
             MessagingDealLink.deal_id == deal_id,
@@ -288,11 +291,29 @@ class IntegrationService:
         result = await self.db.execute(stmt)
         link = result.scalars().first()
 
-        if link:
-            await self.db.delete(link)
-            await self.db.commit()
-            return True
-        return False
+        if not link:
+            return False
+
+        await self.db.delete(link)
+
+        # Check if channel is still linked to other deals
+        other_links_stmt = select(MessagingDealLink).where(
+            MessagingDealLink.channel_id == channel_id,
+            MessagingDealLink.deal_id != deal_id,
+        )
+        other_links_result = await self.db.execute(other_links_stmt)
+        has_other_links = other_links_result.scalars().first() is not None
+
+        # If no other deals linked, stop monitoring this channel
+        if not has_other_links:
+            channel_stmt = select(MessagingChannel).where(MessagingChannel.channel_id == channel_id)
+            channel_result = await self.db.execute(channel_stmt)
+            channel = channel_result.scalars().first()
+            if channel and channel.is_monitored == "true":
+                channel.is_monitored = "false"
+
+        await self.db.commit()
+        return True
 
     async def link_channel_to_deal(
         self,
@@ -317,7 +338,7 @@ class IntegrationService:
         if not integration:
             raise ValueError(f"Integration {integration_id} not found")
 
-        # 2. Find or Create MessagingChannel
+        # 2. Find MessagingChannel (must already exist from Teams sync)
         stmt = select(MessagingChannel).where(
             MessagingChannel.integration_id == integration_id,
             MessagingChannel.external_channel_id == external_channel_id,
@@ -326,30 +347,16 @@ class IntegrationService:
         channel = result.scalars().first()
 
         if not channel:
-            channel = MessagingChannel(
-                organisation_id=self.user_ids.organisation_id,
-                integration_id=integration_id,
-                external_channel_id=external_channel_id,
-                channel_name=channel_data.name,
-                channel_type=channel_data.type,
-                channel_metadata={
-                    "parent_id": channel_data.parent_id,
-                    "parent_name": channel_data.parent_name,
-                },
+            raise ValueError(
+                f"Channel {external_channel_id} not found. "
+                "Channels must be synced from Teams before linking to deals."
             )
-            self.db.add(channel)
-            await self.db.flush()  # Flush to get channel.channel_id
-        else:
-            # Update details if changed
-            channel.channel_name = channel_data.name
-            channel.channel_type = channel_data.type
-            channel.channel_metadata = {
-                "parent_id": channel_data.parent_id,
-                "parent_name": channel_data.parent_name,
-            }
-            await self.db.flush()
 
-        # 3. Create Link if not exists
+        # 3. Mark channel as monitored (will be synced for messages)
+        if channel.is_monitored != "true":
+            channel.is_monitored = "true"
+
+        # 4. Create Link if not exists
         link_stmt = select(MessagingDealLink).where(
             MessagingDealLink.deal_id == deal_id,
             MessagingDealLink.channel_id == channel.channel_id,
@@ -365,14 +372,33 @@ class IntegrationService:
                 channel_id=channel.channel_id,
                 created_by=self.user_ids.user_id,
                 detection_method="manual",
-                is_verified="true",
+                confidence_score=1.0,  # Manual links have full confidence
+                linked_by=self.user_ids.user_id,
+                is_verified="true",  # Manual links are pre-verified
+                verified_by=self.user_ids.user_id,
+                link_metadata={
+                    "source": "deal_channel_link_api",
+                    "channel_name": channel.channel_name,
+                    "channel_type": channel.channel_type.value
+                    if hasattr(channel.channel_type, "value")
+                    else channel.channel_type,
+                    "integration_type": integration.integration_type.value
+                    if hasattr(integration.integration_type, "value")
+                    else integration.integration_type,
+                },
             )
             self.db.add(link)
-            await self.db.commit()
+
+        # Commit both channel update (is_monitored) and link creation
+        await self.db.commit()
 
         return {
             "deal_id": str(deal_id),
             "channel_id": str(channel.channel_id),
             "external_channel_id": channel.external_channel_id,
             "name": channel.channel_name,
+            "type": channel.channel_type.value
+            if hasattr(channel.channel_type, "value")
+            else channel.channel_type,
+            "integration_id": str(integration_id),
         }

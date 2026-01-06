@@ -7,11 +7,12 @@ Handles:
 - Connection setup and validation
 """
 
-# mypy: disable-error-code="no-any-return"
+# mypy: disable-error-code="no-any-return,return-value"
 
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, Request
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
@@ -275,7 +276,7 @@ async def handle_nango_webhook(
     request: Request,
     x_nango_signature: str = Header(None, alias="X-Nango-Signature"),
     webhook_service: NangoWebhookService = Depends(get_webhook_service),
-) -> Response:
+) -> JSONResponse:
     try:
         # Extract JSON payload
         payload = await request.json()

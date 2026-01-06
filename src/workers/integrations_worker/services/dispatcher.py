@@ -1258,8 +1258,8 @@ async def execute_sync(request: SyncJobRequest) -> dict[str, Any]:
         provider_key = request.provider_config_key or to_nango_connect_integration_key(
             integration_meta.integration_type
         )
-
-        logger.debug("Processing data type: %s", sync_data_type)
+        logger.info("Using provider config key: %s", provider_key)
+        logger.info("Processing data type: %s", sync_data_type)
 
         # Check sync lock
         with _sync_lock_guard(str(request.integration_id), sync_data_type) as lock_acquired:

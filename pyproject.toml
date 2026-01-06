@@ -35,7 +35,7 @@ dependencies = [
     
     # Database and ORM (All components access DB)
     "sqlmodel==0.0.24",
-    "SQLAlchemy==2.0.42",
+    "SQLAlchemy==2.0.45",
     "psycopg2-binary==2.9.10",
     "asyncpg==0.30.0",
     "alembic==1.16.4",
@@ -47,7 +47,7 @@ dependencies = [
     "azure-common==1.1.28",
     
     # Utilities
-    "packaging==23.2",
+    "packaging==25.0",
 ]
 
 [project.optional-dependencies]

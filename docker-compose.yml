@@ -48,6 +48,7 @@ services:
       context: .
       dockerfile: Dockerfile.local
     container_name: copilot-api
+    command: /app/.venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8080 --reload
     ports:
       - "8080:8080"
     dns:
@@ -121,6 +122,7 @@ services:
         condition: service_healthy
     networks:
       - copilot-network
+    profiles: ["knowledge"]
 
   # ---------------------------------------------------------------------------
   # Knowledge Upload Worker
@@ -158,6 +160,7 @@ services:
         condition: service_healthy
     networks:
       - copilot-network
+    profiles: ["knowledge"]
 
   # ---------------------------------------------------------------------------
   # Organization Worker
@@ -195,6 +198,7 @@ services:
         condition: service_healthy
     networks:
       - copilot-network
+    profiles: ["organization"]
 
   # ---------------------------------------------------------------------------
   # Chat Worker (handles attachments, chat_processing, chat_messages)
@@ -232,6 +236,7 @@ services:
         condition: service_healthy
     networks:
       - copilot-network
+    profiles: ["chat"]
 
   # ---------------------------------------------------------------------------
   # Integrations Worker (handles CRM/third-party sync)
@@ -250,6 +255,41 @@ services:
       --concurrency=8
       --loglevel=info
       --hostname=integrations@%h
+    environment:
+      - ENV=local
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_SSL=false
+      - REDIS_SSL_CERT_REQS=none
+      - REDIS_PASSWORD=
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    env_file:
+      - .env
+    volumes:
+      - azure-data:/home/appuser/.azure
+      - ./src:/app/src:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - copilot-network
+
+  # ---------------------------------------------------------------------------
+  # Integrations Beat Scheduler
+  # ---------------------------------------------------------------------------
+  integrations-beat:
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+    container_name: copilot-integrations-beat
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    command: >
+      celery -A src.workers.integrations_worker.celery_app beat
+      --loglevel=info
+      --schedule=/tmp/celerybeat-schedule
     environment:
       - ENV=local
       - REDIS_HOST=redis
