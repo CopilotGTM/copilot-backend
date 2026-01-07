@@ -59,13 +59,9 @@ repos:
         exclude: ^tests/
         additional_dependencies: ['bandit[toml]']
 
-  # Dockerfile linting
-  - repo: https://github.com/hadolint/hadolint
-    rev: v2.12.0
-    hooks:
-      - id: hadolint-docker
-        args: ['--ignore', 'DL3008', '--ignore', 'DL3009', '--ignore', 'DL3025']
-        files: Dockerfile.*
+  # Dockerfile linting intentionally disabled.
+  # Reason: the Docker-based hadolint hook requires a running Docker Engine,
+  # which can break commits on Windows when Docker Desktop isn't running.
 
   # Check for secrets (temporarily disabled - baseline setup needed)
   # - repo: https://github.com/Yelp/detect-secrets

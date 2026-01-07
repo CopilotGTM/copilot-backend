@@ -146,6 +146,9 @@ FROM runtime-base AS api
 LABEL component="api" \
       description="FastAPI Application"
 
+# Production Python optimizations
+ENV PYTHONOPTIMIZE=1
+
 COPY --from=builder-api --chown=appuser:appuser /app/.venv /app/.venv
 
 # Copy application code
@@ -162,10 +165,18 @@ USER appuser
 
 EXPOSE 8080
 
-CMD uvicorn src.main:app \
-    --host 0.0.0.0 \
-    --port 8080 \
-    --workers 2
+# Ensure SIGTERM is properly handled for graceful shutdown
+STOPSIGNAL SIGTERM
+
+# Exec form ensures signals propagate correctly to uvicorn
+# --timeout-keep-alive: Match K8s ingress timeout to prevent connection resets
+# --timeout-graceful-shutdown: Allow in-flight requests to complete on shutdown
+CMD ["uvicorn", "src.main:app", \
+    "--host", "0.0.0.0", \
+    "--port", "8080", \
+    "--workers", "2", \
+    "--timeout-keep-alive", "75", \
+    "--timeout-graceful-shutdown", "30"]
 
 # ============================================================================
 # Target: Knowledge Worker - Heavy ML/Document Processing
@@ -285,10 +296,16 @@ USER appuser
 
 EXPOSE 8080
 
-CMD uvicorn src.main:app \
-    --host 0.0.0.0 \
-    --port 8080 \
-    --workers 2
+# Ensure SIGTERM is properly handled for graceful shutdown
+STOPSIGNAL SIGTERM
+
+# Exec form ensures signals propagate correctly to uvicorn
+CMD ["uvicorn", "src.main:app", \
+    "--host", "0.0.0.0", \
+    "--port", "8080", \
+    "--workers", "2", \
+    "--timeout-keep-alive", "75", \
+    "--timeout-graceful-shutdown", "30"]
 
 # ============================================================================
 # Default Target (for backward compatibility)
