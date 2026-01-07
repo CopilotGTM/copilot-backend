@@ -27,6 +27,7 @@ from src.api.routers.crm import (
     deals_router,
     meetings_router,
     risks_blockers_router,
+    stakeholder_insights_router,
     stakeholders_router,
     tasks_router,
 )
@@ -169,6 +170,9 @@ def create_fastapi_app():
     fastapp.include_router(deal_notes_router, prefix="/users/crm/deals", tags=["deal-notes"])
     fastapp.include_router(
         risks_blockers_router, prefix="/users/crm/deals", tags=["risks-blockers"]
+    )
+    fastapp.include_router(
+        stakeholder_insights_router, prefix="/users/crm/deals", tags=["stakeholder-insights"]
     )
 
     # Admin routers

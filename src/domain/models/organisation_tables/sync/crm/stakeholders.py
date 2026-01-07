@@ -1,8 +1,9 @@
 from datetime import datetime
 from enum import Enum
+from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import Column, DateTime, Index, String, UniqueConstraint
+from sqlalchemy import Column, DateTime, Index, String, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, Relationship
 from src.domain.models.organisation_tables.sync.base import FlexibleSyncedRecordMixin
@@ -88,6 +89,32 @@ class DealStakeholder(FlexibleSyncedRecordMixin, table=True):
     temperature: StakeholderTemperature = Field(default=StakeholderTemperature.COLD)
 
     source: StakeholderSource = Field(default=StakeholderSource.CALENDAR_DISCOVERY)
+
+    # Extended Data (general purpose, future extensibility)
+    stakeholder_data: dict[str, Any] | None = Field(
+        default=None,
+        sa_column=Column(JSONB, nullable=True, server_default=text("NULL")),
+        description="General extended data for future extensibility.",
+    )
+
+    # Engagement History (time-series tracking for insight detection)
+    # Structure: [
+    #   {
+    #     "recorded_at": "2025-01-06T10:00:00Z",
+    #     "stance": "CHAMPION",
+    #     "temperature": "HOT",
+    #     "engagement_score": 85.0,
+    #     "champion_potential": 90.0,
+    #     "decision_power": "DECISION_MAKER",
+    #     "analysis_run_id": "uuid"
+    #   },
+    #   ...
+    # ]
+    stakeholder_engagement_history: list[dict[str, Any]] | None = Field(
+        default=None,
+        sa_column=Column(JSONB, nullable=True, server_default=text("NULL")),
+        description="Time-series engagement history for tracking changes and detecting sentiment trends.",
+    )
 
     # Relationships
     deal: CRMDeal = Relationship()
