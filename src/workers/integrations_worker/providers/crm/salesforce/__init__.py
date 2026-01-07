@@ -9,7 +9,13 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from src.infra.utils.logger import get_logger
 from src.service.integrations.nango_client import NangoClient
+from src.workers.integrations_worker.utils.sync_metadata import (
+    SyncContext,
+    classify_records,
+    log_sync_action_distribution,
+)
 
 from .fetchers import (
     SalesforceAccountFetcher,
@@ -23,6 +29,8 @@ from .fetchers import (
     SalesforceTaskFetcher,
     SalesforceUserFetcher,
 )
+
+logger = get_logger(__name__)
 
 __all__ = [
     "fetch_accounts",
@@ -436,12 +444,28 @@ async def fetch_opportunities(
     last_synced_at: Any,
     data_type: str | None,
     provider_config_key: str,
+    *,
+    sync_type: str | None = None,
+    response_results: dict[str, int] | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch Opportunities with associated contact roles.
 
     Fetches both Opportunities and OpportunityContactRoles, then embeds
     the contact roles into each deal's associations field for compatibility
     with the existing DealSyncService participant extraction.
+
+    Args:
+        nango: Nango client instance
+        connection_id: Nango connection ID
+        is_initial: Whether this is an initial (full) sync
+        last_synced_at: Timestamp of last sync
+        data_type: Data type being synced (unused, kept for interface)
+        provider_config_key: Nango provider config key
+        sync_type: Sync type from Nango webhook (INITIAL or INCREMENTAL)
+        response_results: Record counts from Nango webhook {added, updated, deleted}
+
+    Returns:
+        List of deal records with _sync_metadata added for incremental processing
     """
     _ = data_type
 
@@ -467,7 +491,42 @@ async def fetch_opportunities(
             roles_by_opp.setdefault(opp_id, []).append(role)
 
     # Transform opportunities with embedded associations
-    return [_sf_to_canonical_deal_with_associations(r, roles_by_opp) for r in opportunities]
+    canonical_records = [
+        _sf_to_canonical_deal_with_associations(r, roles_by_opp) for r in opportunities
+    ]
+
+    # Add sync metadata for incremental processing optimization
+    context = SyncContext.from_params(
+        sync_type=sync_type,
+        is_initial=is_initial,
+        response_results=response_results,
+    )
+
+    # Classify records and add _sync_metadata
+    # Note: For Salesforce, IsDeleted=True records will be classified as DELETED
+    processed_records, counts = classify_records(
+        canonical_records,
+        context=context,
+        add_metadata=True,
+    )
+
+    # Log action distribution for observability
+    log_sync_action_distribution(
+        counts,
+        entity_type="deals",
+        provider="salesforce",
+        sync_type=sync_type,
+    )
+
+    logger.info(
+        "Salesforce opportunities fetch completed: total=%d (webhook_expected: added=%d updated=%d deleted=%d)",
+        len(processed_records),
+        response_results.get("added", 0) if response_results else 0,
+        response_results.get("updated", 0) if response_results else 0,
+        response_results.get("deleted", 0) if response_results else 0,
+    )
+
+    return processed_records
 
 
 async def fetch_deals(
@@ -477,7 +536,25 @@ async def fetch_deals(
     last_synced_at: Any,
     data_type: str | None,
     provider_config_key: str,
+    *,
+    sync_type: str | None = None,
+    response_results: dict[str, int] | None = None,
 ) -> list[dict[str, Any]]:
+    """Fetch deals (Opportunities) from Salesforce.
+
+    Args:
+        nango: Nango client instance
+        connection_id: Nango connection ID
+        is_initial: Whether this is an initial (full) sync
+        last_synced_at: Timestamp of last sync
+        data_type: Data type being synced (unused, kept for interface)
+        provider_config_key: Nango provider config key
+        sync_type: Sync type from Nango webhook (INITIAL or INCREMENTAL)
+        response_results: Record counts from Nango webhook {added, updated, deleted}
+
+    Returns:
+        List of deal records with _sync_metadata added for incremental processing
+    """
     return await fetch_opportunities(
         nango=nango,
         connection_id=connection_id,
@@ -485,6 +562,8 @@ async def fetch_deals(
         last_synced_at=last_synced_at,
         data_type=data_type,
         provider_config_key=provider_config_key,
+        sync_type=sync_type,
+        response_results=response_results,
     )
 
 
@@ -495,14 +574,62 @@ async def fetch_contacts(
     last_synced_at: Any,
     data_type: str | None,
     provider_config_key: str,
+    *,
+    sync_type: str | None = None,
+    response_results: dict[str, int] | None = None,
 ) -> list[dict[str, Any]]:
+    """Fetch contacts from Salesforce.
+
+    Args:
+        nango: Nango client instance
+        connection_id: Nango connection ID
+        is_initial: Whether this is an initial (full) sync
+        last_synced_at: Timestamp of last sync
+        data_type: Data type being synced (unused, kept for interface)
+        provider_config_key: Nango provider config key
+        sync_type: Sync type from Nango webhook (INITIAL or INCREMENTAL)
+        response_results: Record counts from Nango webhook {added, updated, deleted}
+
+    Returns:
+        List of contact records with _sync_metadata added for incremental processing
+    """
     _ = data_type
     fetcher = SalesforceContactFetcher(nango, provider_config_key, connection_id)
     rows = await fetcher.fetch_all(
         incremental=not is_initial,
         last_synced_at=last_synced_at,
     )
-    return [_sf_to_canonical_contact(r) for r in rows]
+    canonical_records = [_sf_to_canonical_contact(r) for r in rows]
+
+    # Add sync metadata for incremental processing optimization
+    context = SyncContext.from_params(
+        sync_type=sync_type,
+        is_initial=is_initial,
+        response_results=response_results,
+    )
+
+    processed_records, counts = classify_records(
+        canonical_records,
+        context=context,
+        add_metadata=True,
+    )
+
+    log_sync_action_distribution(
+        counts,
+        entity_type="contacts",
+        provider="salesforce",
+        sync_type=sync_type,
+    )
+
+    logger.info(
+        "Salesforce contacts fetch completed: total=%d (webhook_expected: added=%d updated=%d deleted=%d)",
+        len(processed_records),
+        response_results.get("added", 0) if response_results else 0,
+        response_results.get("updated", 0) if response_results else 0,
+        response_results.get("deleted", 0) if response_results else 0,
+    )
+
+    return processed_records
 
 
 async def fetch_leads(
@@ -529,14 +656,62 @@ async def fetch_accounts(
     last_synced_at: Any,
     data_type: str | None,
     provider_config_key: str,
+    *,
+    sync_type: str | None = None,
+    response_results: dict[str, int] | None = None,
 ) -> list[dict[str, Any]]:
+    """Fetch accounts (companies) from Salesforce.
+
+    Args:
+        nango: Nango client instance
+        connection_id: Nango connection ID
+        is_initial: Whether this is an initial (full) sync
+        last_synced_at: Timestamp of last sync
+        data_type: Data type being synced (unused, kept for interface)
+        provider_config_key: Nango provider config key
+        sync_type: Sync type from Nango webhook (INITIAL or INCREMENTAL)
+        response_results: Record counts from Nango webhook {added, updated, deleted}
+
+    Returns:
+        List of company records with _sync_metadata added for incremental processing
+    """
     _ = data_type
     fetcher = SalesforceAccountFetcher(nango, provider_config_key, connection_id)
     rows = await fetcher.fetch_all(
         incremental=not is_initial,
         last_synced_at=last_synced_at,
     )
-    return [_sf_to_canonical_company(r) for r in rows]
+    canonical_records = [_sf_to_canonical_company(r) for r in rows]
+
+    # Add sync metadata for incremental processing optimization
+    context = SyncContext.from_params(
+        sync_type=sync_type,
+        is_initial=is_initial,
+        response_results=response_results,
+    )
+
+    processed_records, counts = classify_records(
+        canonical_records,
+        context=context,
+        add_metadata=True,
+    )
+
+    log_sync_action_distribution(
+        counts,
+        entity_type="companies",
+        provider="salesforce",
+        sync_type=sync_type,
+    )
+
+    logger.info(
+        "Salesforce accounts fetch completed: total=%d (webhook_expected: added=%d updated=%d deleted=%d)",
+        len(processed_records),
+        response_results.get("added", 0) if response_results else 0,
+        response_results.get("updated", 0) if response_results else 0,
+        response_results.get("deleted", 0) if response_results else 0,
+    )
+
+    return processed_records
 
 
 async def fetch_companies(
@@ -546,7 +721,11 @@ async def fetch_companies(
     last_synced_at: Any,
     data_type: str | None,
     provider_config_key: str,
+    *,
+    sync_type: str | None = None,
+    response_results: dict[str, int] | None = None,
 ) -> list[dict[str, Any]]:
+    """Fetch companies (accounts) from Salesforce - alias for fetch_accounts."""
     return await fetch_accounts(
         nango=nango,
         connection_id=connection_id,
@@ -554,6 +733,8 @@ async def fetch_companies(
         last_synced_at=last_synced_at,
         data_type=data_type,
         provider_config_key=provider_config_key,
+        sync_type=sync_type,
+        response_results=response_results,
     )
 
 
@@ -564,14 +745,37 @@ async def fetch_users(
     last_synced_at: Any,
     data_type: str | None,
     provider_config_key: str,
+    *,
+    sync_type: str | None = None,
+    response_results: dict[str, int] | None = None,
 ) -> list[dict[str, Any]]:
+    """Fetch users from Salesforce.
+
+    Args:
+        nango: NangoClient instance
+        connection_id: Nango connection ID
+        is_initial: Whether this is initial sync
+        last_synced_at: Last sync timestamp
+        data_type: Data type being synced
+        provider_config_key: Provider config key
+        sync_type: Sync type from Nango webhook (INITIAL or INCREMENTAL)
+        response_results: Record counts from Nango webhook for classification
+    """
     _ = data_type
     fetcher = SalesforceUserFetcher(nango, provider_config_key, connection_id)
     rows = await fetcher.fetch_all(
         incremental=not is_initial,
         last_synced_at=last_synced_at,
     )
-    return [_sf_to_canonical_user(r) for r in rows]
+    users = [_sf_to_canonical_user(r) for r in rows]
+
+    # Add sync metadata for incremental sync
+    if sync_type and sync_type.upper() == "INCREMENTAL" and users:
+        context = SyncContext(response_results=response_results)
+        classify_records(users, context)
+        log_sync_action_distribution(users, "users", logger)
+
+    return users
 
 
 async def fetch_tasks(
@@ -581,14 +785,37 @@ async def fetch_tasks(
     last_synced_at: Any,
     data_type: str | None,
     provider_config_key: str,
+    *,
+    sync_type: str | None = None,
+    response_results: dict[str, int] | None = None,
 ) -> list[dict[str, Any]]:
+    """Fetch tasks from Salesforce.
+
+    Args:
+        nango: NangoClient instance
+        connection_id: Nango connection ID
+        is_initial: Whether this is initial sync
+        last_synced_at: Last sync timestamp
+        data_type: Data type being synced
+        provider_config_key: Provider config key
+        sync_type: Sync type from Nango webhook (INITIAL or INCREMENTAL)
+        response_results: Record counts from Nango webhook for classification
+    """
     _ = data_type
     fetcher = SalesforceTaskFetcher(nango, provider_config_key, connection_id)
     rows = await fetcher.fetch_all(
         incremental=not is_initial,
         last_synced_at=last_synced_at,
     )
-    return [_sf_to_canonical_task(r) for r in rows]
+    tasks = [_sf_to_canonical_task(r) for r in rows]
+
+    # Add sync metadata for incremental sync
+    if sync_type and sync_type.upper() == "INCREMENTAL" and tasks:
+        context = SyncContext(response_results=response_results)
+        classify_records(tasks, context)
+        log_sync_action_distribution(tasks, "tasks", logger)
+
+    return tasks
 
 
 async def fetch_notes(
@@ -598,10 +825,23 @@ async def fetch_notes(
     last_synced_at: Any,
     data_type: str | None,
     provider_config_key: str,
+    *,
+    sync_type: str | None = None,
+    response_results: dict[str, int] | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch legacy Salesforce Notes.
 
     Notes attached to Opportunities will be linked to deals during sync.
+
+    Args:
+        nango: NangoClient instance
+        connection_id: Nango connection ID
+        is_initial: Whether this is initial sync
+        last_synced_at: Last sync timestamp
+        data_type: Data type being synced
+        provider_config_key: Provider config key
+        sync_type: Sync type from Nango webhook (INITIAL or INCREMENTAL)
+        response_results: Record counts from Nango webhook for classification
     """
     _ = data_type
     fetcher = SalesforceNoteFetcher(nango, provider_config_key, connection_id)
@@ -609,7 +849,15 @@ async def fetch_notes(
         incremental=not is_initial,
         last_synced_at=last_synced_at,
     )
-    return [_sf_to_canonical_note(r) for r in rows]
+    notes = [_sf_to_canonical_note(r) for r in rows]
+
+    # Add sync metadata for incremental sync
+    if sync_type and sync_type.upper() == "INCREMENTAL" and notes:
+        context = SyncContext(response_results=response_results)
+        classify_records(notes, context)
+        log_sync_action_distribution(notes, "notes", logger)
+
+    return notes
 
 
 async def fetch_tickets(
@@ -619,11 +867,24 @@ async def fetch_tickets(
     last_synced_at: Any,
     data_type: str | None,
     provider_config_key: str,
+    *,
+    sync_type: str | None = None,
+    response_results: dict[str, int] | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch tickets (Cases) from Salesforce.
 
     In Salesforce, tickets are represented by the Case object, which is the
     equivalent of HubSpot Tickets - customer support requests and issues.
+
+    Args:
+        nango: NangoClient instance
+        connection_id: Nango connection ID
+        is_initial: Whether this is initial sync
+        last_synced_at: Last sync timestamp
+        data_type: Data type being synced
+        provider_config_key: Provider config key
+        sync_type: Sync type from Nango webhook (INITIAL or INCREMENTAL)
+        response_results: Record counts from Nango webhook for classification
     """
     _ = data_type
     fetcher = SalesforceCaseFetcher(nango, provider_config_key, connection_id)
@@ -631,7 +892,15 @@ async def fetch_tickets(
         incremental=not is_initial,
         last_synced_at=last_synced_at,
     )
-    return [_sf_to_canonical_ticket(r) for r in rows]
+    tickets = [_sf_to_canonical_ticket(r) for r in rows]
+
+    # Add sync metadata for incremental sync
+    if sync_type and sync_type.upper() == "INCREMENTAL" and tickets:
+        context = SyncContext(response_results=response_results)
+        classify_records(tickets, context)
+        log_sync_action_distribution(tickets, "tickets", logger)
+
+    return tickets
 
 
 async def fetch_pipelines(
@@ -641,7 +910,22 @@ async def fetch_pipelines(
     last_synced_at: Any,
     data_type: str | None,
     provider_config_key: str,
+    *,
+    sync_type: str | None = None,
+    response_results: dict[str, int] | None = None,
 ) -> list[dict[str, Any]]:
+    """Fetch pipelines from Salesforce.
+
+    Args:
+        nango: NangoClient instance
+        connection_id: Nango connection ID
+        is_initial: Whether this is initial sync
+        last_synced_at: Last sync timestamp
+        data_type: Data type being synced
+        provider_config_key: Provider config key
+        sync_type: Sync type from Nango webhook (INITIAL or INCREMENTAL)
+        response_results: Record counts from Nango webhook for classification
+    """
     _ = data_type, is_initial, last_synced_at
     fetcher = SalesforcePipelineFetcher(nango, provider_config_key, connection_id)
     stages = await fetcher.fetch_all(
@@ -676,7 +960,15 @@ async def fetch_pipelines(
         ],
     }
 
-    return [pipeline]
+    pipelines = [pipeline]
+
+    # Add sync metadata for incremental sync
+    if sync_type and sync_type.upper() == "INCREMENTAL" and pipelines:
+        context = SyncContext(response_results=response_results)
+        classify_records(pipelines, context)
+        log_sync_action_distribution(pipelines, "pipelines", logger)
+
+    return pipelines
 
 
 def _sf_contact_role_to_participant(raw: dict[str, Any]) -> dict[str, Any]:

@@ -24,30 +24,59 @@ async def sync_deals(
     records: list[dict[str, Any]],
     provider: str,
     provider_config_key: str | None = None,
+    sync_type: str | None = None,
 ) -> dict[str, Any]:
     """Sync deal records using DealSyncService.
 
     After syncing deals, automatically syncs pipelines to ensure pipeline/stage
     names are populated in deal records.
 
+    For incremental syncs (sync_type="INCREMENTAL"), uses optimized sync method that:
+    - Routes records by _sync_metadata.sync_action (ADDED/UPDATED/DELETED)
+    - Skips unchanged records to reduce database writes
+    - Preserves application-generated data (deal_summary_data)
+
     Args:
         db: Database session
         organisation_id: Organisation UUID string
         integration: KnowledgeIntegration instance
-        records: Raw deal records from provider
+        records: Raw deal records from provider (with _sync_metadata for incremental)
         provider: Provider name (e.g., 'hubspot')
         provider_config_key: Nango provider config key (optional, will be derived if not provided)
+        sync_type: Sync type from Nango webhook (INITIAL or INCREMENTAL)
 
     Returns:
         Sync statistics including deals, participants, stage history, and pipelines
     """
-    # Step 1: Sync deals
+    # Step 1: Sync deals using appropriate method based on sync_type
     service = DealSyncService(db=db, organisation_id=UUID(organisation_id))
-    deal_result = await service.sync(
-        integration=integration,
-        records=records,
-        provider=provider,
-    )
+
+    # Use incremental sync for INCREMENTAL sync type
+    # This optimizes by skipping unchanged records and preserving app-generated data
+    if sync_type and sync_type.upper() == "INCREMENTAL":
+        logger.info(
+            "Using incremental deal sync: provider=%s record_count=%d",
+            provider,
+            len(records),
+        )
+        deal_result = await service.sync_incremental(
+            integration=integration,
+            records=records,
+            provider=provider,
+        )
+    else:
+        # For INITIAL sync or unknown sync_type, use full sync
+        logger.info(
+            "Using full deal sync: provider=%s sync_type=%s record_count=%d",
+            provider,
+            sync_type,
+            len(records),
+        )
+        deal_result = await service.sync(
+            integration=integration,
+            records=records,
+            provider=provider,
+        )
 
     logger.info(
         "Deals sync completed: %d deals processed. Triggering pipelines sync...",

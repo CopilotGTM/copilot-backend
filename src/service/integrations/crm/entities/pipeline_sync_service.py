@@ -18,6 +18,12 @@ from src.domain.models.organisation_tables.sync.crm import (
 )
 from src.infra.utils.logger import get_logger
 from src.service.integrations.core import BaseSyncService
+from src.workers.integrations_worker.utils.sync_metadata import (
+    SyncAction,
+    SyncContext,
+    classify_records,
+    log_sync_action_distribution,
+)
 
 logger = get_logger(__name__)
 
@@ -137,6 +143,253 @@ class PipelineSyncService(BaseSyncService[CRMPipeline]):
             "stages": stages_processed,
             **result.to_dict(),
         }
+
+    async def sync_incremental(
+        self,
+        *,
+        integration: KnowledgeIntegration,
+        records: Iterable[dict[str, Any]],
+        provider: str,
+    ) -> dict[str, Any]:
+        """Sync pipeline records incrementally.
+
+        This method is optimized for incremental syncs where records come with
+        sync_action metadata. It uses database state as the source of truth.
+
+        Args:
+            integration: KnowledgeIntegration instance
+            records: Raw pipeline records from provider API with _sync_metadata
+            provider: Provider name (e.g., 'hubspot')
+
+        Returns:
+            Dictionary with sync statistics including stages
+        """
+        result = self._init_result()
+        self._log_sync_start("pipelines_incremental", provider, 0)
+
+        pipeline_list = [p for p in records if isinstance(p, dict)]
+        if not pipeline_list:
+            result.complete()
+            return {"pipelines": 0, "stages": 0, **result.to_dict()}
+
+        # Log sync action distribution for observability
+        log_sync_action_distribution(pipeline_list, "pipelines", logger)
+
+        # Load existing pipelines
+        pipeline_external_ids = [
+            str(ext_id)
+            for pipeline in pipeline_list
+            if (ext_id := self._extract_external_id(pipeline)) is not None
+        ]
+        existing = await self._load_existing_by_external_ids(
+            CRMPipeline,
+            pipeline_external_ids,
+            integration.integration_id,
+        )
+        existing_ids = set(existing.keys())
+
+        # Classify records for logging (sync_action is only for observability)
+        context = SyncContext(existing_ids=existing_ids)
+        classify_records(pipeline_list, context)
+
+        now = utcnow()
+        pipelines_processed = 0
+        pipelines_skipped = 0
+        stages_processed = 0
+
+        for pipeline in pipeline_list:
+            try:
+                external_id = self._extract_external_id(pipeline)
+                if not external_id:
+                    result.increment_failed()
+                    result.add_error(f"Missing external ID for pipeline: {pipeline}")
+                    continue
+
+                # Extract sync metadata for logging/observability
+                sync_metadata = pipeline.get("_sync_metadata", {})
+                sync_action = SyncAction(sync_metadata.get("sync_action", SyncAction.ADDED.value))
+
+                # Handle deletions
+                is_archived = pipeline.get("archived", False) or pipeline.get("IsDeleted", False)
+
+                if sync_action == SyncAction.DELETED or is_archived:
+                    # Soft-delete: mark pipeline and its stages as deleted if exists
+                    record = existing.get(external_id)
+                    if record:
+                        record.is_deleted = True
+                        record.is_active = False
+                        record.synced_at = now
+                        record.last_seen_at = now
+                        self.db.add(record)
+                        result.increment_deleted()
+                        pipelines_processed += 1
+                        # Also soft-delete stages
+                        await self._soft_delete_pipeline_stages(
+                            integration.integration_id, record.pipeline_id, now
+                        )
+                    continue
+
+                # Database state is source of truth for create vs update
+                record = existing.get(external_id)
+                is_new = record is None
+
+                if is_new:
+                    # Create new pipeline
+                    record = CRMPipeline(
+                        organisation_id=self.organisation_id,
+                        integration_id=integration.integration_id,
+                        external_id=external_id,
+                    )
+                else:
+                    # Check for meaningful changes before updating
+                    if not self._has_meaningful_changes(record, pipeline, provider):
+                        pipelines_skipped += 1
+                        # Update last_seen_at even if no changes
+                        record.last_seen_at = now
+                        self.db.add(record)
+                        # Still need to sync stages even if pipeline unchanged
+                        stages_synced = await self._sync_stages_for_pipeline(
+                            integration, record, pipeline.get("stages")
+                        )
+                        stages_processed += stages_synced
+                        continue
+
+                # Transform and update record
+                self._update_pipeline_record(record, pipeline, provider)
+
+                # Update metadata
+                record.synced_at = now
+                record.last_seen_at = now
+                record.is_deleted = False
+
+                self.db.add(record)
+                pipelines_processed += 1
+                result.increment_processed()
+
+                if is_new:
+                    result.increment_created()
+                else:
+                    result.increment_updated()
+
+                # Sync stages for this pipeline
+                stages_synced = await self._sync_stages_for_pipeline(
+                    integration, record, pipeline.get("stages")
+                )
+                stages_processed += stages_synced
+
+            except Exception as exc:
+                self._log_error("pipeline", pipeline.get("id"), exc)
+                result.increment_failed()
+                result.add_error(str(exc))
+
+        # Commit pipelines and stages
+        await self.db.commit()
+
+        result.metadata.update(
+            {
+                "pipelines": pipelines_processed,
+                "stages": stages_processed,
+                "skipped": pipelines_skipped,
+            }
+        )
+        result.complete()
+
+        logger.info(
+            "Incremental pipeline sync complete: pipelines=%d, skipped=%d, stages=%d, created=%d, updated=%d, deleted=%d",
+            pipelines_processed,
+            pipelines_skipped,
+            stages_processed,
+            result.created,
+            result.updated,
+            result.deleted,
+        )
+
+        return {
+            "pipelines": pipelines_processed,
+            "stages": stages_processed,
+            "skipped": pipelines_skipped,
+            **result.to_dict(),
+        }
+
+    def _has_meaningful_changes(
+        self,
+        existing: CRMPipeline,
+        incoming: dict[str, Any],
+        provider: str,
+    ) -> bool:
+        """Check if incoming data has meaningful changes compared to existing record.
+
+        Args:
+            existing: Existing CRMPipeline record from database
+            incoming: Incoming pipeline data from provider
+            provider: Provider name for field mapping
+
+        Returns:
+            True if there are meaningful changes, False otherwise
+        """
+        _ = provider  # Reserved for future provider-specific logic
+
+        # Compare key fields
+        incoming_name = incoming.get("label") or incoming.get("name") or existing.external_id
+        incoming_label = incoming.get("label") or incoming_name
+
+        checks = [
+            (existing.name, incoming_name),
+            (existing.label, incoming_label),
+            (existing.object_type, incoming.get("objectType") or "deals"),
+            (existing.is_default, bool(incoming.get("default"))),
+            (existing.is_active, not bool(incoming.get("archived"))),
+        ]
+
+        for existing_val, incoming_val in checks:
+            if existing_val is None and incoming_val is None:
+                continue
+            if existing_val != incoming_val:
+                return True
+
+        # Check display order
+        incoming_display_order = incoming.get("displayOrder")
+        if incoming_display_order is not None:
+            try:
+                if existing.display_order != int(incoming_display_order):
+                    return True
+            except (TypeError, ValueError):
+                pass
+
+        # Check source_modified_at
+        incoming_modified = self._parse_date(incoming.get("updatedAt"))
+        return bool(
+            incoming_modified
+            and existing.source_modified_at
+            and incoming_modified > existing.source_modified_at
+        )
+
+    async def _soft_delete_pipeline_stages(
+        self,
+        integration_id: UUID,
+        pipeline_id: UUID,
+        now: datetime,
+    ) -> None:
+        """Soft-delete all stages for a deleted pipeline.
+
+        Args:
+            integration_id: Integration ID
+            pipeline_id: Pipeline ID
+            now: Current timestamp
+        """
+        stmt = (
+            select(CRMDealStage)
+            .where(CRMDealStage.integration_id == integration_id)  # type: ignore[arg-type]
+            .where(CRMDealStage.pipeline_id == pipeline_id)  # type: ignore[arg-type]
+            .where(CRMDealStage.is_deleted.is_(False))  # type: ignore[attr-defined]
+        )
+        result = await self.db.execute(stmt)
+        stages = result.scalars().all()
+
+        for stage in stages:
+            stage.is_deleted = True
+            stage.last_seen_at = now
+            self.db.add(stage)
 
     async def enrich_deals_with_pipeline_metadata(
         self,

@@ -28,3 +28,29 @@ async def upsert_calendar(
         integration=integration, events=events, provider=provider
     )
     return result.get("records_processed", 0)
+
+
+async def upsert_calendar_incremental(
+    *,
+    session: AsyncSession,
+    organisation_id: UUID,
+    integration: KnowledgeIntegration,
+    provider: str,
+    events: Iterable[dict[str, Any]],
+) -> int:
+    """
+    Sync calendar events using incremental optimization.
+
+    This function routes to the incremental sync method which:
+    - Skips unchanged events based on change detection
+    - Handles cancelled events via status field
+    - Tracks action counts for observability
+
+    Returns:
+        Number of successfully processed records
+    """
+    service = CalendarSyncService(session, organisation_id)
+    result = await service.sync_calendar_events_incremental(
+        integration=integration, events=events, provider=provider
+    )
+    return result.get("records_processed", 0)

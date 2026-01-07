@@ -17,6 +17,8 @@
 #   docker-compose down               # Stop all services
 # =============================================================================
 
+name: copilot-backend
+
 services:
   # ---------------------------------------------------------------------------
   # Redis - Local instance (replaces Azure Redis for development)

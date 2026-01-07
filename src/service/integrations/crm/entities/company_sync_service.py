@@ -12,6 +12,11 @@ from src.domain.models.organisation_tables.sync import KnowledgeIntegration
 from src.domain.models.organisation_tables.sync.crm import CRMCompany
 from src.infra.utils.logger import get_logger
 from src.service.integrations.core import BaseSyncService
+from src.workers.integrations_worker.utils.sync_metadata import (
+    SyncAction,
+    SyncActionCounts,
+    extract_sync_action,
+)
 
 logger = get_logger(__name__)
 
@@ -113,6 +118,230 @@ class CompanySyncService(BaseSyncService[CRMCompany]):
         self._log_sync_complete(result)
 
         return {"companies": companies_processed, **result.to_dict()}
+
+    async def sync_incremental(
+        self,
+        *,
+        integration: KnowledgeIntegration,
+        records: Iterable[dict[str, Any]],
+        provider: str,
+    ) -> dict[str, Any]:
+        """Sync company records using incremental optimization.
+
+        This method optimizes sync by:
+        - Using database state to determine if records are new or existing
+        - Running change detection to skip unchanged records
+        - Handling archived/deleted records via soft-delete
+
+        Args:
+            integration: KnowledgeIntegration instance
+            records: Raw company records with optional _sync_metadata
+            provider: Provider name (e.g., 'hubspot', 'salesforce')
+
+        Returns:
+            Dictionary with sync statistics including skipped count
+        """
+        result = self._init_result()
+        company_list = [c for c in records if isinstance(c, dict)]
+        self._log_sync_start("companies (incremental)", provider, len(company_list))
+
+        if not company_list:
+            result.complete()
+            return {
+                "companies": 0,
+                "skipped": 0,
+                **result.to_dict(),
+            }
+
+        # Track action counts for logging (observability only)
+        action_counts = SyncActionCounts()
+
+        # Load existing companies for change detection
+        company_external_ids = [str(c.get("id")) for c in company_list if c.get("id")]
+        existing = await self._load_existing_by_external_ids(
+            CRMCompany,
+            company_external_ids,
+            integration.integration_id,
+        )
+
+        now = utcnow()
+        companies_processed = 0
+        companies_skipped = 0
+
+        for company in company_list:
+            try:
+                external_id = company.get("id")
+                if not external_id:
+                    result.increment_failed()
+                    result.add_error(f"Missing external ID for company: {company}")
+                    continue
+
+                # Extract sync action for logging and deletion handling
+                sync_action = extract_sync_action(company)
+                if sync_action:
+                    action_counts.increment(sync_action)
+
+                # Check database state - this is the source of truth
+                record = existing.get(str(external_id))
+                is_new = record is None
+
+                # Check if record is archived/deleted
+                is_archived = company.get("archived", False) or company.get("IsDeleted", False)
+
+                # Handle deletion
+                if is_archived or sync_action == SyncAction.DELETED:
+                    if record:
+                        record.is_deleted = True
+                        record.is_active = False
+                        record.synced_at = now
+                        record.last_seen_at = now
+                        self.db.add(record)
+                        result.increment_processed()
+                        companies_processed += 1
+                        logger.debug("Soft-deleted company: external_id=%s", external_id)
+                    continue
+
+                # Handle new records
+                if is_new:
+                    record = CRMCompany(
+                        organisation_id=self.organisation_id,
+                        integration_id=integration.integration_id,
+                        external_id=str(external_id),
+                    )
+                    self._update_company_record(record, company, provider)
+                    record.synced_at = now
+                    record.last_seen_at = now
+                    record.is_active = True
+                    record.is_deleted = False
+
+                    self.db.add(record)
+                    companies_processed += 1
+                    result.increment_processed()
+                    result.increment_created()
+
+                else:
+                    # Existing record - check for meaningful changes
+                    if self._has_meaningful_changes(record, company):
+                        self._update_company_record(record, company, provider)
+                        record.synced_at = now
+                        record.last_seen_at = now
+                        record.is_active = True
+                        record.is_deleted = False
+
+                        self.db.add(record)
+                        companies_processed += 1
+                        result.increment_processed()
+                        result.increment_updated()
+                    else:
+                        # No meaningful changes - skip database write
+                        companies_skipped += 1
+                        action_counts.unchanged += 1
+                        logger.debug("Skipping unchanged company: external_id=%s", external_id)
+                        continue
+
+            except Exception as exc:
+                self._log_error("company", company.get("id"), exc)
+                result.increment_failed()
+                result.add_error(str(exc))
+
+        # Commit companies
+        await self.db.commit()
+
+        result.metadata.update(
+            {
+                "companies": companies_processed,
+                "skipped": companies_skipped,
+            }
+        )
+        result.complete()
+        self._log_sync_complete(result)
+
+        logger.info(
+            "Company incremental sync complete: processed=%d skipped=%d (added=%d updated=%d deleted=%d)",
+            companies_processed,
+            companies_skipped,
+            action_counts.added,
+            action_counts.updated,
+            action_counts.deleted,
+        )
+
+        return {
+            "companies": companies_processed,
+            "skipped": companies_skipped,
+            "action_counts": action_counts.to_dict(),
+            **result.to_dict(),
+        }
+
+    def _has_meaningful_changes(self, existing: CRMCompany, incoming: dict[str, Any]) -> bool:
+        """Check if incoming company data has meaningful changes.
+
+        Args:
+            existing: Existing CRMCompany record from database
+            incoming: Incoming company data from provider
+
+        Returns:
+            True if meaningful changes detected, False otherwise
+        """
+        properties = incoming.get("properties") or {}
+
+        # Check source_modified_at as primary indicator
+        incoming_modified = self._parse_date(incoming.get("updatedAt")) or self._parse_date(
+            properties.get("hs_lastmodifieddate")
+        )
+        if (
+            incoming_modified
+            and existing.source_modified_at
+            and incoming_modified > existing.source_modified_at
+        ):
+            return True
+
+        # Compare key fields
+        checks = [
+            (existing.name, properties.get("name") or incoming.get("name")),
+            (existing.domain, properties.get("domain")),
+            (existing.industry, properties.get("industry")),
+            (existing.website, properties.get("website")),
+            (existing.phone, properties.get("phone")),
+            (
+                existing.owner_external_id,
+                str(properties.get("hubspot_owner_id"))
+                if properties.get("hubspot_owner_id")
+                else None,
+            ),
+            (existing.lifecycle_stage, properties.get("lifecyclestage")),
+        ]
+
+        # Compare number_of_employees
+        incoming_employees = properties.get("numberofemployees")
+        if incoming_employees is not None:
+            try:
+                incoming_employees = int(incoming_employees)
+            except (ValueError, TypeError):
+                incoming_employees = None
+        if existing.number_of_employees != incoming_employees and not (
+            existing.number_of_employees is None and incoming_employees is None
+        ):
+            return True
+
+        # Compare annual_revenue
+        incoming_revenue = properties.get("annualrevenue")
+        if incoming_revenue is not None:
+            try:
+                incoming_revenue = float(incoming_revenue)
+            except (ValueError, TypeError):
+                incoming_revenue = None
+        if existing.annual_revenue != incoming_revenue and not (
+            existing.annual_revenue is None and incoming_revenue is None
+        ):
+            return True
+
+        for existing_val, incoming_val in checks:
+            if existing_val is None and incoming_val is None:
+                continue
+            if existing_val != incoming_val:
+                return True
+
+        return False
 
     def _transform_record(self, raw: dict[str, Any], _provider: str) -> CRMCompany:
         """Transform provider-specific company data to CRMCompany model.

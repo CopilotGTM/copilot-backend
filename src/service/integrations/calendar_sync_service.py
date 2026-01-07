@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.domain.models.organisation_tables.sync import KnowledgeIntegration
@@ -31,6 +32,11 @@ from src.domain.models.organisation_tables.sync.integration_models import (
     SyncStatus,
 )
 from src.infra.utils.logger import get_logger
+from src.workers.integrations_worker.utils.sync_metadata import (
+    SyncAction,
+    SyncActionCounts,
+    extract_sync_action,
+)
 
 logger = get_logger(__name__)
 
@@ -727,3 +733,327 @@ class CalendarSyncService:
             "none": "none",
         }
         return status_map.get(status.lower(), "none")
+
+    # -------------------------------------------------------------------------
+    # Incremental Sync Methods
+    # -------------------------------------------------------------------------
+
+    async def sync_calendar_events_incremental(
+        self,
+        *,
+        integration: KnowledgeIntegration,
+        events: Iterable[dict[str, Any]],
+        provider: str,
+    ) -> dict[str, Any]:
+        """
+        Sync calendar events using incremental optimization.
+
+        This method optimizes sync by:
+        - Using database state to determine if records are new or existing
+        - Running change detection to skip unchanged records
+        - Handling cancelled events via status field
+
+        Args:
+            integration: KnowledgeIntegration instance
+            events: Raw event records with optional _sync_metadata
+            provider: Provider name (google, microsoft, etc.)
+
+        Returns:
+            Dictionary with sync statistics including skipped count
+        """
+        sync_history = await self._create_sync_history(integration.integration_id)
+
+        try:
+            event_list = list(events)
+            logger.info(
+                "sync_calendar_events_incremental started: integration=%s provider=%s event_count=%d",
+                integration.integration_id,
+                provider,
+                len(event_list),
+            )
+
+            if not event_list:
+                await self._complete_sync_history(
+                    sync_history,
+                    status=SyncStatus.SUCCESS,
+                    records_processed=0,
+                    records_failed=0,
+                    metadata={"provider": provider, "skipped": 0},
+                )
+                return {
+                    "status": "success",
+                    "records_processed": 0,
+                    "records_failed": 0,
+                    "created": 0,
+                    "updated": 0,
+                    "skipped": 0,
+                }
+
+            # Track action counts for logging (observability only)
+            action_counts = SyncActionCounts()
+
+            # Load existing events for change detection
+            event_external_ids = [
+                self._extract_external_id(e, provider)
+                for e in event_list
+                if self._extract_external_id(e, provider)
+            ]
+            existing = await self._load_existing_events_by_external_ids(event_external_ids)
+
+            records_processed = 0
+            records_failed = 0
+            created_count = 0
+            updated_count = 0
+            skipped_count = 0
+
+            for idx, event_data in enumerate(event_list):
+                try:
+                    external_id = self._extract_external_id(event_data, provider)
+                    if not external_id:
+                        logger.debug("Event %d: skipping (no external_id)", idx)
+                        records_failed += 1
+                        continue
+
+                    # Extract sync action for logging and deletion handling
+                    sync_action = extract_sync_action(event_data)
+                    if sync_action:
+                        action_counts.increment(sync_action)
+
+                    # Check database state - this is the source of truth
+                    record = existing.get(external_id)
+                    is_new = record is None
+
+                    # Check if event is cancelled/deleted
+                    # Google: status == "cancelled"
+                    # Microsoft: isCancelled == true (already mapped to status: "cancelled")
+                    fields = self._extract_event_fields(event_data, provider)
+                    is_cancelled = fields.get("status") == "cancelled"
+
+                    # Handle cancelled events
+                    if is_cancelled or sync_action == SyncAction.DELETED:
+                        if record:
+                            # Update status to cancelled for existing events
+                            record.status = "cancelled"
+                            record.synced_at = datetime.now(UTC)
+                            self.db.add(record)
+                            records_processed += 1
+                            logger.debug(
+                                "Marked event as cancelled: external_id=%s",
+                                external_id,
+                            )
+                        continue
+
+                    # Handle new records
+                    if is_new:
+                        event = await self._upsert_event(
+                            integration, event_data, provider, external_id
+                        )
+                        records_processed += 1
+                        created_count += 1
+                        logger.debug(
+                            "Created event: external_id=%s title=%s",
+                            external_id,
+                            event.title,
+                        )
+                    else:
+                        # Existing record - check for meaningful changes
+                        if self._has_meaningful_event_changes(record, event_data, provider):
+                            event = await self._upsert_event(
+                                integration, event_data, provider, external_id
+                            )
+                            records_processed += 1
+                            updated_count += 1
+                            logger.debug(
+                                "Updated event: external_id=%s title=%s",
+                                external_id,
+                                event.title,
+                            )
+                        else:
+                            # No meaningful changes - skip database write
+                            skipped_count += 1
+                            action_counts.unchanged += 1
+                            logger.debug(
+                                "Skipping unchanged event: external_id=%s",
+                                external_id,
+                            )
+                            continue
+
+                    # Commit in batches of 100
+                    if records_processed % 100 == 0:
+                        await self.db.commit()
+                        logger.debug("Batch commit: %d events processed", records_processed)
+
+                except Exception as e:
+                    logger.error(
+                        "Failed to sync event %d (external_id=%s): %s",
+                        idx,
+                        event_data.get("id"),
+                        str(e),
+                        exc_info=True,
+                    )
+                    records_failed += 1
+
+            # Final commit
+            await self.db.commit()
+
+            # Update sync history
+            await self._complete_sync_history(
+                sync_history,
+                status=SyncStatus.SUCCESS,
+                records_processed=records_processed,
+                records_failed=records_failed,
+                metadata={
+                    "created": created_count,
+                    "updated": updated_count,
+                    "skipped": skipped_count,
+                    "provider": provider,
+                    "action_counts": action_counts.to_dict(),
+                },
+            )
+
+            # Update integration last_synced_at
+            integration.last_synced_at = datetime_now_naive()
+            integration.last_sync_status = SyncStatus.SUCCESS.value
+            self.db.add(integration)
+            await self.db.commit()
+
+            logger.info(
+                "Calendar incremental sync completed: integration=%s "
+                "created=%d updated=%d skipped=%d failed=%d "
+                "(added=%d updated=%d deleted=%d)",
+                integration.integration_id,
+                created_count,
+                updated_count,
+                skipped_count,
+                records_failed,
+                action_counts.added,
+                action_counts.updated,
+                action_counts.deleted,
+            )
+
+            return {
+                "status": "success",
+                "records_processed": records_processed,
+                "records_failed": records_failed,
+                "created": created_count,
+                "updated": updated_count,
+                "skipped": skipped_count,
+                "action_counts": action_counts.to_dict(),
+            }
+
+        except Exception as e:
+            logger.error(
+                "Calendar incremental sync failed: integration=%s error=%s",
+                integration.integration_id,
+                str(e),
+                exc_info=True,
+            )
+
+            await self._complete_sync_history(
+                sync_history,
+                status=SyncStatus.FAILED,
+                records_processed=0,
+                records_failed=len(event_list),
+                error_details={"error": str(e), "error_type": type(e).__name__},
+            )
+
+            # Update integration sync status
+            integration.last_sync_status = SyncStatus.FAILED.value
+            integration.last_sync_error = str(e)[:500]
+            self.db.add(integration)
+            await self.db.commit()
+
+            raise
+
+    async def _load_existing_events_by_external_ids(
+        self,
+        external_ids: list[str],
+    ) -> dict[str, CalendarEvent]:
+        """Load existing calendar events by external IDs for change detection.
+
+        Args:
+            external_ids: List of external IDs to look up
+
+        Returns:
+            Dictionary mapping external_id -> CalendarEvent
+        """
+        if not external_ids:
+            return {}
+
+        stmt = select(CalendarEvent).where(
+            CalendarEvent.organisation_id == self.organisation_id,
+            CalendarEvent.external_id.in_(external_ids),
+        )
+        result = await self.db.execute(stmt)
+        events = result.scalars().all()
+
+        return {e.external_id: e for e in events}
+
+    def _has_meaningful_event_changes(
+        self,
+        existing: CalendarEvent,
+        incoming: dict[str, Any],
+        provider: str,
+    ) -> bool:
+        """Check if incoming event data has meaningful changes.
+
+        Args:
+            existing: Existing CalendarEvent record from database
+            incoming: Incoming event data from provider
+            provider: Provider name (google, microsoft, etc.)
+
+        Returns:
+            True if meaningful changes detected, False otherwise
+        """
+        fields = self._extract_event_fields(incoming, provider)
+
+        # Check source_modified_at as primary indicator
+        incoming_modified = fields.get("source_modified_at")
+        if (
+            incoming_modified
+            and existing.source_modified_at
+            and incoming_modified > existing.source_modified_at
+        ):
+            return True
+
+        # Compare key fields
+        checks = [
+            (existing.title, fields.get("title")),
+            (existing.description, fields.get("description")),
+            (existing.location, fields.get("location")),
+            (existing.status, fields.get("status")),
+            (existing.conference_link, fields.get("conference_link")),
+            (existing.organiser_email, fields.get("organiser_email")),
+        ]
+
+        for existing_val, incoming_val in checks:
+            if existing_val is None and incoming_val is None:
+                continue
+            if existing_val != incoming_val:
+                return True
+
+        # Compare start_at and end_at (datetime comparison)
+        incoming_start = fields.get("start_at")
+        if (
+            incoming_start
+            and existing.start_at
+            and incoming_start.replace(tzinfo=None) != existing.start_at.replace(tzinfo=None)
+        ):
+            return True
+
+        incoming_end = fields.get("end_at")
+        if (
+            incoming_end
+            and existing.end_at
+            and incoming_end.replace(tzinfo=None) != existing.end_at.replace(tzinfo=None)
+        ):
+            return True
+
+        # Compare attendee_count
+        incoming_attendee_count = fields.get("attendee_count", 0)
+        if existing.attendee_count != incoming_attendee_count:
+            return True
+
+        # Compare is_all_day
+        incoming_is_all_day = fields.get("is_all_day", False)
+        return existing.is_all_day != incoming_is_all_day
