@@ -27,6 +27,11 @@ from src.domain.models.organisation_tables.sync.integration_models import (
     SyncStatus,
 )
 from src.infra.utils.logger import get_logger
+from src.workers.integrations_worker.utils.sync_metadata import (
+    SyncAction,
+    SyncActionCounts,
+    extract_sync_action,
+)
 
 logger = get_logger(__name__)
 
@@ -735,6 +740,577 @@ class EmailSyncService:
         if provider in ("microsoft", "outlook"):
             return message_data.get("parentFolderId") or message_data.get("parent_folder_id")
         return message_data.get("folderId")
+
+    # -------------------------------------------------------------------------
+    # Incremental Sync Methods
+    # -------------------------------------------------------------------------
+
+    async def sync_folders_incremental(
+        self,
+        *,
+        integration: KnowledgeIntegration,
+        folders: Iterable[dict[str, Any]],
+        provider: str,
+    ) -> dict[str, Any]:
+        """
+        Sync email folders using incremental optimization.
+
+        This method optimizes sync by:
+        - Using database state to determine if records are new or existing
+        - Running change detection to skip unchanged folders
+        - Handling deleted folders via soft-delete
+
+        Args:
+            integration: KnowledgeIntegration instance
+            folders: Raw folder records with optional _sync_metadata
+            provider: Provider name (outlook, gmail, etc.)
+
+        Returns:
+            Dictionary with sync statistics including skipped count
+        """
+        integration_id = integration.integration_id
+        sync_history = await self._create_sync_history(integration_id)
+
+        try:
+            folder_list = list(folders)
+            logger.debug(
+                "sync_folders_incremental started: integration=%s provider=%s folder_count=%d",
+                integration_id,
+                provider,
+                len(folder_list),
+            )
+
+            if not folder_list:
+                await self._complete_sync_history(
+                    sync_history,
+                    status=SyncStatus.SUCCESS,
+                    records_processed=0,
+                    records_failed=0,
+                    metadata={"provider": provider, "skipped": 0},
+                )
+                return {
+                    "status": "success",
+                    "records_processed": 0,
+                    "records_failed": 0,
+                    "created": 0,
+                    "updated": 0,
+                    "skipped": 0,
+                }
+
+            # Track action counts for logging (observability only)
+            action_counts = SyncActionCounts()
+
+            # Load existing folders for change detection
+            folder_external_ids = [
+                self._extract_folder_id(f, provider)
+                for f in folder_list
+                if self._extract_folder_id(f, provider)
+            ]
+            existing = await self._load_existing_folders_by_external_ids(
+                integration_id, folder_external_ids
+            )
+
+            records_processed = 0
+            records_failed = 0
+            created_count = 0
+            updated_count = 0
+            skipped_count = 0
+
+            for idx, folder_data in enumerate(folder_list):
+                try:
+                    external_id = self._extract_folder_id(folder_data, provider)
+                    if not external_id:
+                        logger.debug("Folder %d: skipping (no external_id)", idx)
+                        records_failed += 1
+                        continue
+
+                    # Extract sync action for logging and deletion handling
+                    sync_action = extract_sync_action(folder_data)
+                    if sync_action:
+                        action_counts.increment(sync_action)
+
+                    # Check database state - this is the source of truth
+                    record = existing.get(external_id)
+                    is_new = record is None
+
+                    # Handle deleted folders
+                    if sync_action == SyncAction.DELETED:
+                        # Folders don't have a soft-delete flag, skip deleted ones
+                        logger.debug("Skipping deleted folder: external_id=%s", external_id)
+                        continue
+
+                    # Handle new records
+                    if is_new:
+                        folder = await self._upsert_folder(
+                            integration_id, folder_data, provider, external_id
+                        )
+                        records_processed += 1
+                        created_count += 1
+                        logger.debug(
+                            "Created folder: external_id=%s name=%s",
+                            external_id,
+                            folder.folder_name,
+                        )
+                    else:
+                        # Existing record - check for meaningful changes
+                        if self._has_meaningful_folder_changes(record, folder_data, provider):
+                            folder = await self._upsert_folder(
+                                integration_id, folder_data, provider, external_id
+                            )
+                            records_processed += 1
+                            updated_count += 1
+                            logger.debug(
+                                "Updated folder: external_id=%s name=%s",
+                                external_id,
+                                folder.folder_name,
+                            )
+                        else:
+                            # No meaningful changes - skip database write
+                            skipped_count += 1
+                            action_counts.unchanged += 1
+                            logger.debug(
+                                "Skipping unchanged folder: external_id=%s",
+                                external_id,
+                            )
+                            continue
+
+                    # Commit in batches of 50
+                    if records_processed % 50 == 0:
+                        await self.db.commit()
+                        logger.debug("Batch commit: %d folders processed", records_processed)
+
+                except Exception as e:
+                    logger.error(
+                        "Failed to sync folder %d (external_id=%s): %s",
+                        idx,
+                        folder_data.get("id"),
+                        str(e),
+                        exc_info=True,
+                    )
+                    records_failed += 1
+
+            # Final commit
+            await self.db.commit()
+
+            # Update sync history
+            await self._complete_sync_history(
+                sync_history,
+                status=SyncStatus.SUCCESS,
+                records_processed=records_processed,
+                records_failed=records_failed,
+                metadata={
+                    "created": created_count,
+                    "updated": updated_count,
+                    "skipped": skipped_count,
+                    "provider": provider,
+                    "action_counts": action_counts.to_dict(),
+                },
+            )
+
+            # Update integration last_synced_at
+            integration.last_synced_at = datetime_now_naive()
+            integration.last_sync_status = SyncStatus.SUCCESS.value
+            self.db.add(integration)
+            await self.db.commit()
+
+            logger.debug(
+                "Folder incremental sync completed: integration=%s created=%d updated=%d skipped=%d failed=%d",
+                integration_id,
+                created_count,
+                updated_count,
+                skipped_count,
+                records_failed,
+            )
+
+            return {
+                "status": "success",
+                "records_processed": records_processed,
+                "records_failed": records_failed,
+                "created": created_count,
+                "updated": updated_count,
+                "skipped": skipped_count,
+                "action_counts": action_counts.to_dict(),
+            }
+
+        except Exception as e:
+            logger.error(
+                "Folder incremental sync failed: integration=%s error=%s",
+                integration_id,
+                str(e),
+                exc_info=True,
+            )
+
+            await self._complete_sync_history(
+                sync_history,
+                status=SyncStatus.FAILED,
+                records_processed=0,
+                records_failed=len(folder_list),
+                error_details={"error": str(e), "error_type": type(e).__name__},
+            )
+
+            integration.last_sync_status = SyncStatus.FAILED.value
+            integration.last_sync_error = str(e)[:500]
+            self.db.add(integration)
+            await self.db.commit()
+
+            raise
+
+    async def sync_messages_incremental(
+        self,
+        *,
+        integration: KnowledgeIntegration,
+        messages: Iterable[dict[str, Any]],
+        provider: str,
+        folder_id: UUID | None = None,
+    ) -> dict[str, Any]:
+        """
+        Sync email messages using incremental optimization.
+
+        This method optimizes sync by:
+        - Using database state to determine if records are new or existing
+        - Running change detection to skip unchanged messages
+        - Handling deleted messages
+
+        Args:
+            integration: KnowledgeIntegration instance
+            messages: Raw message records with optional _sync_metadata
+            provider: Provider name (outlook, gmail, etc.)
+            folder_id: Optional folder ID for folder-specific sync
+
+        Returns:
+            Dictionary with sync statistics including skipped count
+        """
+        integration_id = integration.integration_id
+        sync_history = await self._create_sync_history(integration_id)
+
+        try:
+            message_list = list(messages)
+            logger.debug(
+                "sync_messages_incremental started: integration=%s provider=%s message_count=%d folder_id=%s",
+                integration_id,
+                provider,
+                len(message_list),
+                folder_id,
+            )
+
+            if not message_list:
+                await self._complete_sync_history(
+                    sync_history,
+                    status=SyncStatus.SUCCESS,
+                    records_processed=0,
+                    records_failed=0,
+                    metadata={
+                        "provider": provider,
+                        "skipped": 0,
+                        "folder_id": str(folder_id) if folder_id else None,
+                    },
+                )
+                return {
+                    "status": "success",
+                    "records_processed": 0,
+                    "records_failed": 0,
+                    "created": 0,
+                    "updated": 0,
+                    "skipped": 0,
+                }
+
+            # Track action counts for logging (observability only)
+            action_counts = SyncActionCounts()
+
+            # Load existing messages for change detection
+            message_external_ids = [
+                self._extract_message_id(m, provider)
+                for m in message_list
+                if self._extract_message_id(m, provider)
+            ]
+            existing = await self._load_existing_messages_by_external_ids(
+                integration_id, message_external_ids
+            )
+
+            records_processed = 0
+            records_failed = 0
+            created_count = 0
+            updated_count = 0
+            skipped_count = 0
+
+            for idx, message_data in enumerate(message_list):
+                try:
+                    external_id = self._extract_message_id(message_data, provider)
+                    if not external_id:
+                        logger.debug("Message %d: skipping (no external_id)", idx)
+                        records_failed += 1
+                        continue
+
+                    # Extract sync action for logging and deletion handling
+                    sync_action = extract_sync_action(message_data)
+                    if sync_action:
+                        action_counts.increment(sync_action)
+
+                    # Check database state - this is the source of truth
+                    record = existing.get(external_id)
+                    is_new = record is None
+
+                    # Handle deleted messages
+                    if sync_action == SyncAction.DELETED:
+                        # Skip deleted messages (we don't store them)
+                        logger.debug("Skipping deleted message: external_id=%s", external_id)
+                        continue
+
+                    # Handle new records
+                    if is_new:
+                        message = await self._upsert_message(
+                            integration_id, message_data, provider, external_id, folder_id
+                        )
+                        records_processed += 1
+                        created_count += 1
+                        logger.debug(
+                            "Created message: external_id=%s subject=%s",
+                            external_id,
+                            message.subject,
+                        )
+                    else:
+                        # Existing record - check for meaningful changes
+                        if self._has_meaningful_message_changes(record, message_data, provider):
+                            message = await self._upsert_message(
+                                integration_id, message_data, provider, external_id, folder_id
+                            )
+                            records_processed += 1
+                            updated_count += 1
+                            logger.debug(
+                                "Updated message: external_id=%s subject=%s",
+                                external_id,
+                                message.subject,
+                            )
+                        else:
+                            # No meaningful changes - skip database write
+                            skipped_count += 1
+                            action_counts.unchanged += 1
+                            logger.debug(
+                                "Skipping unchanged message: external_id=%s",
+                                external_id,
+                            )
+                            continue
+
+                    await self.db.commit()
+
+                except Exception as e:
+                    logger.error(
+                        "Failed to sync message %d (external_id=%s): %s",
+                        idx,
+                        message_data.get("id"),
+                        str(e),
+                        exc_info=True,
+                    )
+                    if self.db.in_transaction():
+                        await self.db.rollback()
+                    records_failed += 1
+
+            # Final commit (no-op if already committed per message)
+            await self.db.commit()
+
+            # Update sync history
+            await self._complete_sync_history(
+                sync_history,
+                status=SyncStatus.SUCCESS,
+                records_processed=records_processed,
+                records_failed=records_failed,
+                metadata={
+                    "created": created_count,
+                    "updated": updated_count,
+                    "skipped": skipped_count,
+                    "provider": provider,
+                    "folder_id": str(folder_id) if folder_id else None,
+                    "action_counts": action_counts.to_dict(),
+                },
+            )
+
+            # Update integration last_synced_at
+            integration.last_synced_at = datetime_now_naive()
+            integration.last_sync_status = SyncStatus.SUCCESS.value
+            self.db.add(integration)
+            await self.db.commit()
+
+            logger.debug(
+                "Message incremental sync completed: integration=%s created=%d updated=%d skipped=%d failed=%d",
+                integration_id,
+                created_count,
+                updated_count,
+                skipped_count,
+                records_failed,
+            )
+
+            return {
+                "status": "success",
+                "records_processed": records_processed,
+                "records_failed": records_failed,
+                "created": created_count,
+                "updated": updated_count,
+                "skipped": skipped_count,
+                "action_counts": action_counts.to_dict(),
+            }
+
+        except Exception as e:
+            logger.error(
+                "Message incremental sync failed: integration=%s error=%s",
+                integration_id,
+                str(e),
+                exc_info=True,
+            )
+
+            await self._complete_sync_history(
+                sync_history,
+                status=SyncStatus.FAILED,
+                records_processed=0,
+                records_failed=len(message_list),
+                error_details={"error": str(e), "error_type": type(e).__name__},
+            )
+
+            integration.last_sync_status = SyncStatus.FAILED.value
+            integration.last_sync_error = str(e)[:500]
+            self.db.add(integration)
+            await self.db.commit()
+
+            raise
+
+    async def _load_existing_folders_by_external_ids(
+        self,
+        integration_id: UUID,
+        external_ids: list[str],
+    ) -> dict[str, EmailFolder]:
+        """Load existing email folders by external IDs for change detection.
+
+        Args:
+            integration_id: Integration ID
+            external_ids: List of external IDs to look up
+
+        Returns:
+            Dictionary mapping external_folder_id -> EmailFolder
+        """
+        if not external_ids:
+            return {}
+
+        stmt = select(EmailFolder).where(
+            EmailFolder.integration_id == integration_id,
+            EmailFolder.external_folder_id.in_(external_ids),
+        )
+        result = await self.db.execute(stmt)
+        folders = result.scalars().all()
+
+        return {f.external_folder_id: f for f in folders}
+
+    async def _load_existing_messages_by_external_ids(
+        self,
+        integration_id: UUID,
+        external_ids: list[str],
+    ) -> dict[str, Email]:
+        """Load existing email messages by external IDs for change detection.
+
+        Args:
+            integration_id: Integration ID
+            external_ids: List of external IDs to look up
+
+        Returns:
+            Dictionary mapping external_message_id -> Email
+        """
+        if not external_ids:
+            return {}
+
+        stmt = select(Email).where(
+            Email.integration_id == integration_id,
+            Email.external_message_id.in_(external_ids),
+        )
+        result = await self.db.execute(stmt)
+        messages = result.scalars().all()
+
+        return {m.external_message_id: m for m in messages}
+
+    def _has_meaningful_folder_changes(
+        self,
+        existing: EmailFolder,
+        incoming: dict[str, Any],
+        provider: str,
+    ) -> bool:
+        """Check if incoming folder data has meaningful changes.
+
+        Args:
+            existing: Existing EmailFolder record from database
+            incoming: Incoming folder data from provider
+            provider: Provider name (outlook, gmail, etc.)
+
+        Returns:
+            True if meaningful changes detected, False otherwise
+        """
+        fields = self._extract_folder_fields(incoming, provider)
+
+        # Compare key fields
+        checks = [
+            (existing.folder_name, fields.get("folder_name")),
+            (existing.folder_type, fields.get("folder_type")),
+        ]
+
+        for existing_val, incoming_val in checks:
+            if existing_val is None and incoming_val is None:
+                continue
+            if existing_val != incoming_val:
+                return True
+
+        # Compare counts (meaningful for folder monitoring)
+        incoming_total = fields.get("total_count", 0)
+        incoming_unread = fields.get("unread_count", 0)
+
+        if existing.total_count != incoming_total:
+            return True
+        return existing.unread_count != incoming_unread
+
+    def _has_meaningful_message_changes(
+        self,
+        existing: Email,
+        incoming: dict[str, Any],
+        provider: str,
+    ) -> bool:
+        """Check if incoming message data has meaningful changes.
+
+        Args:
+            existing: Existing Email record from database
+            incoming: Incoming message data from provider
+            provider: Provider name (outlook, gmail, etc.)
+
+        Returns:
+            True if meaningful changes detected, False otherwise
+        """
+        fields = self._extract_message_fields(incoming, provider)
+
+        # Compare key string fields
+        checks = [
+            (existing.subject, fields.get("subject")),
+            (existing.from_email, fields.get("from_email")),
+            (existing.is_read, fields.get("is_read")),
+            (existing.is_starred, fields.get("is_starred")),
+            (existing.is_important, fields.get("is_important")),
+            (existing.is_draft, fields.get("is_draft")),
+        ]
+
+        for existing_val, incoming_val in checks:
+            if existing_val is None and incoming_val is None:
+                continue
+            if existing_val != incoming_val:
+                return True
+
+        # Compare labels (list comparison)
+        existing_labels = existing.labels or []
+        incoming_labels = fields.get("labels") or []
+        if set(existing_labels) != set(incoming_labels):
+            return True
+
+        # Check if message moved to different folder
+        incoming_folder_id = self._extract_external_folder_id_from_message(incoming, provider)
+        existing_folder_metadata = existing.email_metadata or {}
+        existing_parent_folder = existing_folder_metadata.get("parent_folder_id")
+        return bool(
+            incoming_folder_id
+            and existing_parent_folder
+            and incoming_folder_id != existing_parent_folder
+        )
 
 
 __all__ = ["EmailSyncService"]

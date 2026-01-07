@@ -30,7 +30,7 @@ from src.service.integrations.crm.entities import (
 from src.service.integrations.email_sync_service import EmailSyncService
 from src.service.integrations.messaging_sync_service import MessagingSyncService
 
-from ..adapters.calendar_adapter import upsert_calendar
+from ..adapters.calendar_adapter import upsert_calendar, upsert_calendar_incremental
 from ..adapters.conversation_intelligence_adapter import sync_conversation_intelligence_data
 from ..adapters.crm_adapter import sync_crm_data
 from ..models.sync_models import SyncItemResult, SyncJobRequest, SyncJobResult
@@ -665,6 +665,8 @@ async def _handle_calendar(
     data_type: str,
     records: list[dict[str, Any]],
     provider: str,
+    *,
+    sync_type: str | None = None,
 ) -> CategoryHandlerOutcome:
     async with _integration_session(organisation_id) as session:
         integration_row = await _reload_integration(session, integration_id)
@@ -679,17 +681,28 @@ async def _handle_calendar(
                 should_stop=True,
             )
 
-        count = await upsert_calendar(
-            session=session,
-            organisation_id=organisation_id,
-            integration=integration_row,
-            provider=provider,
-            events=records,
-        )
+        # Route to incremental or full sync based on sync_type
+        if sync_type and sync_type.upper() == "INCREMENTAL":
+            count = await upsert_calendar_incremental(
+                session=session,
+                organisation_id=organisation_id,
+                integration=integration_row,
+                provider=provider,
+                events=records,
+            )
+        else:
+            count = await upsert_calendar(
+                session=session,
+                organisation_id=organisation_id,
+                integration=integration_row,
+                provider=provider,
+                events=records,
+            )
         logger.debug(
-            "Calendar sync completed for data_type=%s: %d events processed",
+            "Calendar sync completed for data_type=%s: %d events processed (sync_type=%s)",
             data_type,
             count,
+            sync_type,
         )
         await session.refresh(integration_row)
         return CategoryHandlerOutcome(
@@ -704,6 +717,8 @@ async def _handle_email(
     data_type: str,
     records: list[dict[str, Any]],
     provider: str,
+    *,
+    sync_type: str | None = None,
 ) -> CategoryHandlerOutcome:
     """
     Handle email folder and message sync.
@@ -727,20 +742,35 @@ async def _handle_email(
             )
 
         email_service = EmailSyncService(session=session, organisation_id=organisation_id)
+        is_incremental = sync_type and sync_type.upper() == "INCREMENTAL"
 
-        # Route to appropriate sync method based on data_type
+        # Route to appropriate sync method based on data_type and sync_type
         if data_type in ("folders",):
-            metrics = await email_service.sync_folders(
-                integration=integration_row,
-                folders=records,
-                provider=provider,
-            )
+            if is_incremental:
+                metrics = await email_service.sync_folders_incremental(
+                    integration=integration_row,
+                    folders=records,
+                    provider=provider,
+                )
+            else:
+                metrics = await email_service.sync_folders(
+                    integration=integration_row,
+                    folders=records,
+                    provider=provider,
+                )
         elif data_type in ("messages", "emails"):
-            metrics = await email_service.sync_messages(
-                integration=integration_row,
-                messages=records,
-                provider=provider,
-            )
+            if is_incremental:
+                metrics = await email_service.sync_messages_incremental(
+                    integration=integration_row,
+                    messages=records,
+                    provider=provider,
+                )
+            else:
+                metrics = await email_service.sync_messages(
+                    integration=integration_row,
+                    messages=records,
+                    provider=provider,
+                )
         else:
             logger.warning("Unknown email data_type: %s", data_type)
             return CategoryHandlerOutcome(
@@ -751,8 +781,9 @@ async def _handle_email(
         records_synced = metrics.get("records_processed", 0)
 
         logger.debug(
-            "Email sync completed for data_type=%s: %s",
+            "Email sync completed for data_type=%s (sync_type=%s): %s",
             data_type,
+            sync_type,
             metrics,
         )
         await session.refresh(integration_row)
@@ -967,9 +998,29 @@ async def _dispatch_category(
             should_stop=True,
         )
 
-    # CRM handler accepts sync_type for incremental deal optimization
+    # CRM, calendar, and email handlers accept sync_type for incremental optimization
     if category == "crm":
         return await _handle_crm(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            data_type=data_type,
+            records=records,
+            provider=provider,
+            sync_type=sync_type,
+        )
+
+    if category == "calendar":
+        return await _handle_calendar(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            data_type=data_type,
+            records=records,
+            provider=provider,
+            sync_type=sync_type,
+        )
+
+    if category == "email":
+        return await _handle_email(
             organisation_id=organisation_id,
             integration_id=integration_id,
             data_type=data_type,
@@ -1161,9 +1212,10 @@ async def _execute_category_sync(
             "provider_config_key": provider_key,
         }
 
-        # For CRM entities with incremental sync support, pass sync context
+        # For entities with incremental sync support, pass sync context
         # These parameters enable the fetchers to add _sync_metadata to records
         incremental_sync_entities = {
+            # CRM entities
             "deals",
             "opportunities",  # Deals
             "contacts",
@@ -1177,8 +1229,19 @@ async def _execute_category_sync(
             "owners",  # Owners
             "users",  # Users
             "pipelines",  # Pipelines
+            # Calendar entities
+            "events",
+            "calendars",
+            # Email entities
+            "emails",
+            "messages",
+            "folders",
         }
-        if request.category == "crm" and sync_data_type in incremental_sync_entities:
+        incremental_sync_categories = {"crm", "calendar", "email"}
+        if (
+            request.category in incremental_sync_categories
+            and sync_data_type in incremental_sync_entities
+        ):
             fetch_kwargs["sync_type"] = request.sync_type
             fetch_kwargs["response_results"] = request.response_results
             logger.debug(
