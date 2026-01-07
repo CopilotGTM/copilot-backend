@@ -29,7 +29,6 @@ from src.domain.models.organisation_tables.sync.stakeholder_insight_models impor
 )
 from src.infra.utils.logger import get_logger
 from src.service.crm.stakeholder_insight_service import (
-    StakeholderInsightNotFoundError,
     StakeholderInsightService,
     StakeholderInsightServiceError,
 )
@@ -167,36 +166,6 @@ async def list_stakeholder_insights(
         raise HTTPException(status_code=e.status_code, detail=e.message) from None
     except Exception:
         logger.exception("Failed to list stakeholder insights")
-        raise HTTPException(status_code=500, detail=_UNEXPECTED_ERR_MSG) from None
-
-
-@stakeholder_insights_router.get(
-    "/stakeholder-insights/{insight_id}",
-    response_model=GenericResponse[StakeholderInsightResponse],
-    summary="Get stakeholder insight details",
-    description="Get details for a specific stakeholder insight.",
-    dependencies=[Depends(rate_limit_user_read)],
-)
-async def get_stakeholder_insight(
-    insight_id: UUID,
-    service: StakeholderInsightService = Depends(get_insight_service),
-) -> GenericResponse[StakeholderInsightResponse]:
-    """Get details for a specific stakeholder insight."""
-    try:
-        insight = await service.get_by_id(insight_id)
-        if not insight:
-            raise StakeholderInsightNotFoundError(insight_id)
-
-        return Response.success_response(
-            message="Stakeholder insight retrieved successfully",
-            data=_model_to_response(insight),
-        )
-
-    except StakeholderInsightServiceError as e:
-        logger.warning(f"Stakeholder insight service error: {e.message}")
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
-    except Exception:
-        logger.exception("Failed to get stakeholder insight")
         raise HTTPException(status_code=500, detail=_UNEXPECTED_ERR_MSG) from None
 
 
