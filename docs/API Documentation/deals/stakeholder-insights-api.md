@@ -123,26 +123,49 @@ export interface InsightAction {
   parameters: Record<string, any>;  // Additional params (stakeholder_id, etc.)
 }
 
-/** Single insight response */
+/**
+ * Complete insight response - returned in list endpoint.
+ *
+ * IMPORTANT: The list endpoint returns ALL fields. Frontend should implement
+ * a collapsed/expanded view pattern:
+ *
+ * COLLAPSED VIEW (Card Summary):
+ *   - title
+ *   - priority (for color coding)
+ *   - stakeholder_name, stakeholder_title
+ *   - actions (buttons)
+ *
+ * EXPANDED VIEW (Full Details - on click/expand):
+ *   - description
+ *   - ai_reasoning
+ *   - metric_value, metric_unit, threshold_value
+ *   - trend_direction
+ *   - ai_confidence
+ *   - identified_at, expires_at
+ */
 export interface StakeholderInsightResponse {
   insight_id: UUID;
   insight_type: StakeholderInsightType;
   priority: StakeholderInsightPriority;
   status: StakeholderInsightStatus;
 
-  // Content
+  // ─────────────────────────────────────────────────────────────────────────
+  // SUMMARY FIELDS (show in collapsed card view)
+  // ─────────────────────────────────────────────────────────────────────────
   title: string;                    // Short actionable title
+  stakeholder_name: string | null;  // e.g., "Arun Patel"
+  stakeholder_title: string | null; // e.g., "VP Technology"
+  actions: InsightAction[];         // Action buttons
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // DETAIL FIELDS (show when user expands/clicks the card)
+  // ─────────────────────────────────────────────────────────────────────────
   description: string | null;       // Detailed explanation
   ai_reasoning: string;             // Why this insight was generated
 
-  // Stakeholder context (null for deal-level insights)
+  // Stakeholder identifiers
   stakeholder_id: UUID | null;
-  stakeholder_name: string | null;
-  stakeholder_title: string | null;
   stakeholder_email: string | null;
-
-  // Actions
-  actions: InsightAction[];
 
   // Metrics (evidence)
   metric_value: number | null;      // e.g., 21 (days)
@@ -182,9 +205,83 @@ export interface StakeholderInsightListResponse {
 
 ---
 
+## API Endpoints
+
+| # | Method | Endpoint | Description |
+|---|--------|----------|-------------|
+| 1 | GET | `/{deal_id}/stakeholder-insights` | List insights for a deal |
+| 2 | POST | `/{deal_id}/stakeholder-insights/{insight_id}/acknowledge` | Mark as seen |
+| 3 | POST | `/{deal_id}/stakeholder-insights/{insight_id}/dismiss` | Dismiss insight |
+| 4 | POST | `/{deal_id}/stakeholder-insights/{insight_id}/resolve` | Mark as resolved |
+
+> **Note**: There is no separate "Get Detail" endpoint. The list endpoint returns complete data for each insight. Frontend should implement collapsed/expanded view using the same data.
+
+---
+
+## UI Flow
+
+The frontend should implement the following user interaction flow:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  AI INSIGHTS PANEL                                                      │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │ [HIGH] Decision maker hasn't been engaged in 3 weeks            │   │
+│  │        Arun Patel (VP Technology)                               │   │
+│  │        [Schedule Call] [Send Email]                   ← ACTIONS │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                           ↓ CLICK                                       │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │ POPUP / EXPANDED VIEW                                       [X] │   │
+│  │─────────────────────────────────────────────────────────────────│   │
+│  │ [HIGH] Decision maker hasn't been engaged in 3 weeks            │   │
+│  │        Arun Patel (VP Technology)                               │   │
+│  │                                                                  │   │
+│  │ Description:                                                     │   │
+│  │ Arun hasn't been contacted in 22 days. Risk of deal stalling.  │   │
+│  │                                                                  │   │
+│  │ AI Reasoning:                                                    │   │
+│  │ Stakeholder has decision_power=DECISION_MAKER and last_contact  │   │
+│  │ was 22 days ago. Arun is the key budget holder.                 │   │
+│  │                                                                  │   │
+│  │ Metrics: 22 days (threshold: 14 days)                           │   │
+│  │ Identified: Jan 6, 2025                                         │   │
+│  │                                                                  │   │
+│  │ Actions Available:                                               │   │
+│  │ • Schedule Call                                                  │   │
+│  │ • Send Email                                                     │   │
+│  │                                                                  │   │
+│  │ ─────────────────────────────────────────────────────────────── │   │
+│  │                              [DISMISS]  [RESOLVE]                │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### UI Elements
+
+| Element | Location | Description |
+|---------|----------|-------------|
+| **Card (Collapsed)** | List view | Shows summary: title, stakeholder, priority badge, action buttons |
+| **Popup (Expanded)** | On card click | Shows full details: description, ai_reasoning, metrics |
+| **Close Button (X)** | Popup top-right | Closes the popup, returns to list view |
+| **Action Buttons** | Card & Popup | Shows available actions (Schedule Call, Send Email, etc.) |
+| **Dismiss Button** | Popup footer | Dismisses insight as not relevant → calls `/dismiss` API |
+| **Resolve Button** | Popup footer | Marks insight as resolved → calls `/resolve` API |
+
+### Action Buttons Note
+
+> **Current Implementation**: Action buttons display the available actions for each insight type (e.g., "Schedule Call", "Send Email"). These are informational - showing what actions the user CAN take.
+>
+> **Future Enhancement**: Action button clicks will trigger actual functionality (open calendar, compose email, etc.). For now, frontend can display them as informational or implement basic actions like opening stakeholder profile.
+
+---
+
 ## 1) List Stakeholder Insights
 
-Retrieve AI-generated insights for a deal's stakeholders.
+Retrieve AI-generated insights for a deal's stakeholders. Returns complete data for each insight.
 
 - **Endpoint**: `GET /{deal_id}/stakeholder-insights`
 - **Tags**: `stakeholder-insights`
@@ -292,67 +389,7 @@ curl -X GET "$BASE_URL/users/crm/deals/6c3f98d5-2e6b-4a1c-8f8c-2e8f0211b0b9/stak
 
 ---
 
-## 2) Get Insight Detail
-
-Get full details of a specific stakeholder insight.
-
-- **Endpoint**: `GET /stakeholder-insights/{insight_id}`
-- **Tags**: `stakeholder-insights`
-
-### Path Parameters
-
-| Name | Type | Description |
-| ---- | ---- | ----------- |
-| `insight_id` | UUID | Insight identifier |
-
-### Sample Response
-
-```json
-{
-  "status": "SUCCESS",
-  "message": "Stakeholder insight retrieved successfully",
-  "data": {
-    "insight_id": "f9a6c1e1-0d56-4e2b-9c2d-4d3fb3d6c9a1",
-    "insight_type": "STAKEHOLDER_RISK",
-    "priority": "CRITICAL",
-    "status": "ACTIVE",
-    "title": "John mentioned evaluating competitor solution",
-    "description": "In the March 15 meeting, John Smith mentioned that his team is also evaluating Competitor X. He specifically said 'We need to compare pricing models before making a decision.'",
-    "ai_reasoning": "Direct competitive mention with pricing comparison request indicates deal is not yet won. Need to address value proposition vs competitor. John has decision_power=DECISION_MAKER which makes this a critical risk.",
-    "stakeholder_id": "5fa85f64-5717-4562-b3fc-2c963f66afa8",
-    "stakeholder_name": "John Smith",
-    "stakeholder_title": "CTO",
-    "stakeholder_email": "john.smith@acmecorp.com",
-    "actions": [
-      {"action_type": "VIEW_PROFILE", "label": "View Profile", "parameters": {}},
-      {"action_type": "SCHEDULE_CALL", "label": "Schedule Call", "parameters": {}}
-    ],
-    "metric_value": null,
-    "metric_unit": null,
-    "threshold_value": null,
-    "trend_direction": null,
-    "ai_confidence": 0.92,
-    "source_type": "agent",
-    "related_risk_blocker_id": null,
-    "identified_at": "2025-01-06T10:00:00Z",
-    "expires_at": null,
-    "created_at": "2025-01-06T10:00:00Z",
-    "updated_at": "2025-01-06T10:00:00Z"
-  }
-}
-```
-
-### cURL Example
-
-```bash
-curl -X GET "$BASE_URL/users/crm/stakeholder-insights/f9a6c1e1-0d56-4e2b-9c2d-4d3fb3d6c9a1" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Accept: application/json"
-```
-
----
-
-## 3) Acknowledge Insight
+## 2) Acknowledge Insight
 
 Mark an insight as acknowledged (user has seen it). Moves status from `ACTIVE` to `ACKNOWLEDGED`.
 
@@ -389,7 +426,7 @@ curl -X POST "$BASE_URL/users/crm/deals/6c3f98d5-2e6b-4a1c-8f8c-2e8f0211b0b9/sta
 
 ---
 
-## 4) Dismiss Insight
+## 3) Dismiss Insight
 
 Dismiss an insight as not relevant. Moves status to `DISMISSED`.
 
@@ -426,7 +463,7 @@ curl -X POST "$BASE_URL/users/crm/deals/6c3f98d5-2e6b-4a1c-8f8c-2e8f0211b0b9/sta
 
 ---
 
-## 5) Resolve Insight
+## 4) Resolve Insight
 
 Mark an insight as resolved (action has been taken).
 
@@ -518,7 +555,7 @@ class StakeholderInsightsAPI {
     return json.data;
   }
 
-  // List insights with filters
+  // List insights with filters (returns complete data)
   async list(dealId: string, params?: {
     limit?: number;
     status?: string;
@@ -532,11 +569,6 @@ class StakeholderInsightsAPI {
         .map(([k, v]) => [k, String(v)])
     );
     return this.request(`/deals/${dealId}/stakeholder-insights?${query}`);
-  }
-
-  // Get single insight
-  async get(insightId: string): Promise<StakeholderInsightResponse> {
-    return this.request(`/stakeholder-insights/${insightId}`);
   }
 
   // Status transitions
@@ -565,12 +597,12 @@ class StakeholderInsightsAPI {
 }
 
 // ============================================================================
-// Usage Example - AI Insights Panel
+// Usage Example - AI Insights Panel with Collapsed/Expanded Views
 // ============================================================================
 
 const api = new StakeholderInsightsAPI('/api/v1/users/crm', accessToken);
 
-// Fetch active insights for the deal
+// Fetch active insights for the deal (complete data in one call)
 const { insights, summary } = await api.list(dealId, {
   status: 'ACTIVE,ACKNOWLEDGED',
   limit: 20,
@@ -580,60 +612,243 @@ const { insights, summary } = await api.list(dealId, {
 console.log(`Critical: ${summary.critical_count}`);
 console.log(`High: ${summary.high_count}`);
 
-// Render insight cards grouped by priority
-const critical = insights.filter(i => i.priority === 'CRITICAL');
-const high = insights.filter(i => i.priority === 'HIGH');
-const medium = insights.filter(i => i.priority === 'MEDIUM');
+// ============================================================================
+// COLLAPSED VIEW - Insight Card Summary
+// Shows: title, stakeholder, priority badge, action buttons
+// ============================================================================
 
-// Render a single insight card
-function renderInsightCard(insight: StakeholderInsightResponse) {
+function renderCollapsedCard(insight: StakeholderInsightResponse) {
   return {
+    // Summary fields only
     title: insight.title,
     stakeholder: insight.stakeholder_name
       ? `${insight.stakeholder_name} (${insight.stakeholder_title})`
       : 'Deal-level insight',
-    description: insight.description,
-    reasoning: insight.ai_reasoning,
+    priorityBadge: {
+      label: insight.priority,
+      color: {
+        CRITICAL: 'red',
+        HIGH: 'orange',
+        MEDIUM: 'yellow',
+        LOW: 'blue',
+      }[insight.priority],
+    },
     actions: insight.actions.map(a => ({
       label: a.label,
       onClick: () => handleAction(a.action_type, a.parameters),
     })),
-    priorityColor: {
-      CRITICAL: 'red',
-      HIGH: 'orange',
-      MEDIUM: 'yellow',
-      LOW: 'blue',
-    }[insight.priority],
   };
 }
 
-// Handle action button clicks
-function handleAction(actionType: string, params: Record<string, any>) {
-  switch (actionType) {
-    case 'SCHEDULE_CALL':
-      // Open calendar scheduling modal
-      break;
-    case 'SEND_EMAIL':
-      // Open email composer
-      break;
-    case 'VIEW_PROFILE':
-      // Navigate to stakeholder profile
-      break;
-    case 'VIEW_DETAILS':
-      // Expand insight details panel
-      break;
-    case 'GENERATE_BRIEFING':
-      // Trigger briefing generation
-      break;
-  }
+// ============================================================================
+// EXPANDED VIEW - Full Insight Details (on click/expand)
+// Shows: description, ai_reasoning, metrics, timestamps
+// ============================================================================
+
+function renderExpandedDetails(insight: StakeholderInsightResponse) {
+  return {
+    // Detail fields (shown when user expands the card)
+    description: insight.description,
+    reasoning: insight.ai_reasoning,
+    metrics: insight.metric_value
+      ? `${insight.metric_value} ${insight.metric_unit}`
+      : null,
+    threshold: insight.threshold_value
+      ? `Threshold: ${insight.threshold_value} ${insight.metric_unit}`
+      : null,
+    trend: insight.trend_direction,
+    confidence: `${Math.round(insight.ai_confidence * 100)}% confidence`,
+    identifiedAt: formatDate(insight.identified_at),
+    expiresAt: insight.expires_at ? formatDate(insight.expires_at) : 'No expiration',
+  };
 }
 
-// User dismisses an insight
-await api.dismiss(dealId, insightId);
+// ============================================================================
+// Complete Card + Popup Component Pattern
+// ============================================================================
 
-// User resolves an insight after taking action
-await api.resolve(dealId, insightId, 'Called Arun, confirmed timeline for Q2.');
+function InsightCard({ insight, onSelect }: {
+  insight: StakeholderInsightResponse;
+  onSelect: (insight: StakeholderInsightResponse) => void;
+}) {
+  return (
+    <Card onClick={() => onSelect(insight)}>
+      {/* Collapsed summary view */}
+      <CardHeader>
+        <PriorityBadge priority={insight.priority} />
+        <Title>{insight.title}</Title>
+        <Stakeholder>
+          {insight.stakeholder_name} ({insight.stakeholder_title})
+        </Stakeholder>
+      </CardHeader>
+
+      {/* Action buttons - informational for now */}
+      <ActionButtons>
+        {insight.actions.map(action => (
+          <Button key={action.action_type} variant="outline" size="sm">
+            {action.label}
+          </Button>
+        ))}
+      </ActionButtons>
+    </Card>
+  );
+}
+
+// ============================================================================
+// Popup Component - Shows full details with Dismiss/Resolve buttons
+// ============================================================================
+
+function InsightPopup({
+  insight,
+  onClose,
+  onDismiss,
+  onResolve,
+}: {
+  insight: StakeholderInsightResponse;
+  onClose: () => void;
+  onDismiss: () => void;
+  onResolve: () => void;
+}) {
+  return (
+    <Modal open onClose={onClose}>
+      {/* Close button (X) in top-right */}
+      <CloseButton onClick={onClose}>×</CloseButton>
+
+      {/* Header - same as collapsed view */}
+      <ModalHeader>
+        <PriorityBadge priority={insight.priority} />
+        <Title>{insight.title}</Title>
+        <Stakeholder>
+          {insight.stakeholder_name} ({insight.stakeholder_title})
+        </Stakeholder>
+      </ModalHeader>
+
+      {/* Full details - only shown in popup */}
+      <ModalBody>
+        <Section>
+          <Label>Description</Label>
+          <Text>{insight.description}</Text>
+        </Section>
+
+        <Section>
+          <Label>AI Reasoning</Label>
+          <Text>{insight.ai_reasoning}</Text>
+        </Section>
+
+        {insight.metric_value && (
+          <Section>
+            <Label>Metrics</Label>
+            <Text>
+              {insight.metric_value} {insight.metric_unit}
+              {insight.threshold_value && ` (threshold: ${insight.threshold_value})`}
+            </Text>
+          </Section>
+        )}
+
+        <Section>
+          <Label>Actions Available</Label>
+          <ActionList>
+            {insight.actions.map(action => (
+              <ActionItem key={action.action_type}>• {action.label}</ActionItem>
+            ))}
+          </ActionList>
+        </Section>
+
+        <Timestamp>Identified: {formatDate(insight.identified_at)}</Timestamp>
+      </ModalBody>
+
+      {/* Footer with Dismiss and Resolve buttons */}
+      <ModalFooter>
+        <Button variant="outline" onClick={onDismiss}>
+          Dismiss
+        </Button>
+        <Button variant="primary" onClick={onResolve}>
+          Resolve
+        </Button>
+      </ModalFooter>
+    </Modal>
+  );
+}
+
+// ============================================================================
+// Parent Component - Manages popup state
+// ============================================================================
+
+function AIInsightsPanel({ dealId }: { dealId: string }) {
+  const [insights, setInsights] = useState<StakeholderInsightResponse[]>([]);
+  const [selectedInsight, setSelectedInsight] = useState<StakeholderInsightResponse | null>(null);
+
+  // Fetch insights on mount
+  useEffect(() => {
+    api.list(dealId, { status: 'ACTIVE,ACKNOWLEDGED' })
+      .then(res => setInsights(res.insights));
+  }, [dealId]);
+
+  // Handle dismiss
+  const handleDismiss = async () => {
+    if (!selectedInsight) return;
+    await api.dismiss(dealId, selectedInsight.insight_id);
+    setInsights(prev => prev.filter(i => i.insight_id !== selectedInsight.insight_id));
+    setSelectedInsight(null);
+  };
+
+  // Handle resolve
+  const handleResolve = async () => {
+    if (!selectedInsight) return;
+    await api.resolve(dealId, selectedInsight.insight_id, 'Action taken');
+    setInsights(prev => prev.filter(i => i.insight_id !== selectedInsight.insight_id));
+    setSelectedInsight(null);
+  };
+
+  return (
+    <Panel>
+      <PanelHeader>AI Insights</PanelHeader>
+
+      {/* List of insight cards */}
+      {insights.map(insight => (
+        <InsightCard
+          key={insight.insight_id}
+          insight={insight}
+          onSelect={setSelectedInsight}
+        />
+      ))}
+
+      {/* Popup shown when card is clicked */}
+      {selectedInsight && (
+        <InsightPopup
+          insight={selectedInsight}
+          onClose={() => setSelectedInsight(null)}
+          onDismiss={handleDismiss}
+          onResolve={handleResolve}
+        />
+      )}
+    </Panel>
+  );
+}
 ```
+
+---
+
+## Summary vs Detail Fields Reference
+
+| Field | Card (Collapsed) | Popup (Expanded) | Notes |
+| ----- | ---------------- | ---------------- | ----- |
+| `title` | Show | Show | Main heading |
+| `priority` | Show (badge) | Show (badge) | Color coding |
+| `stakeholder_name` | Show | Show | Who it's about |
+| `stakeholder_title` | Show | Show | Role context |
+| `actions` | Show (buttons) | Show (list) | Informational - what actions are available |
+| `description` | - | Show | Detailed explanation |
+| `ai_reasoning` | - | Show | Why AI generated this |
+| `metric_value/unit` | - | Show | Evidence |
+| `threshold_value` | - | Show | Threshold exceeded |
+| `trend_direction` | - | Show | Improving/declining |
+| `ai_confidence` | - | Show | Confidence score |
+| `identified_at` | - | Show | When detected |
+| `expires_at` | - | Show | When stale |
+| **Close Button (X)** | - | Show (top-right) | Closes popup |
+| **Dismiss Button** | - | Show (footer) | Calls `/dismiss` API |
+| **Resolve Button** | - | Show (footer) | Calls `/resolve` API |
 
 ---
 
@@ -666,6 +881,7 @@ Frontend should style insights based on priority:
 
 ## Notes
 
+- **No Separate Detail Endpoint**: The list endpoint returns complete data. Frontend implements collapsed/expanded UI pattern without additional API calls.
 - **AI Generation**: Insights are generated automatically during stakeholder analysis (background process). No manual trigger endpoint.
 - **Expiration**: Some insights have `expires_at` set and will auto-transition to `EXPIRED` status. By default, expired insights are hidden.
 - **Deal-Level Insights**: Some insights (like `MISSING_DECISION_MAKER`) are deal-level and have `stakeholder_id = null`.
