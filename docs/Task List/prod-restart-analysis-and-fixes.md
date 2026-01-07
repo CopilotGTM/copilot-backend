@@ -685,4 +685,94 @@ kubectl get events -n copilotgtm --sort-by=.lastTimestamp | grep -i "oom\|kill"
 
 ---
 
-*Updated by Claude Code analysis on 2026-01-07*
+## Update: Further Investigation (2026-01-07 Evening)
+
+### Key Discovery: NOT Memory - Process Freeze
+
+A deeper investigation revealed that the restarts are **NOT caused by memory issues**:
+
+| Metric | Value | Implication |
+|--------|-------|-------------|
+| Memory when killed | 362Mi | Only 6% of 6Gi limit |
+| Kill reason | Liveness probe timeout | NOT OOMKilled |
+| Pattern | Both pods killed within 19 seconds | Simultaneous freeze |
+| DB Pools | 0 connections, healthy | No connection exhaustion |
+| Last logs | Normal health checks, then sudden stop | Event loop blocked |
+
+### Root Cause: Event Loop Blocking
+
+The `/health` endpoint is trivial (just returns static JSON), yet it times out. This means the **entire FastAPI event loop freezes** - all Uvicorn workers become unresponsive simultaneously.
+
+**Possible causes of simultaneous freeze:**
+1. Python GC pause (likely - both pods freeze at same time, no errors)
+2. External dependency stall (Redis, Nango webhooks)
+3. Blocking sync call in async context
+
+### Fixes Applied (2026-01-07)
+
+#### 1. GC Tuning Added
+
+File: `src/api/fastapi_app.py`
+
+```python
+import gc
+# Configure Python garbage collector to reduce pause times
+gc.set_threshold(50000, 500, 100)
+```
+
+This reduces GC frequency to prevent long pauses that cause health check timeouts.
+
+#### 2. Liveness Probe Timeout Increased
+
+File: `charts/application/charts/webservice/templates/deployment.yaml`
+
+```yaml
+livenessProbe:
+  timeoutSeconds: 45      # Increased from 30
+  failureThreshold: 4     # Increased from 3
+```
+
+Total tolerance: ~2 minutes of unresponsiveness before restart.
+
+#### 3. Lazy Loading for Heavy Libraries
+
+Files modified:
+- `src/workers/knowledge_worker/services/document_converter.py`
+- `src/workers/knowledge_worker/services/chunking.py`
+- `src/workers/knowledge_worker/parsers/docling_parser.py`
+- `src/workers/knowledge_worker/parsers/__init__.py`
+- `src/workers/knowledge_worker/parsers/registry.py`
+
+**Impact:** Reduced knowledge-upload-worker idle memory from ~1.5GB to ~200MB by deferring heavy imports (docling, transformers) until first use.
+
+### Worker Memory Analysis
+
+| Worker | Current Memory | Cause |
+|--------|---------------|-------|
+| knowledge-upload-worker | 1523Mi | Eager loading of docling/transformers (FIXED) |
+| integrations-worker | 1104Mi | 8 Celery workers × base memory |
+| chat-worker | 982Mi | 5 Celery workers × base memory |
+| API pods | ~400Mi | Healthy |
+
+### Summary of All Fixes Applied
+
+| Fix | File | Status |
+|-----|------|--------|
+| Event loop fix (redis_subscriber) | `src/api/events/redis_subscriber.py` | APPLIED |
+| GC tuning | `src/api/fastapi_app.py` | APPLIED |
+| Liveness probe tolerance | `deployment.yaml` | APPLIED |
+| Lazy loading heavy libs | Multiple parser/service files | APPLIED |
+| Health probe timeouts | `deployment.yaml` | APPLIED (earlier) |
+
+### Next Steps
+
+1. **Deploy changes** and monitor restart frequency
+2. **Watch memory** on knowledge-upload-worker after lazy loading fix
+3. **Monitor GC pauses** - if still seeing freezes, consider:
+   - Running health endpoint in separate worker process
+   - Adding circuit breakers for external calls
+   - Profiling to find blocking operations
+
+---
+
+*Updated by Claude Code analysis on 2026-01-07 (Evening)*

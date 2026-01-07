@@ -243,10 +243,10 @@ class NangoWebhookService:
             deleted,
         )
 
-        # Use client to avoid importing celery_app in FastAPI process
-        from src.workers.integrations_worker.client import send_integrations_task
+        # Use async client to avoid blocking the event loop during Redis connection
+        from src.workers.integrations_worker.client import send_integrations_task_async
 
-        send_integrations_task(
+        await send_integrations_task_async(
             task_name="integrations.sync_integration_data",
             kwargs={
                 "organisation_id": str(organisation_id),

@@ -171,7 +171,7 @@ knowledge-upload-worker:
   pullPolicy: IfNotPresent
   config:
     queueName: "knowledge_upload"
-    concurrency: 4
+    concurrency: 5
   # Use shared ServiceAccount (created by knowledge-extract-worker)
   serviceAccount:
     create: false
@@ -182,7 +182,7 @@ knowledge-upload-worker:
       memory: "1Gi"
     limits:
       cpu: "1500m"
-      memory: "2Gi"
+      memory: "1.5Gi"
   autoscaling:
     enabled: true
     minReplicas: 1
@@ -194,7 +194,7 @@ knowledge-upload-worker:
 # Organization Worker
 organization-worker:
   enabled: true
-  replicaCount: 1
+  replicaCount: 0
   image:
     repository: "copilotgtmacrdev.azurecr.io/copilot-backend"
     tag: "latest"
@@ -215,9 +215,9 @@ organization-worker:
       memory: "1Gi"
   autoscaling:
     enabled: true
-    minReplicas: 1
+    minReplicas: 0
     maxReplicas: 5
-    queueLength: 1
+    queueLength: 2
     scaleDownDelay: 300
     scaleUpDelay: 5
 

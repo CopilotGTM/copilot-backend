@@ -1,10 +1,26 @@
-# app_layer/utils/fastapi_app.py
+"""FastAPI application factory and configuration.
 
+This module creates and configures the FastAPI application with:
+- CORS middleware
+- Request context middleware
+- Redis connection pool management
+- Database pool monitoring
+- GC tuning for reduced pause times
+"""
+
+import gc
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+# Configure Python garbage collector to reduce pause times
+# This helps prevent health check timeouts caused by GC pauses
+# - threshold0: Collect young generation less frequently (default 700)
+# - threshold1: Collect middle generation less frequently (default 10)
+# - threshold2: Collect old generation less frequently (default 10)
+gc.set_threshold(50000, 500, 100)
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 load_dotenv(BASE_DIR / ".env", override=True)

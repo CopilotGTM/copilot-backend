@@ -64,15 +64,17 @@ spec:
             timeoutSeconds: 10
             failureThreshold: 30
           # Liveness probe: checks if application is still running
-          # Increased timeout to 30s to handle GC pauses and memory pressure
+          # Increased timeout to 45s and failureThreshold to 4 to handle GC pauses,
+          # event loop blocking, and temporary freezes without unnecessary restarts
+          # Total tolerance: 4 failures * 30s period = ~2 minutes before restart
           livenessProbe:
             httpGet:
               path: /health
               port: http
             initialDelaySeconds: 0
             periodSeconds: 30
-            timeoutSeconds: 30
-            failureThreshold: 3
+            timeoutSeconds: 45
+            failureThreshold: 4
           # Readiness probe: checks if application can accept traffic
           # Increased timeout to 15s for better tolerance
           readinessProbe:
