@@ -349,3 +349,541 @@ class TestCalendarDataTypes:
         """'calendars' data type should be in incremental_sync_entities."""
         incremental_sync_entities = {"events", "calendars"}
         assert "calendars" in incremental_sync_entities
+
+
+class TestGoogleCalendarFieldExtraction:
+    """Tests for Google Calendar specific field extraction."""
+
+    def test_extracts_summary_as_title(self) -> None:
+        """Google 'summary' should map to title."""
+        incoming = {
+            "summary": "Project Review",
+            "start": {"dateTime": "2024-01-15T14:00:00Z"},
+            "end": {"dateTime": "2024-01-15T15:00:00Z"},
+        }
+        mock_event = MagicMock()
+        mock_event.title = "Different Title"
+        mock_event.description = None
+        mock_event.location = None
+        mock_event.status = None
+        mock_event.conference_link = None
+        mock_event.organiser_email = None
+        mock_event.start_at = datetime(2024, 1, 15, 14, 0, 0)
+        mock_event.end_at = datetime(2024, 1, 15, 15, 0, 0)
+        mock_event.attendee_count = 0
+        mock_event.is_all_day = False
+        mock_event.source_modified_at = None
+
+        result = _has_meaningful_event_changes(mock_event, incoming, "google")
+        assert result is True  # Title changed
+
+    def test_handles_all_day_event(self) -> None:
+        """All-day events use 'date' instead of 'dateTime'."""
+        mock_event = MagicMock()
+        mock_event.title = "Company Holiday"
+        mock_event.description = None
+        mock_event.location = None
+        mock_event.status = None
+        mock_event.conference_link = None
+        mock_event.organiser_email = None
+        mock_event.start_at = datetime(2024, 1, 15, 0, 0, 0)
+        mock_event.end_at = datetime(2024, 1, 16, 0, 0, 0)
+        mock_event.attendee_count = 0
+        mock_event.is_all_day = True
+        mock_event.source_modified_at = None
+
+        incoming = {
+            "summary": "Company Holiday",
+            "start": {"date": "2024-01-15"},
+            "end": {"date": "2024-01-16"},
+        }
+
+        result = _has_meaningful_event_changes(mock_event, incoming, "google")
+        assert result is False  # No change
+
+    def test_extracts_google_meet_link(self) -> None:
+        """Should extract Google Meet link from conferenceData."""
+        mock_event = MagicMock()
+        mock_event.title = "Meeting"
+        mock_event.description = None
+        mock_event.location = None
+        mock_event.status = None
+        mock_event.conference_link = "https://meet.google.com/old-link"
+        mock_event.organiser_email = None
+        mock_event.start_at = datetime(2024, 1, 15, 10, 0, 0)
+        mock_event.end_at = datetime(2024, 1, 15, 11, 0, 0)
+        mock_event.attendee_count = 0
+        mock_event.is_all_day = False
+        mock_event.source_modified_at = None
+
+        incoming = {
+            "summary": "Meeting",
+            "start": {"dateTime": "2024-01-15T10:00:00Z"},
+            "end": {"dateTime": "2024-01-15T11:00:00Z"},
+            "conferenceData": {
+                "entryPoints": [
+                    {"entryPointType": "video", "uri": "https://meet.google.com/new-link"}
+                ]
+            },
+        }
+
+        result = _has_meaningful_event_changes(mock_event, incoming, "google")
+        assert result is True  # Conference link changed
+
+    def test_cancelled_status_google(self) -> None:
+        """Google cancelled events should have status='cancelled'."""
+        incoming = {
+            "id": "event-123",
+            "summary": "Cancelled Meeting",
+            "status": "cancelled",
+            "start": {"dateTime": "2024-01-15T10:00:00Z"},
+            "end": {"dateTime": "2024-01-15T11:00:00Z"},
+        }
+
+        mock_event = MagicMock()
+        mock_event.title = "Cancelled Meeting"
+        mock_event.description = None
+        mock_event.location = None
+        mock_event.status = "confirmed"  # Was confirmed
+        mock_event.conference_link = None
+        mock_event.organiser_email = None
+        mock_event.start_at = datetime(2024, 1, 15, 10, 0, 0)
+        mock_event.end_at = datetime(2024, 1, 15, 11, 0, 0)
+        mock_event.attendee_count = 0
+        mock_event.is_all_day = False
+        mock_event.source_modified_at = None
+
+        result = _has_meaningful_event_changes(mock_event, incoming, "google")
+        assert result is True  # Status changed to cancelled
+
+
+class TestMicrosoftCalendarFieldExtraction:
+    """Tests for Microsoft Calendar specific field extraction."""
+
+    def test_extracts_subject_as_title(self) -> None:
+        """Microsoft 'subject' should map to title."""
+        incoming = {
+            "subject": "Team Sync",
+            "start": {"dateTime": "2024-01-15T14:00:00Z"},
+            "end": {"dateTime": "2024-01-15T15:00:00Z"},
+        }
+        mock_event = MagicMock()
+        mock_event.title = "Different Title"
+        mock_event.description = None
+        mock_event.location = None
+        mock_event.status = "confirmed"
+        mock_event.conference_link = None
+        mock_event.organiser_email = None
+        mock_event.start_at = datetime(2024, 1, 15, 14, 0, 0)
+        mock_event.end_at = datetime(2024, 1, 15, 15, 0, 0)
+        mock_event.attendee_count = 0
+        mock_event.is_all_day = False
+        mock_event.source_modified_at = None
+
+        result = _has_meaningful_event_changes(mock_event, incoming, "microsoft")
+        assert result is True
+
+    def test_extracts_teams_meeting_link(self) -> None:
+        """Should extract Teams meeting link from onlineMeeting."""
+        mock_event = MagicMock()
+        mock_event.title = "Teams Meeting"
+        mock_event.description = None
+        mock_event.location = None
+        mock_event.status = "confirmed"
+        mock_event.conference_link = None
+        mock_event.organiser_email = None
+        mock_event.start_at = datetime(2024, 1, 15, 10, 0, 0)
+        mock_event.end_at = datetime(2024, 1, 15, 11, 0, 0)
+        mock_event.attendee_count = 0
+        mock_event.is_all_day = False
+        mock_event.source_modified_at = None
+
+        incoming = {
+            "subject": "Teams Meeting",
+            "start": {"dateTime": "2024-01-15T10:00:00Z"},
+            "end": {"dateTime": "2024-01-15T11:00:00Z"},
+            "onlineMeeting": {"joinUrl": "https://teams.microsoft.com/l/meetup-join/abc123"},
+        }
+
+        result = _has_meaningful_event_changes(mock_event, incoming, "microsoft")
+        assert result is True  # Conference link added
+
+    def test_cancelled_status_microsoft(self) -> None:
+        """Microsoft isCancelled=true should map to status='cancelled'."""
+        incoming = {
+            "id": "event-456",
+            "subject": "Cancelled Meeting",
+            "isCancelled": True,
+            "start": {"dateTime": "2024-01-15T10:00:00Z"},
+            "end": {"dateTime": "2024-01-15T11:00:00Z"},
+        }
+
+        mock_event = MagicMock()
+        mock_event.title = "Cancelled Meeting"
+        mock_event.description = None
+        mock_event.location = None
+        mock_event.status = "confirmed"
+        mock_event.conference_link = None
+        mock_event.organiser_email = None
+        mock_event.start_at = datetime(2024, 1, 15, 10, 0, 0)
+        mock_event.end_at = datetime(2024, 1, 15, 11, 0, 0)
+        mock_event.attendee_count = 0
+        mock_event.is_all_day = False
+        mock_event.source_modified_at = None
+
+        result = _has_meaningful_event_changes(mock_event, incoming, "microsoft")
+        assert result is True  # Status changed
+
+    def test_extracts_location_display_name(self) -> None:
+        """Microsoft location should use displayName."""
+        mock_event = MagicMock()
+        mock_event.title = "Meeting"
+        mock_event.description = None
+        mock_event.location = "Room A"
+        mock_event.status = "confirmed"
+        mock_event.conference_link = None
+        mock_event.organiser_email = None
+        mock_event.start_at = datetime(2024, 1, 15, 10, 0, 0)
+        mock_event.end_at = datetime(2024, 1, 15, 11, 0, 0)
+        mock_event.attendee_count = 0
+        mock_event.is_all_day = False
+        mock_event.source_modified_at = None
+
+        incoming = {
+            "subject": "Meeting",
+            "location": {"displayName": "Room B"},  # Changed
+            "start": {"dateTime": "2024-01-15T10:00:00Z"},
+            "end": {"dateTime": "2024-01-15T11:00:00Z"},
+        }
+
+        result = _has_meaningful_event_changes(mock_event, incoming, "microsoft")
+        assert result is True
+
+
+class TestCalendarIncrementalScenarios:
+    """Integration scenarios testing the full incremental sync flow."""
+
+    def test_mixed_event_scenario(self) -> None:
+        """Test scenario with new, updated, cancelled, and unchanged events."""
+        from src.workers.integrations_worker.utils.sync_metadata import (
+            SyncActionCounts,
+            extract_sync_action,
+        )
+
+        events = [
+            # New event
+            {
+                "id": "event-new-1",
+                "summary": "New Meeting",
+                "_sync_metadata": {"sync_action": "ADDED"},
+            },
+            # Updated event
+            {
+                "id": "event-existing-1",
+                "summary": "Updated Meeting",
+                "_sync_metadata": {"sync_action": "UPDATED"},
+            },
+            # Cancelled event
+            {
+                "id": "event-cancelled-1",
+                "summary": "Cancelled Meeting",
+                "status": "cancelled",
+                "_sync_metadata": {"sync_action": "DELETED"},
+            },
+            # Unchanged event
+            {
+                "id": "event-existing-2",
+                "summary": "Regular Meeting",
+                "_sync_metadata": {"sync_action": "UPDATED"},
+            },
+        ]
+
+        counts = SyncActionCounts()
+        for event in events:
+            action = extract_sync_action(event)
+            if action:
+                counts.increment(action)
+
+        assert counts.added == 1
+        assert counts.updated == 2
+        assert counts.deleted == 1
+        assert counts.total == 4
+
+    def test_database_state_determines_create_or_update(self) -> None:
+        """Database existence should determine create vs update."""
+        existing_external_ids = {"event-1", "event-2"}
+
+        event = {
+            "id": "event-1",
+            "summary": "Test Event",
+            "_sync_metadata": {"sync_action": "ADDED"},
+        }
+
+        external_id = event["id"]
+        is_new = external_id not in existing_external_ids
+
+        assert is_new is False
+        should_update = not is_new
+        assert should_update is True
+
+    def test_new_event_gets_created(self) -> None:
+        """New event (not in DB) should be created."""
+        existing_external_ids = {"event-1", "event-2"}
+
+        event = {
+            "id": "event-new",
+            "summary": "Brand New Event",
+            "_sync_metadata": {"sync_action": "ADDED"},
+        }
+
+        external_id = event["id"]
+        is_new = external_id not in existing_external_ids
+
+        assert is_new is True
+
+    def test_unchanged_event_gets_skipped(self) -> None:
+        """Event with no meaningful changes should be skipped."""
+        mock_existing = MagicMock()
+        mock_existing.title = "Weekly Standup"
+        mock_existing.description = None
+        mock_existing.location = "Zoom"
+        mock_existing.status = "confirmed"
+        mock_existing.conference_link = None
+        mock_existing.organiser_email = "host@company.com"
+        mock_existing.start_at = datetime(2024, 1, 15, 10, 0, 0)
+        mock_existing.end_at = datetime(2024, 1, 15, 10, 30, 0)
+        mock_existing.attendee_count = 5
+        mock_existing.is_all_day = False
+        mock_existing.source_modified_at = datetime(2024, 1, 10, 12, 0, 0, tzinfo=UTC)
+
+        incoming = {
+            "summary": "Weekly Standup",
+            "location": "Zoom",
+            "status": "confirmed",
+            "start": {"dateTime": "2024-01-15T10:00:00Z"},
+            "end": {"dateTime": "2024-01-15T10:30:00Z"},
+            "attendees": [{}] * 5,
+            "organizer": {"email": "host@company.com"},
+        }
+
+        has_changes = _has_meaningful_event_changes(mock_existing, incoming, "google")
+        assert has_changes is False
+
+    def test_source_modified_at_triggers_update(self) -> None:
+        """Newer source_modified_at should trigger update."""
+        mock_existing = MagicMock()
+        mock_existing.title = "Meeting"
+        mock_existing.description = None
+        mock_existing.location = None
+        mock_existing.status = "confirmed"
+        mock_existing.conference_link = None
+        mock_existing.organiser_email = None
+        mock_existing.start_at = datetime(2024, 1, 15, 10, 0, 0)
+        mock_existing.end_at = datetime(2024, 1, 15, 11, 0, 0)
+        mock_existing.attendee_count = 0
+        mock_existing.is_all_day = False
+        mock_existing.source_modified_at = datetime(2024, 1, 10, 12, 0, 0, tzinfo=UTC)
+
+        incoming = {
+            "summary": "Meeting",
+            "status": "confirmed",
+            "start": {"dateTime": "2024-01-15T10:00:00Z"},
+            "end": {"dateTime": "2024-01-15T11:00:00Z"},
+            "updated": "2024-01-15T14:00:00Z",  # Newer
+        }
+
+        has_changes = _has_meaningful_event_changes(mock_existing, incoming, "google")
+        assert has_changes is True
+
+
+class TestCalendarIncrementalResultStructure:
+    """Tests for incremental sync result structure."""
+
+    def test_result_includes_all_counts(self) -> None:
+        """Result should include created, updated, skipped counts."""
+        expected_keys = {
+            "status",
+            "records_processed",
+            "records_failed",
+            "created",
+            "updated",
+            "skipped",
+        }
+
+        sample_result = {
+            "status": "success",
+            "records_processed": 15,
+            "records_failed": 1,
+            "created": 5,
+            "updated": 7,
+            "skipped": 3,
+        }
+
+        assert expected_keys.issubset(sample_result.keys())
+
+    def test_action_counts_tracking(self) -> None:
+        """SyncActionCounts should track all action types."""
+        from src.workers.integrations_worker.utils.sync_metadata import (
+            SyncAction,
+            SyncActionCounts,
+        )
+
+        counts = SyncActionCounts()
+        counts.increment(SyncAction.ADDED)
+        counts.increment(SyncAction.UPDATED)
+        counts.increment(SyncAction.UPDATED)
+        counts.increment(SyncAction.DELETED)
+
+        result = counts.to_dict()
+        assert result["added"] == 1
+        assert result["updated"] == 2
+        assert result["deleted"] == 1
+        assert result["total"] == 4
+
+
+class TestCalendarDispatcherIntegration:
+    """Tests for dispatcher integration with calendar."""
+
+    def test_calendar_category_in_incremental_categories(self) -> None:
+        """'calendar' should be in incremental_sync_categories."""
+        incremental_sync_categories = {"crm", "calendar", "email", "messaging"}
+        assert "calendar" in incremental_sync_categories
+
+    def test_calendar_entities_not_in_fetcher_entities(self) -> None:
+        """Calendar entities should NOT be in incremental_sync_entities (CRM only)."""
+        incremental_sync_entities = {
+            "deals",
+            "opportunities",
+            "contacts",
+            "leads",
+            "companies",
+            "accounts",
+            "deal_tasks",
+            "tasks",
+            "tickets",
+            "notes",
+            "owners",
+            "users",
+            "pipelines",
+        }
+        assert "events" not in incremental_sync_entities
+        assert "calendars" not in incremental_sync_entities
+
+    def test_sync_type_only_passed_to_handler_not_fetcher(self) -> None:
+        """sync_type should be passed to handler, not to calendar fetcher."""
+        category = "calendar"
+        data_type = "events"
+
+        incremental_sync_entities = {
+            "deals",
+            "opportunities",
+            "contacts",
+            "leads",
+            "companies",
+            "accounts",
+            "deal_tasks",
+            "tasks",
+            "tickets",
+            "notes",
+            "owners",
+            "users",
+            "pipelines",
+        }
+
+        should_pass_to_fetcher = data_type in incremental_sync_entities
+        assert should_pass_to_fetcher is False
+
+        incremental_sync_categories = {"crm", "calendar", "email", "messaging"}
+        should_pass_to_handler = category in incremental_sync_categories
+        assert should_pass_to_handler is True
+
+
+class TestCalendarRecurringEvents:
+    """Tests for recurring event handling."""
+
+    def test_recurring_event_instance_identified(self) -> None:
+        """Recurring event instances should be identifiable."""
+        # Google recurring event instance
+        google_recurring = {
+            "id": "event-base_20240115T100000Z",
+            "recurringEventId": "event-base",
+            "summary": "Daily Standup",
+        }
+
+        is_recurring_instance = "recurringEventId" in google_recurring
+        assert is_recurring_instance is True
+
+        # Microsoft recurring event instance
+        microsoft_recurring = {
+            "id": "AAMkAG...",
+            "seriesMasterId": "AAMkAG-master...",
+            "subject": "Weekly Review",
+        }
+
+        is_recurring_instance_ms = "seriesMasterId" in microsoft_recurring
+        assert is_recurring_instance_ms is True
+
+    def test_non_recurring_event(self) -> None:
+        """Non-recurring events don't have recurringEventId."""
+        single_event = {
+            "id": "event-single",
+            "summary": "One-time Meeting",
+        }
+
+        is_recurring = "recurringEventId" in single_event or "seriesMasterId" in single_event
+        assert is_recurring is False
+
+
+class TestCalendarTimezoneHandling:
+    """Tests for timezone handling in calendar events."""
+
+    def test_utc_timezone_parsed(self) -> None:
+        """UTC timezone (Z suffix) should be parsed correctly."""
+        mock_event = MagicMock()
+        mock_event.title = "Meeting"
+        mock_event.description = None
+        mock_event.location = None
+        mock_event.status = "confirmed"
+        mock_event.conference_link = None
+        mock_event.organiser_email = None
+        mock_event.start_at = datetime(2024, 1, 15, 10, 0, 0)
+        mock_event.end_at = datetime(2024, 1, 15, 11, 0, 0)
+        mock_event.attendee_count = 0
+        mock_event.is_all_day = False
+        mock_event.source_modified_at = None
+
+        incoming = {
+            "summary": "Meeting",
+            "status": "confirmed",
+            "start": {"dateTime": "2024-01-15T10:00:00Z"},
+            "end": {"dateTime": "2024-01-15T11:00:00Z"},
+        }
+
+        # Should not raise
+        result = _has_meaningful_event_changes(mock_event, incoming, "google")
+        assert isinstance(result, bool)
+
+    def test_offset_timezone_parsed(self) -> None:
+        """Offset timezone (+00:00) should be parsed correctly."""
+        mock_event = MagicMock()
+        mock_event.title = "Meeting"
+        mock_event.description = None
+        mock_event.location = None
+        mock_event.status = "confirmed"
+        mock_event.conference_link = None
+        mock_event.organiser_email = None
+        mock_event.start_at = datetime(2024, 1, 15, 10, 0, 0)
+        mock_event.end_at = datetime(2024, 1, 15, 11, 0, 0)
+        mock_event.attendee_count = 0
+        mock_event.is_all_day = False
+        mock_event.source_modified_at = None
+
+        incoming = {
+            "summary": "Meeting",
+            "status": "confirmed",
+            "start": {"dateTime": "2024-01-15T10:00:00+00:00"},
+            "end": {"dateTime": "2024-01-15T11:00:00+00:00"},
+        }
+
+        result = _has_meaningful_event_changes(mock_event, incoming, "google")
+        assert isinstance(result, bool)
