@@ -129,22 +129,32 @@ class ParserRegistry:
 
         This is called lazily on first access to handle circular imports.
         Parsers register themselves when their modules are imported.
+
+        Note: Heavy parsers (docling_parser) are loaded lazily here to avoid
+        loading ML libraries (docling, transformers) until a document needs parsing.
         """
         if cls._initialized:
             return
 
-        # Import parser modules to trigger registration
+        # Import light parser modules to trigger registration
         # Each parser module uses @ParserRegistry.register decorator
         try:
             from . import (
-                pdf_parser,  # noqa: F401 - PDF parser
+                json_parser,  # noqa: F401 - JSON parser
                 text_parser,  # noqa: F401 - Text file parser
+                xml_parser,  # noqa: F401 - XML parser
             )
-
-            # Future parsers will be imported here:
-            # from . import docx_parser  # noqa: F401
         except ImportError as e:
-            logger.warning(f"Failed to import some parsers: {e}")
+            logger.warning(f"Failed to import light parsers: {e}")
+
+        # Import heavy parsers (docling) - this loads ML libraries
+        # Only imported when registry is accessed, not at worker startup
+        try:
+            from . import docling_parser  # noqa: F401 - PDF/DOCX parser (heavy)
+
+            logger.info("DoclingParser loaded for PDF/DOCX support")
+        except ImportError as e:
+            logger.warning(f"Failed to import docling_parser: {e}")
 
         cls._initialized = True
         logger.info(f"Parser registry initialized with {len(cls._parsers)} parsers")

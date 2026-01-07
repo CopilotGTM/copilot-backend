@@ -541,3 +541,148 @@ After deploying fixes:
 ---
 
 *Document generated and updated by Claude Code analysis on 2026-01-06*
+
+---
+
+## Update: Investigation Results (2026-01-07)
+
+### Investigation Summary
+
+A detailed investigation was performed on 2026-01-07 to check the status of fixes and identify remaining issues.
+
+### Status of Previously Identified Fixes
+
+| Fix | Status | Evidence |
+|-----|--------|----------|
+| `redis_subscriber.py` event loop fix | **APPLIED** | Now uses `run_async()` instead of `new_event_loop()` |
+| Health probe timeouts increased | **APPLIED** | Liveness: timeout=30s, Readiness: timeout=15s |
+| Startup probe added | **APPLIED** | delay=10s timeout=10s period=10s failureThreshold=30 |
+| Worker event loop fixes | **PARTIAL** | `organization.py` uses persistent loop, legacy files still have old pattern |
+
+### Current Pod Status (2026-01-07)
+
+```
+Pod: copilot-backend-967995c98-dltzm
+- Restart Count: 1
+- Last State: Terminated (Exit Code 137 = SIGKILL)
+- Last Crash: 2026-01-07 20:22:53 IST (ran for ~1h 20min before crash)
+- Current Memory: ~400Mi (healthy)
+```
+
+### Database Connection Pool Analysis
+
+**Your theory about connection limits was investigated:**
+
+| Metric | Value | Assessment |
+|--------|-------|------------|
+| Pool Config | size=5, max_overflow=2 (7 max per pool) | Reasonable |
+| Active Pools | 3 total (1 sync, 2 async) | Low count |
+| Connections in use | 0 checked_out, 2 idle | **No exhaustion** |
+| Pool Health | OK=3, WARN=0, CRIT=0 | **Healthy** |
+
+**Conclusion: Connection pool exhaustion is NOT the cause.** The pools show 0 connections in use with healthy status right up until the crash.
+
+### Critical Finding: Node Resource Overcommitment
+
+**Node aks-agentpool-39986328-vmss000000 (where API pods run):**
+```
+Resource    Requests    Limits
+CPU         97%         322% (overcommitted)
+Memory      55%         185% (overcommitted by 85%!)
+```
+
+**Node aks-agentpool-39986328-vmss000001:**
+```
+Resource    Requests    Limits
+Memory      37%         139% (overcommitted by 39%)
+```
+
+This severe overcommitment means:
+- When pods approach their limits simultaneously, the Linux OOM killer intervenes
+- The kernel kills processes before any application logging can occur
+- Exit code 137 (SIGKILL) is consistent with OOM killer behavior
+
+### Azure PostgreSQL Connection Limits Reference
+
+Per [Microsoft documentation](https://learn.microsoft.com/en-us/azure/postgresql/flexible-server/concepts-limits):
+
+| Tier | Max User Connections |
+|------|---------------------|
+| B1ms (2 GiB) | 35 |
+| B2s (4 GiB) | 414 |
+| B2ms (8 GiB) | 844 |
+
+**Note:** Azure reserves 15 connections for replication/monitoring. If using B1ms tier, the 35 connection limit could be a future concern with scaling.
+
+### Root Cause Analysis (Updated)
+
+The restarts are likely caused by a **combination of factors**:
+
+1. **Memory pressure from node overcommitment** - When multiple pods use memory simultaneously, the node runs out of available memory
+2. **Linux OOM killer** - Selects the API pod to kill based on memory usage patterns
+3. **No warning in logs** - OOM kill happens at kernel level, instantaneous SIGKILL
+
+### Remaining Event Loop Issues
+
+These files still have the old `new_event_loop()` pattern but are in workers (not API pod):
+- `src/workers/organization_worker/tasks/organization.py` - Uses persistent loop pattern (OK)
+- `src/workers/knowledge_worker/_legacy/*` - Legacy files, may not be in active use
+
+### Recommended Actions
+
+#### Immediate (High Priority)
+
+1. **Reduce node overcommitment** - Lower memory limits or add more nodes
+   ```yaml
+   # Option A: Reduce memory limits in pods
+   resources:
+     limits:
+       memory: 4Gi  # Reduce from 6Gi
+
+   # Option B: Add more nodes to the cluster
+   ```
+
+2. **Add Pod Priority Classes** - Ensure API pods aren't killed first
+   ```yaml
+   priorityClassName: high-priority
+   ```
+
+3. **Enable Resource Quotas** - Prevent overcommitment
+   ```yaml
+   apiVersion: v1
+   kind: ResourceQuota
+   metadata:
+     name: limit-overcommit
+   spec:
+     hard:
+       limits.memory: 15Gi  # Match node capacity
+   ```
+
+#### Short-term
+
+4. **Monitor memory growth** - Track if memory accumulates over time
+   ```bash
+   kubectl top pods -n copilotgtm -w
+   ```
+
+5. **Consider PgBouncer** - If scaling to more tenants, implement connection pooling at infrastructure level
+
+### Verification Commands
+
+```bash
+# Check current memory usage
+kubectl top pods -n copilotgtm
+
+# Check node allocation
+kubectl describe nodes | grep -A 10 "Allocated resources"
+
+# Watch for restarts
+kubectl get pods -n copilotgtm -w
+
+# Check for OOM events
+kubectl get events -n copilotgtm --sort-by=.lastTimestamp | grep -i "oom\|kill"
+```
+
+---
+
+*Updated by Claude Code analysis on 2026-01-07*

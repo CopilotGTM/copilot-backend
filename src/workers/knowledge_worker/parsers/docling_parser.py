@@ -8,14 +8,15 @@ This module provides a unified parser that:
 
 This is designed to work with the ExtractionService pipeline:
     DoclingParser → ParsedContent → ChunkProcessor → OrganisationDocument[]
+
+Note: Heavy imports (docling, docling_core) are deferred until first use
+to reduce memory footprint when workers start.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-
-from docling_core.types.doc import DocItemLabel, PictureItem, TableItem
 
 from src.infra.utils.logger import get_logger
 from src.workers.knowledge_worker.models import ChunkData, ParsedContent, ProcessingContext
@@ -33,6 +34,17 @@ if TYPE_CHECKING:
     from docling.document_converter import DocumentConverter
 
 logger = get_logger("docling_parser")
+
+
+def _get_docling_types() -> tuple[type, type, type]:
+    """Lazy load docling_core types to avoid heavy import at module load.
+
+    Returns:
+        Tuple of (DocItemLabel, PictureItem, TableItem) classes
+    """
+    from docling_core.types.doc import DocItemLabel, PictureItem, TableItem
+
+    return DocItemLabel, PictureItem, TableItem  # noqa: N806 - returning class types
 
 
 @ParserRegistry.register
@@ -240,7 +252,7 @@ class DoclingParser(IDocumentParser):
         self,
         doc_items: list[Any],
         dl_doc: Any,  # noqa: ARG002 - kept for signature consistency
-    ) -> list[TableItem]:
+    ) -> list[Any]:
         """
         Extract table items from doc_items.
 
@@ -251,10 +263,11 @@ class DoclingParser(IDocumentParser):
         Returns:
             List of TableItem objects
         """
+        doc_item_label_cls, _, table_item_cls = _get_docling_types()
         tables = []
         for item in doc_items:
-            is_table = isinstance(item, TableItem) or (
-                hasattr(item, "label") and item.label == DocItemLabel.TABLE
+            is_table = isinstance(item, table_item_cls) or (
+                hasattr(item, "label") and item.label == doc_item_label_cls.TABLE
             )
             if is_table:
                 tables.append(item)
@@ -264,7 +277,7 @@ class DoclingParser(IDocumentParser):
         self,
         doc_items: list[Any],
         dl_doc: Any,  # noqa: ARG002 - kept for signature consistency
-    ) -> list[PictureItem]:
+    ) -> list[Any]:
         """
         Extract picture items from doc_items.
 
@@ -275,10 +288,11 @@ class DoclingParser(IDocumentParser):
         Returns:
             List of PictureItem objects
         """
+        doc_item_label_cls, picture_item_cls, _ = _get_docling_types()
         pictures = []
         for item in doc_items:
-            is_picture = isinstance(item, PictureItem) or (
-                hasattr(item, "label") and item.label == DocItemLabel.PICTURE
+            is_picture = isinstance(item, picture_item_cls) or (
+                hasattr(item, "label") and item.label == doc_item_label_cls.PICTURE
             )
             if is_picture:
                 pictures.append(item)
