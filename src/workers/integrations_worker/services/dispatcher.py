@@ -800,6 +800,7 @@ async def _handle_messaging(
     data_type: str,
     records: list[dict[str, Any]],
     provider: str,
+    sync_type: str | None = None,
 ) -> CategoryHandlerOutcome:
     """
     Handle messaging channel and message sync (Teams, Slack, etc.).
@@ -807,6 +808,9 @@ async def _handle_messaging(
     Supported data_types:
     - channels: Messaging channel/team sync (pulls all available channels)
     - messages: Messaging message sync (syncs only monitored channels)
+
+    Args:
+        sync_type: Optional sync type ("INCREMENTAL" or "INITIAL")
     """
     async with _integration_session(organisation_id) as session:
         integration_row = await _reload_integration(session, integration_id)
@@ -823,17 +827,25 @@ async def _handle_messaging(
 
         messaging_service = MessagingSyncService(session=session, organisation_id=organisation_id)
 
-        # Route to appropriate sync method based on data_type
+        # Route to appropriate sync method based on data_type and sync_type
         if data_type in ("channels", "chats"):
             # Both Team channels and chats use the same sync method
             # The service handles them differently based on channel_metadata.provider
-            metrics = await messaging_service.sync_channels(
-                integration=integration_row,
-                channels=records,
-                provider=provider,
-            )
+            if sync_type and sync_type.upper() == "INCREMENTAL":
+                metrics = await messaging_service.sync_channels_incremental(
+                    integration=integration_row,
+                    channels=records,
+                    provider=provider,
+                )
+            else:
+                metrics = await messaging_service.sync_channels(
+                    integration=integration_row,
+                    channels=records,
+                    provider=provider,
+                )
         elif data_type in ("messages", "chat_messages"):
             # For message sync, only process monitored channels/chats
+            # Note: Messages don't need incremental sync - handled separately
             metrics = await messaging_service.sync_messages(
                 integration=integration_row,
                 messages=records,
@@ -1029,6 +1041,16 @@ async def _dispatch_category(
             sync_type=sync_type,
         )
 
+    if category == "messaging":
+        return await _handle_messaging(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            data_type=data_type,
+            records=records,
+            provider=provider,
+            sync_type=sync_type,
+        )
+
     return await handler(
         organisation_id=organisation_id,
         integration_id=integration_id,
@@ -1214,8 +1236,10 @@ async def _execute_category_sync(
 
         # For entities with incremental sync support, pass sync context
         # These parameters enable the fetchers to add _sync_metadata to records
+        # CRM fetchers accept sync_type and response_results parameters
+        # for adding _sync_metadata to records. Non-CRM fetchers don't.
         incremental_sync_entities = {
-            # CRM entities
+            # CRM entities only - these fetchers accept sync_type/response_results
             "deals",
             "opportunities",  # Deals
             "contacts",
@@ -1229,15 +1253,10 @@ async def _execute_category_sync(
             "owners",  # Owners
             "users",  # Users
             "pipelines",  # Pipelines
-            # Calendar entities
-            "events",
-            "calendars",
-            # Email entities
-            "emails",
-            "messages",
-            "folders",
         }
-        incremental_sync_categories = {"crm", "calendar", "email"}
+        # All categories that support incremental sync at the handler/service level
+        # (email, calendar, messaging handle incremental at service layer, not fetcher layer)
+        incremental_sync_categories = {"crm", "calendar", "email", "messaging"}
         if (
             request.category in incremental_sync_categories
             and sync_data_type in incremental_sync_entities

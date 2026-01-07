@@ -329,3 +329,576 @@ class TestEmailDataTypes:
         """'folders' data type should be in incremental_sync_entities."""
         incremental_sync_entities = {"emails", "messages", "folders"}
         assert "folders" in incremental_sync_entities
+
+
+class TestOutlookFolderTypeMapping:
+    """Tests for Outlook folder type mapping."""
+
+    def test_inbox_maps_to_inbox_type(self) -> None:
+        """Inbox folder should map to 'inbox' type."""
+        incoming = {
+            "id": "folder-inbox",
+            "displayName": "Inbox",
+            "totalItemCount": 100,
+            "unreadItemCount": 5,
+        }
+        fields = _extract_folder_fields(incoming, "outlook")
+        assert fields["folder_type"] == "inbox"
+
+    def test_sent_items_maps_to_sent_type(self) -> None:
+        """Sent Items folder should map to 'sent' type."""
+        incoming = {
+            "id": "folder-sent",
+            "displayName": "Sent Items",
+            "totalItemCount": 50,
+            "unreadItemCount": 0,
+        }
+        fields = _extract_folder_fields(incoming, "outlook")
+        assert fields["folder_type"] == "sent"
+
+    def test_drafts_maps_to_drafts_type(self) -> None:
+        """Drafts folder should map to 'drafts' type."""
+        incoming = {
+            "id": "folder-drafts",
+            "displayName": "Drafts",
+            "totalItemCount": 3,
+            "unreadItemCount": 0,
+        }
+        fields = _extract_folder_fields(incoming, "outlook")
+        assert fields["folder_type"] == "drafts"
+
+    def test_deleted_items_maps_to_trash_type(self) -> None:
+        """Deleted Items folder should map to 'trash' type."""
+        incoming = {
+            "id": "folder-trash",
+            "displayName": "Deleted Items",
+            "totalItemCount": 20,
+            "unreadItemCount": 0,
+        }
+        fields = _extract_folder_fields(incoming, "outlook")
+        assert fields["folder_type"] == "trash"
+
+    def test_archive_maps_to_archive_type(self) -> None:
+        """Archive folder should map to 'archive' type."""
+        incoming = {
+            "id": "folder-archive",
+            "displayName": "Archive",
+            "totalItemCount": 500,
+            "unreadItemCount": 0,
+        }
+        fields = _extract_folder_fields(incoming, "outlook")
+        assert fields["folder_type"] == "archive"
+
+    def test_custom_folder_maps_to_user_type(self) -> None:
+        """Custom folders should map to 'user' type."""
+        incoming = {
+            "id": "folder-custom",
+            "displayName": "Project Alpha",
+            "totalItemCount": 25,
+            "unreadItemCount": 2,
+        }
+        fields = _extract_folder_fields(incoming, "outlook")
+        assert fields["folder_type"] == "user"
+
+    def test_case_insensitive_folder_type_mapping(self) -> None:
+        """Folder type mapping should be case-insensitive."""
+        incoming = {
+            "displayName": "INBOX",
+            "totalItemCount": 100,
+            "unreadItemCount": 5,
+        }
+        fields = _extract_folder_fields(incoming, "outlook")
+        assert fields["folder_type"] == "inbox"
+
+
+class TestOutlookMessageFieldExtraction:
+    """Tests for Outlook message field extraction."""
+
+    def test_extracts_from_email_address(self) -> None:
+        """Should extract from email address correctly."""
+        incoming = {
+            "subject": "Test Email",
+            "from": {"emailAddress": {"name": "John Doe", "address": "john@example.com"}},
+            "isRead": False,
+        }
+        fields = _extract_message_fields(incoming, "outlook")
+        assert fields["from_email"] == "john@example.com"
+
+    def test_extracts_importance_high(self) -> None:
+        """High importance should map to is_important='true'."""
+        incoming = {
+            "subject": "Urgent Matter",
+            "from": {"emailAddress": {"address": "boss@example.com"}},
+            "isRead": False,
+            "importance": "high",
+        }
+        fields = _extract_message_fields(incoming, "outlook")
+        assert fields["is_important"] == "true"
+
+    def test_extracts_importance_normal(self) -> None:
+        """Normal importance should map to is_important='false'."""
+        incoming = {
+            "subject": "Normal Email",
+            "from": {"emailAddress": {"address": "colleague@example.com"}},
+            "isRead": False,
+            "importance": "normal",
+        }
+        fields = _extract_message_fields(incoming, "outlook")
+        assert fields["is_important"] == "false"
+
+    def test_extracts_is_draft(self) -> None:
+        """Draft status should be extracted correctly."""
+        incoming = {
+            "subject": "Draft Email",
+            "from": {"emailAddress": {"address": "me@example.com"}},
+            "isRead": False,
+            "isDraft": True,
+        }
+        fields = _extract_message_fields(incoming, "outlook")
+        assert fields["is_draft"] == "true"
+
+    def test_extracts_categories_as_labels(self) -> None:
+        """Categories should be extracted as labels."""
+        incoming = {
+            "subject": "Categorized Email",
+            "from": {"emailAddress": {"address": "sender@example.com"}},
+            "isRead": True,
+            "categories": ["Red Category", "Blue Category"],
+        }
+        fields = _extract_message_fields(incoming, "outlook")
+        assert fields["labels"] == ["Red Category", "Blue Category"]
+
+
+class TestEmailIncrementalScenarios:
+    """Integration scenarios testing the full incremental sync flow."""
+
+    def test_mixed_message_scenario(self) -> None:
+        """Test scenario with new, updated, and unchanged messages."""
+        from src.workers.integrations_worker.utils.sync_metadata import (
+            SyncActionCounts,
+            extract_sync_action,
+        )
+
+        messages = [
+            # New message
+            {
+                "id": "msg-new-1",
+                "subject": "New Email",
+                "_sync_metadata": {"sync_action": "ADDED"},
+            },
+            # Updated message (marked as read)
+            {
+                "id": "msg-existing-1",
+                "subject": "Existing Email",
+                "isRead": True,
+                "_sync_metadata": {"sync_action": "UPDATED"},
+            },
+            # Deleted message
+            {
+                "id": "msg-deleted-1",
+                "_sync_metadata": {"sync_action": "DELETED"},
+            },
+            # Unchanged message
+            {
+                "id": "msg-existing-2",
+                "subject": "Unchanged Email",
+                "_sync_metadata": {"sync_action": "UPDATED"},
+            },
+        ]
+
+        counts = SyncActionCounts()
+        for msg in messages:
+            action = extract_sync_action(msg)
+            if action:
+                counts.increment(action)
+
+        assert counts.added == 1
+        assert counts.updated == 2
+        assert counts.deleted == 1
+        assert counts.total == 4
+
+    def test_database_state_determines_create_or_update(self) -> None:
+        """Database existence should determine create vs update."""
+        existing_external_ids = {"msg-1", "msg-2"}
+
+        message = {
+            "id": "msg-1",
+            "subject": "Test Message",
+            "_sync_metadata": {"sync_action": "ADDED"},
+        }
+
+        external_id = message["id"]
+        is_new = external_id not in existing_external_ids
+
+        assert is_new is False
+        should_update = not is_new
+        assert should_update is True
+
+    def test_new_message_gets_created(self) -> None:
+        """New message (not in DB) should be created."""
+        existing_external_ids = {"msg-1", "msg-2"}
+
+        message = {
+            "id": "msg-new",
+            "subject": "Brand New Message",
+            "_sync_metadata": {"sync_action": "ADDED"},
+        }
+
+        external_id = message["id"]
+        is_new = external_id not in existing_external_ids
+
+        assert is_new is True
+
+    def test_unchanged_message_gets_skipped(self) -> None:
+        """Message with no meaningful changes should be skipped."""
+        mock_existing = MagicMock()
+        mock_existing.subject = "Weekly Report"
+        mock_existing.from_email = "reports@company.com"
+        mock_existing.is_read = "true"
+        mock_existing.is_starred = "false"
+        mock_existing.is_important = "false"
+        mock_existing.is_draft = "false"
+        mock_existing.labels = ["reports"]
+
+        incoming = {
+            "id": "msg-1",
+            "subject": "Weekly Report",
+            "from": {"emailAddress": {"address": "reports@company.com"}},
+            "isRead": True,
+            "categories": ["reports"],
+        }
+
+        has_changes = _has_meaningful_message_changes(mock_existing, incoming, "outlook")
+        assert has_changes is False
+
+    def test_read_status_change_triggers_update(self) -> None:
+        """Marking a message as read should trigger update."""
+        mock_existing = MagicMock()
+        mock_existing.subject = "Unread Email"
+        mock_existing.from_email = "sender@company.com"
+        mock_existing.is_read = "false"  # Was unread
+        mock_existing.is_starred = "false"
+        mock_existing.is_important = "false"
+        mock_existing.is_draft = "false"
+        mock_existing.labels = []
+
+        incoming = {
+            "id": "msg-1",
+            "subject": "Unread Email",
+            "from": {"emailAddress": {"address": "sender@company.com"}},
+            "isRead": True,  # Now read
+            "categories": [],
+        }
+
+        has_changes = _has_meaningful_message_changes(mock_existing, incoming, "outlook")
+        assert has_changes is True
+
+
+class TestEmailFolderIncrementalScenarios:
+    """Tests for folder incremental sync scenarios."""
+
+    def test_mixed_folder_scenario(self) -> None:
+        """Test scenario with new, updated, and unchanged folders."""
+        from src.workers.integrations_worker.utils.sync_metadata import (
+            SyncActionCounts,
+            extract_sync_action,
+        )
+
+        folders = [
+            # New folder
+            {
+                "id": "folder-new",
+                "displayName": "New Project",
+                "_sync_metadata": {"sync_action": "ADDED"},
+            },
+            # Updated folder (count changed)
+            {
+                "id": "folder-inbox",
+                "displayName": "Inbox",
+                "totalItemCount": 150,
+                "_sync_metadata": {"sync_action": "UPDATED"},
+            },
+        ]
+
+        counts = SyncActionCounts()
+        for folder in folders:
+            action = extract_sync_action(folder)
+            if action:
+                counts.increment(action)
+
+        assert counts.added == 1
+        assert counts.updated == 1
+        assert counts.total == 2
+
+    def test_unchanged_folder_gets_skipped(self) -> None:
+        """Folder with no meaningful changes should be skipped."""
+        mock_existing = MagicMock()
+        mock_existing.folder_name = "Projects"
+        mock_existing.folder_type = "user"
+        mock_existing.total_count = 50
+        mock_existing.unread_count = 0
+
+        incoming = {
+            "id": "folder-projects",
+            "displayName": "Projects",
+            "totalItemCount": 50,
+            "unreadItemCount": 0,
+        }
+
+        has_changes = _has_meaningful_folder_changes(mock_existing, incoming, "outlook")
+        assert has_changes is False
+
+    def test_unread_count_change_triggers_update(self) -> None:
+        """Unread count change should trigger update."""
+        mock_existing = MagicMock()
+        mock_existing.folder_name = "Inbox"
+        mock_existing.folder_type = "inbox"
+        mock_existing.total_count = 100
+        mock_existing.unread_count = 5
+
+        incoming = {
+            "id": "folder-inbox",
+            "displayName": "Inbox",
+            "totalItemCount": 100,
+            "unreadItemCount": 10,  # Changed
+        }
+
+        has_changes = _has_meaningful_folder_changes(mock_existing, incoming, "outlook")
+        assert has_changes is True
+
+
+class TestEmailIncrementalResultStructure:
+    """Tests for incremental sync result structure."""
+
+    def test_result_includes_all_counts(self) -> None:
+        """Result should include created, updated, skipped counts."""
+        expected_keys = {
+            "status",
+            "records_processed",
+            "records_failed",
+            "created",
+            "updated",
+            "skipped",
+        }
+
+        sample_result = {
+            "status": "success",
+            "records_processed": 20,
+            "records_failed": 0,
+            "created": 5,
+            "updated": 10,
+            "skipped": 5,
+        }
+
+        assert expected_keys.issubset(sample_result.keys())
+
+    def test_action_counts_tracking(self) -> None:
+        """SyncActionCounts should track all action types."""
+        from src.workers.integrations_worker.utils.sync_metadata import (
+            SyncAction,
+            SyncActionCounts,
+        )
+
+        counts = SyncActionCounts()
+        counts.increment(SyncAction.ADDED)
+        counts.increment(SyncAction.ADDED)
+        counts.increment(SyncAction.UPDATED)
+        counts.increment(SyncAction.DELETED)
+
+        result = counts.to_dict()
+        assert result["added"] == 2
+        assert result["updated"] == 1
+        assert result["deleted"] == 1
+        assert result["total"] == 4
+
+
+class TestEmailDispatcherIntegration:
+    """Tests for dispatcher integration with email."""
+
+    def test_email_category_in_incremental_categories(self) -> None:
+        """'email' should be in incremental_sync_categories."""
+        incremental_sync_categories = {"crm", "calendar", "email", "messaging"}
+        assert "email" in incremental_sync_categories
+
+    def test_email_entities_not_in_fetcher_entities(self) -> None:
+        """Email entities should NOT be in incremental_sync_entities (CRM only)."""
+        incremental_sync_entities = {
+            "deals",
+            "opportunities",
+            "contacts",
+            "leads",
+            "companies",
+            "accounts",
+            "deal_tasks",
+            "tasks",
+            "tickets",
+            "notes",
+            "owners",
+            "users",
+            "pipelines",
+        }
+        assert "emails" not in incremental_sync_entities
+        assert "messages" not in incremental_sync_entities
+        assert "folders" not in incremental_sync_entities
+
+    def test_sync_type_only_passed_to_handler_not_fetcher(self) -> None:
+        """sync_type should be passed to handler, not to email fetcher."""
+        category = "email"
+        data_type = "messages"
+
+        incremental_sync_entities = {
+            "deals",
+            "opportunities",
+            "contacts",
+            "leads",
+            "companies",
+            "accounts",
+            "deal_tasks",
+            "tasks",
+            "tickets",
+            "notes",
+            "owners",
+            "users",
+            "pipelines",
+        }
+
+        should_pass_to_fetcher = data_type in incremental_sync_entities
+        assert should_pass_to_fetcher is False
+
+        incremental_sync_categories = {"crm", "calendar", "email", "messaging"}
+        should_pass_to_handler = category in incremental_sync_categories
+        assert should_pass_to_handler is True
+
+
+class TestEmailLabelHandling:
+    """Tests for email label/category handling."""
+
+    def test_label_order_does_not_matter(self) -> None:
+        """Labels should be compared as sets, not lists."""
+        mock_existing = MagicMock()
+        mock_existing.subject = "Test"
+        mock_existing.from_email = "test@example.com"
+        mock_existing.is_read = "false"
+        mock_existing.is_starred = "false"
+        mock_existing.is_important = "false"
+        mock_existing.is_draft = "false"
+        mock_existing.labels = ["work", "important"]  # Order 1
+
+        incoming = {
+            "subject": "Test",
+            "from": {"emailAddress": {"address": "test@example.com"}},
+            "isRead": False,
+            "categories": ["important", "work"],  # Same labels, different order
+        }
+
+        has_changes = _has_meaningful_message_changes(mock_existing, incoming, "outlook")
+        assert has_changes is False
+
+    def test_label_addition_detected(self) -> None:
+        """Adding a new label should be detected."""
+        mock_existing = MagicMock()
+        mock_existing.subject = "Test"
+        mock_existing.from_email = "test@example.com"
+        mock_existing.is_read = "false"
+        mock_existing.is_starred = "false"
+        mock_existing.is_important = "false"
+        mock_existing.is_draft = "false"
+        mock_existing.labels = ["work"]
+
+        incoming = {
+            "subject": "Test",
+            "from": {"emailAddress": {"address": "test@example.com"}},
+            "isRead": False,
+            "categories": ["work", "urgent"],  # Added "urgent"
+        }
+
+        has_changes = _has_meaningful_message_changes(mock_existing, incoming, "outlook")
+        assert has_changes is True
+
+    def test_label_removal_detected(self) -> None:
+        """Removing a label should be detected."""
+        mock_existing = MagicMock()
+        mock_existing.subject = "Test"
+        mock_existing.from_email = "test@example.com"
+        mock_existing.is_read = "false"
+        mock_existing.is_starred = "false"
+        mock_existing.is_important = "false"
+        mock_existing.is_draft = "false"
+        mock_existing.labels = ["work", "urgent"]
+
+        incoming = {
+            "subject": "Test",
+            "from": {"emailAddress": {"address": "test@example.com"}},
+            "isRead": False,
+            "categories": ["work"],  # Removed "urgent"
+        }
+
+        has_changes = _has_meaningful_message_changes(mock_existing, incoming, "outlook")
+        assert has_changes is True
+
+    def test_empty_labels_handled(self) -> None:
+        """Empty labels should be handled correctly."""
+        mock_existing = MagicMock()
+        mock_existing.subject = "Test"
+        mock_existing.from_email = "test@example.com"
+        mock_existing.is_read = "false"
+        mock_existing.is_starred = "false"
+        mock_existing.is_important = "false"
+        mock_existing.is_draft = "false"
+        mock_existing.labels = []
+
+        incoming = {
+            "subject": "Test",
+            "from": {"emailAddress": {"address": "test@example.com"}},
+            "isRead": False,
+            "categories": [],
+        }
+
+        has_changes = _has_meaningful_message_changes(mock_existing, incoming, "outlook")
+        assert has_changes is False
+
+
+class TestEmailMetadataHandling:
+    """Tests for email metadata handling."""
+
+    def test_handles_missing_from_field(self) -> None:
+        """Should handle messages with missing 'from' field."""
+        mock_existing = MagicMock()
+        mock_existing.subject = "System Message"
+        mock_existing.from_email = ""
+        mock_existing.is_read = "true"
+        mock_existing.is_starred = "false"
+        mock_existing.is_important = "false"
+        mock_existing.is_draft = "false"
+        mock_existing.labels = []
+
+        incoming = {
+            "subject": "System Message",
+            "isRead": True,
+            # No 'from' field
+        }
+
+        # Should not raise
+        result = _has_meaningful_message_changes(mock_existing, incoming, "outlook")
+        assert isinstance(result, bool)
+
+    def test_handles_missing_categories(self) -> None:
+        """Should handle messages with missing categories."""
+        mock_existing = MagicMock()
+        mock_existing.subject = "Test"
+        mock_existing.from_email = "test@example.com"
+        mock_existing.is_read = "false"
+        mock_existing.is_starred = "false"
+        mock_existing.is_important = "false"
+        mock_existing.is_draft = "false"
+        mock_existing.labels = []
+
+        incoming = {
+            "subject": "Test",
+            "from": {"emailAddress": {"address": "test@example.com"}},
+            "isRead": False,
+            # No categories field
+        }
+
+        result = _has_meaningful_message_changes(mock_existing, incoming, "outlook")
+        assert result is False

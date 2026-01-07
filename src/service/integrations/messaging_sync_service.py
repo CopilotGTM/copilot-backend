@@ -29,6 +29,10 @@ from src.domain.models.organisation_tables.sync.messaging_models import (
     MessagingMessage,
 )
 from src.infra.utils.logger import get_logger
+from src.workers.integrations_worker.utils.sync_metadata import (
+    SyncActionCounts,
+    extract_sync_action,
+)
 
 logger = get_logger(__name__)
 
@@ -198,6 +202,205 @@ class MessagingSyncService:
             )
 
             # Update integration sync status
+            integration.last_sync_status = SyncStatus.FAILED.value
+            integration.last_sync_error = str(e)[:500]
+            self.db.add(integration)
+            await self.db.commit()
+
+            raise
+
+    async def sync_channels_incremental(
+        self,
+        *,
+        integration: KnowledgeIntegration,
+        channels: Iterable[dict[str, Any]],
+        provider: str,
+    ) -> dict[str, Any]:
+        """
+        Sync messaging channels using incremental optimization.
+
+        This method:
+        - Skips unchanged channels based on change detection
+        - Uses database state to determine create vs update
+        - Tracks action counts for observability
+
+        Tables Modified:
+        - messaging_channels (primary)
+        - integration_sync_history (tracking)
+        - knowledge_integrations (last_synced_at update only)
+
+        Args:
+            integration: The integration record
+            channels: List of channel dictionaries from provider (with _sync_metadata)
+            provider: Provider name (teams, slack, etc.)
+
+        Returns:
+            Dictionary with sync statistics including action counts
+        """
+        sync_history = await self._create_sync_history(integration.integration_id)
+        action_counts = SyncActionCounts()
+
+        try:
+            channel_list = list(channels)
+            logger.info(
+                "sync_channels_incremental started: integration=%s provider=%s channel_count=%d",
+                integration.integration_id,
+                provider,
+                len(channel_list),
+            )
+
+            if not channel_list:
+                await self._complete_sync_history(
+                    sync_history,
+                    status=SyncStatus.SUCCESS,
+                    records_processed=0,
+                    records_failed=0,
+                    metadata={"provider": provider, "skipped": 0},
+                )
+                return {
+                    "status": "success",
+                    "records_processed": 0,
+                    "records_failed": 0,
+                    "created": 0,
+                    "updated": 0,
+                    "skipped": 0,
+                }
+
+            # Batch load existing channels for comparison
+            external_ids = [
+                self._extract_channel_id(ch, provider)
+                for ch in channel_list
+                if self._extract_channel_id(ch, provider)
+            ]
+            existing_map = await self._load_existing_channels_by_external_ids(
+                integration.integration_id, external_ids
+            )
+
+            records_processed = 0
+            records_failed = 0
+            created_count = 0
+            updated_count = 0
+            skipped_count = 0
+
+            for idx, channel_data in enumerate(channel_list):
+                try:
+                    external_id = self._extract_channel_id(channel_data, provider)
+                    if not external_id:
+                        logger.debug("Channel %d: skipping (no external_id)", idx)
+                        records_failed += 1
+                        continue
+
+                    # Extract sync action for observability
+                    sync_action = extract_sync_action(channel_data)
+                    action_counts.increment(sync_action)
+
+                    # Database state is source of truth for create vs update
+                    existing_channel = existing_map.get(external_id)
+                    is_new = existing_channel is None
+
+                    if is_new:
+                        # Create new channel
+                        await self._create_channel(integration, channel_data, provider, external_id)
+                        created_count += 1
+                        logger.debug(
+                            "Created channel: external_id=%s name=%s",
+                            external_id,
+                            channel_data.get("displayName"),
+                        )
+                    else:
+                        # Check if meaningful changes exist
+                        if self._has_meaningful_channel_changes(
+                            existing_channel, channel_data, provider
+                        ):
+                            await self._update_channel(existing_channel, channel_data, provider)
+                            updated_count += 1
+                            logger.debug(
+                                "Updated channel: external_id=%s name=%s",
+                                external_id,
+                                channel_data.get("displayName"),
+                            )
+                        else:
+                            skipped_count += 1
+                            logger.debug(
+                                "Skipped unchanged channel: external_id=%s",
+                                external_id,
+                            )
+
+                    records_processed += 1
+                    await self.db.commit()
+
+                except Exception as e:
+                    logger.error(
+                        "Failed to sync channel %d (external_id=%s): %s",
+                        idx,
+                        channel_data.get("id"),
+                        str(e),
+                        exc_info=True,
+                    )
+                    if self.db.in_transaction():
+                        await self.db.rollback()
+                    records_failed += 1
+
+            # Final commit
+            await self.db.commit()
+
+            # Update sync history
+            await self._complete_sync_history(
+                sync_history,
+                status=SyncStatus.SUCCESS,
+                records_processed=records_processed,
+                records_failed=records_failed,
+                metadata={
+                    "created": created_count,
+                    "updated": updated_count,
+                    "skipped": skipped_count,
+                    "provider": provider,
+                    "action_counts": action_counts.to_dict(),
+                },
+            )
+
+            # Update integration last_synced_at
+            integration.last_synced_at = datetime_now_naive()
+            integration.last_sync_status = SyncStatus.SUCCESS.value
+            self.db.add(integration)
+            await self.db.commit()
+
+            logger.info(
+                "Channel incremental sync completed: integration=%s "
+                "created=%d updated=%d skipped=%d failed=%d actions=%s",
+                integration.integration_id,
+                created_count,
+                updated_count,
+                skipped_count,
+                records_failed,
+                action_counts.to_dict(),
+            )
+
+            return {
+                "status": "success",
+                "records_processed": records_processed,
+                "records_failed": records_failed,
+                "created": created_count,
+                "updated": updated_count,
+                "skipped": skipped_count,
+            }
+
+        except Exception as e:
+            logger.error(
+                "Channel incremental sync failed: integration=%s error=%s",
+                integration.integration_id,
+                str(e),
+                exc_info=True,
+            )
+
+            await self._complete_sync_history(
+                sync_history,
+                status=SyncStatus.FAILED,
+                records_processed=0,
+                records_failed=len(channel_list),
+                error_details={"error": str(e), "error_type": type(e).__name__},
+            )
+
             integration.last_sync_status = SyncStatus.FAILED.value
             integration.last_sync_error = str(e)[:500]
             self.db.add(integration)
@@ -430,6 +633,67 @@ class MessagingSyncService:
         )
         result = await self.db.execute(stmt)
         return result.scalars().first()
+
+    async def _load_existing_channels_by_external_ids(
+        self, integration_id: UUID, external_ids: list[str]
+    ) -> dict[str, MessagingChannel]:
+        """Batch load existing channels by external IDs for efficient comparison."""
+        if not external_ids:
+            return {}
+
+        stmt = select(MessagingChannel).where(
+            MessagingChannel.integration_id == integration_id,  # type: ignore[arg-type]
+            MessagingChannel.external_channel_id.in_(external_ids),  # type: ignore[union-attr]
+        )
+        result = await self.db.execute(stmt)
+        channels = result.scalars().all()
+
+        return {ch.external_channel_id: ch for ch in channels}
+
+    def _has_meaningful_channel_changes(
+        self,
+        existing: MessagingChannel,
+        incoming: dict[str, Any],
+        provider: str,
+    ) -> bool:
+        """Check if incoming channel data has meaningful changes.
+
+        Args:
+            existing: Existing MessagingChannel record from database
+            incoming: Incoming channel data from provider
+            provider: Provider name (teams, slack, etc.)
+
+        Returns:
+            True if meaningful changes detected, False otherwise
+        """
+        fields = self._extract_channel_fields(incoming, provider)
+
+        # Compare key fields
+        checks = [
+            (existing.channel_name, fields.get("channel_name")),
+            (existing.channel_type, fields.get("channel_type")),
+            (existing.channel_description, fields.get("channel_description")),
+            (existing.is_archived, fields.get("is_archived")),
+        ]
+
+        for existing_val, incoming_val in checks:
+            if existing_val is None and incoming_val is None:
+                continue
+            if existing_val != incoming_val:
+                return True
+
+        # Compare participant_count
+        incoming_count = fields.get("participant_count", 0)
+        if existing.participant_count != incoming_count:
+            return True
+
+        # Check last_updated_date_time in metadata (primary indicator for Teams)
+        existing_metadata = existing.channel_metadata or {}
+        incoming_metadata = fields.get("channel_metadata") or {}
+        existing_updated = existing_metadata.get("last_updated_date_time")
+        incoming_updated = incoming_metadata.get("last_updated_date_time")
+
+        return bool(incoming_updated and existing_updated and incoming_updated != existing_updated)
 
     async def _create_channel(
         self,
