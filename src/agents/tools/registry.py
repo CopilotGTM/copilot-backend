@@ -41,6 +41,7 @@ class ToolName(str, Enum):
     GET_STAKEHOLDER_DETAILS = "get_stakeholder_details"
     GET_EXISTING_RISKS_BLOCKERS = "get_existing_risks_blockers"
     LIST_DEAL_NOTES = "list_deal_notes"
+    LIST_DEAL_STAKEHOLDER_INSIGHTS = "list_deal_stakeholder_insights"
 
     # Meeting Intelligence tools
     LIST_DEAL_MEETINGS = "list_deal_meetings"
@@ -79,6 +80,7 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.SEARCH_INTERNET,
         ToolName.LIST_DEAL_STAKEHOLDERS,
         ToolName.GET_STAKEHOLDER_DETAILS,
+        ToolName.LIST_DEAL_STAKEHOLDER_INSIGHTS,
         ToolName.LIST_DEAL_MEETINGS,
         ToolName.GET_MEETING_DETAILS,
         ToolName.LIST_DEAL_EMAILS,
@@ -89,6 +91,7 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.SEARCH_INTERNAL_KNOWLEDGE,
         ToolName.LIST_DEAL_STAKEHOLDERS,
         ToolName.GET_STAKEHOLDER_DETAILS,
+        ToolName.LIST_DEAL_STAKEHOLDER_INSIGHTS,
         ToolName.LIST_DEAL_MEETINGS,
         ToolName.GET_MEETING_DETAILS,
         ToolName.GET_MEETING_TRANSCRIPT,
@@ -119,6 +122,7 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.SEARCH_INTERNAL_KNOWLEDGE,
         ToolName.LIST_DEAL_STAKEHOLDERS,
         ToolName.GET_STAKEHOLDER_DETAILS,
+        ToolName.LIST_DEAL_STAKEHOLDER_INSIGHTS,
         ToolName.LIST_DEAL_MEETINGS,
         ToolName.GET_MEETING_DETAILS,
         ToolName.GET_MEETING_TRANSCRIPT,
@@ -156,6 +160,7 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     ToolName.GET_STAKEHOLDERS: ToolCategory.CRM,
     ToolName.GET_EXISTING_RISKS_BLOCKERS: ToolCategory.CRM,
     ToolName.LIST_DEAL_NOTES: ToolCategory.CRM,
+    ToolName.LIST_DEAL_STAKEHOLDER_INSIGHTS: ToolCategory.CRM,
     # Meeting Intelligence
     ToolName.LIST_DEAL_MEETINGS: ToolCategory.INTELLIGENCE,
     ToolName.GET_MEETING_DETAILS: ToolCategory.INTELLIGENCE,
@@ -209,6 +214,7 @@ class ToolRegistry:
             create_get_existing_risks_blockers,
             create_get_stakeholder_details,
             create_list_deal_notes,
+            create_list_deal_stakeholder_insights,
             create_list_deal_stakeholders,
         )
         from src.agents.tools.intelligence import (
@@ -242,6 +248,9 @@ class ToolRegistry:
         )
         self._tool_factories[ToolName.LIST_DEAL_NOTES] = lambda: create_list_deal_notes(
             self.context, self.capabilities_getter
+        )
+        self._tool_factories[ToolName.LIST_DEAL_STAKEHOLDER_INSIGHTS] = (
+            lambda: create_list_deal_stakeholder_insights(self.context, self.capabilities_getter)
         )
 
         # Meeting Intelligence tools

@@ -404,7 +404,7 @@ curl -X POST "$BASE_URL/users/crm/deals/3fa85f64-5717-4562-b3fc-2c963f66afa6/sta
 ### Typical Flow
 
 1. **View Stakeholders**: Call `GET /{deal_id}/stakeholders` to display the stakeholder list
-2. **Add Stakeholders**: 
+2. **Add Stakeholders**:
    - User clicks "Add Stakeholder" button
    - Call `GET /{deal_id}/stakeholders/available-contacts` to show available contacts
    - User selects one or more contacts
@@ -424,8 +424,22 @@ curl -X POST "$BASE_URL/users/crm/deals/3fa85f64-5717-4562-b3fc-2c963f66afa6/sta
 
 ---
 
+## AI-Generated Insights
+
+Stakeholder data is analyzed by AI to generate actionable insights such as:
+
+- **Engagement Gaps**: Decision makers not contacted recently
+- **Sentiment Decline**: Champions showing reduced enthusiasm
+- **Champion Opportunities**: High-potential stakeholders identified
+- **Stakeholder Risks**: Competitive mentions, stance shifts
+
+These insights are available via a separate API endpoint. See the **Stakeholder Insights API** documentation for details.
+
+---
+
 ## Related References
 
+- **Stakeholder Insights API**: `docs/API Documentation/deals/stakeholder-insights-api.md`
 - CRM Deals API: `docs/API Documentation/deals/crm-deals-api.md`
 - Deal Meetings API: `docs/API Documentation/deals/deal-meetings-api.md`
-
+- Risks & Blockers API: `docs/API Documentation/deals/risks-blockers-api.md`

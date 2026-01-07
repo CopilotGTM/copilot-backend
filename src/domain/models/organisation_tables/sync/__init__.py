@@ -84,6 +84,18 @@ from .risk_blocker_models import (
     RiskBlockerStatus,
     RiskBlockerType,
 )
+from .stakeholder_insight_models import (
+    DEFAULT_ACTIONS_BY_TYPE,
+    INSIGHT_ACTION_LABELS,
+    DealStakeholderInsight,
+    InsightActionDict,
+    InsightActionType,
+    StakeholderInsightPriority,
+    StakeholderInsightStatus,
+    StakeholderInsightType,
+    create_insight_action,
+    get_default_actions,
+)
 from .timeline_models import (
     DealTimelineEvent,
     TimelineEventSource,
@@ -168,4 +180,15 @@ __all__ = [
     "RiskBlockerCategory",
     "RiskBlockerSource",
     "DealRiskBlocker",
+    # Stakeholder Insight models
+    "StakeholderInsightType",
+    "StakeholderInsightStatus",
+    "StakeholderInsightPriority",
+    "InsightActionType",
+    "InsightActionDict",
+    "INSIGHT_ACTION_LABELS",
+    "DEFAULT_ACTIONS_BY_TYPE",
+    "create_insight_action",
+    "get_default_actions",
+    "DealStakeholderInsight",
 ]
