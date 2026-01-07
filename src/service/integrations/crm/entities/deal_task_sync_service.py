@@ -19,6 +19,12 @@ from src.domain.models.organisation_tables.sync.crm import (
 )
 from src.infra.utils.logger import get_logger
 from src.service.integrations.core import BaseSyncService
+from src.workers.integrations_worker.utils.sync_metadata import (
+    SyncAction,
+    SyncContext,
+    classify_records,
+    log_sync_action_distribution,
+)
 
 from .activity_enum_mappings import (
     normalize_activity_priority,
@@ -140,6 +146,289 @@ class DealTaskSyncService(BaseSyncService[CRMDealTask]):
             "deal_tasks": tasks_processed,
             **result.to_dict(),
         }
+
+    async def sync_incremental(
+        self,
+        *,
+        integration: KnowledgeIntegration,
+        records: Iterable[dict[str, Any]],
+        provider: str,
+    ) -> dict[str, Any]:
+        """Sync deal task records incrementally.
+
+        This method is optimized for incremental syncs where records come with
+        sync_action metadata (ADDED, UPDATED, DELETED). It uses database state
+        as the source of truth for create vs update decisions.
+
+        Args:
+            integration: KnowledgeIntegration instance
+            records: Raw task records from provider API with _sync_metadata
+            provider: Provider name (e.g., 'hubspot', 'salesforce')
+
+        Returns:
+            Dictionary with sync statistics
+        """
+        result = self._init_result()
+        self._log_sync_start("deal_tasks_incremental", provider, 0)
+
+        task_list = [t for t in records if isinstance(t, dict)]
+        if not task_list:
+            result.complete()
+            return {
+                "deal_tasks": 0,
+                **result.to_dict(),
+            }
+
+        # Log sync action distribution for observability
+        log_sync_action_distribution(task_list, "deal_tasks", logger)
+
+        # Load existing tasks to determine create vs update
+        task_external_ids = [str(t.get("id")) for t in task_list if t.get("id")]
+        existing = await self._load_existing_by_external_ids(
+            CRMDealTask,
+            task_external_ids,
+            integration.integration_id,
+        )
+        existing_ids = set(existing.keys())
+
+        # Classify records for logging (sync_action is only for observability)
+        context = SyncContext(existing_ids=existing_ids)
+        classify_records(task_list, context)
+
+        # Load deal mapping for association resolution
+        deal_map = await self._load_deal_map(integration.integration_id)
+
+        now = utcnow()
+        tasks_processed = 0
+        tasks_skipped = 0
+
+        for task in task_list:
+            try:
+                external_id = str(task.get("id")) if task.get("id") else None
+                if not external_id:
+                    result.increment_failed()
+                    result.add_error(f"Missing external ID for task: {task}")
+                    continue
+
+                # Extract sync metadata for logging/observability
+                sync_metadata = task.get("_sync_metadata", {})
+                sync_action = SyncAction(sync_metadata.get("sync_action", SyncAction.ADDED.value))
+
+                # Handle deletions - check both HubSpot and Salesforce patterns
+                is_archived = task.get("archived", False) or task.get("IsDeleted", False)
+
+                if sync_action == SyncAction.DELETED or is_archived:
+                    # Soft-delete: mark as deleted if exists
+                    record = existing.get(external_id)
+                    if record:
+                        record.is_deleted = True
+                        record.synced_at = now
+                        record.last_seen_at = now
+                        self.db.add(record)
+                        result.increment_deleted()
+                        tasks_processed += 1
+                    continue
+
+                # Database state is source of truth for create vs update
+                record = existing.get(external_id)
+                is_new = record is None
+
+                if is_new:
+                    # Create new task
+                    record = CRMDealTask(
+                        organisation_id=self.organisation_id,
+                        integration_id=integration.integration_id,
+                        external_id=external_id,
+                    )
+                else:
+                    # Check for meaningful changes before updating
+                    if not self._has_meaningful_changes(record, task, provider):
+                        tasks_skipped += 1
+                        # Update last_seen_at even if no changes
+                        record.last_seen_at = now
+                        self.db.add(record)
+                        continue
+
+                # Transform and update record
+                self._update_task_record(record, task, provider, deal_map)
+
+                # Update metadata
+                record.synced_at = now
+                record.last_seen_at = now
+                record.is_deleted = False
+
+                self.db.add(record)
+                tasks_processed += 1
+                result.increment_processed()
+
+                if is_new:
+                    result.increment_created()
+                else:
+                    result.increment_updated()
+
+            except Exception as exc:
+                self._log_error("deal_task", task.get("id"), exc)
+                result.increment_failed()
+                result.add_error(str(exc))
+
+        # Commit tasks
+        await self.db.commit()
+
+        # Enrich tasks with owner details from CRMUser
+        if tasks_processed > 0:
+            enrichment_service = TaskEnrichmentService(
+                db=self.db,
+                organisation_id=self.organisation_id,
+            )
+            await enrichment_service.enrich_tasks_for_integration(integration.integration_id)
+            await self.db.commit()
+
+        result.complete()
+
+        logger.info(
+            "Incremental deal task sync complete: processed=%d, skipped=%d, created=%d, updated=%d, deleted=%d",
+            tasks_processed,
+            tasks_skipped,
+            result.created,
+            result.updated,
+            result.deleted,
+        )
+
+        return {
+            "deal_tasks": tasks_processed,
+            "skipped": tasks_skipped,
+            **result.to_dict(),
+        }
+
+    def _has_meaningful_changes(
+        self,
+        existing: CRMDealTask,
+        incoming: dict[str, Any],
+        provider: str,
+    ) -> bool:
+        """Check if incoming data has meaningful changes compared to existing record.
+
+        Args:
+            existing: Existing CRMDealTask record from database
+            incoming: Incoming task data from provider
+            provider: Provider name for field mapping
+
+        Returns:
+            True if there are meaningful changes, False otherwise
+        """
+        props = incoming.get("properties") or {}
+
+        # Check source_modified_at as primary indicator
+        incoming_modified = self._parse_incoming_modified_date(incoming, props, provider)
+        if (
+            incoming_modified
+            and existing.source_modified_at
+            and incoming_modified > existing.source_modified_at
+        ):
+            return True
+
+        # Compare key fields based on provider
+        if provider == "hubspot":
+            checks = [
+                (existing.subject, props.get("hs_task_subject")),
+                (existing.body, props.get("hs_task_body")),
+                (existing.owner_external_id, props.get("hubspot_owner_id")),
+            ]
+            # Check normalized status/type/priority
+            raw_status = props.get("hs_task_status")
+            raw_type = props.get("hs_task_type")
+            raw_priority = props.get("hs_task_priority")
+        else:
+            # Salesforce - detect if it's a Case (ticket) vs Task
+            is_salesforce_ticket = props.get("case_number") is not None
+            checks = [
+                (existing.subject, props.get("subject")),
+                (
+                    existing.body,
+                    props.get("content") if is_salesforce_ticket else props.get("description"),
+                ),
+                (
+                    existing.owner_external_id,
+                    str(props.get("hubspot_owner_id") or props.get("owner_id") or "")
+                    if (props.get("hubspot_owner_id") or props.get("owner_id"))
+                    else None,
+                ),
+            ]
+            raw_status = (
+                props.get("hs_pipeline_stage") if is_salesforce_ticket else props.get("status")
+            )
+            raw_type = props.get("case_type") if is_salesforce_ticket else props.get("type")
+            raw_priority = (
+                props.get("hs_ticket_priority") if is_salesforce_ticket else props.get("priority")
+            )
+
+        # Compare normalized enum fields
+        normalized_status = normalize_activity_status(raw_status)
+        normalized_type = normalize_activity_type(raw_type)
+        normalized_priority = normalize_activity_priority(raw_priority)
+
+        if existing.status != normalized_status:
+            return True
+        if existing.task_type != normalized_type:
+            return True
+        if existing.priority != normalized_priority:
+            return True
+
+        # Compare associations
+        associations = incoming.get("associations", {})
+        deals_data = associations.get("deals", {})
+        if isinstance(deals_data, dict):
+            deals = deals_data.get("results", [])
+        elif isinstance(deals_data, list):
+            deals = deals_data
+        else:
+            deals = []
+
+        if deals and isinstance(deals, list) and len(deals) > 0:
+            first_deal = deals[0]
+            deal_ext_id = str(first_deal.get("id")) if isinstance(first_deal, dict) else None
+            if deal_ext_id and existing.deal_external_id != deal_ext_id:
+                return True
+
+        # Compare basic field checks
+        for existing_val, incoming_val in checks:
+            if existing_val is None and incoming_val is None:
+                continue
+            if existing_val != incoming_val:
+                return True
+
+        return False
+
+    def _parse_incoming_modified_date(
+        self,
+        incoming: dict[str, Any],
+        props: dict[str, Any],
+        provider: str,
+    ) -> datetime | None:
+        """Parse the modified date from incoming data.
+
+        Args:
+            incoming: Full incoming record
+            props: Properties dictionary
+            provider: Provider name
+
+        Returns:
+            Parsed datetime or None
+        """
+        if provider == "hubspot":
+            # Try updatedAt first, then hs_lastmodifieddate
+            updated_at = incoming.get("updatedAt")
+            if updated_at:
+                parsed = self._parse_hubspot_timestamp(updated_at)
+                if parsed:
+                    return parsed
+            return self._parse_hubspot_timestamp(props.get("hs_lastmodifieddate"))
+        else:
+            # Salesforce
+            is_salesforce_ticket = props.get("case_number") is not None
+            if is_salesforce_ticket:
+                return self._parse_salesforce_datetime(props.get("hs_lastmodifieddate"))
+            return self._parse_salesforce_datetime(props.get("last_modified_date"))
 
     def _update_task_record(
         self,

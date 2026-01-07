@@ -16,6 +16,8 @@ class SyncJobRequest:
     sync_name: str | None = None
     sync_type: str | None = None
     sync_variant: str | None = None
+    # Webhook response results for incremental sync optimization
+    response_results: dict[str, int] | None = None
 
 
 @dataclass

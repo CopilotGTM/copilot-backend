@@ -258,6 +258,12 @@ class NangoWebhookService:
                 "sync_type": sync_type,
                 "sync_variant": sync_variant,
                 "incremental": str(sync_type).upper() != "INITIAL" if sync_type else True,
+                # Pass response_results for incremental sync optimization
+                "response_results": {
+                    "added": added,
+                    "updated": updated,
+                    "deleted": deleted,
+                },
             },
             queue="integrations",
             headers=correlation_headers(),

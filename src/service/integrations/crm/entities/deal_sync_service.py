@@ -21,6 +21,11 @@ from src.domain.models.organisation_tables.sync.crm import (
 )
 from src.infra.utils.logger import get_logger
 from src.service.integrations.core import BaseSyncService
+from src.workers.integrations_worker.utils.sync_metadata import (
+    SyncAction,
+    SyncActionCounts,
+    extract_sync_action,
+)
 
 from .deal_enrichment_service import DealEnrichmentService
 
@@ -179,6 +184,314 @@ class DealSyncService(BaseSyncService[CRMDeal]):
             "stage_history": history_synced,
             **result.to_dict(),
         }
+
+    async def sync_incremental(
+        self,
+        *,
+        integration: KnowledgeIntegration,
+        records: Iterable[dict[str, Any]],
+        provider: str,
+    ) -> dict[str, Any]:
+        """Sync deal records using incremental optimization.
+
+        This method optimizes sync by:
+        - Using database state to determine if records are new or existing
+        - Running change detection to skip unchanged records
+        - Preserving application-generated data (deal_summary_data)
+        - Handling archived/deleted records via soft-delete
+
+        The _sync_metadata.sync_action is used for:
+        - DELETED: Soft-delete records (mark is_deleted=True)
+        - Logging/observability of expected vs actual actions
+
+        For ADDED/UPDATED actions, we trust database state (is_new) over
+        sync_action because we don't have reliable per-record action info
+        from Nango when fetching directly from CRM APIs.
+
+        Args:
+            integration: KnowledgeIntegration instance
+            records: Raw deal records with optional _sync_metadata from fetcher
+            provider: Provider name (e.g., 'hubspot', 'salesforce')
+
+        Returns:
+            Dictionary with sync statistics including action breakdown
+        """
+        result = self._init_result()
+        deal_list = [d for d in records if isinstance(d, dict)]
+        self._log_sync_start("deals (incremental)", provider, len(deal_list))
+
+        if not deal_list:
+            result.complete()
+            return {
+                "deals": 0,
+                "participants": 0,
+                "stage_history": 0,
+                "skipped": 0,
+                **result.to_dict(),
+            }
+
+        # Track action counts for logging (observability only)
+        action_counts = SyncActionCounts()
+
+        # Load existing deals for change detection and update
+        deal_external_ids = [str(d.get("id")) for d in deal_list if d.get("id")]
+        existing = await self._load_existing_by_external_ids(
+            CRMDeal,
+            deal_external_ids,
+            integration.integration_id,
+        )
+
+        # Load reference data
+        pipeline_map = await self._load_pipeline_map(integration.integration_id)
+        stage_map = await self._load_stage_map(integration.integration_id)
+
+        now = utcnow()
+        participants_to_upsert: list[tuple[CRMDeal, dict[str, Any], CRMParticipantType]] = []
+        history_entries: list[dict[str, Any]] = []
+        deals_processed = 0
+        deals_skipped = 0
+        deals_to_enrich: list[CRMDeal] = []
+
+        for deal in deal_list:
+            try:
+                external_id = deal.get("id")
+                if not external_id:
+                    result.increment_failed()
+                    result.add_error(f"Missing external ID for deal: {deal}")
+                    continue
+
+                # Extract sync action for logging and deletion handling
+                sync_action = extract_sync_action(deal)
+                if sync_action:
+                    action_counts.increment(sync_action)
+
+                # Check database state - this is the source of truth
+                record = existing.get(external_id)
+                is_new = record is None
+
+                # Check if record is archived/deleted
+                is_archived = deal.get("archived", False) or deal.get("IsDeleted", False)
+
+                # Handle deletion: archived records or DELETED sync_action
+                if is_archived or sync_action == SyncAction.DELETED:
+                    if record:
+                        record.is_deleted = True
+                        record.synced_at = now
+                        record.last_seen_at = now
+                        self.db.add(record)
+                        result.increment_processed()
+                        deals_processed += 1
+                        logger.debug(
+                            "Soft-deleted deal: external_id=%s",
+                            external_id,
+                        )
+                    continue
+
+                # Handle new records
+                if is_new:
+                    record = CRMDeal(
+                        organisation_id=self.organisation_id,
+                        integration_id=integration.integration_id,
+                        external_id=external_id,
+                    )
+                    # For new records, no protection needed (no existing data)
+                    self._update_deal_record(record, deal, provider, pipeline_map, stage_map)
+                    record.synced_at = now
+                    record.last_seen_at = now
+                    record.is_deleted = False
+
+                    self.db.add(record)
+                    deals_to_enrich.append(record)
+                    deals_processed += 1
+                    result.increment_processed()
+                    result.increment_created()
+
+                else:
+                    # Existing record - check for meaningful changes before updating
+                    if self._has_meaningful_changes(record, deal):
+                        # Use protection wrapper to preserve deal_summary_data
+                        self._update_deal_record_with_protection(
+                            record, deal, provider, pipeline_map, stage_map
+                        )
+                        record.synced_at = now
+                        record.last_seen_at = now
+                        record.is_deleted = False
+
+                        self.db.add(record)
+                        deals_to_enrich.append(record)
+                        deals_processed += 1
+                        result.increment_processed()
+                        result.increment_updated()
+                    else:
+                        # No meaningful changes - skip database write
+                        deals_skipped += 1
+                        action_counts.unchanged += 1
+                        logger.debug(
+                            "Skipping unchanged deal: external_id=%s",
+                            external_id,
+                        )
+                        continue
+
+                # Extract related data for processed deals
+                associations = deal.get("associations") or {}
+                participants_to_upsert.extend(self._extract_participants(record, associations))
+                deal_history_entries, latest_stage_entry = self._extract_stage_history(
+                    record, deal, stage_map
+                )
+                history_entries.extend(deal_history_entries)
+
+                if latest_stage_entry:
+                    record.stage_entered_at = latest_stage_entry["entered_at"]
+                    record.stage_updated_at = latest_stage_entry["entered_at"]
+
+            except Exception as exc:
+                self._log_error("deal", deal.get("id"), exc)
+                result.increment_failed()
+                result.add_error(str(exc))
+
+        # Enrich only the deals that were actually modified
+        if deals_to_enrich:
+            enricher = DealEnrichmentService(db=self.db, organisation_id=self.organisation_id)
+            await enricher.enrich_deals(deals_to_enrich)
+
+        # Commit deals
+        await self.db.commit()
+
+        # Sync related entities only for modified deals
+        participants_synced = await self._upsert_participants(integration, participants_to_upsert)
+
+        # Enrich participants with contact/company details
+        if deals_to_enrich:
+            deal_ids_for_enrichment = [d.deal_id for d in deals_to_enrich]
+            participants_enriched = await enricher.enrich_participants(
+                integration.integration_id, deal_ids=deal_ids_for_enrichment
+            )
+            logger.debug(
+                "Enriched deal participants (incremental)",
+                participants_enriched=participants_enriched,
+                integration_id=str(integration.integration_id),
+            )
+
+        history_synced = await self._upsert_stage_history(integration, history_entries)
+
+        # Log incremental sync summary
+        logger.info(
+            "Incremental deal sync completed: processed=%d skipped=%d "
+            "(added=%d updated=%d deleted=%d) participants=%d history=%d",
+            deals_processed,
+            deals_skipped,
+            action_counts.added,
+            action_counts.updated,
+            action_counts.deleted,
+            participants_synced,
+            history_synced,
+        )
+
+        result.metadata.update(
+            {
+                "deals": deals_processed,
+                "participants": participants_synced,
+                "stage_history": history_synced,
+                "skipped": deals_skipped,
+                "action_counts": action_counts.to_dict(),
+            }
+        )
+        result.complete()
+        self._log_sync_complete(result)
+
+        return {
+            "deals": deals_processed,
+            "participants": participants_synced,
+            "stage_history": history_synced,
+            "skipped": deals_skipped,
+            "action_counts": action_counts.to_dict(),
+            **result.to_dict(),
+        }
+
+    def _has_meaningful_changes(
+        self,
+        existing: CRMDeal,
+        incoming: dict[str, Any],
+    ) -> bool:
+        """Check if incoming data has meaningful changes compared to existing record.
+
+        Compares key fields that typically matter for deal updates.
+        Returns True if any significant field differs, False if record is unchanged.
+
+        Args:
+            existing: Existing CRMDeal record from database
+            incoming: New deal data from provider
+
+        Returns:
+            True if changes detected, False otherwise
+        """
+        properties = incoming.get("properties") or {}
+
+        # Check source_modified_at as primary indicator
+        incoming_modified = self._parse_date(incoming.get("updatedAt"))
+        if (
+            incoming_modified
+            and existing.source_modified_at
+            and incoming_modified > existing.source_modified_at
+        ):
+            return True
+
+        # Compare key fields
+        checks = [
+            (existing.name, properties.get("dealname") or incoming.get("name")),
+            (existing.amount, self._safe_float(properties.get("amount"))),
+            (existing.stage_external_id, properties.get("dealstage")),
+            (existing.pipeline_external_id, properties.get("pipeline")),
+            (existing.owner_external_id, properties.get("hubspot_owner_id")),
+        ]
+
+        # Compare close_date
+        existing_close = existing.close_date.isoformat() if existing.close_date else None
+        incoming_close_date = self._parse_date(properties.get("closedate"))
+        incoming_close = incoming_close_date.isoformat() if incoming_close_date else None
+        if existing_close != incoming_close:
+            return True
+
+        # Check key field comparisons
+        for existing_val, incoming_val in checks:
+            # Normalize None comparisons
+            if existing_val is None and incoming_val is None:
+                continue
+            if existing_val != incoming_val:
+                return True
+
+        return False
+
+    def _update_deal_record_with_protection(
+        self,
+        record: CRMDeal,
+        raw: dict[str, Any],
+        provider: str,
+        pipeline_map: dict[str, CRMPipeline],
+        stage_map: dict[str, CRMDealStage],
+    ) -> None:
+        """Update CRMDeal record while preserving application-generated data.
+
+        This wrapper around _update_deal_record ensures that fields generated
+        by our application (like deal_summary_data) are never overwritten by
+        CRM sync data.
+
+        Args:
+            record: Existing CRMDeal instance to update
+            raw: Raw data from provider
+            provider: Provider name
+            pipeline_map: Mapping of pipeline external IDs to records
+            stage_map: Mapping of stage external IDs to records
+        """
+        # Preserve application-generated fields before update
+        preserved_deal_summary = record.deal_summary_data
+
+        # Perform the standard update
+        self._update_deal_record(record, raw, provider, pipeline_map, stage_map)
+
+        # Restore preserved fields (only if they had values)
+        if preserved_deal_summary is not None:
+            record.deal_summary_data = preserved_deal_summary
 
     def _transform_record(self, raw: dict[str, Any], _provider: str) -> CRMDeal:
         """Transform provider-specific deal data to CRMDeal model.

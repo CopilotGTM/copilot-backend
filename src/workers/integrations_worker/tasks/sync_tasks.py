@@ -93,6 +93,7 @@ def sync_integration_data_task(
     sync_type: str | None = None,
     sync_variant: str | None = None,
     incremental: bool = True,
+    response_results: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """
     Sync integration data from external provider.
@@ -141,6 +142,7 @@ def sync_integration_data_task(
                     sync_name=sync_name,
                     sync_type=sync_type,
                     sync_variant=sync_variant,
+                    response_results=response_results,
                 )
                 result = await execute_sync(req)
             except Exception as exc:

@@ -20,6 +20,11 @@ from src.domain.models.organisation_tables.sync.crm import (
 )
 from src.infra.utils.logger import get_logger
 from src.service.integrations.core import BaseSyncService
+from src.workers.integrations_worker.utils.sync_metadata import (
+    SyncAction,
+    SyncActionCounts,
+    extract_sync_action,
+)
 
 logger = get_logger(__name__)
 
@@ -156,6 +161,238 @@ class ContactSyncService(BaseSyncService[CRMContact]):
         self._log_sync_complete(result)
 
         return {"contacts": contacts_processed, **result.to_dict()}
+
+    async def sync_incremental(
+        self,
+        *,
+        integration: KnowledgeIntegration,
+        records: Iterable[dict[str, Any]],
+        provider: str,
+    ) -> dict[str, Any]:
+        """Sync contact records using incremental optimization.
+
+        This method optimizes sync by:
+        - Using database state to determine if records are new or existing
+        - Running change detection to skip unchanged records
+        - Handling archived/deleted records via soft-delete
+
+        Args:
+            integration: KnowledgeIntegration instance
+            records: Raw contact records with optional _sync_metadata
+            provider: Provider name (e.g., 'hubspot', 'salesforce')
+
+        Returns:
+            Dictionary with sync statistics including skipped count
+        """
+        result = self._init_result()
+        contact_list = [c for c in records if isinstance(c, dict)]
+        self._log_sync_start("contacts (incremental)", provider, len(contact_list))
+
+        if not contact_list:
+            result.complete()
+            return {
+                "contacts": 0,
+                "skipped": 0,
+                **result.to_dict(),
+            }
+
+        # Track action counts for logging (observability only)
+        action_counts = SyncActionCounts()
+
+        # Load existing contacts for change detection
+        contact_external_ids = [str(c.get("id")) for c in contact_list if c.get("id")]
+        existing = await self._load_existing_by_external_ids(
+            CRMContact,
+            contact_external_ids,
+            integration.integration_id,
+        )
+
+        # Pre-load companies for association resolution
+        referenced_company_external_ids: set[str] = set()
+        for raw_contact in contact_list:
+            properties = raw_contact.get("properties") or {}
+            referenced_company_external_ids.update(
+                self._extract_contact_company_external_ids(properties, provider)
+            )
+
+        company_local_id_by_external_id: dict[str, UUID] = {}
+        if referenced_company_external_ids:
+            stmt = (
+                select(CRMCompany)
+                .where(CRMCompany.integration_id == integration.integration_id)
+                .where(CRMCompany.external_id.in_(list(referenced_company_external_ids)))
+            )
+            result_companies = await self.db.execute(stmt)
+            company_local_id_by_external_id = {
+                row.external_id: row.company_id for row in result_companies.scalars().all()
+            }
+
+        now = utcnow()
+        contacts_processed = 0
+        contacts_skipped = 0
+
+        for contact in contact_list:
+            try:
+                external_id = contact.get("id")
+                if not external_id:
+                    result.increment_failed()
+                    result.add_error(f"Missing external ID for contact: {contact}")
+                    continue
+
+                # Extract sync action for logging and deletion handling
+                sync_action = extract_sync_action(contact)
+                if sync_action:
+                    action_counts.increment(sync_action)
+
+                # Check database state - this is the source of truth
+                record = existing.get(str(external_id))
+                is_new = record is None
+
+                # Check if record is archived/deleted
+                is_archived = contact.get("archived", False) or contact.get("IsDeleted", False)
+
+                # Handle deletion
+                if is_archived or sync_action == SyncAction.DELETED:
+                    if record:
+                        record.is_deleted = True
+                        record.synced_at = now
+                        record.last_seen_at = now
+                        self.db.add(record)
+                        result.increment_processed()
+                        contacts_processed += 1
+                        logger.debug("Soft-deleted contact: external_id=%s", external_id)
+                    continue
+
+                # Handle new records
+                if is_new:
+                    record = CRMContact(
+                        organisation_id=self.organisation_id,
+                        integration_id=integration.integration_id,
+                        external_id=str(external_id),
+                    )
+                    self._update_contact_record(record, contact, provider)
+                    record.synced_at = now
+                    record.last_seen_at = now
+                    record.is_deleted = False
+
+                    self.db.add(record)
+                    contacts_processed += 1
+                    result.increment_processed()
+                    result.increment_created()
+
+                else:
+                    # Existing record - check for meaningful changes
+                    if self._has_meaningful_changes(record, contact):
+                        self._update_contact_record(record, contact, provider)
+                        record.synced_at = now
+                        record.last_seen_at = now
+                        record.is_deleted = False
+
+                        self.db.add(record)
+                        contacts_processed += 1
+                        result.increment_processed()
+                        result.increment_updated()
+                    else:
+                        # No meaningful changes - skip database write
+                        contacts_skipped += 1
+                        action_counts.unchanged += 1
+                        logger.debug("Skipping unchanged contact: external_id=%s", external_id)
+                        continue
+
+                # Handle company associations for processed contacts
+                properties = contact.get("properties") or {}
+                company_external_ids = self._extract_contact_company_external_ids(
+                    properties, provider
+                )
+                if company_external_ids:
+                    await self._upsert_contact_company_associations(
+                        integration_id=integration.integration_id,
+                        provider=provider,
+                        contact_record=record,
+                        company_external_ids=company_external_ids,
+                        company_local_id_by_external_id=company_local_id_by_external_id,
+                        now=now,
+                    )
+
+            except Exception as exc:
+                self._log_error("contact", contact.get("id"), exc)
+                result.increment_failed()
+                result.add_error(str(exc))
+
+        # Commit contacts
+        await self.db.commit()
+
+        result.metadata.update(
+            {
+                "contacts": contacts_processed,
+                "skipped": contacts_skipped,
+            }
+        )
+        result.complete()
+        self._log_sync_complete(result)
+
+        logger.info(
+            "Contact incremental sync complete: processed=%d skipped=%d (added=%d updated=%d deleted=%d)",
+            contacts_processed,
+            contacts_skipped,
+            action_counts.added,
+            action_counts.updated,
+            action_counts.deleted,
+        )
+
+        return {
+            "contacts": contacts_processed,
+            "skipped": contacts_skipped,
+            "action_counts": action_counts.to_dict(),
+            **result.to_dict(),
+        }
+
+    def _has_meaningful_changes(self, existing: CRMContact, incoming: dict[str, Any]) -> bool:
+        """Check if incoming contact data has meaningful changes.
+
+        Args:
+            existing: Existing CRMContact record from database
+            incoming: Incoming contact data from provider
+
+        Returns:
+            True if meaningful changes detected, False otherwise
+        """
+        properties = incoming.get("properties") or {}
+
+        # Check source_modified_at as primary indicator
+        incoming_modified = self._parse_date(incoming.get("updatedAt")) or self._parse_date(
+            properties.get("hs_lastmodifieddate")
+        )
+        if (
+            incoming_modified
+            and existing.source_modified_at
+            and incoming_modified > existing.source_modified_at
+        ):
+            return True
+
+        # Compare key fields
+        checks = [
+            (existing.first_name, properties.get("firstname")),
+            (existing.last_name, properties.get("lastname")),
+            (existing.email, properties.get("email")),
+            (existing.phone, properties.get("phone")),
+            (existing.job_title, properties.get("jobtitle") or properties.get("title")),
+            (existing.owner_external_id, properties.get("hubspot_owner_id")),
+            (existing.lifecycle_stage, properties.get("lifecyclestage")),
+            (
+                existing.lead_status,
+                properties.get("hs_lead_status") or properties.get("leadstatus"),
+            ),
+            (existing.company_name, properties.get("company")),
+        ]
+
+        for existing_val, incoming_val in checks:
+            if existing_val is None and incoming_val is None:
+                continue
+            if existing_val != incoming_val:
+                return True
+
+        return False
 
     def _extract_contact_company_external_ids(
         self, properties: dict[str, Any], provider: str

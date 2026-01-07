@@ -12,6 +12,12 @@ from src.domain.models.organisation_tables.sync import KnowledgeIntegration
 from src.domain.models.organisation_tables.sync.crm import CRMUser
 from src.infra.utils.logger import get_logger
 from src.service.integrations.core import BaseSyncService
+from src.workers.integrations_worker.utils.sync_metadata import (
+    SyncAction,
+    SyncContext,
+    classify_records,
+    log_sync_action_distribution,
+)
 
 logger = get_logger(__name__)
 
@@ -118,6 +124,224 @@ class UserSyncService(BaseSyncService[CRMUser]):
             "users": users_processed,
             **result.to_dict(),
         }
+
+    async def sync_incremental(
+        self,
+        *,
+        integration: KnowledgeIntegration,
+        records: Iterable[dict[str, Any]],
+        provider: str,
+    ) -> dict[str, Any]:
+        """Sync user records incrementally.
+
+        This method is optimized for incremental syncs where records come with
+        sync_action metadata. It uses database state as the source of truth.
+
+        Args:
+            integration: KnowledgeIntegration instance
+            records: Raw user records from provider API with _sync_metadata
+            provider: Provider name (e.g., 'hubspot')
+
+        Returns:
+            Dictionary with sync statistics
+        """
+        result = self._init_result()
+        self._log_sync_start("users_incremental", provider, 0)
+
+        user_list = [u for u in records if isinstance(u, dict)]
+        if not user_list:
+            result.complete()
+            return {"users": 0, **result.to_dict()}
+
+        # Log sync action distribution for observability
+        log_sync_action_distribution(user_list, "users", logger)
+
+        # Load existing users
+        user_external_ids = [
+            str(ext_id)
+            for user in user_list
+            if (ext_id := self._extract_external_id(user)) is not None
+        ]
+        existing = await self._load_existing_by_external_ids(
+            CRMUser,
+            user_external_ids,
+            integration.integration_id,
+        )
+        existing_ids = set(existing.keys())
+
+        # Classify records for logging (sync_action is only for observability)
+        context = SyncContext(existing_ids=existing_ids)
+        classify_records(user_list, context)
+
+        now = utcnow()
+        users_processed = 0
+        users_skipped = 0
+
+        for user in user_list:
+            try:
+                external_id = self._extract_external_id(user)
+                if not external_id:
+                    result.increment_failed()
+                    result.add_error(f"Missing external ID for user: {user}")
+                    continue
+
+                # Extract sync metadata for logging/observability
+                sync_metadata = user.get("_sync_metadata", {})
+                sync_action = SyncAction(sync_metadata.get("sync_action", SyncAction.ADDED.value))
+
+                # Handle deletions
+                is_archived = user.get("archived", False) or user.get("IsDeleted", False)
+                is_deleted = user.get("deleted", False) or user.get("isDeleted", False)
+
+                if sync_action == SyncAction.DELETED or is_archived or is_deleted:
+                    # Soft-delete: mark as deleted if exists
+                    record = existing.get(external_id)
+                    if record:
+                        record.is_deleted = True
+                        record.is_active = False
+                        record.synced_at = now
+                        record.last_seen_at = now
+                        self.db.add(record)
+                        result.increment_deleted()
+                        users_processed += 1
+                    continue
+
+                # Database state is source of truth for create vs update
+                record = existing.get(external_id)
+                is_new = record is None
+
+                if is_new:
+                    # Create new user
+                    record = CRMUser(
+                        organisation_id=self.organisation_id,
+                        integration_id=integration.integration_id,
+                        external_id=external_id,
+                    )
+                else:
+                    # Check for meaningful changes before updating
+                    if not self._has_meaningful_changes(record, user, provider):
+                        users_skipped += 1
+                        # Update last_seen_at even if no changes
+                        record.last_seen_at = now
+                        self.db.add(record)
+                        continue
+
+                # Transform and update record
+                self._update_user_record(record, user, provider)
+
+                # Update metadata
+                record.synced_at = now
+                record.last_seen_at = now
+                record.is_deleted = False
+
+                self.db.add(record)
+                users_processed += 1
+                result.increment_processed()
+
+                if is_new:
+                    result.increment_created()
+                else:
+                    result.increment_updated()
+
+            except Exception as exc:
+                self._log_error("user", user.get("id"), exc)
+                result.increment_failed()
+                result.add_error(str(exc))
+
+        # Commit users
+        await self.db.commit()
+
+        result.metadata["users"] = users_processed
+        result.metadata["skipped"] = users_skipped
+        result.complete()
+
+        logger.info(
+            "Incremental user sync complete: processed=%d, skipped=%d, created=%d, updated=%d, deleted=%d",
+            users_processed,
+            users_skipped,
+            result.created,
+            result.updated,
+            result.deleted,
+        )
+
+        return {
+            "users": users_processed,
+            "skipped": users_skipped,
+            **result.to_dict(),
+        }
+
+    def _has_meaningful_changes(
+        self,
+        existing: CRMUser,
+        incoming: dict[str, Any],
+        provider: str,
+    ) -> bool:
+        """Check if incoming data has meaningful changes compared to existing record.
+
+        Args:
+            existing: Existing CRMUser record from database
+            incoming: Incoming user data from provider
+            provider: Provider name for field mapping
+
+        Returns:
+            True if there are meaningful changes, False otherwise
+        """
+        _ = provider  # Reserved for future provider-specific logic
+
+        # Extract properties block
+        prop_block = incoming.get("properties")
+        properties = prop_block if isinstance(prop_block, dict) else {}
+
+        # Helper for flexible field extraction (same as sync logic)
+        def pick(*keys: str) -> Any:
+            for key in keys:
+                if key in incoming and incoming[key] not in (None, ""):
+                    return incoming[key]
+                if key in properties and properties[key] not in (None, ""):
+                    return properties[key]
+            return None
+
+        # Compare key fields
+        checks = [
+            (existing.email, pick("email")),
+            (existing.first_name, pick("firstName", "firstname", "first_name")),
+            (existing.last_name, pick("lastName", "lastname", "last_name")),
+            (existing.job_title, pick("jobTitle", "jobtitle", "title", "positionTitle")),
+            (existing.user_role, pick("roleId", "role", "type")),
+            (existing.time_zone, pick("timeZone", "timezone")),
+            (existing.locale, pick("locale", "language")),
+        ]
+
+        for existing_val, incoming_val in checks:
+            if existing_val is None and incoming_val is None:
+                continue
+            if existing_val != incoming_val:
+                return True
+
+        # Check active status
+        archived_flag = self._as_bool(pick("archived"))
+        active_flag = self._as_bool(pick("active", "isActive", "hasAccess"))
+        incoming_active = (
+            active_flag
+            if active_flag is not None
+            else (not archived_flag if archived_flag is not None else None)
+        )
+        if incoming_active is not None and existing.is_active != incoming_active:
+            return True
+
+        # Check team changes
+        incoming_team_ids = self._extract_team_ids(incoming, properties)
+        deduplicated_team_ids = self._deduplicate_team_ids(incoming_team_ids)
+        if existing.team_ids != deduplicated_team_ids:
+            return True
+
+        # Check source_modified_at
+        incoming_modified = self._parse_date(pick("updatedAt", "updatedate", "updated_at"))
+        return bool(
+            incoming_modified
+            and existing.source_modified_at
+            and incoming_modified > existing.source_modified_at
+        )
 
     def _transform_record(self, raw: dict[str, Any], _provider: str) -> CRMUser:
         """Transform provider-specific user data to CRMUser model.

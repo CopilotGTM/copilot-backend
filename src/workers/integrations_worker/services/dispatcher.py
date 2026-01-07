@@ -836,6 +836,8 @@ async def _handle_crm(
     data_type: str,
     records: list[dict[str, Any]],
     provider: str,
+    *,
+    sync_type: str | None = None,
 ) -> CategoryHandlerOutcome:
     async with _integration_session(organisation_id) as session:
         integration_row = await _reload_integration(session, integration_id)
@@ -857,6 +859,7 @@ async def _handle_crm(
             data_type=data_type,
             records=records,
             provider=provider,
+            sync_type=sync_type,
         )
         records_synced = metrics.get("records_synced")
         if records_synced is None:
@@ -945,6 +948,8 @@ async def _dispatch_category(
     data_type: str,
     records: list[dict[str, Any]],
     provider: str,
+    *,
+    sync_type: str | None = None,
 ) -> CategoryHandlerOutcome:
     handler_map = {
         "calendar": _handle_calendar,
@@ -960,6 +965,17 @@ async def _dispatch_category(
         return CategoryHandlerOutcome(
             item_result=SyncItemResult(status="ignored", reason="unsupported_category"),
             should_stop=True,
+        )
+
+    # CRM handler accepts sync_type for incremental deal optimization
+    if category == "crm":
+        return await _handle_crm(
+            organisation_id=organisation_id,
+            integration_id=integration_id,
+            data_type=data_type,
+            records=records,
+            provider=provider,
+            sync_type=sync_type,
         )
 
     return await handler(
@@ -1135,14 +1151,44 @@ async def _execute_category_sync(
             monitored_fetch.monitored_channel_count,
         )
     else:
-        records = await fetcher(
-            nango=nango,
-            connection_id=integration_meta.connection_id,
-            is_initial=not request.incremental,
-            last_synced_at=integration_meta.last_synced_at,
-            data_type=sync_data_type,
-            provider_config_key=provider_key,
-        )
+        # Build base fetch parameters
+        fetch_kwargs: dict[str, Any] = {
+            "nango": nango,
+            "connection_id": integration_meta.connection_id,
+            "is_initial": not request.incremental,
+            "last_synced_at": integration_meta.last_synced_at,
+            "data_type": sync_data_type,
+            "provider_config_key": provider_key,
+        }
+
+        # For CRM entities with incremental sync support, pass sync context
+        # These parameters enable the fetchers to add _sync_metadata to records
+        incremental_sync_entities = {
+            "deals",
+            "opportunities",  # Deals
+            "contacts",
+            "leads",  # Contacts
+            "companies",
+            "accounts",  # Companies
+            "deal_tasks",
+            "tasks",
+            "tickets",
+            "notes",  # Deal Tasks
+            "owners",  # Owners
+            "users",  # Users
+            "pipelines",  # Pipelines
+        }
+        if request.category == "crm" and sync_data_type in incremental_sync_entities:
+            fetch_kwargs["sync_type"] = request.sync_type
+            fetch_kwargs["response_results"] = request.response_results
+            logger.debug(
+                "Passing sync context to %s fetcher: sync_type=%s response_results=%s",
+                sync_data_type,
+                request.sync_type,
+                request.response_results,
+            )
+
+        records = await fetcher(**fetch_kwargs)
         logger.debug("Fetched %d records for data_type=%s", len(records), sync_data_type)
     if not records:
         logger.debug(
@@ -1166,6 +1212,7 @@ async def _execute_category_sync(
         data_type=sync_data_type,
         records=records,
         provider=request.provider,
+        sync_type=request.sync_type,
     )
 
     result.items[sync_data_type] = outcome.item_result
