@@ -179,6 +179,10 @@ async def rate_limit_login(request: Request) -> None:
 
     This targets the public user login endpoint only and avoids admin APIs.
     It uses stricter budgets from config to reduce brute-force risk.
+
+    Two-layer protection:
+    1. IP+email combo limit: Prevents brute-forcing a single account
+    2. IP-only total limit: Prevents credential stuffing across many emails
     """
     # Identify user/email; dependencies that read the body later still work (Starlette caches body)
     email = await _get_email_from_request(request)
@@ -192,6 +196,35 @@ async def rate_limit_login(request: Request) -> None:
     minute_bucket = now // minute_window
     hour_bucket = now // hour_window
 
+    # --- Layer 1: IP-only total limit (credential stuffing protection) ---
+    ip_total_minute_key = f"rl:login:ip_total:{ip}:m:{minute_bucket}"
+    ip_total_hour_key = f"rl:login:ip_total:{ip}:h:{hour_bucket}"
+
+    ip_total_minute_count = _incr_with_ttl(ip_total_minute_key, minute_window)
+    ip_total_hour_count = _incr_with_ttl(ip_total_hour_key, hour_window)
+
+    ip_total_per_min = getattr(rate_limit_config, "LOGIN_IP_TOTAL_PER_MINUTE", 100)
+    ip_total_per_hr = getattr(rate_limit_config, "LOGIN_IP_TOTAL_PER_HOUR", 300)
+
+    if ip_total_minute_count and ip_total_minute_count > ip_total_per_min:
+        retry_after = _ttl_seconds(ip_total_minute_key) or minute_window
+        logger.warning(f"Login IP total rate limit exceeded (per-minute) for ip={ip}")
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many login attempts from this location. Please try again later.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+    if ip_total_hour_count and ip_total_hour_count > ip_total_per_hr:
+        retry_after = _ttl_seconds(ip_total_hour_key) or hour_window
+        logger.warning(f"Login IP total rate limit exceeded (per-hour) for ip={ip}")
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many login attempts from this location. Please try again later.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+    # --- Layer 2: IP+email combo limit (brute-force protection per account) ---
     base = f"rl:login:ip:{ip}"
     if email:
         base += f":email:{email.lower()}"
@@ -227,6 +260,10 @@ async def rate_limit_admin_login(request: Request) -> None:
 
     This targets admin login endpoints with stricter limits than regular user login
     to protect privileged admin accounts from brute-force attacks.
+
+    Two-layer protection:
+    1. IP-only total limit: Prevents credential stuffing across many admin emails
+    2. IP+email combo limit: Prevents brute-forcing a single admin account
     """
     # Identify admin email from request body
     email = await _get_email_from_request(request)
@@ -240,7 +277,37 @@ async def rate_limit_admin_login(request: Request) -> None:
     minute_bucket = now // minute_window
     hour_bucket = now // hour_window
 
-    # Use separate namespace for admin logins
+    # --- Layer 1: IP-only total limit (credential stuffing protection) ---
+    # Admin login uses stricter IP-only limits (20/min, 50/hr)
+    ip_total_minute_key = f"rl:admin_login:ip_total:{ip}:m:{minute_bucket}"
+    ip_total_hour_key = f"rl:admin_login:ip_total:{ip}:h:{hour_bucket}"
+
+    ip_total_minute_count = _incr_with_ttl(ip_total_minute_key, minute_window)
+    ip_total_hour_count = _incr_with_ttl(ip_total_hour_key, hour_window)
+
+    # Stricter IP total limits for admin (20/min, 50/hr vs 100/300 for user)
+    ip_total_per_min = 20
+    ip_total_per_hr = 50
+
+    if ip_total_minute_count and ip_total_minute_count > ip_total_per_min:
+        retry_after = _ttl_seconds(ip_total_minute_key) or minute_window
+        logger.warning(f"Admin login IP total rate limit exceeded (per-minute) for ip={ip}")
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many admin login attempts from this location. Please try again later.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+    if ip_total_hour_count and ip_total_hour_count > ip_total_per_hr:
+        retry_after = _ttl_seconds(ip_total_hour_key) or hour_window
+        logger.warning(f"Admin login IP total rate limit exceeded (per-hour) for ip={ip}")
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many admin login attempts from this location. Please try again later.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+    # --- Layer 2: IP+email combo limit (brute-force protection per account) ---
     base = f"rl:admin_login:ip:{ip}"
     if email:
         base += f":email:{email.lower()}"

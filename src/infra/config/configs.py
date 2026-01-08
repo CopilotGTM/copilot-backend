@@ -328,9 +328,13 @@ class RateLimitConfig:
     READ_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_READ_PER_MINUTE", "120"))
     READ_PER_HOUR: int = int(os.getenv("RATE_LIMIT_READ_PER_HOUR", "2000"))
 
-    # Strict limits for authentication (login attempts)
+    # Strict limits for authentication (login attempts) - per IP+email
     AUTH_LOGIN_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_AUTH_LOGIN_PER_MINUTE", "50"))
     AUTH_LOGIN_PER_HOUR: int = int(os.getenv("RATE_LIMIT_AUTH_LOGIN_PER_HOUR", "100"))
+
+    # IP-only total limit for login (prevents credential stuffing across many emails)
+    LOGIN_IP_TOTAL_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_LOGIN_IP_TOTAL_PER_MINUTE", "100"))
+    LOGIN_IP_TOTAL_PER_HOUR: int = int(os.getenv("RATE_LIMIT_LOGIN_IP_TOTAL_PER_HOUR", "300"))
 
 
 # Create config instances
