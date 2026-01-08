@@ -39,6 +39,8 @@ class MetadataParser:
             yield from self._yield_sources_frame(response_data)
             yield from self._yield_question_frame(response_data)
             yield from self._yield_agent_switch_frame(response_data)
+            # Note: visualizations and structured_data removed - markdown handles these naturally
+            # Note: task_list is handled inline via AGENT_TASKS blocks, not in AEP metadata
 
         except json.JSONDecodeError:
             logger.error(f"Failed to parse JSON metadata: {json_text}")

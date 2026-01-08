@@ -8,6 +8,11 @@ class ChatWorkerConfig(BaseWorkerConfig):
 
     def __init__(self):
         super().__init__()
+
+        # Chat worker needs longer time limits for agent responses with multiple tool calls
+        self.task_time_limit = 600  # 10 minutes hard limit
+        self.task_soft_time_limit = 540  # 9 minutes soft limit
+
         # Fix: declare a dedicated direct exchange and bind each queue with a routing
         # key matching its queue name. Also add routing_key to task_routes so Celery
         # produces messages with the correct routing key.

@@ -1,22 +1,22 @@
+"""General agent for handling user queries with search and deal context tools."""
+
 import uuid
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
-from agno.agent import Agent
+from agno.agent import Agent as AgnoAgent
 from agno.models.azure import AzureOpenAI
 from dotenv import load_dotenv
 from src.agents.base import Agent as BaseAgent
+from src.agents.common.agent_tasks_extractor import AgentTasksExtractor
 from src.agents.common.json_extractor import JsonExtractor
 from src.agents.common.metadata_parser import MetadataParser
 from src.agents.common.stream_buffer import StreamingAnswerBuffer
 from src.agents.context import AgentContext
+from src.agents.tools.registry import get_tools_for_agent
 from src.agents.tools.transparent_tools import AgentCapabilities
 from src.agents.utils import prepare_messages
 from src.agents.workflows.general.prompts.general_prompt import get_general_prompt
-from src.agents.workflows.general.tools import (
-    create_search_internal_knowledge,
-    create_search_internet,
-)
 from src.api.schemas.chat_stream_models import AnswerDelta, Finalize, Frame
 from src.domain.models.organisation_tables import ChatMessage
 from src.infra.utils.logger import get_logger
@@ -33,31 +33,29 @@ class GeneralAgent(BaseAgent):
         *,
         context: AgentContext,
     ):
+        super().__init__(context=context)
         self.capabilities: AgentCapabilities | None = None
-        self.context = context
         logger.info(
-            f"Initializing GeneralAgent with enhanced transparency features {self.context} "
+            "Initializing GeneralAgent with enhanced transparency features %s", self.context
         )
         self.json_extractor = JsonExtractor()
         self.metadata_parser = MetadataParser(self.json_extractor)
         self.separators = ["⟦AEP:1⟧"]
 
-        # Create tool functions bound to context and capabilities getter
-        self._tools: list[Callable[..., Any]] = [
-            create_search_internal_knowledge(context, lambda: self.capabilities),
-            create_search_internet(lambda: self.capabilities),
-        ]
+        # Get all tools for GeneralAgent from the registry
+        self._tools: list[Callable[..., Any]] = get_tools_for_agent(
+            "GeneralAgent", context, lambda: self.capabilities
+        )
 
         # Log tool registration for debugging
         for tool_func in self._tools:
-            logger.info(
-                f"[TOOL REGISTERED] {tool_func.__name__}: {tool_func.__doc__[:100] if tool_func.__doc__ else 'No docstring'}..."
-            )
+            doc_preview = tool_func.__doc__[:100] if tool_func.__doc__ else "No docstring"
+            logger.info("[TOOL REGISTERED] %s: %s...", tool_func.__name__, doc_preview)
 
         # Generate prompt with org_name from context (falls back to "Our Organization" if None)
         system_prompt = get_general_prompt(context.org_name)
 
-        self.general_agent = Agent(
+        self.general_agent = AgnoAgent(
             model=AzureOpenAI(id="gpt-5", api_version="2024-12-01-preview"),
             description=system_prompt,
             structured_outputs=False,
@@ -66,34 +64,42 @@ class GeneralAgent(BaseAgent):
             markdown=True,
             tools=self._tools,  # type: ignore[arg-type]
         )
-        logger.info(f"[AGNO AGENT] Initialized with {len(self._tools)} tools")
+        logger.info("[AGNO AGENT] Initialized with %d tools", len(self._tools))
 
-    async def run_stream(self, message_list: list[ChatMessage]) -> AsyncIterator[Frame]:
+    def run_stream(self, message_list: list[ChatMessage]) -> AsyncIterator[Frame]:
         """Run with enhanced JSON streaming and transparency support."""
-        logger.info("Starting enhanced workflow execution with transparency")
-        logger.info(f"[AGNO AGENT] Processing {len(message_list)} messages")
 
-        processed_messages = prepare_messages(message_list)
-        message_id = str(uuid.uuid4())
+        async def _run():
+            logger.info("Starting enhanced workflow execution with transparency")
+            logger.info("[AGNO AGENT] Processing %d messages", len(message_list))
 
-        # Use a simple list for frame queue - tools append synchronously
-        # The "tick" events from StreamBuffer ensure we drain frequently
-        frame_queue: list[Frame] = []
-        self.capabilities = self._setup_capabilities(message_id, frame_queue)
+            processed_messages = prepare_messages(message_list)
+            message_id = str(uuid.uuid4())
 
-        try:
-            logger.info("[AGNO AGENT] Calling arun with stream=True...")
-            chat_response = await self.general_agent.arun(messages=processed_messages, stream=True)
+            # Use a simple list for frame queue - tools append synchronously
+            # The "tick" events from StreamBuffer ensure we drain frequently
+            frame_queue: list[Frame] = []
+            self.capabilities = self._setup_capabilities(message_id, frame_queue)
 
-            buffer = StreamingAnswerBuffer(self.separators, logger=logger)
-            async for frame in self._process_streaming_response(chat_response, buffer, frame_queue):
-                yield frame
+            try:
+                logger.info("[AGNO AGENT] Calling arun with stream=True...")
+                chat_response = await self.general_agent.arun(
+                    messages=processed_messages, stream=True
+                )
 
-        except Exception as exc:  # noqa: B902
-            logger.error(f"Error in enhanced run_workflow: {exc}")
-        finally:
-            for frame in self._finalize_stream(frame_queue):
-                yield frame
+                buffer = StreamingAnswerBuffer(self.separators, logger=logger)
+                async for frame in self._process_streaming_response(
+                    chat_response, buffer, frame_queue
+                ):
+                    yield frame
+
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                logger.exception("Error in enhanced run_workflow: %s", exc)
+            finally:
+                for frame in self._finalize_stream(frame_queue):
+                    yield frame
+
+        return _run()
 
     def _setup_capabilities(self, message_id: str, frame_queue: list):
         capabilities = AgentCapabilities(message_id)
@@ -111,6 +117,9 @@ class GeneralAgent(BaseAgent):
         buffer: StreamingAnswerBuffer,
         frame_queue: list,
     ):
+        # Extractor for inline AGENT_TASKS blocks
+        tasks_extractor = AgentTasksExtractor()
+
         async for kind, content, json_started in buffer.stream(chat_response):
             # Drain any pending frames from tool execution
             # This runs on every iteration including "tick" events (filtered tool chunks)
@@ -122,8 +131,31 @@ class GeneralAgent(BaseAgent):
                 # Just a signal to drain the queue, no content to emit
                 continue
             elif kind == "answer" and content:
-                yield AnswerDelta(content=content)
+                # DEBUG: Print raw answer content before extraction
+                print(f"[GENERAL_AGENT] answer chunk ({len(content)} chars): {content[:200]!r}")
+
+                # Extract AGENT_TASKS blocks from answer content
+                result = tasks_extractor.process(content)
+
+                # Emit any task frames that were extracted
+                for task_frame in result.frames:
+                    print(f"[GENERAL_AGENT] Yielding task_frame: {task_frame}")
+                    yield task_frame
+
+                # Emit cleaned content (without AGENT_TASKS blocks)
+                if result.clean_content:
+                    print(
+                        f"[GENERAL_AGENT] Yielding AnswerDelta ({len(result.clean_content)} chars): {result.clean_content[:100]!r}"
+                    )
+                    yield AnswerDelta(content=result.clean_content)
             elif kind == "final":
+                # Flush any remaining content from extractor
+                flush_result = tasks_extractor.flush()
+                for task_frame in flush_result.frames:
+                    yield task_frame
+                if flush_result.clean_content:
+                    yield AnswerDelta(content=flush_result.clean_content)
+
                 async for frame in self._handle_final_content(content, json_started):
                     yield frame
 
