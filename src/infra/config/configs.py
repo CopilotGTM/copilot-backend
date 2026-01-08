@@ -321,15 +321,15 @@ class RateLimitConfig:
     Defaults are conservative for testing; override via env vars when needed.
     """
 
-    PER_MINUTE: int = int(os.getenv("RATE_LIMIT_PER_MINUTE", "30"))
-    PER_HOUR: int = int(os.getenv("RATE_LIMIT_PER_HOUR", "200"))
+    PER_MINUTE: int = int(os.getenv("RATE_LIMIT_PER_MINUTE", "120"))
+    PER_HOUR: int = int(os.getenv("RATE_LIMIT_PER_HOUR", "2000"))
 
     # Lenient limits for read-only (GET) endpoints
     READ_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_READ_PER_MINUTE", "120"))
     READ_PER_HOUR: int = int(os.getenv("RATE_LIMIT_READ_PER_HOUR", "2000"))
 
     # Strict limits for authentication (login attempts)
-    AUTH_LOGIN_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_AUTH_LOGIN_PER_MINUTE", "20"))
+    AUTH_LOGIN_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_AUTH_LOGIN_PER_MINUTE", "50"))
     AUTH_LOGIN_PER_HOUR: int = int(os.getenv("RATE_LIMIT_AUTH_LOGIN_PER_HOUR", "100"))
 
 
