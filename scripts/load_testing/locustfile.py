@@ -97,7 +97,7 @@ def on_test_start(environment, **kwargs):
         )
         if response.status_code == 200:
             data = response.json()
-            if data.get("success") and data.get("data"):
+            if data.get("status") == "SUCCESS" and data.get("data"):
                 tokens = data["data"].get("tokens", {})
                 _shared_token["access_token"] = tokens.get("access_token")
                 _shared_token["refresh_token"] = tokens.get("refresh_token")
@@ -171,7 +171,7 @@ class AuthenticatedUser(HttpUser):
         if response.status_code == 200:
             data = response.json()
             # Response is wrapped in GenericResponse: {"success": true, "data": {...}}
-            if data.get("success") and data.get("data"):
+            if data.get("status") == "SUCCESS" and data.get("data"):
                 tokens = data["data"].get("tokens", {})
                 self.access_token = tokens.get("access_token")
                 self.refresh_token = tokens.get("refresh_token")
@@ -200,7 +200,7 @@ class AuthenticatedUser(HttpUser):
 
         if response.status_code == 200:
             data = response.json()
-            if data.get("success") and data.get("data"):
+            if data.get("status") == "SUCCESS" and data.get("data"):
                 tokens = data["data"].get("tokens", {})
                 self.access_token = tokens.get("access_token")
                 self.refresh_token = tokens.get("refresh_token")
@@ -224,7 +224,7 @@ class AuthenticatedUser(HttpUser):
         )
         if response.status_code == 200:
             data = response.json()
-            if data.get("success") and data.get("data"):
+            if data.get("status") == "SUCCESS" and data.get("data"):
                 deals = data["data"].get("deals", [])
                 self.deal_ids = [d.get("id") for d in deals if d.get("id")]
 
@@ -236,7 +236,7 @@ class AuthenticatedUser(HttpUser):
         )
         if response.status_code == 200:
             data = response.json()
-            if data.get("success") and data.get("data"):
+            if data.get("status") == "SUCCESS" and data.get("data"):
                 items = data["data"].get("items", [])
                 self.session_ids = [s.get("session_id") for s in items if s.get("session_id")]
 
@@ -294,7 +294,7 @@ class CRMUser(AuthenticatedUser):
             headers=self._get_headers(),
             params={
                 "limit": 10,
-                "statuses": "OPEN",
+                "statuses": ["open"],
             },
             name="[CRM] List Deals (filtered)",
         )

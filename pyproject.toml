@@ -73,7 +73,7 @@ api = [
     "eventlet==0.40.2",
     
     # Supabase Integration (auth)
-    "supabase>=2.17.0",
+    "supabase>=2.27.1",
     
     # Azure Services (storage for uploads)
     "azure-storage-blob==12.25.1",
@@ -128,7 +128,7 @@ workers-light = [
     "duckduckgo-search~=8.1.1",
     
     # Supabase (Organization worker provisioning)
-    "supabase>=2.17.0",
+    "supabase>=2.27.1",
     
     # Azure Storage (for attachments in chat worker)
     "azure-storage-blob==12.25.1",
@@ -160,7 +160,7 @@ full = [
     "itsdangerous==2.2.0",
     "python-socketio==5.13.0",
     "eventlet==0.40.2",
-    "supabase>=2.17.0",
+    "supabase>=2.27.1",
     "azure-storage-blob==12.25.1",
     "azure-mgmt-storage==21.1.0",
     "resend==2.11.0",
