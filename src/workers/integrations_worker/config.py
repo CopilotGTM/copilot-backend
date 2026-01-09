@@ -69,6 +69,11 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
                 "queue": "integrations",
                 "routing_key": "integrations",
             },
+            # Calendar events periodic sync
+            "integrations.sync_calendar_events": {
+                "queue": "integrations",
+                "routing_key": "integrations",
+            },
         }
 
         # Celery Beat schedule for periodic tasks
@@ -96,6 +101,15 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
                 "task": "integrations.trigger_deal_channel_messages_sync_all_orgs",
                 "schedule": crontab(minute=30),  # Run every hour at :30
                 "kwargs": {},
+                "options": {
+                    "queue": "integrations",
+                    "routing_key": "integrations",
+                },
+            },
+            "sync-calendar-events-all-orgs": {
+                "task": "integrations.sync_calendar_events",
+                "schedule": crontab(minute="*/15"),  # Run every 5 minutes (for testing)
+                "kwargs": {},  # No args = sync all organizations
                 "options": {
                     "queue": "integrations",
                     "routing_key": "integrations",

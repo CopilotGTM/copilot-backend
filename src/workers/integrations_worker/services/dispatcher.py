@@ -34,6 +34,7 @@ from ..adapters.calendar_adapter import upsert_calendar, upsert_calendar_increme
 from ..adapters.conversation_intelligence_adapter import sync_conversation_intelligence_data
 from ..adapters.crm_adapter import sync_crm_data
 from ..models.sync_models import SyncItemResult, SyncJobRequest, SyncJobResult
+from ..providers.calendar.outlook_calendar import FetchEventsResult
 from ..providers.registry import FetchFn, get_fetcher
 from ..utils.dedupe import acquire_sync_lock, release_sync_lock
 
@@ -533,6 +534,7 @@ class IntegrationMetadata:
     connection_id: str
     integration_type: IntegrationType
     last_synced_at: datetime | None
+    connection_metadata: dict[str, Any] | None = None
 
 
 @dataclass(slots=True)
@@ -578,6 +580,7 @@ def _to_metadata(integration: KnowledgeIntegration) -> IntegrationMetadata:
         connection_id=integration.connection_id,
         integration_type=integration.integration_type,
         last_synced_at=integration.last_synced_at,
+        connection_metadata=integration.connection_metadata,
     )
 
 
@@ -667,6 +670,7 @@ async def _handle_calendar(
     provider: str,
     *,
     sync_type: str | None = None,
+    new_delta_link: str | None = None,
 ) -> CategoryHandlerOutcome:
     async with _integration_session(organisation_id) as session:
         integration_row = await _reload_integration(session, integration_id)
@@ -698,6 +702,20 @@ async def _handle_calendar(
                 provider=provider,
                 events=records,
             )
+
+        # Save new deltaLink for Outlook calendar (enables true incremental sync)
+        if new_delta_link and integration_row.integration_type == IntegrationType.OUTLOOK_CALENDAR:
+            connection_metadata = dict(integration_row.connection_metadata or {})
+            connection_metadata["outlook_delta_link"] = new_delta_link
+            integration_row.connection_metadata = connection_metadata
+            await (
+                session.commit()
+            )  # Commit to persist the deltaLink (async session doesn't auto-commit)
+            logger.info(
+                "Outlook calendar: saved new deltaLink for next sync (integration=%s)",
+                integration_id,
+            )
+
         logger.debug(
             "Calendar sync completed for data_type=%s: %d events processed (sync_type=%s)",
             data_type,
@@ -993,6 +1011,7 @@ async def _dispatch_category(
     provider: str,
     *,
     sync_type: str | None = None,
+    new_delta_link: str | None = None,
 ) -> CategoryHandlerOutcome:
     handler_map = {
         "calendar": _handle_calendar,
@@ -1029,6 +1048,7 @@ async def _dispatch_category(
             records=records,
             provider=provider,
             sync_type=sync_type,
+            new_delta_link=new_delta_link,
         )
 
     if category == "email":
@@ -1205,6 +1225,13 @@ async def _execute_category_sync(
     logger.debug("Last Synced At: %s", integration_meta.last_synced_at)
     logger.debug("Is Initial Sync: %s", not request.incremental)
 
+    # Track Outlook calendar deltaLink for true incremental sync
+    is_outlook_calendar = (
+        request.category == "calendar"
+        and integration_meta.integration_type == IntegrationType.OUTLOOK_CALENDAR
+    )
+    new_delta_link: str | None = None
+
     monitored_fetch: MonitoredMessagesFetchResult | None = None
     if request.category == "messaging" and sync_data_type == "messages":
         monitored_fetch = await _fetch_monitored_messages(
@@ -1270,7 +1297,29 @@ async def _execute_category_sync(
                 request.response_results,
             )
 
-        records = await fetcher(**fetch_kwargs)
+        # For Outlook calendar incremental sync, pass stored deltaLink for true incremental
+        # This enables fetching only changed events instead of all events
+        if is_outlook_calendar and request.incremental:
+            stored_delta_link = (integration_meta.connection_metadata or {}).get(
+                "outlook_delta_link"
+            )
+            if stored_delta_link:
+                fetch_kwargs["delta_link"] = stored_delta_link
+                logger.info("Outlook calendar: using stored deltaLink for true incremental sync")
+            else:
+                logger.info("Outlook calendar: no stored deltaLink, will establish baseline")
+
+        fetch_result = await fetcher(**fetch_kwargs)
+
+        # Handle Outlook calendar's FetchEventsResult return type
+        if is_outlook_calendar and isinstance(fetch_result, FetchEventsResult):
+            records = fetch_result.events
+            new_delta_link = fetch_result.delta_link
+            if new_delta_link:
+                logger.info("Outlook calendar: received new deltaLink from API")
+        else:
+            records = fetch_result
+
         logger.debug("Fetched %d records for data_type=%s", len(records), sync_data_type)
     if not records:
         logger.debug(
@@ -1295,6 +1344,7 @@ async def _execute_category_sync(
         records=records,
         provider=request.provider,
         sync_type=request.sync_type,
+        new_delta_link=new_delta_link if is_outlook_calendar else None,
     )
 
     result.items[sync_data_type] = outcome.item_result
