@@ -200,6 +200,30 @@ export interface ApiEnvelope<T> {
   message: string;
   data: T | null;
 }
+
+// Task list types for real-time task tracking
+export type TaskStatus = "pending" | "in_progress" | "completed";
+
+export interface TaskItem {
+  id: string;                    // Unique task identifier
+  task: string;                  // Task description
+  status: TaskStatus;            // Current task status
+}
+
+export interface TaskUpdate {
+  id: string;                    // Task identifier to update
+  status?: TaskStatus;           // New status (for status-only updates)
+  task?: string;                 // Task description (for new tasks)
+  is_new?: boolean;              // True if this is a newly added task
+}
+
+export interface TaskListFrame {
+  type: "task_list";
+  job_id: string;
+  assistant_message_id: string;
+  tasks?: TaskItem[];            // Full task list (initial or reset)
+  updates?: TaskUpdate[];        // Delta updates (efficient status changes)
+}
 ```
 
 ### SSE Event Frames (Message Events)
@@ -216,6 +240,8 @@ export interface ApiEnvelope<T> {
 { "type": "progress.update", "stage":"retrieval", "progress": 0.7 }
 { "type": "tool.usage", "tool_name":"search", "status":"ok" }
 { "type": "thinking.update", "thought": "...", "stage":"plan" }
+{ "type": "task_list", "tasks": [{"id":"1","task":"Search knowledge base","status":"completed"},{"id":"2","task":"Analyze results","status":"in_progress"}] }
+{ "type": "task_list", "updates": [{"id":"1","status":"completed"},{"id":"2","status":"in_progress"}] }
 { "type": "finalize", "reason": "done" }
 ```
 
@@ -586,6 +612,8 @@ Streams Server-Sent Events for a specific message job. Includes reconnection sup
 { "type": "progress.update", "stage":"retrieval", "progress": 0.7 }
 { "type": "tool.usage", "tool_name":"search", "status":"ok" }
 { "type": "thinking.update", "thought": "...", "stage":"plan" }
+{ "type": "task_list", "tasks": [{"id":"1","task":"Search knowledge base","status":"completed"},{"id":"2","task":"Analyze results","status":"in_progress"}] }
+{ "type": "task_list", "updates": [{"id":"1","status":"completed"},{"id":"2","status":"in_progress"}] }
 { "type": "finalize", "reason": "done" }
 ```
 
@@ -613,18 +641,20 @@ Streams Server-Sent Events for a specific message job. Includes reconnection sup
   - `answer.replace`: full current answer. If received, treat this as the canonical text and replace the accumulated buffer.
   - Finalization: a `finalize` frame is followed by an `event: complete`. After `complete`, close the stream and optionally refresh with `GET /messages/list` to show the persisted assistant message.
 
-- Diagnostics / “autopsy” frames (what the frontend can expect)
+- Diagnostics / "autopsy" frames (what the frontend can expect)
   - `answer.metrics`: confidence signal for the answer (e.g., `low|medium|high|neutral`). May also include `citations` in some cases.
   - `sources.replace`: full replacement list of sources/citations to display alongside the answer.
   - `suggestions.replace`: full replacement list of suggested follow-ups.
   - `progress.update`: background status such as `{ stage, message?, progress [0..1], eta_seconds? }` to drive progress UI.
   - `tool.usage`: instrumentation about tools used `{ tool_name, status, duration_ms?, result_summary? }`.
   - `thinking.update`: optional thinking/planning breadcrumbs `{ thought, stage }` for debug or dev UIs.
+  - `task_list`: real-time task tracking for multi-step agent work. Has `tasks` (full list) or `updates` (delta changes). Display in fixed UI position.
   - `agent.switch` and `question.prompt`: advanced flows for agent handoff or asking the user for more info.
 
 - Frontend handling (practical expectations)
   - Stream only from `answer.delta` (append) and apply `answer.replace` when present to ensure the UI shows the canonical answer.
-  - Merge diagnostics frames live: update confidence, sources, suggestions, progress bars, and tool/thinking panes as frames arrive.
+  - Merge diagnostics frames live: update confidence, sources, suggestions, progress bars, tool/thinking panes, and task lists as frames arrive.
+  - For `task_list` frames: maintain task state in a fixed UI position (sidebar, banner, or floating card). See "Task List Frontend Integration Guide" section for details.
   - Stop on `event: complete` (or on `finalize` shortly followed by `complete`). On `timeout` or `error` where `reconnect` is true, reconnect with backoff and include `Last-Event-ID`.
   - After completion, call `GET /users/chats/messages/list` for the session to render the stored assistant message and any enriched metadata.
 
@@ -650,13 +680,13 @@ src.addEventListener('frame', (e) => {
   const frame = JSON.parse(e.data);
   // frame.job_id - correlate with your request
   // frame.assistant_message_id - update this message in your UI
-  
+
   switch(frame.type){
-    case 'answer.delta': 
+    case 'answer.delta':
       // Append frame.content to assistant message
       updateMessage(frame.assistant_message_id, { content: append(frame.content) });
       break;
-    case 'answer.replace': 
+    case 'answer.replace':
       // Replace full content
       updateMessage(frame.assistant_message_id, { content: frame.content });
       break;
@@ -668,7 +698,17 @@ src.addEventListener('frame', (e) => {
       // Update sources
       updateMessage(frame.assistant_message_id, { sources: frame.sources });
       break;
-    case 'finalize': 
+    case 'task_list':
+      // Update task list UI (show in fixed position)
+      if (frame.tasks) {
+        // Full task list - replace all tasks
+        updateTaskList(frame.tasks);
+      } else if (frame.updates) {
+        // Delta updates - apply changes
+        applyTaskUpdates(frame.updates);
+      }
+      break;
+    case 'finalize':
       // Mark complete
       updateMessage(frame.assistant_message_id, { status: 'completed' });
       break;
@@ -931,7 +971,7 @@ The agent may execute multiple tools for a single query. Each tool goes through 
 **Server-side handling**: The backend now filters these out automatically by detecting Agno's `ToolCallCompleted` events in the `StreamingAnswerBuffer`. The frontend should **not** receive these polluted `answer.delta` frames.
 
 **If filtering fails** (edge cases), the frontend can optionally strip them:
-```typescript
+rpt
 const toolSummaryPattern = /\w+\([^)]*\)\s+completed\s+in\s+[\d.]+s\.?/g;
 const cleanContent = content.replace(toolSummaryPattern, '').trim();
 ```
@@ -955,6 +995,7 @@ Show a collapsible "Research" section above or beside the answer:
 ```
 
 **State Management**:
+
 ```typescript
 interface ToolState {
   tool_name: string;
@@ -1110,9 +1151,402 @@ function getToolDisplayName(toolName: string): string {
 3. **Keep both streams** — `tool.usage` for structured UI, `answer.delta` for the actual answer
 
 This gives users:
+
 - Clear visibility into what research the agent performed
 - A clean answer without technical noise
 - Optional deep-dive into research details
+
+---
+
+## Task List Frontend Integration Guide
+
+This section explains how to handle `task_list` frames for displaying real-time task progress during agent execution.
+
+### Overview
+
+The agent tracks multi-step work using inline task lists that are streamed to the frontend via `task_list` frames. This provides users visibility into what the agent is currently working on.
+
+### Frame Format
+
+The `task_list` frame has two modes:
+
+**1. Full Task List** — Initial task list or complete reset:
+
+```json
+{
+  "type": "task_list",
+  "job_id": "abc-123",
+  "assistant_message_id": "msg-456",
+  "tasks": [
+    { "id": "1", "task": "Search knowledge base", "status": "in_progress" },
+    { "id": "2", "task": "Analyze results", "status": "pending" },
+    { "id": "3", "task": "Generate summary", "status": "pending" }
+  ]
+}
+```
+
+**2. Delta Updates** — Efficient status updates (token-efficient):
+
+```json
+{
+  "type": "task_list",
+  "job_id": "abc-123",
+  "assistant_message_id": "msg-456",
+  "updates": [
+    { "id": "1", "status": "completed" },
+    { "id": "2", "status": "in_progress" }
+  ]
+}
+```
+
+**3. Adding New Tasks** — When agent discovers additional work:
+
+```json
+{
+  "type": "task_list",
+  "updates": [
+    { "id": "4", "task": "Verify data accuracy", "status": "pending", "is_new": true }
+  ]
+}
+```
+
+### Task Status Values
+
+| Status | Description | Icon Suggestion |
+|--------|-------------|-----------------|
+| `pending` | Task not yet started | ○ (empty circle) |
+| `in_progress` | Currently working | ◐ (spinner) or ● (filled) |
+| `completed` | Task finished | ✓ (checkmark) |
+
+### Recommended UI Layout
+
+The task list should be displayed in a **fixed position** that doesn't interfere with the main chat content. Choose one of these patterns:
+
+#### Pattern 1: Right Sidebar (Recommended for Desktop)
+
+```
+┌──────────────────────────────────┬─────────────────────┐
+│                                  │ ⚡ Agent Tasks       │
+│  Chat Content                    │                     │
+│                                  │ ✓ Search KB         │
+│  User: What's our pricing?       │ ◐ Analyze results   │
+│                                  │ ○ Generate summary  │
+│  Assistant: [streaming...]       │                     │
+│                                  │                     │
+└──────────────────────────────────┴─────────────────────┘
+```
+
+**CSS Example:**
+
+```css
+.chat-container {
+  display: flex;
+  gap: 1rem;
+}
+.chat-content {
+  flex: 1;
+  overflow-y: auto;
+}
+.task-sidebar {
+  width: 250px;
+  flex-shrink: 0;
+  position: sticky;
+  top: 0;
+  max-height: 100vh;
+  overflow-y: auto;
+}
+```
+
+#### Pattern 2: Top Banner (Works on Mobile)
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ ⚡ Tasks: ✓ Search KB  ◐ Analyze results  ○ Summary     │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│  Chat Content                                           │
+│                                                         │
+│  User: What's our pricing?                              │
+│                                                         │
+│  Assistant: [streaming...]                              │
+│                                                         │
+└─────────────────────────────────────────────────────────┘
+```
+
+**CSS Example:**
+
+```css
+.task-banner {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: var(--bg-secondary);
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+```
+
+#### Pattern 3: Floating Card (Minimal)
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                                                         │
+│  Chat Content                     ┌───────────────────┐ │
+│                                   │ ⚡ Tasks           │ │
+│  User: What's our pricing?        │ ✓ Search KB       │ │
+│                                   │ ◐ Analyzing...    │ │
+│  Assistant: [streaming...]        └───────────────────┘ │
+│                                                         │
+└─────────────────────────────────────────────────────────┘
+```
+
+**CSS Example:**
+
+```css
+.task-card {
+  position: fixed;
+  bottom: 100px;
+  right: 20px;
+  width: 200px;
+  background: var(--bg-elevated);
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  padding: 1rem;
+  z-index: 1000;
+}
+```
+
+### Display Rules
+
+1. **Only show when tasks exist** — Hide the task UI entirely when there are no tasks
+2. **Auto-hide on completion** — Optionally fade out 2-3 seconds after all tasks complete
+3. **Smooth transitions** — Animate status changes for better UX
+4. **Collapse on mobile** — Use a compact view or expandable drawer on small screens
+
+### State Management
+
+```typescript
+interface TaskListState {
+  tasks: Map<string, TaskItem>;
+  isVisible: boolean;
+}
+
+function handleTaskListFrame(frame: TaskListFrame, setState: SetState<TaskListState>) {
+  setState(prev => {
+    const tasks = new Map(prev.tasks);
+
+    // Handle full task list
+    if (frame.tasks) {
+      tasks.clear();
+      for (const task of frame.tasks) {
+        tasks.set(task.id, task);
+      }
+    }
+
+    // Handle delta updates
+    if (frame.updates) {
+      for (const update of frame.updates) {
+        if (update.is_new && update.task) {
+          // Add new task
+          tasks.set(update.id, {
+            id: update.id,
+            task: update.task,
+            status: update.status || "pending"
+          });
+        } else if (tasks.has(update.id)) {
+          // Update existing task
+          const existing = tasks.get(update.id)!;
+          tasks.set(update.id, {
+            ...existing,
+            status: update.status || existing.status
+          });
+        }
+      }
+    }
+
+    return {
+      tasks,
+      isVisible: tasks.size > 0
+    };
+  });
+}
+```
+
+### Complete Integration Example
+
+```typescript
+interface ChatState {
+  content: string;
+  tasks: Map<string, TaskItem>;
+  showTasks: boolean;
+  // ... other state
+}
+
+function handleFrame(frame: Frame, setState: SetState<ChatState>) {
+  switch (frame.type) {
+    case "task_list":
+      handleTaskListFrame(frame, setState);
+      break;
+
+    case "answer.delta":
+      setState(prev => ({
+        ...prev,
+        content: prev.content + frame.content
+      }));
+      break;
+
+    case "finalize":
+      // Optionally hide tasks after a delay
+      setTimeout(() => {
+        setState(prev => ({ ...prev, showTasks: false }));
+      }, 3000);
+      break;
+
+    // ... handle other frames
+  }
+}
+
+// React component example
+function TaskListPanel({ tasks, isVisible }: { tasks: Map<string, TaskItem>, isVisible: boolean }) {
+  if (!isVisible || tasks.size === 0) return null;
+
+  return (
+    <div className="task-sidebar">
+      <h4>⚡ Agent Tasks</h4>
+      <ul>
+        {Array.from(tasks.values()).map(task => (
+          <li key={task.id} className={`task-item task-${task.status}`}>
+            <span className="task-icon">
+              {task.status === "completed" ? "✓" :
+               task.status === "in_progress" ? "◐" : "○"}
+            </span>
+            <span className="task-label">{task.task}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+```
+
+### Animation CSS
+
+```css
+.task-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0;
+  transition: opacity 0.3s, color 0.3s;
+}
+
+.task-pending {
+  color: var(--text-muted);
+}
+
+.task-in_progress {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.task-in_progress .task-icon {
+  animation: pulse 1.5s infinite;
+}
+
+.task-completed {
+  color: var(--color-success);
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+```
+
+---
+
+## Markdown Content Rendering
+
+### Tables and Mermaid Diagrams
+
+The assistant's response may include **tables** and **Mermaid diagrams** directly in the markdown content. These are rendered as part of the `answer.delta`/`answer.replace` frames and should be handled by your markdown renderer.
+
+**Tables** — Render using standard markdown table syntax:
+
+```markdown
+| Feature | Us | Competitor |
+|---------|-----|------------|
+| AI Analysis | Advanced | Basic |
+| Price | $10/mo | $15/mo |
+```
+
+**Mermaid Diagrams** — Render using fenced code blocks with `mermaid` language hint:
+
+```markdown
+```mermaid
+flowchart TD
+    A[Discovery] --> B{Qualified?}
+    B -->|Yes| C[Demo]
+    B -->|No| D[Nurture]
+```
+
+```
+
+### Frontend Markdown Library Recommendations
+
+Use a markdown library that supports:
+1. **GFM tables** — GitHub Flavored Markdown table syntax
+2. **Mermaid rendering** — Either built-in or via plugin
+
+Popular options:
+- **react-markdown** + **remark-gfm** + **mermaid** plugin
+- **marked** + mermaid integration
+- **markdown-it** + **markdown-it-mermaid**
+
+### Example: React Markdown with Mermaid
+
+```tsx
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import mermaid from 'mermaid';
+import { useEffect, useRef } from 'react';
+
+function MermaidBlock({ code }: { code: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (ref.current) {
+      mermaid.render('mermaid-' + Date.now(), code).then(({ svg }) => {
+        ref.current!.innerHTML = svg;
+      });
+    }
+  }, [code]);
+
+  return <div ref={ref} className="mermaid-diagram" />;
+}
+
+function AssistantMessage({ content }: { content: string }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        code({ node, inline, className, children, ...props }) {
+          const match = /language-(\w+)/.exec(className || '');
+          if (!inline && match?.[1] === 'mermaid') {
+            return <MermaidBlock code={String(children)} />;
+          }
+          return <code className={className} {...props}>{children}</code>;
+        }
+      }}
+    >
+      {content}
+    </ReactMarkdown>
+  );
+}
+```
 
 ---
 

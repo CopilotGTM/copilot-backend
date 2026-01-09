@@ -149,6 +149,82 @@ class LogFrame(FrameBase):
     message: str
 
 
+class VisualizationFrame(FrameBase):
+    """Frame for rich visualizations like Mermaid diagrams, charts, and graphs."""
+
+    type: Literal["visualization"] = "visualization"
+    visualization_type: Literal["mermaid", "chart", "timeline", "orgchart", "mindmap"]
+    content: str  # Mermaid syntax or chart specification
+    title: str | None = None
+    description: str | None = None
+    diagram_type: str | None = Field(
+        default=None,
+        description="Specific diagram type (e.g., flowchart, sequence, gantt, pie, quadrant)",
+    )
+
+
+class StructuredDataFrame(FrameBase):
+    """Frame for structured data like tables, comparisons, and lists."""
+
+    type: Literal["structured_data"] = "structured_data"
+    data_type: Literal["table", "comparison", "timeline", "list", "key_value"]
+    title: str | None = None
+    columns: list[str] | None = Field(
+        default=None, description="Column headers for table/comparison types"
+    )
+    rows: list[dict[str, Any]] | None = Field(
+        default=None, description="Row data as list of dictionaries"
+    )
+    items: list[dict[str, Any]] | None = Field(
+        default=None, description="Items for list/timeline types"
+    )
+    metadata: dict[str, Any] | None = Field(
+        default=None, description="Additional metadata for rendering hints"
+    )
+
+
+class TaskItem(BaseModel):
+    """Individual task item for agent's work tracking."""
+
+    id: str = Field(description="Unique identifier to reference this task")
+    task: str = Field(description="Description of what the agent is doing")
+    status: Literal["pending", "in_progress", "completed"] = Field(
+        default="pending", description="Current status"
+    )
+
+
+class TaskUpdate(BaseModel):
+    """Compact task update for delta changes."""
+
+    id: str = Field(description="Task ID to update, or new ID if adding")
+    status: Literal["pending", "in_progress", "completed"] = Field(
+        description="New status for the task"
+    )
+    task: str | None = Field(default=None, description="Task description (required for new tasks)")
+    is_new: bool = Field(default=False, description="True if this is a new task")
+
+
+class TaskListFrame(FrameBase):
+    """Frame for agent's task tracking - shows what the agent is working on.
+
+    Two modes:
+    - Full list: `tasks` contains complete task list (initial or full refresh)
+    - Delta updates: `updates` contains only changes (efficient for subsequent updates)
+
+    Frontend should:
+    - On `tasks`: Replace entire task list
+    - On `updates`: Apply changes to existing task list
+    """
+
+    type: Literal["task_list"] = "task_list"
+    tasks: list[TaskItem] | None = Field(
+        default=None, description="Full task list (used for initial/complete list)"
+    )
+    updates: list[TaskUpdate] | None = Field(
+        default=None, description="Delta updates (used for efficient status changes)"
+    )
+
+
 Frame = Union[
     AnswerDelta,
     AnswerReplace,
@@ -165,4 +241,7 @@ Frame = Union[
     Finalize,
     ErrorFrame,
     LogFrame,
+    VisualizationFrame,
+    StructuredDataFrame,
+    TaskListFrame,
 ]

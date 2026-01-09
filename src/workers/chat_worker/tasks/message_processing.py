@@ -35,6 +35,9 @@ FRAME_TYPE_PROGRESS_UPDATE = "progress.update"
 FRAME_TYPE_TOOL_USAGE = "tool.usage"
 FRAME_TYPE_THINKING_UPDATE = "thinking.update"
 FRAME_TYPE_FINALIZE = "finalize"
+FRAME_TYPE_VISUALIZATION = "visualization"
+FRAME_TYPE_STRUCTURED_DATA = "structured_data"
+FRAME_TYPE_TASK_LIST = "task_list"
 
 
 def _cleanup_job_stream(organisation_id: UUID, job_id: UUID, delay_seconds: int = 30) -> None:
@@ -112,6 +115,12 @@ def _process_frame_data(data: dict, result_summary: dict) -> None:
         _process_tool_usage_frame(data, result_summary)
     elif ftype == FRAME_TYPE_THINKING_UPDATE:
         _process_thinking_frame(data, result_summary)
+    elif ftype == FRAME_TYPE_VISUALIZATION:
+        _process_visualization_frame(data, result_summary)
+    elif ftype == FRAME_TYPE_STRUCTURED_DATA:
+        _process_structured_data_frame(data, result_summary)
+    elif ftype == FRAME_TYPE_TASK_LIST:
+        _process_task_list_frame(data, result_summary)
 
 
 def _process_answer_frame(data: dict, result_summary: dict) -> None:
@@ -202,6 +211,50 @@ def _process_thinking_frame(data: dict, result_summary: dict) -> None:
     )
 
 
+def _process_visualization_frame(data: dict, result_summary: dict) -> None:
+    """Process visualization frames (Mermaid diagrams, charts, etc.)."""
+    result_summary["visualizations"].append(
+        {
+            "visualization_type": data.get("visualization_type"),
+            "diagram_type": data.get("diagram_type"),
+            "content": data.get("content"),
+            "title": data.get("title"),
+            "description": data.get("description"),
+        }
+    )
+
+
+def _process_structured_data_frame(data: dict, result_summary: dict) -> None:
+    """Process structured data frames (tables, comparisons, lists)."""
+    result_summary["structured_data"].append(
+        {
+            "data_type": data.get("data_type"),
+            "title": data.get("title"),
+            "columns": data.get("columns"),
+            "rows": data.get("rows"),
+            "items": data.get("items"),
+            "metadata": data.get("metadata"),
+        }
+    )
+
+
+def _process_task_list_frame(data: dict, result_summary: dict) -> None:
+    """Process task list frames for agent work tracking.
+
+    Each task_list frame replaces the previous one (latest status).
+    """
+    tasks = data.get("tasks") or []
+    result_summary["task_list"] = [
+        {
+            "id": task.get("id"),
+            "task": task.get("task"),
+            "status": task.get("status"),
+        }
+        for task in tasks
+        if isinstance(task, dict)
+    ]
+
+
 async def _consume_agent_stream(
     chat_type,
     history,
@@ -225,6 +278,9 @@ async def _consume_agent_stream(
         "progress_updates": [],
         "tool_usage": [],
         "thinking_updates": [],
+        "visualizations": [],
+        "structured_data": [],
+        "task_list": [],
     }
 
     # Extract assistant_message_id from job metadata for SSE frames
@@ -293,6 +349,9 @@ async def _consume_agent_stream(
             "progress_updates": result_summary["progress_updates"],
             "tool_usage": result_summary["tool_usage"],
             "thinking_updates": result_summary["thinking_updates"],
+            "visualizations": result_summary["visualizations"],
+            "structured_data": result_summary["structured_data"],
+            "task_list": result_summary["task_list"],
         }
 
 
@@ -449,6 +508,9 @@ def _create_error_summary() -> dict:
         "progress_updates": [],
         "tool_usage": [],
         "thinking_updates": [],
+        "visualizations": [],
+        "structured_data": [],
+        "task_list": [],
     }
 
 
@@ -511,6 +573,9 @@ def _create_assistant_message(
             "progress_tracked": bool(result_summary.get("progress_updates")),
             "tool_usage_count": len(result_summary.get("tool_usage") or []),
             "thinking_updates_count": len(result_summary.get("thinking_updates") or []),
+            "visualizations_count": len(result_summary.get("visualizations") or []),
+            "structured_data_count": len(result_summary.get("structured_data") or []),
+            "task_list_count": len(result_summary.get("task_list") or []),
         },
         agent_data={
             "sources": result_summary.get("sources"),
@@ -520,6 +585,9 @@ def _create_assistant_message(
             "progress_updates": result_summary.get("progress_updates") or [],
             "tool_usage": result_summary.get("tool_usage") or [],
             "thinking_updates": result_summary.get("thinking_updates") or [],
+            "visualizations": result_summary.get("visualizations") or [],
+            "structured_data": result_summary.get("structured_data") or [],
+            "task_list": result_summary.get("task_list") or [],
         },
     )
 
@@ -555,6 +623,9 @@ def _finalize_job(
         "progress_updates_count": len(result_summary.get("progress_updates") or []),
         "tool_usage_count": len(result_summary.get("tool_usage") or []),
         "thinking_updates_count": len(result_summary.get("thinking_updates") or []),
+        "visualizations_count": len(result_summary.get("visualizations") or []),
+        "structured_data_count": len(result_summary.get("structured_data") or []),
+        "task_list": result_summary.get("task_list") or [],
     }
     job.status = JobStatus.COMPLETED
     session.add(job)

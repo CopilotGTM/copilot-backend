@@ -14,6 +14,7 @@ from src.domain.models.organisation_tables.chat_message_models import ChatMessag
 
 class Agent(ABC):
     def __init__(self, *, context: AgentContext):
+        super().__init__()
         self.context = context
 
     async def run_structured(self, message_list: list[ChatMessage]) -> ChatAgentOutput:
@@ -21,6 +22,6 @@ class Agent(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def run_stream(self, message_list: list[ChatMessage]) -> AsyncIterator[Frame]:
+    async def run_stream(self, message_list: list[ChatMessage]) -> AsyncIterator[Frame]:
         """Run the agent and stream back frames."""
         ...
