@@ -74,6 +74,19 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
                 "queue": "integrations",
                 "routing_key": "integrations",
             },
+            # Email sync tasks (three-tier architecture)
+            "integrations.sync_email_all_orgs": {
+                "queue": "integrations",
+                "routing_key": "integrations",
+            },
+            "integrations.sync_email_org": {
+                "queue": "integrations",
+                "routing_key": "integrations",
+            },
+            "integrations.sync_email_integration": {
+                "queue": "integrations_priority",  # Priority queue for manual triggers
+                "routing_key": "integrations_priority",
+            },
         }
 
         # Celery Beat schedule for periodic tasks
@@ -108,7 +121,17 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
             },
             "sync-calendar-events-all-orgs": {
                 "task": "integrations.sync_calendar_events",
-                "schedule": crontab(minute="*/15"),  # Run every 5 minutes (for testing)
+                "schedule": crontab(minute="*/30"),  # Run every 30 minutes
+                "kwargs": {},  # No args = sync all organizations
+                "options": {
+                    "queue": "integrations",
+                    "routing_key": "integrations",
+                },
+            },
+            # Email sync (three-tier: Tier 1 triggers Tier 2 for each org)
+            "sync-email-all-orgs": {
+                "task": "integrations.sync_email_all_orgs",
+                "schedule": crontab(minute="*/30"),  # Run every 30 minutes
                 "kwargs": {},  # No args = sync all organizations
                 "options": {
                     "queue": "integrations",

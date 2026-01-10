@@ -62,8 +62,10 @@ def worker_shutdown_handler(sender=None, **kwargs):
 
 
 # Explicitly import task modules to ensure registration
+# Email sync tasks (three-tier architecture)
 from .tasks import (
     deal_channel_messages_tasks,  # noqa: F401, E402
+    email,  # noqa: F401, E402
     sync_tasks,  # noqa: F401, E402
     teams_sync_tasks,  # noqa: F401, E402
     token_refresh,  # noqa: F401, E402
