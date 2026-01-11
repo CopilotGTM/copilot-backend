@@ -26,6 +26,7 @@ from .company_enrichment_service import CompanyEnrichmentService
 from .contact_enrichment_service import ContactEnrichmentService
 from .deal_enrichment_service import DealEnrichmentService
 from .owner_enrichment_service import OwnerEnrichmentService
+from .reference_data_detector import MissingPipelinesDetector, MissingUsersDetector
 from .task_enrichment_service import TaskEnrichmentService
 
 if TYPE_CHECKING:
@@ -125,19 +126,28 @@ class CRMEnrichmentOrchestrator:
             )
         return self._task_enrichment
 
-    async def enrich_after_deals_sync(self) -> dict:
+    async def enrich_after_deals_sync(self, detect_missing: bool = True) -> dict:
         """Called after deals sync - enriches deals + participants.
 
         HubSpot Flow:
             1. Enrich deals (owner, contact, company details)
             2. Enrich participants
+            3. Detect missing reference data (pipelines, users)
 
         Salesforce Flow:
             1. Enrich deals (owner, contact, company details)
             2. Enrich participants
+            3. Detect missing reference data (pipelines, users)
+
+        Args:
+            detect_missing: If True, detect missing pipelines/users after enrichment.
+                           Returns list of missing IDs for caller to trigger re-sync.
 
         Returns:
-            Dictionary with enrichment metrics
+            Dictionary with enrichment metrics and missing reference data IDs.
+            If detect_missing=True, includes:
+                - missing_pipelines: List of pipeline external IDs not found
+                - missing_users: List of user external IDs not found
         """
         logger.info(
             "Running deal enrichment: org=%s integration=%s provider=%s",
@@ -148,10 +158,12 @@ class CRMEnrichmentOrchestrator:
             else self.integration_type,
         )
 
-        result = {
+        result: dict = {
             "entity": "deals",
             "deals_enriched": 0,
             "participants_enriched": 0,
+            "missing_pipelines": [],
+            "missing_users": [],
         }
 
         # Step 1: Enrich deals
@@ -162,25 +174,55 @@ class CRMEnrichmentOrchestrator:
         participants_count = await self.deal_enrichment.enrich_participants(self.integration_id)
         result["participants_enriched"] = participants_count
 
+        # Step 3: Detect missing reference data (for on-demand sync trigger)
+        if detect_missing:
+            missing_pipelines = await self._detect_missing_pipelines()
+            missing_users = await self._detect_missing_users()
+
+            result["missing_pipelines"] = missing_pipelines
+            result["missing_users"] = missing_users
+
+            if missing_pipelines:
+                logger.warning(
+                    "Missing pipelines detected after deal enrichment: org=%s count=%d ids=%s",
+                    self.organisation_id,
+                    len(missing_pipelines),
+                    missing_pipelines[:5],  # Log first 5 for brevity
+                )
+
+            if missing_users:
+                logger.warning(
+                    "Missing users detected after deal enrichment: org=%s count=%d ids=%s",
+                    self.organisation_id,
+                    len(missing_users),
+                    missing_users[:5],  # Log first 5 for brevity
+                )
+
         logger.info(
-            "Deal enrichment complete: org=%s deals=%d participants=%d",
+            "Deal enrichment complete: org=%s deals=%d participants=%d missing_pipelines=%d missing_users=%d",
             self.organisation_id,
             deals_count,
             participants_count,
+            len(result.get("missing_pipelines", [])),
+            len(result.get("missing_users", [])),
         )
 
         return result
 
-    async def enrich_after_contacts_sync(self) -> dict:
+    async def enrich_after_contacts_sync(self, detect_missing: bool = True) -> dict:
         """Called after contacts sync - enriches contacts + re-enriches related entities.
 
         Both HubSpot and Salesforce:
             1. Enrich contacts (owner details only - no company FK on contacts)
             2. Re-enrich deal participants (now that contacts exist)
             3. Re-enrich tasks (resolve contact_id FKs)
+            4. Detect missing users (if detect_missing=True)
+
+        Args:
+            detect_missing: If True, detect missing users after enrichment.
 
         Returns:
-            Dictionary with enrichment metrics
+            Dictionary with enrichment metrics and missing reference data.
         """
         logger.info(
             "Running contact enrichment: org=%s integration=%s",
@@ -188,11 +230,12 @@ class CRMEnrichmentOrchestrator:
             self.integration_id,
         )
 
-        result = {
+        result: dict = {
             "entity": "contacts",
             "contacts_enriched": 0,
             "participants_enriched": 0,
             "tasks_enriched": 0,
+            "missing_users": [],
         }
 
         # Step 1: Enrich contacts
@@ -209,12 +252,24 @@ class CRMEnrichmentOrchestrator:
         tasks_count = await self.task_enrichment.enrich_tasks_for_integration(self.integration_id)
         result["tasks_enriched"] = tasks_count
 
+        # Step 4: Detect missing users
+        if detect_missing:
+            missing_users = await self._detect_missing_users()
+            result["missing_users"] = missing_users
+            if missing_users:
+                logger.warning(
+                    "Missing users detected after contact enrichment: org=%s count=%d",
+                    self.organisation_id,
+                    len(missing_users),
+                )
+
         logger.info(
-            "Contact enrichment complete: org=%s contacts=%d participants=%d tasks=%d",
+            "Contact enrichment complete: org=%s contacts=%d participants=%d tasks=%d missing_users=%d",
             self.organisation_id,
             contacts_count,
             participants_count,
             tasks_count,
+            len(result.get("missing_users", [])),
         )
 
         return result
@@ -403,3 +458,62 @@ class CRMEnrichmentOrchestrator:
         )
 
         return results
+
+    # =========================================================================
+    # Helper methods for detecting missing reference data
+    # =========================================================================
+
+    async def _detect_missing_pipelines(self) -> list[str]:
+        """Detect pipeline_external_ids that don't have matching CRMPipeline records.
+
+        Used after deal enrichment to identify if pipeline sync is needed.
+
+        Returns:
+            List of pipeline external IDs not found in the database.
+        """
+        detector = MissingPipelinesDetector(
+            db=self.db,
+            organisation_id=self.organisation_id,
+            integration_id=self.integration_id,
+        )
+        return await detector.detect()
+
+    async def _detect_missing_users(self) -> list[str]:
+        """Detect owner_external_ids that don't have matching CRMUser records.
+
+        Used after any enrichment to identify if users sync is needed.
+
+        Returns:
+            List of user external IDs not found in the database.
+        """
+        detector = MissingUsersDetector(
+            db=self.db,
+            organisation_id=self.organisation_id,
+            integration_id=self.integration_id,
+        )
+        return await detector.detect()
+
+    async def detect_missing_reference_data(self) -> dict:
+        """Detect all missing reference data for this integration.
+
+        Convenience method that runs all detectors and returns a summary.
+        Useful for diagnostics or triggering on-demand syncs.
+
+        Returns:
+            Dictionary with missing data summary:
+            {
+                "missing_pipelines": ["id1", "id2"],
+                "missing_users": ["id3", "id4"],
+                "needs_pipeline_sync": True,
+                "needs_users_sync": True,
+            }
+        """
+        missing_pipelines = await self._detect_missing_pipelines()
+        missing_users = await self._detect_missing_users()
+
+        return {
+            "missing_pipelines": missing_pipelines,
+            "missing_users": missing_users,
+            "needs_pipeline_sync": len(missing_pipelines) > 0,
+            "needs_users_sync": len(missing_users) > 0,
+        }
