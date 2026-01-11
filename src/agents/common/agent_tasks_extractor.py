@@ -45,14 +45,6 @@ class AgentTasksExtractor:
 
     def __init__(self):
         self._pending_buffer: str = ""
-        # DEBUG: Print sentinel bytes to check for unicode issues
-        print("[AGENT_TASKS_EXTRACTOR] Initialized")
-        print(f"[AGENT_TASKS_EXTRACTOR] START sentinel: {AGENT_TASKS_START!r}")
-        print(
-            f"[AGENT_TASKS_EXTRACTOR] START sentinel bytes: {AGENT_TASKS_START.encode('utf-8')!r}"
-        )
-        print(f"[AGENT_TASKS_EXTRACTOR] END sentinel: {AGENT_TASKS_END!r}")
-        print(f"[AGENT_TASKS_EXTRACTOR] END sentinel bytes: {AGENT_TASKS_END.encode('utf-8')!r}")
 
     def process(self, content: str) -> ExtractionResult:
         """Process incoming content, extract complete AGENT_TASKS blocks.
@@ -65,34 +57,6 @@ class AgentTasksExtractor:
         """
         # Add to pending buffer
         self._pending_buffer += content
-
-        # DEBUG: Print incoming content and buffer state
-        print("[AGENT_TASKS_EXTRACTOR] process() called")
-        print(f"[AGENT_TASKS_EXTRACTOR] Incoming content ({len(content)} chars): {content[:200]!r}")
-        print(
-            f"[AGENT_TASKS_EXTRACTOR] Buffer ({len(self._pending_buffer)} chars): {self._pending_buffer[:300]!r}"
-        )
-        print(f"[AGENT_TASKS_EXTRACTOR] Looking for START sentinel: {AGENT_TASKS_START!r}")
-        print(
-            f"[AGENT_TASKS_EXTRACTOR] START in buffer: {AGENT_TASKS_START in self._pending_buffer}"
-        )
-
-        # DEBUG: Check for alternative bracket characters that look similar
-        # Check common lookalikes: ⟦ (U+27E6), 〚 (U+301A), ⌈ (U+2308), [ (U+005B)
-        if "AGENT_TASKS" in self._pending_buffer:
-            print("[AGENT_TASKS_EXTRACTOR] Found 'AGENT_TASKS' text in buffer!")
-            # Find the character before AGENT_TASKS
-            idx = self._pending_buffer.find("AGENT_TASKS")
-            if idx > 0:
-                before_char = self._pending_buffer[idx - 1]
-                print(
-                    f"[AGENT_TASKS_EXTRACTOR] Char before 'AGENT_TASKS': {before_char!r} (U+{ord(before_char):04X})"
-                )
-                print(f"[AGENT_TASKS_EXTRACTOR] Expected: '⟦' (U+{ord('⟦'):04X})")
-            # Find content around AGENT_TASKS
-            start = max(0, idx - 5)
-            end = min(len(self._pending_buffer), idx + 20)
-            print(f"[AGENT_TASKS_EXTRACTOR] Context: {self._pending_buffer[start:end]!r}")
 
         frames: list[TaskListFrame] = []
         clean_parts: list[str] = []
@@ -134,25 +98,14 @@ class AgentTasksExtractor:
                 # Send everything except the partial match
                 clean_parts.append(self._pending_buffer[: -len(kept)])
                 self._pending_buffer = kept
-                print(f"[AGENT_TASKS_EXTRACTOR] Keeping potential partial sentinel: {kept!r}")
             else:
                 clean_parts.append(self._pending_buffer)
                 self._pending_buffer = ""
 
-        result = ExtractionResult(
+        return ExtractionResult(
             clean_content="".join(clean_parts),
             frames=frames,
         )
-
-        # DEBUG: Print extraction result
-        print(
-            f"[AGENT_TASKS_EXTRACTOR] Result: {len(result.frames)} frames, clean_content ({len(result.clean_content)} chars): {result.clean_content[:200]!r}"
-        )
-        if result.frames:
-            for i, frame in enumerate(result.frames):
-                print(f"[AGENT_TASKS_EXTRACTOR] Frame {i}: {frame}")
-
-        return result
 
     def flush(self) -> ExtractionResult:
         """Flush any remaining buffered content.
@@ -208,14 +161,12 @@ class AgentTasksExtractor:
             # Full task list format
             tasks = self._parse_full_list(data)
             if tasks:
-                logger.info("Parsed AGENT_TASKS full list with %d tasks", len(tasks))
                 return TaskListFrame(tasks=tasks)
 
         elif isinstance(first, str):
             # Delta update format
             updates = self._parse_delta_updates(data)
             if updates:
-                logger.info("Parsed AGENT_TASKS delta with %d updates", len(updates))
                 return TaskListFrame(updates=updates)
 
         return None

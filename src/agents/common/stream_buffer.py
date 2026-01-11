@@ -47,7 +47,6 @@ class StreamingAnswerBuffer:
             for result in self._process_chunk_for_separator(chunk.content, state):
                 yield result
 
-        self.logger.info(f"Agent log: {state['log_buffer']}")
         buffer_content = str(state["buffer"])
         json_started = bool(state["json_part_started"])
         yield ("final", buffer_content, json_started)

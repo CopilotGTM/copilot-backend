@@ -21,7 +21,7 @@ classifiers = [
 # =============================================================================
 dependencies = [
     # Configuration & Environment
-    "python-dotenv==1.1.1",
+    "python-dotenv==1.2.1",
     "pydantic~=2.11.7",
     "pydantic[email]",
     
@@ -39,7 +39,7 @@ dependencies = [
     "psycopg2-binary==2.9.10",
     "asyncpg==0.30.0",
     "alembic==1.16.4",
-    "pgvector==0.4.1",
+    "pgvector==0.4.2",
     
     # Azure Core Services (KeyVault for secrets, Identity for auth)
     "azure-identity==1.25.1",
@@ -60,7 +60,7 @@ api = [
     # FastAPI and ASGI server
     "fastapi==0.116.1",
     "uvicorn[standard]==0.35.0",
-    "sse-starlette==3.0.2",
+    "sse-starlette==3.1.2",
     
     # Authentication and Security
     "python-jose[cryptography]==3.5.0",
@@ -126,6 +126,14 @@ workers-light = [
     
     # Search tools used by GeneralAgent
     "duckduckgo-search~=8.1.1",
+
+    # Research tools (free, no API keys required)
+    "yfinance~=0.2.50",
+    "wikipedia~=1.4.0",
+    "crawl4ai~=0.4.0",
+    "arxiv~=2.1.0",
+    "newspaper4k~=0.9.0",
+    "lxml-html-clean~=0.4.0",
     
     # Supabase (Organization worker provisioning)
     "supabase>=2.27.1",
@@ -185,6 +193,12 @@ full = [
     
     # === Light Workers Dependencies ===
     "duckduckgo-search~=8.1.1",
+    "yfinance~=0.2.50",
+    "wikipedia~=1.4.0",
+    "crawl4ai~=0.4.0",
+    "arxiv~=2.1.0",
+    "newspaper4k~=0.9.0",
+    "lxml-html-clean~=0.4.0",
     
     # === Integrations Worker Dependencies ===
     "aiohttp==3.9.1",

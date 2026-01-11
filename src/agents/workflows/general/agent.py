@@ -35,9 +35,6 @@ class GeneralAgent(BaseAgent):
     ):
         super().__init__(context=context)
         self.capabilities: AgentCapabilities | None = None
-        logger.info(
-            "Initializing GeneralAgent with enhanced transparency features %s", self.context
-        )
         self.json_extractor = JsonExtractor()
         self.metadata_parser = MetadataParser(self.json_extractor)
         self.separators = ["⟦AEP:1⟧"]
@@ -46,11 +43,6 @@ class GeneralAgent(BaseAgent):
         self._tools: list[Callable[..., Any]] = get_tools_for_agent(
             "GeneralAgent", context, lambda: self.capabilities
         )
-
-        # Log tool registration for debugging
-        for tool_func in self._tools:
-            doc_preview = tool_func.__doc__[:100] if tool_func.__doc__ else "No docstring"
-            logger.info("[TOOL REGISTERED] %s: %s...", tool_func.__name__, doc_preview)
 
         # Generate prompt with org_name from context (falls back to "Our Organization" if None)
         system_prompt = get_general_prompt(context.org_name)
@@ -64,15 +56,11 @@ class GeneralAgent(BaseAgent):
             markdown=True,
             tools=self._tools,  # type: ignore[arg-type]
         )
-        logger.info("[AGNO AGENT] Initialized with %d tools", len(self._tools))
 
     def run_stream(self, message_list: list[ChatMessage]) -> AsyncIterator[Frame]:
         """Run with enhanced JSON streaming and transparency support."""
 
         async def _run():
-            logger.info("Starting enhanced workflow execution with transparency")
-            logger.info("[AGNO AGENT] Processing %d messages", len(message_list))
-
             processed_messages = prepare_messages(message_list)
             message_id = str(uuid.uuid4())
 
@@ -82,7 +70,6 @@ class GeneralAgent(BaseAgent):
             self.capabilities = self._setup_capabilities(message_id, frame_queue)
 
             try:
-                logger.info("[AGNO AGENT] Calling arun with stream=True...")
                 chat_response = await self.general_agent.arun(
                     messages=processed_messages, stream=True
                 )
@@ -131,22 +118,15 @@ class GeneralAgent(BaseAgent):
                 # Just a signal to drain the queue, no content to emit
                 continue
             elif kind == "answer" and content:
-                # DEBUG: Print raw answer content before extraction
-                print(f"[GENERAL_AGENT] answer chunk ({len(content)} chars): {content[:200]!r}")
-
                 # Extract AGENT_TASKS blocks from answer content
                 result = tasks_extractor.process(content)
 
                 # Emit any task frames that were extracted
                 for task_frame in result.frames:
-                    print(f"[GENERAL_AGENT] Yielding task_frame: {task_frame}")
                     yield task_frame
 
                 # Emit cleaned content (without AGENT_TASKS blocks)
                 if result.clean_content:
-                    print(
-                        f"[GENERAL_AGENT] Yielding AnswerDelta ({len(result.clean_content)} chars): {result.clean_content[:100]!r}"
-                    )
                     yield AnswerDelta(content=result.clean_content)
             elif kind == "final":
                 # Flush any remaining content from extractor

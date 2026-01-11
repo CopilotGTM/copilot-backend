@@ -31,7 +31,6 @@ class MetadataParser:
 
         try:
             response_data = json.loads(json_text)
-            logger.info(f"Parsed JSON metadata: {response_data}")
             self._validate_metadata_version(response_data)
 
             yield from self._yield_confidence_frame(response_data)
@@ -115,33 +114,18 @@ class MetadataParser:
             or response_data.get("switch")
         )
 
-        logger.info(
-            f"Checking for agent switch in response_data keys: {list(response_data.keys())}"
-        )
-        logger.info(f"Switch data found: {switch}")
-
         if isinstance(switch, dict) and switch.get("to"):
-            logger.info(f"Agent switch detected - switching to: {switch.get('to')}")
             yield AgentSwitch(
                 from_agent="GENERAL_CHAT",
                 to_agent=switch.get("to"),
                 reason=switch.get("reason") or "Agent switch requested",
             )
         elif isinstance(switch, str) and switch.strip():
-            logger.info(f"Agent switch detected (string format) - switching to: {switch}")
             yield AgentSwitch(
                 from_agent="GENERAL_CHAT",
                 to_agent=switch.strip(),
                 reason="Agent switch requested",
             )
-        else:
-            if any(key.lower().startswith(("switch", "agent")) for key in response_data):
-                logger.info(
-                    "Potential agent switch fields found but not in expected format: "
-                    f"{[k for k in response_data if 'switch' in k.lower() or 'agent' in k.lower()]}"
-                )
-            else:
-                logger.info("No agent switch detected in response data")
 
     def _convert_confidence_score(self, confidence_value) -> str | None:
         if confidence_value is None:
