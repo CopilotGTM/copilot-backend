@@ -294,33 +294,45 @@ async def handle_nango_webhook(
         match webhook_type:
             case "auth":
                 return await webhook_service._handle_authorization_webhook(payload)
+            # DEPRECATED: Sync webhooks - replaced by Celery Beat scheduled sync
+            # See: src/workers/integrations_worker/tasks/crm/deprecating_webhook.md
+            # case "sync":
+            #     # Validate required fields
+            #     if not payload.get("connectionId") or not payload.get("providerConfigKey"):
+            #         logger.error(
+            #             "Sync webhook missing connectionId or providerConfigKey: %s", payload
+            #         )
+            #         return Response.bad_request_error_response(
+            #             message="Missing connectionId or providerConfigKey in sync webhook."
+            #         )
+            #
+            #     # Fetch mapping details
+            #     mapping_details = await webhook_service._get_connection_mapping(
+            #         UUID(payload.get("connectionId"))
+            #     )
+            #     if not mapping_details:
+            #         logger.error(
+            #             "Sync webhook: mapping not found for connection %s",
+            #             payload.get("connectionId"),
+            #         )
+            #         return Response.bad_request_error_response(
+            #             message="Mapping not found for connection.", data=None
+            #         )
+            #
+            #     return await webhook_service._handle_sync_webhook(
+            #         payload,
+            #         organisation_id=mapping_details.organisation_id,
+            #         integration_id=mapping_details.integration_id,
+            #     )
             case "sync":
-                # Validate required fields
-                if not payload.get("connectionId") or not payload.get("providerConfigKey"):
-                    logger.error(
-                        "Sync webhook missing connectionId or providerConfigKey: %s", payload
-                    )
-                    return Response.bad_request_error_response(
-                        message="Missing connectionId or providerConfigKey in sync webhook."
-                    )
-
-                # Fetch mapping details
-                mapping_details = await webhook_service._get_connection_mapping(
-                    UUID(payload.get("connectionId"))
+                # Sync webhooks deprecated - return 200 OK to acknowledge but don't process
+                logger.info(
+                    "Received sync webhook (deprecated) - ignoring. connectionId=%s",
+                    payload.get("connectionId"),
                 )
-                if not mapping_details:
-                    logger.error(
-                        "Sync webhook: mapping not found for connection %s",
-                        payload.get("connectionId"),
-                    )
-                    return Response.bad_request_error_response(
-                        message="Mapping not found for connection.", data=None
-                    )
-
-                return await webhook_service._handle_sync_webhook(
-                    payload,
-                    organisation_id=mapping_details.organisation_id,
-                    integration_id=mapping_details.integration_id,
+                return JSONResponse(
+                    status_code=200,
+                    content={"status": "ignored", "reason": "sync webhooks deprecated"},
                 )
             case _:
                 logger.error("Received unknown Nango webhook type: %s", webhook_type)

@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from src.infra.utils.logger import get_logger
 from src.workers.integrations_worker.core import BaseFetcher
+
+logger = get_logger(__name__)
 
 # HubSpot deal properties to fetch
 HUBSPOT_DEAL_PROPERTIES = [
@@ -97,34 +100,28 @@ class HubSpotDealFetcher(BaseFetcher):
         Args:
             limit: Number of records per page
             incremental: Whether to fetch only updated records
-            last_sync_time: ISO timestamp for incremental sync
+            last_sync_time: Unix timestamp in milliseconds for incremental sync
 
         Returns:
             List of deal records with properties and associations
         """
+        if incremental and last_sync_time:
+            # Use search endpoint for incremental sync (requires POST)
+            return await self._fetch_incremental(
+                last_sync_time=last_sync_time,
+                limit=limit,
+            )
+
+        # Full sync uses the standard GET endpoint
         max_limit = min(limit, 50)  # HubSpot caps propertiesWithHistory requests to 50 rows
 
+        # HubSpot expects comma-separated strings for list params
         params: dict[str, Any] = {
             "limit": max_limit,
-            "properties": HUBSPOT_DEAL_PROPERTIES,
-            "associations": HUBSPOT_DEAL_ASSOCIATIONS,
-            "propertiesWithHistory": HUBSPOT_DEAL_PROPERTY_HISTORY,
+            "properties": ",".join(HUBSPOT_DEAL_PROPERTIES),
+            "associations": ",".join(HUBSPOT_DEAL_ASSOCIATIONS),
+            "propertiesWithHistory": ",".join(HUBSPOT_DEAL_PROPERTY_HISTORY),
         }
-
-        if incremental and last_sync_time:
-            # HubSpot uses hs_lastmodifieddate for filtering
-            # Format: Unix timestamp in milliseconds
-            params["filterGroups"] = [
-                {
-                    "filters": [
-                        {
-                            "propertyName": "hs_lastmodifieddate",
-                            "operator": "GTE",
-                            "value": last_sync_time,
-                        }
-                    ]
-                }
-            ]
 
         # Fetch active deals first (default)
         active = await self._fetch_paginated(
@@ -141,6 +138,101 @@ class HubSpotDealFetcher(BaseFetcher):
         )
 
         return [*active, *archived]
+
+    async def _fetch_incremental(
+        self,
+        last_sync_time: str,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Fetch deals modified since last sync using search endpoint.
+
+        HubSpot's search endpoint requires POST with filterGroups in the body.
+        This is limited to 10,000 results per query.
+
+        Args:
+            last_sync_time: Unix timestamp in milliseconds
+            limit: Number of records per page (max 100, but we use 50 for propertiesWithHistory)
+
+        Returns:
+            List of deal records modified since last_sync_time
+        """
+        all_records: list[dict[str, Any]] = []
+        after: str | None = None
+        page = 1
+        max_limit = min(limit, 50)  # HubSpot caps propertiesWithHistory requests to 50 rows
+
+        logger.info(
+            "Starting incremental deal fetch with hs_lastmodifieddate >= %s",
+            last_sync_time,
+        )
+
+        while True:
+            # Build search request body
+            # Note: HubSpot search supports propertiesWithHistory for stage tracking
+            body: dict[str, Any] = {
+                "filterGroups": [
+                    {
+                        "filters": [
+                            {
+                                "propertyName": "hs_lastmodifieddate",
+                                "operator": "GTE",
+                                "value": last_sync_time,
+                            }
+                        ]
+                    }
+                ],
+                "properties": HUBSPOT_DEAL_PROPERTIES,
+                "propertiesWithHistory": HUBSPOT_DEAL_PROPERTY_HISTORY,
+                "associations": HUBSPOT_DEAL_ASSOCIATIONS,
+                "limit": max_limit,
+            }
+
+            if after:
+                body["after"] = after
+
+            response = await self.nango_client.proxy_request(
+                provider_config_key=self.provider_config_key,
+                connection_id=self.connection_id,
+                endpoint="/crm/v3/objects/deals/search",
+                method="POST",
+                data=body,
+            )
+
+            if not response or not isinstance(response, dict):
+                break
+
+            records = response.get("results", [])
+            if not records:
+                break
+
+            all_records.extend(records)
+            logger.debug("Fetched %d deals on page %d", len(records), page)
+
+            # Check pagination
+            paging = response.get("paging", {})
+            next_page = paging.get("next", {})
+            after = next_page.get("after")
+
+            if not after:
+                break
+
+            page += 1
+
+            # Safety limit: HubSpot search is limited to 10,000 results
+            if len(all_records) >= 10000:
+                logger.warning(
+                    "Reached HubSpot search limit of 10,000 results. "
+                    "Some records may be missing. Consider reducing sync interval."
+                )
+                break
+
+        logger.info(
+            "Completed incremental deal fetch: %d records across %d pages",
+            len(all_records),
+            page,
+        )
+
+        return all_records
 
     async def fetch_by_ids(
         self,

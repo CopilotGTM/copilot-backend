@@ -32,6 +32,9 @@ from src.service.integrations import NangoClient
 
 logger = get_logger(__name__)
 
+# CRM integration types that should trigger initial sync on connect
+CRM_INTEGRATION_TYPES = {IntegrationType.HUBSPOT, IntegrationType.SALESFORCE}
+
 # Constants for webhook responses
 SYNC_WEBHOOK_ACCEPTED_MSG = "Sync webhook accepted"
 
@@ -58,7 +61,7 @@ class NangoWebhookService:
         """Get OrganisationIntegrationDetails mapping for a given connection UUID."""
         async for master_session in acquire_master_async_session():
             stmt = select(OrganisationIntegrationDetails).where(
-                OrganisationIntegrationDetails.connection_id == connection_uuid
+                OrganisationIntegrationDetails.connection_id == connection_uuid  # type: ignore[arg-type]
             )
             result = await master_session.execute(stmt)
             mapping = result.scalar_one_or_none()
@@ -75,7 +78,7 @@ class NangoWebhookService:
     ) -> None:
         async for master_session in acquire_master_async_session():
             stmt = select(OrganisationIntegrationDetails).where(
-                OrganisationIntegrationDetails.connection_id == connection_uuid
+                OrganisationIntegrationDetails.connection_id == connection_uuid  # type: ignore[arg-type]
             )
             result = await master_session.execute(stmt)
             mapping = result.scalar_one_or_none()
@@ -328,10 +331,10 @@ class NangoWebhookService:
             reactivate_stmt = (
                 select(KnowledgeIntegration)
                 .where(
-                    KnowledgeIntegration.created_by_user_id == user_id,
-                    KnowledgeIntegration.integration_type == integration_type,
+                    KnowledgeIntegration.created_by_user_id == user_id,  # type: ignore[arg-type]
+                    KnowledgeIntegration.integration_type == integration_type,  # type: ignore[arg-type]
                 )
-                .order_by(desc(KnowledgeIntegration.updated_at))
+                .order_by(desc(KnowledgeIntegration.updated_at))  # type: ignore[arg-type]
                 .limit(1)
             )
             reactivatable_result = await org_session.execute(reactivate_stmt)
@@ -403,6 +406,9 @@ class NangoWebhookService:
         # Update connection mapping in master database
         await self._save_connection_mapping(new_connection_id, integration, provider_config_key)
 
+        # Trigger initial CRM sync if this is a CRM integration
+        await self._trigger_crm_initial_sync(integration.organisation_id, integration)
+
         return Response.success_response(
             message="Integration reactivated successfully",
             data={
@@ -473,6 +479,10 @@ class NangoWebhookService:
             )
 
             await self._save_connection_mapping(connection_id, integration, provider_config_key)
+
+            # Trigger initial CRM sync if this is a CRM integration
+            await self._trigger_crm_initial_sync(user.organisation_id, integration)
+
             return Response.success_response(
                 message="Webhook processed successfully",
                 data={
@@ -489,6 +499,69 @@ class NangoWebhookService:
             return Response.bad_request_error_response(
                 message=f"Unknown integration type: {provider_config_key}"
             )
+
+    async def _trigger_crm_initial_sync(
+        self,
+        organisation_id: UUID,
+        integration: KnowledgeIntegration,
+    ) -> None:
+        """
+        Trigger initial CRM sync for a newly connected/reactivated CRM integration.
+
+        Uses Celery chord to run all sync tasks in parallel, then runs enrichment
+        task ONLY after all syncs complete.
+        """
+        integration_type = integration.integration_type
+        if isinstance(integration_type, str):
+            integration_type = IntegrationType(integration_type)
+
+        if integration_type not in CRM_INTEGRATION_TYPES:
+            return
+
+        logger.info(
+            "Triggering CRM initial sync for integration %s (org=%s, type=%s)",
+            integration.integration_id,
+            organisation_id,
+            integration_type.value,
+        )
+
+        from celery import chord, group
+        from src.workers.integrations_worker.tasks.crm import (
+            enrich_crm_after_initial_sync_task,
+            sync_crm_activities_org_task,
+            sync_crm_companies_org_task,
+            sync_crm_contacts_org_task,
+            sync_crm_deals_org_task,
+            sync_crm_pipelines_org_task,
+            sync_crm_users_org_task,
+        )
+
+        org_id_str = str(organisation_id)
+        int_id_str = str(integration.integration_id)
+
+        try:
+            # Create group of sync tasks (run in parallel)
+            sync_group = group(
+                sync_crm_companies_org_task.s(org_id_str, skip_enrichment=True),  # type: ignore[attr-defined]
+                sync_crm_contacts_org_task.s(org_id_str, skip_enrichment=True),  # type: ignore[attr-defined]
+                sync_crm_deals_org_task.s(org_id_str, skip_enrichment=True),  # type: ignore[attr-defined]
+                sync_crm_users_org_task.s(org_id_str, skip_enrichment=True),  # type: ignore[attr-defined]
+                sync_crm_pipelines_org_task.s(org_id_str),  # type: ignore[attr-defined]
+                sync_crm_activities_org_task.s(org_id_str, skip_enrichment=True),  # type: ignore[attr-defined]
+            )
+
+            # Chord: run sync group, then enrichment callback after ALL complete
+            # Use .si() (immutable) to ignore group results - enrichment doesn't need them
+            chord(sync_group)(
+                enrich_crm_after_initial_sync_task.si(org_id_str, int_id_str)  # type: ignore[attr-defined]
+            )
+
+            logger.info(
+                "Dispatched CRM sync chord for integration %s (6 sync tasks + enrichment callback)",
+                integration.integration_id,
+            )
+        except Exception as e:
+            logger.error("Failed to dispatch CRM sync chord: %s", str(e), exc_info=True)
 
     async def _save_connection_mapping(
         self,
@@ -513,7 +586,7 @@ class NangoWebhookService:
     async def _fetch_user_from_master(user_uuid: UUID) -> User | None:
         """Fetch User from master database by UUID."""
         async for master_session in acquire_master_async_session():
-            statement = select(User).where(User.user_id == user_uuid)
+            statement = select(User).where(User.user_id == user_uuid)  # type: ignore[arg-type]
             result = await master_session.execute(statement)
             return result.scalar_one_or_none()
         return None

@@ -938,6 +938,20 @@ For optimal results, consider a **hybrid approach**:
 - [x] Implement Delta Query support for Team channel messages
 - [x] Implement client-side filtering for chat messages (no Delta Query support)
 
+### CRM Sync Implementation
+- [ ] Create `tasks/crm/utils.py` with shared utilities (timestamp helpers, constants)
+- [ ] Create `tasks/crm/deals/` folder with all three tiers
+- [ ] Create `tasks/crm/pipelines/` folder with all three tiers
+- [ ] Create `tasks/crm/contacts/` folder with all three tiers
+- [ ] Create `tasks/crm/companies/` folder with all three tiers
+- [ ] Create `tasks/crm/users/` folder with all three tiers
+- [ ] Implement timestamp-based incremental sync in Tier 2 tasks
+- [ ] Store `crm_{entity}_last_sync_at` in connection_metadata
+- [ ] Implement post-sync enrichment triggers
+- [ ] Update Celery Beat schedules with staggered CRM entity schedules
+- [ ] Configure task routes for CRM task names
+- [ ] Update `tasks/__init__.py` to import CRM modules
+
 ### Configuration
 - [x] Update Celery Beat schedules in `config.py`
 - [x] Configure task routes for new task names
@@ -949,12 +963,15 @@ For optimal results, consider a **hybrid approach**:
 - [ ] Integration tests for full flow
 - [ ] Test failure scenarios and recovery
 - [ ] Validate result aggregation
+- [ ] Test CRM timestamp-based incremental sync
+- [ ] Test CRM entity dependency order (staggered schedule)
 
 ### Migration
 - [x] Deprecate old task files (calendar_sync_tasks.py, teams_sync_tasks.py, deal_channel_messages_tasks.py)
 - [ ] Update any API endpoints calling old tasks
 - [x] Update documentation references
 - [ ] Monitor for issues post-migration
+- [ ] Disable Nango webhooks for CRM static pull after scheduled sync is stable
 
 ### Monitoring
 - [ ] Set up monitoring and alerting
@@ -973,6 +990,11 @@ For optimal results, consider a **hybrid approach**:
 | Email | `tasks/email/all_orgs_task.py` | `tasks/email/org_task.py` | `tasks/email/integration_task.py` |
 | Messaging Channels | `tasks/messaging/all_orgs_task.py` | `tasks/messaging/org_task.py` | `tasks/messaging/integration_task.py` |
 | Deal Messages | `tasks/messaging/deal_messages_all_orgs_task.py` | `tasks/messaging/deal_messages_org_task.py` | N/A (use org-level) |
+| CRM Deals | `tasks/crm/deals/all_orgs_task.py` | `tasks/crm/deals/org_task.py` | `tasks/crm/deals/integration_task.py` |
+| CRM Pipelines | `tasks/crm/pipelines/all_orgs_task.py` | `tasks/crm/pipelines/org_task.py` | `tasks/crm/pipelines/integration_task.py` |
+| CRM Contacts | `tasks/crm/contacts/all_orgs_task.py` | `tasks/crm/contacts/org_task.py` | `tasks/crm/contacts/integration_task.py` |
+| CRM Companies | `tasks/crm/companies/all_orgs_task.py` | `tasks/crm/companies/org_task.py` | `tasks/crm/companies/integration_task.py` |
+| CRM Users | `tasks/crm/users/all_orgs_task.py` | `tasks/crm/users/org_task.py` | `tasks/crm/users/integration_task.py` |
 
 ### Core Files
 
@@ -1147,9 +1169,181 @@ channel.last_sync_cursor = "https://graph.microsoft.com/.../delta?$skiptoken=...
 
 ---
 
+## CRM Sync Flow
+
+### Overview
+
+CRM sync (HubSpot, Salesforce) follows the same three-tier architecture but uses **timestamp-based incremental sync** instead of delta links, as CRM providers don't support Microsoft-style Delta Query.
+
+### CRM Entities and Schedules
+
+Each CRM entity has an independent sync schedule. Post-sync enrichment handles cross-entity references automatically.
+
+| Entity | Frequency | Cron Schedule | Rationale |
+|--------|-----------|---------------|-----------|
+| **Deals** | Every 1 hour | `minute=0` | Most critical, changes frequently |
+| **Pipelines** | Every 3 hours | `minute=0, hour="*/3"` | Rarely change |
+| **Contacts** | Every 3 hours | `minute=0, hour="*/3"` | Moderate change rate |
+| **Companies** | Every 3 hours | `minute=0, hour="*/3"` | Moderate change rate |
+| **Users** | Every 3 hours | `minute=0, hour="*/3"` | Rarely change |
+
+**Note:** Entity dependencies (e.g., deals referencing contacts) are handled by post-sync enrichment services, not by sync order. Each entity syncs independently.
+
+### Timestamp-Based Incremental Sync
+
+Unlike Email/Calendar (which use Microsoft Graph delta links), CRM providers use timestamp filtering:
+
+```text
+INITIAL SYNC:
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  1. First sync: No last_sync_at stored                                      │
+│     • Fetch ALL records from CRM                                            │
+│     • Store all records in database                                         │
+│                                                                             │
+│  2. Store timestamp in connection_metadata                                  │
+│     connection_metadata["crm_deals_last_sync_at"] = "2026-01-11T10:30:00Z" │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+INCREMENTAL SYNC:
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  1. Read last_sync_at from connection_metadata                              │
+│     last_sync_at = "2026-01-11T10:30:00Z"                                  │
+│                                                                             │
+│  2. Fetch with timestamp filter:                                            │
+│     • HubSpot: filterGroups with hs_lastmodifieddate >= last_sync_at       │
+│     • Salesforce: SOQL WHERE LastModifiedDate >= last_sync_at              │
+│                                                                             │
+│  3. Returns ONLY records modified since last sync                           │
+│                                                                             │
+│  4. Update last_sync_at after successful sync                               │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Connection Metadata Structure for CRM
+
+```python
+# KnowledgeIntegration.connection_metadata
+{
+    # Per-entity last sync timestamps
+    "crm_deals_last_sync_at": "2026-01-11T10:30:00+00:00",
+    "crm_pipelines_last_sync_at": "2026-01-11T09:00:00+00:00",
+    "crm_contacts_last_sync_at": "2026-01-11T09:00:00+00:00",
+    "crm_companies_last_sync_at": "2026-01-11T09:00:00+00:00",
+    "crm_users_last_sync_at": "2026-01-11T06:00:00+00:00",
+}
+```
+
+### CRM Task Architecture
+
+```text
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           TIER 1: GLOBAL TASK                               │
+│                         (Triggered by Celery Beat)                          │
+│                                                                             │
+│  Task Names:                                                                │
+│  • integrations.sync_crm_deals_all_orgs                                    │
+│  • integrations.sync_crm_pipelines_all_orgs                                │
+│  • integrations.sync_crm_contacts_all_orgs                                 │
+│  • integrations.sync_crm_companies_all_orgs                                │
+│  • integrations.sync_crm_users_all_orgs                                    │
+│                                                                             │
+│  Responsibility:                                                            │
+│  • Query master DB for all APPROVED organizations                           │
+│  • Trigger Tier 2 task for each organization                                │
+│  • Return dispatch summary with task IDs                                    │
+└──────────────────────────────────┬──────────────────────────────────────────┘
+                                   │
+                    Triggers one task per organization
+                                   │
+                                   ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           TIER 2: ORGANIZATION TASK                         │
+│                    (Triggered by Global Task or API)                        │
+│                                                                             │
+│  Task Names:                                                                │
+│  • integrations.sync_crm_deals_org                                         │
+│  • integrations.sync_crm_pipelines_org                                     │
+│  • integrations.sync_crm_contacts_org                                      │
+│  • integrations.sync_crm_companies_org                                     │
+│  • integrations.sync_crm_users_org                                         │
+│                                                                             │
+│  Responsibility:                                                            │
+│  • Query org DB for all active CRM integrations (HubSpot, Salesforce)       │
+│  • For each integration:                                                    │
+│    1. Get last_sync_at from connection_metadata                             │
+│    2. Fetch records via provider fetcher with timestamp filter              │
+│    3. Call sync service (sync() or sync_incremental())                      │
+│    4. Update connection_metadata with new timestamp                         │
+│  • Return org-level aggregated results                                      │
+└──────────────────────────────────┬──────────────────────────────────────────┘
+                                   │
+                    (For manual/user-level triggers only)
+                                   │
+                                   ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          TIER 3: INTEGRATION TASK                           │
+│                       (For Manual/On-Demand Triggers)                       │
+│                                                                             │
+│  Task Names:                                                                │
+│  • integrations.sync_crm_deals_integration                                 │
+│  • integrations.sync_crm_pipelines_integration                             │
+│  • integrations.sync_crm_contacts_integration                              │
+│  • integrations.sync_crm_companies_integration                             │
+│  • integrations.sync_crm_users_integration                                 │
+│                                                                             │
+│  Parameters:                                                                │
+│  • organisation_id (required)                                               │
+│  • integration_id (required)                                                │
+│  • force_full_sync (optional) - Ignores last_sync_at if True               │
+│                                                                             │
+│  Use Cases:                                                                 │
+│  • User clicks "Refresh" button on frontend                                 │
+│  • Admin manually triggers sync for debugging                               │
+│  • API endpoint for on-demand sync                                          │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Post-Sync Enrichment
+
+After CRM syncs, enrichment tasks are triggered to populate denormalized fields:
+
+| After Sync | Enrichment Task | Purpose |
+|------------|-----------------|---------|
+| Users | `_enrich_owners_after_users_sync()` | Populate `owner_id` FKs in deals, contacts, companies |
+| Contacts/Companies | `_enrich_participants_after_crm_sync()` | Populate deal participant names and emails |
+| Pipelines | `enrich_deals_with_pipeline_metadata()` | Populate `pipeline_name`, `stage_name` in deals |
+
+### CRM Sync Services
+
+| Entity | Service | Methods |
+|--------|---------|---------|
+| Deals | `DealSyncService` | `sync()`, `sync_incremental()` |
+| Pipelines | `PipelineSyncService` | `sync()`, `enrich_deals_with_pipeline_metadata()` |
+| Contacts | `ContactSyncService` | `sync()`, `sync_incremental()` |
+| Companies | `CompanySyncService` | `sync()`, `sync_incremental()` |
+| Users | `UserSyncService` | `sync()` |
+
+### CRM Provider Fetchers
+
+| Provider | Entity | Fetcher | Timestamp Field |
+|----------|--------|---------|-----------------|
+| HubSpot | Deals | `deal_fetcher.py` | `hs_lastmodifieddate` |
+| HubSpot | Pipelines | `pipeline_fetcher.py` | N/A (fetch all) |
+| HubSpot | Contacts | `contact_fetcher.py` | `lastmodifieddate` |
+| HubSpot | Companies | `company_fetcher.py` | `hs_lastmodifieddate` |
+| HubSpot | Users | `owner_fetcher.py` | N/A (fetch all) |
+| Salesforce | Deals | `opportunity_fetcher.py` | `LastModifiedDate` (SOQL) |
+| Salesforce | Pipelines | `pipeline_fetcher.py` | N/A (fetch all) |
+| Salesforce | Contacts | `contact_fetcher.py` | `LastModifiedDate` (SOQL) |
+| Salesforce | Companies | `account_fetcher.py` | `LastModifiedDate` (SOQL) |
+| Salesforce | Users | `user_fetcher.py` | N/A (fetch all) |
+
+---
+
 ## Related Documentation
 
 - [Calendar Sync Flow](./calendar-sync-flow.md) - Calendar-specific sync details
 - [Messaging Sync Flow](./messaging-sync-flow.md) - Messaging-specific sync details
+- [CRM Sync Flow](./crm-sync-flow.md) - CRM-specific sync details
 - [Data Sync Flow](./data-sync-flow.md) - General integration sync flow
 - [Integration Data Sync Architecture](./Integration-data-sync-architecture.md) - System architecture

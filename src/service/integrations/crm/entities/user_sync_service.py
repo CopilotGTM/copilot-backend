@@ -103,6 +103,14 @@ class UserSyncService(BaseSyncService[CRMUser]):
                 users_processed += 1
                 result.increment_processed()
 
+                # Log user sync for debugging
+                logger.debug(
+                    "Synced CRM user: external_id=%s, email=%s, full_name=%s",
+                    record.external_id,
+                    record.email,
+                    record.full_name,
+                )
+
                 if is_new:
                     result.increment_created()
                 else:
@@ -115,6 +123,12 @@ class UserSyncService(BaseSyncService[CRMUser]):
 
         # Commit users
         await self.db.commit()
+
+        # Log summary of synced users
+        logger.info(
+            "User sync summary: processed=%d users with external_ids for integration",
+            users_processed,
+        )
 
         result.metadata["users"] = users_processed
         result.complete()
