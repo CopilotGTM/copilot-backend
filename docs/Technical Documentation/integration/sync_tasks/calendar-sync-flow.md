@@ -1,11 +1,11 @@
-# Calendar Sync Tasks: Scheduled Synchronization Flow
+# Calendar Sync Tasks: Three-Tier Architecture
 
 **Last Updated**: January 2026
 **Status**: Active Implementation Document
 
 ## Overview
 
-This document explains the **calendar events synchronization** implementation using Celery Beat scheduled tasks. Calendar sync provides a reliable fallback mechanism for webhook-driven syncs, ensuring calendar events are captured even if webhook processing fails.
+This document explains the **calendar events synchronization** implementation using a **three-tier Celery task architecture**. This pattern ensures each organization gets its own Celery task, enabling better tracking, retry capabilities, and org-level parallelism.
 
 **Supported Providers**:
 - Google Calendar
@@ -18,154 +18,318 @@ This document explains the **calendar events synchronization** implementation us
 ```text
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                           CELERY BEAT SCHEDULER                             │
-│                   Triggers every 15 minutes (configurable)                  │
+│                       Triggers every 30 minutes                             │
 │                   Config: src/workers/integrations_worker/config.py         │
 └──────────────────────────────────┬──────────────────────────────────────────┘
                                    │
                                    ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  COORDINATOR TASK: sync_calendar_events_task                                │
-│  File: src/workers/integrations_worker/tasks/calendar_sync_tasks.py         │
+│  TIER 1: sync_calendar_all_orgs_task                                        │
+│  File: src/workers/integrations_worker/tasks/calendar/all_orgs_task.py      │
+│  Task Name: integrations.sync_calendar_all_orgs                             │
 │                                                                             │
-│  Two execution modes:                                                       │
-│  ┌───────────────────────────────────────────────────────────────────────┐  │
-│  │ MODE 1: Scheduled (no args)                                           │  │
-│  │ • Query all APPROVED organizations from master DB                     │  │
-│  │ • For each org → query active calendar integrations                   │  │
-│  │ • Trigger sync for each integration                                   │  │
-│  └───────────────────────────────────────────────────────────────────────┘  │
-│  ┌───────────────────────────────────────────────────────────────────────┐  │
-│  │ MODE 2: Manual (with org_id/integration_id)                           │  │
-│  │ • Sync specific organization or integration                           │  │
-│  │ • Used for frontend "Refresh" button                                  │  │
-│  └───────────────────────────────────────────────────────────────────────┘  │
+│  Actions:                                                                   │
+│  1. Query master DB for all APPROVED organizations                          │
+│  2. For each org: dispatch sync_calendar_org_task via apply_async()         │
+│  3. Return summary with task IDs                                            │
+│                                                                             │
+│  Characteristics:                                                           │
+│  • bind=False, max_retries=0 (coordinator doesn't retry)                    │
+│  • Fire-and-forget dispatch to Tier 2                                       │
 └──────────────────────────────────┬──────────────────────────────────────────┘
                                    │
-                                   │ For each integration, triggers:
-                                   ▼
+              Dispatches one Tier 2 task per organization (async)
+                                   │
+        ┌──────────────────────────┼──────────────────────────┐
+        │                          │                          │
+        ▼                          ▼                          ▼
+┌───────────────────┐  ┌───────────────────┐  ┌───────────────────┐
+│ sync_calendar_    │  │ sync_calendar_    │  │ sync_calendar_    │
+│ org_task          │  │ org_task          │  │ org_task          │
+│ (Org A)           │  │ (Org B)           │  │ (Org C)           │
+│ task_id: abc-123  │  │ task_id: def-456  │  │ task_id: ghi-789  │
+└─────────┬─────────┘  └─────────┬─────────┘  └─────────┬─────────┘
+          │                      │                      │
+          ▼                      ▼                      ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  WORKER TASK: sync_integration_data_task                                    │
-│  File: src/workers/integrations_worker/tasks/sync_tasks.py                  │
+│  TIER 2: sync_calendar_org_task                                             │
+│  File: src/workers/integrations_worker/tasks/calendar/org_task.py           │
+│  Task Name: integrations.sync_calendar_org                                  │
 │                                                                             │
-│  Parameters passed from calendar sync:                                      │
-│  • organisation_id: UUID                                                    │
-│  • integration_id: UUID                                                     │
-│  • category: "calendar"                                                     │
-│  • provider: "google" | "microsoft"                                         │
-│  • sync_name: "events"                                                      │
-│  • sync_type: "INCREMENTAL"                                                 │
-│  • incremental: True                                                        │
+│  Actions:                                                                   │
+│  1. Query org DB for active calendar integrations (Google/Outlook)          │
+│  2. For each integration: dispatch sync_integration_data_task               │
+│  3. Return org-level summary with task IDs                                  │
+│                                                                             │
+│  Characteristics:                                                           │
+│  • bind=True, max_retries=2, retry_delay=120s                               │
+│  • soft_time_limit=600s, time_limit=660s                                    │
+└──────────────────────────────────┬──────────────────────────────────────────┘
+                                   │
+              Dispatches sync_integration_data_task for each integration
+                                   │
+        ┌──────────────────────────┼──────────────────────────┐
+        │                          │                          │
+        ▼                          ▼                          ▼
+┌───────────────────┐  ┌───────────────────┐  ┌───────────────────┐
+│ sync_integration_ │  │ sync_integration_ │  │ sync_integration_ │
+│ data_task         │  │ data_task         │  │ data_task         │
+│ (Google Cal)      │  │ (Outlook Cal)     │  │ (Google Cal)      │
+└─────────┬─────────┘  └─────────┬─────────┘  └─────────┬─────────┘
+          │                      │                      │
+          ▼                      ▼                      ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  DISPATCHER → CALENDAR ADAPTER → CALENDAR SYNC SERVICE                      │
+│                                                                             │
+│  • Fetches events from Google/Outlook via Nango proxy                       │
+│  • Upserts events to calendar_events table                                  │
+│  • Syncs attendees to calendar_attendees table                              │
+│  • Updates sync history                                                     │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Manual Sync Flow (Tier 3)
+
+```text
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  FRONTEND: User clicks "Refresh" button                                     │
+│  OR API: Manual sync endpoint called                                        │
 └──────────────────────────────────┬──────────────────────────────────────────┘
                                    │
                                    ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  DISPATCHER: execute_sync()                                                 │
-│  File: src/workers/integrations_worker/services/dispatcher.py               │
+│  TIER 3: sync_calendar_integration_task                                     │
+│  File: src/workers/integrations_worker/tasks/calendar/integration_task.py   │
+│  Task Name: integrations.sync_calendar_integration                          │
 │                                                                             │
-│  1. Load integration metadata (connection_id, last_synced_at)               │
-│  2. Acquire sync lock (prevent duplicate syncs)                             │
-│  3. Get appropriate fetcher from registry                                   │
-│  4. Fetch events from provider via Nango proxy                              │
-│  5. Route to category handler → _handle_calendar()                          │
-└──────────────────────────────────┬──────────────────────────────────────────┘
-                                   │
-                                   ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  CATEGORY HANDLER: _handle_calendar()                                       │
-│  File: src/workers/integrations_worker/services/dispatcher.py               │
+│  Parameters: organisation_id, integration_id                                │
 │                                                                             │
-│  Routes to appropriate adapter based on sync_type:                          │
-│  ┌─────────────────────────────────────────────────────────────────────────┐│
-│  │ sync_type == "INCREMENTAL"                                              ││
-│  │ → upsert_calendar_incremental()                                         ││
-│  │ • Skips unchanged events (optimization)                                 ││
-│  │ • Handles cancelled events via status field                             ││
-│  │ • Tracks action counts for observability                                ││
-│  └─────────────────────────────────────────────────────────────────────────┘│
-│  ┌─────────────────────────────────────────────────────────────────────────┐│
-│  │ sync_type == "INITIAL" or None                                          ││
-│  │ → upsert_calendar()                                                     ││
-│  │ • Full sync - processes all events                                      ││
-│  │ • Used for initial integration setup                                    ││
-│  └─────────────────────────────────────────────────────────────────────────┘│
-└──────────────────────────────────┬──────────────────────────────────────────┘
-                                   │
-                                   ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  CALENDAR SYNC SERVICE                                                      │
-│  File: src/service/integrations/calendar_sync_service.py                    │
+│  Actions:                                                                   │
+│  1. Validate integration exists and is active                               │
+│  2. Dispatch sync_integration_data_task for the specific integration        │
+│  3. Return result with task ID                                              │
 │                                                                             │
-│  Tables Modified:                                                           │
-│  • calendar_events (primary event storage)                                  │
-│  • calendar_event_user_states (tracks which integrations synced each event) │
-│  • calendar_attendees (event attendees)                                     │
-│  • integration_sync_history (sync tracking)                                 │
-│  • knowledge_integrations.last_synced_at (timestamp update)                 │
+│  Characteristics:                                                           │
+│  • bind=True, max_retries=3, retry_delay=60s                                │
+│  • soft_time_limit=300s, time_limit=360s                                    │
+│  • Routes to integrations_priority queue                                    │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Execution Modes
+## Three-Tier Task Summary
 
-### Mode 1: Scheduled Execution (Celery Beat)
+| Tier | Task Name | Triggered By | Purpose |
+|------|-----------|--------------|---------|
+| **Tier 1** | `sync_calendar_all_orgs_task` | Celery Beat (every 30 min) | Dispatches Tier 2 tasks for each org |
+| **Tier 2** | `sync_calendar_org_task` | Tier 1 or API | Syncs all calendar integrations for one org |
+| **Tier 3** | `sync_calendar_integration_task` | Frontend/API (manual) | Syncs a single integration on-demand |
 
-When no arguments are provided, the task runs as a **global coordinator**:
+### Key Benefits of Three-Tier Architecture
 
-```python
-# Triggered by Celery Beat every 15 minutes
-sync_calendar_events_task()  # No args
+- **Org-level tracking**: Each organization has its own Celery task ID
+- **Independent retries**: Failed org syncs can retry without affecting others
+- **Parallelism**: Multiple orgs sync concurrently as separate tasks
+- **Monitoring**: Can track sync status per organization
+- **Isolation**: One org's failure doesn't block others
+
+---
+
+## File Structure
+
+```text
+src/workers/integrations_worker/tasks/
+├── calendar/                           # Three-tier calendar sync
+│   ├── __init__.py                     # Module exports
+│   ├── all_orgs_task.py                # Tier 1: Global coordinator
+│   ├── org_task.py                     # Tier 2: Org-level processor
+│   └── integration_task.py             # Tier 3: Manual trigger
+│
+├── calendar_sync_tasks.py              # DEPRECATED - see below
+└── ...
 ```
 
-**Flow**:
-1. Query master database for all organizations with `status == APPROVED`
-2. For each organization:
-   - Query org database for active calendar integrations
-   - Filter: `integration_type IN (GOOGLE_CALENDAR, OUTLOOK_CALENDAR)`
-   - Filter: `is_active == True` AND `connection_id IS NOT NULL`
-3. For each integration, trigger `sync_integration_data_task`
+---
 
-### Mode 2: Manual Execution (Frontend Refresh)
+## Task Definitions
 
-When called with specific IDs, syncs only the requested scope:
+### Tier 1: `sync_calendar_all_orgs_task`
 
 ```python
-# Sync all calendar integrations for one org
-sync_calendar_events_task(organisation_id="uuid-here")
-
-# Sync specific integration only
-sync_calendar_events_task(
-    organisation_id="uuid-here",
-    integration_id="integration-uuid"
+@app.task(
+    name="integrations.sync_calendar_all_orgs",
+    bind=False,
+    max_retries=0,
+    acks_late=True,
 )
+def sync_calendar_all_orgs_task() -> dict[str, Any]:
+    """Tier 1: Sync calendar events for all approved organizations."""
 ```
 
-**Use Cases**:
-- Frontend "Refresh" button on integrations page
-- API endpoint for on-demand sync
-- Manual intervention/debugging
+### Tier 2: `sync_calendar_org_task`
+
+```python
+@app.task(
+    name="integrations.sync_calendar_org",
+    bind=True,
+    max_retries=2,
+    default_retry_delay=120,
+    acks_late=True,
+    soft_time_limit=600,
+    time_limit=660,
+)
+def sync_calendar_org_task(
+    self: Task,
+    organisation_id: str,
+) -> dict[str, Any]:
+    """Tier 2: Sync all calendar integrations for one organization."""
+```
+
+### Tier 3: `sync_calendar_integration_task`
+
+```python
+@app.task(
+    name="integrations.sync_calendar_integration",
+    bind=True,
+    max_retries=3,
+    default_retry_delay=60,
+    acks_late=True,
+    soft_time_limit=300,
+    time_limit=360,
+)
+def sync_calendar_integration_task(
+    self: Task,
+    organisation_id: str,
+    integration_id: str,
+) -> dict[str, Any]:
+    """Tier 3: Sync specific calendar integration (manual trigger)."""
+```
+
+---
+
+## Celery Configuration
+
+### Task Routes (`config.py`)
+
+```python
+self.task_routes = {
+    # Calendar sync tasks (three-tier architecture)
+    "integrations.sync_calendar_all_orgs": {
+        "queue": "integrations",
+        "routing_key": "integrations",
+    },
+    "integrations.sync_calendar_org": {
+        "queue": "integrations",
+        "routing_key": "integrations",
+    },
+    "integrations.sync_calendar_integration": {
+        "queue": "integrations_priority",  # Priority queue for manual triggers
+        "routing_key": "integrations_priority",
+    },
+}
+```
+
+### Beat Schedule (`config.py`)
+
+```python
+self.beat_schedule = {
+    "sync-calendar-events-all-orgs": {
+        "task": "integrations.sync_calendar_all_orgs",  # Tier 1
+        "schedule": crontab(minute="*/30"),  # Every 30 minutes
+        "kwargs": {},
+        "options": {
+            "queue": "integrations",
+            "routing_key": "integrations",
+        },
+    },
+}
+```
+
+---
+
+## Result Formats
+
+### Tier 1 Result
+
+```python
+{
+    "status": "completed",
+    "started_at": "2026-01-10T10:00:00+00:00",
+    "completed_at": "2026-01-10T10:00:05+00:00",
+    "summary": {
+        "total_orgs": 50,
+        "orgs_triggered": 48,
+        "orgs_skipped": 2
+    },
+    "org_tasks": [
+        {"org_id": "uuid-1", "task_id": "celery-task-id-1", "status": "triggered"},
+        {"org_id": "uuid-2", "task_id": "celery-task-id-2", "status": "triggered"},
+        {"org_id": "uuid-3", "status": "failed", "error": "..."}
+    ]
+}
+```
+
+### Tier 2 Result
+
+```python
+{
+    "status": "completed",  # or "partial", "failed"
+    "organisation_id": "uuid-1",
+    "started_at": "2026-01-10T10:00:06+00:00",
+    "completed_at": "2026-01-10T10:00:30+00:00",
+    "summary": {
+        "total_integrations": 3,
+        "syncs_triggered": 3,
+        "syncs_failed": 0
+    },
+    "integration_results": [
+        {
+            "integration_id": "int-1",
+            "integration_type": "google_calendar",
+            "user_id": "user-uuid",
+            "task_id": "sync-task-id-1",
+            "status": "triggered"
+        },
+        {
+            "integration_id": "int-2",
+            "integration_type": "outlook_calendar",
+            "task_id": "sync-task-id-2",
+            "status": "triggered"
+        }
+    ]
+}
+```
+
+### Tier 3 Result
+
+```python
+{
+    "status": "success",  # or "failed"
+    "organisation_id": "uuid-1",
+    "integration_id": "int-1",
+    "integration_type": "google_calendar",
+    "started_at": "2026-01-10T10:00:00+00:00",
+    "completed_at": "2026-01-10T10:00:15+00:00",
+    "task_id": "sync-task-id-1"
+}
+```
 
 ---
 
 ## Incremental vs Full Sync
 
-### Incremental Sync (Default for Scheduled Tasks)
+### Incremental Sync (Default)
 
-**Characteristics**:
+All tiers use incremental sync by default:
 - `sync_type = "INCREMENTAL"`
 - `incremental = True`
 - Uses `upsert_calendar_incremental()` adapter
-- Optimized for regular scheduled runs
+- Skips unchanged events for efficiency
 
-**Behavior**:
-- Fetches events from provider with time-based filtering
-- Skips processing unchanged events (based on change detection)
-- Handles cancelled/deleted events via status field updates
-- Tracks action counts (created, updated, skipped, cancelled)
+### Outlook Delta Link Support
 
-**Outlook-Specific: Delta Link Support**
-
-For Outlook Calendar, true incremental sync is achieved using Microsoft's deltaLink:
+For Outlook Calendar, true incremental sync uses Microsoft's deltaLink:
 
 ```text
 First Sync:
@@ -179,19 +343,26 @@ Subsequent Syncs:
   → Receive new deltaLink for next sync
 ```
 
-This significantly reduces API calls and data transfer for Outlook calendars.
+---
 
-### Full Sync (Initial Setup)
+## Usage Examples
 
-**Characteristics**:
-- `sync_type = "INITIAL"` or `None`
-- Uses `upsert_calendar()` adapter
-- Processes all events without optimization
+```python
+# Tier 1: Sync all organizations (usually via Beat, but can be manual)
+from src.workers.integrations_worker.tasks.calendar import sync_calendar_all_orgs_task
+result = sync_calendar_all_orgs_task.delay()
 
-**When Used**:
-- First sync after integration connection
-- Webhook-triggered syncs from Nango (INITIAL type)
-- Manual full re-sync if needed
+# Tier 2: Sync specific organization
+from src.workers.integrations_worker.tasks.calendar import sync_calendar_org_task
+result = sync_calendar_org_task.delay(organisation_id="your-org-uuid")
+
+# Tier 3: Sync specific integration (manual refresh)
+from src.workers.integrations_worker.tasks.calendar import sync_calendar_integration_task
+result = sync_calendar_integration_task.delay(
+    organisation_id="your-org-uuid",
+    integration_id="your-integration-uuid"
+)
+```
 
 ---
 
@@ -199,208 +370,44 @@ This significantly reduces API calls and data transfer for Outlook calendars.
 
 | Component | File Path |
 |-----------|-----------|
-| **Coordinator Task** | `src/workers/integrations_worker/tasks/calendar_sync_tasks.py` |
+| **Tier 1 Task** | `src/workers/integrations_worker/tasks/calendar/all_orgs_task.py` |
+| **Tier 2 Task** | `src/workers/integrations_worker/tasks/calendar/org_task.py` |
+| **Tier 3 Task** | `src/workers/integrations_worker/tasks/calendar/integration_task.py` |
 | **Worker Task** | `src/workers/integrations_worker/tasks/sync_tasks.py` |
 | **Dispatcher** | `src/workers/integrations_worker/services/dispatcher.py` |
 | **Calendar Adapter** | `src/workers/integrations_worker/adapters/calendar_adapter.py` |
 | **Calendar Sync Service** | `src/service/integrations/calendar_sync_service.py` |
-| **Celery Beat Config** | `src/workers/integrations_worker/config.py` |
-| **Sync Models** | `src/workers/integrations_worker/models/sync_models.py` |
+| **Celery Config** | `src/workers/integrations_worker/config.py` |
 
 ---
 
-## Celery Beat Schedule Configuration
+## Deprecated Files
 
-```python
-# src/workers/integrations_worker/config.py
+### `src/workers/integrations_worker/tasks/calendar_sync_tasks.py`
 
-"sync-calendar-events-all-orgs": {
-    "task": "integrations.sync_calendar_events",
-    "schedule": crontab(minute="*/15"),  # Every 15 minutes
-    "kwargs": {},  # No args = sync all organizations
-    "options": {
-        "queue": "integrations",
-        "routing_key": "integrations",
-    },
-},
-```
+| Field | Value |
+|-------|-------|
+| **Status** | DEPRECATED |
+| **Replacement** | `src/workers/integrations_worker/tasks/calendar/` |
+| **Task Name** | `integrations.sync_calendar_events` |
+| **Action Required** | Delete in next major release |
 
-**Schedule Recommendations**:
-- **Production**: Every 1-2 hours (`crontab(minute=0, hour="*/2")`)
-- **Development/Testing**: Every 15 minutes (`crontab(minute="*/15")`)
-- Calendar events are time-sensitive but not real-time critical
+**Why deprecated**:
+- Uses a single monolithic task that loops through all orgs internally
+- No org-level task tracking or retry capability
+- Doesn't follow the three-tier architecture pattern
 
----
-
-## Data Flow Example
-
-### Scenario: Scheduled sync triggers for Org A with Google Calendar
-
-```text
-1. Celery Beat fires at :00 minute
-   └── sync_calendar_events_task() triggered (no args)
-
-2. Coordinator queries master DB
-   └── Returns: [Org_A, Org_B, Org_C] (approved orgs)
-
-3. For Org_A, query org DB
-   └── Returns: Integration_1 (Google Calendar, active)
-
-4. Coordinator triggers worker task:
-   └── sync_integration_data_task.apply_async(
-         kwargs={
-           "organisation_id": "org-a-uuid",
-           "integration_id": "int-1-uuid",
-           "category": "calendar",
-           "provider": "google",
-           "sync_name": "events",
-           "sync_type": "INCREMENTAL",
-           "incremental": True,
-         }
-       )
-
-5. Worker task executes:
-   └── Dispatcher loads integration metadata
-   └── Fetcher retrieves events from Google via Nango
-   └── _handle_calendar() routes to incremental adapter
-   └── CalendarSyncService upserts events to DB
-
-6. Results returned:
-   └── {
-         "status": "success",
-         "items": {
-           "events": {"status": "success", "records_synced": 42}
-         }
-       }
-```
-
----
-
-## Return Value Structure
-
-### Coordinator Task Result
-
-```python
-{
-    "status": "completed",
-    "organizations_processed": 15,
-    "organizations_with_integrations": 12,
-    "total_syncs_triggered": 24,
-    "results": [
-        {
-            "org_id": "uuid-1",
-            "integrations_count": 2,
-            "syncs_triggered": 2,
-            "results": [
-                {
-                    "integration_id": "int-1",
-                    "integration_type": "google_calendar",
-                    "user_id": "user-uuid",
-                    "sync": {
-                        "type": "events",
-                        "task_id": "celery-task-id",
-                        "status": "submitted",
-                        "provider": "google"
-                    }
-                }
-            ]
-        },
-        {
-            "org_id": "uuid-2",
-            "status": "failed",
-            "error": "Database connection error"
-        }
-    ]
-}
-```
-
-### Worker Task Result
-
-```python
-{
-    "status": "success",  # or "partial", "failed"
-    "items": {
-        "events": {
-            "status": "success",
-            "records_synced": 42,
-            "reason": None  # or "no_records", "locked"
-        }
-    },
-    "extra": {
-        # Additional metadata if any
-    }
-}
-```
-
----
-
-## Error Handling & Retry Strategy
-
-### Coordinator Task
-
-```python
-@app.task(
-    name="integrations.sync_calendar_events",
-    bind=False,
-    max_retries=0,  # Coordinator doesn't retry
-    acks_late=True,
-)
-```
-
-- **No retries**: Coordinator errors don't retry (next scheduled run handles it)
-- Individual org/integration failures are logged but don't stop other syncs
-- Failed orgs are included in results with error details
-
-### Worker Task
-
-```python
-@app.task(
-    name="integrations.sync_integration_data",
-    bind=True,
-    max_retries=3,
-    default_retry_delay=60,  # 60 seconds between retries
-    acks_late=True,
-    reject_on_worker_lost=True,
-)
-```
-
-- **3 retries**: Worker retries on transient failures
-- **60s delay**: Between retry attempts
-- **Non-retryable errors**: `integration_not_found`, `no_fetcher`, etc. don't retry
-
----
-
-## Downstream Operations
-
-After successful calendar sync, the system can trigger downstream operations:
-
-| Trigger Condition | Downstream Task |
-|-------------------|-----------------|
-| Initial calendar sync (`sync_type == "INITIAL"`) | Deal-meeting matching (`process_deal_meetings_task`) |
-
-```python
-# From dispatcher.py - triggered after initial sync
-if category == "calendar" and sync_name == "events":
-    process_deal_meetings_task.apply_async(args=[org_id_str])
-```
-
-**Note**: Downstream tasks are only triggered for INITIAL sync, not incremental.
+**Before deletion, verify**:
+1. No code directly imports `sync_calendar_events_task`
+2. No external systems call `integrations.sync_calendar_events`
+3. Update any tests that reference the old task
+4. Remove the task route from `config.py`
 
 ---
 
 ## Monitoring & Debugging
 
-### Check Sync Status
-
-```python
-# View recent sync history in database
-SELECT * FROM integration_sync_history
-WHERE integration_id = 'uuid'
-ORDER BY started_at DESC
-LIMIT 10;
-```
-
-### Celery Task Monitoring
+### Check Celery Tasks
 
 ```bash
 # View scheduled tasks
@@ -410,30 +417,17 @@ celery -A src.workers.integrations_worker.celery_app inspect scheduled
 celery -A src.workers.integrations_worker.celery_app inspect active
 ```
 
-### Logging
+### Key Log Messages
 
-Key log messages to search for:
-- `"Starting scheduled calendar events sync for all organizations"` - Coordinator started
-- `"Calendar sync triggered: org=%s integration=%s"` - Worker task submitted
-- `"Calendar sync completed for data_type=%s"` - Individual sync finished
-- `"sync_calendar_events started"` - CalendarSyncService processing
+- `"Starting calendar sync for all organizations (Tier 1)"` - Tier 1 started
+- `"Dispatched calendar sync for org: {uuid}"` - Tier 2 task dispatched
+- `"Starting calendar sync for organization (Tier 2): {uuid}"` - Tier 2 started
+- `"Dispatching calendar sync: org={} integration={}"` - Integration sync dispatched
 
 ---
 
 ## Related Documentation
 
-- [Scheduled Sync Architecture Guide](./scheduled-sync-architecture.md) - Architecture decisions and three-tier task structure
+- [Scheduled Sync Architecture Guide](./scheduled-sync-architecture.md) - Three-tier pattern overview
 - [Data Sync Flow](./data-sync-flow.md) - General integration sync flow
 - [Integration Data Sync Architecture](./Integration-data-sync-architecture.md) - System architecture
-
----
-
-## Summary
-
-The calendar sync task system provides:
-
-1. **Reliability**: Scheduled sync catches any events missed by webhooks
-2. **Flexibility**: Can be triggered manually for specific orgs/integrations
-3. **Efficiency**: Incremental sync with Outlook deltaLink support
-4. **Observability**: Comprehensive result tracking and logging
-5. **Scalability**: Processes all organizations in parallel via async task submission

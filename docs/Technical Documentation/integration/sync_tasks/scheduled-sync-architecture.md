@@ -22,6 +22,7 @@ This document explains the architectural decision to transition from **Nango web
 9. [Trade-offs and Considerations](#trade-offs-and-considerations)
 10. [Migration Strategy](#migration-strategy)
 11. [Implementation Checklist](#implementation-checklist)
+12. [Delta Link Support](#delta-link-support)
 
 ---
 
@@ -448,10 +449,10 @@ Examples:
 │   ├── sync_crm_org_task
 │   └── sync_crm_integration_task
 │
-└── Messaging (Teams/Slack):
-    ├── sync_messaging_all_orgs_task
-    ├── sync_messaging_org_task
-    └── sync_messaging_integration_task
+└── Messaging Channels (Teams/Slack):
+    ├── sync_messaging_channels_all_orgs_task
+    ├── sync_messaging_channels_org_task
+    └── sync_messaging_channels_integration_task
 ```
 
 ### Standardized Result Format
@@ -588,9 +589,11 @@ src/workers/integrations_worker/
 │   ├── # ═══════════════════════════════════════════════════════════
 │   ├── messaging/
 │   │   ├── __init__.py
-│   │   ├── all_orgs_task.py             # Tier 1: sync_messaging_all_orgs_task
-│   │   ├── org_task.py                  # Tier 2: sync_messaging_org_task
-│   │   └── integration_task.py          # Tier 3: sync_messaging_integration_task
+│   │   ├── all_orgs_task.py              # Tier 1: sync_messaging_channels_all_orgs_task
+│   │   ├── org_task.py                   # Tier 2: sync_messaging_channels_org_task
+│   │   ├── integration_task.py           # Tier 3: sync_messaging_channels_integration_task
+│   │   ├── deal_messages_all_orgs_task.py  # Tier 1: sync_deal_messages_all_orgs_task
+│   │   └── deal_messages_org_task.py     # Tier 2: sync_deal_messages_org_task
 │   │
 │   └── # ═══════════════════════════════════════════════════════════
 │       # LEGACY (To be migrated)
@@ -723,44 +726,46 @@ def sync_calendar_integration_task(
 
 self.beat_schedule = {
     # ═══════════════════════════════════════════════════════════
-    # CALENDAR SYNC - Every 2 hours
+    # MESSAGING CHANNELS SYNC - Every 3 hours
     # ═══════════════════════════════════════════════════════════
-    "sync-calendar-all-orgs": {
-        "task": "integrations.sync_calendar_all_orgs",  # Tier 1
-        "schedule": crontab(minute=0, hour="*/2"),
+    "sync-messaging-channels-all-orgs": {
+        "task": "integrations.sync_messaging_channels_all_orgs",  # Tier 1
+        "schedule": crontab(minute="*/180"),
         "kwargs": {},
         "options": {"queue": "integrations"},
     },
 
     # ═══════════════════════════════════════════════════════════
-    # EMAIL SYNC - Every 1 hour
+    # DEAL MESSAGES SYNC - Every 3 hours
+    # ═══════════════════════════════════════════════════════════
+    "sync-deal-messages-all-orgs": {
+        "task": "integrations.sync_deal_messages_all_orgs",  # Tier 1
+        "schedule": crontab(minute="*/180"),
+        "kwargs": {},
+        "options": {"queue": "integrations"},
+    },
+
+    # ═══════════════════════════════════════════════════════════
+    # CALENDAR SYNC - Every 30 minutes
+    # ═══════════════════════════════════════════════════════════
+    "sync-calendar-events-all-orgs": {
+        "task": "integrations.sync_calendar_all_orgs",  # Tier 1
+        "schedule": crontab(minute="*/30"),
+        "kwargs": {},
+        "options": {"queue": "integrations"},
+    },
+
+    # ═══════════════════════════════════════════════════════════
+    # EMAIL SYNC - Every 60 minutes
     # ═══════════════════════════════════════════════════════════
     "sync-email-all-orgs": {
         "task": "integrations.sync_email_all_orgs",  # Tier 1
-        "schedule": crontab(minute=0),
+        "schedule": crontab(minute="*/60"),
         "kwargs": {},
         "options": {"queue": "integrations"},
     },
 
-    # ═══════════════════════════════════════════════════════════
-    # CRM SYNC - Every 3 hours
-    # ═══════════════════════════════════════════════════════════
-    "sync-crm-all-orgs": {
-        "task": "integrations.sync_crm_all_orgs",  # Tier 1
-        "schedule": crontab(minute=0, hour="*/3"),
-        "kwargs": {},
-        "options": {"queue": "integrations"},
-    },
-
-    # ═══════════════════════════════════════════════════════════
-    # MESSAGING SYNC - Every 3 hours
-    # ═══════════════════════════════════════════════════════════
-    "sync-messaging-all-orgs": {
-        "task": "integrations.sync_messaging_all_orgs",  # Tier 1
-        "schedule": crontab(minute=0, hour="*/3"),
-        "kwargs": {},
-        "options": {"queue": "integrations"},
-    },
+    # NOTE: CRM sync tasks are not yet implemented
 }
 ```
 
@@ -918,22 +923,26 @@ For optimal results, consider a **hybrid approach**:
 ## Implementation Checklist
 
 ### Structure Setup
-- [ ] Create `tasks/calendar/` folder with all three tiers
-- [ ] Create `tasks/email/` folder with all three tiers
+- [x] Create `tasks/calendar/` folder with all three tiers
+- [x] Create `tasks/email/` folder with all three tiers
 - [ ] Create `tasks/crm/` folder with all three tiers
-- [ ] Create `tasks/messaging/` folder with all three tiers
-- [ ] Update `tasks/__init__.py` to import new modules
+- [x] Create `tasks/messaging/` folder with all three tiers
+- [x] Update `tasks/__init__.py` to import new modules
 
 ### Task Implementation
-- [ ] Implement Tier 1 tasks (all_orgs) for each category
-- [ ] Implement Tier 2 tasks (org) for each category
-- [ ] Implement Tier 3 tasks (integration) for each category
-- [ ] Ensure standardized result format across all tasks
+- [x] Implement Tier 1 tasks (all_orgs) for calendar, email, messaging
+- [x] Implement Tier 2 tasks (org) for calendar, email, messaging
+- [x] Implement Tier 3 tasks (integration) for calendar, email, messaging
+- [x] Implement deal_messages sync (Tier 1 + Tier 2) in messaging/
+- [x] Ensure standardized result format across all tasks
+- [x] Implement Delta Query support for Team channel messages
+- [x] Implement client-side filtering for chat messages (no Delta Query support)
 
 ### Configuration
-- [ ] Update Celery Beat schedules in `config.py`
-- [ ] Configure task routes for new task names
-- [ ] Set appropriate retry policies per tier
+- [x] Update Celery Beat schedules in `config.py`
+- [x] Configure task routes for new task names
+- [x] Set appropriate retry policies per tier
+- [x] Remove orphaned `sync-all-integrations` placeholder task
 
 ### Testing & Validation
 - [ ] Unit tests for each tier
@@ -942,9 +951,9 @@ For optimal results, consider a **hybrid approach**:
 - [ ] Validate result aggregation
 
 ### Migration
-- [ ] Deprecate old task files
+- [x] Deprecate old task files (calendar_sync_tasks.py, teams_sync_tasks.py, deal_channel_messages_tasks.py)
 - [ ] Update any API endpoints calling old tasks
-- [ ] Update documentation references
+- [x] Update documentation references
 - [ ] Monitor for issues post-migration
 
 ### Monitoring
@@ -956,18 +965,191 @@ For optimal results, consider a **hybrid approach**:
 
 ## Related Files
 
+### Three-Tier Task Implementations
+
+| Category | Tier 1 (all_orgs) | Tier 2 (org) | Tier 3 (integration) |
+|----------|-------------------|--------------|----------------------|
+| Calendar | `tasks/calendar/all_orgs_task.py` | `tasks/calendar/org_task.py` | `tasks/calendar/integration_task.py` |
+| Email | `tasks/email/all_orgs_task.py` | `tasks/email/org_task.py` | `tasks/email/integration_task.py` |
+| Messaging Channels | `tasks/messaging/all_orgs_task.py` | `tasks/messaging/org_task.py` | `tasks/messaging/integration_task.py` |
+| Deal Messages | `tasks/messaging/deal_messages_all_orgs_task.py` | `tasks/messaging/deal_messages_org_task.py` | N/A (use org-level) |
+
+### Core Files
+
 | Component | Path |
 |-----------|------|
 | Webhook-Driven Sync Task | `src/workers/integrations_worker/tasks/sync_tasks.py` |
-| Teams Scheduled Sync (Legacy) | `src/workers/integrations_worker/tasks/teams_sync_tasks.py` |
-| Calendar Scheduled Sync (Legacy) | `src/workers/integrations_worker/tasks/calendar_sync_tasks.py` |
 | Celery Beat Config | `src/workers/integrations_worker/config.py` |
+| Celery App | `src/workers/integrations_worker/celery_app.py` |
 | Webhook Handler | `src/service/integrations/nango_webhook_service.py` |
+
+### Deprecated Files (To Be Removed)
+
+| Component | Path | Replacement |
+|-----------|------|-------------|
+| Calendar Sync (Legacy) | `tasks/calendar_sync_tasks.py` | `tasks/calendar/` |
+| Teams Sync (Legacy) | `tasks/teams_sync_tasks.py` | `tasks/messaging/` |
+| Deal Messages (Legacy) | `tasks/deal_channel_messages_tasks.py` | `tasks/messaging/deal_messages_*.py` |
+
+---
+
+## Delta Link Support
+
+### Overview
+
+Microsoft Graph APIs support **Delta Query** for efficient incremental synchronization. Instead of fetching all data each time, Delta Query returns only the changes (created, updated, deleted) since the last sync.
+
+### How Delta Link Works
+
+```text
+INITIAL SYNC:
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  1. First sync: GET /messages/delta                                         │
+│     • Returns ALL messages                                                  │
+│     • Response includes @odata.deltaLink (token for next sync)              │
+│                                                                             │
+│  2. Store deltaLink in database for this channel/folder                     │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+INCREMENTAL SYNC:
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  1. Use stored deltaLink: GET {deltaLink}                                   │
+│     • Returns ONLY messages changed since deltaLink was issued              │
+│     • Created messages: Full message object                                 │
+│     • Updated messages: Full message object with changes                    │
+│     • Deleted messages: @removed annotation with message ID                 │
+│                                                                             │
+│  2. Process changes and store new deltaLink for next sync                   │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Delta Link by Integration Type
+
+| Integration | Delta Support | Initial Fetch | Storage Location | API Endpoint |
+|-------------|---------------|---------------|------------------|--------------|
+| **Outlook Calendar** | Yes | Events (last 6 months) | `KnowledgeIntegration.connection_metadata` | `/calendarView/delta` |
+| **Outlook Email** | Yes | Messages (last 90 days) | `KnowledgeIntegration.connection_metadata` | `/mailFolders/{id}/messages/delta` |
+| **Teams Channel Messages** | Yes | All messages | `MessagingChannel.last_sync_cursor` | `/teams/{id}/channels/{id}/messages/delta` |
+| **Teams Chat Messages** | **No*** | All messages | `MessagingChannel.last_synced_at` | `/chats/{id}/messages` |
+| **Google Calendar** | Yes | Events (last 6 months) | `KnowledgeIntegration.connection_metadata` | Uses `syncToken` |
+| **CRM (HubSpot/Salesforce)** | No** | Modified since last sync | N/A | Uses `modifiedAfter` timestamp |
+
+*Teams chat messages do NOT support Delta Query. Microsoft Graph returns error: "Change tracking is not supported against 'microsoft.graph.chatMessage'". We use client-side filtering with `last_synced_at` instead.
+
+**CRM providers don't support delta query - use timestamp-based incremental sync instead.
+
+### Client-Side Filtering for Chat Messages
+
+Since Microsoft Graph doesn't support Delta Query or `$filter` on `createdDateTime` for chat messages, we implement **client-side filtering with early termination**:
+
+```text
+INCREMENTAL SYNC FOR CHATS:
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  1. Fetch messages ordered by createdDateTime DESC (newest first)           │
+│     GET /chats/{id}/messages?$orderby=createdDateTime desc                  │
+│                                                                             │
+│  2. Compare each message's createdDateTime to last_synced_at                │
+│     • If message.createdDateTime > last_synced_at → keep (new message)      │
+│     • If message.createdDateTime <= last_synced_at → STOP (reached old)     │
+│                                                                             │
+│  3. Early termination prevents fetching the entire chat history             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Implementation** (`src/workers/integrations_worker/providers/messaging/teams.py`):
+
+```python
+# Fetch newest messages first - enables early termination
+initial_params = {
+    "$top": "50",
+    "$orderby": "createdDateTime desc",
+}
+
+# Stop when we hit messages older than our cutoff
+for item in resp["value"]:
+    created_at = datetime.fromisoformat(item["createdDateTime"])
+    if cutoff_date and created_at <= cutoff_date:
+        reached_cutoff = True
+        break  # Early termination - no need to fetch more pages
+    all_messages.append(item)
+```
+
+### Handling Deleted Items
+
+When Delta Query returns a deleted item, it appears with `@removed` annotation:
+
+```json
+{
+  "id": "1234567890",
+  "@removed": {
+    "reason": "deleted"
+  }
+}
+```
+
+Our providers translate this to `_sync_metadata` for consistent handling:
+
+```python
+{
+  "id": "1234567890",
+  "_sync_metadata": {
+    "sync_action": "DELETED",
+    "sync_type": "INCREMENTAL",
+    "source": "delta_removed"
+  }
+}
+```
+
+Services then mark these items as `is_deleted = True` in the database.
+
+### Handling Expired Delta Links
+
+Delta links can expire (typically after 30-45 days of inactivity). When this happens:
+
+1. Microsoft returns error 410 Gone or `syncStateNotFound`
+2. Our providers detect this and automatically retry with fresh delta query
+3. A full re-sync occurs, and a new delta link is stored
+
+```python
+# Automatic recovery in teams.py
+if "410" in error_msg or "syncStateNotFound" in error_code:
+    # Retry without delta_link - forces fresh delta query
+    return await fetch_messages(delta_link=None, ...)
+```
+
+### Delta Link Storage Strategy
+
+**For Email (per folder):**
+```python
+# Stored in KnowledgeIntegration.connection_metadata
+{
+  "email_folder_delta_links": {
+    "inbox-folder-id": "https://graph.microsoft.com/.../delta?$skiptoken=...",
+    "sent-folder-id": "https://graph.microsoft.com/.../delta?$skiptoken=..."
+  }
+}
+```
+
+**For Teams Messages (per channel):**
+```python
+# Stored in MessagingChannel.last_sync_cursor
+# Each channel has its own delta link
+channel.last_sync_cursor = "https://graph.microsoft.com/.../delta?$skiptoken=..."
+```
+
+**For Calendar (per integration):**
+```python
+# Stored in KnowledgeIntegration.connection_metadata
+{
+  "calendar_delta_link": "https://graph.microsoft.com/.../delta?$skiptoken=..."
+}
+```
 
 ---
 
 ## Related Documentation
 
 - [Calendar Sync Flow](./calendar-sync-flow.md) - Calendar-specific sync details
+- [Messaging Sync Flow](./messaging-sync-flow.md) - Messaging-specific sync details
 - [Data Sync Flow](./data-sync-flow.md) - General integration sync flow
 - [Integration Data Sync Architecture](./Integration-data-sync-architecture.md) - System architecture
