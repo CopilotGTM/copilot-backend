@@ -194,3 +194,4 @@ cache/
 docs/Future Functionality Documentation/
 Dockerfile.local
 .vscode/
+crm_data_exports/

@@ -570,7 +570,7 @@ class ContactSyncService(BaseSyncService[CRMContact]):
         self._update_name_fields(record, properties)
         self._update_professional_fields(record, properties)
         self._update_status_fields(record, properties)
-        self._update_contact_owner_fields(record, properties)
+        self._update_contact_owner_fields(record, properties, raw)
         self._update_contact_info_fields(record, properties)
         self._update_address_fields(record, properties)
         self._update_activity_fields(record, properties, updated_at)
@@ -607,18 +607,68 @@ class ContactSyncService(BaseSyncService[CRMContact]):
             "hs_content_membership_email_status"
         )
 
-    def _update_contact_owner_fields(self, record: CRMContact, properties: dict[str, Any]) -> None:
+    def _update_contact_owner_fields(
+        self, record: CRMContact, properties: dict[str, Any], raw: dict[str, Any] | None = None
+    ) -> None:
         """Update owner information fields."""
-        owner_id = properties.get("hubspot_owner_id")
-        if owner_id is not None:
-            record.owner_external_id = owner_id
+        raw = raw or {}
 
-        owner_email = properties.get("hubspot_owner_email")
-        if isinstance(owner_email, str):
+        # Try multiple possible property names for owner ID
+        # Check both properties dict and root level of raw object
+        owner_id = (
+            properties.get("hubspot_owner_id")
+            or properties.get("hs_owner_id")
+            or properties.get("owner_id")
+            or properties.get("ownerId")
+            or raw.get("hubspot_owner_id")
+            or raw.get("ownerId")
+            or raw.get("owner_id")
+        )
+        owner_email = (
+            properties.get("hubspot_owner_email")
+            or properties.get("hs_owner_email")
+            or properties.get("owner_email")
+            or raw.get("hubspot_owner_email")
+            or raw.get("owner_email")
+        )
+        owner_name = (
+            properties.get("hubspot_owner_name")
+            or properties.get("hs_owner_name")
+            or properties.get("owner_name")
+            or raw.get("hubspot_owner_name")
+            or raw.get("owner_name")
+        )
+
+        # Log owner fields for debugging - always log first few contacts
+        # Also log any keys that contain 'owner' for debugging
+        owner_related_props = [k for k in properties if "owner" in k.lower()]
+        owner_related_raw = [k for k in raw if "owner" in k.lower()]
+        logger.info(
+            "Contact owner fields from HubSpot: contact_external_id=%s, "
+            "hubspot_owner_id=%r, owner_email=%r, owner_name=%r, "
+            "owner_props=%s, owner_raw=%s, raw_keys=%s",
+            record.external_id,
+            owner_id,
+            owner_email,
+            owner_name,
+            owner_related_props,
+            owner_related_raw,
+            list(raw.keys())[:15],  # Root level keys for debugging
+        )
+
+        # Set owner_external_id if we have a valid (non-empty) owner ID
+        if owner_id and str(owner_id).strip():
+            record.owner_external_id = str(owner_id)
+            logger.info(
+                "Set owner_external_id=%s for contact %s",
+                record.owner_external_id,
+                record.external_id,
+            )
+
+        if isinstance(owner_email, str) and owner_email.strip():
             record.owner_email = owner_email
 
-        owner_name = properties.get("hubspot_owner_name")
-        if isinstance(owner_name, str):
+        if isinstance(owner_name, str) and owner_name.strip():
             record.owner_name = owner_name
 
     def _update_contact_info_fields(self, record: CRMContact, properties: dict[str, Any]) -> None:

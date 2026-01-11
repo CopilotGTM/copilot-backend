@@ -1,7 +1,8 @@
 """CRM integration services."""
 
-from . import entities
+from . import enrichment, entities
 
 __all__ = [
     "entities",
+    "enrichment",
 ]

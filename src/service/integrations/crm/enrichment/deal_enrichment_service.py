@@ -1,0 +1,376 @@
+"""Deal enrichment helper service.
+
+Enriches CRMDeal records with denormalised data pulled from related
+entities (users, contacts, companies). Intended to be reused by the
+deal sync flow as well as other sync services that need to refresh
+deal-derived details after owners/contacts/companies change.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable, Sequence
+from typing import Any
+from uuid import UUID
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from src.domain.models.organisation_tables.sync.crm import (
+    CRMCompany,
+    CRMContact,
+    CRMDeal,
+    CRMDealStage,
+    CRMPipeline,
+    CRMUser,
+)
+
+
+class DealEnrichmentService:
+    """Populate denormalised deal fields from related CRM entities."""
+
+    def __init__(self, *, db: AsyncSession, organisation_id: UUID) -> None:
+        self.db = db
+        self.organisation_id = organisation_id
+
+    async def enrich_deals(
+        self, deals: Iterable[CRMDeal], integration_id: UUID | None = None
+    ) -> None:
+        """Enrich the provided deal records in-place.
+
+        Args:
+            deals: Iterable of deal ORM objects already attached to the session.
+            integration_id: Optional integration ID to scope entity lookups.
+        """
+
+        deal_list = [deal for deal in deals if isinstance(deal, CRMDeal)]
+        if not deal_list:
+            return
+
+        # Infer integration_id from first deal if not provided
+        if integration_id is None and deal_list:
+            integration_id = deal_list[0].integration_id
+
+        owner_ids = {deal.owner_external_id for deal in deal_list if deal.owner_external_id}
+        contact_ids = {
+            deal.primary_contact_external_id
+            for deal in deal_list
+            if deal.primary_contact_external_id
+        }
+        company_ids = {deal.company_external_id for deal in deal_list if deal.company_external_id}
+        pipeline_ids = {
+            deal.pipeline_external_id for deal in deal_list if deal.pipeline_external_id
+        }
+        stage_ids = {deal.stage_external_id for deal in deal_list if deal.stage_external_id}
+
+        user_map = await self._load_users(owner_ids, integration_id) if owner_ids else {}
+        contact_map = await self._load_contacts(contact_ids, integration_id) if contact_ids else {}
+        company_map = await self._load_companies(company_ids, integration_id) if company_ids else {}
+        pipeline_map = (
+            await self._load_pipelines(pipeline_ids, integration_id) if pipeline_ids else {}
+        )
+        stage_map = await self._load_stages(stage_ids, integration_id) if stage_ids else {}
+
+        for deal in deal_list:
+            if deal.owner_external_id and deal.owner_external_id in user_map:
+                self._apply_owner_details(deal, user_map[deal.owner_external_id])
+
+            if deal.primary_contact_external_id and deal.primary_contact_external_id in contact_map:
+                self._apply_contact_details(deal, contact_map[deal.primary_contact_external_id])
+
+            if deal.company_external_id and deal.company_external_id in company_map:
+                self._apply_company_details(deal, company_map[deal.company_external_id])
+
+            if deal.pipeline_external_id and deal.pipeline_external_id in pipeline_map:
+                self._apply_pipeline_details(deal, pipeline_map[deal.pipeline_external_id])
+
+            if deal.stage_external_id and deal.stage_external_id in stage_map:
+                self._apply_stage_details(deal, stage_map[deal.stage_external_id])
+
+    async def enrich_deals_by_ids(
+        self,
+        deal_ids: Sequence[UUID],
+    ) -> None:
+        """Fetch deals by internal IDs and enrich them."""
+
+        if not deal_ids:
+            return
+
+        result = await self.db.execute(
+            select(CRMDeal)
+            .where(CRMDeal.organisation_id == self.organisation_id)  # type: ignore[arg-type]
+            .where(CRMDeal.deal_id.in_(deal_ids))  # type: ignore[attr-defined]
+        )
+        deals = list(result.scalars().all())
+        if not deals:
+            return
+        await self.enrich_deals(deals)
+
+    async def enrich_deals_for_integration(self, integration_id: UUID) -> int:
+        """Fetch and enrich all deals for a given integration.
+
+        Args:
+            integration_id: The integration to scope the enrichment to.
+
+        Returns:
+            Number of deals enriched.
+        """
+        # Include deleted deals - they still need enrichment for historical data
+        result = await self.db.execute(
+            select(CRMDeal)
+            .where(CRMDeal.organisation_id == self.organisation_id)  # type: ignore[arg-type]
+            .where(CRMDeal.integration_id == integration_id)  # type: ignore[arg-type]
+        )
+        deals = list(result.scalars().all())
+        if not deals:
+            return 0
+        await self.enrich_deals(deals, integration_id)
+        return len(deals)
+
+    async def _load_users(
+        self, owner_ids: set[str], integration_id: UUID | None = None
+    ) -> dict[str, CRMUser]:
+        query = (
+            select(CRMUser)
+            .where(CRMUser.organisation_id == self.organisation_id)  # type: ignore[arg-type]
+            .where(CRMUser.external_id.in_(owner_ids))  # type: ignore[attr-defined]
+            .where(CRMUser.is_deleted.is_(False))  # type: ignore[attr-defined]
+        )
+        if integration_id is not None:
+            query = query.where(CRMUser.integration_id == integration_id)  # type: ignore[arg-type]
+        result = await self.db.execute(query)
+        return {user.external_id: user for user in result.scalars().all()}
+
+    async def _load_contacts(
+        self, contact_ids: set[str], integration_id: UUID | None = None
+    ) -> dict[str, CRMContact]:
+        query = (
+            select(CRMContact)
+            .where(CRMContact.organisation_id == self.organisation_id)  # type: ignore[arg-type]
+            .where(CRMContact.external_id.in_(contact_ids))  # type: ignore[attr-defined]
+            .where(CRMContact.is_deleted.is_(False))  # type: ignore[attr-defined]
+        )
+        if integration_id is not None:
+            query = query.where(CRMContact.integration_id == integration_id)  # type: ignore[arg-type]
+        result = await self.db.execute(query)
+        return {contact.external_id: contact for contact in result.scalars().all()}
+
+    async def _load_companies(
+        self, company_ids: set[str], integration_id: UUID | None = None
+    ) -> dict[str, CRMCompany]:
+        query = (
+            select(CRMCompany)
+            .where(CRMCompany.organisation_id == self.organisation_id)  # type: ignore[arg-type]
+            .where(CRMCompany.external_id.in_(company_ids))  # type: ignore[attr-defined]
+            .where(CRMCompany.is_deleted.is_(False))  # type: ignore[attr-defined]
+        )
+        if integration_id is not None:
+            query = query.where(CRMCompany.integration_id == integration_id)  # type: ignore[arg-type]
+        result = await self.db.execute(query)
+        return {company.external_id: company for company in result.scalars().all()}
+
+    async def _load_pipelines(
+        self, pipeline_ids: set[str], integration_id: UUID | None = None
+    ) -> dict[str, CRMPipeline]:
+        query = (
+            select(CRMPipeline)
+            .where(CRMPipeline.organisation_id == self.organisation_id)  # type: ignore[arg-type]
+            .where(CRMPipeline.external_id.in_(pipeline_ids))  # type: ignore[attr-defined]
+            .where(CRMPipeline.is_deleted.is_(False))  # type: ignore[attr-defined]
+        )
+        if integration_id is not None:
+            query = query.where(CRMPipeline.integration_id == integration_id)  # type: ignore[arg-type]
+        result = await self.db.execute(query)
+        return {pipeline.external_id: pipeline for pipeline in result.scalars().all()}
+
+    async def _load_stages(
+        self, stage_ids: set[str], integration_id: UUID | None = None
+    ) -> dict[str, CRMDealStage]:
+        query = (
+            select(CRMDealStage)
+            .where(CRMDealStage.organisation_id == self.organisation_id)  # type: ignore[arg-type]
+            .where(CRMDealStage.external_id.in_(stage_ids))  # type: ignore[attr-defined]
+            .where(CRMDealStage.is_deleted.is_(False))  # type: ignore[attr-defined]
+        )
+        if integration_id is not None:
+            query = query.where(CRMDealStage.integration_id == integration_id)  # type: ignore[arg-type]
+        result = await self.db.execute(query)
+        return {stage.external_id: stage for stage in result.scalars().all()}
+
+    def _apply_owner_details(self, deal: CRMDeal, user: CRMUser) -> None:
+        full_name = user.full_name or self._compose_name(user.first_name, user.last_name)
+        if full_name and full_name != deal.owner_name:
+            deal.owner_name = full_name
+
+        if user.email and user.email != deal.owner_email:
+            deal.owner_email = user.email
+
+        # Also set owner_id FK if not set
+        if not deal.owner_id:
+            deal.owner_id = user.user_id
+
+    def _apply_contact_details(self, deal: CRMDeal, contact: CRMContact) -> None:
+        full_name = contact.full_name or self._compose_name(contact.first_name, contact.last_name)
+        if full_name and full_name != deal.primary_contact_name:
+            deal.primary_contact_name = full_name
+
+        if contact.email and contact.email != deal.primary_contact_email:
+            deal.primary_contact_email = contact.email
+
+    def _apply_company_details(self, deal: CRMDeal, company: CRMCompany) -> None:
+        if company.name and company.name != deal.company_name:
+            deal.company_name = company.name
+
+        if company.domain and company.domain != deal.company_domain:
+            deal.company_domain = company.domain
+
+    def _apply_pipeline_details(self, deal: CRMDeal, pipeline: CRMPipeline) -> None:
+        """Apply pipeline details from CRMPipeline to deal."""
+        if pipeline.name and pipeline.name != deal.pipeline_name:
+            deal.pipeline_name = pipeline.name
+
+        if pipeline.label and pipeline.label != deal.pipeline_label:
+            deal.pipeline_label = pipeline.label
+
+        # Set pipeline_id FK if not set
+        if not deal.pipeline_id:
+            deal.pipeline_id = pipeline.pipeline_id
+
+    def _apply_stage_details(self, deal: CRMDeal, stage: CRMDealStage) -> None:
+        """Apply stage details from CRMDealStage to deal."""
+        if stage.name and stage.name != deal.stage_name:
+            deal.stage_name = stage.name
+
+        if stage.label and stage.label != deal.stage_label:
+            deal.stage_label = stage.label
+
+        # Set stage_id FK if not set
+        if not deal.stage_id:
+            deal.stage_id = stage.stage_id
+
+    def _compose_name(self, first: Any, last: Any) -> str | None:
+        parts = [str(part).strip() for part in (first, last) if part]
+        return " ".join(parts) if parts else None
+
+    async def enrich_participants(
+        self, integration_id: UUID, *, deal_ids: Sequence[UUID] | None = None
+    ) -> int:
+        """Enrich deal participants with related entity details.
+
+        Looks up CRMContact and CRMCompany records to populate related_name
+        and related_email fields on CRMDealParticipant records.
+
+        Args:
+            integration_id: The integration to scope the enrichment to.
+            deal_ids: Optional list of deal IDs to limit enrichment scope.
+                     If None, enriches all participants for the integration.
+
+        Returns:
+            Number of participants enriched.
+        """
+        from src.domain.models.organisation_tables.sync.crm import (
+            CRMDealParticipant,
+            CRMParticipantType,
+        )
+
+        def _get_participant_type_str(ptype: Any) -> str:
+            """Normalize participant type to string for comparison."""
+            if hasattr(ptype, "value"):
+                return ptype.value
+            return str(ptype)
+
+        # Build query for participants needing enrichment
+        # Include deleted participants for historical data
+        stmt = (
+            select(CRMDealParticipant)
+            .where(CRMDealParticipant.organisation_id == self.organisation_id)  # type: ignore[arg-type]
+            .where(CRMDealParticipant.integration_id == integration_id)  # type: ignore[arg-type]
+        )
+
+        if deal_ids:
+            stmt = stmt.where(CRMDealParticipant.deal_id.in_(deal_ids))  # type: ignore[attr-defined]
+
+        result = await self.db.execute(stmt)
+        participants = list(result.scalars().all())
+
+        if not participants:
+            return 0
+
+        # Collect external IDs by type (handle both string and enum)
+        contact_ext_ids: set[str] = set()
+        company_ext_ids: set[str] = set()
+        user_ext_ids: set[str] = set()
+
+        for p in participants:
+            ptype = _get_participant_type_str(p.participant_type)
+            if ptype == CRMParticipantType.CONTACT.value and p.related_external_id:
+                contact_ext_ids.add(p.related_external_id)
+            elif ptype == CRMParticipantType.COMPANY.value and p.related_external_id:
+                company_ext_ids.add(p.related_external_id)
+            elif ptype == CRMParticipantType.USER.value and p.related_external_id:
+                user_ext_ids.add(p.related_external_id)
+
+        # Load related entities (scoped to integration)
+        contact_map = (
+            await self._load_contacts(contact_ext_ids, integration_id) if contact_ext_ids else {}
+        )
+        company_map = (
+            await self._load_companies(company_ext_ids, integration_id) if company_ext_ids else {}
+        )
+        user_map = await self._load_users(user_ext_ids, integration_id) if user_ext_ids else {}
+
+        enriched_count = 0
+        for p in participants:
+            updated = False
+            ptype = _get_participant_type_str(p.participant_type)
+
+            if ptype == CRMParticipantType.CONTACT.value:
+                contact = contact_map.get(p.related_external_id)
+                if contact:
+                    name = contact.full_name or self._compose_name(
+                        contact.first_name, contact.last_name
+                    )
+                    if name and name != p.related_name:
+                        p.related_name = name
+                        updated = True
+                    if contact.email and contact.email != p.related_email:
+                        p.related_email = contact.email
+                        updated = True
+                    if contact.contact_id and p.related_local_id != contact.contact_id:
+                        p.related_local_id = contact.contact_id
+                        updated = True
+
+            elif ptype == CRMParticipantType.COMPANY.value:
+                company = company_map.get(p.related_external_id)
+                if company:
+                    if company.name and company.name != p.related_name:
+                        p.related_name = company.name
+                        updated = True
+                    # Use company domain as related_email for companies
+                    if company.domain and company.domain != p.related_email:
+                        p.related_email = company.domain
+                        updated = True
+                    if company.company_id and p.related_local_id != company.company_id:
+                        p.related_local_id = company.company_id
+                        updated = True
+
+            elif ptype == CRMParticipantType.USER.value:
+                user = user_map.get(p.related_external_id)
+                if user:
+                    name = user.full_name or self._compose_name(user.first_name, user.last_name)
+                    if name and name != p.related_name:
+                        p.related_name = name
+                        updated = True
+                    if user.email and user.email != p.related_email:
+                        p.related_email = user.email
+                        updated = True
+                    if user.user_id and p.related_local_id != user.user_id:
+                        p.related_local_id = user.user_id
+                        updated = True
+
+            if updated:
+                self.db.add(p)
+                enriched_count += 1
+
+        if enriched_count > 0:
+            await self.db.commit()
+
+        return enriched_count
