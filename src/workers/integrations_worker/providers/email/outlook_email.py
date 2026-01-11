@@ -2,19 +2,115 @@
 
 Fetches email folders and messages from Outlook/Office 365 mailboxes.
 
+Uses Microsoft Graph Delta Query for efficient incremental sync:
+- Initial sync: /messages/delta with receivedDateTime filter (last 90 days)
+- Incremental sync: Use stored deltaLink (returns ONLY new/changed/deleted messages)
+
 Microsoft Graph API documentation:
 - List folders: https://learn.microsoft.com/en-us/graph/api/user-list-mailfolders
-- List messages: https://learn.microsoft.com/en-us/graph/api/user-list-messages
+- Delta messages: https://learn.microsoft.com/en-us/graph/delta-query-messages
+- message: delta: https://learn.microsoft.com/en-us/graph/api/message-delta
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 from src.domain.models.organisation_tables.sync import IntegrationType
 from src.infra.config.nango_provider_mapping import to_nango_connect_integration_key
+from src.infra.utils.logger import get_logger
 from src.service.integrations.nango_client import NangoClient
+
+logger = get_logger(__name__)
+
+
+@dataclass
+class FetchMessagesResult:
+    """Result from fetch_messages containing messages and optional delta token."""
+
+    messages: list[dict[str, Any]]
+    delta_link: str | None = None
+
+
+def _extract_pagination_params(next_link: str) -> tuple[str, dict[str, Any]]:
+    """
+    Extract endpoint path and query params from Microsoft Graph @odata.nextLink or @odata.deltaLink.
+
+    Microsoft Graph returns full URLs like:
+    https://graph.microsoft.com/v1.0/me/mailFolders/{id}/messages/delta?$skiptoken=xxx...
+
+    We need to extract the path and query params for Nango's proxy_request.
+    """
+    parsed = urlparse(next_link)
+    endpoint = parsed.path
+
+    # Parse query string into dict (parse_qs returns lists, we want single values)
+    query_dict = parse_qs(parsed.query)
+    params: dict[str, Any] = {k: v[0] if len(v) == 1 else v for k, v in query_dict.items()}
+
+    return endpoint, params
+
+
+def _mark_as_deleted(message: dict[str, Any]) -> dict[str, Any]:
+    """
+    Mark a message as deleted for proper handling downstream.
+
+    Microsoft Graph delta sync returns deleted items with @removed annotation.
+    We translate this to _sync_metadata for consistent handling in sync services.
+    """
+    message["_sync_metadata"] = {
+        "sync_action": "DELETED",
+        "sync_type": "INCREMENTAL",
+        "inferred": True,
+        "source": "delta_removed",
+    }
+    return message
+
+
+def _filter_other_inbox_messages(
+    messages: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int]:
+    """
+    Filter out "Other" inbox messages (less important emails).
+
+    Outlook's Focused Inbox classifies emails as:
+    - "focused": Important emails from real people
+    - "other": Less important (newsletters, automated, no-reply emails)
+
+    We skip "other" emails to reduce noise and sync only relevant emails.
+
+    Note: Deleted messages (@removed) are always kept regardless of classification.
+
+    Args:
+        messages: List of messages from Microsoft Graph
+
+    Returns:
+        Tuple of (filtered_messages, skipped_count)
+    """
+    filtered: list[dict[str, Any]] = []
+    skipped = 0
+
+    for message in messages:
+        # Always keep deleted messages - need to mark as deleted in DB
+        if (
+            "@removed" in message
+            or message.get("_sync_metadata", {}).get("sync_action") == "DELETED"
+        ):
+            filtered.append(message)
+            continue
+
+        # Skip "other" inbox messages (less important)
+        classification = message.get("inferenceClassification", "").lower()
+        if classification == "other":
+            skipped += 1
+            continue
+
+        filtered.append(message)
+
+    return filtered, skipped
 
 
 async def fetch_folders(
@@ -82,41 +178,46 @@ async def fetch_messages(
     connection_id: str,
     is_initial: bool,
     last_synced_at: datetime | None,
+    delta_link: str | None = None,
     data_type: str | None = None,
     provider_config_key: str | None = None,
     folder_id: str | None = None,
-) -> list[dict[str, Any]]:
+) -> FetchMessagesResult:
     """
-    Fetch Outlook email messages via Nango proxy.
+    Fetch Outlook email messages via Nango proxy using Delta Query.
 
-    Uses Microsoft Graph API: GET /v1.0/me/messages or /v1.0/me/mailFolders/{folderId}/messages
+    Uses Microsoft Graph Delta API for efficient incremental sync:
+    - Initial sync: /messages/delta with receivedDateTime filter (last 90 days)
+    - Incremental sync: Use stored deltaLink (returns ONLY changes)
 
     Args:
-        folder_id: Optional folder ID to fetch messages from specific folder
+        delta_link: Optional stored deltaLink from previous sync. If provided,
+                    only messages changed since that deltaLink are returned.
+        folder_id: Folder ID to fetch messages from (required for delta query)
 
     Returns:
-        List of message dictionaries with structure:
+        FetchMessagesResult with messages and new deltaLink for next sync.
+
+        Message structure:
         {
             "id": "AAMkAGI...",
             "conversationId": "AAQkAGI...",
             "subject": "Meeting notes",
             "bodyPreview": "Here are the notes...",
-            "body": {"contentType": "html", "content": "<html>..."},
             "from": {"emailAddress": {"name": "John Doe", "address": "john@example.com"}},
             "toRecipients": [...],
-            "ccRecipients": [...],
-            "bccRecipients": [...],
-            "replyTo": [...],
             "sentDateTime": "2025-11-12T10:30:00Z",
             "receivedDateTime": "2025-11-12T10:30:05Z",
             "hasAttachments": true,
-            "attachments": [...],
             "importance": "normal",
             "isRead": false,
-            "isDraft": false,
-            "flag": {...},
-            "categories": ["Red category"],
-            "inferenceClassification": "focused"
+            ...
+        }
+
+        Deleted messages appear with @removed annotation:
+        {
+            "id": "AAMkAGI...",
+            "@removed": {"reason": "deleted"}
         }
     """
     _ = data_type  # intentionally unused
@@ -125,49 +226,145 @@ async def fetch_messages(
         IntegrationType.OUTLOOK_EMAIL
     )
 
+    if not folder_id:
+        raise ValueError("folder_id is required for delta query")
+
     now = datetime.now(UTC)
+    using_stored_delta_link = False
 
-    def _ensure_utc(dt: datetime) -> datetime:
-        if dt.tzinfo is None:
-            return dt.replace(tzinfo=UTC)
-        return dt.astimezone(UTC)
-
-    # Determine time range for message sync
-    if is_initial or not last_synced_at:
-        # Initial sync: last 90 days
-        time_min = now - timedelta(days=90)
+    if delta_link:
+        # True incremental sync: use stored deltaLink
+        # Returns ONLY messages that changed since the deltaLink was issued
+        initial_endpoint, initial_params = _extract_pagination_params(delta_link)
+        using_stored_delta_link = True
+        logger.info(
+            "Outlook Email: using stored deltaLink for folder (true incremental)",
+        )
     else:
-        # Incremental: from last sync minus 1 day buffer
-        time_min = last_synced_at - timedelta(days=1)
+        # Fresh delta query (initial sync)
+        # Use delta endpoint with receivedDateTime filter for last 90 days
+        time_min = now - timedelta(days=90)
+        time_min_str = time_min.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    time_min = _ensure_utc(time_min)
+        initial_endpoint = f"/v1.0/me/mailFolders/{folder_id}/messages/delta"
+        initial_params: dict[str, Any] = {
+            "$filter": f"receivedDateTime ge {time_min_str}",
+            # Note: $select is encoded into deltaLink, don't need to repeat
+            # Including body for full email content
+            "$select": "id,conversationId,subject,bodyPreview,body,from,toRecipients,ccRecipients,bccRecipients,replyTo,sentDateTime,receivedDateTime,hasAttachments,importance,isRead,isDraft,internetMessageId,parentFolderId,inferenceClassification",
+        }
+        logger.info(
+            "Outlook Email: fresh delta query for folder=%s (since=%s)",
+            folder_id,
+            time_min_str,
+        )
 
-    # Build endpoint - either all messages or folder-specific
-    endpoint = f"/v1.0/me/mailFolders/{folder_id}/messages" if folder_id else "/v1.0/me/messages"
+    all_items: list[dict[str, Any]] = []
+    next_link: str | None = None
+    new_delta_link: str | None = None
+    max_pages = 100  # Safety limit (100 pages * ~100 items = 10,000 messages max)
 
-    # Microsoft Graph query parameters
-    params = {
-        "$filter": f"receivedDateTime ge {time_min.isoformat()}",
-        "$orderby": "receivedDateTime desc",
-        "$top": "999",  # Max items per request
-        "$select": "id,conversationId,subject,bodyPreview,body,from,toRecipients,ccRecipients,bccRecipients,replyTo,sentDateTime,receivedDateTime,hasAttachments,importance,isRead,isDraft,flag,categories,inferenceClassification,internetMessageId,parentFolderId",
-    }
+    for page_num in range(max_pages):
+        # Determine endpoint and params for this request
+        if next_link:
+            endpoint, params = _extract_pagination_params(next_link)
+        else:
+            endpoint, params = initial_endpoint, initial_params
 
-    resp = await nango.proxy_request(
-        provider_config_key=provider,
-        connection_id=connection_id,
-        endpoint=endpoint,
-        params=params,
+        try:
+            resp = await nango.proxy_request(
+                provider_config_key=provider,
+                connection_id=connection_id,
+                endpoint=endpoint,
+                params=params,
+            )
+        except Exception as e:
+            # Handle expired deltaLink (Microsoft returns 410 Gone or similar)
+            if using_stored_delta_link and page_num == 0:
+                error_msg = str(e).lower()
+                if "410" in error_msg or "gone" in error_msg or "sync state" in error_msg:
+                    logger.warning(
+                        "Outlook Email: stored deltaLink expired, retrying with fresh delta query"
+                    )
+                    # Retry without deltaLink
+                    return await fetch_messages(
+                        nango=nango,
+                        connection_id=connection_id,
+                        is_initial=True,
+                        last_synced_at=last_synced_at,
+                        delta_link=None,  # Force fresh delta query
+                        data_type=data_type,
+                        provider_config_key=provider_config_key,
+                        folder_id=folder_id,
+                    )
+            raise
+
+        if isinstance(resp, dict):
+            # Check for error response (deltaLink might be expired)
+            if "error" in resp and using_stored_delta_link and page_num == 0:
+                error_code = resp.get("error", {}).get("code", "").lower()
+                if error_code in ("syncstatenotfound", "resyncresquired", "invalidrequest"):
+                    logger.warning(
+                        "Outlook Email: deltaLink invalid (error=%s), retrying fresh",
+                        error_code,
+                    )
+                    return await fetch_messages(
+                        nango=nango,
+                        connection_id=connection_id,
+                        is_initial=True,
+                        last_synced_at=last_synced_at,
+                        delta_link=None,
+                        data_type=data_type,
+                        provider_config_key=provider_config_key,
+                        folder_id=folder_id,
+                    )
+
+            # Extract messages from response
+            if "value" in resp and isinstance(resp["value"], list):
+                for item in resp["value"]:
+                    # Check for deleted items (delta sync returns @removed annotation)
+                    if "@removed" in item:
+                        logger.debug(
+                            "Delta sync: detected deleted message id=%s reason=%s",
+                            item.get("id"),
+                            item.get("@removed", {}).get("reason"),
+                        )
+                        # Mark for downstream handling with proper sync metadata
+                        _mark_as_deleted(item)
+                    all_items.append(item)
+            elif "items" in resp and isinstance(resp["items"], list):
+                all_items.extend(resp["items"])
+
+            # Check for next page or deltaLink
+            next_link = resp.get("@odata.nextLink")
+            if not next_link:
+                # Capture deltaLink for next sync (only on last page)
+                new_delta_link = resp.get("@odata.deltaLink")
+                if new_delta_link:
+                    logger.info(
+                        "Delta sync complete after %d pages, new deltaLink received",
+                        page_num + 1,
+                    )
+                break
+        else:
+            break
+
+    # Filter out "Other" inbox messages (less important emails like newsletters)
+    filtered_messages, skipped_count = _filter_other_inbox_messages(all_items)
+
+    if skipped_count > 0:
+        logger.info(
+            "Outlook Email: skipped %d 'Other' inbox messages (less important)",
+            skipped_count,
+        )
+
+    logger.info(
+        "Outlook Email fetch complete: %d messages (%d after filtering, initial=%s, used_delta_link=%s, folder=%s)",
+        len(all_items),
+        len(filtered_messages),
+        is_initial,
+        using_stored_delta_link,
+        folder_id,
     )
 
-    items = []
-    if isinstance(resp, dict):
-        if "value" in resp and isinstance(resp["value"], list):
-            items = resp["value"]
-        elif "items" in resp and isinstance(resp["items"], list):
-            items = resp["items"]
-
-    # Note: Pagination (@odata.nextLink) can be added in future iterations
-    # Currently returning first page up to 999 items per sync
-
-    return items
+    return FetchMessagesResult(messages=filtered_messages, delta_link=new_delta_link)

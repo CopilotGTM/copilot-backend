@@ -1,0 +1,157 @@
+"""
+Tier 3: Integration-level email sync task.
+
+Syncs a specific email integration for manual/user-level triggers.
+
+This task is used for:
+- Frontend "Refresh" button on integrations page
+- API endpoint for on-demand sync
+- Manual intervention/debugging
+
+NOTE: This task is NOT used by the scheduled sync (Celery Beat).
+The scheduler uses Tier 1 → Tier 2, which handles integrations inline.
+
+Architecture:
+    Frontend/API (manual trigger)
+        ↓
+    sync_email_integration_task [Tier 3 - this file]
+        ↓
+    EmailDeltaSyncService.sync_integration()
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from typing import Any
+from uuid import UUID
+
+from celery import Task
+
+from src.infra.utils.async_runner import run_async
+from src.infra.utils.logger import get_logger
+from src.service.integrations.email_delta_sync_service import EmailDeltaSyncService
+from src.workers.integrations_worker.celery_app import app
+
+logger = get_logger(__name__)
+
+
+@app.task(
+    name="integrations.sync_email_integration",
+    bind=True,
+    max_retries=3,
+    default_retry_delay=60,  # 1 minute between retries
+    acks_late=True,
+    soft_time_limit=300,  # 5 minutes soft limit for single integration
+    time_limit=360,  # 6 minutes hard limit
+)
+def sync_email_integration_task(
+    self: Task,
+    organisation_id: str,
+    integration_id: str,
+) -> dict[str, Any]:
+    """
+    Tier 3: Sync specific email integration.
+
+    Triggered by: Frontend refresh button, API, manual intervention
+    NOT triggered by: Scheduled sync (Tier 1/2)
+
+    This task is for on-demand/manual sync of a single integration.
+    It provides immediate feedback to the user.
+
+    Args:
+        organisation_id: The organization UUID string
+        integration_id: The specific integration UUID string
+
+    Returns:
+        Dictionary with integration sync results:
+        {
+            "status": "success",
+            "organisation_id": "uuid",
+            "integration_id": "uuid",
+            "integration_type": "outlook_email",
+            "started_at": "...",
+            "completed_at": "...",
+            "folders_synced": 5,
+            "messages_synced": 150,
+            "folder_results": [...]
+        }
+    """
+    started_at = datetime.now(UTC).isoformat()
+    org_id = UUID(organisation_id)
+    int_id = UUID(integration_id)
+
+    async def _sync_integration() -> dict[str, Any]:
+        """Sync the specific integration."""
+        logger.info(
+            "Starting manual email sync (Tier 3): org=%s integration=%s",
+            org_id,
+            int_id,
+        )
+
+        service = EmailDeltaSyncService()
+        result = await service.sync_integration(
+            organisation_id=org_id,
+            integration_id=int_id,
+        )
+
+        # Add timing info to result
+        result["started_at"] = started_at
+        result["completed_at"] = datetime.now(UTC).isoformat()
+
+        return result
+
+    try:
+        result = run_async(_sync_integration())
+
+        # Log based on status
+        if result.get("status") == "success":
+            logger.info(
+                "Manual email sync complete: org=%s integration=%s folders=%d messages=%d",
+                organisation_id,
+                integration_id,
+                result.get("folders_synced", 0),
+                result.get("messages_synced", 0),
+            )
+        else:
+            logger.warning(
+                "Manual email sync failed: org=%s integration=%s error=%s",
+                organisation_id,
+                integration_id,
+                result.get("error"),
+            )
+
+        return result
+
+    except Exception as e:
+        logger.error(
+            "Manual email sync exception: org=%s integration=%s error=%s",
+            organisation_id,
+            integration_id,
+            str(e),
+            exc_info=True,
+        )
+
+        # Check if we should retry
+        if self.request.retries < self.max_retries:
+            logger.info(
+                "Retrying manual email sync: org=%s integration=%s attempt=%d/%d",
+                organisation_id,
+                integration_id,
+                self.request.retries + 1,
+                self.max_retries,
+            )
+            raise self.retry(exc=e) from e
+
+        return {
+            "status": "failed",
+            "organisation_id": organisation_id,
+            "integration_id": integration_id,
+            "started_at": started_at,
+            "completed_at": datetime.now(UTC).isoformat(),
+            "error": str(e),
+            "error_type": type(e).__name__,
+        }
+
+
+# Convenience alias
+sync_email_integration = sync_email_integration_task

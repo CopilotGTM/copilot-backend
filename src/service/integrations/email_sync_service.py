@@ -552,11 +552,15 @@ class EmailSyncService:
     @classmethod
     def _extract_outlook_folder_fields(cls, folder_data: dict[str, Any]) -> dict[str, Any]:
         """Extract folder fields from Outlook/Microsoft data."""
+        folder_type = cls._classify_folder_type(folder_data.get("displayName", ""))
+        # Only monitor inbox and sent folders by default
+        # is_monitored is stored as string in DB ("true"/"false")
+        is_monitored = "true" if folder_type in cls.MONITORED_FOLDER_TYPES else "false"
         return {
             "folder_name": folder_data.get("displayName", "Unnamed Folder"),
             "folder_path": None,  # Outlook doesn't provide full path in single API call
-            "folder_type": cls._classify_folder_type(folder_data.get("displayName", "")),
-            "is_monitored": "false",  # Default; can be configured later (stored as string in DB)
+            "folder_type": folder_type,
+            "is_monitored": is_monitored,
             "total_count": folder_data.get("totalItemCount", 0),
             "unread_count": folder_data.get("unreadItemCount", 0),
             "folder_metadata": {
@@ -565,6 +569,9 @@ class EmailSyncService:
                 "is_hidden": folder_data.get("isHidden", False),
             },
         }
+
+    # Folder types that should be monitored (messages synced)
+    MONITORED_FOLDER_TYPES = ("inbox", "sent")
 
     @staticmethod
     def _classify_folder_type(folder_name: str) -> str:
@@ -578,6 +585,8 @@ class EmailSyncService:
             return "drafts"
         elif name_lower in ("deleted items", "trash"):
             return "trash"
+        elif name_lower in ("junk email", "junk", "spam"):
+            return "junk"
         elif name_lower in ("archive",):
             return "archive"
         return "user"

@@ -43,6 +43,7 @@ from src.domain.models.organisation_tables.sync.messaging_models import (
 from src.infra.utils.logger import get_logger
 from src.service.integrations.nango_client import NangoClient
 from src.workers.integrations_worker.providers.messaging.teams import (
+    FetchMessagesResult,
     fetch_chat_messages,
     fetch_messages,
 )
@@ -62,6 +63,7 @@ class DealLinkedChannelInfo:
     channel_type: str
     last_synced_at: datetime | None
     available_integrations: int
+    last_sync_cursor: str | None = None  # Stores deltaLink for incremental sync
 
 
 @dataclass
@@ -210,6 +212,7 @@ class DealChannelMessagesService:
                 MessagingChannel.channel_name,
                 MessagingChannel.channel_type,
                 MessagingChannel.last_synced_at,
+                MessagingChannel.last_sync_cursor,
             )
             .select_from(MessagingDealLink)
             .join(
@@ -251,6 +254,7 @@ class DealChannelMessagesService:
                     channel_type=row.channel_type,
                     last_synced_at=row.last_synced_at,
                     available_integrations=1,  # Simplified - one per external_channel_id
+                    last_sync_cursor=row.last_sync_cursor,  # Delta link for incremental sync
                 )
             )
 
@@ -261,7 +265,11 @@ class DealChannelMessagesService:
         channel_info: DealLinkedChannelInfo,
     ) -> ChannelSyncResult:
         """
-        Sync messages for a single deal-linked channel.
+        Sync messages for a single deal-linked channel using Delta Query.
+
+        Uses Microsoft Graph Delta Query for efficient incremental sync:
+        - Initial sync: Fetches all messages, receives deltaLink
+        - Incremental sync: Uses stored deltaLink, returns ONLY changes
 
         Args:
             channel_info: Channel information from get_unique_deal_linked_channels
@@ -287,14 +295,30 @@ class DealChannelMessagesService:
                     error="Integration not found or has no connection",
                 )
 
-            # Fetch messages from Teams API
-            messages = await self._fetch_messages(channel_info, integration)
+            # Fetch messages from Teams API using Delta Query
+            # Pass stored deltaLink for incremental sync
+            is_initial = channel_info.last_sync_cursor is None
+            fetch_result = await self._fetch_messages(
+                channel_info,
+                integration,
+                delta_link=channel_info.last_sync_cursor,
+            )
+
+            messages = fetch_result.messages
+            new_delta_link = fetch_result.delta_link
 
             if not messages:
                 logger.debug(
-                    "No new messages for channel %s",
+                    "No new messages for channel %s (initial=%s)",
                     channel_info.channel_name,
+                    is_initial,
                 )
+                # Still update deltaLink even if no messages (for subsequent syncs)
+                if new_delta_link:
+                    await self._update_channel_sync_state(
+                        channel_info.channel_id,
+                        delta_link=new_delta_link,
+                    )
                 return ChannelSyncResult(
                     channel_id=channel_info.channel_id,
                     channel_name=channel_info.channel_name,
@@ -310,14 +334,18 @@ class DealChannelMessagesService:
                 messages=messages,
             )
 
-            # Update channel's last_synced_at
-            await self._update_channel_sync_timestamp(channel_info.channel_id)
+            # Update channel's last_synced_at and delta_link
+            await self._update_channel_sync_state(
+                channel_info.channel_id,
+                delta_link=new_delta_link,
+            )
 
             logger.info(
-                "✅ Synced %d messages from channel %s (integration: %s)",
+                "✅ Synced %d messages from channel %s (integration: %s, initial=%s)",
                 messages_stored,
                 channel_info.channel_name,
                 channel_info.integration_id,
+                is_initial,
             )
 
             return ChannelSyncResult(
@@ -356,22 +384,29 @@ class DealChannelMessagesService:
         self,
         channel_info: DealLinkedChannelInfo,
         integration: KnowledgeIntegration,
-    ) -> list[dict[str, Any]]:
+        delta_link: str | None = None,
+    ) -> FetchMessagesResult:
         """
-        Fetch messages from Teams API via provider layer.
+        Fetch messages from Teams API via provider layer using Delta Query.
+
+        Uses Microsoft Graph Delta Query for efficient incremental sync:
+        - Initial sync: /messages/delta (fetches all, returns deltaLink)
+        - Incremental sync: Use stored deltaLink (returns ONLY changes)
 
         Args:
             channel_info: Channel information
             integration: Integration with Nango connection
+            delta_link: Optional stored deltaLink from previous sync
 
         Returns:
-            List of message dictionaries from Teams API
+            FetchMessagesResult with messages and new deltaLink for next sync
         """
-        is_initial = channel_info.last_synced_at is None
         channel_type = channel_info.channel_type
 
         if channel_type in (ChannelType.PUBLIC, ChannelType.PRIVATE):
             # Team channel - needs team_id from metadata
+            # For team channels, is_initial is based on delta_link (delta query supported)
+            is_initial = delta_link is None
             team_id = channel_info.channel_metadata.get("team_id")
             if not team_id:
                 raise ValueError(
@@ -385,22 +420,27 @@ class DealChannelMessagesService:
                 channel_id=channel_info.external_channel_id,
                 is_initial=is_initial,
                 last_synced_at=channel_info.last_synced_at,
+                delta_link=delta_link,
             )
 
         elif channel_type in (ChannelType.GROUP_MESSAGE, ChannelType.MEETING):
             # Chat - use chat_id directly (external_channel_id is the chat_id)
+            # For chats, is_initial is based on last_synced_at (delta query NOT supported)
+            # If we have last_synced_at, we do incremental sync using date filter
+            is_initial = channel_info.last_synced_at is None
             return await fetch_chat_messages(
                 nango=self.nango,
                 connection_id=integration.connection_id,
                 chat_id=channel_info.external_channel_id,
                 is_initial=is_initial,
                 last_synced_at=channel_info.last_synced_at,
+                delta_link=delta_link,  # Always None for chats, ignored by fetcher
             )
 
         elif channel_type == ChannelType.DIRECT_MESSAGE:
             # Skip 1:1 DMs - excluded by design
             logger.debug("Skipping 1:1 DM channel %s", channel_info.channel_id)
-            return []
+            return FetchMessagesResult(messages=[], delta_link=None)
 
         else:
             logger.warning(
@@ -408,7 +448,7 @@ class DealChannelMessagesService:
                 channel_type,
                 channel_info.channel_id,
             )
-            return []
+            return FetchMessagesResult(messages=[], delta_link=None)
 
     async def _store_messages(
         self,
@@ -431,132 +471,172 @@ class DealChannelMessagesService:
         """
         stored_count = 0
 
-        for msg in messages:
-            external_message_id = msg.get("id")
-            if not external_message_id:
-                continue
+        # Use no_autoflush to prevent SQLAlchemy from auto-flushing pending INSERTs
+        # when running SELECT queries in the loop. This avoids duplicate key errors
+        # when the same message appears multiple times in the incoming batch.
+        with self.db.no_autoflush:
+            for msg in messages:
+                external_message_id = msg.get("id")
+                if not external_message_id:
+                    continue
 
-            # Detect system event messages (user joined, call started, members added, etc.)
-            # These are stored for timeline/analytics but filtered out for chat display
-            # Detection methods:
-            # 1. messageType == "systemEventMessage"
-            # 2. eventDetail property exists (indicates system event)
-            # 3. body.content contains "<systemEventMessage/>" marker
-            msg_type_raw = msg.get("messageType", "message")
-            has_event_detail = msg.get("eventDetail") is not None
-            body = msg.get("body", {})
-            raw_content = body.get("content", "") if isinstance(body, dict) else ""
+                # Handle deleted messages from Delta sync
+                # Delta Query returns @removed annotation for deleted items
+                sync_metadata = msg.get("_sync_metadata", {})
+                is_deleted_from_delta = sync_metadata.get("sync_action") == "DELETED"
 
-            is_system_event = (
-                msg_type_raw == "systemEventMessage"
-                or has_event_detail
-                or raw_content.strip() == "<systemEventMessage/>"
-            )
-
-            # Check if message already exists
-            existing_stmt = select(MessagingMessage).where(
-                MessagingMessage.integration_id == integration_id,
-                MessagingMessage.external_message_id == external_message_id,
-            )
-            existing_result = await self.db.execute(existing_stmt)
-            existing = existing_result.scalar_one_or_none()
-
-            # Extract content type
-            content_type = body.get("contentType", "text") if isinstance(body, dict) else "text"
-
-            # Process content based on type:
-            # Teams API returns body.content which can be HTML or plain text
-            # - content: Always plain text (for search, preview, AI analysis)
-            # - formatted_content: Original HTML (for rich display in UI)
-            if content_type == "html" and raw_content:
-                # Extract plain text from HTML
-                soup = BeautifulSoup(raw_content, "html.parser")
-                # Replace <br> and </p> with newlines for better formatting
-                for br in soup.find_all("br"):
-                    br.replace_with("\n")
-                for p in soup.find_all("p"):
-                    p.append("\n")
-                plain_text = soup.get_text(separator=" ").strip()
-                # Clean up multiple spaces/newlines
-                plain_text = re.sub(r"\s+", " ", plain_text).strip()
-                content = plain_text
-                formatted_content = raw_content  # Keep original HTML
-            else:
-                # Plain text message
-                content = raw_content
-                formatted_content = None  # No HTML version
-
-            # Extract sender info
-            from_info = msg.get("from", {})
-            sender_user = from_info.get("user", {}) if isinstance(from_info, dict) else {}
-            sender_id = sender_user.get("id") if isinstance(sender_user, dict) else None
-            sender_name = sender_user.get("displayName") if isinstance(sender_user, dict) else None
-
-            # Parse timestamps
-            sent_at_str = msg.get("createdDateTime")
-            sent_at = (
-                datetime.fromisoformat(sent_at_str.replace("Z", "+00:00"))
-                if sent_at_str
-                else datetime.now(UTC)
-            )
-
-            if existing:
-                # Update existing message
-                existing.content = content
-                existing.formatted_content = formatted_content
-                existing.message_type = (
-                    MessageType.SYSTEM_EVENT if is_system_event else MessageType.TEXT
-                )
-                existing.updated_at = datetime.now(UTC)
-            else:
-                # Determine message type:
-                # - SYSTEM_EVENT: Call started, members added, etc. (for timeline/analytics)
-                # - TEXT: Regular user messages (for chat display and AI analysis)
-                message_type = MessageType.SYSTEM_EVENT if is_system_event else MessageType.TEXT
-
-                # For system events, store event details in metadata for future analytics
-                metadata = {
-                    "importance": msg.get("importance"),
-                    "webUrl": msg.get("webUrl"),
-                    "sender_display_name": sender_name,
-                }
-                if is_system_event and msg.get("eventDetail"):
-                    # Store event type (e.g., "callEndedEventMessageDetail")
-                    event_detail = msg.get("eventDetail", {})
-                    metadata["event_type"] = event_detail.get("@odata.type", "").replace(
-                        "#microsoft.graph.", ""
+                if is_deleted_from_delta:
+                    # Mark existing message as deleted
+                    existing_stmt = select(MessagingMessage).where(
+                        MessagingMessage.integration_id == integration_id,
+                        MessagingMessage.external_message_id == external_message_id,
                     )
-                    metadata["event_detail"] = event_detail
+                    existing_result = await self.db.execute(existing_stmt)
+                    existing = existing_result.scalar_one_or_none()
+                    if existing and not existing.is_deleted:
+                        existing.is_deleted = True
+                        existing.updated_at = datetime.now(UTC)
+                        logger.debug(
+                            "Marked message as deleted: %s",
+                            external_message_id,
+                        )
+                    continue  # Skip to next message
 
-                new_message = MessagingMessage(
-                    organisation_id=self.organisation_id,
-                    integration_id=integration_id,
-                    channel_id=channel_id,
-                    external_message_id=external_message_id,
-                    content=content,
-                    formatted_content=formatted_content,
-                    message_type=message_type,
-                    sent_at=sent_at,
-                    external_user_id=sender_id,
-                    attachments=msg.get("attachments", []),
-                    mentions=[m.get("id") for m in msg.get("mentions", []) if m.get("id")],
-                    reactions={"items": msg.get("reactions", [])},
-                    is_deleted=False,
-                    is_bot_message=False,
-                    is_important=msg.get("importance") == "high",
-                    message_metadata=metadata,
+                # Detect system event messages (user joined, call started, members added, etc.)
+                # These are stored for timeline/analytics but filtered out for chat display
+                # Detection methods:
+                # 1. messageType == "systemEventMessage"
+                # 2. eventDetail property exists (indicates system event)
+                # 3. body.content contains "<systemEventMessage/>" marker
+                msg_type_raw = msg.get("messageType", "message")
+                has_event_detail = msg.get("eventDetail") is not None
+                body = msg.get("body", {})
+                raw_content = body.get("content", "") if isinstance(body, dict) else ""
+
+                is_system_event = (
+                    msg_type_raw == "systemEventMessage"
+                    or has_event_detail
+                    or raw_content.strip() == "<systemEventMessage/>"
                 )
-                self.db.add(new_message)
-                stored_count += 1
+
+                # Check if message already exists
+                existing_stmt = select(MessagingMessage).where(
+                    MessagingMessage.integration_id == integration_id,
+                    MessagingMessage.external_message_id == external_message_id,
+                )
+                existing_result = await self.db.execute(existing_stmt)
+                existing = existing_result.scalar_one_or_none()
+
+                # Extract content type
+                content_type = body.get("contentType", "text") if isinstance(body, dict) else "text"
+
+                # Process content based on type:
+                # Teams API returns body.content which can be HTML or plain text
+                # - content: Always plain text (for search, preview, AI analysis)
+                # - formatted_content: Original HTML (for rich display in UI)
+                if content_type == "html" and raw_content:
+                    # Extract plain text from HTML
+                    soup = BeautifulSoup(raw_content, "html.parser")
+                    # Replace <br> and </p> with newlines for better formatting
+                    for br in soup.find_all("br"):
+                        br.replace_with("\n")
+                    for p in soup.find_all("p"):
+                        p.append("\n")
+                    plain_text = soup.get_text(separator=" ").strip()
+                    # Clean up multiple spaces/newlines
+                    plain_text = re.sub(r"\s+", " ", plain_text).strip()
+                    content = plain_text
+                    formatted_content = raw_content  # Keep original HTML
+                else:
+                    # Plain text message
+                    content = raw_content
+                    formatted_content = None  # No HTML version
+
+                # Extract sender info
+                from_info = msg.get("from", {})
+                sender_user = from_info.get("user", {}) if isinstance(from_info, dict) else {}
+                sender_id = sender_user.get("id") if isinstance(sender_user, dict) else None
+                sender_name = (
+                    sender_user.get("displayName") if isinstance(sender_user, dict) else None
+                )
+
+                # Parse timestamps
+                sent_at_str = msg.get("createdDateTime")
+                sent_at = (
+                    datetime.fromisoformat(sent_at_str.replace("Z", "+00:00"))
+                    if sent_at_str
+                    else datetime.now(UTC)
+                )
+
+                if existing:
+                    # Update existing message
+                    existing.content = content
+                    existing.formatted_content = formatted_content
+                    existing.message_type = (
+                        MessageType.SYSTEM_EVENT if is_system_event else MessageType.TEXT
+                    )
+                    existing.updated_at = datetime.now(UTC)
+                else:
+                    # Determine message type:
+                    # - SYSTEM_EVENT: Call started, members added, etc. (for timeline/analytics)
+                    # - TEXT: Regular user messages (for chat display and AI analysis)
+                    message_type = MessageType.SYSTEM_EVENT if is_system_event else MessageType.TEXT
+
+                    # For system events, store event details in metadata for future analytics
+                    metadata = {
+                        "importance": msg.get("importance"),
+                        "webUrl": msg.get("webUrl"),
+                        "sender_display_name": sender_name,
+                    }
+                    if is_system_event and msg.get("eventDetail"):
+                        # Store event type (e.g., "callEndedEventMessageDetail")
+                        event_detail = msg.get("eventDetail", {})
+                        metadata["event_type"] = event_detail.get("@odata.type", "").replace(
+                            "#microsoft.graph.", ""
+                        )
+                        metadata["event_detail"] = event_detail
+
+                    new_message = MessagingMessage(
+                        organisation_id=self.organisation_id,
+                        integration_id=integration_id,
+                        channel_id=channel_id,
+                        external_message_id=external_message_id,
+                        content=content,
+                        formatted_content=formatted_content,
+                        message_type=message_type,
+                        sent_at=sent_at,
+                        external_user_id=sender_id,
+                        attachments=msg.get("attachments", []),
+                        mentions=[m.get("id") for m in msg.get("mentions", []) if m.get("id")],
+                        reactions={"items": msg.get("reactions", [])},
+                        is_deleted=False,
+                        is_bot_message=False,
+                        is_important=msg.get("importance") == "high",
+                        message_metadata=metadata,
+                    )
+                    self.db.add(new_message)
+                    stored_count += 1
 
         await self.db.commit()
         return stored_count
 
-    async def _update_channel_sync_timestamp(self, channel_id: UUID) -> None:
-        """Update the last_synced_at timestamp for a channel."""
+    async def _update_channel_sync_state(
+        self,
+        channel_id: UUID,
+        delta_link: str | None = None,
+    ) -> None:
+        """
+        Update the channel sync state (timestamp and deltaLink).
+
+        Args:
+            channel_id: Channel UUID
+            delta_link: New deltaLink from Microsoft Graph for next incremental sync
+        """
         channel_stmt = select(MessagingChannel).where(MessagingChannel.channel_id == channel_id)
         channel_result = await self.db.execute(channel_stmt)
         channel = channel_result.scalar_one_or_none()
         if channel:
             channel.last_synced_at = datetime.now(UTC)
+            if delta_link:
+                channel.last_sync_cursor = delta_link
             await self.db.commit()

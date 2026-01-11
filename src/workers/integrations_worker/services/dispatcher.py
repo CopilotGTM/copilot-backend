@@ -34,6 +34,8 @@ from ..adapters.calendar_adapter import upsert_calendar, upsert_calendar_increme
 from ..adapters.conversation_intelligence_adapter import sync_conversation_intelligence_data
 from ..adapters.crm_adapter import sync_crm_data
 from ..models.sync_models import SyncItemResult, SyncJobRequest, SyncJobResult
+from ..providers.calendar.outlook_calendar import FetchEventsResult
+from ..providers.messaging.teams import FetchChatsResult, FetchMessagesResult
 from ..providers.registry import FetchFn, get_fetcher
 from ..utils.dedupe import acquire_sync_lock, release_sync_lock
 
@@ -533,6 +535,7 @@ class IntegrationMetadata:
     connection_id: str
     integration_type: IntegrationType
     last_synced_at: datetime | None
+    connection_metadata: dict[str, Any] | None = None
 
 
 @dataclass(slots=True)
@@ -554,12 +557,16 @@ class MonitoredChannelContext:
     chat_type: str | None  # oneOnOne, group, meeting
     sync_from_date: datetime | None
     last_synced_at: datetime | None
+    # Delta link for incremental message sync (per-channel delta)
+    last_sync_cursor: str | None = None
 
 
 @dataclass(slots=True)
 class MonitoredMessagesFetchResult:
     messages: list[dict[str, Any]]
     monitored_channel_count: int
+    # Delta links per channel for incremental sync (channel_id -> delta_link)
+    channel_delta_links: dict[UUID, str | None] | None = None
 
 
 @dataclass(slots=True)
@@ -578,6 +585,7 @@ def _to_metadata(integration: KnowledgeIntegration) -> IntegrationMetadata:
         connection_id=integration.connection_id,
         integration_type=integration.integration_type,
         last_synced_at=integration.last_synced_at,
+        connection_metadata=integration.connection_metadata,
     )
 
 
@@ -633,6 +641,8 @@ async def _load_monitored_channel_contexts(
                     chat_type=metadata.get("chat_type"),
                     sync_from_date=channel.sync_from_date,
                     last_synced_at=channel.last_synced_at,
+                    # Delta link for incremental message sync
+                    last_sync_cursor=channel.last_sync_cursor,
                 )
             )
 
@@ -667,6 +677,7 @@ async def _handle_calendar(
     provider: str,
     *,
     sync_type: str | None = None,
+    new_delta_link: str | None = None,
 ) -> CategoryHandlerOutcome:
     async with _integration_session(organisation_id) as session:
         integration_row = await _reload_integration(session, integration_id)
@@ -698,6 +709,20 @@ async def _handle_calendar(
                 provider=provider,
                 events=records,
             )
+
+        # Save new deltaLink for Outlook calendar (enables true incremental sync)
+        if new_delta_link and integration_row.integration_type == IntegrationType.OUTLOOK_CALENDAR:
+            connection_metadata = dict(integration_row.connection_metadata or {})
+            connection_metadata["outlook_delta_link"] = new_delta_link
+            integration_row.connection_metadata = connection_metadata
+            await (
+                session.commit()
+            )  # Commit to persist the deltaLink (async session doesn't auto-commit)
+            logger.info(
+                "Outlook calendar: saved new deltaLink for next sync (integration=%s)",
+                integration_id,
+            )
+
         logger.debug(
             "Calendar sync completed for data_type=%s: %d events processed (sync_type=%s)",
             data_type,
@@ -801,6 +826,7 @@ async def _handle_messaging(
     records: list[dict[str, Any]],
     provider: str,
     sync_type: str | None = None,
+    new_delta_link: str | None = None,  # noqa: ARG001 - Reserved for future use
 ) -> CategoryHandlerOutcome:
     """
     Handle messaging channel and message sync (Teams, Slack, etc.).
@@ -859,6 +885,9 @@ async def _handle_messaging(
             )
 
         records_synced = metrics.get("records_processed", 0)
+
+        # Note: Delta links for Teams chats listing are NOT supported in v1.0 API.
+        # Delta IS supported for messages within a chat (/chats/{id}/messages/delta).
 
         logger.debug(
             "Messaging sync completed for data_type=%s: %s",
@@ -993,6 +1022,7 @@ async def _dispatch_category(
     provider: str,
     *,
     sync_type: str | None = None,
+    new_delta_link: str | None = None,
 ) -> CategoryHandlerOutcome:
     handler_map = {
         "calendar": _handle_calendar,
@@ -1029,6 +1059,7 @@ async def _dispatch_category(
             records=records,
             provider=provider,
             sync_type=sync_type,
+            new_delta_link=new_delta_link,
         )
 
     if category == "email":
@@ -1049,6 +1080,7 @@ async def _dispatch_category(
             records=records,
             provider=provider,
             sync_type=sync_type,
+            new_delta_link=new_delta_link,
         )
 
     return await handler(
@@ -1094,7 +1126,13 @@ async def _fetch_monitored_messages(
     sync_data_type: str,
     is_initial: bool,
 ) -> MonitoredMessagesFetchResult:
-    """Collect Teams messages only for channels flagged as monitored."""
+    """Collect Teams messages only for channels flagged as monitored.
+
+    Supports delta query for incremental message sync:
+    - First sync: fetches all messages and stores delta_link
+    - Subsequent syncs: uses stored delta_link to fetch only new/changed messages
+    - Expired delta links (410 Gone): automatically falls back to full sync
+    """
     channel_contexts = await _load_monitored_channel_contexts(
         organisation_id=organisation_id,
         integration_id=integration_id,
@@ -1108,6 +1146,8 @@ async def _fetch_monitored_messages(
         return MonitoredMessagesFetchResult(messages=[], monitored_channel_count=0)
 
     aggregated_messages: list[dict[str, Any]] = []
+    # Collect new delta links per channel for storage after sync
+    channel_delta_links: dict[UUID, str | None] = {}
 
     for channel in channel_contexts:
         # Determine if this is a Team channel or a chat
@@ -1123,7 +1163,11 @@ async def _fetch_monitored_messages(
             )
             continue
 
-        channel_is_initial = is_initial or channel.last_synced_at is None
+        # Determine if this channel needs initial sync
+        # If we have a stored delta_link, use it for incremental sync
+        has_delta_link = channel.last_sync_cursor is not None
+        channel_is_initial = is_initial or (channel.last_synced_at is None and not has_delta_link)
+
         last_synced_at = channel.last_synced_at or integration_meta.last_synced_at
         if last_synced_at is None:
             last_synced_at = channel.sync_from_date
@@ -1148,15 +1192,67 @@ async def _fetch_monitored_messages(
                 # Chat: needs chat_id
                 fetch_params["chat_id"] = channel.external_channel_id
 
-            messages = await fetcher(**fetch_params)
-        except Exception:  # pragma: no cover - defensive logging for external API errors
-            logger.exception(
-                "Failed to fetch messages: integration=%s type=%s id=%s",
-                integration_id,
-                "chat" if is_chat else "channel",
-                channel.external_channel_id,
-            )
-            continue
+            # Pass stored delta_link for incremental sync (if available)
+            if has_delta_link and not channel_is_initial:
+                fetch_params["delta_link"] = channel.last_sync_cursor
+                logger.debug(
+                    "Using stored delta_link for incremental sync: channel=%s",
+                    channel.external_channel_id,
+                )
+
+            fetch_result = await fetcher(**fetch_params)
+
+            # Handle FetchMessagesResult with delta_link
+            if isinstance(fetch_result, FetchMessagesResult):
+                messages = fetch_result.messages
+                new_delta_link = fetch_result.delta_link
+                if new_delta_link:
+                    channel_delta_links[channel.channel_id] = new_delta_link
+                    logger.debug(
+                        "Received new delta_link for channel=%s",
+                        channel.external_channel_id,
+                    )
+            else:
+                # Fallback for fetchers that don't return FetchMessagesResult
+                messages = fetch_result
+
+        except Exception as e:
+            # Check for expired delta link (410 Gone) - retry with fresh sync
+            error_str = str(e).lower()
+            if "410" in error_str or "gone" in error_str or "expired" in error_str:
+                logger.warning(
+                    "Delta link expired for channel=%s, retrying with fresh sync",
+                    channel.external_channel_id,
+                )
+                try:
+                    # Retry without delta_link (fresh sync)
+                    fetch_params.pop("delta_link", None)
+                    fetch_params["is_initial"] = True
+
+                    fetch_result = await fetcher(**fetch_params)
+
+                    if isinstance(fetch_result, FetchMessagesResult):
+                        messages = fetch_result.messages
+                        new_delta_link = fetch_result.delta_link
+                        if new_delta_link:
+                            channel_delta_links[channel.channel_id] = new_delta_link
+                    else:
+                        messages = fetch_result
+                except Exception:
+                    logger.exception(
+                        "Failed to fetch messages after delta_link expiry: integration=%s channel=%s",
+                        integration_id,
+                        channel.external_channel_id,
+                    )
+                    continue
+            else:
+                logger.exception(
+                    "Failed to fetch messages: integration=%s type=%s id=%s",
+                    integration_id,
+                    "chat" if is_chat else "channel",
+                    channel.external_channel_id,
+                )
+                continue
 
         if not messages:
             continue
@@ -1175,7 +1271,63 @@ async def _fetch_monitored_messages(
     return MonitoredMessagesFetchResult(
         messages=aggregated_messages,
         monitored_channel_count=len(channel_contexts),
+        channel_delta_links=channel_delta_links if channel_delta_links else None,
     )
+
+
+async def _save_channel_delta_links(
+    *,
+    organisation_id: UUID,
+    channel_delta_links: dict[UUID, str | None],
+) -> int:
+    """
+    Save new delta links to messaging_channels.last_sync_cursor after successful message sync.
+
+    This enables true incremental sync for subsequent syncs - we only fetch
+    messages changed since the last delta.
+
+    Args:
+        organisation_id: The organization UUID
+        channel_delta_links: Map of channel_id -> new_delta_link
+
+    Returns:
+        Number of channels updated
+    """
+    if not channel_delta_links:
+        return 0
+
+    from datetime import UTC, datetime
+
+    from sqlalchemy import update
+    from src.domain.models.organisation_tables.sync import MessagingChannel
+
+    async with _integration_session(organisation_id) as session:
+        updated_count = 0
+        for channel_id, delta_link in channel_delta_links.items():
+            if delta_link:
+                stmt = (
+                    update(MessagingChannel)
+                    .where(MessagingChannel.channel_id == channel_id)
+                    .values(
+                        last_sync_cursor=delta_link,
+                        last_synced_at=datetime.now(UTC),
+                    )
+                )
+                result = await session.execute(stmt)
+                if result.rowcount > 0:
+                    updated_count += 1
+                    logger.debug(
+                        "Saved delta_link for channel %s",
+                        channel_id,
+                    )
+
+        await session.commit()
+        logger.info(
+            "Saved delta links for %d channels (org=%s)",
+            updated_count,
+            organisation_id,
+        )
+        return updated_count
 
 
 async def _execute_category_sync(
@@ -1204,6 +1356,19 @@ async def _execute_category_sync(
     logger.debug("Starting Fetch for Connection ID: %s", integration_meta.connection_id)
     logger.debug("Last Synced At: %s", integration_meta.last_synced_at)
     logger.debug("Is Initial Sync: %s", not request.incremental)
+
+    # Track Outlook calendar deltaLink for true incremental sync
+    is_outlook_calendar = (
+        request.category == "calendar"
+        and integration_meta.integration_type == IntegrationType.OUTLOOK_CALENDAR
+    )
+    # Track Teams chats deltaLink for true incremental sync
+    is_teams_chats = (
+        request.category == "messaging"
+        and sync_data_type == "chats"
+        and integration_meta.integration_type == IntegrationType.TEAMS
+    )
+    new_delta_link: str | None = None
 
     monitored_fetch: MonitoredMessagesFetchResult | None = None
     if request.category == "messaging" and sync_data_type == "messages":
@@ -1270,7 +1435,40 @@ async def _execute_category_sync(
                 request.response_results,
             )
 
-        records = await fetcher(**fetch_kwargs)
+        # For Outlook calendar incremental sync, pass stored deltaLink for true incremental
+        # This enables fetching only changed events instead of all events
+        if is_outlook_calendar and request.incremental:
+            stored_delta_link = (integration_meta.connection_metadata or {}).get(
+                "outlook_delta_link"
+            )
+            if stored_delta_link:
+                fetch_kwargs["delta_link"] = stored_delta_link
+                logger.info("Outlook calendar: using stored deltaLink for true incremental sync")
+            else:
+                logger.info("Outlook calendar: no stored deltaLink, will establish baseline")
+
+        # Note: Teams chats listing (/me/chats) does NOT support delta query in v1.0 API.
+        # Delta is only available in beta API. We fetch all chats each time.
+        # Delta IS supported for messages within a chat (/chats/{id}/messages/delta).
+        if is_teams_chats:
+            logger.info("Teams chats: fetching all chats (delta not supported in v1.0 API)")
+
+        fetch_result = await fetcher(**fetch_kwargs)
+
+        # Handle Outlook calendar's FetchEventsResult return type
+        if is_outlook_calendar and isinstance(fetch_result, FetchEventsResult):
+            records = fetch_result.events
+            new_delta_link = fetch_result.delta_link
+            if new_delta_link:
+                logger.info("Outlook calendar: received new deltaLink from API")
+        # Handle Teams chats' FetchChatsResult return type
+        # Note: delta_link is always None since delta is not supported for /me/chats in v1.0
+        elif is_teams_chats and isinstance(fetch_result, FetchChatsResult):
+            records = fetch_result.chats
+            # delta_link not supported for chats listing in v1.0 API
+        else:
+            records = fetch_result
+
         logger.debug("Fetched %d records for data_type=%s", len(records), sync_data_type)
     if not records:
         logger.debug(
@@ -1295,9 +1493,36 @@ async def _execute_category_sync(
         records=records,
         provider=request.provider,
         sync_type=request.sync_type,
+        new_delta_link=new_delta_link if (is_outlook_calendar or is_teams_chats) else None,
     )
 
     result.items[sync_data_type] = outcome.item_result
+
+    # Save per-channel delta links for messaging messages (enables incremental sync)
+    if (
+        request.category == "messaging"
+        and sync_data_type == "messages"
+        and monitored_fetch
+        and monitored_fetch.channel_delta_links
+        and outcome.item_result.status == "success"
+    ):
+        try:
+            delta_count = await _save_channel_delta_links(
+                organisation_id=organisation_id,
+                channel_delta_links=monitored_fetch.channel_delta_links,
+            )
+            logger.info(
+                "Saved delta links for %d channels after message sync: org=%s",
+                delta_count,
+                organisation_id,
+            )
+        except Exception as e:
+            # Don't fail the main sync if delta link save fails
+            logger.warning(
+                "Failed to save channel delta links: org=%s error=%s",
+                organisation_id,
+                str(e),
+            )
 
     # For Salesforce CRM syncs, also sync users alongside
     # This ensures crm_users table is populated even without a dedicated Nango 'users' sync

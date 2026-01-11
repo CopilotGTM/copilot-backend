@@ -2,19 +2,80 @@
 
 Fetches Teams channels and messages.
 
+Uses Microsoft Graph Delta Query for efficient incremental sync of messages:
+- Initial sync: /messages/delta with createdDateTime filter (last 90 days)
+- Incremental sync: Use stored deltaLink (returns ONLY new/changed/deleted messages)
+
 Microsoft Graph API documentation:
 - List channels: https://learn.microsoft.com/en-us/graph/api/channel-list
 - List messages: https://learn.microsoft.com/en-us/graph/api/channel-list-messages
+- Delta messages: https://learn.microsoft.com/en-us/graph/api/chatmessage-delta
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 from src.domain.models.organisation_tables.sync import IntegrationType
 from src.infra.config.nango_provider_mapping import to_nango_connect_integration_key
+from src.infra.utils.logger import get_logger
 from src.service.integrations.nango_client import NangoClient
+
+logger = get_logger(__name__)
+
+
+@dataclass
+class FetchMessagesResult:
+    """Result from fetch_messages containing messages and optional delta token."""
+
+    messages: list[dict[str, Any]]
+    delta_link: str | None = None
+
+
+@dataclass
+class FetchChatsResult:
+    """Result from fetch_chats containing chats and optional delta token."""
+
+    chats: list[dict[str, Any]]
+    delta_link: str | None = None
+
+
+def _extract_pagination_params(next_link: str) -> tuple[str, dict[str, Any]]:
+    """
+    Extract endpoint path and query params from Microsoft Graph @odata.nextLink or @odata.deltaLink.
+
+    Microsoft Graph returns full URLs like:
+    https://graph.microsoft.com/v1.0/teams/{id}/channels/{id}/messages/delta?$skiptoken=xxx...
+
+    We need to extract the path and query params for Nango's proxy_request.
+    """
+    parsed = urlparse(next_link)
+    endpoint = parsed.path
+
+    # Parse query string into dict (parse_qs returns lists, we want single values)
+    query_dict = parse_qs(parsed.query)
+    params: dict[str, Any] = {k: v[0] if len(v) == 1 else v for k, v in query_dict.items()}
+
+    return endpoint, params
+
+
+def _mark_as_deleted(message: dict[str, Any]) -> dict[str, Any]:
+    """
+    Mark a message as deleted for proper handling downstream.
+
+    Microsoft Graph delta sync returns deleted items with @removed annotation.
+    We translate this to _sync_metadata for consistent handling in sync services.
+    """
+    message["_sync_metadata"] = {
+        "sync_action": "DELETED",
+        "sync_type": "INCREMENTAL",
+        "inferred": True,
+        "source": "delta_removed",
+    }
+    return message
 
 
 async def fetch_channels(
@@ -104,92 +165,37 @@ async def fetch_channels(
     return all_channels
 
 
-def _parse_message_datetime(dt_str: str | None) -> datetime | None:
-    """Parse ISO datetime string from Teams API."""
-    if not dt_str:
-        return None
-    try:
-        return datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
-    except (ValueError, AttributeError):
-        return None
-
-
-def _ensure_utc(dt: datetime) -> datetime:
-    """Ensure datetime is UTC-aware."""
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=UTC)
-    return dt.astimezone(UTC)
-
-
-def _parse_next_link(next_link: str) -> tuple[str, dict[str, str]]:
-    """
-    Parse Microsoft Graph @odata.nextLink into path and query params.
-
-    The nextLink returns a full URL like:
-    https://graph.microsoft.com/v1.0/chats/.../messages?$skiptoken=abc123
-
-    Returns:
-        Tuple of (path, params_dict) for Nango proxy_request
-        e.g., ("/v1.0/chats/.../messages", {"$skiptoken": "abc123"})
-    """
-    from urllib.parse import parse_qs, urlparse
-
-    # Remove the Graph base URL prefix
-    graph_prefixes = [
-        "https://graph.microsoft.com",
-        "http://graph.microsoft.com",
-    ]
-    url = next_link
-    for prefix in graph_prefixes:
-        if url.startswith(prefix):
-            url = url[len(prefix) :]
-            break
-
-    # Parse the URL to extract path and query params
-    parsed = urlparse(url)
-    path = parsed.path
-
-    # Convert query string to dict (parse_qs returns lists, we want single values)
-    params = {}
-    if parsed.query:
-        qs = parse_qs(parsed.query)
-        for key, values in qs.items():
-            # Take first value (Graph API doesn't use repeated params)
-            params[key] = values[0] if values else ""
-
-    return path, params
-
-
 async def fetch_messages(
     *,
     nango: NangoClient,
     connection_id: str,
     is_initial: bool,
     last_synced_at: datetime | None,
+    delta_link: str | None = None,
     data_type: str | None = None,
     provider_config_key: str | None = None,
     team_id: str | None = None,
     channel_id: str | None = None,
-) -> list[dict[str, Any]]:
+) -> FetchMessagesResult:
     """
-    Fetch Teams messages from a specific channel.
+    Fetch Teams messages from a specific channel using Delta Query.
 
-    Uses Microsoft Graph API: GET /v1.0/teams/{teamId}/channels/{channelId}/messages
-
-    Sync behavior:
-    - Initial sync (is_initial=True or no last_synced_at): Fetches ALL messages from last 90 days
-      with full pagination.
-    - Incremental sync: Fetches messages since last_synced_at minus 30-minute buffer.
-      Uses early termination when all messages on a page are older than cutoff.
+    Uses Microsoft Graph Delta API for efficient incremental sync:
+    - Initial sync: /messages/delta (fetches all messages, returns deltaLink)
+    - Incremental sync: Use stored deltaLink (returns ONLY changes)
 
     Args:
+        delta_link: Optional stored deltaLink from previous sync. If provided,
+                    only messages changed since that deltaLink are returned.
         team_id: Required - Team ID containing the channel
         channel_id: Required - Channel ID to fetch messages from
         is_initial: Whether this is the first sync for this channel
         last_synced_at: Timestamp of last successful sync
 
     Returns:
-        List of message dictionaries with structure:
+        FetchMessagesResult with messages and new deltaLink for next sync.
+
+        Message structure:
         {
             "id": "1234567890",
             "createdDateTime": "2025-11-12T10:30:00Z",
@@ -211,6 +217,12 @@ async def fetch_messages(
             "mentions": [...],
             "reactions": [...]
         }
+
+        Deleted messages appear with @removed annotation:
+        {
+            "id": "1234567890",
+            "@removed": {"reason": "deleted"}
+        }
     """
     _ = data_type
 
@@ -219,99 +231,133 @@ async def fetch_messages(
 
     provider = provider_config_key or to_nango_connect_integration_key(IntegrationType.TEAMS)
 
-    now = datetime.now(UTC)
+    using_stored_delta_link = False
 
-    # Determine time range for message sync
-    if is_initial or not last_synced_at:
-        # Initial sync: last 90 days, fetch all with pagination
-        time_min = now - timedelta(days=90)
-        use_pagination = True
-        max_pages = 100  # Safety limit: 100 pages × 50 = 5000 messages max
+    if delta_link:
+        # True incremental sync: use stored deltaLink
+        # Returns ONLY messages that changed since the deltaLink was issued
+        initial_endpoint, initial_params = _extract_pagination_params(delta_link)
+        using_stored_delta_link = True
+        logger.info(
+            "Teams Messages: using stored deltaLink for channel (true incremental)",
+        )
     else:
-        # Incremental: from last sync minus 30-minute buffer
-        # Buffer accounts for: clock skew, delayed messages, task delays
-        time_min = _ensure_utc(last_synced_at) - timedelta(minutes=30)
-        use_pagination = True  # Still paginate but with early exit
-        max_pages = 10  # For incremental, limit pages (500 messages should be plenty)
-
-    time_min = _ensure_utc(time_min)
-
-    # Microsoft Graph endpoint for channel messages
-    base_endpoint = f"/v1.0/teams/{team_id}/channels/{channel_id}/messages"
-
-    # Note: Teams API doesn't support $filter on createdDateTime
-    # We fetch in descending order and stop when messages are older than cutoff
-    params = {
-        "$top": "50",
-        "$orderby": "createdDateTime desc",
-        "$expand": "replies",
-    }
-
-    all_messages: list[dict[str, Any]] = []
-    next_endpoint: str | None = None
-    next_params: dict[str, str] | None = None
-    page_count = 0
-
-    while True:
-        page_count += 1
-
-        # Use parsed next_link for pagination, or base endpoint for first request
-        current_endpoint = next_endpoint or base_endpoint
-        current_params = next_params if next_endpoint else params
-
-        resp = await nango.proxy_request(
-            provider_config_key=provider,
-            connection_id=connection_id,
-            endpoint=current_endpoint,
-            params=current_params,
+        # Fresh delta query (initial sync)
+        # Use delta endpoint - fetches all messages, returns deltaLink for next sync
+        initial_endpoint = f"/v1.0/teams/{team_id}/channels/{channel_id}/messages/delta"
+        initial_params: dict[str, Any] = {
+            "$top": "50",
+        }
+        logger.info(
+            "Teams Messages: fresh delta query for team=%s channel=%s",
+            team_id,
+            channel_id,
         )
 
-        items = []
-        if isinstance(resp, dict) and "value" in resp and isinstance(resp["value"], list):
-            items = resp["value"]
+    all_messages: list[dict[str, Any]] = []
+    next_link: str | None = None
+    new_delta_link: str | None = None
+    max_pages = 100  # Safety limit (100 pages * 50 items = 5,000 messages max)
 
-        if not items:
-            break  # No more messages
+    for page_num in range(max_pages):  # noqa: B007
+        # Determine endpoint and params for this request
+        if next_link:
+            endpoint, params = _extract_pagination_params(next_link)
+        else:
+            endpoint, params = initial_endpoint, initial_params
 
-        # Filter and check for early termination
-        messages_in_range = 0
-        messages_too_old = 0
+        try:
+            resp = await nango.proxy_request(
+                provider_config_key=provider,
+                connection_id=connection_id,
+                endpoint=endpoint,
+                params=params,
+            )
+        except Exception as e:
+            # Handle expired deltaLink (Microsoft returns 410 Gone or similar)
+            if using_stored_delta_link and page_num == 0:
+                error_msg = str(e).lower()
+                if "410" in error_msg or "gone" in error_msg or "sync state" in error_msg:
+                    logger.warning(
+                        "Teams Messages: stored deltaLink expired, retrying with fresh delta query"
+                    )
+                    # Retry without deltaLink
+                    return await fetch_messages(
+                        nango=nango,
+                        connection_id=connection_id,
+                        is_initial=True,
+                        last_synced_at=last_synced_at,
+                        delta_link=None,  # Force fresh delta query
+                        data_type=data_type,
+                        provider_config_key=provider_config_key,
+                        team_id=team_id,
+                        channel_id=channel_id,
+                    )
+            raise
 
-        for item in items:
-            created_dt = _parse_message_datetime(item.get("createdDateTime"))
+        if isinstance(resp, dict):
+            # Check for error response (deltaLink might be expired)
+            if "error" in resp and using_stored_delta_link and page_num == 0:
+                error_code = resp.get("error", {}).get("code", "").lower()
+                if error_code in ("syncstatenotfound", "resyncresquired", "invalidrequest"):
+                    logger.warning(
+                        "Teams Messages: deltaLink invalid (error=%s), retrying fresh",
+                        error_code,
+                    )
+                    return await fetch_messages(
+                        nango=nango,
+                        connection_id=connection_id,
+                        is_initial=True,
+                        last_synced_at=last_synced_at,
+                        delta_link=None,
+                        data_type=data_type,
+                        provider_config_key=provider_config_key,
+                        team_id=team_id,
+                        channel_id=channel_id,
+                    )
 
-            if created_dt is None:
-                # Can't parse date, include to be safe
-                all_messages.append(item)
-                messages_in_range += 1
-            elif created_dt >= time_min:
-                all_messages.append(item)
-                messages_in_range += 1
-            else:
-                messages_too_old += 1
+            # Extract messages from response
+            if "value" in resp and isinstance(resp["value"], list):
+                for item in resp["value"]:
+                    # Check for deleted items (delta sync returns @removed annotation)
+                    if "@removed" in item:
+                        logger.debug(
+                            "Delta sync: detected deleted message id=%s reason=%s",
+                            item.get("id"),
+                            item.get("@removed", {}).get("reason"),
+                        )
+                        # Mark for downstream handling with proper sync metadata
+                        _mark_as_deleted(item)
 
-        # Early termination for incremental sync:
-        # If ALL messages on this page are older than cutoff, stop pagination
-        if messages_in_range == 0 and messages_too_old > 0:
+                    # Enrich with team/channel context
+                    item["teamId"] = team_id
+                    item["channelId"] = channel_id
+                    all_messages.append(item)
+
+            # Check for next page or deltaLink
+            next_link = resp.get("@odata.nextLink")
+            if not next_link:
+                # Capture deltaLink for next sync (only on last page)
+                new_delta_link = resp.get("@odata.deltaLink")
+                if new_delta_link:
+                    logger.info(
+                        "Teams Messages delta sync complete after %d pages, new deltaLink received",
+                        page_num + 1,
+                    )
+                break
+        else:
             break
 
-        # Check pagination limits
-        if not use_pagination or page_count >= max_pages:
-            break
+    logger.info(
+        "Teams Messages fetch complete: %d messages (initial=%s, used_delta_link=%s, team=%s, channel=%s)",
+        len(all_messages),
+        is_initial,
+        using_stored_delta_link,
+        team_id,
+        channel_id,
+    )
 
-        # Get next page link
-        next_link_raw = resp.get("@odata.nextLink") if isinstance(resp, dict) else None
-        if not next_link_raw:
-            break
-        # Parse the nextLink into path and params for Nango
-        next_endpoint, next_params = _parse_next_link(next_link_raw)
-
-    # Enrich messages with team/channel context
-    for msg in all_messages:
-        msg["teamId"] = team_id
-        msg["channelId"] = channel_id
-
-    return all_messages
+    return FetchMessagesResult(messages=all_messages, delta_link=new_delta_link)
 
 
 async def fetch_chats(
@@ -320,18 +366,33 @@ async def fetch_chats(
     connection_id: str,
     is_initial: bool,
     last_synced_at: datetime | None,
+    delta_link: str | None = None,
     data_type: str | None = None,
     provider_config_key: str | None = None,
-) -> list[dict[str, Any]]:
+    max_age_days: int = 90,
+) -> FetchChatsResult:
     """
     Fetch Teams chats (group and meeting chats only, excludes 1:1).
 
-    Uses Microsoft Graph API: GET /v1.0/me/chats
+    Uses Microsoft Graph /me/chats endpoint to list chats, ordered by last activity.
+    Only fetches chats with activity in the last `max_age_days` days (default 90).
+
+    Note: Delta Query is NOT supported for /me/chats in the v1.0 API (only in beta).
+    Delta Query IS supported for messages within a chat (/chats/{id}/messages/delta).
 
     Note: Excludes oneOnOne chats (1:1 direct messages) - only syncs group and meeting chats.
 
+    Args:
+        is_initial: Whether this is the first sync
+        last_synced_at: Timestamp of last successful sync
+        delta_link: Not used for chats listing (delta not supported in v1.0)
+        max_age_days: Only fetch chats active in the last N days (default 90)
+
     Returns:
-        List of chat dictionaries with structure:
+        FetchChatsResult with chats list. delta_link will always be None since
+        delta queries are not supported for listing chats.
+
+        Chat structure:
         {
             "id": "19:abc123...",
             "topic": "Chat with John Doe",
@@ -346,52 +407,148 @@ async def fetch_chats(
     _ = data_type
     _ = is_initial
     _ = last_synced_at
+    _ = delta_link  # Delta not supported for /me/chats in v1.0 API
 
     provider = provider_config_key or to_nango_connect_integration_key(IntegrationType.TEAMS)
 
-    # Fetch all chats user participates in
-    chats_endpoint = "/v1.0/me/chats"
-    chats_params = {
-        "$select": "id,topic,chatType,createdDateTime,lastUpdatedDateTime,webUrl,tenantId,onlineMeetingInfo",
-        "$expand": "members",  # Include member list
-    }
+    # Calculate cutoff date for max_age_days
+    cutoff_date = datetime.now(UTC) - timedelta(days=max_age_days)
 
-    resp = await nango.proxy_request(
-        provider_config_key=provider,
-        connection_id=connection_id,
-        endpoint=chats_endpoint,
-        params=chats_params,
+    # Use standard chats endpoint with ordering by last message (most recent first)
+    # This allows us to stop early when we hit chats older than cutoff
+    # Expand members to get chat participants, and lastMessagePreview for date filtering
+    initial_endpoint = "/v1.0/me/chats"
+    initial_params: dict[str, Any] = {
+        "$select": "id,topic,chatType,createdDateTime,lastUpdatedDateTime,webUrl,tenantId,onlineMeetingInfo",
+        "$expand": "lastMessagePreview,members",
+        "$orderby": "lastMessagePreview/createdDateTime desc",
+        "$top": "50",
+    }
+    logger.info(
+        "Teams Chats: fetching chats with activity in last %d days (cutoff: %s)",
+        max_age_days,
+        cutoff_date.isoformat(),
     )
 
-    all_chats = []
-    if isinstance(resp, dict) and "value" in resp and isinstance(resp["value"], list):
-        all_chats = resp["value"]
+    all_chats: list[dict[str, Any]] = []
+    next_link: str | None = None
+    max_pages = 100  # Safety limit
+    reached_cutoff = False
 
-    # Filter out 1:1 chats (oneOnOne) - only keep group and meeting chats
-    chats = [chat for chat in all_chats if chat.get("chatType") != "oneOnOne"]
-
-    # Enrich chat names for better display
-    for chat in chats:
-        chat_type = chat.get("chatType")
-        topic = chat.get("topic")
-
-        # Generate display name if topic is None
-        if not topic:
-            members = chat.get("members", [])
-            if chat_type == "group":
-                # Use member names
-                member_names = [m.get("displayName", "Unknown") for m in members[:3]]
-                chat["displayName"] = ", ".join(member_names)
-                if len(members) > 3:
-                    chat["displayName"] += f" +{len(members) - 3} more"
-            elif chat_type == "meeting":
-                chat["displayName"] = "Meeting Chat"
-            else:
-                chat["displayName"] = "Group Chat"
+    for page_num in range(max_pages):  # noqa: B007
+        # Determine endpoint and params for this request
+        if next_link:
+            endpoint, params = _extract_pagination_params(next_link)
         else:
-            chat["displayName"] = topic
+            endpoint, params = initial_endpoint, initial_params
 
-    return chats
+        resp = await nango.proxy_request(
+            provider_config_key=provider,
+            connection_id=connection_id,
+            endpoint=endpoint,
+            params=params,
+        )
+
+        if isinstance(resp, dict):
+            # Extract chats from response
+            if "value" in resp and isinstance(resp["value"], list):
+                for chat in resp["value"]:
+                    # Check if chat is older than cutoff based on last message
+                    last_message = chat.get("lastMessagePreview", {})
+                    last_message_time_str = (
+                        last_message.get("createdDateTime") if last_message else None
+                    )
+
+                    # Also check lastUpdatedDateTime as fallback
+                    if not last_message_time_str:
+                        last_message_time_str = chat.get("lastUpdatedDateTime")
+
+                    if last_message_time_str:
+                        try:
+                            # Parse the datetime string
+                            last_message_time = datetime.fromisoformat(
+                                last_message_time_str.replace("Z", "+00:00")
+                            )
+                            if last_message_time < cutoff_date:
+                                logger.info(
+                                    "Teams Chats: reached cutoff date after %d chats, stopping",
+                                    len(all_chats),
+                                )
+                                reached_cutoff = True
+                                break
+                        except (ValueError, TypeError):
+                            pass  # Continue if date parsing fails
+
+                    # Filter out 1:1 chats (oneOnOne)
+                    if chat.get("chatType") == "oneOnOne":
+                        continue
+
+                    # Enrich chat name for display
+                    chat_type = chat.get("chatType")
+                    topic = chat.get("topic")
+                    members = chat.get("members", [])
+
+                    if not topic:
+                        if chat_type == "group":
+                            member_names = [m.get("displayName", "Unknown") for m in members[:3]]
+                            chat["displayName"] = (
+                                ", ".join(member_names) if member_names else "Group Chat"
+                            )
+                            if len(members) > 3:
+                                chat["displayName"] += f" +{len(members) - 3} more"
+                        elif chat_type == "meeting":
+                            chat["displayName"] = "Meeting Chat"
+                        else:
+                            chat["displayName"] = "Group Chat"
+                    else:
+                        chat["displayName"] = topic
+
+                    # Normalize members data for storage
+                    # Each member has: id, displayName, email, roles, userId, tenantId, visibleHistoryStartDateTime
+                    if members:
+                        normalized_members = []
+                        for member in members:
+                            normalized_members.append(
+                                {
+                                    "id": member.get("id"),
+                                    "userId": member.get("userId"),
+                                    "displayName": member.get("displayName"),
+                                    "email": member.get("email"),
+                                    "roles": member.get("roles", []),
+                                    "tenantId": member.get("tenantId"),
+                                    "visibleHistoryStartDateTime": member.get(
+                                        "visibleHistoryStartDateTime"
+                                    ),
+                                }
+                            )
+                        chat["members"] = normalized_members
+
+                    # Remove lastMessagePreview from stored data (we only needed it for filtering)
+                    chat.pop("lastMessagePreview", None)
+
+                    all_chats.append(chat)
+
+            # Stop if we've reached the cutoff date
+            if reached_cutoff:
+                break
+
+            # Check for next page
+            next_link = resp.get("@odata.nextLink")
+            if not next_link:
+                break
+        else:
+            break
+
+    logger.info(
+        "Teams Chats fetch complete: %d chats after %d pages (reached_cutoff=%s, max_age_days=%d)",
+        len(all_chats),
+        page_num + 1,
+        reached_cutoff,
+        max_age_days,
+    )
+
+    # Return without delta_link since delta is not supported for chats listing
+    return FetchChatsResult(chats=all_chats, delta_link=None)
 
 
 async def fetch_chat_messages(
@@ -400,112 +557,132 @@ async def fetch_chat_messages(
     connection_id: str,
     is_initial: bool,
     last_synced_at: datetime | None,
+    delta_link: str | None = None,
     data_type: str | None = None,
     provider_config_key: str | None = None,
     chat_id: str | None = None,
-) -> list[dict[str, Any]]:
+) -> FetchMessagesResult:
     """
     Fetch Teams chat messages from a specific chat.
 
-    Uses Microsoft Graph API: GET /v1.0/chats/{chatId}/messages
-
-    Sync behavior:
-    - Initial sync (is_initial=True or no last_synced_at): Fetches ALL messages from last 90 days
-      with full pagination.
-    - Incremental sync: Fetches messages since last_synced_at minus 30-minute buffer.
-      Uses early termination when all messages on a page are older than cutoff.
+    NOTE: Microsoft Graph does NOT support delta queries for chat messages.
+    Delta is only supported for Team channel messages (/teams/{id}/channels/{id}/messages/delta).
+    For chat messages, we use standard pagination with date filtering.
 
     Args:
         chat_id: Required - Chat ID to fetch messages from
+        delta_link: Ignored (delta not supported for chat messages)
         is_initial: Whether this is the first sync for this chat
-        last_synced_at: Timestamp of last successful sync
+        last_synced_at: Timestamp of last successful sync (used for incremental filtering)
 
     Returns:
-        List of message dictionaries (same structure as channel messages)
+        FetchMessagesResult with messages (delta_link is always None for chats).
     """
     _ = data_type
+    _ = delta_link  # Ignored - delta not supported for chat messages
 
     if not chat_id:
         raise ValueError("chat_id is required for fetching Teams chat messages")
 
     provider = provider_config_key or to_nango_connect_integration_key(IntegrationType.TEAMS)
 
-    now = datetime.now(UTC)
-
-    # Determine time range for message sync
-    if is_initial or not last_synced_at:
-        # Initial sync: last 90 days, fetch all with pagination
-        time_min = now - timedelta(days=90)
-        max_pages = 100  # Safety limit
-    else:
-        # Incremental: from last sync minus 30-minute buffer
-        time_min = _ensure_utc(last_synced_at) - timedelta(minutes=30)
-        max_pages = 10  # For incremental, limit pages
-
-    time_min = _ensure_utc(time_min)
-
-    # Microsoft Graph endpoint for chat messages
-    base_endpoint = f"/v1.0/chats/{chat_id}/messages"
-
-    params = {
+    # Use standard messages endpoint (NOT delta - delta is not supported for chat messages)
+    # NOTE: $filter on createdDateTime is also NOT supported for chat messages.
+    # We use client-side filtering with early termination instead.
+    initial_endpoint = f"/v1.0/chats/{chat_id}/messages"
+    initial_params: dict[str, Any] = {
         "$top": "50",
-        "$orderby": "createdDateTime desc",
+        "$orderby": "createdDateTime desc",  # Newest first - enables early termination
     }
 
-    all_messages: list[dict[str, Any]] = []
-    next_endpoint: str | None = None
-    next_params: dict[str, str] | None = None
-    page_count = 0
-
-    while True:
-        page_count += 1
-
-        # Use parsed next_link for pagination, or base endpoint for first request
-        current_endpoint = next_endpoint or base_endpoint
-        current_params = next_params if next_endpoint else params
-
-        resp = await nango.proxy_request(
-            provider_config_key=provider,
-            connection_id=connection_id,
-            endpoint=current_endpoint,
-            params=current_params,
+    # For incremental sync, we do client-side filtering (API doesn't support $filter)
+    cutoff_date: datetime | None = None
+    if not is_initial and last_synced_at:
+        cutoff_date = last_synced_at
+        logger.info(
+            "Teams Chat Messages: incremental sync for chat=%s (client-side filter since %s)",
+            chat_id,
+            last_synced_at.isoformat(),
+        )
+    else:
+        logger.info(
+            "Teams Chat Messages: initial sync for chat=%s",
+            chat_id,
         )
 
-        items = []
-        if isinstance(resp, dict) and "value" in resp and isinstance(resp["value"], list):
-            items = resp["value"]
+    all_messages: list[dict[str, Any]] = []
+    next_link: str | None = None
+    max_pages = 100  # Safety limit (100 pages * 50 items = 5,000 messages max)
+    reached_cutoff = False
 
-        if not items:
+    for page_num in range(max_pages):  # noqa: B007
+        # Determine endpoint and params for this request
+        if next_link:
+            endpoint, params = _extract_pagination_params(next_link)
+        else:
+            endpoint, params = initial_endpoint, initial_params
+
+        try:
+            resp = await nango.proxy_request(
+                provider_config_key=provider,
+                connection_id=connection_id,
+                endpoint=endpoint,
+                params=params,
+            )
+        except Exception:
+            logger.exception(
+                "Teams Chat Messages: API error for chat=%s page=%d",
+                chat_id,
+                page_num,
+            )
+            raise
+
+        if isinstance(resp, dict):
+            # Extract messages from response
+            if "value" in resp and isinstance(resp["value"], list):
+                for item in resp["value"]:
+                    # For incremental sync, check if message is older than cutoff
+                    if cutoff_date:
+                        created_str = item.get("createdDateTime")
+                        if created_str:
+                            try:
+                                created_at = datetime.fromisoformat(
+                                    created_str.replace("Z", "+00:00")
+                                )
+                                if created_at <= cutoff_date:
+                                    # Message is older than cutoff - stop fetching
+                                    reached_cutoff = True
+                                    logger.debug(
+                                        "Teams Chat Messages: reached cutoff at message %s (created %s)",
+                                        item.get("id"),
+                                        created_str,
+                                    )
+                                    break
+                            except (ValueError, TypeError):
+                                pass  # If we can't parse date, include the message
+
+                    # Enrich with chat context
+                    item["chatId"] = chat_id
+                    all_messages.append(item)
+
+            # Stop if we reached the cutoff
+            if reached_cutoff:
+                break
+
+            # Check for next page
+            next_link = resp.get("@odata.nextLink")
+            if not next_link:
+                break
+        else:
             break
 
-        # Filter and check for early termination
-        messages_in_range = 0
-        messages_too_old = 0
+    logger.info(
+        "Teams Chat Messages fetch complete: %d messages (initial=%s, chat=%s, reached_cutoff=%s)",
+        len(all_messages),
+        is_initial,
+        chat_id,
+        reached_cutoff,
+    )
 
-        for item in items:
-            created_dt = _parse_message_datetime(item.get("createdDateTime"))
-
-            if created_dt is None or created_dt >= time_min:
-                all_messages.append(item)
-                messages_in_range += 1
-            else:
-                messages_too_old += 1
-
-        # Early termination: all messages on page are older than cutoff
-        if messages_in_range == 0 and messages_too_old > 0:
-            break
-
-        if page_count >= max_pages:
-            break
-
-        next_link_raw = resp.get("@odata.nextLink") if isinstance(resp, dict) else None
-        if not next_link_raw:
-            break
-        # Parse the nextLink into path and params for Nango
-        next_endpoint, next_params = _parse_next_link(next_link_raw)
-
-    # Enrich messages with chat context
-    for msg in all_messages:
-        msg["chatId"] = chat_id
-
-    return all_messages
+    # Note: delta_link is always None for chat messages (delta not supported)
+    return FetchMessagesResult(messages=all_messages, delta_link=None)

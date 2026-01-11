@@ -1,4 +1,21 @@
 """
+DEPRECATED: This module is deprecated. Use tasks/messaging/ instead.
+
+The three-tier architecture in tasks/messaging/ provides:
+- sync_messaging_channels_all_orgs_task (Tier 1) - Global coordinator
+- sync_messaging_channels_org_task (Tier 2) - Organization-level processor
+- sync_messaging_channels_integration_task (Tier 3) - Manual trigger
+
+Benefits of three-tier architecture:
+- Each organization gets its own Celery task (trackable, retryable)
+- Better org-level parallelism and monitoring
+- Follows the pattern established by email and calendar sync
+
+This file will be removed in a future release.
+
+---
+
+Original description:
 Teams-specific synchronization tasks.
 
 Handles automatic and on-demand Teams synchronization:

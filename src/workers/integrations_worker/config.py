@@ -41,12 +41,8 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
                 "queue": "integrations_priority",  # Priority queue for manual refresh
                 "routing_key": "integrations_priority",
             },
-            # Data sync tasks (to be implemented in Step 5)
+            # Generic data sync task (used by three-tier tasks)
             "integrations.sync_integration": {
-                "queue": "integrations",
-                "routing_key": "integrations",
-            },
-            "integrations.sync_all_active_integrations": {
                 "queue": "integrations",
                 "routing_key": "integrations",
             },
@@ -55,12 +51,12 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
                 "queue": "integrations",
                 "routing_key": "integrations",
             },
-            # Teams channels periodic sync
+            # Teams channels periodic sync (DEPRECATED - use three-tier tasks below)
             "integrations.sync_teams_channels": {
                 "queue": "integrations",
                 "routing_key": "integrations",
             },
-            # Deal channel messages sync
+            # Deal channel messages sync (DEPRECATED - use three-tier tasks below)
             "integrations.trigger_deal_channel_messages_sync_all_orgs": {
                 "queue": "integrations",
                 "routing_key": "integrations",
@@ -68,6 +64,63 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
             "integrations.sync_deal_channel_messages": {
                 "queue": "integrations",
                 "routing_key": "integrations",
+            },
+            # Messaging channels sync tasks (three-tier architecture)
+            "integrations.sync_messaging_channels_all_orgs": {
+                "queue": "integrations",
+                "routing_key": "integrations",
+            },
+            "integrations.sync_messaging_channels_org": {
+                "queue": "integrations",
+                "routing_key": "integrations",
+            },
+            "integrations.sync_messaging_channels_integration": {
+                "queue": "integrations_priority",  # Priority queue for manual triggers
+                "routing_key": "integrations_priority",
+            },
+            # Deal messages sync tasks (three-tier architecture)
+            "integrations.sync_deal_messages_all_orgs": {
+                "queue": "integrations",
+                "routing_key": "integrations",
+            },
+            "integrations.sync_deal_messages_org": {
+                "queue": "integrations",
+                "routing_key": "integrations",
+            },
+            "integrations.sync_deal_messages_integration": {
+                "queue": "integrations_priority",  # Priority queue for manual triggers
+                "routing_key": "integrations_priority",
+            },
+            # Calendar events periodic sync (DEPRECATED - use three-tier tasks below)
+            "integrations.sync_calendar_events": {
+                "queue": "integrations",
+                "routing_key": "integrations",
+            },
+            # Calendar sync tasks (three-tier architecture)
+            "integrations.sync_calendar_all_orgs": {
+                "queue": "integrations",
+                "routing_key": "integrations",
+            },
+            "integrations.sync_calendar_org": {
+                "queue": "integrations",
+                "routing_key": "integrations",
+            },
+            "integrations.sync_calendar_integration": {
+                "queue": "integrations_priority",  # Priority queue for manual triggers
+                "routing_key": "integrations_priority",
+            },
+            # Email sync tasks (three-tier architecture)
+            "integrations.sync_email_all_orgs": {
+                "queue": "integrations",
+                "routing_key": "integrations",
+            },
+            "integrations.sync_email_org": {
+                "queue": "integrations",
+                "routing_key": "integrations",
+            },
+            "integrations.sync_email_integration": {
+                "queue": "integrations_priority",  # Priority queue for manual triggers
+                "routing_key": "integrations_priority",
             },
         }
 
@@ -83,31 +136,43 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
             #         "routing_key": "integrations",
             #     },
             # },
-            "sync-teams-channels-all-orgs": {
-                "task": "integrations.sync_teams_channels",
-                "schedule": crontab(minute=0, hour="*/3"),  # Run every 3 hours
+            # Messaging channels sync (three-tier: Tier 1 triggers Tier 2 for each org)
+            "sync-messaging-channels-all-orgs": {
+                "task": "integrations.sync_messaging_channels_all_orgs",  # Three-tier: Tier 1
+                "schedule": crontab(minute="*/180"),  # Run every 3 hours
                 "kwargs": {},  # No args = sync all organizations
                 "options": {
                     "queue": "integrations",
                     "routing_key": "integrations",
                 },
             },
-            "sync-deal-channel-messages-all-orgs": {
-                "task": "integrations.trigger_deal_channel_messages_sync_all_orgs",
-                "schedule": crontab(minute=30),  # Run every hour at :30
+            # Deal messages sync (three-tier: Tier 1 triggers Tier 2 for each org)
+            "sync-deal-messages-all-orgs": {
+                "task": "integrations.sync_deal_messages_all_orgs",  # Three-tier: Tier 1
+                "schedule": crontab(minute="*/180"),  # Run every 3 hours
                 "kwargs": {},
                 "options": {
                     "queue": "integrations",
                     "routing_key": "integrations",
                 },
             },
-            # Data sync schedule (to be uncommented in Step 5)
-            # "sync-all-integrations": {
-            #     "task": "integrations.sync_all_active_integrations",
-            #     "schedule": crontab(minute=0),  # Run every hour
-            #     "options": {
-            #         "queue": "integrations",
-            #         "routing_key": "integrations",
-            #     },
-            # },
+            "sync-calendar-events-all-orgs": {
+                "task": "integrations.sync_calendar_all_orgs",  # Three-tier: Tier 1
+                "schedule": crontab(minute="*/30"),  # Run every 30 minutes
+                "kwargs": {},  # No args = sync all organizations
+                "options": {
+                    "queue": "integrations",
+                    "routing_key": "integrations",
+                },
+            },
+            # # Email sync (three-tier: Tier 1 triggers Tier 2 for each org)
+            "sync-email-all-orgs": {
+                "task": "integrations.sync_email_all_orgs",
+                "schedule": crontab(minute="*/60"),  # Run every 30 minutes
+                "kwargs": {},  # No args = sync all organizations
+                "options": {
+                    "queue": "integrations",
+                    "routing_key": "integrations",
+                },
+            },
         }
