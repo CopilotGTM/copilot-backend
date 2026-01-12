@@ -49,11 +49,11 @@ The following methods are deprecated but NOT removed (may be used for other inte
 
 ### 3. Legacy Sync Tasks
 
-**File**: `src/workers/integrations_worker/tasks/sync_tasks.py`
+**File**: `src/workers/integrations_worker/tasks/sync_tasks.py` (DELETED)
 
 | Task | Description | Status |
 |------|-------------|--------|
-| `sync_integration_data_task` | Generic sync task dispatched by webhook | DEPRECATED for CRM |
+| `sync_integration_data_task` | Generic sync task dispatched by webhook | **DELETED** - All sync categories now use direct service calls |
 
 ---
 
@@ -126,11 +126,11 @@ src/workers/integrations_worker/tasks/crm/
 
 ---
 
-## Future Cleanup
+## Cleanup Status
 
-When ready to fully remove deprecated code:
+The following cleanup has been completed:
 
-1. Remove commented sync case from `oauth_routes.py`
-2. Remove `_handle_sync_webhook()` and `_dispatch_sync_task()` from `NangoWebhookService` (if not used elsewhere)
-3. Remove `sync_integration_data_task` from `sync_tasks.py` (if not used elsewhere)
+1. ~~Remove `sync_integration_data_task` from `sync_tasks.py`~~ **DONE** - File deleted, all sync categories (CRM, Email, Calendar, Messaging) now use direct service calls
+2. Remove commented sync case from `oauth_routes.py`
+3. Remove `_handle_sync_webhook()` and `_dispatch_sync_task()` from `NangoWebhookService` (if not used elsewhere)
 4. Update Nango dashboard to disable sync webhooks (optional - reduces noise)

@@ -971,8 +971,11 @@ For optimal results, consider a **hybrid approach**:
 - [ ] Test enrichment with missing reference data
 
 ### Migration
-- [x] Deprecate old task files (calendar_sync_tasks.py, teams_sync_tasks.py, deal_channel_messages_tasks.py)
-- [ ] Update any API endpoints calling old tasks
+- [x] Delete deprecated task files (calendar_sync_tasks.py, teams_sync_tasks.py, deal_channel_messages_tasks.py) - COMPLETED
+- [x] Remove deprecated imports from tasks/__init__.py - COMPLETED
+- [x] Remove deprecated imports from celery_app.py - COMPLETED
+- [x] Remove deprecated task routes from config.py - COMPLETED
+- [x] Delete deprecated test file (test_calendar_sync_tasks.py) - COMPLETED
 - [x] Update documentation references
 - [ ] Monitor for issues post-migration
 - [ ] Disable Nango webhooks for CRM static pull after scheduled sync is stable
@@ -1009,13 +1012,15 @@ For optimal results, consider a **hybrid approach**:
 | Celery App | `src/workers/integrations_worker/celery_app.py` |
 | Webhook Handler | `src/service/integrations/nango_webhook_service.py` |
 
-### Deprecated Files (To Be Removed)
+### Legacy Files (Removed)
 
-| Component | Path | Replacement |
-|-----------|------|-------------|
-| Calendar Sync (Legacy) | `tasks/calendar_sync_tasks.py` | `tasks/calendar/` |
-| Teams Sync (Legacy) | `tasks/teams_sync_tasks.py` | `tasks/messaging/` |
-| Deal Messages (Legacy) | `tasks/deal_channel_messages_tasks.py` | `tasks/messaging/deal_messages_*.py` |
+The following legacy files have been removed and replaced with the three-tier architecture:
+
+| Component | Former Path | Replaced By |
+|-----------|-------------|-------------|
+| Calendar Sync | `tasks/calendar_sync_tasks.py` | `tasks/calendar/` |
+| Teams Sync | `tasks/teams_sync_tasks.py` | `tasks/messaging/` |
+| Deal Messages | `tasks/deal_channel_messages_tasks.py` | `tasks/messaging/deal_messages_*.py` |
 
 ---
 
@@ -1379,6 +1384,7 @@ DEAL SYNC FLOW WITH ON-DEMAND REFERENCE SYNC:
 
 ## Related Documentation
 
+- [Initial Sync on Auth](./initial-sync-on-auth.md) - How initial sync is triggered when a user authenticates
 - [Calendar Sync Flow](./calendar-sync-flow.md) - Calendar-specific sync details
 - [Messaging Sync Flow](./messaging-sync-flow.md) - Messaging-specific sync details
 - [CRM Sync Flow](./crm-sync-flow.md) - CRM-specific sync details

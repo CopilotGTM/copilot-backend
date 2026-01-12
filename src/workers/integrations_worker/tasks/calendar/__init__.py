@@ -13,7 +13,7 @@ Architecture:
         |
     sync_calendar_org_task [Tier 2] (one per org, async dispatch)
         |
-    sync_integration_data_task (for each integration)
+    CalendarSyncService (direct call, for each integration)
 
 Usage:
     # Scheduled sync (via Celery Beat config)

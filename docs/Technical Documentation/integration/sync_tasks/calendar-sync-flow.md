@@ -146,7 +146,6 @@ src/workers/integrations_worker/tasks/
 │   ├── org_task.py                     # Tier 2: Org-level processor
 │   └── integration_task.py             # Tier 3: Manual trigger
 │
-├── calendar_sync_tasks.py              # DEPRECATED - see below
 └── ...
 ```
 
@@ -378,30 +377,6 @@ result = sync_calendar_integration_task.delay(
 | **Calendar Adapter** | `src/workers/integrations_worker/adapters/calendar_adapter.py` |
 | **Calendar Sync Service** | `src/service/integrations/calendar_sync_service.py` |
 | **Celery Config** | `src/workers/integrations_worker/config.py` |
-
----
-
-## Deprecated Files
-
-### `src/workers/integrations_worker/tasks/calendar_sync_tasks.py`
-
-| Field | Value |
-|-------|-------|
-| **Status** | DEPRECATED |
-| **Replacement** | `src/workers/integrations_worker/tasks/calendar/` |
-| **Task Name** | `integrations.sync_calendar_events` |
-| **Action Required** | Delete in next major release |
-
-**Why deprecated**:
-- Uses a single monolithic task that loops through all orgs internally
-- No org-level task tracking or retry capability
-- Doesn't follow the three-tier architecture pattern
-
-**Before deletion, verify**:
-1. No code directly imports `sync_calendar_events_task`
-2. No external systems call `integrations.sync_calendar_events`
-3. Update any tests that reference the old task
-4. Remove the task route from `config.py`
 
 ---
 

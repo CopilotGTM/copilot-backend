@@ -16,8 +16,7 @@ Architecture:
         |
     sync_messaging_channels_integration_task [Tier 3 - this file]
         |
-    sync_integration_data_task (for channels)
-    sync_integration_data_task (for chats)
+    MessagingSyncService (direct call, same pattern as CRM/Email)
 """
 
 from __future__ import annotations
@@ -31,11 +30,17 @@ from sqlalchemy import select
 
 from src.api.dependencies.organisation_dependencies import acquire_org_async_session
 from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
-from src.infra.observability.context import correlation_headers
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
+from src.service.integrations import NangoClient
+from src.service.integrations.messaging_sync_service import MessagingSyncService
 from src.workers.integrations_worker.celery_app import app
-from src.workers.integrations_worker.tasks.sync_tasks import sync_integration_data_task
+from src.workers.integrations_worker.providers.messaging.teams import (
+    fetch_channels as teams_fetch_channels,
+)
+from src.workers.integrations_worker.providers.messaging.teams import (
+    fetch_chats as teams_fetch_chats,
+)
 
 logger = get_logger(__name__)
 
@@ -64,7 +69,7 @@ def sync_messaging_channels_integration_task(
     NOT triggered by: Scheduled sync (Tier 1/2)
 
     This task is for on-demand/manual sync of a single messaging integration.
-    It dispatches sync tasks for both channels and chats.
+    It syncs both channels and chats using MessagingSyncService.
 
     Args:
         organisation_id: The organization UUID string
@@ -79,10 +84,8 @@ def sync_messaging_channels_integration_task(
             "integration_type": "teams",
             "started_at": "...",
             "completed_at": "...",
-            "syncs": [
-                {"sync_type": "channels", "task_id": "...", "status": "triggered"},
-                {"sync_type": "chats", "task_id": "...", "status": "triggered"}
-            ]
+            "channels_synced": 10,
+            "chats_synced": 5
         }
     """
     started_at = datetime.now(UTC).isoformat()
@@ -97,194 +100,197 @@ def sync_messaging_channels_integration_task(
             int_id,
         )
 
-        async for session in acquire_org_async_session(org_id):
-            # Query the specific integration
-            stmt = select(KnowledgeIntegration).where(
-                KnowledgeIntegration.integration_id == int_id,
-                KnowledgeIntegration.integration_type.in_(MESSAGING_INTEGRATION_TYPES),
-            )
-            result = await session.execute(stmt)
-            integration = result.scalar_one_or_none()
-
-            if not integration:
-                return {
-                    "status": "failed",
-                    "organisation_id": organisation_id,
-                    "integration_id": integration_id,
-                    "started_at": started_at,
-                    "completed_at": datetime.now(UTC).isoformat(),
-                    "error": "Integration not found or not a messaging integration",
-                }
-
-            if not integration.is_active:
-                return {
-                    "status": "failed",
-                    "organisation_id": organisation_id,
-                    "integration_id": integration_id,
-                    "started_at": started_at,
-                    "completed_at": datetime.now(UTC).isoformat(),
-                    "error": "Integration is not active",
-                }
-
-            if not integration.connection_id:
-                return {
-                    "status": "failed",
-                    "organisation_id": organisation_id,
-                    "integration_id": integration_id,
-                    "started_at": started_at,
-                    "completed_at": datetime.now(UTC).isoformat(),
-                    "error": "Integration is not connected (no connection_id)",
-                }
-
-            # Get provider details
-            int_type = integration.integration_type
-            if isinstance(int_type, str):
-                int_type = IntegrationType(int_type)
-
-            integration_type = int_type.value
-
-            # Determine provider based on integration type
-            if int_type == IntegrationType.TEAMS:
-                provider = "teams"
-                provider_config_key = "microsoft-teams"
-            else:
-                # Future: Add Slack support
-                provider = str(int_type.value)
-                provider_config_key = str(int_type.value)
-
-            syncs = []
-            syncs_triggered = 0
-            syncs_failed = 0
-
-            # 1. Dispatch channels sync
-            try:
-                channels_task = sync_integration_data_task.apply_async(
-                    kwargs={
-                        "organisation_id": str(org_id),
-                        "integration_id": str(int_id),
-                        "category": "messaging",
-                        "provider": provider,
-                        "provider_config_key": provider_config_key,
-                        "sync_name": "channels",
-                        "sync_type": "INCREMENTAL",
-                        "sync_variant": "base",
-                        "incremental": True,
-                    },
-                    headers=correlation_headers(),
+        nango = NangoClient()
+        try:
+            async for session in acquire_org_async_session(org_id):
+                # Query the specific integration
+                stmt = select(KnowledgeIntegration).where(
+                    KnowledgeIntegration.integration_id == int_id,
+                    KnowledgeIntegration.integration_type.in_(MESSAGING_INTEGRATION_TYPES),
                 )
-                syncs.append(
-                    {
-                        "sync_type": "channels",
-                        "task_id": channels_task.id,
-                        "status": "triggered",
-                    }
-                )
-                syncs_triggered += 1
-                logger.debug(
-                    "Manual messaging channels sync dispatched: org=%s integration=%s task=%s",
-                    org_id,
-                    int_id,
-                    channels_task.id,
-                )
-            except Exception as e:
-                logger.error(
-                    "Failed to dispatch manual messaging channels sync: org=%s integration=%s error=%s",
-                    org_id,
-                    int_id,
-                    str(e),
-                    exc_info=True,
-                )
-                syncs.append(
-                    {
-                        "sync_type": "channels",
+                result = await session.execute(stmt)
+                integration = result.scalar_one_or_none()
+
+                if not integration:
+                    return {
                         "status": "failed",
-                        "error": str(e),
+                        "organisation_id": organisation_id,
+                        "integration_id": integration_id,
+                        "started_at": started_at,
+                        "completed_at": datetime.now(UTC).isoformat(),
+                        "error": "Integration not found or not a messaging integration",
                     }
-                )
-                syncs_failed += 1
 
-            # 2. Dispatch chats sync
-            try:
-                chats_task = sync_integration_data_task.apply_async(
-                    kwargs={
-                        "organisation_id": str(org_id),
-                        "integration_id": str(int_id),
-                        "category": "messaging",
-                        "provider": provider,
-                        "provider_config_key": provider_config_key,
-                        "sync_name": "chats",
-                        "sync_type": "INCREMENTAL",
-                        "sync_variant": "base",
-                        "incremental": True,
-                    },
-                    headers=correlation_headers(),
-                )
-                syncs.append(
-                    {
-                        "sync_type": "chats",
-                        "task_id": chats_task.id,
-                        "status": "triggered",
-                    }
-                )
-                syncs_triggered += 1
-                logger.debug(
-                    "Manual messaging chats sync dispatched: org=%s integration=%s task=%s",
-                    org_id,
-                    int_id,
-                    chats_task.id,
-                )
-            except Exception as e:
-                logger.error(
-                    "Failed to dispatch manual messaging chats sync: org=%s integration=%s error=%s",
-                    org_id,
-                    int_id,
-                    str(e),
-                    exc_info=True,
-                )
-                syncs.append(
-                    {
-                        "sync_type": "chats",
+                if not integration.is_active:
+                    return {
                         "status": "failed",
-                        "error": str(e),
+                        "organisation_id": organisation_id,
+                        "integration_id": integration_id,
+                        "started_at": started_at,
+                        "completed_at": datetime.now(UTC).isoformat(),
+                        "error": "Integration is not active",
                     }
+
+                if not integration.connection_id:
+                    return {
+                        "status": "failed",
+                        "organisation_id": organisation_id,
+                        "integration_id": integration_id,
+                        "started_at": started_at,
+                        "completed_at": datetime.now(UTC).isoformat(),
+                        "error": "Integration is not connected (no connection_id)",
+                    }
+
+                # Get provider details
+                int_type = integration.integration_type
+                if isinstance(int_type, str):
+                    int_type = IntegrationType(int_type)
+
+                integration_type = int_type.value
+
+                # Determine provider based on integration type
+                if int_type == IntegrationType.TEAMS:
+                    provider = "teams"
+                    provider_config_key = "microsoft-teams"
+                else:
+                    # Future: Add Slack support
+                    provider = str(int_type.value)
+                    provider_config_key = str(int_type.value)
+
+                connection_id = integration.connection_id
+
+                logger.info(
+                    "Syncing messaging integration: org=%s integration=%s type=%s",
+                    org_id,
+                    int_id,
+                    integration_type,
                 )
-                syncs_failed += 1
 
-            # Determine overall status
-            if syncs_failed == 0:
-                status = "success"
-            elif syncs_triggered == 0:
-                status = "failed"
-            else:
-                status = "partial"
+                # Initialize messaging sync service
+                messaging_service = MessagingSyncService(session, org_id)
 
-            logger.info(
-                "Manual messaging channels sync dispatched: org=%s integration=%s triggered=%d failed=%d",
-                org_id,
-                int_id,
-                syncs_triggered,
-                syncs_failed,
-            )
+                # Determine if this is initial sync
+                is_initial = integration.last_synced_at is None
 
+                channels_synced = 0
+                chats_synced = 0
+                errors = []
+
+                # 1. Sync channels
+                try:
+                    channels = await teams_fetch_channels(
+                        nango=nango,
+                        connection_id=connection_id,
+                        is_initial=is_initial,
+                        last_synced_at=integration.last_synced_at,
+                        provider_config_key=provider_config_key,
+                    )
+
+                    logger.info(
+                        "Fetched %d channels for integration %s",
+                        len(channels),
+                        int_id,
+                    )
+
+                    if channels:
+                        channels_metrics = await messaging_service.sync_channels_incremental(
+                            integration=integration,
+                            channels=channels,
+                            provider=provider,
+                        )
+                        channels_synced = channels_metrics.get("channels_processed", 0)
+
+                except Exception as e:
+                    logger.error(
+                        "Failed to sync channels: org=%s integration=%s error=%s",
+                        org_id,
+                        int_id,
+                        str(e),
+                        exc_info=True,
+                    )
+                    errors.append(f"channels: {str(e)}")
+
+                # 2. Sync chats (group and meeting chats, excludes 1:1)
+                try:
+                    chats_result = await teams_fetch_chats(
+                        nango=nango,
+                        connection_id=connection_id,
+                        is_initial=is_initial,
+                        last_synced_at=integration.last_synced_at,
+                        provider_config_key=provider_config_key,
+                    )
+                    chats = chats_result.chats
+
+                    logger.info(
+                        "Fetched %d chats for integration %s",
+                        len(chats),
+                        int_id,
+                    )
+
+                    if chats:
+                        chats_metrics = await messaging_service.sync_channels_incremental(
+                            integration=integration,
+                            channels=chats,
+                            provider=provider,
+                        )
+                        chats_synced = chats_metrics.get("channels_processed", 0)
+
+                except Exception as e:
+                    logger.error(
+                        "Failed to sync chats: org=%s integration=%s error=%s",
+                        org_id,
+                        int_id,
+                        str(e),
+                        exc_info=True,
+                    )
+                    errors.append(f"chats: {str(e)}")
+
+                # Update last_synced_at
+                integration.last_synced_at = datetime.now(UTC).replace(tzinfo=None)
+                session.add(integration)
+                await session.commit()
+
+                # Determine overall status
+                if errors:
+                    status = "partial" if channels_synced > 0 or chats_synced > 0 else "failed"
+                else:
+                    status = "success"
+
+                logger.info(
+                    "Manual messaging channels sync complete: org=%s integration=%s channels=%d chats=%d",
+                    org_id,
+                    int_id,
+                    channels_synced,
+                    chats_synced,
+                )
+
+                result = {
+                    "status": status,
+                    "organisation_id": organisation_id,
+                    "integration_id": integration_id,
+                    "integration_type": integration_type,
+                    "started_at": started_at,
+                    "completed_at": datetime.now(UTC).isoformat(),
+                    "channels_synced": channels_synced,
+                    "chats_synced": chats_synced,
+                }
+
+                if errors:
+                    result["errors"] = errors
+
+                return result
+
+            # If async for didn't yield any sessions
             return {
-                "status": status,
+                "status": "failed",
                 "organisation_id": organisation_id,
                 "integration_id": integration_id,
-                "integration_type": integration_type,
                 "started_at": started_at,
                 "completed_at": datetime.now(UTC).isoformat(),
-                "syncs": syncs,
+                "error": "Failed to acquire database session",
             }
-
-        # If async for didn't yield any sessions
-        return {
-            "status": "failed",
-            "organisation_id": organisation_id,
-            "integration_id": integration_id,
-            "started_at": started_at,
-            "completed_at": datetime.now(UTC).isoformat(),
-            "error": "Failed to acquire database session",
-        }
+        finally:
+            await nango.close()
 
     try:
         result = run_async(_sync_integration())
@@ -292,16 +298,18 @@ def sync_messaging_channels_integration_task(
         # Log based on status
         if result.get("status") == "success":
             logger.info(
-                "Manual messaging channels sync complete: org=%s integration=%s",
+                "Manual messaging channels sync succeeded: org=%s integration=%s channels=%d chats=%d",
                 organisation_id,
                 integration_id,
+                result.get("channels_synced", 0),
+                result.get("chats_synced", 0),
             )
         else:
             logger.warning(
                 "Manual messaging channels sync failed: org=%s integration=%s error=%s",
                 organisation_id,
                 integration_id,
-                result.get("error"),
+                result.get("error") or result.get("errors"),
             )
 
         return result

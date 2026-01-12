@@ -51,20 +51,6 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
                 "queue": "integrations",
                 "routing_key": "integrations",
             },
-            # Teams channels periodic sync (DEPRECATED - use three-tier tasks below)
-            "integrations.sync_teams_channels": {
-                "queue": "integrations",
-                "routing_key": "integrations",
-            },
-            # Deal channel messages sync (DEPRECATED - use three-tier tasks below)
-            "integrations.trigger_deal_channel_messages_sync_all_orgs": {
-                "queue": "integrations",
-                "routing_key": "integrations",
-            },
-            "integrations.sync_deal_channel_messages": {
-                "queue": "integrations",
-                "routing_key": "integrations",
-            },
             # Messaging channels sync tasks (three-tier architecture)
             "integrations.sync_messaging_channels_all_orgs": {
                 "queue": "integrations",
@@ -90,11 +76,6 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
             "integrations.sync_deal_messages_integration": {
                 "queue": "integrations_priority",  # Priority queue for manual triggers
                 "routing_key": "integrations_priority",
-            },
-            # Calendar events periodic sync (DEPRECATED - use three-tier tasks below)
-            "integrations.sync_calendar_events": {
-                "queue": "integrations",
-                "routing_key": "integrations",
             },
             # Calendar sync tasks (three-tier architecture)
             "integrations.sync_calendar_all_orgs": {
