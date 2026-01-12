@@ -203,7 +203,79 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
         }
 
         # Celery Beat schedule for periodic tasks
+        # Schedule designed for production CRM sync:
+        # - Deals & Notes (Activities): Every 3 hours - most critical, changes frequently
+        # - Contacts: Every 6 hours - moderate change frequency
+        # - Users, Pipelines, Tasks, Companies: Daily - reference data, low change frequency
         self.beat_schedule = {
+            # =================================================================
+            # CRM SYNC SCHEDULES (Production)
+            # =================================================================
+            # CRM Users sync (daily at 00:00) - reference data, sync first
+            # Must run before other syncs for owner enrichment to work
+            "sync-crm-users-all-orgs": {
+                "task": "integrations.sync_crm_users_all_orgs",
+                "schedule": crontab(minute=0, hour=0),  # Daily at midnight
+                "kwargs": {},
+                "options": {
+                    "queue": "integrations",
+                    "routing_key": "integrations",
+                },
+            },
+            # # CRM Pipelines sync (daily at 00:15) - reference data
+            # # Must run before deals for pipeline enrichment to work
+            # "sync-crm-pipelines-all-orgs": {
+            #     "task": "integrations.sync_crm_pipelines_all_orgs",
+            #     "schedule": crontab(minute=15, hour=0),  # Daily at 00:15
+            #     "kwargs": {},
+            #     "options": {
+            #         "queue": "integrations",
+            #         "routing_key": "integrations",
+            #     },
+            # },
+            # CRM Companies sync (daily at 00:30)
+            "sync-crm-companies-all-orgs": {
+                "task": "integrations.sync_crm_companies_all_orgs",
+                "schedule": crontab(minute=30, hour=0),  # Daily at 00:30
+                "kwargs": {},
+                "options": {
+                    "queue": "integrations",
+                    "routing_key": "integrations",
+                },
+            },
+            # CRM Contacts sync (every 6 hours at :00)
+            "sync-crm-contacts-all-orgs": {
+                "task": "integrations.sync_crm_contacts_all_orgs",
+                "schedule": crontab(minute=0, hour="0,6,12,18"),  # Every 6 hours
+                "kwargs": {},
+                "options": {
+                    "queue": "integrations",
+                    "routing_key": "integrations",
+                },
+            },
+            # CRM Deals sync (every 3 hours at :30) - most critical
+            "sync-crm-deals-all-orgs": {
+                "task": "integrations.sync_crm_deals_all_orgs",
+                "schedule": crontab(minute=30, hour="0,3,6,9,12,15,18,21"),  # Every 3 hours
+                "kwargs": {},
+                "options": {
+                    "queue": "integrations",
+                    "routing_key": "integrations",
+                },
+            },
+            # CRM Activities/Notes sync (every 3 hours at :45)
+            "sync-crm-activities-all-orgs": {
+                "task": "integrations.sync_crm_activities_all_orgs",
+                "schedule": crontab(minute=45, hour="0,3,6,9,12,15,18,21"),  # Every 3 hours
+                "kwargs": {},
+                "options": {
+                    "queue": "integrations",
+                    "routing_key": "integrations",
+                },
+            },
+            # =================================================================
+            # NON-CRM SYNC SCHEDULES (Disabled - enable as needed)
+            # =================================================================
             # OAuth token refresh - DISABLED until tested
             # "refresh-expiring-oauth-tokens": {
             #     "task": "integrations.refresh_expiring_tokens",
@@ -248,106 +320,6 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
             #     "task": "integrations.sync_email_all_orgs",
             #     "schedule": crontab(minute="*/60"),  # Run every 30 minutes
             #     "kwargs": {},  # No args = sync all organizations
-            #     "options": {
-            #         "queue": "integrations",
-            #         "routing_key": "integrations",
-            #     },
-            # },
-            # # CRM Users sync (every 3 hours at :00) - reference data, sync first
-            # "sync-crm-users-all-orgs": {
-            #     "task": "integrations.sync_crm_users_all_orgs",
-            #     "schedule": crontab(minute=0, hour="*/3"),
-            #     "kwargs": {},
-            #     "options": {
-            #         "queue": "integrations",
-            #         "routing_key": "integrations",
-            #     },
-            # },
-            # # CRM Pipelines sync (every 3 hours at :10) - reference data
-            # "sync-crm-pipelines-all-orgs": {
-            #     "task": "integrations.sync_crm_pipelines_all_orgs",
-            #     "schedule": crontab(minute=10, hour="*/3"),
-            #     "kwargs": {},
-            #     "options": {
-            #         "queue": "integrations",
-            #         "routing_key": "integrations",
-            #     },
-            # },
-            # # CRM Contacts sync (every 3 hours at :20)
-            # "sync-crm-contacts-all-orgs": {
-            #     "task": "integrations.sync_crm_contacts_all_orgs",
-            #     "schedule": crontab(minute=20, hour="*/3"),
-            #     "kwargs": {},
-            #     "options": {
-            #         "queue": "integrations",
-            #         "routing_key": "integrations",
-            #     },
-            # },
-            # # CRM Companies sync (every 3 hours at :30)
-            # "sync-crm-companies-all-orgs": {
-            #     "task": "integrations.sync_crm_companies_all_orgs",
-            #     "schedule": crontab(minute=30, hour="*/3"),
-            #     "kwargs": {},
-            #     "options": {
-            #         "queue": "integrations",
-            #         "routing_key": "integrations",
-            #     },
-            # },
-            # CRM Deals sync (every 3 minutes) - most critical, changes frequently
-            # "sync-crm-deals-all-orgs": {
-            #     "task": "integrations.sync_crm_deals_all_orgs",
-            #     "schedule": crontab(minute="*/3"),
-            #     "kwargs": {},
-            #     "options": {
-            #         "queue": "integrations",
-            #         "routing_key": "integrations",
-            #     },
-            # },
-            # CRM Contacts sync (every 3 minutes) - for testing
-            "sync-crm-contacts-all-orgs": {
-                "task": "integrations.sync_crm_contacts_all_orgs",
-                "schedule": crontab(minute="*/3"),
-                "kwargs": {},
-                "options": {
-                    "queue": "integrations",
-                    "routing_key": "integrations",
-                },
-            },
-            # CRM Companies sync (every 2 minutes) - for testing
-            # "sync-crm-companies-all-orgs": {
-            #     "task": "integrations.sync_crm_companies_all_orgs",
-            #     "schedule": crontab(minute="*/2"),
-            #     "kwargs": {},
-            #     "options": {
-            #         "queue": "integrations",
-            #         "routing_key": "integrations",
-            #     },
-            # },
-            # CRM Activities sync (every 3 minutes) - for testing
-            # "sync-crm-activities-all-orgs": {
-            #     "task": "integrations.sync_crm_activities_all_orgs",
-            #     "schedule": crontab(minute="*/3"),
-            #     "kwargs": {},
-            #     "options": {
-            #         "queue": "integrations",
-            #         "routing_key": "integrations",
-            #     },
-            # },
-            # CRM Pipelines sync (every 3 minutes) - for testing
-            # "sync-crm-pipelines-all-orgs": {
-            #     "task": "integrations.sync_crm_pipelines_all_orgs",
-            #     "schedule": crontab(minute="*/3"),
-            #     "kwargs": {},
-            #     "options": {
-            #         "queue": "integrations",
-            #         "routing_key": "integrations",
-            #     },
-            # },
-            # CRM Users sync (every 3 minutes) - for testing
-            # "sync-crm-users-all-orgs": {
-            #     "task": "integrations.sync_crm_users_all_orgs",
-            #     "schedule": crontab(minute="*/3"),
-            #     "kwargs": {},
             #     "options": {
             #         "queue": "integrations",
             #         "routing_key": "integrations",

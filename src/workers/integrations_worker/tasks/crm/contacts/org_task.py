@@ -252,13 +252,14 @@ async def _sync_contacts_for_integration(
 
     # Run enrichment after sync (unless skipped for initial sync)
     enrichment_metrics = {}
+    triggered_syncs = []
     if not skip_enrichment:
         orchestrator = CRMEnrichmentOrchestrator(
             db=session,
             organisation_id=organisation_id,
             integration=integration,
         )
-        enrichment_metrics = await orchestrator.enrich_after_contacts_sync()
+        enrichment_metrics = await orchestrator.enrich_after_contacts_sync(detect_missing=True)
         # Commit enrichment changes
         await session.commit()
         logger.info(
@@ -267,6 +268,26 @@ async def _sync_contacts_for_integration(
             integration_id,
             enrichment_metrics,
         )
+
+        # Trigger on-demand user sync if missing users detected
+        missing_users = enrichment_metrics.get("missing_users", [])
+        if missing_users:
+            logger.info(
+                "Triggering on-demand users sync: org=%s integration=%s missing=%d",
+                organisation_id,
+                integration_id,
+                len(missing_users),
+            )
+            # Import here to avoid circular import
+            from src.workers.integrations_worker.tasks.crm.users.integration_task import (
+                sync_crm_users_integration_task,
+            )
+
+            sync_crm_users_integration_task.delay(
+                organisation_id=str(organisation_id),
+                integration_id=str(integration_id),
+            )
+            triggered_syncs.append("users")
 
     return {
         "integration_id": str(integration_id),
@@ -277,4 +298,5 @@ async def _sync_contacts_for_integration(
         "is_initial": is_initial,
         "metrics": metrics,
         "enrichment_metrics": enrichment_metrics,
+        "triggered_syncs": triggered_syncs,
     }

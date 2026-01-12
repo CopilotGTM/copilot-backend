@@ -939,18 +939,20 @@ For optimal results, consider a **hybrid approach**:
 - [x] Implement client-side filtering for chat messages (no Delta Query support)
 
 ### CRM Sync Implementation
-- [ ] Create `tasks/crm/utils.py` with shared utilities (timestamp helpers, constants)
-- [ ] Create `tasks/crm/deals/` folder with all three tiers
-- [ ] Create `tasks/crm/pipelines/` folder with all three tiers
-- [ ] Create `tasks/crm/contacts/` folder with all three tiers
-- [ ] Create `tasks/crm/companies/` folder with all three tiers
-- [ ] Create `tasks/crm/users/` folder with all three tiers
-- [ ] Implement timestamp-based incremental sync in Tier 2 tasks
-- [ ] Store `crm_{entity}_last_sync_at` in connection_metadata
-- [ ] Implement post-sync enrichment triggers
-- [ ] Update Celery Beat schedules with staggered CRM entity schedules
-- [ ] Configure task routes for CRM task names
-- [ ] Update `tasks/__init__.py` to import CRM modules
+- [x] Create `tasks/crm/utils.py` with shared utilities (timestamp helpers, constants)
+- [x] Create `tasks/crm/deals/` folder with all three tiers
+- [x] Create `tasks/crm/pipelines/` folder with all three tiers
+- [x] Create `tasks/crm/contacts/` folder with all three tiers
+- [x] Create `tasks/crm/companies/` folder with all three tiers
+- [x] Create `tasks/crm/users/` folder with all three tiers
+- [x] Create `tasks/crm/activities/` folder with all three tiers
+- [x] Implement timestamp-based incremental sync in Tier 2 tasks
+- [x] Store `crm_{entity}_last_sync_at` in connection_metadata
+- [x] Implement post-sync enrichment triggers via CRMEnrichmentOrchestrator
+- [x] Update Celery Beat schedules with production CRM entity schedules
+- [x] Configure task routes for CRM task names
+- [x] Update `tasks/__init__.py` to import CRM modules
+- [x] Implement on-demand reference data sync (MissingPipelinesDetector, MissingUsersDetector)
 
 ### Configuration
 - [x] Update Celery Beat schedules in `config.py`
@@ -963,8 +965,10 @@ For optimal results, consider a **hybrid approach**:
 - [ ] Integration tests for full flow
 - [ ] Test failure scenarios and recovery
 - [ ] Validate result aggregation
-- [ ] Test CRM timestamp-based incremental sync
-- [ ] Test CRM entity dependency order (staggered schedule)
+- [x] Test CRM timestamp-based incremental sync
+- [x] Test CRM entity schedule (staggered timing)
+- [ ] Test on-demand reference data sync triggers
+- [ ] Test enrichment with missing reference data
 
 ### Migration
 - [x] Deprecate old task files (calendar_sync_tasks.py, teams_sync_tasks.py, deal_channel_messages_tasks.py)
@@ -1177,15 +1181,21 @@ CRM sync (HubSpot, Salesforce) follows the same three-tier architecture but uses
 
 ### CRM Entities and Schedules
 
-Each CRM entity has an independent sync schedule. Post-sync enrichment handles cross-entity references automatically.
+Each CRM entity has an independent sync schedule. Post-sync enrichment handles cross-entity references automatically. Reference data (users, pipelines) is synced daily, while transactional data (deals, contacts) is synced more frequently.
 
 | Entity | Frequency | Cron Schedule | Rationale |
 |--------|-----------|---------------|-----------|
-| **Deals** | Every 1 hour | `minute=0` | Most critical, changes frequently |
-| **Pipelines** | Every 3 hours | `minute=0, hour="*/3"` | Rarely change |
-| **Contacts** | Every 3 hours | `minute=0, hour="*/3"` | Moderate change rate |
-| **Companies** | Every 3 hours | `minute=0, hour="*/3"` | Moderate change rate |
-| **Users** | Every 3 hours | `minute=0, hour="*/3"` | Rarely change |
+| **Users** | Daily at 00:00 | `minute=0, hour=0` | Reference data, rarely changes, needed for owner enrichment |
+| **Pipelines** | Daily at 00:15 | `minute=15, hour=0` | Reference data, rarely changes, needed for deal pipeline enrichment |
+| **Companies** | Daily at 00:30 | `minute=30, hour=0` | Reference data, moderate change frequency |
+| **Contacts** | Every 6 hours | `minute=0, hour="0,6,12,18"` | Moderate change frequency |
+| **Deals** | Every 3 hours | `minute=30, hour="0,3,6,9,12,15,18,21"` | Most critical, changes frequently |
+| **Activities/Notes** | Every 3 hours | `minute=45, hour="0,3,6,9,12,15,18,21"` | Important for deal context |
+
+**Schedule Strategy:**
+- **Reference data first**: Users and pipelines sync daily at midnight to ensure enrichment data is available
+- **Staggered timing**: Each entity syncs at different minutes to avoid overwhelming the system
+- **On-demand sync**: When enrichment detects missing reference data, it triggers immediate sync of the missing entities
 
 **Note:** Entity dependencies (e.g., deals referencing contacts) are handled by post-sync enrichment services, not by sync order. Each entity syncs independently.
 
@@ -1305,13 +1315,40 @@ INCREMENTAL SYNC:
 
 ### Post-Sync Enrichment
 
-After CRM syncs, enrichment tasks are triggered to populate denormalized fields:
+After CRM syncs, enrichment is handled by the `CRMEnrichmentOrchestrator` which coordinates entity-specific enrichment services:
 
-| After Sync | Enrichment Task | Purpose |
-|------------|-----------------|---------|
-| Users | `_enrich_owners_after_users_sync()` | Populate `owner_id` FKs in deals, contacts, companies |
-| Contacts/Companies | `_enrich_participants_after_crm_sync()` | Populate deal participant names and emails |
-| Pipelines | `enrich_deals_with_pipeline_metadata()` | Populate `pipeline_name`, `stage_name` in deals |
+| After Sync | Orchestrator Method | Enrichment Services Called |
+|------------|---------------------|---------------------------|
+| Deals | `enrich_after_deals_sync()` | DealEnrichmentService (deals + participants) |
+| Contacts | `enrich_after_contacts_sync()` | ContactEnrichmentService, DealEnrichmentService (participants), TaskEnrichmentService |
+| Companies | `enrich_after_companies_sync()` | CompanyEnrichmentService, DealEnrichmentService, TaskEnrichmentService |
+| Users | `enrich_after_users_sync()` | OwnerEnrichmentService (companies, contacts, deals) |
+| Activities | `enrich_after_activities_sync()` | TaskEnrichmentService |
+
+### On-Demand Reference Data Sync
+
+When enrichment detects missing reference data (e.g., deals reference a pipeline or user that doesn't exist), the orchestrator automatically triggers an on-demand sync:
+
+```text
+DEAL SYNC FLOW WITH ON-DEMAND REFERENCE SYNC:
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  1. Deal sync completes                                                      │
+│  2. CRMEnrichmentOrchestrator.enrich_after_deals_sync() runs                │
+│  3. MissingPipelinesDetector checks for pipeline_external_ids without       │
+│     matching CRMPipeline records                                            │
+│  4. MissingUsersDetector checks for owner_external_ids without              │
+│     matching CRMUser records                                                │
+│  5. If missing reference data detected:                                     │
+│     • Trigger sync_crm_pipelines_integration_task.delay() for pipelines     │
+│     • Trigger sync_crm_users_integration_task.delay() for users             │
+│  6. Next scheduled sync will have enrichment data available                 │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Benefits:**
+- Reference data (users, pipelines) only syncs daily to reduce API load
+- On-demand sync fills gaps when new reference IDs appear in deals/contacts
+- Ensures enrichment eventually succeeds without waiting for next scheduled sync
 
 ### CRM Sync Services
 
