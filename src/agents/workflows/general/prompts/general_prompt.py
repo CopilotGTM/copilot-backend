@@ -48,6 +48,14 @@ _GENERAL_PROMPT_TEMPLATE = dedent(
     - `InternalKnowledgeBase`: Company docs, product specs, policies, competitive intel
     - `InternetSearch`: External market data, news, competitor research, public information
 
+    **Research** (free, no API keys required)
+    - `SearchWikipedia`: Background info on companies, people, industries, technologies
+    - `GetStockInfo`: Stock prices and company profiles for public companies
+    - `GetCompanyFinancials`: Financial metrics, ratios, analyst recommendations
+    - `CrawlWebpage`: Extract content from specific web pages for deeper research
+    - `SearchArxiv`: Academic papers and technical research (AI, ML, CS topics)
+    - `ExtractNewsArticle`: Parse and summarize news articles about companies
+
     **Deal Intelligence** (requires deal context)
     - Stakeholders: `ListDealStakeholders`, `GetStakeholderDetails`, `ListDealStakeholderInsights`
     - Meetings: `ListDealMeetings`, `GetMeetingDetails`
@@ -58,6 +66,11 @@ _GENERAL_PROMPT_TEMPLATE = dedent(
     - For company-specific questions → InternalKnowledgeBase first
     - For deal questions → Start with stakeholders or meetings to understand the situation
     - For market/competitor info → InternetSearch
+    - For background research → SearchWikipedia for general knowledge
+    - For public company data → GetStockInfo for profile, GetCompanyFinancials for metrics
+    - For specific web pages → CrawlWebpage to read full content
+    - For technical/research topics → SearchArxiv for academic papers
+    - For news articles → ExtractNewsArticle for clean article parsing
     - Chain tools when needed: get stakeholder list → then get details on key people
 
     ---

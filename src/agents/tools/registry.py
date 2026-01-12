@@ -53,6 +53,14 @@ class ToolName(str, Enum):
     LIST_DEAL_EMAILS = "list_deal_emails"
     GET_EMAIL_DETAILS = "get_email_details"
 
+    # Research tools (free, no API keys required)
+    SEARCH_WIKIPEDIA = "search_wikipedia"
+    GET_STOCK_INFO = "get_stock_info"
+    GET_COMPANY_FINANCIALS = "get_company_financials"
+    CRAWL_WEBPAGE = "crawl_webpage"
+    SEARCH_ARXIV = "search_arxiv"
+    EXTRACT_NEWS_ARTICLE = "extract_news_article"
+
     # Legacy placeholders (to be implemented or removed)
     GET_DEALS = "get_deals"
     GET_DEAL_DETAILS = "get_deal_details"
@@ -86,6 +94,13 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.LIST_DEAL_EMAILS,
         ToolName.GET_EMAIL_DETAILS,
         ToolName.LIST_DEAL_NOTES,
+        # Research tools (free, no API keys)
+        ToolName.SEARCH_WIKIPEDIA,
+        ToolName.GET_STOCK_INFO,
+        ToolName.GET_COMPANY_FINANCIALS,
+        ToolName.CRAWL_WEBPAGE,
+        ToolName.SEARCH_ARXIV,
+        ToolName.EXTRACT_NEWS_ARTICLE,
     },
     "DealAgent": {
         ToolName.SEARCH_INTERNAL_KNOWLEDGE,
@@ -177,6 +192,13 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     # Communication
     ToolName.LIST_DEAL_EMAILS: ToolCategory.COMMUNICATION,
     ToolName.GET_EMAIL_DETAILS: ToolCategory.COMMUNICATION,
+    # Research (free, no API keys)
+    ToolName.SEARCH_WIKIPEDIA: ToolCategory.SEARCH,
+    ToolName.GET_STOCK_INFO: ToolCategory.SEARCH,
+    ToolName.GET_COMPANY_FINANCIALS: ToolCategory.SEARCH,
+    ToolName.CRAWL_WEBPAGE: ToolCategory.SEARCH,
+    ToolName.SEARCH_ARXIV: ToolCategory.SEARCH,
+    ToolName.EXTRACT_NEWS_ARTICLE: ToolCategory.SEARCH,
 }
 
 
@@ -222,6 +244,14 @@ class ToolRegistry:
             create_get_meeting_details,
             create_get_meeting_transcript,
             create_list_deal_meetings,
+        )
+        from src.agents.tools.research import (
+            create_crawl_webpage,
+            create_extract_news_article,
+            create_get_company_financials,
+            create_get_stock_info,
+            create_search_arxiv,
+            create_search_wikipedia,
         )
         from src.agents.tools.search import (
             create_search_internal_knowledge,
@@ -273,6 +303,26 @@ class ToolRegistry:
         )
         self._tool_factories[ToolName.GET_EMAIL_DETAILS] = lambda: create_get_email_details(
             self.context, self.capabilities_getter
+        )
+
+        # Research tools (free, no API keys - stateless, no context needed)
+        self._tool_factories[ToolName.SEARCH_WIKIPEDIA] = lambda: create_search_wikipedia(
+            self.capabilities_getter
+        )
+        self._tool_factories[ToolName.GET_STOCK_INFO] = lambda: create_get_stock_info(
+            self.capabilities_getter
+        )
+        self._tool_factories[ToolName.GET_COMPANY_FINANCIALS] = (
+            lambda: create_get_company_financials(self.capabilities_getter)
+        )
+        self._tool_factories[ToolName.CRAWL_WEBPAGE] = lambda: create_crawl_webpage(
+            self.capabilities_getter
+        )
+        self._tool_factories[ToolName.SEARCH_ARXIV] = lambda: create_search_arxiv(
+            self.capabilities_getter
+        )
+        self._tool_factories[ToolName.EXTRACT_NEWS_ARTICLE] = lambda: create_extract_news_article(
+            self.capabilities_getter
         )
 
         # Legacy/placeholder tools - will be registered when implemented
