@@ -38,7 +38,7 @@ logger = get_logger(__name__)
 @app.task(
     name="integrations.sync_calendar_all_orgs",
     bind=False,
-    max_retries=0,  # Coordinator doesn't retry - individual org tasks retry
+    max_retries=0,
     acks_late=True,
 )
 def sync_calendar_all_orgs_task() -> dict[str, Any]:
@@ -82,7 +82,7 @@ def sync_calendar_all_orgs_task() -> dict[str, Any]:
         # Query all approved organizations
         org_ids: list[UUID] = []
         async for master_session in acquire_master_async_session():
-            stmt = select(Organisation.organisation_id).where(
+            stmt = select(Organisation.organisation_id).where(  # type: ignore
                 Organisation.status == OrganisationStatus.APPROVED
             )
             result = await master_session.execute(stmt)
@@ -111,7 +111,7 @@ def sync_calendar_all_orgs_task() -> dict[str, Any]:
 
         for org_id in org_ids:
             try:
-                task = sync_calendar_org_task.apply_async(
+                task = sync_calendar_org_task.apply_async(  # type: ignore
                     kwargs={"organisation_id": str(org_id)},
                     headers=correlation_headers(),
                 )
