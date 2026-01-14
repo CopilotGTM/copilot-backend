@@ -887,75 +887,30 @@ async def sync_channel_messages(self, channel_info):
 
 ---
 
-## Deprecation Checklist
+## Migration Completed
 
-This section provides a comprehensive list of all files, functions, task names, and configurations that need to be deprecated/removed when migrating fully to the three-tier architecture.
+The migration from monolithic webhook-driven tasks to the three-tier scheduled sync architecture has been completed.
 
-### Files to Delete
+### Files Removed
 
-| File | Status | Replacement | Notes |
-|------|--------|-------------|-------|
-| `src/workers/integrations_worker/tasks/teams_sync_tasks.py` | DEPRECATED | `tasks/messaging/channels_*.py` | Monolithic task, no org-level tracking |
-| `src/workers/integrations_worker/tasks/deal_channel_messages_tasks.py` | DEPRECATED | `tasks/messaging/deal_messages_*.py` | Non-standard naming pattern |
-| `src/workers/integrations_worker/tasks/calendar_sync_tasks.py` | DEPRECATED | `tasks/calendar/*.py` | Monolithic task, no org-level tracking |
+The following legacy files have been deleted:
 
-### Functions to Remove from `tasks/__init__.py`
+| File | Replaced By |
+|------|-------------|
+| `tasks/teams_sync_tasks.py` | `tasks/messaging/channels_*.py` |
+| `tasks/deal_channel_messages_tasks.py` | `tasks/messaging/deal_messages_*.py` |
+| `tasks/calendar_sync_tasks.py` | `tasks/calendar/*.py` |
 
-```python
-# Remove these imports:
-from .calendar_sync_tasks import sync_calendar_events_task
-from .deal_channel_messages_tasks import (
-    sync_deal_channel_messages_task,
-    trigger_deal_channel_messages_sync_all_orgs,
-)
-from .teams_sync_tasks import sync_teams_channels_task
+### Completed Migration Steps
 
-# Remove from __all__:
-"sync_calendar_events_task",           # Use sync_calendar_all_orgs_task
-"sync_teams_channels_task",            # Use sync_messaging_channels_all_orgs_task
-"sync_deal_channel_messages_task",     # Use sync_deal_messages_org_task
-"trigger_deal_channel_messages_sync_all_orgs",  # Use sync_deal_messages_all_orgs_task
-```
+1. ✅ Removed deprecated imports from `tasks/__init__.py`
+2. ✅ Removed deprecated imports from `celery_app.py`
+3. ✅ Removed deprecated task routes from `config.py`
+4. ✅ Deleted deprecated task files
+5. ✅ Deleted deprecated test file (`test_calendar_sync_tasks.py`)
+6. ✅ Updated documentation references
 
-### Imports to Remove from `celery_app.py`
-
-```python
-# Remove these imports:
-from .tasks import (
-    deal_channel_messages_tasks,  # REMOVE - DEPRECATED
-    teams_sync_tasks,             # REMOVE - DEPRECATED
-)
-```
-
-### Task Routes to Remove from `config.py`
-
-```python
-# Remove these task routes:
-
-# Teams channels periodic sync (DEPRECATED)
-"integrations.sync_teams_channels": {
-    "queue": "integrations",
-    "routing_key": "integrations",
-},
-
-# Deal channel messages sync (DEPRECATED)
-"integrations.trigger_deal_channel_messages_sync_all_orgs": {
-    "queue": "integrations",
-    "routing_key": "integrations",
-},
-"integrations.sync_deal_channel_messages": {
-    "queue": "integrations",
-    "routing_key": "integrations",
-},
-
-# Calendar events periodic sync (DEPRECATED)
-"integrations.sync_calendar_events": {
-    "queue": "integrations",
-    "routing_key": "integrations",
-},
-```
-
-### Task Name Mapping (Old → New)
+### Task Name Mapping (Historical Reference)
 
 | Old Task Name | New Task Name | Notes |
 |--------------|---------------|-------|
@@ -963,45 +918,3 @@ from .tasks import (
 | `integrations.trigger_deal_channel_messages_sync_all_orgs` | `integrations.sync_deal_messages_all_orgs` | Tier 1 global coordinator |
 | `integrations.sync_deal_channel_messages` | `integrations.sync_deal_messages_org` | Tier 2 org-level processor |
 | `integrations.sync_calendar_events` | `integrations.sync_calendar_all_orgs` | Tier 1 global coordinator |
-
-### Pre-Deprecation Verification Steps
-
-Before deleting deprecated files, verify:
-
-1. **Search for direct imports**:
-
-   ```bash
-   grep -r "from.*teams_sync_tasks import" src/
-   grep -r "from.*deal_channel_messages_tasks import" src/
-   grep -r "from.*calendar_sync_tasks import" src/
-   ```
-
-2. **Search for task name references**:
-
-   ```bash
-   grep -r "sync_teams_channels" src/
-   grep -r "trigger_deal_channel_messages_sync_all_orgs" src/
-   grep -r "sync_deal_channel_messages" src/
-   grep -r "sync_calendar_events" src/
-   ```
-
-3. **Check tests**:
-
-   ```bash
-   grep -r "sync_teams_channels" tests/
-   grep -r "deal_channel_messages" tests/
-   grep -r "sync_calendar_events" tests/
-   ```
-
-4. **Verify no external API calls to old task names** (check frontend, external services)
-
-### Deprecation Order
-
-Execute deprecation in this order:
-
-1. **Phase 1**: Ensure all new three-tier tasks are working in production
-2. **Phase 2**: Update any code that references old task names
-3. **Phase 3**: Remove imports from `celery_app.py` and `tasks/__init__.py`
-4. **Phase 4**: Remove task routes from `config.py`
-5. **Phase 5**: Delete deprecated task files
-6. **Phase 6**: Update documentation to remove "DEPRECATED" references

@@ -3,6 +3,8 @@ from kombu import Exchange, Queue
 
 from src.workers.base.worker_config import BaseWorkerConfig
 
+CALENDAR_SYNC_TASK = "integrations.sync_calendar_all_orgs"
+
 
 class IntegrationsWorkerConfig(BaseWorkerConfig):
     """Configuration for the Integrations Worker."""
@@ -51,20 +53,6 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
                 "queue": "integrations",
                 "routing_key": "integrations",
             },
-            # Teams channels periodic sync (DEPRECATED - use three-tier tasks below)
-            "integrations.sync_teams_channels": {
-                "queue": "integrations",
-                "routing_key": "integrations",
-            },
-            # Deal channel messages sync (DEPRECATED - use three-tier tasks below)
-            "integrations.trigger_deal_channel_messages_sync_all_orgs": {
-                "queue": "integrations",
-                "routing_key": "integrations",
-            },
-            "integrations.sync_deal_channel_messages": {
-                "queue": "integrations",
-                "routing_key": "integrations",
-            },
             # Messaging channels sync tasks (three-tier architecture)
             "integrations.sync_messaging_channels_all_orgs": {
                 "queue": "integrations",
@@ -91,13 +79,8 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
                 "queue": "integrations_priority",  # Priority queue for manual triggers
                 "routing_key": "integrations_priority",
             },
-            # Calendar events periodic sync (DEPRECATED - use three-tier tasks below)
-            "integrations.sync_calendar_events": {
-                "queue": "integrations",
-                "routing_key": "integrations",
-            },
             # Calendar sync tasks (three-tier architecture)
-            "integrations.sync_calendar_all_orgs": {
+            CALENDAR_SYNC_TASK: {
                 "queue": "integrations",
                 "routing_key": "integrations",
             },
@@ -202,127 +185,94 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
             },
         }
 
-        # Celery Beat schedule for periodic tasks
-        # Schedule designed for production CRM sync:
-        # - Deals & Notes (Activities): Every 3 hours - most critical, changes frequently
-        # - Contacts: Every 6 hours - moderate change frequency
-        # - Users, Pipelines, Tasks, Companies: Daily - reference data, low change frequency
-        self.beat_schedule = {
-            # =================================================================
-            # CRM SYNC SCHEDULES (Production)
-            # =================================================================
-            # CRM Users sync (daily at 00:00) - reference data, sync first
-            # Must run before other syncs for owner enrichment to work
+        # Celery Beat schedule for periodic tasks.
+        # Organization:
+        #   1. CRM sync (business critical data pipelines)
+        #   2. Maintenance (token refresh, shared housekeeping)
+        #   3. Communication/messaging workloads (US business-hour focus)
+
+        crm_schedule = {
+            # Reference data, low churn
             "sync-crm-users-all-orgs": {
                 "task": "integrations.sync_crm_users_all_orgs",
-                "schedule": crontab(minute=0, hour=0),  # Daily at midnight
+                "schedule": crontab(minute=0, hour=0),
                 "kwargs": {},
-                "options": {
-                    "queue": "integrations",
-                    "routing_key": "integrations",
-                },
+                "options": {"queue": "integrations", "routing_key": "integrations"},
             },
-            # # CRM Pipelines sync (daily at 00:15) - reference data
-            # # Must run before deals for pipeline enrichment to work
-            # "sync-crm-pipelines-all-orgs": {
-            #     "task": "integrations.sync_crm_pipelines_all_orgs",
-            #     "schedule": crontab(minute=15, hour=0),  # Daily at 00:15
-            #     "kwargs": {},
-            #     "options": {
-            #         "queue": "integrations",
-            #         "routing_key": "integrations",
-            #     },
-            # },
-            # CRM Companies sync (daily at 00:30)
             "sync-crm-companies-all-orgs": {
                 "task": "integrations.sync_crm_companies_all_orgs",
-                "schedule": crontab(minute=30, hour=0),  # Daily at 00:30
+                "schedule": crontab(minute=30, hour=0),
                 "kwargs": {},
-                "options": {
-                    "queue": "integrations",
-                    "routing_key": "integrations",
-                },
+                "options": {"queue": "integrations", "routing_key": "integrations"},
             },
-            # CRM Contacts sync (every 6 hours at :00)
+            # Higher churn datasets
             "sync-crm-contacts-all-orgs": {
                 "task": "integrations.sync_crm_contacts_all_orgs",
-                "schedule": crontab(minute=0, hour="0,6,12,18"),  # Every 6 hours
+                "schedule": crontab(minute=0, hour=1),
                 "kwargs": {},
-                "options": {
-                    "queue": "integrations",
-                    "routing_key": "integrations",
-                },
+                "options": {"queue": "integrations", "routing_key": "integrations"},
             },
-            # CRM Deals sync (every 3 hours at :30) - most critical
             "sync-crm-deals-all-orgs": {
                 "task": "integrations.sync_crm_deals_all_orgs",
-                "schedule": crontab(minute=30, hour="0,3,6,9,12,15,18,21"),  # Every 3 hours
+                "schedule": crontab(minute=30, hour="3,6,9,12,15,18"),
                 "kwargs": {},
-                "options": {
-                    "queue": "integrations",
-                    "routing_key": "integrations",
-                },
+                "options": {"queue": "integrations", "routing_key": "integrations"},
             },
-            # CRM Activities/Notes sync (every 3 hours at :45)
             "sync-crm-activities-all-orgs": {
                 "task": "integrations.sync_crm_activities_all_orgs",
-                "schedule": crontab(minute=45, hour="0,3,6,9,12,15,18,21"),  # Every 3 hours
+                "schedule": crontab(minute=45, hour="3,6,9,12,15,18"),
                 "kwargs": {},
-                "options": {
-                    "queue": "integrations",
-                    "routing_key": "integrations",
-                },
+                "options": {"queue": "integrations", "routing_key": "integrations"},
             },
-            # =================================================================
-            # NON-CRM SYNC SCHEDULES (Disabled - enable as needed)
-            # =================================================================
-            # OAuth token refresh - DISABLED until tested
-            # "refresh-expiring-oauth-tokens": {
-            #     "task": "integrations.refresh_expiring_tokens",
-            #     "schedule": crontab(minute=0),  # Run every hour at minute 0
-            #     "kwargs": {"buffer_hours": 2},  # Refresh tokens expiring within 2 hours
-            #     "options": {
-            #         "queue": "integrations",
-            #         "routing_key": "integrations",
-            #     },
-            # },
-            # Messaging channels sync (three-tier: Tier 1 triggers Tier 2 for each org)
-            # "sync-messaging-channels-all-orgs": {
-            #     "task": "integrations.sync_messaging_channels_all_orgs",  # Three-tier: Tier 1
-            #     "schedule": crontab(minute="*/180"),  # Run every 3 hours
-            #     "kwargs": {},  # No args = sync all organizations
-            #     "options": {
-            #         "queue": "integrations",
-            #         "routing_key": "integrations",
-            #     },
-            # },
-            # # Deal messages sync (three-tier: Tier 1 triggers Tier 2 for each org)
-            # "sync-deal-messages-all-orgs": {
-            #     "task": "integrations.sync_deal_messages_all_orgs",  # Three-tier: Tier 1
-            #     "schedule": crontab(minute="*/180"),  # Run every 3 hours
-            #     "kwargs": {},
-            #     "options": {
-            #         "queue": "integrations",
-            #         "routing_key": "integrations",
-            #     },
-            # },
-            # "sync-calendar-events-all-orgs": {
-            #     "task": "integrations.sync_calendar_all_orgs",  # Three-tier: Tier 1
-            #     "schedule": crontab(minute="*/30"),  # Run every 30 minutes
-            #     "kwargs": {},  # No args = sync all organizations
-            #     "options": {
-            #         "queue": "integrations",
-            #         "routing_key": "integrations",
-            #     },
-            # },
-            # # # Email sync (three-tier: Tier 1 triggers Tier 2 for each org)
-            # "sync-email-all-orgs": {
-            #     "task": "integrations.sync_email_all_orgs",
-            #     "schedule": crontab(minute="*/60"),  # Run every 30 minutes
-            #     "kwargs": {},  # No args = sync all organizations
-            #     "options": {
-            #         "queue": "integrations",
-            #         "routing_key": "integrations",
-            #     },
-            # },
+        }
+
+        # maintenance_schedule = {
+        #     "refresh-expiring-oauth-tokens": {
+        #         "task": "integrations.refresh_expiring_tokens",
+        #         "schedule": crontab(minute=0),  # Hourly token refresh window
+        #         "kwargs": {"buffer_hours": 2},
+        #         "options": {"queue": "integrations", "routing_key": "integrations"},
+        #     },
+        # }
+
+        communication_schedule = {
+            # US business hours (12:00-23:00 UTC)
+            "sync-messaging-channels-all-orgs": {
+                "task": "integrations.sync_messaging_channels_all_orgs",
+                "schedule": crontab(minute=0, hour="12-23"),
+                "kwargs": {},
+                "options": {"queue": "integrations", "routing_key": "integrations"},
+            },
+            "sync-deal-messages-all-orgs": {
+                "task": "integrations.sync_deal_messages_all_orgs",
+                "schedule": crontab(minute="*/15", hour="12-23"),
+                "kwargs": {},
+                "options": {"queue": "integrations", "routing_key": "integrations"},
+            },
+            # Calendar cadence split between day/night
+            "sync-calendar-events-daytime": {
+                "task": CALENDAR_SYNC_TASK,
+                "schedule": crontab(minute="*/15", hour="12-23"),
+                "kwargs": {},
+                "options": {"queue": "integrations", "routing_key": "integrations"},
+            },
+            "sync-calendar-events-nighttime": {
+                "task": CALENDAR_SYNC_TASK,
+                "schedule": crontab(minute=0, hour="0-11"),
+                "kwargs": {},
+                "options": {"queue": "integrations", "routing_key": "integrations"},
+            },
+            # Email runs every 30 minutes around the clock
+            "sync-email-all-orgs": {
+                "task": "integrations.sync_email_all_orgs",
+                "schedule": crontab(minute="0,30"),
+                "kwargs": {},
+                "options": {"queue": "integrations", "routing_key": "integrations"},
+            },
+        }
+
+        self.beat_schedule = {
+            **crm_schedule,
+            # **maintenance_schedule,
+            **communication_schedule,
         }

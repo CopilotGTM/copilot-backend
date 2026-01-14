@@ -1,6 +1,9 @@
-"""Service to process Nango webhooks (auth + sync)."""
+"""Service to process Nango auth webhooks.
 
-# mypy: disable-error-code="arg-type"
+NOTE: Sync webhooks have been deprecated and removed.
+Sync is now handled by Celery Beat scheduled tasks.
+See: docs/Technical Documentation/integration/sync_tasks/scheduled-sync-architecture.md
+"""
 
 from __future__ import annotations
 
@@ -25,22 +28,15 @@ from src.domain.models.organisation_tables.sync import (
     IntegrationType,
     KnowledgeIntegration,
 )
-from src.infra.config.provider_categories import categorize_integration_type
-from src.infra.observability.context import correlation_headers
 from src.infra.utils.logger import get_logger
 from src.service.integrations import NangoClient
+from src.service.integrations.initial_sync_service import initial_sync_service
 
 logger = get_logger(__name__)
 
-# CRM integration types that should trigger initial sync on connect
-CRM_INTEGRATION_TYPES = {IntegrationType.HUBSPOT, IntegrationType.SALESFORCE}
-
-# Constants for webhook responses
-SYNC_WEBHOOK_ACCEPTED_MSG = "Sync webhook accepted"
-
 
 class NangoWebhookService:
-    """Encapsulates Nango webhook processing (auth + sync)."""
+    """Encapsulates Nango webhook processing (auth only - sync webhooks deprecated)."""
 
     @staticmethod
     def _is_valid_signature(signature: str | None, payload: dict[str, Any]) -> bool:
@@ -141,137 +137,6 @@ class NangoWebhookService:
 
         # For all other providers, use the standard mapping
         return from_nango_provider_key(provider_config_key)
-
-    async def _handle_sync_webhook(
-        self, payload: dict[str, Any], organisation_id: UUID, integration_id: UUID
-    ) -> JSONResponse:
-        """
-        Handle sync webhook - triggers data sync for the given connection.
-        Args:
-            payload: The webhook payload containing connection details.
-        Returns:
-            Response indicating acceptance of the sync webhook.
-        """
-
-        # Extract necessary fields from payload
-        connection_id = payload.get("connectionId")
-        provider_config_key = payload.get("providerConfigKey")
-        logger.info("Processing sync webhook: %s", payload)
-
-        # Check for zero-delta webhooks and skip if no changes
-        response_results = payload.get("responseResults", {})
-        logger.debug("Sync webhook responseResults: %s", response_results)
-        added = response_results.get("added", 0) if response_results else 0
-        updated = response_results.get("updated", 0) if response_results else 0
-        deleted = response_results.get("deleted", 0) if response_results else 0
-        total_changes = added + updated + deleted
-
-        sync_type = payload.get("syncType")
-        sync_name = payload.get("syncName")
-
-        logger.info(
-            "Sync webhook received: connection=%s sync_name=%s sync_type=%s "
-            "added=%d updated=%d deleted=%d",
-            connection_id,
-            sync_name,
-            sync_type,
-            added,
-            updated,
-            deleted,
-        )
-
-        # Skip sync if no changes and this is an incremental sync
-        # Always process INITIAL syncs regardless of responseResults
-        is_initial = str(sync_type).upper() == "INITIAL" if sync_type else False
-        if total_changes == 0 and not is_initial:
-            logger.info(
-                "Sync webhook skipped (no changes): connection=%s sync_name=%s "
-                "added=%d updated=%d deleted=%d",
-                connection_id,
-                sync_name,
-                added,
-                updated,
-                deleted,
-            )
-            return Response.success_response(
-                message="No changes to sync",
-                data={"skipped": True, "reason": "zero_delta"},
-            )
-
-        # Validate required fields
-        integration: KnowledgeIntegration | None = None
-        async for org_session in acquire_org_async_session(organisation_id):
-            stmt = select(KnowledgeIntegration).where(
-                KnowledgeIntegration.connection_id == connection_id
-            )
-            result = await org_session.execute(stmt)
-            integration = result.scalars().first()
-            if not integration:
-                logger.error(
-                    "No integration found for sync webhook: connection %s, integration %s",
-                    connection_id,
-                    integration_id,
-                )
-                return Response.bad_request_error_response(
-                    message="No matching integration found for sync webhook"
-                )
-
-        # Guard: if async for didn't yield any sessions, integration is still None
-        if not integration:
-            logger.error(
-                "Failed to acquire org session for sync webhook: org %s",
-                organisation_id,
-            )
-            return Response.bad_request_error_response(message="Failed to process sync webhook")
-
-        # Resolve Category and provider of the sync request
-        category, provider = categorize_integration_type(integration.integration_type)
-        logger.info(
-            "Sync webhook: resolved category=%s, provider=%s for integration %s",
-            category,
-            provider,
-            integration.integration_id,
-        )
-
-        # Resolve organisation ID and validate mapping
-        sync_variant = payload.get("syncVariant")
-        logger.info(
-            "Sync webhook: determined data types %s for integration %s (category=%s) "
-            "changes: added=%d updated=%d deleted=%d",
-            [sync_name, sync_type, sync_variant],
-            integration.integration_id,
-            category,
-            added,
-            updated,
-            deleted,
-        )
-
-        # Use async client to avoid blocking the event loop during Redis connection
-        from src.workers.integrations_worker.client import send_integrations_task_async
-
-        await send_integrations_task_async(
-            task_name="integrations.sync_integration_data",
-            kwargs={
-                "organisation_id": str(organisation_id),
-                "integration_id": str(integration.integration_id),
-                "category": category,
-                "provider": provider,
-                "provider_config_key": provider_config_key,
-                "sync_name": sync_name,
-                "sync_type": sync_type,
-                "sync_variant": sync_variant,
-                "incremental": str(sync_type).upper() != "INITIAL" if sync_type else True,
-                # Pass response_results for incremental sync optimization
-                "response_results": {
-                    "added": added,
-                    "updated": updated,
-                    "deleted": deleted,
-                },
-            },
-            queue="integrations",
-            headers=correlation_headers(),
-        )
-        return Response.success_response(message=SYNC_WEBHOOK_ACCEPTED_MSG, data=None)
 
     async def _handle_authorization_webhook(self, payload: dict[str, Any]) -> JSONResponse:
         """
@@ -406,8 +271,8 @@ class NangoWebhookService:
         # Update connection mapping in master database
         await self._save_connection_mapping(new_connection_id, integration, provider_config_key)
 
-        # Trigger initial CRM sync if this is a CRM integration
-        await self._trigger_crm_initial_sync(integration.organisation_id, integration)
+        # Trigger initial sync for the reactivated integration
+        initial_sync_service.trigger_initial_sync(integration.organisation_id, integration)
 
         return Response.success_response(
             message="Integration reactivated successfully",
@@ -480,8 +345,8 @@ class NangoWebhookService:
 
             await self._save_connection_mapping(connection_id, integration, provider_config_key)
 
-            # Trigger initial CRM sync if this is a CRM integration
-            await self._trigger_crm_initial_sync(user.organisation_id, integration)
+            # Trigger initial sync for the newly connected integration
+            initial_sync_service.trigger_initial_sync(user.organisation_id, integration)
 
             return Response.success_response(
                 message="Webhook processed successfully",
@@ -499,69 +364,6 @@ class NangoWebhookService:
             return Response.bad_request_error_response(
                 message=f"Unknown integration type: {provider_config_key}"
             )
-
-    async def _trigger_crm_initial_sync(
-        self,
-        organisation_id: UUID,
-        integration: KnowledgeIntegration,
-    ) -> None:
-        """
-        Trigger initial CRM sync for a newly connected/reactivated CRM integration.
-
-        Uses Celery chord to run all sync tasks in parallel, then runs enrichment
-        task ONLY after all syncs complete.
-        """
-        integration_type = integration.integration_type
-        if isinstance(integration_type, str):
-            integration_type = IntegrationType(integration_type)
-
-        if integration_type not in CRM_INTEGRATION_TYPES:
-            return
-
-        logger.info(
-            "Triggering CRM initial sync for integration %s (org=%s, type=%s)",
-            integration.integration_id,
-            organisation_id,
-            integration_type.value,
-        )
-
-        from celery import chord, group
-        from src.workers.integrations_worker.tasks.crm import (
-            enrich_crm_after_initial_sync_task,
-            sync_crm_activities_org_task,
-            sync_crm_companies_org_task,
-            sync_crm_contacts_org_task,
-            sync_crm_deals_org_task,
-            sync_crm_pipelines_org_task,
-            sync_crm_users_org_task,
-        )
-
-        org_id_str = str(organisation_id)
-        int_id_str = str(integration.integration_id)
-
-        try:
-            # Create group of sync tasks (run in parallel)
-            sync_group = group(
-                sync_crm_companies_org_task.s(org_id_str, skip_enrichment=True),  # type: ignore[attr-defined]
-                sync_crm_contacts_org_task.s(org_id_str, skip_enrichment=True),  # type: ignore[attr-defined]
-                sync_crm_deals_org_task.s(org_id_str, skip_enrichment=True),  # type: ignore[attr-defined]
-                sync_crm_users_org_task.s(org_id_str, skip_enrichment=True),  # type: ignore[attr-defined]
-                sync_crm_pipelines_org_task.s(org_id_str),  # type: ignore[attr-defined]
-                sync_crm_activities_org_task.s(org_id_str, skip_enrichment=True),  # type: ignore[attr-defined]
-            )
-
-            # Chord: run sync group, then enrichment callback after ALL complete
-            # Use .si() (immutable) to ignore group results - enrichment doesn't need them
-            chord(sync_group)(
-                enrich_crm_after_initial_sync_task.si(org_id_str, int_id_str)  # type: ignore[attr-defined]
-            )
-
-            logger.info(
-                "Dispatched CRM sync chord for integration %s (6 sync tasks + enrichment callback)",
-                integration.integration_id,
-            )
-        except Exception as e:
-            logger.error("Failed to dispatch CRM sync chord: %s", str(e), exc_info=True)
 
     async def _save_connection_mapping(
         self,

@@ -16,7 +16,7 @@ Architecture:
         |
     sync_calendar_integration_task [Tier 3 - this file]
         |
-    sync_integration_data_task (for the specific integration)
+    CalendarSyncService (direct call, same pattern as CRM/Email)
 """
 
 from __future__ import annotations
@@ -32,11 +32,20 @@ from src.api.dependencies.organisation_dependencies import acquire_org_async_ses
 from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
 from src.infra.config.nango_provider_mapping import to_nango_provider_key
 from src.infra.config.provider_categories import categorize_integration_type
-from src.infra.observability.context import correlation_headers
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
+from src.service.integrations import NangoClient
+from src.workers.integrations_worker.adapters.calendar_adapter import upsert_calendar_incremental
 from src.workers.integrations_worker.celery_app import app
-from src.workers.integrations_worker.tasks.sync_tasks import sync_integration_data_task
+from src.workers.integrations_worker.providers.calendar.google_calendar import (
+    fetch_events as google_fetch_events,
+)
+from src.workers.integrations_worker.providers.calendar.outlook_calendar import (
+    FetchEventsResult,
+)
+from src.workers.integrations_worker.providers.calendar.outlook_calendar import (
+    fetch_events as outlook_fetch_events,
+)
 
 logger = get_logger(__name__)
 
@@ -83,7 +92,7 @@ def sync_calendar_integration_task(
             "integration_type": "google_calendar",
             "started_at": "...",
             "completed_at": "...",
-            "task_id": "celery-task-id"
+            "events_synced": 50
         }
     """
     started_at = datetime.now(UTC).isoformat()
@@ -98,98 +107,163 @@ def sync_calendar_integration_task(
             int_id,
         )
 
-        async for session in acquire_org_async_session(org_id):
-            # Query the specific integration
-            stmt = select(KnowledgeIntegration).where(
-                KnowledgeIntegration.integration_id == int_id,
-                KnowledgeIntegration.integration_type.in_(CALENDAR_INTEGRATION_TYPES),
-            )
-            result = await session.execute(stmt)
-            integration = result.scalar_one_or_none()
+        nango = NangoClient()
+        try:
+            async for session in acquire_org_async_session(org_id):
+                # Query the specific integration
+                stmt = select(KnowledgeIntegration).where(
+                    KnowledgeIntegration.integration_id == int_id,
+                    KnowledgeIntegration.integration_type.in_(CALENDAR_INTEGRATION_TYPES),
+                )
+                result = await session.execute(stmt)
+                integration = result.scalar_one_or_none()
 
-            if not integration:
+                if not integration:
+                    return {
+                        "status": "failed",
+                        "organisation_id": organisation_id,
+                        "integration_id": integration_id,
+                        "started_at": started_at,
+                        "completed_at": datetime.now(UTC).isoformat(),
+                        "error": "Integration not found or not a calendar integration",
+                    }
+
+                if not integration.is_active:
+                    return {
+                        "status": "failed",
+                        "organisation_id": organisation_id,
+                        "integration_id": integration_id,
+                        "started_at": started_at,
+                        "completed_at": datetime.now(UTC).isoformat(),
+                        "error": "Integration is not active",
+                    }
+
+                if not integration.connection_id:
+                    return {
+                        "status": "failed",
+                        "organisation_id": organisation_id,
+                        "integration_id": integration_id,
+                        "started_at": started_at,
+                        "completed_at": datetime.now(UTC).isoformat(),
+                        "error": "Integration is not connected (no connection_id)",
+                    }
+
+                # Get provider details
+                int_type = (
+                    IntegrationType(integration.integration_type)
+                    if isinstance(integration.integration_type, str)
+                    else integration.integration_type
+                )
+                integration_type = int_type.value
+                category, provider = categorize_integration_type(int_type)
+                provider_config_key = to_nango_provider_key(int_type)
+                connection_id = integration.connection_id
+
+                logger.info(
+                    "Syncing calendar integration: org=%s integration=%s type=%s",
+                    org_id,
+                    int_id,
+                    integration_type,
+                )
+
+                # Determine if this is initial sync
+                is_initial = integration.last_synced_at is None
+
+                # Fetch events based on provider
+                if int_type == IntegrationType.GOOGLE_CALENDAR:
+                    events = await google_fetch_events(
+                        nango=nango,
+                        connection_id=connection_id,
+                        is_initial=is_initial,
+                        last_synced_at=integration.last_synced_at,
+                        provider_config_key=provider_config_key,
+                    )
+                    new_delta_link = None
+                elif int_type == IntegrationType.OUTLOOK_CALENDAR:
+                    # Get stored delta link for true incremental sync
+                    stored_delta_link = (integration.connection_metadata or {}).get(
+                        "outlook_delta_link"
+                    )
+                    fetch_result: FetchEventsResult = await outlook_fetch_events(
+                        nango=nango,
+                        connection_id=connection_id,
+                        is_initial=is_initial,
+                        last_synced_at=integration.last_synced_at,
+                        provider_config_key=provider_config_key,
+                        delta_link=stored_delta_link if not is_initial else None,
+                    )
+                    events = fetch_result.events
+                    new_delta_link = fetch_result.delta_link
+                else:
+                    return {
+                        "status": "failed",
+                        "organisation_id": organisation_id,
+                        "integration_id": integration_id,
+                        "started_at": started_at,
+                        "completed_at": datetime.now(UTC).isoformat(),
+                        "error": f"Unknown calendar provider: {int_type}",
+                    }
+
+                logger.info(
+                    "Fetched %d events for integration %s",
+                    len(events),
+                    int_id,
+                )
+
+                # Sync events to database
+                records_synced = await upsert_calendar_incremental(
+                    session=session,
+                    organisation_id=org_id,
+                    integration=integration,
+                    provider=provider,
+                    events=events,
+                )
+
+                # Save new deltaLink for Outlook (enables true incremental sync)
+                if new_delta_link and int_type == IntegrationType.OUTLOOK_CALENDAR:
+                    connection_metadata = dict(integration.connection_metadata or {})
+                    connection_metadata["outlook_delta_link"] = new_delta_link
+                    integration.connection_metadata = connection_metadata
+                    session.add(integration)
+                    await session.commit()
+                    logger.info(
+                        "Outlook calendar: saved new deltaLink for next sync (integration=%s)",
+                        int_id,
+                    )
+
+                # Update last_synced_at
+                integration.last_synced_at = datetime.now(UTC).replace(tzinfo=None)
+                session.add(integration)
+                await session.commit()
+
+                logger.info(
+                    "Manual calendar sync complete: org=%s integration=%s events_synced=%d",
+                    org_id,
+                    int_id,
+                    records_synced,
+                )
+
                 return {
-                    "status": "failed",
+                    "status": "success",
                     "organisation_id": organisation_id,
                     "integration_id": integration_id,
+                    "integration_type": integration_type,
                     "started_at": started_at,
                     "completed_at": datetime.now(UTC).isoformat(),
-                    "error": "Integration not found or not a calendar integration",
+                    "events_synced": records_synced,
                 }
 
-            if not integration.is_active:
-                return {
-                    "status": "failed",
-                    "organisation_id": organisation_id,
-                    "integration_id": integration_id,
-                    "started_at": started_at,
-                    "completed_at": datetime.now(UTC).isoformat(),
-                    "error": "Integration is not active",
-                }
-
-            if not integration.connection_id:
-                return {
-                    "status": "failed",
-                    "organisation_id": organisation_id,
-                    "integration_id": integration_id,
-                    "started_at": started_at,
-                    "completed_at": datetime.now(UTC).isoformat(),
-                    "error": "Integration is not connected (no connection_id)",
-                }
-
-            # Get provider details
-            int_type_str = integration.integration_type
-            if isinstance(int_type_str, str):
-                int_type = IntegrationType(int_type_str)
-            else:
-                int_type = int_type_str
-
-            integration_type = int_type.value
-            category, provider = categorize_integration_type(int_type)
-            provider_config_key = to_nango_provider_key(int_type)
-
-            # Dispatch sync task
-            events_task = sync_integration_data_task.apply_async(
-                kwargs={
-                    "organisation_id": str(org_id),
-                    "integration_id": str(int_id),
-                    "category": category,
-                    "provider": provider,
-                    "provider_config_key": provider_config_key,
-                    "sync_name": "events",
-                    "sync_type": "INCREMENTAL",
-                    "sync_variant": "base",
-                    "incremental": True,
-                },
-                headers=correlation_headers(),
-            )
-
-            logger.info(
-                "Manual calendar sync dispatched: org=%s integration=%s task=%s",
-                org_id,
-                int_id,
-                events_task.id,
-            )
-
+            # If async for didn't yield any sessions
             return {
-                "status": "success",
+                "status": "failed",
                 "organisation_id": organisation_id,
                 "integration_id": integration_id,
-                "integration_type": integration_type,
                 "started_at": started_at,
                 "completed_at": datetime.now(UTC).isoformat(),
-                "task_id": events_task.id,
+                "error": "Failed to acquire database session",
             }
-
-        # If async for didn't yield any sessions
-        return {
-            "status": "failed",
-            "organisation_id": organisation_id,
-            "integration_id": integration_id,
-            "started_at": started_at,
-            "completed_at": datetime.now(UTC).isoformat(),
-            "error": "Failed to acquire database session",
-        }
+        finally:
+            await nango.close()
 
     try:
         result = run_async(_sync_integration())
@@ -197,10 +271,10 @@ def sync_calendar_integration_task(
         # Log based on status
         if result.get("status") == "success":
             logger.info(
-                "Manual calendar sync complete: org=%s integration=%s task_id=%s",
+                "Manual calendar sync succeeded: org=%s integration=%s events=%d",
                 organisation_id,
                 integration_id,
-                result.get("task_id"),
+                result.get("events_synced", 0),
             )
         else:
             logger.warning(

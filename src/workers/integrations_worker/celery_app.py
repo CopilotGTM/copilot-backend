@@ -62,15 +62,12 @@ def worker_shutdown_handler(sender=None, **kwargs):
 
 
 # Explicitly import task modules to ensure registration
-# Three-tier architecture: calendar, email, and messaging sync tasks
-# DEPRECATED: Old task modules (kept for backward compatibility, to be removed)
+# Three-tier architecture: calendar, email, messaging, and CRM sync tasks
 from .tasks import (
     calendar,  # noqa: F401, E402 - three-tier calendar sync
-    deal_channel_messages_tasks,  # noqa: F401, E402 - DEPRECATED: use messaging module
+    crm,  # noqa: F401, E402 - three-tier CRM sync
     email,  # noqa: F401, E402 - three-tier email sync
     messaging,  # noqa: F401, E402 - three-tier messaging sync
-    sync_tasks,  # noqa: F401, E402
-    teams_sync_tasks,  # noqa: F401, E402 - DEPRECATED: use messaging module
     token_refresh,  # noqa: F401, E402
 )
 
