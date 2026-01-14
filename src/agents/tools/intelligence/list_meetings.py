@@ -106,7 +106,7 @@ async def list_deal_meetings(
         .where(
             assoc_c.organisation_id == organisation_id,
             assoc_c.deal_id == parsed_deal_id,
-            assoc_c.status != AssociationStatus.REJECTED,  # Exclude rejected associations
+            assoc_c.status == AssociationStatus.ACTIVE,  # Only include active associations
         )
         .join(CalendarEvent, assoc_c.event_id == event_c.event_id)
     )

@@ -101,7 +101,7 @@ async def get_meeting_details(
     assoc_stmt = select(CalendarEventDealAssociation).where(
         assoc_c.organisation_id == organisation_id,
         assoc_c.event_id == parsed_event_id,
-        assoc_c.status != AssociationStatus.REJECTED,
+        assoc_c.status == AssociationStatus.ACTIVE,
     )
 
     try:

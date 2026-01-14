@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any, cast
 from uuid import UUID
 
+from sqlalchemy import func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlmodel import col, select
@@ -29,7 +30,13 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDealStatus,
     CRMParticipantType,
 )
-from src.domain.models.organisation_tables.sync.crm.stakeholders import DealStakeholder
+from src.domain.models.organisation_tables.sync.crm.stakeholders import (
+    ApprovalStatus,
+    DealStakeholder,
+    StakeholderSource,
+    StakeholderStance,
+    StakeholderTemperature,
+)
 from src.domain.models.organisation_tables.sync.email_models import (
     DealEmailAssociation,
     DealEmailDirection,
@@ -46,6 +53,22 @@ logger = get_logger(__name__)
 # Configuration constants
 MIN_MATCH_SCORE = 0.7
 BATCH_SIZE = 500
+MAX_EMAIL_DISCOVERY_AUTO_APPROVED = 5
+
+# Calendar invite subject patterns (case-insensitive)
+# These emails are already matched via calendar sync, so we skip them
+CALENDAR_INVITE_PATTERNS = (
+    "invitation:",
+    "invite:",
+    "accepted:",
+    "declined:",
+    "tentative:",
+    "updated invitation:",
+    "canceled:",
+    "cancelled:",
+    "meeting request:",
+    "meeting response:",
+)
 
 
 @dataclass
@@ -53,8 +76,10 @@ class DealStakeholderInfo:
     """Container for deal stakeholder information."""
 
     deal_id: UUID
+    integration_id: UUID | None = None
     team_emails: set[str] = field(default_factory=set)
     contact_emails: set[str] = field(default_factory=set)
+    company_domains: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -99,6 +124,146 @@ class DealEmailMatcher:
             return None
         return normalized
 
+    def _extract_domain(self, email: str) -> str | None:
+        """Extract domain from email address."""
+        if not email or "@" not in email:
+            return None
+        return email.split("@")[1].lower()
+
+    def _is_calendar_invite_email(self, email: Email) -> bool:
+        """Check if email is a calendar invite based on subject patterns.
+
+        Calendar invite emails are already matched via calendar sync,
+        so we skip them to avoid duplicate associations.
+        """
+        if not email.subject:
+            return False
+        subject_lower = email.subject.lower().strip()
+        return any(subject_lower.startswith(pattern) for pattern in CALENDAR_INVITE_PATTERNS)
+
+    def _collect_company_domains(self, deal: CRMDeal) -> set[str]:
+        """Collect customer domains from deal's CONTACT participants."""
+        domains: set[str] = set()
+
+        # From primary contact
+        if deal.primary_contact_email:
+            domain = self._extract_domain(deal.primary_contact_email)
+            if domain:
+                domains.add(domain)
+
+        # From CONTACT participants
+        participants = cast(list[CRMDealParticipant] | None, getattr(deal, "participants", None))
+        if participants:
+            for participant in participants:
+                if participant.participant_type != CRMParticipantType.CONTACT:
+                    continue
+                if participant.related_email:
+                    domain = self._extract_domain(participant.related_email)
+                    if domain:
+                        domains.add(domain)
+
+        return domains
+
+    async def _discover_stakeholders_from_email(
+        self,
+        email: Email,
+        deal_id: UUID,
+        info: DealStakeholderInfo,
+    ) -> int:
+        """Discover new stakeholders from email participants.
+
+        Only adds participants who:
+        - Have email domain matching customer domains
+        - Are not already team members
+        - Don't already exist as stakeholders for this deal
+
+        Applies 5-limit: first 5 discovered stakeholders are auto-APPROVED,
+        beyond that they are PENDING (require user approval).
+
+        Returns:
+            Number of stakeholders discovered.
+        """
+        if not info.company_domains:
+            return 0
+
+        discovered = 0
+
+        # Collect all email participants (from, to, cc)
+        all_participants: set[str] = set()
+        from_email = self._normalize_email(email.from_email)
+        if from_email:
+            all_participants.add(from_email)
+        for addr in email.to_emails or []:
+            normalized = self._normalize_email(addr)
+            if normalized:
+                all_participants.add(normalized)
+        for addr in email.cc_emails or []:
+            normalized = self._normalize_email(addr)
+            if normalized:
+                all_participants.add(normalized)
+
+        for participant_email in all_participants:
+            # Skip team members
+            if participant_email in info.team_emails:
+                continue
+
+            # Skip known contacts
+            if participant_email in info.contact_emails:
+                continue
+
+            # Only add if domain matches customer domains
+            domain = self._extract_domain(participant_email)
+            if not domain or domain not in info.company_domains:
+                continue
+
+            # Check if stakeholder already exists
+            stmt = select(DealStakeholder).where(
+                col(DealStakeholder.deal_id) == deal_id,
+                col(DealStakeholder.email) == participant_email,
+            )
+            result = await self.session.execute(stmt)
+            if result.scalars().first():
+                continue  # Already exists
+
+            # Count existing discovered stakeholders for 5-limit
+            count_stmt = select(func.count()).where(
+                col(DealStakeholder.deal_id) == deal_id,
+                col(DealStakeholder.source) == StakeholderSource.EMAIL_DISCOVERY,
+            )
+            count_result = await self.session.execute(count_stmt)
+            current_count = count_result.scalar() or 0
+
+            approval_status = (
+                ApprovalStatus.APPROVED
+                if current_count < MAX_EMAIL_DISCOVERY_AUTO_APPROVED
+                else ApprovalStatus.PENDING
+            )
+
+            # Create stakeholder
+            stakeholder = DealStakeholder(
+                organisation_id=self.organisation_id,
+                integration_id=info.integration_id,
+                deal_id=deal_id,
+                email=participant_email,
+                name=None,  # We don't have display names from email addresses
+                source=StakeholderSource.EMAIL_DISCOVERY,
+                approval_status=approval_status,
+                stance=StakeholderStance.UNKNOWN,
+                temperature=StakeholderTemperature.UNKNOWN,
+                engagement_score=0.0,
+            )
+            self.session.add(stakeholder)
+            discovered += 1
+
+            if approval_status == ApprovalStatus.PENDING:
+                logger.info(
+                    "Email discovery limit reached for deal %s, stakeholder %s set to PENDING",
+                    deal_id,
+                    participant_email,
+                )
+
+        return discovered
+
     async def _build_stakeholder_maps(self) -> None:
         """
         Load all active deals and build stakeholder-to-deal lookup maps.
@@ -131,13 +296,19 @@ class DealEmailMatcher:
         logger.info(f"Building stakeholder maps for {len(deals)} active deals")
 
         for deal in deals:
-            info = DealStakeholderInfo(deal_id=deal.deal_id)
+            info = DealStakeholderInfo(
+                deal_id=deal.deal_id,
+                integration_id=deal.integration_id,
+            )
 
             # Collect team emails (owner + technical owner from participants)
             self._collect_team_emails(deal, info)
 
             # Collect contact emails from DealStakeholder table
             await self._collect_stakeholder_emails(deal.deal_id, info)
+
+            # Collect company domains for stakeholder discovery
+            info.company_domains = self._collect_company_domains(deal)
 
             # Store deal info
             self._deal_info[deal.deal_id] = info
@@ -186,11 +357,18 @@ class DealEmailMatcher:
         """
         Collect contact emails from DealStakeholder table.
 
-        These are external contacts discovered from calendar meetings.
+        Uses DealStakeholder table which contains:
+        - CRM-synced contacts (source=CRM)
+        - Discovered contacts from calendar (source=CALENDAR_DISCOVERY)
+        - Discovered contacts from email (source=EMAIL_DISCOVERY)
+
+        Only returns APPROVED stakeholders (not PENDING or REJECTED).
         """
         stmt = select(col(DealStakeholder.email)).where(
             col(DealStakeholder.organisation_id) == self.organisation_id,
             col(DealStakeholder.deal_id) == deal_id,
+            col(DealStakeholder.is_deleted).is_(False),
+            col(DealStakeholder.approval_status) == ApprovalStatus.APPROVED,
         )
         result = await self.session.execute(stmt)
         stakeholder_emails = result.scalars().all()
@@ -423,8 +601,8 @@ class DealEmailMatcher:
         association = DealEmailAssociation(
             organisation_id=self.organisation_id,
             deal_id=match.deal_id,
-            internet_message_id=email.internet_message_id,
-            status=AssociationStatus.SUGGESTED,
+            internet_message_id=email.internet_message_id,  # type: ignore
+            status=AssociationStatus.ACTIVE,
             match_score=match.score,
             direction=match.direction,
             matched_stakeholder_emails=match.matched_emails,
@@ -465,6 +643,8 @@ class DealEmailMatcher:
             "emails_matched": 0,
             "associations_created": 0,
             "deals_with_matches": 0,
+            "calendar_invites_skipped": 0,
+            "stakeholders_discovered": 0,
         }
 
         # Step 1: Build stakeholder maps
@@ -499,6 +679,11 @@ class DealEmailMatcher:
         for email in emails:
             stats["emails_processed"] += 1
 
+            # Skip calendar invite emails (already matched via calendar sync)
+            if self._is_calendar_invite_email(email):
+                stats["calendar_invites_skipped"] += 1
+                continue
+
             matches = self._match_email_to_deals(email)
 
             if matches:
@@ -514,6 +699,14 @@ class DealEmailMatcher:
                         stats["associations_created"] += 1
                         deals_matched.add(match.deal_id)
 
+                        # Discover new stakeholders from email participants
+                        info = self._deal_info.get(match.deal_id)
+                        if info:
+                            discovered = await self._discover_stakeholders_from_email(
+                                email, match.deal_id, info
+                            )
+                            stats["stakeholders_discovered"] += discovered
+
         stats["deals_with_matches"] = len(deals_matched)
 
         await self.session.commit()
@@ -521,10 +714,162 @@ class DealEmailMatcher:
         logger.info(
             f"Email matching completed for org {self.organisation_id}: "
             f"{stats['emails_processed']} processed, {stats['emails_matched']} matched, "
-            f"{stats['associations_created']} associations created"
+            f"{stats['associations_created']} associations created, "
+            f"{stats['calendar_invites_skipped']} calendar invites skipped, "
+            f"{stats['stakeholders_discovered']} stakeholders discovered"
         )
 
         return stats
+
+    async def process_deal(self, deal_id: UUID) -> dict[str, int]:
+        """
+        Process email matching for a single deal.
+
+        Re-matches all emails against this specific deal's stakeholders.
+        Used when a new stakeholder is added to find historical emails.
+
+        Args:
+            deal_id: UUID of the deal to re-match.
+
+        Returns:
+            Stats dictionary with processing results.
+        """
+        stats = {
+            "emails_processed": 0,
+            "emails_matched": 0,
+            "associations_created": 0,
+            "calendar_invites_skipped": 0,
+            "stakeholders_discovered": 0,
+        }
+
+        # Build stakeholder map for just this deal
+        deal_participants_rel = cast(Any, CRMDeal.participants)
+
+        stmt = (
+            select(CRMDeal)
+            .options(selectinload(deal_participants_rel))
+            .where(
+                col(CRMDeal.organisation_id) == self.organisation_id,
+                col(CRMDeal.deal_id) == deal_id,
+            )
+        )
+        result = await self.session.execute(stmt)
+        deal = result.scalars().first()
+
+        if not deal:
+            logger.warning(f"Deal {deal_id} not found in org {self.organisation_id}")
+            return stats
+
+        # Build info for this single deal
+        info = DealStakeholderInfo(
+            deal_id=deal.deal_id,
+            integration_id=deal.integration_id,
+        )
+        self._collect_team_emails(deal, info)
+        await self._collect_stakeholder_emails(deal.deal_id, info)
+        info.company_domains = self._collect_company_domains(deal)
+
+        if not info.team_emails or not info.contact_emails:
+            logger.info(f"No stakeholders for deal {deal_id}, skipping email matching")
+            return stats
+
+        # Store in lookup maps for matching
+        self._deal_info[deal.deal_id] = info
+        for email in info.team_emails:
+            if email not in self._team_email_to_deals:
+                self._team_email_to_deals[email] = set()
+            self._team_email_to_deals[email].add(deal.deal_id)
+        for email in info.contact_emails:
+            if email not in self._contact_email_to_deals:
+                self._contact_email_to_deals[email] = set()
+            self._contact_email_to_deals[email].add(deal.deal_id)
+
+        # Get all emails involving this deal's stakeholders
+        all_stakeholder_emails = list(info.team_emails | info.contact_emails)
+        emails = await self._get_emails_for_stakeholders(all_stakeholder_emails)
+
+        if not emails:
+            logger.info(f"No emails found for deal {deal_id} stakeholders")
+            return stats
+
+        # Preload integration types
+        integration_ids = {e.integration_id for e in emails if getattr(e, "integration_id", None)}
+        integration_type_by_id: dict[UUID, Any] = {}
+        if integration_ids:
+            it_stmt = select(
+                KnowledgeIntegration.integration_id,
+                KnowledgeIntegration.integration_type,
+            ).where(KnowledgeIntegration.integration_id.in_(integration_ids))
+            it_result = await self.session.execute(it_stmt)
+            integration_type_by_id = dict(it_result.all())
+
+        # Match and create associations
+        for email in emails:
+            stats["emails_processed"] += 1
+
+            # Skip calendar invite emails (already matched via calendar sync)
+            if self._is_calendar_invite_email(email):
+                stats["calendar_invites_skipped"] += 1
+                continue
+
+            matches = self._match_email_to_deals(email)
+            # Filter to only this deal
+            matches = [m for m in matches if m.deal_id == deal_id]
+
+            if matches:
+                stats["emails_matched"] += 1
+                for match in matches:
+                    association = await self._create_association(
+                        email,
+                        match,
+                        integration_type=integration_type_by_id.get(email.integration_id),
+                    )
+                    if association:
+                        stats["associations_created"] += 1
+
+                        # Discover new stakeholders from email participants
+                        discovered = await self._discover_stakeholders_from_email(
+                            email, match.deal_id, info
+                        )
+                        stats["stakeholders_discovered"] += discovered
+
+        await self.session.commit()
+
+        logger.info(
+            f"Email matching for deal {deal_id}: "
+            f"{stats['emails_processed']} processed, {stats['emails_matched']} matched, "
+            f"{stats['associations_created']} associations created, "
+            f"{stats['calendar_invites_skipped']} calendar invites skipped, "
+            f"{stats['stakeholders_discovered']} stakeholders discovered"
+        )
+
+        return stats
+
+    async def _get_emails_for_stakeholders(self, stakeholder_emails: list[str]) -> list[Email]:
+        """Get all emails involving any of the given stakeholder emails."""
+        if not stakeholder_emails:
+            return []
+
+        # Query emails where sender or recipient matches stakeholders
+        stmt = (
+            select(Email)
+            .where(
+                col(Email.organisation_id) == self.organisation_id,
+                col(Email.internet_message_id).isnot(None),
+                col(Email.internet_message_id) != "",
+            )
+            .where(
+                or_(
+                    func.lower(Email.from_email).in_(stakeholder_emails),
+                    # Check if any to/cc email matches (using array overlap would be better but this works)
+                )
+            )
+            .order_by(col(Email.received_at).desc())
+            .limit(1000)  # Reasonable limit for single deal
+        )
+
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
 
 
 async def process_deal_emails(

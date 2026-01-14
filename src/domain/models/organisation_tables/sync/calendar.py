@@ -10,9 +10,17 @@ from src.domain.models.organisation_tables.sync.base import FlexibleSyncedRecord
 
 
 class AssociationStatus(str, Enum):
-    SUGGESTED = "SUGGESTED"
-    CONFIRMED = "CONFIRMED"
-    REJECTED = "REJECTED"
+    """Status for deal-communication associations (calendar/email).
+
+    Simplified model - no approval workflow needed:
+    - ACTIVE: Matched and visible in timeline (default)
+    - REMOVED: User removed it from timeline
+    - CANCELLED: External event - meeting was cancelled
+    """
+
+    ACTIVE = "ACTIVE"  # Matched and visible (default)
+    REMOVED = "REMOVED"  # User removed from timeline
+    CANCELLED = "CANCELLED"  # External event: meeting was cancelled
 
 
 class GenerationStatus(str, Enum):
@@ -140,7 +148,7 @@ class CalendarEventDealAssociation(SQLModel, table=True):
     event_id: UUID = Field(foreign_key="calendar_events.event_id")
     deal_id: UUID = Field(foreign_key="crm_deals.deal_id")
 
-    status: AssociationStatus = Field(default=AssociationStatus.SUGGESTED)
+    status: AssociationStatus = Field(default=AssociationStatus.ACTIVE)
     match_score: float = Field(default=0.0)
 
     # Meeting Prep (formerly Briefing)

@@ -24,6 +24,38 @@ from src.workers.integrations_worker.celery_app import app
 logger = get_logger(__name__)
 
 
+def _trigger_stakeholder_sync(organisation_id: str) -> bool:
+    """Trigger org-level stakeholder sync after CRM initial sync.
+
+    After CRM initial sync completes, we need to sync stakeholders for all deals
+    so that calendar/email matching can work (matching depends on stakeholder lookup).
+
+    Args:
+        organisation_id: The organization UUID string
+
+    Returns:
+        True if task was dispatched successfully, False otherwise
+    """
+    try:
+        from src.workers.deal_worker.tasks.deal_mappers import (
+            sync_all_deals_stakeholders_org_task,
+        )
+
+        sync_all_deals_stakeholders_org_task.delay(organisation_id)  # type: ignore[attr-defined]
+        logger.info(
+            "Triggered org-level stakeholder sync after CRM initial sync: org=%s",
+            organisation_id,
+        )
+        return True
+    except Exception as e:
+        logger.warning(
+            "Failed to trigger stakeholder sync: org=%s error=%s",
+            organisation_id,
+            str(e),
+        )
+        return False
+
+
 @app.task(
     name="integrations.enrich_crm_after_initial_sync",
     bind=True,
@@ -111,6 +143,11 @@ def enrich_crm_after_initial_sync_task(
                 int_id,
                 enrichment_result,
             )
+
+            # Trigger org-level stakeholder sync after CRM initial sync.
+            # This ensures all deals have their stakeholders synced, which is required
+            # for calendar/email matching to work (matching uses stakeholder lookup).
+            _trigger_stakeholder_sync(organisation_id)
 
             return {
                 "status": "completed",

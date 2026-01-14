@@ -67,7 +67,7 @@ class IntegrationScope(str, Enum):
 
 
 class KnowledgeIntegration(TimestampMixin, table=True):
-    __tablename__ = "knowledge_integrations"
+    __tablename__ = "knowledge_integrations"  # type: ignore
 
     integration_id: UUID = Field(default_factory=uuid4, primary_key=True)
     organisation_id: UUID = Field(index=True)
@@ -151,7 +151,7 @@ class SyncStatus(str, Enum):
 
 
 class IntegrationSyncHistory(TimestampMixin, table=True):
-    __tablename__ = "integration_sync_history"
+    __tablename__ = "integration_sync_history"  # type: ignore
     __table_args__ = (
         Index("ix_sync_history_integration_started", "integration_id", "started_at"),
         Index("ix_sync_history_status", "status"),

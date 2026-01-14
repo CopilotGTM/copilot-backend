@@ -66,13 +66,16 @@ def worker_shutdown_handler(sender=None, **kwargs):
 
 # Explicitly import task modules to ensure registration
 from .tasks import (  # noqa: F401, E402
-    deal_email_tasks,
     deal_meeting_tasks,
     deal_summary_tasks,
     deal_tasks,
     deal_timeline_tasks,
     risk_blocker_extraction_tasks,
     stakeholder_analysis_tasks,
+)
+from .tasks.deal_mappers import (  # noqa: F401, E402
+    calendar_matching_tasks,
+    email_matching_tasks,
     stakeholder_tasks,
 )
 

@@ -244,7 +244,7 @@ async def count_deal_meetings(
         .where(
             col(CalendarEventDealAssociation.deal_id) == deal_id,
             col(CalendarEventDealAssociation.organisation_id) == org_id,
-            col(CalendarEventDealAssociation.status) != AssociationStatus.REJECTED,
+            col(CalendarEventDealAssociation.status) == AssociationStatus.ACTIVE,
         )
     )
     result = await session.execute(stmt)
@@ -317,7 +317,7 @@ async def count_prior_meetings_for_briefing(
         .where(
             col(CalendarEventDealAssociation.deal_id) == deal_id,
             col(CalendarEventDealAssociation.organisation_id) == org_id,
-            col(CalendarEventDealAssociation.status) != AssociationStatus.REJECTED,
+            col(CalendarEventDealAssociation.status) == AssociationStatus.ACTIVE,
         )
     )
 
@@ -412,7 +412,7 @@ async def count_emails_for_briefing(
         .where(
             col(DealEmailAssociation.deal_id) == deal_id,
             col(DealEmailAssociation.organisation_id) == org_id,
-            col(DealEmailAssociation.status) != AssociationStatus.REJECTED,
+            col(DealEmailAssociation.status) == AssociationStatus.ACTIVE,
         )
     )
 

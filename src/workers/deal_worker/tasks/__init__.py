@@ -2,9 +2,13 @@
 Tasks for the deal worker.
 """
 
-from .deal_email_tasks import (
-    process_deal_emails_task,
-    trigger_deal_email_processing_all_orgs,
+from .deal_mappers import (
+    match_calendar_to_deals_org_task,
+    match_calendar_to_deals_task,
+    match_email_to_deals_org_task,
+    match_email_to_deals_task,
+    sync_all_deals_stakeholders_org_task,
+    sync_deal_stakeholders_task,
 )
 from .deal_meeting_tasks import process_deal_meeting_job
 from .deal_summary_tasks import process_deal_summary_job
@@ -28,12 +32,17 @@ from .stakeholder_analysis_tasks import (
     analyze_org_stakeholders_task,
     trigger_stakeholder_analysis_all_orgs,
 )
-from .stakeholder_tasks import sync_stakeholders_from_meeting_task
 
 __all__ = [
-    # Deal email tasks
-    "process_deal_emails_task",
-    "trigger_deal_email_processing_all_orgs",
+    # Deal mappers - Task 1: Stakeholder Sync
+    "sync_deal_stakeholders_task",
+    "sync_all_deals_stakeholders_org_task",
+    # Deal mappers - Task 2: Calendar Matching
+    "match_calendar_to_deals_org_task",
+    "match_calendar_to_deals_task",
+    # Deal mappers - Task 3: Email Matching
+    "match_email_to_deals_org_task",
+    "match_email_to_deals_task",
     # Deal meeting tasks (meeting-level)
     "process_deal_meeting_job",
     # Deal summary tasks (deal-level)
@@ -42,8 +51,6 @@ __all__ = [
     "process_deal_meetings_task",
     "process_single_deal_task",
     "trigger_deal_meeting_processing_all_orgs",
-    # Stakeholder sync tasks
-    "sync_stakeholders_from_meeting_task",
     # Stakeholder analysis tasks
     "analyze_deal_stakeholders_task",
     "analyze_org_stakeholders_task",

@@ -1,3 +1,21 @@
+"""DEPRECATED: Stakeholder discovery and sync service.
+
+DEPRECATION NOTICE (January 2026):
+----------------------------------
+This module is DEPRECATED and moved to _deprecated folder.
+
+Replaced by:
+- DealMeetingMatcher now has inline stakeholder discovery
+- src/workers/deal_worker/services/stakeholder_sync_service.py (CRM sync - Task 1)
+- src/workers/deal_worker/services/stakeholder_lookup_service.py (lookup maps)
+
+This file is no longer imported by any active code.
+Can be deleted once confirmed safe.
+
+Do NOT use this service for new development.
+----------------------------------
+"""
+
 from __future__ import annotations
 
 from uuid import UUID

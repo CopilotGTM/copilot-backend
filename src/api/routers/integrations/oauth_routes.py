@@ -296,6 +296,13 @@ async def handle_nango_webhook(
         match webhook_type:
             case "auth":
                 return await webhook_service._handle_authorization_webhook(payload)
+            case "sync":
+                # Sync webhooks are handled at application level via Celery Beat scheduled tasks
+                # See: docs/Technical Documentation/integration/sync_tasks/scheduled-sync-architecture.md
+                logger.info(
+                    "Received sync webhook - handled at application level via scheduled tasks"
+                )
+                return JSONResponse(status_code=200, content={"status": "ok"})
             case _:
                 logger.error("Received unknown Nango webhook type: %s", webhook_type)
                 return Response.bad_request_error_response(message="Unknown webhook type.")
