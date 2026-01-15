@@ -495,9 +495,9 @@ class DealEmailAssociation(SQLModel, table=True):
 
     # Matching metadata (same pattern as CalendarEventDealAssociation)
     status: AssociationStatus = Field(
-        default=AssociationStatus.SUGGESTED,
-        sa_column=Column(String(32), nullable=False, server_default=text("'SUGGESTED'")),
-        description="Association status: SUGGESTED, CONFIRMED, or REJECTED.",
+        default=AssociationStatus.ACTIVE,
+        sa_column=Column(String(32), nullable=False, server_default=text("'ACTIVE'")),
+        description="Association status: ACTIVE (visible), REMOVED (user removed), or CANCELLED.",
     )
     match_score: float = Field(
         default=0.0,

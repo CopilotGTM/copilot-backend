@@ -42,122 +42,74 @@ class DealWorkerConfig(BaseWorkerConfig):
             ),
         )
 
-        # Route tasks to queues
-        self.task_routes = {
-            # Deal matching and processing tasks -> deal queue
-            "deal.process_deal_meetings_task": {
-                "queue": "deal",
-                "routing_key": "deal",
-            },
-            "deal.trigger_deal_meeting_processing_all_orgs": {
-                "queue": "deal",
-                "routing_key": "deal",
-            },
-            "deal.process_single_deal_task": {
-                "queue": "deal",
-                "routing_key": "deal",
-            },
-            # Deal email matching tasks -> deal queue
-            "deal.process_deal_emails_task": {
-                "queue": "deal",
-                "routing_key": "deal",
-            },
-            "deal.trigger_deal_email_processing_all_orgs": {
-                "queue": "deal",
-                "routing_key": "deal",
-            },
-            # Deal meeting job tasks (briefing, summary, followup) -> deal_jobs queue
-            "deal_meeting_task.process": {
-                "queue": "deal_jobs",
-                "routing_key": "deal_jobs",
-            },
-            # Stakeholder sync tasks -> deal queue
-            "stakeholder.sync_from_meeting_task": {
-                "queue": "deal",
-                "routing_key": "deal",
-            },
-            # Stakeholder analysis tasks -> deal_jobs queue (uses LLM)
-            "stakeholder.analyze_deal_stakeholders_task": {
-                "queue": "deal_jobs",
-                "routing_key": "deal_jobs",
-            },
-            "stakeholder.analyze_org_stakeholders_task": {
-                "queue": "deal_jobs",
-                "routing_key": "deal_jobs",
-            },
-            "stakeholder.trigger_analysis_all_orgs": {
-                "queue": "deal",
-                "routing_key": "deal",
-            },
-            "deal.trigger_timeline_sync_all_orgs": {
-                "queue": "deal",
-            },
-            # Timeline event tasks -> deal queue
-            "deal.sync_deal_timeline": {
-                "queue": "deal",
-                "routing_key": "deal",
-            },
-            "deal.sync_org_timeline": {
-                "queue": "deal",
-                "routing_key": "deal",
-            },
-            "deal.exclude_timeline_event": {
-                "queue": "deal",
-                "routing_key": "deal",
-            },
+        # Route tasks to queues in a compact, readable way
+        deal_queue_tasks = (
+            # Deal matching and processing tasks
+            "deal.process_deal_meetings_task",
+            "deal.trigger_deal_meeting_processing_all_orgs",
+            "deal.process_single_deal_task",
+            # Stakeholder sync
+            "stakeholder.sync_deal_stakeholders",
+            "stakeholder.sync_all_deals_stakeholders_org",
+            "stakeholder.sync_all_deals_stakeholders_all_orgs",
+            "stakeholder.trigger_analysis_all_orgs",
+            # Calendar matching
+            "deal.match_calendar_to_deals_org",
+            "deal.match_calendar_to_deals",
+            "deal.match_calendar_to_deals_all_orgs",
+            # Email matching
+            "deal.match_email_to_deals_org",
+            "deal.match_email_to_deals",
+            "deal.match_email_to_deals_all_orgs",
+            # Timeline event tasks
+            "deal.sync_deal_timeline",
+            "deal.sync_org_timeline",
+            "deal.exclude_timeline_event",
+            "deal.trigger_timeline_sync_all_orgs",
+            # Risk/Blocker extraction trigger
+            "risk_blocker.trigger_extraction_all_orgs",
+        )
+
+        deal_jobs_queue_tasks = (
+            # Deal meeting job tasks (briefing, summary, follow-up)
+            "deal_meeting_task.process",
+            "deal_summary_task.process",
+            # Stakeholder analysis tasks (LLM heavy)
+            "stakeholder.analyze_deal_stakeholders_task",
+            "stakeholder.analyze_org_stakeholders_task",
             # Risk/Blocker extraction tasks
-            "risk_blocker.extract_deal_risks_blockers_task": {
-                "queue": "deal_jobs",
-                "routing_key": "deal_jobs",
-            },
-            "risk_blocker.trigger_extraction_all_orgs": {
-                "queue": "deal",
-                "routing_key": "deal",
-            },
+            "risk_blocker.extract_deal_risks_blockers_task",
+        )
+
+        self.task_routes = {
+            **self._route_tasks(deal_queue_tasks, "deal"),
+            **self._route_tasks(deal_jobs_queue_tasks, "deal_jobs"),
         }
 
         # Celery Beat schedule for periodic tasks
         self.beat_schedule = {
-            "process-deal-meetings-all-orgs": {
-                "task": "deal.trigger_deal_meeting_processing_all_orgs",
-                "schedule": crontab(minute=0),  # Run every hour at :00
-                "options": {
-                    "queue": "deal",
-                    "routing_key": "deal",
-                },
+            # HOURLY: Stakeholder sync → triggers calendar + email matching
+            # This runs the full discovery cycle every hour
+            "hourly-deal-mapping": {
+                "task": "stakeholder.sync_all_deals_stakeholders_all_orgs",
+                "schedule": crontab(minute=0),  # Every hour at :00
+                "options": {"queue": "deal", "routing_key": "deal"},
             },
-            "analyze-stakeholders-all-orgs": {
+            # NIGHTLY: Heavy LLM tasks (2 AM UTC)
+            "nightly-stakeholder-analysis": {
                 "task": "stakeholder.trigger_analysis_all_orgs",
-                "schedule": crontab(minute=0),  # Run every hour at :00
-                "options": {
-                    "queue": "deal",
-                    "routing_key": "deal",
-                },
+                "schedule": crontab(hour=2, minute=0),
+                "options": {"queue": "deal", "routing_key": "deal"},
             },
-            "process-deal-emails-all-orgs": {
-                "task": "deal.trigger_deal_email_processing_all_orgs",
-                "schedule": crontab(minute=0),  # Run every hour at :00
-                "options": {
-                    "queue": "deal",
-                    "routing_key": "deal",
-                },
-            },
-            "extract-risks-blockers-all-orgs": {
-                "task": "risk_blocker.trigger_extraction_all_orgs",
-                # NOTE: Celery Beat uses the worker timezone (typically UTC in k8s).
-                # 10:00 AM IST = 04:30 UTC.
-                "schedule": crontab(hour=5, minute=25),  # Run daily at 10:00 AM IST
-                "options": {
-                    "queue": "deal",
-                    "routing_key": "deal",
-                },
-            },
-            "sync-timeline-all-orgs": {
-                "task": "deal.trigger_timeline_sync_all_orgs",
-                "schedule": crontab(minute=30),  # Run every hour at :00
-                "options": {
-                    "queue": "deal",
-                    "routing_key": "deal",
-                },
-            },
+        }
+
+    @staticmethod
+    def _route_tasks(tasks, queue):
+        """Return a routing dict for the provided tasks and queue."""
+        return {
+            task: {
+                "queue": queue,
+                "routing_key": queue,
+            }
+            for task in tasks
         }

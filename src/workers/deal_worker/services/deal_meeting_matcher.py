@@ -21,13 +21,22 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDealStatus,
     CRMParticipantType,
 )
+from src.domain.models.organisation_tables.sync.crm.stakeholders import (
+    ApprovalStatus,
+    DealStakeholder,
+    StakeholderSource,
+    StakeholderStance,
+    StakeholderTemperature,
+)
 from src.domain.models.organisation_tables.sync.integration_models import KnowledgeIntegration
 from src.infra.utils.logger import get_logger
 from src.service.crm.deal_timeline_sync_service import build_meeting_timeline_event
 from src.service.crm.timeline_event_source_resolver import resolve_meeting_event_source
-from src.workers.deal_worker.services.stakeholder_service import StakeholderService
 
 logger = get_logger(__name__)
+
+# Max auto-approved discovered stakeholders per deal from calendar events
+MAX_CALENDAR_DISCOVERY_AUTO_APPROVED = 5
 
 
 class DealMeetingMatcher:
@@ -47,7 +56,6 @@ class DealMeetingMatcher:
         """
         self.session = session
         self.organisation_id = organisation_id
-        self.stakeholder_service = StakeholderService(session, organisation_id)
         self._contact_cache_by_id: dict[UUID, CRMContact] = {}
         self._contact_cache_by_external: dict[str, CRMContact] = {}
 
@@ -127,36 +135,29 @@ class DealMeetingMatcher:
         return contact
 
     async def _collect_contact_emails(self, deal: CRMDeal) -> set[str]:
-        """Collect all relevant contact emails (primary and participants) for a deal."""
+        """Collect all approved stakeholder emails for a deal.
+
+        Uses DealStakeholder table which contains:
+        - CRM-synced contacts (source=CRM)
+        - Discovered contacts from calendar (source=CALENDAR_DISCOVERY)
+
+        Only returns APPROVED stakeholders (not PENDING or REJECTED).
+        """
         emails: set[str] = set()
 
-        # 1. Add primary contact email directly from deal
-        primary_email = self._normalize_email(deal.primary_contact_email)
-        if primary_email:
-            emails.add(primary_email)
-        # 2. If primary email missing, lookup via external ID
-        elif deal.primary_contact_external_id:
-            contact = await self._get_contact_by_external_id(deal.primary_contact_external_id)
-            self._add_contact_emails(contact, emails)
+        # Get all approved stakeholders from DealStakeholder table
+        stmt = select(col(DealStakeholder.email)).where(
+            col(DealStakeholder.deal_id) == deal.deal_id,
+            col(DealStakeholder.is_deleted).is_(False),
+            col(DealStakeholder.approval_status) == ApprovalStatus.APPROVED,
+        )
+        result = await self.session.execute(stmt)
+        stakeholder_emails = result.scalars().all()
 
-        # 3. Add emails from all contact-type participants
-        for participant in self._get_participants(deal):
-            if participant.participant_type != CRMParticipantType.CONTACT:
-                continue
-
-            # Try direct email on participant record
-            normalized = self._normalize_email(participant.related_email)
+        for email in stakeholder_emails:
+            normalized = self._normalize_email(email)
             if normalized:
                 emails.add(normalized)
-                continue
-
-            # Fallback to looking up the contact entity
-            p_contact: CRMContact | None = None
-            if participant.related_local_id:
-                p_contact = await self._get_contact_by_id(participant.related_local_id)
-            elif participant.related_external_id:
-                p_contact = await self._get_contact_by_external_id(participant.related_external_id)
-            self._add_contact_emails(p_contact, emails)
 
         return emails
 
@@ -190,23 +191,154 @@ class DealMeetingMatcher:
 
         return emails
 
+    def _extract_domain(self, email: str) -> str | None:
+        """Extract domain from email address."""
+        if not email or "@" not in email:
+            return None
+        return email.split("@")[1].lower()
+
+    def _collect_customer_domains(self, deal: CRMDeal) -> set[str]:
+        """Collect customer domains from deal's CONTACT participants.
+
+        These domains are used to identify additional stakeholders from
+        calendar event attendees who belong to the same company.
+
+        Args:
+            deal: The CRM deal.
+
+        Returns:
+            Set of customer email domains.
+        """
+        domains: set[str] = set()
+
+        # From primary contact
+        if deal.primary_contact_email:
+            domain = self._extract_domain(deal.primary_contact_email)
+            if domain:
+                domains.add(domain)
+
+        # From CONTACT participants
+        for participant in self._get_participants(deal):
+            if participant.participant_type != CRMParticipantType.CONTACT:
+                continue
+            if participant.related_email:
+                domain = self._extract_domain(participant.related_email)
+                if domain:
+                    domains.add(domain)
+
+        return domains
+
+    async def _discover_stakeholders_from_event(
+        self,
+        deal: CRMDeal,
+        event: CalendarEvent,
+        customer_domains: set[str],
+        team_emails: set[str],
+    ) -> int:
+        """Discover new stakeholders from calendar event attendees.
+
+        Only adds attendees who:
+        - Have email domain matching customer domains
+        - Are not already team members
+        - Don't already exist as stakeholders for this deal
+
+        Applies 5-limit: first 5 discovered stakeholders are auto-APPROVED,
+        beyond that they are PENDING (require user approval).
+
+        Args:
+            deal: The CRM deal.
+            event: Calendar event with attendees.
+            customer_domains: Set of customer email domains.
+            team_emails: Set of team member emails to exclude.
+
+        Returns:
+            Number of stakeholders discovered.
+        """
+        if not event.attendees or not customer_domains:
+            return 0
+
+        discovered = 0
+
+        for attendee in event.attendees:
+            if not attendee.email:
+                continue
+
+            email = attendee.email.lower()
+
+            # Skip team members
+            if email in team_emails:
+                continue
+
+            # Only add if domain matches customer domains
+            domain = self._extract_domain(email)
+            if not domain or domain not in customer_domains:
+                continue
+
+            # Check if stakeholder already exists
+            stmt = select(DealStakeholder).where(
+                col(DealStakeholder.deal_id) == deal.deal_id,
+                col(DealStakeholder.email) == email,
+            )
+            result = await self.session.execute(stmt)
+            if result.scalars().first():
+                continue  # Already exists
+
+            # Count existing discovered stakeholders for 5-limit
+            count_stmt = select(func.count()).where(
+                col(DealStakeholder.deal_id) == deal.deal_id,
+                col(DealStakeholder.source) == StakeholderSource.CALENDAR_DISCOVERY,
+            )
+            count_result = await self.session.execute(count_stmt)
+            current_count = count_result.scalar() or 0
+
+            approval_status = (
+                ApprovalStatus.APPROVED
+                if current_count < MAX_CALENDAR_DISCOVERY_AUTO_APPROVED
+                else ApprovalStatus.PENDING
+            )
+
+            # Create stakeholder
+            stakeholder = DealStakeholder(
+                organisation_id=self.organisation_id,
+                integration_id=deal.integration_id,
+                deal_id=deal.deal_id,
+                email=email,
+                name=attendee.display_name,
+                source=StakeholderSource.CALENDAR_DISCOVERY,
+                approval_status=approval_status,
+                stance=StakeholderStance.UNKNOWN,
+                temperature=StakeholderTemperature.UNKNOWN,
+                engagement_score=0.0,
+            )
+            self.session.add(stakeholder)
+            discovered += 1
+
+            if approval_status == ApprovalStatus.PENDING:
+                logger.info(
+                    "Calendar discovery limit reached for deal %s, stakeholder %s set to PENDING",
+                    deal.deal_id,
+                    email,
+                )
+
+        return discovered
+
     async def process_organisation(self) -> dict[str, int]:
         """
         Process all open deals for the organisation.
 
         Returns:
-            Stats dictionary with deals_processed, meetings_linked, and cancelled_rejected counts.
+            Stats dictionary with deals_processed, meetings_linked, and cancelled counts.
         """
         stats = {
             "deals_processed": 0,
             "meetings_linked": 0,
-            "cancelled_rejected": 0,
+            "cancelled": 0,
         }
 
         # STEP 0: Handle cancelled meetings FIRST (before matching new ones)
         # This ensures we clean up any previously-mapped meetings that are now cancelled
         cancelled_count = await self._handle_cancelled_associations()
-        stats["cancelled_rejected"] = cancelled_count
+        stats["cancelled"] = cancelled_count
 
         # Fetch all open deals
         deal_participants_rel = cast(Any, CRMDeal.participants)
@@ -227,10 +359,11 @@ class DealMeetingMatcher:
 
         for deal in deals:
             stats["deals_processed"] += 1
-            # Sync CRM contact stakeholders and collect customer domains
-            _, customer_domains = await self.stakeholder_service.sync_stakeholders_from_deal(deal)
+            # Collect customer domains from deal participants
+            customer_domains = self._collect_customer_domains(deal)
+            team_emails = self._collect_team_emails(deal)
 
-            linked_count = await self._find_and_link_meetings(deal, customer_domains)
+            linked_count = await self._find_and_link_meetings(deal, customer_domains, team_emails)
             stats["meetings_linked"] += linked_count
 
         await self.session.commit()
@@ -241,7 +374,7 @@ class DealMeetingMatcher:
         Process a single deal.
 
         Returns:
-            Stats dictionary with deals_processed, meetings_linked, and cancelled_rejected counts.
+            Stats dictionary with deals_processed, meetings_linked, and cancelled counts.
         """
         # STEP 0: Handle cancelled meetings FIRST for this deal
         cancelled_count = await self._handle_cancelled_associations(deal_id=deal_id)
@@ -260,22 +393,28 @@ class DealMeetingMatcher:
 
         if not deal:
             logger.warning(f"Deal {deal_id} not found in org {self.organisation_id}")
-            return {"deals_processed": 0, "meetings_linked": 0, "cancelled_rejected": 0}
+            return {"deals_processed": 0, "meetings_linked": 0, "cancelled": 0}
 
-        # Sync CRM contact stakeholders and collect customer domains
-        _, customer_domains = await self.stakeholder_service.sync_stakeholders_from_deal(deal)
+        # Collect customer domains from deal participants
+        customer_domains = self._collect_customer_domains(deal)
+        team_emails = self._collect_team_emails(deal)
 
-        linked_count = await self._find_and_link_meetings(deal, customer_domains)
+        linked_count = await self._find_and_link_meetings(deal, customer_domains, team_emails)
 
         await self.session.commit()
 
         return {
             "deals_processed": 1,
             "meetings_linked": linked_count,
-            "cancelled_rejected": cancelled_count,
+            "cancelled": cancelled_count,
         }
 
-    async def _find_and_link_meetings(self, deal: CRMDeal, customer_domains: set[str]) -> int:
+    async def _find_and_link_meetings(
+        self,
+        deal: CRMDeal,
+        customer_domains: set[str],
+        team_emails: set[str],
+    ) -> int:
         """
         Find matching meetings for a deal and create associations.
 
@@ -290,12 +429,11 @@ class DealMeetingMatcher:
         Args:
             deal: The CRM deal to match meetings for.
             customer_domains: Set of customer email domains (derived from CRM contacts).
+            team_emails: Set of team member emails.
 
         Returns:
             Number of new associations created.
         """
-        # 1. Collect all team member emails
-        team_emails = self._collect_team_emails(deal)
         if not team_emails:
             logger.debug(f"No team emails found for deal {deal.deal_id}")
             return 0
@@ -317,13 +455,23 @@ class DealMeetingMatcher:
 
         # PASS 1: Team member is ORGANIZER (highest confidence - score 1.0)
         organizer_count = await self._match_events_as_organizer(
-            deal, team_email_list, contact_email_list, linked_event_ids, customer_domains
+            deal,
+            team_email_list,
+            contact_email_list,
+            linked_event_ids,
+            customer_domains,
+            team_emails,
         )
         linked_count += organizer_count
 
         # PASS 2: Team member is ATTENDEE only (lower confidence - score 0.8)
         attendee_count = await self._match_events_as_attendee(
-            deal, team_email_list, contact_email_list, linked_event_ids, customer_domains
+            deal,
+            team_email_list,
+            contact_email_list,
+            linked_event_ids,
+            customer_domains,
+            team_emails,
         )
         linked_count += attendee_count
 
@@ -342,6 +490,7 @@ class DealMeetingMatcher:
         contact_email_list: list[str],
         linked_event_ids: set[UUID],
         customer_domains: set[str],
+        team_emails: set[str],
     ) -> int:
         """
         Match events where a team member is the ORGANIZER.
@@ -356,6 +505,7 @@ class DealMeetingMatcher:
             contact_email_list: List of customer contact emails.
             linked_event_ids: Set of already-linked event IDs (will be updated).
             customer_domains: Set of customer email domains for stakeholder discovery.
+            team_emails: Set of team member emails for discovery filtering.
 
         Returns:
             Number of new associations created.
@@ -394,6 +544,7 @@ class DealMeetingMatcher:
             match_score=1.0,
             linked_event_ids=linked_event_ids,
             customer_domains=customer_domains,
+            team_emails=team_emails,
         )
 
     async def _match_events_as_attendee(
@@ -403,6 +554,7 @@ class DealMeetingMatcher:
         contact_email_list: list[str],
         linked_event_ids: set[UUID],
         customer_domains: set[str],
+        team_emails: set[str],
     ) -> int:
         """
         Match events where a team member is an ATTENDEE (but not organizer).
@@ -417,6 +569,7 @@ class DealMeetingMatcher:
             contact_email_list: List of customer contact emails.
             linked_event_ids: Set of already-linked event IDs (will be updated).
             customer_domains: Set of customer email domains for stakeholder discovery.
+            team_emails: Set of team member emails for discovery filtering.
 
         Returns:
             Number of new associations created.
@@ -465,6 +618,7 @@ class DealMeetingMatcher:
             match_score=0.8,
             linked_event_ids=linked_event_ids,
             customer_domains=customer_domains,
+            team_emails=team_emails,
         )
 
     async def _create_associations(
@@ -474,6 +628,7 @@ class DealMeetingMatcher:
         match_score: float,
         linked_event_ids: set[UUID],
         customer_domains: set[str],
+        team_emails: set[str],
     ) -> int:
         """
         Create associations for matched events.
@@ -484,6 +639,7 @@ class DealMeetingMatcher:
             match_score: Confidence score for the match (1.0 = organizer, 0.8 = attendee).
             linked_event_ids: Set of already-linked event IDs (will be updated).
             customer_domains: Set of customer email domains for stakeholder discovery.
+            team_emails: Set of team member emails for discovery filtering.
 
         Returns:
             Number of new associations created.
@@ -494,7 +650,7 @@ class DealMeetingMatcher:
         integration_ids: set[UUID] = set()
         for event in events:
             if getattr(event, "integration_id", None):
-                integration_ids.add(event.integration_id)
+                integration_ids.add(event.integration_id)  # type: ignore
             for state in getattr(event, "user_states", None) or []:
                 if getattr(state, "integration_id", None):
                     integration_ids.add(state.integration_id)
@@ -502,11 +658,11 @@ class DealMeetingMatcher:
         integration_type_by_id: dict[UUID, Any] = {}
         if integration_ids:
             it_stmt = select(
-                KnowledgeIntegration.integration_id,
-                KnowledgeIntegration.integration_type,
-            ).where(KnowledgeIntegration.integration_id.in_(integration_ids))
+                KnowledgeIntegration.integration_id,  # type: ignore
+                KnowledgeIntegration.integration_type,  # type: ignore
+            ).where(KnowledgeIntegration.integration_id.in_(integration_ids))  # type: ignore
             it_result = await self.session.execute(it_stmt)
-            integration_type_by_id = dict(it_result.all())
+            integration_type_by_id = dict(it_result.all())  # type: ignore
 
         for event in events:
             # Skip if already linked in a previous pass
@@ -527,7 +683,7 @@ class DealMeetingMatcher:
                     organisation_id=self.organisation_id,
                     event_id=event.event_id,
                     deal_id=deal.deal_id,
-                    status=AssociationStatus.SUGGESTED,
+                    status=AssociationStatus.ACTIVE,
                     match_score=match_score,
                     meeting_prep_status=GenerationStatus.NOT_STARTED,
                 )
@@ -562,26 +718,30 @@ class DealMeetingMatcher:
                 linked_event_ids.add(event.event_id)
 
                 # Discover stakeholders from event attendees (only customer domain)
-                await self.stakeholder_service.sync_stakeholders_from_event(
-                    deal, event, customer_domains
+                await self._discover_stakeholders_from_event(
+                    deal, event, customer_domains, team_emails
                 )
 
         return linked_count
 
     async def _handle_cancelled_associations(self, deal_id: UUID | None = None) -> int:
         """
-        Update associations to REJECTED status when their events are cancelled.
+        Update associations to CANCELLED status when their events are cancelled.
 
         This handles the case where a meeting was previously matched but the
         underlying calendar event was later cancelled.
+
+        Note: We use CANCELLED (not REJECTED) because:
+        - REJECTED = user explicitly rejected the association
+        - CANCELLED = external event (meeting was cancelled)
 
         Args:
             deal_id: Optional deal ID to scope the check. If None, checks all deals in org.
 
         Returns:
-            Number of associations updated to REJECTED.
+            Number of associations updated to CANCELLED.
         """
-        # Find associations linked to cancelled events that aren't already rejected
+        # Find associations linked to cancelled events that aren't already cancelled
         stmt = (
             select(CalendarEventDealAssociation)
             .join(
@@ -590,7 +750,7 @@ class DealMeetingMatcher:
             )
             .where(
                 col(CalendarEventDealAssociation.organisation_id) == self.organisation_id,
-                col(CalendarEventDealAssociation.status) != AssociationStatus.REJECTED,
+                col(CalendarEventDealAssociation.status) != AssociationStatus.CANCELLED,
                 col(CalendarEvent.status) == "cancelled",
             )
         )
@@ -604,16 +764,16 @@ class DealMeetingMatcher:
 
         updated_count = 0
         for assoc in associations:
-            assoc.status = AssociationStatus.REJECTED
+            assoc.status = AssociationStatus.CANCELLED
             updated_count += 1
             logger.info(
-                f"Rejected cancelled event association: event_id={assoc.event_id}, "
+                f"Marked cancelled event association: event_id={assoc.event_id}, "
                 f"deal_id={assoc.deal_id}"
             )
 
         if updated_count > 0:
             logger.info(
-                f"Rejected {updated_count} associations for cancelled events "
+                f"Marked {updated_count} associations as CANCELLED "
                 f"(org={self.organisation_id}, deal={deal_id})"
             )
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from typing import Any, cast
 from uuid import UUID
 
@@ -22,19 +21,9 @@ from src.domain.models.organisation_tables.sync.calendar import (
     CalendarEvent,
     CalendarEventDealAssociation,
 )
-from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
 from src.infra.utils.logger import get_logger
-from src.workers.deal_worker.client import send_deal_task_async
-from src.workers.deal_worker.services.stakeholder_service import StakeholderService
 
 logger = get_logger("meetings_service")
-
-STAKEHOLDER_TASK_NAME = "stakeholder.sync_from_meeting_task"
-ASYNC_STAKEHOLDER_SYNC_DEFAULT = os.getenv("STAKEHOLDER_SYNC_VIA_TASK", "true").lower() not in (
-    "0",
-    "false",
-    "no",
-)
 
 
 class MeetingsServiceError(Exception):
@@ -169,7 +158,16 @@ class MeetingsService:
     async def update_meeting_status(
         self, deal_id: UUID, event_id: UUID, status: AssociationStatus
     ) -> None:
-        """Update the status of a meeting association."""
+        """Update the status of a meeting association.
+
+        With simplified status model:
+        - ACTIVE: Default, visible in timeline
+        - REMOVED: User removed from timeline
+        - CANCELLED: System-set when meeting is cancelled
+
+        Note: Stakeholder discovery happens automatically during matching,
+        no need for manual trigger on status change.
+        """
         stmt = select(CalendarEventDealAssociation).where(
             col(CalendarEventDealAssociation.deal_id) == deal_id,
             col(CalendarEventDealAssociation.event_id) == event_id,
@@ -182,74 +180,6 @@ class MeetingsService:
             raise MeetingsServiceError("Meeting association not found.", status_code=404)
 
         association.status = status
-        await self.session.commit()
-
-        if status == AssociationStatus.CONFIRMED:
-            await self._trigger_stakeholder_sync(deal_id, event_id)
-
-    async def _trigger_stakeholder_sync(
-        self,
-        deal_id: UUID,
-        event_id: UUID,
-        use_async: bool = ASYNC_STAKEHOLDER_SYNC_DEFAULT,
-    ) -> None:
-        """Trigger stakeholder sync via task when enabled, fallback to inline."""
-        if use_async and await self._enqueue_stakeholder_task(deal_id, event_id):
-            return
-
-        await self._sync_stakeholders_inline(deal_id, event_id)
-
-    async def _enqueue_stakeholder_task(self, deal_id: UUID, event_id: UUID) -> bool:
-        """Enqueue stakeholder sync task; return True on success."""
-        try:
-            await send_deal_task_async(
-                STAKEHOLDER_TASK_NAME,
-                args=[str(self.organisation_id), str(deal_id), str(event_id)],
-            )
-            return True
-        except Exception as exc:
-            logger.warning(
-                "Failed to enqueue stakeholder sync for org %s deal %s event %s: %s",
-                self.organisation_id,
-                deal_id,
-                event_id,
-                exc,
-            )
-            return False
-
-    async def _sync_stakeholders_inline(self, deal_id: UUID, event_id: UUID) -> None:
-        """Run stakeholder sync inline for the provided deal/event."""
-        deal_participants_rel = cast(Any, CRMDeal.participants)
-        deal_stmt = (
-            select(CRMDeal)
-            .options(selectinload(deal_participants_rel))
-            .where(
-                col(CRMDeal.organisation_id) == self.organisation_id,
-                col(CRMDeal.deal_id) == deal_id,
-            )
-        )
-        deal_result = await self.session.execute(deal_stmt)
-        deal = deal_result.scalars().first()
-        if not deal:
-            logger.warning("Deal %s not found for inline stakeholder sync", deal_id)
-            return
-
-        event_stmt = (
-            select(CalendarEvent)
-            .options(selectinload(cast(Any, CalendarEvent.attendees)))
-            .where(
-                col(CalendarEvent.organisation_id) == self.organisation_id,
-                col(CalendarEvent.event_id) == event_id,
-            )
-        )
-        event_result = await self.session.execute(event_stmt)
-        event = event_result.scalars().first()
-        if not event:
-            logger.warning("Event %s not found for inline stakeholder sync", event_id)
-            return
-
-        service = StakeholderService(self.session, self.organisation_id)
-        await service.sync_stakeholders_from_event(deal, event)
         await self.session.commit()
 
     async def close(self):

@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 
 from fastapi import APIRouter, Depends
+from fastapi import Response as FastAPIResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.master_dependencies import get_master_async_session
@@ -41,9 +42,10 @@ UserTable = cast("Table", _user_table)
 @router.post("/login", response_model=GenericResponse[UserLoginResponse], tags=["user_auth"])
 async def user_login(
     login_request: UserLoginRequest,
+    response: FastAPIResponse,
     master_session: AsyncSession = Depends(get_master_async_session),
     _rl_login: None = Depends(rate_limit_login),
-):
+) -> GenericResponse[UserLoginResponse]:
     """
     User login endpoint.
     """
@@ -55,7 +57,9 @@ async def user_login(
 
         if not user:
             logger.warning(f"User not found for email: {login_request.email}")
-            return Response.unauthorized_error_response(UserAuthErrors.USER_NOT_FOUND)
+            return Response.unauthorized_error_response(
+                UserAuthErrors.USER_NOT_FOUND, response=response
+            )
 
         try:
             supabase_response = supabase_user_client.sign_in_with_password(
@@ -63,7 +67,9 @@ async def user_login(
             )
         except Exception:
             logger.warning(f"Invalid credentials for user: {login_request.email}")
-            return Response.unauthorized_error_response(UserAuthErrors.INVALID_CREDENTIALS)
+            return Response.unauthorized_error_response(
+                UserAuthErrors.INVALID_CREDENTIALS, response=response
+            )
 
         user_data = supabase_response.get("user", {})
         session_data = supabase_response.get("session", {})
@@ -73,7 +79,9 @@ async def user_login(
 
         if not access_token:
             logger.warning(f"Invalid credentials for user: {login_request.email}")
-            return Response.unauthorized_error_response(UserAuthErrors.INVALID_CREDENTIALS)
+            return Response.unauthorized_error_response(
+                UserAuthErrors.INVALID_CREDENTIALS, response=response
+            )
 
         requires_password_change = user_data.get("user_metadata", {}).get(
             "requires_password_change", False
@@ -97,7 +105,9 @@ async def user_login(
             except Exception as e:
                 logger.error(f"Failed to generate recovery token for user {user.email}: {str(e)}")
                 return Response.internal_server_error_response(
-                    message=UserAuthErrors.PASSWORD_CHANGE_TOKEN_FAILED, data=None
+                    message=UserAuthErrors.PASSWORD_CHANGE_TOKEN_FAILED,
+                    data=None,
+                    response=response,
                 )
         else:
             # Use timezone-aware UTC timestamp (Sonar rule S6903)
@@ -129,33 +139,42 @@ async def user_login(
             exc_info=True,
         )
         return Response.internal_server_error_response(
-            message=UserAuthErrors.LOGIN_FAILED, data=None
+            message=UserAuthErrors.LOGIN_FAILED, data=None, response=response
         )
 
 
-@router.post("/reset-password", tags=["user_auth"])
+@router.post("/reset-password", response_model=GenericResponse[None], tags=["user_auth"])
 async def reset_password(
     password_request: UserResetPasswordRequest,
+    response: FastAPIResponse,
     master_session: AsyncSession = Depends(get_master_async_session),
-):
+) -> GenericResponse[None]:
     try:
         if not password_request.token_hash:
-            return Response.bad_request_error_response(UserAuthErrors.RECOVERY_TOKEN_REQUIRED)
+            return Response.bad_request_error_response(
+                UserAuthErrors.RECOVERY_TOKEN_REQUIRED, response=response
+            )
 
         if not password_request.new_password:
-            return Response.bad_request_error_response(UserAuthErrors.NEW_PASSWORD_REQUIRED)
+            return Response.bad_request_error_response(
+                UserAuthErrors.NEW_PASSWORD_REQUIRED, response=response
+            )
 
         if (
             password_request.confirm_password
             and password_request.new_password != password_request.confirm_password
         ):
-            return Response.bad_request_error_response(UserAuthErrors.PASSWORD_MISMATCH)
+            return Response.bad_request_error_response(
+                UserAuthErrors.PASSWORD_MISMATCH, response=response
+            )
 
         if password_request.action not in [
             PasswordResetAction.FORCE_CHANGE,
             PasswordResetAction.FORGOT,
         ]:
-            return Response.bad_request_error_response(UserAuthErrors.INVALID_ACTION)
+            return Response.bad_request_error_response(
+                UserAuthErrors.INVALID_ACTION, response=response
+            )
 
         try:
             user_id = supabase_user_client.reset_password_with_token(
@@ -164,7 +183,9 @@ async def reset_password(
             )
         except Exception as e:
             logger.error(f"Failed to reset password with recovery token: {str(e)}")
-            return Response.bad_request_error_response(UserAuthErrors.INVALID_RECOVERY_TOKEN)
+            return Response.bad_request_error_response(
+                UserAuthErrors.INVALID_RECOVERY_TOKEN, response=response
+            )
 
         if password_request.action != PasswordResetAction.FORCE_CHANGE:
             logger.info(
@@ -181,7 +202,9 @@ async def reset_password(
 
         if not current_user:
             logger.warning(f"User not found for user_id: {user_id}")
-            return Response.unauthorized_error_response(UserAuthErrors.UNAUTHORIZED)
+            return Response.unauthorized_error_response(
+                UserAuthErrors.UNAUTHORIZED, response=response
+            )
 
         updated_metadata = {
             "requires_password_change": False,
@@ -203,7 +226,9 @@ async def reset_password(
                     current_user.email,
                 )
                 return Response.internal_server_error_response(
-                    message=UserAuthErrors.UPDATE_METADATA_FAILED, data=None
+                    message=UserAuthErrors.UPDATE_METADATA_FAILED,
+                    data=None,
+                    response=response,
                 )
 
         logger.info(f"Updating local DB for user_id: {user_id}")
@@ -227,7 +252,7 @@ async def reset_password(
             exc_info=True,
         )
         return Response.internal_server_error_response(
-            message=UserAuthErrors.PASSWORD_RESET_FAILED, data=None
+            message=UserAuthErrors.PASSWORD_RESET_FAILED, data=None, response=response
         )
 
 
@@ -236,7 +261,10 @@ async def reset_password(
     response_model=GenericResponse[UserRefreshTokenResponse],
     tags=["user_auth"],
 )
-async def refresh_token(refresh_request: UserRefreshTokenRequest):
+async def refresh_token(
+    refresh_request: UserRefreshTokenRequest,
+    response: FastAPIResponse,
+) -> GenericResponse[UserRefreshTokenResponse]:
     try:
         session_data = supabase_user_client.refresh_access_token(refresh_request.refresh_token)
 
@@ -250,20 +278,24 @@ async def refresh_token(refresh_request: UserRefreshTokenRequest):
             )
         else:
             logger.warning("Refresh token is invalid or expired - logging out user")
-            return Response.unauthorized_error_response(UserAuthErrors.REFRESH_TOKEN_INVALID)
+            return Response.unauthorized_error_response(
+                UserAuthErrors.REFRESH_TOKEN_INVALID, response=response
+            )
     except SupabaseAuthError as e:
         logger.error(f"Token refresh failed: {e.message}")
         # Use the status code and message from the custom exception
         if e.status_code == 400:
-            return Response.bad_request_error_response(e.message)
+            return Response.bad_request_error_response(e.message, response=response)
         elif e.status_code == 401:
-            return Response.unauthorized_error_response(e.message)
+            return Response.unauthorized_error_response(e.message, response=response)
         elif e.status_code == 404:
-            return Response.not_found_error_response(e.message)
+            return Response.not_found_error_response(e.message, response=response)
         elif e.status_code == 409:
-            return Response.conflict_error_response(e.message)
+            return Response.conflict_error_response(e.message, response=response)
         else:
-            return Response.internal_server_error_response(message=e.message, data=None)
+            return Response.internal_server_error_response(
+                message=e.message, data=None, response=response
+            )
     except Exception as e:
         logger.error(
             "Error during token refresh: %s",
@@ -271,16 +303,17 @@ async def refresh_token(refresh_request: UserRefreshTokenRequest):
             exc_info=True,
         )
         return Response.internal_server_error_response(
-            message=UserAuthErrors.REFRESH_TOKEN_FAILED, data=None
+            message=UserAuthErrors.REFRESH_TOKEN_FAILED, data=None, response=response
         )
 
 
-@router.post("/forgot-password", tags=["user_auth"])
+@router.post("/forgot-password", response_model=GenericResponse[None], tags=["user_auth"])
 async def forgot_password(
     forgot_password_request: UserForgotPasswordRequest,
+    response: FastAPIResponse,
     master_session: AsyncSession = Depends(get_master_async_session),
     _rl_password_reset: None = Depends(rate_limit_password_reset),
-):
+) -> GenericResponse[None]:
     """
     Initiate password reset for a user.
     Rate limited to 3 requests per 15 minutes, 10 per hour.
@@ -305,7 +338,7 @@ async def forgot_password(
                 f"Failed to generate password reset link for: {forgot_password_request.email}"
             )
             return Response.internal_server_error_response(
-                message=UserAuthErrors.RESET_LINK_FAILED, data=None
+                message=UserAuthErrors.RESET_LINK_FAILED, data=None, response=response
             )
         logger.info(f"Password reset link generated for user: {user.email}")
 
@@ -320,7 +353,7 @@ async def forgot_password(
                 f"Failed to send password reset email for: {forgot_password_request.email}. Email service returned False."
             )
             return Response.internal_server_error_response(
-                message=UserAuthErrors.EMAIL_SEND_FAILED, data=None
+                message=UserAuthErrors.EMAIL_SEND_FAILED, data=None, response=response
             )
 
         return Response.success_response(
@@ -335,15 +368,16 @@ async def forgot_password(
             exc_info=True,
         )
         return Response.internal_server_error_response(
-            message=UserAuthErrors.FORGOT_PASSWORD_FAILED, data=None
+            message=UserAuthErrors.FORGOT_PASSWORD_FAILED, data=None, response=response
         )
 
 
-@router.post("/logout", tags=["user_auth"])
+@router.post("/logout", response_model=GenericResponse[None], tags=["user_auth"])
 async def user_logout(
     logout_request: UserLogoutRequest,
+    response: FastAPIResponse,
     current_user: User = Depends(user_auth),
-):
+) -> GenericResponse[None]:
     """Logout the current user. If `global_logout` is true, sign out from all sessions."""
     try:
         if current_user.supabase_user_id:
@@ -360,4 +394,6 @@ async def user_logout(
         return Response.success_response(message=message)
     except Exception as e:
         logger.error("Error during user logout: %s", str(e), exc_info=True)
-        return Response.internal_server_error_response(UserAuthErrors.LOGOUT_FAILED)
+        return Response.internal_server_error_response(
+            UserAuthErrors.LOGOUT_FAILED, response=response
+        )

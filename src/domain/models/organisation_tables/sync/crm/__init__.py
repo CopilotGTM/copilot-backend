@@ -24,6 +24,7 @@ from .deals import (
     CRMStageState,
 )
 from .stakeholders import (
+    ApprovalStatus,
     DealStakeholder,
     DecisionPower,
     StakeholderSource,
@@ -65,6 +66,7 @@ __all__ = [
     # Users
     "CRMUser",
     # Stakeholders
+    "ApprovalStatus",
     "DealStakeholder",
     "StakeholderStance",
     "DecisionPower",

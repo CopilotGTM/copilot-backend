@@ -108,9 +108,9 @@ def sync_calendar_org_task(
             async for session in acquire_org_async_session(org_id):
                 # Query all active calendar integrations
                 stmt = select(KnowledgeIntegration).where(
-                    KnowledgeIntegration.integration_type.in_(CALENDAR_INTEGRATION_TYPES),
-                    KnowledgeIntegration.is_active == True,  # noqa: E712
-                    KnowledgeIntegration.connection_id.isnot(None),
+                    KnowledgeIntegration.integration_type.in_(CALENDAR_INTEGRATION_TYPES),  # type: ignore
+                    KnowledgeIntegration.is_active == True,  # noqa: E712 # type: ignore
+                    KnowledgeIntegration.connection_id.isnot(None),  # type: ignore
                 )
                 result = await session.execute(stmt)
                 integrations = result.scalars().all()
@@ -146,6 +146,12 @@ def sync_calendar_org_task(
                 for integration in integrations:
                     integration_id = integration.integration_id
                     connection_id = integration.connection_id
+                    if not connection_id:
+                        logger.warning(
+                            "Skipping integration with no connection_id: %s",
+                            integration_id,
+                        )
+                        continue
 
                     # Get provider details
                     int_type = (
@@ -154,7 +160,7 @@ def sync_calendar_org_task(
                         else integration.integration_type
                     )
                     integration_type = int_type.value
-                    category, provider = categorize_integration_type(int_type)
+                    _, provider = categorize_integration_type(int_type)
                     provider_config_key = to_nango_provider_key(int_type)
 
                     logger.info(
@@ -279,6 +285,15 @@ def sync_calendar_org_task(
                     failed,
                     total_events,
                 )
+
+                # Dispatch Task 2: Match calendar events to deals
+                if total_events > 0:
+                    from src.workers.deal_worker.tasks.deal_mappers import (
+                        match_calendar_to_deals_org_task,
+                    )
+
+                    match_calendar_to_deals_org_task.delay(organisation_id)  # type: ignore
+                    logger.info("Dispatched calendar matching task for org %s", org_id)
 
                 return {
                     "status": status,

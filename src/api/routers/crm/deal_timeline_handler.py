@@ -5,7 +5,8 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
+from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
@@ -60,6 +61,7 @@ async def get_deal_timeline_service(
 )
 async def get_deal_timeline(
     deal_id: UUID,
+    response: FastAPIResponse,
     service: DealTimelineService = Depends(get_deal_timeline_service),
     limit: int = Query(20, ge=1, le=100, description="Number of events per page"),
     cursor: str | None = Query(None, description="Pagination cursor"),
@@ -70,7 +72,7 @@ async def get_deal_timeline(
     start_date: datetime | None = Query(None, description="Filter events after this date"),
     end_date: datetime | None = Query(None, description="Filter events before this date"),
     include_excluded: bool = Query(False, description="Include excluded/hidden events"),
-    sort: str = Query("desc", regex="^(asc|desc)$", description="Sort order"),
+    sort: str = Query("desc", pattern="^(asc|desc)$", description="Sort order"),
 ) -> GenericResponse[TimelinePage]:
     """
     Get timeline events for a deal.
@@ -150,10 +152,14 @@ async def get_deal_timeline(
 
     except DealTimelineServiceError as e:
         logger.warning(f"Timeline service error: {e.message}")
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+        return Response.error_response(
+            message=e.message, status_code=e.status_code, response=response
+        )
     except Exception:
         logger.exception("Failed to get deal timeline")
-        raise HTTPException(status_code=500, detail=_UNEXPECTED_ERR_MSG) from None
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
 
 
 @deal_timeline_router.get(
@@ -165,6 +171,7 @@ async def get_deal_timeline(
 )
 async def get_timeline_event_detail(
     timeline_event_id: UUID,
+    response: FastAPIResponse,
     service: DealTimelineService = Depends(get_deal_timeline_service),
 ) -> GenericResponse[TimelineEvent]:
     """
@@ -190,11 +197,13 @@ async def get_timeline_event_detail(
             message="Timeline event retrieved successfully", data=TimelineEvent(**event_dict)
         )
 
-    except HTTPException:
-        raise
     except DealTimelineServiceError as e:
         logger.warning(f"Timeline service error: {e.message}")
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+        return Response.error_response(
+            message=e.message, status_code=e.status_code, response=response
+        )
     except Exception:
         logger.exception("Failed to get timeline event detail")
-        raise HTTPException(status_code=500, detail=_UNEXPECTED_ERR_MSG) from None
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )

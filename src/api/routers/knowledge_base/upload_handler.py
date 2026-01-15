@@ -3,6 +3,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, Query, status
+from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
@@ -97,10 +98,11 @@ async def get_knowledge_upload_service(
     summary="Batch presign multiple knowledge source uploads",
 )
 async def presign_batch(
+    response: FastAPIResponse,
     payload: KnowledgeBatchPresignRequest = Body(...),
     service: KnowledgeUploadService = Depends(get_knowledge_upload_service),
     _rl: None = Depends(rate_limit_user_write),
-):
+) -> GenericResponse[KnowledgeBatchPresignResponse]:
     """Batch presign one or more files.
 
     Returns signed upload URLs plus per‑file status. Partial success is
@@ -155,16 +157,21 @@ async def presign_batch(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 message="All presign operations failed",
                 data=resp,
+                response=response,
             )
         elif failed_files:
             message = f"Batch presign completed with {len(failed_files)} errors"
 
         return Response.success_response(message=message, data=resp)
     except ValueError as e:
-        return Response.error_response(status_code=status.HTTP_400_BAD_REQUEST, message=str(e))
+        return Response.error_response(
+            status_code=status.HTTP_400_BAD_REQUEST, message=str(e), response=response
+        )
     except Exception as e:
         logger.error("Unexpected error in knowledge presign batch: %s", e, exc_info=True)
-        return Response.internal_server_error_response(KnowledgeBaseErrors.UNEXPECTED_ERROR)
+        return Response.internal_server_error_response(
+            KnowledgeBaseErrors.UNEXPECTED_ERROR, response=response
+        )
 
 
 @upload_router.post(
@@ -174,10 +181,11 @@ async def presign_batch(
     summary="Batch finalize multiple knowledge source uploads",
 )
 async def finalize_batch(
+    response: FastAPIResponse,
     payload: KnowledgeBatchFinalizeRequest = Body(...),
     service: KnowledgeUploadService = Depends(get_knowledge_upload_service),
     _rl: None = Depends(rate_limit_user_write),
-):
+) -> GenericResponse[dict]:
     """Finalize multiple previously presigned & uploaded sources.
 
     Each file is transitioned into PROCESSING (async task queued). The
@@ -231,6 +239,7 @@ async def finalize_batch(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         message="All finalize operations failed",
         data=data,
+        response=response,
     )
 
 
@@ -242,8 +251,9 @@ async def finalize_batch(
 )
 async def get_source(
     source_id: UUID,
+    response: FastAPIResponse,
     service: KnowledgeUploadService = Depends(get_knowledge_upload_service),
-):
+) -> GenericResponse[KnowledgeSourceResponse]:
     """Return current state + fresh read SAS (short‑lived) for a source."""
     try:
         source = await service.get_source(source_id)
@@ -278,9 +288,13 @@ async def get_source(
         )
         return Response.success_response(message="Source status retrieved", data=resp)
     except KnowledgeUploadServiceError as e:
-        return Response.error_response(status_code=e.status_code, message=e.message)
+        return Response.error_response(
+            status_code=e.status_code, message=e.message, response=response
+        )
     except Exception:
-        return Response.internal_server_error_response(KnowledgeBaseErrors.UNEXPECTED_ERROR)
+        return Response.internal_server_error_response(
+            KnowledgeBaseErrors.UNEXPECTED_ERROR, response=response
+        )
 
 
 @upload_router.get(

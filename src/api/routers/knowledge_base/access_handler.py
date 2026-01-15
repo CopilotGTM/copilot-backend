@@ -5,6 +5,7 @@ from datetime import datetime
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Body, Depends, Query, status
+from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
@@ -76,6 +77,7 @@ async def get_knowledge_access_service(
     summary="List knowledge sources (paginated)",
 )
 async def list_sources(
+    response: FastAPIResponse,
     limit: int = Query(20, ge=1, le=100),
     cursor: str | None = Query(
         None, description="Opaque cursor returned by previous page (omit for first)"
@@ -98,7 +100,7 @@ async def list_sources(
     ),
     service: KnowledgeAccessService = Depends(get_knowledge_access_service),
     _rl_read: None = Depends(rate_limit_user_read),
-):
+) -> GenericResponse[KnowledgeSourcesPage]:
     try:
         sources, next_cursor = await service.list_sources(
             limit=limit,
@@ -139,10 +141,14 @@ async def list_sources(
         page = KnowledgeSourcesPage(items=items, cursor=next_cursor)
         return Response.success_response("Sources listed", page)
     except KnowledgeAccessServiceError as e:
-        return Response.error_response(status_code=e.status_code, message=e.message)
+        return Response.error_response(
+            status_code=e.status_code, message=e.message, response=response
+        )
     except Exception as e:  # pragma: no cover - broad safety
         logger.error("Unexpected error listing sources: %s", e, exc_info=True)
-        return Response.internal_server_error_response(KnowledgeBaseErrors.UNEXPECTED_ERROR)
+        return Response.internal_server_error_response(
+            KnowledgeBaseErrors.UNEXPECTED_ERROR, response=response
+        )
 
 
 @access_router.get(
@@ -153,10 +159,11 @@ async def list_sources(
 )
 async def download_source(
     source_id: UUID,
+    response: FastAPIResponse,
     expires_minutes: int = Query(120, ge=1, le=720),
     service: KnowledgeAccessService = Depends(get_knowledge_access_service),
     _rl_read: None = Depends(rate_limit_user_read),
-):
+) -> GenericResponse[KnowledgeDownloadResponse]:
     try:
         url = await service.generate_download_url(source_id, minutes=expires_minutes)
         resp = KnowledgeDownloadResponse(
@@ -166,10 +173,14 @@ async def download_source(
         )
         return Response.success_response("Download URL generated", resp)
     except KnowledgeAccessServiceError as e:
-        return Response.error_response(status_code=e.status_code, message=e.message)
+        return Response.error_response(
+            status_code=e.status_code, message=e.message, response=response
+        )
     except Exception as e:  # pragma: no cover
         logger.error("Unexpected error generating download URL: %s", e, exc_info=True)
-        return Response.internal_server_error_response(KnowledgeBaseErrors.UNEXPECTED_ERROR)
+        return Response.internal_server_error_response(
+            KnowledgeBaseErrors.UNEXPECTED_ERROR, response=response
+        )
 
 
 @access_router.get(
@@ -179,17 +190,22 @@ async def download_source(
     summary="Aggregated counts for sources (total, by status, by type)",
 )
 async def sources_stats(
+    response: FastAPIResponse,
     service: KnowledgeAccessService = Depends(get_knowledge_access_service),
     _rl_read: None = Depends(rate_limit_user_read),
-):
+) -> GenericResponse[KnowledgeSourcesStats]:
     try:
         stats = await service.get_stats()
         return Response.success_response("Source stats retrieved", KnowledgeSourcesStats(**stats))
     except KnowledgeAccessServiceError as e:
-        return Response.error_response(status_code=e.status_code, message=e.message)
+        return Response.error_response(
+            status_code=e.status_code, message=e.message, response=response
+        )
     except Exception as e:  # pragma: no cover
         logger.error("Unexpected error getting source stats: %s", e, exc_info=True)
-        return Response.internal_server_error_response(KnowledgeBaseErrors.UNEXPECTED_ERROR)
+        return Response.internal_server_error_response(
+            KnowledgeBaseErrors.UNEXPECTED_ERROR, response=response
+        )
 
 
 @access_router.delete(
@@ -200,10 +216,11 @@ async def sources_stats(
     status_code=status.HTTP_202_ACCEPTED,
 )
 async def delete_sources(
+    response: FastAPIResponse,
     payload: KnowledgeBatchDeleteRequest = Body(...),
     service: KnowledgeAccessService = Depends(get_knowledge_access_service),
     _rl: None = Depends(rate_limit_user_write),
-):
+) -> GenericResponse[KnowledgeBatchDeleteResponse]:
     """Enqueue deletion of one or more sources and their related records.
 
     Supports both single and batch deletion - pass one or more source_ids.
@@ -264,7 +281,7 @@ async def delete_sources(
             else:
                 error_results.append(err)
 
-        response = KnowledgeBatchDeleteResponse(
+        delete_resp = KnowledgeBatchDeleteResponse(
             batch_id=batch_id,
             results=results,
             errors=error_results,
@@ -274,7 +291,8 @@ async def delete_sources(
             return Response.error_response(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 message="All deletion requests failed",
-                data=response,
+                data=delete_resp,
+                response=response,
             )
 
         message = "Deletion enqueued"
@@ -283,7 +301,9 @@ async def delete_sources(
         if error_results:
             message = f"{message} with {len(error_results)} errors"
 
-        return Response.accepted_response(message, response)
+        return Response.accepted_response(message, delete_resp, response=response)
     except Exception as e:  # pragma: no cover
         logger.error("Unexpected error in deletion: %s", e, exc_info=True)
-        return Response.internal_server_error_response(KnowledgeBaseErrors.UNEXPECTED_ERROR)
+        return Response.internal_server_error_response(
+            KnowledgeBaseErrors.UNEXPECTED_ERROR, response=response
+        )

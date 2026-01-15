@@ -2,7 +2,7 @@ from datetime import datetime
 from enum import Enum
 from uuid import UUID, uuid4
 
-from sqlalchemy import CheckConstraint, Column, DateTime, Index, String, UniqueConstraint
+from sqlalchemy import CheckConstraint, Column, DateTime, Index, String, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, Relationship, SQLModel
 from src.domain.models.organisation_tables.base_mixins import utcnow
@@ -10,9 +10,17 @@ from src.domain.models.organisation_tables.sync.base import FlexibleSyncedRecord
 
 
 class AssociationStatus(str, Enum):
-    SUGGESTED = "SUGGESTED"
-    CONFIRMED = "CONFIRMED"
-    REJECTED = "REJECTED"
+    """Status for deal-communication associations (calendar/email).
+
+    Simplified model - no approval workflow needed:
+    - ACTIVE: Matched and visible in timeline (default)
+    - REMOVED: User removed it from timeline
+    - CANCELLED: External event - meeting was cancelled
+    """
+
+    ACTIVE = "ACTIVE"  # Matched and visible (default)
+    REMOVED = "REMOVED"  # User removed from timeline
+    CANCELLED = "CANCELLED"  # External event: meeting was cancelled
 
 
 class GenerationStatus(str, Enum):
@@ -140,19 +148,32 @@ class CalendarEventDealAssociation(SQLModel, table=True):
     event_id: UUID = Field(foreign_key="calendar_events.event_id")
     deal_id: UUID = Field(foreign_key="crm_deals.deal_id")
 
-    status: AssociationStatus = Field(default=AssociationStatus.SUGGESTED)
+    # Enum columns stored as VARCHAR for flexible schema evolution
+    status: AssociationStatus = Field(
+        default=AssociationStatus.ACTIVE,
+        sa_column=Column(String(32), nullable=False, server_default=text("'ACTIVE'")),
+    )
     match_score: float = Field(default=0.0)
 
     # Meeting Prep (formerly Briefing)
-    meeting_prep_status: GenerationStatus = Field(default=GenerationStatus.NOT_STARTED)
+    meeting_prep_status: GenerationStatus = Field(
+        default=GenerationStatus.NOT_STARTED,
+        sa_column=Column(String(32), nullable=False, server_default=text("'NOT_STARTED'")),
+    )
     meeting_prep_data: dict | None = Field(default=None, sa_column=Column(JSONB))
 
     # Meeting Summary (Post-meeting)
-    meeting_summary_status: GenerationStatus = Field(default=GenerationStatus.NOT_STARTED)
+    meeting_summary_status: GenerationStatus = Field(
+        default=GenerationStatus.NOT_STARTED,
+        sa_column=Column(String(32), nullable=False, server_default=text("'NOT_STARTED'")),
+    )
     meeting_summary_data: dict | None = Field(default=None, sa_column=Column(JSONB))
 
     # Meeting Follow-up (Post-meeting actions)
-    meeting_followup_status: GenerationStatus = Field(default=GenerationStatus.NOT_STARTED)
+    meeting_followup_status: GenerationStatus = Field(
+        default=GenerationStatus.NOT_STARTED,
+        sa_column=Column(String(32), nullable=False, server_default=text("'NOT_STARTED'")),
+    )
     meeting_followup_data: dict | None = Field(default=None, sa_column=Column(JSONB))
 
     created_at: datetime = Field(

@@ -211,6 +211,15 @@ def sync_email_org_task(
                 total_messages,
             )
 
+            # Dispatch Task 3: Match emails to deals
+            if total_messages > 0:
+                from src.workers.deal_worker.tasks.deal_mappers import (
+                    match_email_to_deals_org_task,
+                )
+
+                match_email_to_deals_org_task.delay(organisation_id)
+                logger.info("Dispatched email matching task for org %s", org_id)
+
             return {
                 "status": status,
                 "organisation_id": organisation_id,

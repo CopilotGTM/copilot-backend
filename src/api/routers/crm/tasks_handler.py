@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
+from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
@@ -69,6 +70,7 @@ async def get_tasks_access_service(
 )
 async def list_deal_tasks(
     deal_id: UUID,
+    response: FastAPIResponse,
     limit: int = Query(50, ge=1, le=100, description="Maximum tasks per page"),
     cursor: str | None = Query(None, description="Pagination cursor from a previous response"),
     statuses: list[str] | None = Query(None, description="Filter by task statuses"),
@@ -79,7 +81,7 @@ async def list_deal_tasks(
     ),
     service: TasksAccessService = Depends(get_tasks_access_service),
     _rl_read: None = Depends(rate_limit_user_read),
-):
+) -> GenericResponse[TasksPage]:
     """List tasks for a specific deal."""
 
     try:
@@ -105,10 +107,14 @@ async def list_deal_tasks(
 
     except TasksAccessServiceError as exc:
         logger.warning("Tasks access error: %s", exc.message, exc_info=True)
-        return Response.error_response(message=exc.message, status_code=exc.status_code)
+        return Response.error_response(
+            message=exc.message, status_code=exc.status_code, response=response
+        )
     except Exception as exc:
         logger.error("Unexpected error listing tasks for deal %s: %s", deal_id, exc, exc_info=True)
-        return Response.error_response(message=_UNEXPECTED_ERR_MSG, status_code=500)
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
 
 
 @tasks_router.get(
@@ -120,16 +126,19 @@ async def list_deal_tasks(
 )
 async def get_task(
     task_id: UUID,
+    response: FastAPIResponse,
     service: TasksAccessService = Depends(get_tasks_access_service),
     _rl_read: None = Depends(rate_limit_user_read),
-):
+) -> GenericResponse[TaskDetail]:
     """Retrieve detailed information for a single task."""
 
     try:
         task = await service.get_task_by_id(task_id)
 
         if not task:
-            return Response.error_response(message="Task not found", status_code=404)
+            return Response.error_response(
+                message="Task not found", status_code=404, response=response
+            )
 
         detail = TaskDetail.model_validate(task, from_attributes=True)
         detail = detail.model_copy(
@@ -140,7 +149,11 @@ async def get_task(
 
     except TasksAccessServiceError as exc:
         logger.warning("Task access error: %s", exc.message, exc_info=True)
-        return Response.error_response(message=exc.message, status_code=exc.status_code)
+        return Response.error_response(
+            message=exc.message, status_code=exc.status_code, response=response
+        )
     except Exception as exc:
         logger.error("Unexpected error retrieving task %s: %s", task_id, exc, exc_info=True)
-        return Response.error_response(message=_UNEXPECTED_ERR_MSG, status_code=500)
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )

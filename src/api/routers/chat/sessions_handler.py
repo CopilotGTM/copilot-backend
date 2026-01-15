@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Body, Depends, Query
+from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
@@ -56,10 +57,11 @@ def _to_out(chat) -> ChatSessionOut:
     summary="Create a new chat session",
 )
 async def create_chat(
+    response: FastAPIResponse,
     payload: ChatSessionCreate = Body(...),
     service: ChatSessionService = Depends(get_chat_session_service),
     _rl: None = Depends(rate_limit_user_write),
-):
+) -> GenericResponse[ChatSessionOut]:
     try:
         chat = await service.create_session(
             title=payload.title,
@@ -67,10 +69,12 @@ async def create_chat(
         )
         return Response.success_response("Chat created", data=_to_out(chat))
     except ValueError as e:
-        return Response.bad_request_error_response(str(e))
+        return Response.bad_request_error_response(str(e), response=response)
     except Exception as e:
         logger.error("Create chat failed: %s", e, exc_info=True)
-        return Response.internal_server_error_response("Unable to create chat session")
+        return Response.internal_server_error_response(
+            "Unable to create chat session", response=response
+        )
 
 
 @router.delete(
@@ -80,20 +84,23 @@ async def create_chat(
     summary="Delete (soft) a chat session",
 )
 async def delete_chat(
+    response: FastAPIResponse,
     payload: DeleteChat = Body(...),
     service: ChatSessionService = Depends(get_chat_session_service),
     _rl: None = Depends(rate_limit_user_write),
-):
+) -> GenericResponse[ChatSessionOut]:
     try:
         chat = await service.delete_session(
             session_id=payload.session_id,
         )
         return Response.success_response("Chat deleted", data=_to_out(chat))
     except ValueError as e:
-        return Response.not_found_error_response(str(e))
+        return Response.not_found_error_response(str(e), response=response)
     except Exception as e:
         logger.error("Delete chat failed: %s", e, exc_info=True)
-        return Response.internal_server_error_response("Unable to delete chat session")
+        return Response.internal_server_error_response(
+            "Unable to delete chat session", response=response
+        )
 
 
 @router.patch(
@@ -103,10 +110,11 @@ async def delete_chat(
     summary="Rename a chat session",
 )
 async def rename_chat(
+    response: FastAPIResponse,
     payload: RenameChat = Body(...),
     service: ChatSessionService = Depends(get_chat_session_service),
     _rl: None = Depends(rate_limit_user_write),
-):
+) -> GenericResponse[ChatSessionOut]:
     try:
         chat = await service.rename_session(
             session_id=payload.session_id,
@@ -116,11 +124,13 @@ async def rename_chat(
     except ValueError as e:
         msg = str(e)
         if "not found" in msg.lower():
-            return Response.not_found_error_response(msg)
-        return Response.bad_request_error_response(msg)
+            return Response.not_found_error_response(msg, response=response)
+        return Response.bad_request_error_response(msg, response=response)
     except Exception as e:
         logger.error("Rename chat failed: %s", e, exc_info=True)
-        return Response.internal_server_error_response("Unable to rename chat session")
+        return Response.internal_server_error_response(
+            "Unable to rename chat session", response=response
+        )
 
 
 @router.get(
@@ -130,11 +140,12 @@ async def rename_chat(
     summary="List chat sessions (paginated)",
 )
 async def list_chats(
+    response: FastAPIResponse,
     limit: int = Query(20, ge=1, le=100),
     cursor: str | None = Query(None, description="Opaque cursor from previous page"),
     service: ChatSessionService = Depends(get_chat_session_service),
     _rl_read: None = Depends(rate_limit_user_read),
-):
+) -> GenericResponse[ChatSessionsPage]:
     try:
         items, next_cursor = await service.list_sessions(
             limit=limit,
@@ -144,7 +155,9 @@ async def list_chats(
         return Response.success_response("Chats listed", data=page)
     except Exception as e:
         logger.error("List chats failed: %s", e, exc_info=True)
-        return Response.internal_server_error_response("Unable to list chat sessions")
+        return Response.internal_server_error_response(
+            "Unable to list chat sessions", response=response
+        )
 
 
 @router.get(
@@ -154,11 +167,12 @@ async def list_chats(
     summary="Search chat sessions by title (typeahead)",
 )
 async def search_chats(
+    response: FastAPIResponse,
     q: str = Query(..., min_length=1, description="Search text in title (case-insensitive)"),
     limit: int = Query(10, ge=1, le=50),
     service: ChatSessionService = Depends(get_chat_session_service),
     _rl_read: None = Depends(rate_limit_user_read),
-):
+) -> GenericResponse[ChatSessionsPage]:
     try:
         items = await service.search_sessions(
             q=q,
@@ -168,7 +182,9 @@ async def search_chats(
         return Response.success_response("Chats searched", data=page)
     except Exception as e:
         logger.error("Search chats failed: %s", e, exc_info=True)
-        return Response.internal_server_error_response("Unable to search chat sessions")
+        return Response.internal_server_error_response(
+            "Unable to search chat sessions", response=response
+        )
 
 
 @router.patch(
@@ -178,10 +194,11 @@ async def search_chats(
     summary="Mark or unmark a chat as favorite",
 )
 async def favorite_chat(
+    response: FastAPIResponse,
     payload: FavoriteChat = Body(...),
     service: ChatSessionService = Depends(get_chat_session_service),
     _rl: None = Depends(rate_limit_user_write),
-):
+) -> GenericResponse[ChatSessionOut]:
     try:
         chat = await service.set_favorite(
             session_id=payload.session_id,
@@ -192,8 +209,10 @@ async def favorite_chat(
     except ValueError as e:
         msg = str(e)
         if "not found" in msg.lower():
-            return Response.not_found_error_response(msg)
-        return Response.bad_request_error_response(msg)
+            return Response.not_found_error_response(msg, response=response)
+        return Response.bad_request_error_response(msg, response=response)
     except Exception as e:
         logger.error("Favorite toggle failed: %s", e, exc_info=True)
-        return Response.internal_server_error_response("Unable to update favorite state")
+        return Response.internal_server_error_response(
+            "Unable to update favorite state", response=response
+        )

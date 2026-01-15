@@ -64,17 +64,9 @@ def worker_shutdown_handler(sender=None, **kwargs):
         logger.error(f"Error closing Redis connection pool: {e}")
 
 
-# Explicitly import task modules to ensure registration
-from .tasks import (  # noqa: F401, E402
-    deal_email_tasks,
-    deal_meeting_tasks,
-    deal_summary_tasks,
-    deal_tasks,
-    deal_timeline_tasks,
-    risk_blocker_extraction_tasks,
-    stakeholder_analysis_tasks,
-    stakeholder_tasks,
-)
+# Task modules are auto-discovered via the tasks_module path passed to create_celery_app.
+# Do NOT explicitly import task modules here - it causes circular imports since tasks
+# import `app` from this module. Celery's autodiscovery handles registration.
 
 if __name__ == "__main__":
     app.start()

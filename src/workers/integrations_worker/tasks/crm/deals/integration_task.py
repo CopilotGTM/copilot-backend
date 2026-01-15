@@ -10,8 +10,8 @@ Use cases:
 - API endpoint for on-demand sync
 - Initial sync triggered on auth webhook
 
-IMPORTANT: This task uses the shared sync_deals_for_integration helper
-to ensure consistent behavior with org_task.py (Tier 2).
+This task uses CRMDealSyncService.sync_integration() - same as org_task.py
+to ensure consistent behavior with scheduled sync (Tier 2).
 """
 
 from __future__ import annotations
@@ -29,9 +29,8 @@ from src.domain.models.organisation_tables.sync.integration_models import SyncSt
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.service.integrations import NangoClient
+from src.service.integrations.crm_deal_sync_service import CRMDealSyncService
 from src.workers.integrations_worker.celery_app import app
-
-from .sync_helper import sync_deals_for_integration
 
 logger = get_logger(__name__)
 
@@ -58,7 +57,7 @@ def sync_crm_deals_integration_task(
     Triggered by: Frontend refresh button, API, manual intervention, initial sync on auth
     NOT triggered by: Scheduled sync (Tier 1/2)
 
-    IMPORTANT: This task uses the same sync_deals_for_integration helper as org_task.py
+    This task uses CRMDealSyncService.sync_integration() - same as org_task.py
     to ensure consistent behavior between scheduled and manual syncs.
 
     Args:
@@ -104,8 +103,8 @@ def sync_crm_deals_integration_task(
             async for session in acquire_org_async_session(org_id):
                 # Query the specific integration
                 stmt = select(KnowledgeIntegration).where(
-                    KnowledgeIntegration.integration_id == int_id,
-                    KnowledgeIntegration.is_active == True,  # noqa: E712
+                    KnowledgeIntegration.integration_id == int_id,  # type: ignore
+                    KnowledgeIntegration.is_active,  # type: ignore
                 )
                 result = await session.execute(stmt)
                 integration = result.scalar_one_or_none()
@@ -140,13 +139,16 @@ def sync_crm_deals_integration_task(
                         "error": "Integration not connected",
                     }
 
-                # Use the shared sync helper - same function used by org_task.py
+                # Use the service directly
                 try:
-                    sync_result = await sync_deals_for_integration(
+                    deal_sync_service = CRMDealSyncService(
                         session=session,
-                        nango=nango,
                         organisation_id=org_id,
+                    )
+
+                    sync_result = await deal_sync_service.sync_integration(
                         integration=integration,
+                        nango=nango,
                         skip_enrichment=skip_enrichment,
                         force_full_sync=force_full_sync,
                     )
@@ -160,7 +162,7 @@ def sync_crm_deals_integration_task(
 
                 except Exception as sync_error:
                     logger.error(
-                        "Sync helper failed: org=%s integration=%s error=%s",
+                        "Sync service failed: org=%s integration=%s error=%s",
                         org_id,
                         int_id,
                         str(sync_error),

@@ -2,6 +2,7 @@ from collections.abc import AsyncGenerator
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
+from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.master_dependencies import (
     acquire_master_async_session,
@@ -71,15 +72,18 @@ async def get_admin_organisation_service(
     tags=["admin_organisations"],
 )
 async def list_allowed_countries(
+    response: FastAPIResponse,
     current_admin: SuperAdmin = Depends(admin_auth),
     _rl_admin_read: None = Depends(rate_limit_admin_read),
-):
+) -> GenericResponse[CountriesResponse]:
     """Return the list of allowed countries for organisation provisioning.
 
     Backed by a code-owned metadata registry for now; future: DB-backed table.
     """
     if current_admin.role not in [AdminRole.SUPER_ADMIN, AdminRole.ADMIN]:
-        return Response.forbidden_error_response(AdminOrganizationErrors.ADMIN_ACCESS_REQUIRED)
+        return Response.forbidden_error_response(
+            AdminOrganizationErrors.ADMIN_ACCESS_REQUIRED, response=response
+        )
 
     allowed = get_allowed_org_countries()
     countries = [CountryOption(code=c.code, name=c.name) for c in allowed]
@@ -97,9 +101,10 @@ async def list_allowed_countries(
 )
 async def create_organization(
     request: CreateOrganizationRequest,
+    response: FastAPIResponse,
     current_admin: SuperAdmin = Depends(admin_auth),
     service: AdminOrganisationService = Depends(get_admin_organisation_service),
-):
+) -> GenericResponse[OrganisationJobCreateResponse]:
     """
     Create a new organization with a dedicated schema, role, and database user.
     This endpoint is restricted to super admins.
@@ -121,7 +126,7 @@ async def create_organization(
                 "Super admin access required."
             )
             return Response.forbidden_error_response(
-                AdminOrganizationErrors.SUPER_ADMIN_ACCESS_REQUIRED
+                AdminOrganizationErrors.SUPER_ADMIN_ACCESS_REQUIRED, response=response
             )
 
         org_details = request.model_dump(exclude_unset=True, exclude={"organisation_name"})
@@ -161,6 +166,7 @@ async def create_organization(
         return Response.accepted_response(
             message="Organisation creation job accepted",
             data=response_data.model_dump(mode="json"),
+            response=response,
         )
 
     except Exception as e:
@@ -169,7 +175,7 @@ async def create_organization(
             exc_info=True,
         )
         return Response.internal_server_error_response(
-            message=f"Failed to create organization - {e}", data={}
+            message=f"Failed to create organization - {e}", data={}, response=response
         )
 
 
@@ -181,9 +187,10 @@ async def create_organization(
 )
 async def create_organization_sync(
     request: CreateOrganizationRequest,
+    response: FastAPIResponse,
     current_admin: SuperAdmin = Depends(admin_auth),
     master_session: AsyncSession = Depends(get_master_async_session),
-):
+) -> GenericResponse[CreateOrganizationResponse]:
     """
     Create a new organization synchronously (DEPRECATED).
 
@@ -197,7 +204,7 @@ async def create_organization_sync(
 
         if current_admin.role not in [AdminRole.SUPER_ADMIN]:
             return Response.forbidden_error_response(
-                AdminOrganizationErrors.SUPER_ADMIN_ACCESS_REQUIRED
+                AdminOrganizationErrors.SUPER_ADMIN_ACCESS_REQUIRED, response=response
             )
 
         org_details = request.model_dump(exclude_unset=True, exclude={"organisation_name"})
@@ -219,15 +226,15 @@ async def create_organization_sync(
                 timeout=120,
             )
 
-        response_data = CreateOrganizationResponse(**task_result)
+        resp_data = CreateOrganizationResponse(**task_result)
         return Response.success_response(
-            message="Organization created successfully", data=response_data
+            message="Organization created successfully", data=resp_data
         )
 
     except Exception as e:
         logger.error(f"Error creating organization: {e}", exc_info=True)
         return Response.internal_server_error_response(
-            message=f"Failed to create organization - {e}", data={}
+            message=f"Failed to create organization - {e}", data={}, response=response
         )
 
 
@@ -237,6 +244,7 @@ async def create_organization_sync(
     tags=["admin_organisations"],
 )
 async def list_organizations(
+    response: FastAPIResponse,
     limit: int = Query(20, ge=1, le=100),
     cursor: str | None = Query(
         None,
@@ -244,7 +252,7 @@ async def list_organizations(
     ),
     current_admin: SuperAdmin = Depends(admin_auth),
     service: AdminOrganisationService = Depends(get_admin_organisation_service),
-):
+) -> GenericResponse[PaginationOrganizations]:
     """
     Retrieve a list of all organizations with pagination.
     This endpoint is restricted to super admins.
@@ -257,7 +265,7 @@ async def list_organizations(
                 f"Unauthorized attempt to list organizations by user: {current_admin.admin_id}."
             )
             return Response.forbidden_error_response(
-                AdminOrganizationErrors.SUPER_ADMIN_ACCESS_REQUIRED
+                AdminOrganizationErrors.SUPER_ADMIN_ACCESS_REQUIRED, response=response
             )
 
         paginated_orgs = await service.list_organisations(
@@ -276,7 +284,7 @@ async def list_organizations(
             exc_info=True,
         )
         return Response.internal_server_error_response(
-            message=f"Failed to list organizations - {e}", data={}
+            message=f"Failed to list organizations - {e}", data={}, response=response
         )
 
 
@@ -285,6 +293,7 @@ async def list_organizations(
     tags=["admin_organisations"],
 )
 async def get_all_organisation_history(
+    response: FastAPIResponse,
     limit: int = Query(20, ge=1, le=20),
     cursor: str | None = None,
     current_admin: SuperAdmin = Depends(admin_auth),
@@ -296,7 +305,7 @@ async def get_all_organisation_history(
     try:
         if current_admin.role not in [AdminRole.SUPER_ADMIN]:
             return Response.forbidden_error_response(
-                AdminOrganizationErrors.SUPER_ADMIN_ACCESS_REQUIRED
+                AdminOrganizationErrors.SUPER_ADMIN_ACCESS_REQUIRED, response=response
             )
 
         paginated_history = await service.get_all_organisations_history(
@@ -312,7 +321,7 @@ async def get_all_organisation_history(
     except Exception as e:
         logger.error(f"Error retrieving all organization history: {e}", exc_info=True)
         return Response.internal_server_error_response(
-            message="Failed to retrieve all organization history"
+            message="Failed to retrieve all organization history", response=response
         )
 
 
@@ -323,9 +332,10 @@ async def get_all_organisation_history(
 )
 async def get_organization(
     organisation_id: UUID,
+    response: FastAPIResponse,
     current_admin: SuperAdmin = Depends(admin_auth),
     service: AdminOrganisationService = Depends(get_admin_organisation_service),
-):
+) -> GenericResponse[ListOrganizationResponse]:
     """
     Retrieve a single organization by its ID.
     This endpoint is restricted to super admins and admins.
@@ -339,7 +349,9 @@ async def get_organization(
             logger.warning(
                 f"Unauthorized attempt to get organization by user: {current_admin.admin_id}."
             )
-            return Response.forbidden_error_response(AdminOrganizationErrors.ADMIN_ACCESS_REQUIRED)
+            return Response.forbidden_error_response(
+                AdminOrganizationErrors.ADMIN_ACCESS_REQUIRED, response=response
+            )
 
         org_response = await service.get_organisation(organisation_id=organisation_id)
 
@@ -350,14 +362,16 @@ async def get_organization(
 
     except OrganisationNotFoundError:
         logger.warning(f"Organization with ID '{organisation_id}' not found.")
-        return Response.not_found_error_response(AdminOrganizationErrors.ORGANIZATION_NOT_FOUND)
+        return Response.not_found_error_response(
+            AdminOrganizationErrors.ORGANIZATION_NOT_FOUND, response=response
+        )
     except Exception as e:
         logger.error(
             f"Error retrieving organization '{organisation_id}': {e}",
             exc_info=True,
         )
         return Response.internal_server_error_response(
-            message=f"Failed to retrieve organization - {e}", data={}
+            message=f"Failed to retrieve organization - {e}", data={}, response=response
         )
 
 
@@ -369,9 +383,10 @@ async def get_organization(
 async def update_organization(
     organisation_id: UUID,
     request: UpdateOrganizationRequest,
+    response: FastAPIResponse,
     current_admin: SuperAdmin = Depends(admin_auth),
     service: AdminOrganisationService = Depends(get_admin_organisation_service),
-):
+) -> GenericResponse[ListOrganizationResponse]:
     """
     Update an organization's details.
     This endpoint is restricted to super admins.
@@ -386,12 +401,14 @@ async def update_organization(
                 f"Unauthorized attempt to update organization by user: {current_admin.admin_id}."
             )
             return Response.forbidden_error_response(
-                AdminOrganizationErrors.SUPER_ADMIN_ACCESS_REQUIRED
+                AdminOrganizationErrors.SUPER_ADMIN_ACCESS_REQUIRED, response=response
             )
 
         update_data = request.dict(exclude_unset=True)
         if not update_data:
-            return Response.bad_request_error_response(AdminOrganizationErrors.NO_UPDATE_DATA)
+            return Response.bad_request_error_response(
+                AdminOrganizationErrors.NO_UPDATE_DATA, response=response
+            )
 
         org_response = await service.update_organisation(
             organisation_id=organisation_id,
@@ -407,20 +424,24 @@ async def update_organization(
 
     except OrganisationNotFoundError:
         logger.warning(f"Organization with ID '{organisation_id}' not found.")
-        return Response.not_found_error_response(AdminOrganizationErrors.ORGANIZATION_NOT_FOUND)
+        return Response.not_found_error_response(
+            AdminOrganizationErrors.ORGANIZATION_NOT_FOUND, response=response
+        )
     except NoUpdateDataError:
         logger.warning(f"No update data provided for organization '{organisation_id}'.")
-        return Response.bad_request_error_response(AdminOrganizationErrors.NO_UPDATE_DATA)
+        return Response.bad_request_error_response(
+            AdminOrganizationErrors.NO_UPDATE_DATA, response=response
+        )
     except ValueError as ve:
         logger.warning(f"Value error while updating organization: {ve}")
-        return Response.bad_request_error_response(message=str(ve))
+        return Response.bad_request_error_response(message=str(ve), response=response)
     except Exception as e:
         logger.error(
             f"Error updating organization '{organisation_id}': {e}",
             exc_info=True,
         )
         return Response.internal_server_error_response(
-            message="Failed to update organization", data={}
+            message="Failed to update organization", data={}, response=response
         )
 
 
@@ -432,9 +453,10 @@ async def update_organization(
 async def update_organisation_status(
     organisation_id: UUID,
     request: UpdateOrganisationStatusRequest,
+    response: FastAPIResponse,
     current_admin: SuperAdmin = Depends(admin_auth),
     service: AdminOrganisationService = Depends(get_admin_organisation_service),
-):
+) -> GenericResponse[UpdateOrganisationStatusResponse]:
     """
     Update the status of an organization (e.g., approve, reject, suspend).
     This endpoint is restricted to super admins.
@@ -449,7 +471,7 @@ async def update_organisation_status(
                 f"Unauthorized attempt to update organization status by user: {current_admin.admin_id}."
             )
             return Response.forbidden_error_response(
-                AdminOrganizationErrors.SUPER_ADMIN_ACCESS_REQUIRED
+                AdminOrganizationErrors.SUPER_ADMIN_ACCESS_REQUIRED, response=response
             )
 
         status_result = await service.update_organisation_status(
@@ -467,17 +489,19 @@ async def update_organisation_status(
 
     except OrganisationNotFoundError:
         logger.warning(f"Organization with ID '{organisation_id}' not found.")
-        return Response.not_found_error_response(AdminOrganizationErrors.ORGANIZATION_NOT_FOUND)
+        return Response.not_found_error_response(
+            AdminOrganizationErrors.ORGANIZATION_NOT_FOUND, response=response
+        )
     except ValueError as ve:
         logger.warning(f"Value error while updating organization status: {ve}")
-        return Response.bad_request_error_response(message=str(ve))
+        return Response.bad_request_error_response(message=str(ve), response=response)
     except Exception as e:
         logger.error(
             f"Error updating organization status for '{organisation_id}': {e}",
             exc_info=True,
         )
         return Response.internal_server_error_response(
-            message="Failed to update organization status", data={}
+            message="Failed to update organization status", data={}, response=response
         )
 
 
@@ -487,6 +511,7 @@ async def update_organisation_status(
 )
 async def get_organisation_history(
     organisation_id: UUID,
+    response: FastAPIResponse,
     limit: int = Query(20, ge=1, le=20),
     cursor: str | None = None,
     current_admin: SuperAdmin = Depends(admin_auth),
@@ -497,7 +522,9 @@ async def get_organisation_history(
     """
     try:
         if current_admin.role not in [AdminRole.SUPER_ADMIN, AdminRole.ADMIN]:
-            return Response.forbidden_error_response(AdminOrganizationErrors.ADMIN_ACCESS_REQUIRED)
+            return Response.forbidden_error_response(
+                AdminOrganizationErrors.ADMIN_ACCESS_REQUIRED, response=response
+            )
 
         paginated_history = await service.get_organisation_history(
             organisation_id=organisation_id,
@@ -511,14 +538,16 @@ async def get_organisation_history(
 
     except OrganisationNotFoundError:
         logger.warning(f"Organization with ID '{organisation_id}' not found.")
-        return Response.not_found_error_response(AdminOrganizationErrors.ORGANIZATION_NOT_FOUND)
+        return Response.not_found_error_response(
+            AdminOrganizationErrors.ORGANIZATION_NOT_FOUND, response=response
+        )
     except Exception as e:
         logger.error(
             f"Error retrieving history for organization '{organisation_id}': {e}",
             exc_info=True,
         )
         return Response.internal_server_error_response(
-            message="Failed to retrieve organization history"
+            message="Failed to retrieve organization history", response=response
         )
 
 

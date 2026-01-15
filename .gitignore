@@ -189,6 +189,7 @@ Solution Deck 1.pptx
 workflows/deck_generation/slide_mapping.py
 workflows/deck_generation/test.py
 test-local-scripts/
+scripts/test_local/
 cache/
 .github/instructions/
 docs/Future Functionality Documentation/
@@ -197,3 +198,4 @@ Dockerfile.local
 crm_data_exports/
 tmpclaude-*
 nul
+.claude/

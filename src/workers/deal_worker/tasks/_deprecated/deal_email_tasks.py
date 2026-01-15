@@ -1,4 +1,21 @@
-"""Celery tasks for deal-email matching.
+"""DEPRECATED: Celery tasks for deal-email matching.
+
+DEPRECATION NOTICE (January 2026):
+----------------------------------
+This module is DEPRECATED and moved to _deprecated folder.
+Replaced by: src/workers/deal_worker/tasks/email_matching_tasks.py
+
+New architecture:
+- match_email_to_deals_org_task: Replaces trigger_deal_email_processing_all_orgs
+- match_email_to_deals_task: Single deal re-matching (new capability)
+
+The new tasks are triggered by:
+1. Email sync completion (automatic)
+2. Stakeholder addition (Task 1 triggers Task 3)
+3. Manual refresh
+
+Do NOT use these tasks for new development.
+----------------------------------
 
 This module provides Celery tasks that orchestrate the deal-email matching process:
 - Match emails to CRM deals based on team and contact stakeholder participation

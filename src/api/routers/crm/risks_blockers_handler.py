@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
+from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
@@ -71,6 +72,7 @@ async def get_risk_blocker_service(
 )
 async def list_risks_blockers(
     deal_id: UUID,
+    response: FastAPIResponse,
     service: RiskBlockerService = Depends(get_risk_blocker_service),
     limit: int = Query(20, ge=1, le=100, description="Number of items per page"),
     cursor: str | None = Query(None, description="Pagination cursor"),
@@ -140,10 +142,14 @@ async def list_risks_blockers(
 
     except RiskBlockerServiceError as e:
         logger.warning(f"Risk/blocker service error: {e.message}")
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+        return Response.error_response(
+            message=e.message, status_code=e.status_code, response=response
+        )
     except Exception:
         logger.exception("Failed to list risks/blockers")
-        raise HTTPException(status_code=500, detail=_UNEXPECTED_ERR_MSG) from None
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
 
 
 @risks_blockers_router.get(
@@ -155,6 +161,7 @@ async def list_risks_blockers(
 )
 async def get_risk_blocker(
     risk_blocker_id: UUID,
+    response: FastAPIResponse,
     service: RiskBlockerService = Depends(get_risk_blocker_service),
 ) -> GenericResponse[RiskBlockerDetail]:
     """
@@ -172,21 +179,25 @@ async def get_risk_blocker(
         item = await service.get_by_id(risk_blocker_id)
 
         if not item:
-            raise HTTPException(status_code=404, detail="Risk/blocker not found")
+            return Response.error_response(
+                message="Risk/blocker not found", status_code=404, response=response
+            )
 
         return Response.success_response(
             message="Risk/blocker retrieved successfully",
             data=item,
         )
 
-    except HTTPException:
-        raise
     except RiskBlockerServiceError as e:
         logger.warning(f"Risk/blocker service error: {e.message}")
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+        return Response.error_response(
+            message=e.message, status_code=e.status_code, response=response
+        )
     except Exception:
         logger.exception("Failed to get risk/blocker")
-        raise HTTPException(status_code=500, detail=_UNEXPECTED_ERR_MSG) from None
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -204,6 +215,7 @@ async def get_risk_blocker(
 async def create_risk_blocker(
     deal_id: UUID,
     body: RiskBlockerCreateRequest,
+    response: FastAPIResponse,
     service: RiskBlockerService = Depends(get_risk_blocker_service),
 ) -> GenericResponse[RiskBlockerDetail]:
     """
@@ -225,17 +237,22 @@ async def create_risk_blocker(
             assigned_team=body.assigned_team,
         )
 
-        return Response.success_response(
+        return Response.created_response(
             message="Risk/blocker created successfully",
             data=item,
+            response=response,
         )
 
     except RiskBlockerServiceError as e:
         logger.warning(f"Risk/blocker service error: {e.message}")
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+        return Response.error_response(
+            message=e.message, status_code=e.status_code, response=response
+        )
     except Exception:
         logger.exception("Failed to create risk/blocker")
-        raise HTTPException(status_code=500, detail=_UNEXPECTED_ERR_MSG) from None
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -253,6 +270,7 @@ async def create_risk_blocker(
 async def update_risk_blocker(
     risk_blocker_id: UUID,
     body: RiskBlockerUpdateRequest,
+    response: FastAPIResponse,
     service: RiskBlockerService = Depends(get_risk_blocker_service),
 ) -> GenericResponse[RiskBlockerDetail]:
     """
@@ -265,21 +283,25 @@ async def update_risk_blocker(
         item = await service.update(risk_blocker_id, updates)
 
         if not item:
-            raise HTTPException(status_code=404, detail="Risk/blocker not found")
+            return Response.error_response(
+                message="Risk/blocker not found", status_code=404, response=response
+            )
 
         return Response.success_response(
             message="Risk/blocker updated successfully",
             data=item,
         )
 
-    except HTTPException:
-        raise
     except RiskBlockerServiceError as e:
         logger.warning(f"Risk/blocker service error: {e.message}")
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+        return Response.error_response(
+            message=e.message, status_code=e.status_code, response=response
+        )
     except Exception:
         logger.exception("Failed to update risk/blocker")
-        raise HTTPException(status_code=500, detail=_UNEXPECTED_ERR_MSG) from None
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -296,6 +318,7 @@ async def update_risk_blocker(
 )
 async def confirm_risk_blocker(
     risk_blocker_id: UUID,
+    response: FastAPIResponse,
     service: RiskBlockerService = Depends(get_risk_blocker_service),
 ) -> GenericResponse[RiskBlockerDetail]:
     """
@@ -313,15 +336,21 @@ async def confirm_risk_blocker(
         )
 
     except RiskBlockerNotFoundError:
-        raise HTTPException(status_code=404, detail="Risk/blocker not found") from None
+        return Response.error_response(
+            message="Risk/blocker not found", status_code=404, response=response
+        )
     except InvalidStatusTransitionError as e:
-        raise HTTPException(status_code=400, detail=e.message) from None
+        return Response.error_response(message=e.message, status_code=400, response=response)
     except RiskBlockerServiceError as e:
         logger.warning(f"Risk/blocker service error: {e.message}")
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+        return Response.error_response(
+            message=e.message, status_code=e.status_code, response=response
+        )
     except Exception:
         logger.exception("Failed to confirm risk/blocker")
-        raise HTTPException(status_code=500, detail=_UNEXPECTED_ERR_MSG) from None
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
 
 
 @risks_blockers_router.post(
@@ -333,6 +362,7 @@ async def confirm_risk_blocker(
 )
 async def dismiss_risk_blocker(
     risk_blocker_id: UUID,
+    response: FastAPIResponse,
     service: RiskBlockerService = Depends(get_risk_blocker_service),
 ) -> GenericResponse[RiskBlockerDetail]:
     """
@@ -350,13 +380,19 @@ async def dismiss_risk_blocker(
         )
 
     except RiskBlockerNotFoundError:
-        raise HTTPException(status_code=404, detail="Risk/blocker not found") from None
+        return Response.error_response(
+            message="Risk/blocker not found", status_code=404, response=response
+        )
     except RiskBlockerServiceError as e:
         logger.warning(f"Risk/blocker service error: {e.message}")
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+        return Response.error_response(
+            message=e.message, status_code=e.status_code, response=response
+        )
     except Exception:
         logger.exception("Failed to dismiss risk/blocker")
-        raise HTTPException(status_code=500, detail=_UNEXPECTED_ERR_MSG) from None
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
 
 
 @risks_blockers_router.post(
@@ -369,6 +405,7 @@ async def dismiss_risk_blocker(
 async def resolve_risk_blocker(
     risk_blocker_id: UUID,
     body: RiskBlockerResolveRequest,
+    response: FastAPIResponse,
     service: RiskBlockerService = Depends(get_risk_blocker_service),
 ) -> GenericResponse[RiskBlockerDetail]:
     """
@@ -386,13 +423,19 @@ async def resolve_risk_blocker(
         )
 
     except RiskBlockerNotFoundError:
-        raise HTTPException(status_code=404, detail="Risk/blocker not found") from None
+        return Response.error_response(
+            message="Risk/blocker not found", status_code=404, response=response
+        )
     except RiskBlockerServiceError as e:
         logger.warning(f"Risk/blocker service error: {e.message}")
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+        return Response.error_response(
+            message=e.message, status_code=e.status_code, response=response
+        )
     except Exception:
         logger.exception("Failed to resolve risk/blocker")
-        raise HTTPException(status_code=500, detail=_UNEXPECTED_ERR_MSG) from None
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
 
 
 @risks_blockers_router.post(
@@ -404,6 +447,7 @@ async def resolve_risk_blocker(
 )
 async def reopen_risk_blocker(
     risk_blocker_id: UUID,
+    response: FastAPIResponse,
     service: RiskBlockerService = Depends(get_risk_blocker_service),
 ) -> GenericResponse[RiskBlockerDetail]:
     """
@@ -420,15 +464,21 @@ async def reopen_risk_blocker(
         )
 
     except RiskBlockerNotFoundError:
-        raise HTTPException(status_code=404, detail="Risk/blocker not found") from None
+        return Response.error_response(
+            message="Risk/blocker not found", status_code=404, response=response
+        )
     except InvalidStatusTransitionError as e:
-        raise HTTPException(status_code=400, detail=e.message) from None
+        return Response.error_response(message=e.message, status_code=400, response=response)
     except RiskBlockerServiceError as e:
         logger.warning(f"Risk/blocker service error: {e.message}")
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+        return Response.error_response(
+            message=e.message, status_code=e.status_code, response=response
+        )
     except Exception:
         logger.exception("Failed to reopen risk/blocker")
-        raise HTTPException(status_code=500, detail=_UNEXPECTED_ERR_MSG) from None
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -445,6 +495,7 @@ async def reopen_risk_blocker(
 )
 async def delete_risk_blocker(
     risk_blocker_id: UUID,
+    response: FastAPIResponse,
     service: RiskBlockerService = Depends(get_risk_blocker_service),
 ) -> GenericResponse[None]:
     """
@@ -462,13 +513,19 @@ async def delete_risk_blocker(
         )
 
     except RiskBlockerNotFoundError:
-        raise HTTPException(status_code=404, detail="Risk/blocker not found") from None
+        return Response.error_response(
+            message="Risk/blocker not found", status_code=404, response=response
+        )
     except RiskBlockerServiceError as e:
         logger.warning(f"Risk/blocker service error: {e.message}")
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+        return Response.error_response(
+            message=e.message, status_code=e.status_code, response=response
+        )
     except Exception:
         logger.exception("Failed to delete risk/blocker")
-        raise HTTPException(status_code=500, detail=_UNEXPECTED_ERR_MSG) from None
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

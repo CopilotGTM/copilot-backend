@@ -889,6 +889,69 @@ Frontend should style insights based on priority:
 
 ---
 
+## Stakeholder Metrics Reference
+
+Insights often reference stakeholder engagement metrics. Here's what they mean:
+
+### Champion Potential Score (0-100)
+
+Measures likelihood this person will actively advocate for your solution internally.
+
+| Score Range | Meaning | Insight Trigger |
+|-------------|---------|-----------------|
+| 80-100 | **High** - Actively promotes, introduces to others | May generate CHAMPION_OPPORTUNITY insight |
+| 60-79 | **Moderate** - Supportive but not actively championing | |
+| 40-59 | **Low** - Neutral, needs more engagement | |
+| 0-39 | **Very low** - Unlikely to advocate | |
+
+**Factors**: Positive sentiment in communications, referrals, internal advocacy signals detected in meeting transcripts.
+
+### Engagement Score (0-100)
+
+Measures overall engagement quality and quantity with this stakeholder.
+
+| Score Range | Meaning | Insight Trigger |
+|-------------|---------|-----------------|
+| 80-100 | **Excellent** - Frequent, meaningful interactions | |
+| 60-79 | **Good** - Regular contact, positive engagement | |
+| 40-59 | **Moderate** - Some contact, room for improvement | May generate ENGAGEMENT_GAP if decision maker |
+| 0-39 | **Low** - Needs immediate attention | Will generate ENGAGEMENT_GAP insight |
+
+**Factors**: Meeting attendance, email responsiveness, interaction frequency and recency.
+
+### Temperature (HOT/WARM/COLD)
+
+Measures recent engagement level based on interaction recency.
+
+| Value | Threshold | Insight Impact |
+|-------|-----------|----------------|
+| HOT | Interaction within 7 days | No engagement gap concern |
+| WARM | Interaction within 14 days | Monitor |
+| COLD | No interaction for 14+ days | May trigger ENGAGEMENT_GAP |
+
+### Stance Changes
+
+When stance changes are detected (e.g., SUPPORTER → NEUTRAL), insights may be generated:
+
+| Stance Change | Potential Insight |
+|---------------|------------------|
+| Any → CHAMPION | CHAMPION_OPPORTUNITY |
+| CHAMPION/SUPPORTER → NEUTRAL/DETRACTOR | SENTIMENT_DECLINING |
+| Any → BLOCKER | STAKEHOLDER_RISK |
+
+### Decision Power Context
+
+Insight priority is often influenced by the stakeholder's decision power:
+
+| Decision Power | Impact on Insights |
+|----------------|-------------------|
+| DECISION_MAKER | Higher priority for ENGAGEMENT_GAP, SENTIMENT_DECLINING |
+| INFLUENCER | Medium priority, important for internal selling |
+| EVALUATOR | Lower priority unless blocking evaluation |
+| END_USER | Lower priority unless critical for adoption |
+
+---
+
 ## Related References
 
 - Deal Stakeholders API: `docs/API Documentation/deals/stakeholders-api.md`

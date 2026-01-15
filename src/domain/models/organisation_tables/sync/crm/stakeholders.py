@@ -30,6 +30,15 @@ class DecisionPower(str, Enum):
 
 
 class StakeholderTemperature(str, Enum):
+    """Temperature indicating engagement level with stakeholder.
+
+    TODO: Existing records may have COLD as old default. Future engagement
+    analysis tasks should properly assess and update temperatures. Do not
+    bulk-update existing COLD records to UNKNOWN - let analysis determine
+    the correct value based on actual engagement data.
+    """
+
+    UNKNOWN = "UNKNOWN"
     HOT = "HOT"
     WARM = "WARM"
     COLD = "COLD"
@@ -40,6 +49,22 @@ class StakeholderSource(str, Enum):
     CALENDAR_DISCOVERY = "CALENDAR_DISCOVERY"
     EMAIL_DISCOVERY = "EMAIL_DISCOVERY"
     MANUAL = "MANUAL"
+
+
+class ApprovalStatus(str, Enum):
+    """Approval status for stakeholders.
+
+    - CRM stakeholders are always APPROVED (trusted source)
+    - CALENDAR_DISCOVERY: First 5 per deal auto-APPROVED, rest PENDING
+    - EMAIL_DISCOVERY: First 5 per deal auto-APPROVED, rest PENDING
+    - User can REJECT any stakeholder to exclude from matching
+    - User can REMOVE an APPROVED stakeholder from the deal
+    """
+
+    APPROVED = "APPROVED"
+    PENDING = "PENDING"
+    REJECTED = "REJECTED"
+    REMOVED = "REMOVED"
 
 
 class DealStakeholder(FlexibleSyncedRecordMixin, table=True):
@@ -72,9 +97,15 @@ class DealStakeholder(FlexibleSyncedRecordMixin, table=True):
         description="List of external links with metadata",
     )
 
-    # Insights
-    stance: StakeholderStance = Field(default=StakeholderStance.UNKNOWN)
-    decision_power: DecisionPower = Field(default=DecisionPower.UNKNOWN)
+    # Insights (enum columns stored as VARCHAR for flexible schema evolution)
+    stance: StakeholderStance = Field(
+        default=StakeholderStance.UNKNOWN,
+        sa_column=Column(String(64), nullable=False, server_default=text("'UNKNOWN'")),
+    )
+    decision_power: DecisionPower = Field(
+        default=DecisionPower.UNKNOWN,
+        sa_column=Column(String(64), nullable=False, server_default=text("'UNKNOWN'")),
+    )
     champion_potential: float = Field(default=0.0, description="0-100 score")
 
     motivation: str | None = Field(default=None, sa_column=Column(String, nullable=True))
@@ -83,12 +114,29 @@ class DealStakeholder(FlexibleSyncedRecordMixin, table=True):
 
     # Engagement Metrics
     last_contact_at: datetime | None = Field(
-        sa_column=Column(DateTime(timezone=True), nullable=True)
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
     )
     engagement_score: float = Field(default=0.0)
-    temperature: StakeholderTemperature = Field(default=StakeholderTemperature.COLD)
+    temperature: StakeholderTemperature = Field(
+        default=StakeholderTemperature.UNKNOWN,
+        sa_column=Column(String(64), nullable=False, server_default=text("'UNKNOWN'")),
+    )
 
-    source: StakeholderSource = Field(default=StakeholderSource.CALENDAR_DISCOVERY)
+    source: StakeholderSource = Field(
+        default=StakeholderSource.CALENDAR_DISCOVERY,
+        sa_column=Column(String(64), nullable=False, server_default=text("'CALENDAR_DISCOVERY'")),
+    )
+    source_reference_id: UUID | None = Field(
+        default=None,
+        index=True,
+        description="Reference to the source record (e.g., CRMDealParticipant.participant_id when source=CRM).",
+    )
+    approval_status: ApprovalStatus = Field(
+        default=ApprovalStatus.APPROVED,
+        sa_column=Column(String(64), nullable=False, index=True, server_default=text("'APPROVED'")),
+        description="Approval status. CRM=always APPROVED. Discovery=auto-APPROVED up to 5 per source per deal.",
+    )
 
     # Extended Data (general purpose, future extensibility)
     stakeholder_data: dict[str, Any] | None = Field(

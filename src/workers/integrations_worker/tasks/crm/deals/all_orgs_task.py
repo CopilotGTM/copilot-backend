@@ -19,6 +19,7 @@ Architecture:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -31,6 +32,15 @@ from src.infra.observability.context import correlation_headers
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.workers.integrations_worker.celery_app import app
+
+
+@dataclass(slots=True)
+class OrgTaskDispatch:
+    org_id: UUID
+    status: str = "triggered"
+    task_id: UUID | None = None
+    error: str | None = None
+
 
 logger = get_logger(__name__)
 
@@ -82,12 +92,13 @@ def sync_crm_deals_all_orgs_task() -> dict[str, Any]:
         # Query all approved organizations
         org_ids: list[UUID] = []
         async for master_session in acquire_master_async_session():
-            stmt = select(Organisation.organisation_id).where(
+            stmt = select(Organisation.organisation_id).where(  # type: ignore
                 Organisation.status == OrganisationStatus.APPROVED
             )
             result = await master_session.execute(stmt)
             org_ids = [row[0] for row in result.all()]
 
+        # Handle case with no approved orgs
         if not org_ids:
             logger.warning("No approved organizations found for CRM deals sync")
             return {
@@ -104,43 +115,44 @@ def sync_crm_deals_all_orgs_task() -> dict[str, Any]:
 
         logger.info("Found %d approved organization(s) for CRM deals sync", len(org_ids))
 
-        # Dispatch Tier 2 task for each organization
-        org_tasks = []
+        # Dispatch Organisation Level Tasks for each org (Tier 2)
+        org_tasks: list[OrgTaskDispatch] = []
         orgs_triggered = 0
         orgs_skipped = 0
 
-        for org_id in org_ids:
+        for organisation in org_ids:
             try:
-                task = sync_crm_deals_org_task.apply_async(
-                    kwargs={"organisation_id": str(org_id)},
+                task = sync_crm_deals_org_task.apply_async(  # type: ignore
+                    kwargs={"organisation_id": str(organisation)},
                     headers=correlation_headers(),
                 )
+
+                # Update dispatch results
                 org_tasks.append(
-                    {
-                        "org_id": str(org_id),
-                        "task_id": task.id,
-                        "status": "triggered",
-                    }
+                    OrgTaskDispatch(
+                        org_id=organisation,
+                        task_id=UUID(task.id),
+                    )
                 )
                 orgs_triggered += 1
                 logger.debug(
                     "Dispatched CRM deals sync for org: %s (task_id=%s)",
-                    org_id,
+                    organisation,
                     task.id,
                 )
             except Exception as e:
                 logger.error(
                     "Failed to dispatch CRM deals sync for org %s: %s",
-                    org_id,
+                    organisation,
                     str(e),
                     exc_info=True,
                 )
                 org_tasks.append(
-                    {
-                        "org_id": str(org_id),
-                        "status": "failed",
-                        "error": str(e),
-                    }
+                    OrgTaskDispatch(
+                        org_id=organisation,
+                        status="failed",
+                        error=str(e),
+                    )
                 )
                 orgs_skipped += 1
 

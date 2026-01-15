@@ -5,16 +5,15 @@ Syncs all CRM deal integrations for a specific organization.
 
 This task:
 1. Queries org DB for all active CRM integrations
-2. For each integration, fetches deals and syncs using DealSyncService
-3. Updates integration status after sync
-4. Returns org-level aggregated results
+2. For each integration, calls CRMDealSyncService.sync_integration()
+3. Returns org-level aggregated results
 
 Architecture:
     sync_crm_deals_all_orgs_task [Tier 1]
         |
     sync_crm_deals_org_task [Tier 2 - this file] (one per org)
         |
-    DealSyncService (for each integration, inline)
+    CRMDealSyncService.sync_integration() (for each integration)
 """
 
 from __future__ import annotations
@@ -32,10 +31,10 @@ from src.domain.models.organisation_tables.sync.integration_models import SyncSt
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.service.integrations import NangoClient
+from src.service.integrations.crm_deal_sync_service import CRMDealSyncService
 from src.workers.integrations_worker.celery_app import app
 
 from ..utils import CRM_INTEGRATION_TYPES
-from .sync_helper import sync_deals_for_integration
 
 logger = get_logger(__name__)
 
@@ -60,7 +59,7 @@ def sync_crm_deals_org_task(
     Triggered by: sync_crm_deals_all_orgs_task (Tier 1)
 
     This task loops through all active CRM integrations for the org
-    and syncs deals using DealSyncService.
+    and syncs deals using CRMDealSyncService.
 
     Args:
         organisation_id: The organization UUID string
@@ -94,9 +93,8 @@ def sync_crm_deals_org_task(
             async for session in acquire_org_async_session(org_id):
                 # Query all active CRM integrations
                 stmt = select(KnowledgeIntegration).where(
-                    KnowledgeIntegration.integration_type.in_(CRM_INTEGRATION_TYPES),
-                    KnowledgeIntegration.is_active == True,  # noqa: E712
-                    KnowledgeIntegration.connection_id.isnot(None),
+                    KnowledgeIntegration.integration_type.in_(CRM_INTEGRATION_TYPES),  # type: ignore
+                    KnowledgeIntegration.is_active == True,  # noqa: E712  # type: ignore
                 )
                 result = await session.execute(stmt)
                 integrations = result.scalars().all()
@@ -123,6 +121,12 @@ def sync_crm_deals_org_task(
                     org_id,
                 )
 
+                # Initialize sync service
+                deal_sync_service = CRMDealSyncService(
+                    session=session,
+                    organisation_id=org_id,
+                )
+
                 # Sync each integration
                 integration_results = []
                 successful = 0
@@ -131,11 +135,10 @@ def sync_crm_deals_org_task(
 
                 for integration in integrations:
                     try:
-                        sync_result = await sync_deals_for_integration(
-                            session=session,
-                            nango=nango,
-                            organisation_id=org_id,
+                        # Use the service directly
+                        sync_result = await deal_sync_service.sync_integration(
                             integration=integration,
+                            nango=nango,
                             skip_enrichment=skip_enrichment,
                         )
 
