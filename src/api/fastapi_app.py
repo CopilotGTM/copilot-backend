@@ -108,11 +108,13 @@ async def lifespan(app: FastAPI):
 
 def create_fastapi_app():
     """Create and configure the FastAPI application."""
+    from src.infra.utils.app_state import fastapp
 
     logger.info("Setting Up App Config")
 
-    # Create FastAPI app with lifespan handler
-    fastapp = FastAPI(lifespan=lifespan)
+    # Configure the shared FastAPI app instance with lifespan handler
+    # We use the shared instance from app_state so dependency_overrides work in tests
+    fastapp.router.lifespan_context = lifespan
 
     origins = os.getenv("ALLOW_ORIGIN_URL_AUTH", "*").split(",")
     fastapp.add_middleware(
