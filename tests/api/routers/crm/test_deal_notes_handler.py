@@ -269,9 +269,9 @@ def test_create_note_whitespace_only_content(client: TestClient, notes_dependenc
     for bad_content in ["   ", "\n\t  ", "  \n  "]:
         payload = {"content": bad_content}
         resp = client.post(f"/users/crm/deals/{deal_id}/notes", json=payload)
-        assert (
-            resp.status_code == 422
-        ), f"Expected 422 for content='{bad_content!r}', got {resp.status_code}"
+        assert resp.status_code == 422, (
+            f"Expected 422 for content='{bad_content!r}', got {resp.status_code}"
+        )
 
 
 def test_create_note_content_max_length(client: TestClient, notes_dependency_overrides):

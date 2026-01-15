@@ -61,9 +61,9 @@ def test_send_message_empty_content_rejected(client: TestClient, messages_depend
             "content": bad_content,
         }
         resp = client.post("/users/chats/send_message", json=payload)
-        assert (
-            resp.status_code == 422
-        ), f"Expected 422 for content='{bad_content}', got {resp.status_code}"
+        assert resp.status_code == 422, (
+            f"Expected 422 for content='{bad_content}', got {resp.status_code}"
+        )
 
 
 def test_send_message_invalid_role_rejected(client: TestClient, messages_dependency_overrides):
@@ -430,6 +430,6 @@ def test_feedback_invalid_score(client: TestClient, messages_dependency_override
             "feedback_score": bad_score,
         }
         resp = client.post("/users/chats/messages/feedback", json=feedback_payload)
-        assert (
-            resp.status_code == 422
-        ), f"Expected 422 for score={bad_score}, got {resp.status_code}"
+        assert resp.status_code == 422, (
+            f"Expected 422 for score={bad_score}, got {resp.status_code}"
+        )
