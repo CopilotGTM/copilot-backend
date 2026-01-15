@@ -234,7 +234,7 @@ class FakeStakeholdersService:
         include_pending: bool = True,
         include_rejected: bool = False,
     ):
-        """Return stakeholders for a deal matching the API response format."""
+        """Return stakeholders for a deal matching the API response format (StakeholderListResponse)."""
         stakeholders = self._stakeholders.get(deal_id, [])
 
         # Build list of allowed statuses
@@ -245,7 +245,7 @@ class FakeStakeholdersService:
             allowed_statuses.append(ApprovalStatus.REJECTED)
 
         # Convert to response format (StakeholderDetail)
-        return [
+        stakeholder_list = [
             {
                 "stakeholder_id": s.stakeholder_id,
                 "deal_id": s.deal_id,
@@ -275,6 +275,13 @@ class FakeStakeholdersService:
             for s in stakeholders
             if not s.is_deleted and s.approval_status in allowed_statuses
         ]
+
+        # Return StakeholderListResponse format
+        return {
+            "company_domain": "example.com",
+            "company_name": "Example Corp",
+            "stakeholders": stakeholder_list,
+        }
 
     def _get_stakeholder(self, deal_id: UUID, stakeholder_id: UUID) -> FakeStakeholder | None:
         """Get a specific stakeholder by ID."""
@@ -309,6 +316,25 @@ class FakeStakeholdersService:
             raise StakeholdersServiceError("Stakeholder is already rejected", status_code=400)
 
         stakeholder.approval_status = ApprovalStatus.REJECTED
+        return stakeholder
+
+    async def remove_stakeholder(self, deal_id: UUID, stakeholder_id: UUID):
+        """Remove an approved stakeholder from the deal."""
+        from src.service.crm.stakeholders_service import StakeholdersServiceError
+
+        stakeholder = self._get_stakeholder(deal_id, stakeholder_id)
+        if not stakeholder:
+            raise StakeholdersServiceError("Stakeholder not found", status_code=404)
+
+        if stakeholder.approval_status == ApprovalStatus.REMOVED:
+            raise StakeholdersServiceError("Stakeholder is already removed", status_code=400)
+
+        if stakeholder.approval_status != ApprovalStatus.APPROVED:
+            raise StakeholdersServiceError(
+                "Only approved stakeholders can be removed", status_code=400
+            )
+
+        stakeholder.approval_status = ApprovalStatus.REMOVED
         return stakeholder
 
     async def get_stakeholder_detail(self, deal_id: UUID, stakeholder_id: UUID) -> dict | None:

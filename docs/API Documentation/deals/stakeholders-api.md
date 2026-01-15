@@ -147,7 +147,8 @@ Controls whether a stakeholder is used for deal matching (calendar/email associa
 |-------|-------------|-------------------|
 | `APPROVED` | Active stakeholder, used in all matching | Yes |
 | `PENDING` | Awaiting user approval (discovered beyond threshold) | No |
-| `REJECTED` | User excluded from deal matching | No |
+| `REJECTED` | User excluded from deal matching (never was active) | No |
+| `REMOVED` | Previously approved stakeholder removed by user | No |
 
 ### Response Models (TypeScript)
 
@@ -208,7 +209,7 @@ export interface StakeholderDetail {
 
   temperature: StakeholderTemperature;  // HOT/WARM/COLD based on recency
   source: StakeholderSource;            // How stakeholder was discovered
-  approval_status: ApprovalStatus;      // APPROVED/PENDING/REJECTED for matching
+  approval_status: ApprovalStatus;      // APPROVED/PENDING/REJECTED/REMOVED for matching
 }
 
 /**
@@ -992,6 +993,85 @@ curl -X POST "$BASE_URL/users/crm/deals/3fa85f64-5717-4562-b3fc-2c963f66afa6/sta
 
 ---
 
+## 8. Remove Stakeholder
+
+Remove an approved stakeholder from the deal. This is different from rejection - removal is for stakeholders that were previously active but should no longer be associated with the deal.
+
+### Endpoint (Remove Stakeholder)
+
+```http
+DELETE /{deal_id}/stakeholders/{stakeholder_id}
+```
+
+### Path Parameters (Remove Stakeholder)
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `deal_id` | UUID | Yes | The unique identifier of the deal |
+| `stakeholder_id` | UUID | Yes | The unique identifier of the stakeholder |
+
+### When to Use
+
+- **Stakeholder left the company**: Contact no longer relevant to the deal
+- **Role change**: Person moved to a different role not involved in the decision
+- **Clean up active list**: Remove stakeholders who were active but are no longer relevant
+- **Undo manual addition**: Remove a manually added stakeholder that shouldn't be there
+
+### Difference from Reject
+
+| Action | Use Case | Original Status | Result |
+|--------|----------|-----------------|--------|
+| **Reject** | Stakeholder was discovered but shouldn't be included | PENDING or APPROVED | REJECTED |
+| **Remove** | Stakeholder was active but is no longer relevant | APPROVED only | REMOVED |
+
+Both REJECTED and REMOVED stakeholders are excluded from deal matching. The distinction helps with:
+- **Analytics**: Track how many stakeholders were removed vs rejected
+- **Audit trail**: Understand the history of stakeholder changes
+- **Potential restoration**: Different workflows for re-adding rejected vs removed stakeholders
+
+### Success Response (200) (Remove Stakeholder)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Stakeholder removed",
+  "data": {
+    "stakeholder_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+    "email": "former.contact@example.com",
+    "name": "Former Contact",
+    "approval_status": "REMOVED",
+    "source": "CRM",
+    ...
+  }
+}
+```
+
+### What Happens When Removed
+
+- **Not used for calendar matching**: Events with this attendee won't auto-associate
+- **Not used for email matching**: Emails with this person won't auto-associate
+- **Hidden by default**: Not shown in stakeholder list (requires explicit filter to show)
+- **Historical data preserved**: Previous engagement history is retained for audit
+
+### Error Responses (Remove Stakeholder)
+
+| Code | Description |
+|------|-------------|
+| `400` | Stakeholder is not in APPROVED status (only approved stakeholders can be removed) |
+| `400` | Stakeholder is already removed |
+| `401` | Missing or invalid authentication token |
+| `404` | Stakeholder not found |
+| `500` | Internal server error |
+
+### Example cURL (Remove Stakeholder)
+
+```bash
+curl -X DELETE "$BASE_URL/users/crm/deals/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders/7fa85f64-5717-4562-b3fc-2c963f66afa8" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
 ## Error Codes Summary
 
 | HTTP Code | Reason | Suggested Action |
@@ -1027,6 +1107,12 @@ curl -X POST "$BASE_URL/users/crm/deals/3fa85f64-5717-4562-b3fc-2c963f66afa6/sta
    - On reject: Call `POST /{deal_id}/stakeholders/{stakeholder_id}/reject`
    - Update UI immediately (optimistic update) or refetch list
 
+5. **Remove Active Stakeholders**:
+   - Show "Remove" action on APPROVED stakeholders (e.g., in dropdown menu or detail view)
+   - On remove: Call `DELETE /{deal_id}/stakeholders/{stakeholder_id}`
+   - Show confirmation dialog: "Remove this stakeholder from the deal?"
+   - Update UI immediately or refetch list
+
 ### Stakeholder Cards UI
 
 Display key metrics with appropriate indicators:
@@ -1038,7 +1124,7 @@ Display key metrics with appropriate indicators:
 | `champion_potential` | Progress bar or percentage badge |
 | `engagement_score` | Progress bar or percentage badge |
 | `temperature` | Colored indicator (Red: HOT, Orange: WARM, Blue: COLD) |
-| `approval_status` | PENDING: Yellow badge with action buttons |
+| `approval_status` | PENDING: Yellow badge with action buttons; REMOVED: Gray badge (if shown) |
 
 ### Search Best Practices
 

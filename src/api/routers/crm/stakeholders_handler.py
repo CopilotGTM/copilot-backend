@@ -331,3 +331,43 @@ async def reject_stakeholder(
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
         )
+
+
+@stakeholders_router.delete(
+    "/{deal_id}/stakeholders/{stakeholder_id}",
+    response_model=GenericResponse[StakeholderDetail],
+    summary="Remove a stakeholder from the deal",
+)
+async def remove_stakeholder(
+    deal_id: UUID,
+    stakeholder_id: UUID,
+    response: FastAPIResponse,
+    service: StakeholdersService = Depends(get_stakeholders_service),
+) -> GenericResponse[StakeholderDetail]:
+    """Remove an approved stakeholder from the deal.
+
+    This endpoint marks the stakeholder as REMOVED, excluding them from:
+    - Deal stakeholder lists (unless explicitly requested)
+    - Calendar event matching
+    - Email matching
+    - Stakeholder analysis
+
+    Unlike rejection, removal is intended for stakeholders that were
+    previously active but should no longer be associated with the deal.
+
+    Only APPROVED stakeholders can be removed. Use the reject endpoint
+    for PENDING stakeholders.
+    """
+    try:
+        stakeholder = await service.remove_stakeholder(deal_id, stakeholder_id)
+        return Response.success_response(message="Stakeholder removed", data=stakeholder)
+    except StakeholdersServiceError as e:
+        logger.warning("Remove stakeholder error: %s", e.message)
+        return Response.error_response(
+            message=e.message, status_code=e.status_code, response=response
+        )
+    except Exception:
+        logger.exception("Failed to remove stakeholder %s for deal %s", stakeholder_id, deal_id)
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )

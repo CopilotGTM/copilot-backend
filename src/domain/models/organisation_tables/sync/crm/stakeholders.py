@@ -58,11 +58,13 @@ class ApprovalStatus(str, Enum):
     - CALENDAR_DISCOVERY: First 5 per deal auto-APPROVED, rest PENDING
     - EMAIL_DISCOVERY: First 5 per deal auto-APPROVED, rest PENDING
     - User can REJECT any stakeholder to exclude from matching
+    - User can REMOVE an APPROVED stakeholder from the deal
     """
 
     APPROVED = "APPROVED"
     PENDING = "PENDING"
     REJECTED = "REJECTED"
+    REMOVED = "REMOVED"
 
 
 class DealStakeholder(FlexibleSyncedRecordMixin, table=True):
@@ -95,9 +97,15 @@ class DealStakeholder(FlexibleSyncedRecordMixin, table=True):
         description="List of external links with metadata",
     )
 
-    # Insights
-    stance: StakeholderStance = Field(default=StakeholderStance.UNKNOWN)
-    decision_power: DecisionPower = Field(default=DecisionPower.UNKNOWN)
+    # Insights (enum columns stored as VARCHAR for flexible schema evolution)
+    stance: StakeholderStance = Field(
+        default=StakeholderStance.UNKNOWN,
+        sa_column=Column(String(64), nullable=False, server_default=text("'UNKNOWN'")),
+    )
+    decision_power: DecisionPower = Field(
+        default=DecisionPower.UNKNOWN,
+        sa_column=Column(String(64), nullable=False, server_default=text("'UNKNOWN'")),
+    )
     champion_potential: float = Field(default=0.0, description="0-100 score")
 
     motivation: str | None = Field(default=None, sa_column=Column(String, nullable=True))
@@ -110,9 +118,15 @@ class DealStakeholder(FlexibleSyncedRecordMixin, table=True):
         sa_column=Column(DateTime(timezone=True), nullable=True),
     )
     engagement_score: float = Field(default=0.0)
-    temperature: StakeholderTemperature = Field(default=StakeholderTemperature.UNKNOWN)
+    temperature: StakeholderTemperature = Field(
+        default=StakeholderTemperature.UNKNOWN,
+        sa_column=Column(String(64), nullable=False, server_default=text("'UNKNOWN'")),
+    )
 
-    source: StakeholderSource = Field(default=StakeholderSource.CALENDAR_DISCOVERY)
+    source: StakeholderSource = Field(
+        default=StakeholderSource.CALENDAR_DISCOVERY,
+        sa_column=Column(String(64), nullable=False, server_default=text("'CALENDAR_DISCOVERY'")),
+    )
     source_reference_id: UUID | None = Field(
         default=None,
         index=True,
@@ -120,7 +134,7 @@ class DealStakeholder(FlexibleSyncedRecordMixin, table=True):
     )
     approval_status: ApprovalStatus = Field(
         default=ApprovalStatus.APPROVED,
-        index=True,
+        sa_column=Column(String(64), nullable=False, index=True, server_default=text("'APPROVED'")),
         description="Approval status. CRM=always APPROVED. Discovery=auto-APPROVED up to 5 per source per deal.",
     )
 

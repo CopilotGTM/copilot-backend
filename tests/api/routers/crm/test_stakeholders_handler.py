@@ -42,7 +42,7 @@ class TestGetDealStakeholders:
         body = resp.json()
         assert body["status"] == "SUCCESS"
         assert body["message"] == "Stakeholders retrieved"
-        assert body["data"] == []
+        assert body["data"]["stakeholders"] == []
 
     def test_returns_all_stakeholder_fields_correctly(
         self,
@@ -78,9 +78,9 @@ class TestGetDealStakeholders:
 
         assert resp.status_code == 200
         body = resp.json()
-        assert len(body["data"]) == 1
+        assert len(body["data"]["stakeholders"]) == 1
 
-        data = body["data"][0]
+        data = body["data"]["stakeholders"][0]
         # Verify required fields
         assert data["stakeholder_id"] == str(stakeholder.stakeholder_id)
         assert data["deal_id"] == str(test_deal_id)
@@ -130,9 +130,9 @@ class TestGetDealStakeholders:
 
         assert resp.status_code == 200
         body = resp.json()
-        assert len(body["data"]) == 4
+        assert len(body["data"]["stakeholders"]) == 4
 
-        emails = {s["email"] for s in body["data"]}
+        emails = {s["email"] for s in body["data"]["stakeholders"]}
         assert emails == {
             "ceo@company.com",
             "cto@company.com",
@@ -172,8 +172,8 @@ class TestGetDealStakeholders:
 
         assert resp.status_code == 200
         body = resp.json()
-        assert len(body["data"]) == 1
-        assert body["data"][0]["email"] == "active@example.com"
+        assert len(body["data"]["stakeholders"]) == 1
+        assert body["data"]["stakeholders"][0]["email"] == "active@example.com"
 
     def test_handles_stakeholders_with_special_characters_in_name(
         self,
@@ -204,9 +204,9 @@ class TestGetDealStakeholders:
 
         assert resp.status_code == 200
         body = resp.json()
-        assert len(body["data"]) == 5
+        assert len(body["data"]["stakeholders"]) == 5
 
-        returned_names = {s["name"] for s in body["data"]}
+        returned_names = {s["name"] for s in body["data"]["stakeholders"]}
         assert returned_names == set(special_names)
 
     def test_handles_stakeholders_with_null_optional_fields(
@@ -234,9 +234,9 @@ class TestGetDealStakeholders:
 
         assert resp.status_code == 200
         body = resp.json()
-        assert len(body["data"]) == 1
+        assert len(body["data"]["stakeholders"]) == 1
 
-        data = body["data"][0]
+        data = body["data"]["stakeholders"][0]
         assert data["email"] == "minimal@example.com"
         assert data["name"] is None
         assert data["job_title"] is None
@@ -271,9 +271,9 @@ class TestGetDealStakeholders:
 
         assert resp.status_code == 200
         body = resp.json()
-        assert len(body["data"]) == 4
+        assert len(body["data"]["stakeholders"]) == 4
 
-        returned_sources = {s["source"] for s in body["data"]}
+        returned_sources = {s["source"] for s in body["data"]["stakeholders"]}
         assert returned_sources == {"CRM", "MANUAL", "CALENDAR_DISCOVERY", "EMAIL_DISCOVERY"}
 
     def test_returns_422_for_invalid_deal_id_format(
@@ -1105,5 +1105,285 @@ class TestGetStakeholderDetail:
     ):
         """Verify 422 is returned for malformed stakeholder ID."""
         resp = client.get(f"/users/crm/deals/{test_deal_id}/stakeholders/not-a-uuid")
+
+        assert resp.status_code == 422
+
+
+class TestApproveStakeholder:
+    """Tests for POST /{deal_id}/stakeholders/{stakeholder_id}/approve endpoint."""
+
+    def test_successfully_approves_pending_stakeholder(
+        self,
+        client: TestClient,
+        stakeholders_dependency_overrides,
+        fake_stakeholders_service,
+        test_deal_id,
+        test_user_ids,
+    ):
+        """Verify pending stakeholder can be approved."""
+        from src.domain.models.organisation_tables.sync.crm.stakeholders import ApprovalStatus
+
+        stakeholder = create_stakeholder(
+            deal_id=test_deal_id,
+            organisation_id=test_user_ids["organisation_id"],
+            email="pending@example.com",
+            name="Pending Stakeholder",
+        )
+        stakeholder.approval_status = ApprovalStatus.PENDING
+        fake_stakeholders_service.add_stakeholder(stakeholder)
+
+        resp = client.post(
+            f"/users/crm/deals/{test_deal_id}/stakeholders/{stakeholder.stakeholder_id}/approve"
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "SUCCESS"
+        assert body["message"] == "Stakeholder approved"
+        assert body["data"]["approval_status"] == "APPROVED"
+
+    def test_returns_400_for_already_approved_stakeholder(
+        self,
+        client: TestClient,
+        stakeholders_dependency_overrides,
+        fake_stakeholders_service,
+        test_deal_id,
+        test_user_ids,
+    ):
+        """Verify 400 error when stakeholder is already approved."""
+        stakeholder = create_stakeholder(
+            deal_id=test_deal_id,
+            organisation_id=test_user_ids["organisation_id"],
+            email="approved@example.com",
+        )
+        # Default is APPROVED
+        fake_stakeholders_service.add_stakeholder(stakeholder)
+
+        resp = client.post(
+            f"/users/crm/deals/{test_deal_id}/stakeholders/{stakeholder.stakeholder_id}/approve"
+        )
+
+        assert resp.status_code == 400
+        body = resp.json()
+        assert "already approved" in body["message"]
+
+    def test_returns_404_for_nonexistent_stakeholder(
+        self,
+        client: TestClient,
+        stakeholders_dependency_overrides,
+        test_deal_id,
+    ):
+        """Verify 404 when stakeholder doesn't exist."""
+        nonexistent_id = uuid4()
+
+        resp = client.post(f"/users/crm/deals/{test_deal_id}/stakeholders/{nonexistent_id}/approve")
+
+        assert resp.status_code == 404
+
+
+class TestRejectStakeholder:
+    """Tests for POST /{deal_id}/stakeholders/{stakeholder_id}/reject endpoint."""
+
+    def test_successfully_rejects_stakeholder(
+        self,
+        client: TestClient,
+        stakeholders_dependency_overrides,
+        fake_stakeholders_service,
+        test_deal_id,
+        test_user_ids,
+    ):
+        """Verify stakeholder can be rejected."""
+        stakeholder = create_stakeholder(
+            deal_id=test_deal_id,
+            organisation_id=test_user_ids["organisation_id"],
+            email="to-reject@example.com",
+            name="To Reject",
+        )
+        fake_stakeholders_service.add_stakeholder(stakeholder)
+
+        resp = client.post(
+            f"/users/crm/deals/{test_deal_id}/stakeholders/{stakeholder.stakeholder_id}/reject"
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "SUCCESS"
+        assert body["message"] == "Stakeholder rejected"
+        assert body["data"]["approval_status"] == "REJECTED"
+
+    def test_returns_400_for_already_rejected_stakeholder(
+        self,
+        client: TestClient,
+        stakeholders_dependency_overrides,
+        fake_stakeholders_service,
+        test_deal_id,
+        test_user_ids,
+    ):
+        """Verify 400 error when stakeholder is already rejected."""
+        from src.domain.models.organisation_tables.sync.crm.stakeholders import ApprovalStatus
+
+        stakeholder = create_stakeholder(
+            deal_id=test_deal_id,
+            organisation_id=test_user_ids["organisation_id"],
+            email="rejected@example.com",
+        )
+        stakeholder.approval_status = ApprovalStatus.REJECTED
+        fake_stakeholders_service.add_stakeholder(stakeholder)
+
+        resp = client.post(
+            f"/users/crm/deals/{test_deal_id}/stakeholders/{stakeholder.stakeholder_id}/reject"
+        )
+
+        assert resp.status_code == 400
+        body = resp.json()
+        assert "already rejected" in body["message"]
+
+    def test_returns_404_for_nonexistent_stakeholder(
+        self,
+        client: TestClient,
+        stakeholders_dependency_overrides,
+        test_deal_id,
+    ):
+        """Verify 404 when stakeholder doesn't exist."""
+        nonexistent_id = uuid4()
+
+        resp = client.post(f"/users/crm/deals/{test_deal_id}/stakeholders/{nonexistent_id}/reject")
+
+        assert resp.status_code == 404
+
+
+class TestRemoveStakeholder:
+    """Tests for DELETE /{deal_id}/stakeholders/{stakeholder_id} endpoint."""
+
+    def test_successfully_removes_approved_stakeholder(
+        self,
+        client: TestClient,
+        stakeholders_dependency_overrides,
+        fake_stakeholders_service,
+        test_deal_id,
+        test_user_ids,
+    ):
+        """Verify approved stakeholder can be removed."""
+        stakeholder = create_stakeholder(
+            deal_id=test_deal_id,
+            organisation_id=test_user_ids["organisation_id"],
+            email="to-remove@example.com",
+            name="To Remove",
+        )
+        # Default is APPROVED
+        fake_stakeholders_service.add_stakeholder(stakeholder)
+
+        resp = client.delete(
+            f"/users/crm/deals/{test_deal_id}/stakeholders/{stakeholder.stakeholder_id}"
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "SUCCESS"
+        assert body["message"] == "Stakeholder removed"
+        assert body["data"]["approval_status"] == "REMOVED"
+
+    def test_returns_400_for_already_removed_stakeholder(
+        self,
+        client: TestClient,
+        stakeholders_dependency_overrides,
+        fake_stakeholders_service,
+        test_deal_id,
+        test_user_ids,
+    ):
+        """Verify 400 error when stakeholder is already removed."""
+        from src.domain.models.organisation_tables.sync.crm.stakeholders import ApprovalStatus
+
+        stakeholder = create_stakeholder(
+            deal_id=test_deal_id,
+            organisation_id=test_user_ids["organisation_id"],
+            email="removed@example.com",
+        )
+        stakeholder.approval_status = ApprovalStatus.REMOVED
+        fake_stakeholders_service.add_stakeholder(stakeholder)
+
+        resp = client.delete(
+            f"/users/crm/deals/{test_deal_id}/stakeholders/{stakeholder.stakeholder_id}"
+        )
+
+        assert resp.status_code == 400
+        body = resp.json()
+        assert "already removed" in body["message"]
+
+    def test_returns_400_for_pending_stakeholder(
+        self,
+        client: TestClient,
+        stakeholders_dependency_overrides,
+        fake_stakeholders_service,
+        test_deal_id,
+        test_user_ids,
+    ):
+        """Verify 400 error when trying to remove a pending stakeholder."""
+        from src.domain.models.organisation_tables.sync.crm.stakeholders import ApprovalStatus
+
+        stakeholder = create_stakeholder(
+            deal_id=test_deal_id,
+            organisation_id=test_user_ids["organisation_id"],
+            email="pending@example.com",
+        )
+        stakeholder.approval_status = ApprovalStatus.PENDING
+        fake_stakeholders_service.add_stakeholder(stakeholder)
+
+        resp = client.delete(
+            f"/users/crm/deals/{test_deal_id}/stakeholders/{stakeholder.stakeholder_id}"
+        )
+
+        assert resp.status_code == 400
+        body = resp.json()
+        assert "Only approved stakeholders can be removed" in body["message"]
+
+    def test_returns_400_for_rejected_stakeholder(
+        self,
+        client: TestClient,
+        stakeholders_dependency_overrides,
+        fake_stakeholders_service,
+        test_deal_id,
+        test_user_ids,
+    ):
+        """Verify 400 error when trying to remove a rejected stakeholder."""
+        from src.domain.models.organisation_tables.sync.crm.stakeholders import ApprovalStatus
+
+        stakeholder = create_stakeholder(
+            deal_id=test_deal_id,
+            organisation_id=test_user_ids["organisation_id"],
+            email="rejected@example.com",
+        )
+        stakeholder.approval_status = ApprovalStatus.REJECTED
+        fake_stakeholders_service.add_stakeholder(stakeholder)
+
+        resp = client.delete(
+            f"/users/crm/deals/{test_deal_id}/stakeholders/{stakeholder.stakeholder_id}"
+        )
+
+        assert resp.status_code == 400
+        body = resp.json()
+        assert "Only approved stakeholders can be removed" in body["message"]
+
+    def test_returns_404_for_nonexistent_stakeholder(
+        self,
+        client: TestClient,
+        stakeholders_dependency_overrides,
+        test_deal_id,
+    ):
+        """Verify 404 when stakeholder doesn't exist."""
+        nonexistent_id = uuid4()
+
+        resp = client.delete(f"/users/crm/deals/{test_deal_id}/stakeholders/{nonexistent_id}")
+
+        assert resp.status_code == 404
+
+    def test_returns_422_for_invalid_stakeholder_id(
+        self,
+        client: TestClient,
+        stakeholders_dependency_overrides,
+        test_deal_id,
+    ):
+        """Verify 422 for malformed stakeholder ID."""
+        resp = client.delete(f"/users/crm/deals/{test_deal_id}/stakeholders/not-a-uuid")
 
         assert resp.status_code == 422

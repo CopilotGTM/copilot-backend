@@ -214,6 +214,40 @@ class StakeholdersService:
         await self.session.refresh(stakeholder)
         return stakeholder
 
+    async def remove_stakeholder(self, deal_id: UUID, stakeholder_id: UUID) -> DealStakeholder:
+        """Remove an APPROVED stakeholder from the deal.
+
+        This marks the stakeholder as REMOVED, excluding them from deal matching
+        and stakeholder lists. Unlike REJECTED, REMOVED indicates the stakeholder
+        was previously active but has been removed by the user.
+
+        Args:
+            deal_id: The deal ID.
+            stakeholder_id: The stakeholder to remove.
+
+        Returns:
+            The updated stakeholder with REMOVED status.
+
+        Raises:
+            StakeholdersServiceError: If stakeholder not found or not in APPROVED status.
+        """
+        stakeholder = await self.get_stakeholder(deal_id, stakeholder_id)
+        if not stakeholder:
+            raise StakeholdersServiceError("Stakeholder not found", status_code=404)
+
+        if stakeholder.approval_status == ApprovalStatus.REMOVED:
+            raise StakeholdersServiceError("Stakeholder is already removed", status_code=400)
+
+        if stakeholder.approval_status != ApprovalStatus.APPROVED:
+            raise StakeholdersServiceError(
+                "Only approved stakeholders can be removed", status_code=400
+            )
+
+        stakeholder.approval_status = ApprovalStatus.REMOVED
+        await self.session.commit()
+        await self.session.refresh(stakeholder)
+        return stakeholder
+
     async def create_stakeholder(
         self, deal_id: UUID, request: CreateStakeholderRequest
     ) -> StakeholderDetail:

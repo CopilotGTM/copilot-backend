@@ -198,3 +198,4 @@ Dockerfile.local
 crm_data_exports/
 tmpclaude-*
 nul
+.claude/
