@@ -399,9 +399,9 @@ def test_get_deal_with_active_jobs(client: TestClient, deals_dependency_override
     job_service.add_job(job)
 
     # Verify job was added correctly
-    assert (
-        deal.deal_id in job_service._deal_jobs
-    ), f"Job not added to _deal_jobs for deal {deal.deal_id}"
+    assert deal.deal_id in job_service._deal_jobs, (
+        f"Job not added to _deal_jobs for deal {deal.deal_id}"
+    )
     assert len(job_service._deal_jobs[deal.deal_id]) == 1, "Expected 1 job"
 
     resp = client.get(f"/users/crm/deals/{deal.deal_id}")
