@@ -9,7 +9,7 @@ import logging
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import Boolean, and_, cast, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.organisation_dependencies import UserIDs
 from src.domain.models.organisation_tables.sync import (
@@ -58,6 +58,10 @@ class IntegrationService:
         self.user_ids = user_ids
         self.nango = nango_client or NangoClient()
 
+    async def close(self) -> None:
+        """Close the database session."""
+        await self.db.close()
+
     async def get_integration(
         self,
         integration_id: UUID,
@@ -72,8 +76,8 @@ class IntegrationService:
             KnowledgeIntegration if found, None otherwise
         """
         statement = select(KnowledgeIntegration).where(
-            KnowledgeIntegration.integration_id == integration_id,
-            KnowledgeIntegration.organisation_id == self.user_ids.organisation_id,
+            KnowledgeIntegration.integration_id == integration_id,  # type: ignore
+            KnowledgeIntegration.organisation_id == self.user_ids.organisation_id,  # type: ignore
         )
 
         result = await self.db.execute(statement)
@@ -96,22 +100,22 @@ class IntegrationService:
             List of active KnowledgeIntegration instances, ordered by created_at DESC
         """
         statement = select(KnowledgeIntegration).where(
-            KnowledgeIntegration.organisation_id == self.user_ids.organisation_id,
-            KnowledgeIntegration.is_active,
+            KnowledgeIntegration.organisation_id == self.user_ids.organisation_id,  # type: ignore
+            cast(KnowledgeIntegration.is_active, Boolean).is_(True),
         )
 
         if user_id:
             statement = statement.where(
                 or_(
-                    KnowledgeIntegration.integration_scope == IntegrationScope.ORGANIZATION,
+                    KnowledgeIntegration.integration_scope == IntegrationScope.ORGANIZATION,  # type: ignore
                     and_(
-                        KnowledgeIntegration.integration_scope == IntegrationScope.USER,
-                        KnowledgeIntegration.created_by_user_id == user_id,
+                        KnowledgeIntegration.integration_scope == IntegrationScope.USER,  # type: ignore
+                        KnowledgeIntegration.created_by_user_id == user_id,  # type: ignore
                     ),
                 )
             )
 
-        statement = statement.order_by(KnowledgeIntegration.created_at.desc())
+        statement = statement.order_by(KnowledgeIntegration.created_at.desc())  # type: ignore[attr-defined]
 
         result = await self.db.execute(statement)
         return list(result.scalars().all())
@@ -187,16 +191,16 @@ class IntegrationService:
 
         # Query MessagingChannel table
         stmt = select(MessagingChannel).where(
-            MessagingChannel.integration_id == integration_id,
-            MessagingChannel.is_archived == "false",  # Only active channels
+            MessagingChannel.integration_id == integration_id,  # type: ignore
+            MessagingChannel.is_archived == "false",  # Only active channels # type: ignore
         )
 
         if deal_id:
             # Exclude channels already linked to this deal
-            subquery = select(MessagingDealLink.channel_id).where(
+            subquery = select(MessagingDealLink.channel_id).where(  # type: ignore
                 MessagingDealLink.deal_id == deal_id
             )
-            stmt = stmt.where(MessagingChannel.channel_id.not_in(subquery))
+            stmt = stmt.where(MessagingChannel.channel_id.not_in(subquery))  # type: ignore
 
         result = await self.db.execute(stmt)
         db_channels = result.scalars().all()
@@ -235,15 +239,15 @@ class IntegrationService:
         """
         stmt = (
             select(
-                MessagingChannel.channel_id,
-                MessagingChannel.external_channel_id,
-                MessagingChannel.channel_name,
-                MessagingChannel.channel_type,
-                MessagingChannel.integration_id,
-                KnowledgeIntegration.name.label("integration_name"),
-                KnowledgeIntegration.integration_type,
-                MessagingChannel.channel_metadata,
-            )
+                MessagingChannel.channel_id,  # type: ignore
+                MessagingChannel.external_channel_id,  # type: ignore
+                MessagingChannel.channel_name,  # type: ignore
+                MessagingChannel.channel_type,  # type: ignore
+                MessagingChannel.integration_id,  # type: ignore
+                KnowledgeIntegration.name.label("integration_name"),  # type: ignore
+                KnowledgeIntegration.integration_type,  # type: ignore
+                MessagingChannel.channel_metadata,  # type: ignore
+            )  # type: ignore
             .join(MessagingDealLink, MessagingDealLink.channel_id == MessagingChannel.channel_id)
             .join(
                 KnowledgeIntegration,
@@ -285,8 +289,8 @@ class IntegrationService:
         sets is_monitored=false to stop message syncing.
         """
         stmt = select(MessagingDealLink).where(
-            MessagingDealLink.deal_id == deal_id,
-            MessagingDealLink.channel_id == channel_id,
+            MessagingDealLink.deal_id == deal_id,  # type: ignore
+            MessagingDealLink.channel_id == channel_id,  # type: ignore
         )
         result = await self.db.execute(stmt)
         link = result.scalars().first()
@@ -298,15 +302,15 @@ class IntegrationService:
 
         # Check if channel is still linked to other deals
         other_links_stmt = select(MessagingDealLink).where(
-            MessagingDealLink.channel_id == channel_id,
-            MessagingDealLink.deal_id != deal_id,
+            MessagingDealLink.channel_id == channel_id,  # type: ignore
+            MessagingDealLink.deal_id != deal_id,  # type: ignore
         )
         other_links_result = await self.db.execute(other_links_stmt)
         has_other_links = other_links_result.scalars().first() is not None
 
         # If no other deals linked, stop monitoring this channel
         if not has_other_links:
-            channel_stmt = select(MessagingChannel).where(MessagingChannel.channel_id == channel_id)
+            channel_stmt = select(MessagingChannel).where(MessagingChannel.channel_id == channel_id)  # type: ignore
             channel_result = await self.db.execute(channel_stmt)
             channel = channel_result.scalars().first()
             if channel and channel.is_monitored == "true":
@@ -358,8 +362,8 @@ class IntegrationService:
 
         # 4. Create Link if not exists
         link_stmt = select(MessagingDealLink).where(
-            MessagingDealLink.deal_id == deal_id,
-            MessagingDealLink.channel_id == channel.channel_id,
+            MessagingDealLink.deal_id == deal_id,  # type: ignore
+            MessagingDealLink.channel_id == channel.channel_id,  # type: ignore
         )
         link_result = await self.db.execute(link_stmt)
         link = link_result.scalars().first()
@@ -370,7 +374,6 @@ class IntegrationService:
                 integration_id=integration_id,
                 deal_id=deal_id,
                 channel_id=channel.channel_id,
-                created_by=self.user_ids.user_id,
                 detection_method="manual",
                 confidence_score=1.0,  # Manual links have full confidence
                 linked_by=self.user_ids.user_id,

@@ -167,6 +167,11 @@ class StakeholderSyncService:
                     result.errors.extend(deal_result.errors[:3])  # Limit per deal
 
             except Exception as e:
+                # CRITICAL: Rollback to clear the failed transaction state
+                # Otherwise all subsequent queries will fail with:
+                # "current transaction is aborted, commands ignored until end of transaction block"
+                await self.session.rollback()
+
                 result.failed_deals += 1
                 result.errors.append(f"Deal {deal_id}: {str(e)}")
                 logger.warning(
@@ -325,14 +330,20 @@ class StakeholderSyncService:
             if participant.related_name and not existing.name:
                 existing.name = participant.related_name
 
-            # Update role if provided
-            if participant.relationship_role:
-                existing.job_title = participant.relationship_role
+            # NOTE: Do NOT set job_title from participant.relationship_role
+            # relationship_role contains HubSpot association type (e.g., "deal_to_contact")
+            # job_title should come from CRMContact.job_title via enrichment
+
+            # Enrich from CRMContact (fixes bad job_title values from old sync)
+            await self._enrich_from_contact(existing, email)
 
             self.session.add(existing)
             return False
 
         # Create new stakeholder
+        # NOTE: job_title is NOT set from participant.relationship_role
+        # relationship_role contains HubSpot association type (e.g., "deal_to_contact")
+        # job_title will be enriched from CRMContact.job_title below
         stakeholder = DealStakeholder(
             organisation_id=self.organisation_id,
             integration_id=deal.integration_id,
@@ -342,7 +353,7 @@ class StakeholderSyncService:
             source=StakeholderSource.CRM,
             source_reference_id=participant.participant_id,
             approval_status=ApprovalStatus.APPROVED,  # CRM is always trusted
-            job_title=participant.relationship_role,
+            job_title=None,  # Will be enriched from CRMContact
             stance=StakeholderStance.UNKNOWN,
             temperature=StakeholderTemperature.UNKNOWN,
             engagement_score=0.0,
@@ -356,7 +367,11 @@ class StakeholderSyncService:
         return True
 
     async def _enrich_from_contact(self, stakeholder: DealStakeholder, email: str) -> None:
-        """Enrich stakeholder with CRMContact data if available."""
+        """Enrich stakeholder with CRMContact data if available.
+
+        CRMContact is the authoritative source for job_title, so we always
+        overwrite (fixes bad values from old sync that used relationship_role).
+        """
         stmt = select(CRMContact).where(
             col(CRMContact.organisation_id) == self.organisation_id,
             col(CRMContact.email) == email,
@@ -368,5 +383,6 @@ class StakeholderSyncService:
             stakeholder.contact_id = contact.contact_id
             if contact.full_name and not stakeholder.name:
                 stakeholder.name = contact.full_name
-            if contact.job_title and not stakeholder.job_title:
+            # Always use CRMContact.job_title as authoritative source
+            if contact.job_title:
                 stakeholder.job_title = contact.job_title

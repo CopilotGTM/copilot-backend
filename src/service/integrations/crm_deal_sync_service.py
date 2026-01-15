@@ -148,29 +148,30 @@ class CRMDealSyncService:
         # 4. Run enrichment (unless skipped)
         enrichment_metrics: dict[str, Any] = {}
         triggered_syncs: list[str] = []
+        stakeholder_count = 0
 
         if not skip_enrichment:
             enrichment_metrics = await self._run_enrichment(integration)
             triggered_syncs = self._trigger_missing_data_syncs(integration, enrichment_metrics)
 
-        # 5. Dispatch stakeholder sync for all synced deals
-        # The stakeholder task will internally decide what changes occurred
-        stakeholder_count = await self._dispatch_stakeholder_sync(
-            integration_id=integration_id,
-            integration_type=integration_type,
-            sync_start=sync_start,
-        )
+            # 5. Dispatch stakeholder sync for all synced deals
+            # The stakeholder task will internally decide what changes occurred
+            stakeholder_count = await self._dispatch_stakeholder_sync(
+                integration_id=integration_id,
+                integration_type=integration_type,
+                sync_start=sync_start,
+            )
 
-        if stakeholder_count > 0:
-            triggered_syncs.append("stakeholders")
+            if stakeholder_count > 0:
+                triggered_syncs.append("stakeholders")
 
-        logger.info(
-            "CRM deal sync complete: org=%s integration=%s synced=%d stakeholders=%d",
-            self.organisation_id,
-            integration_id,
-            metrics.get("deals", 0),
-            stakeholder_count,
-        )
+            logger.info(
+                "CRM deal sync complete: org=%s integration=%s synced=%d stakeholders=%d",
+                self.organisation_id,
+                integration_id,
+                metrics.get("deals", 0),
+                stakeholder_count,
+            )
 
         return {
             "integration_id": str(integration_id),
@@ -288,7 +289,7 @@ class CRMDealSyncService:
             len(deal_ids),
         )
 
-        from src.workers.deal_worker.tasks.stakeholder_tasks import (
+        from src.workers.deal_worker.tasks.deal_mappers.stakeholder_tasks import (
             sync_deal_stakeholders_task,
         )
 

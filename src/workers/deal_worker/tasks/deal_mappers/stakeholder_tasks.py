@@ -1,18 +1,24 @@
 """Celery tasks for stakeholder synchronization.
 
-Task 1: sync_deal_stakeholders_task - Sync stakeholders from CRM participant changes
+Task 1a: sync_deal_stakeholders_task - Sync stakeholders for a single deal
 Task 1b: sync_all_deals_stakeholders_org_task - Sync stakeholders for ALL deals in an org
+Task 1c: sync_all_deals_stakeholders_all_orgs_task - Sync stakeholders for ALL orgs (Tier 1)
 
-Architecture (Three-Task System):
+Architecture (Three-Tier System):
 ---------------------------------
-    CRM Sync → sync_deal_stakeholders_task (per-deal)
+    Tier 1: sync_all_deals_stakeholders_all_orgs_task (all orgs - coordinator)
                         │
-                        └─→ Triggers Task 2/3 for re-matching
+                        └─→ Dispatches Tier 2 for each approved org
 
-    CRM Initial Sync → sync_all_deals_stakeholders_org_task (org-level)
+    Tier 2: sync_all_deals_stakeholders_org_task (org-level)
                         │
                         └─→ Loops through all deals, syncs stakeholders
-                        └─→ Triggers Task 2/3 (calendar/email matching) at end
+                        └─→ Triggers calendar/email matching at end
+
+    Tier 3: sync_deal_stakeholders_task (per-deal)
+                        │
+                        └─→ Syncs stakeholders for a single deal
+                        └─→ Triggers calendar/email matching for that deal
 
 For stakeholder analysis tasks, see stakeholder_analysis_tasks.py.
 """
@@ -24,8 +30,11 @@ from typing import Any
 from uuid import UUID
 
 from celery import Task
+from sqlalchemy import select
 
+from src.api.dependencies.master_dependencies import acquire_master_async_session
 from src.api.dependencies.organisation_dependencies import acquire_org_async_session
+from src.domain.models.master_tables import Organisation, OrganisationStatus
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.workers.deal_worker.celery_app import app
@@ -196,8 +205,11 @@ def sync_all_deals_stakeholders_org_task(
             result = await service.sync_for_organisation()
 
             # Trigger calendar and email matching for the entire org
+            # ALWAYS trigger when trigger_deal_matching=True, not just when new CRM stakeholders
+            # This ensures discovered stakeholders (CALENDAR_DISCOVERY, EMAIL_DISCOVERY)
+            # from previous runs are used to find more meetings
             deal_matching_triggered = False
-            if trigger_deal_matching and result.requires_rematching:
+            if trigger_deal_matching:
                 try:
                     from src.workers.deal_worker.tasks.deal_mappers.calendar_matching_tasks import (
                         match_calendar_to_deals_org_task,
@@ -274,4 +286,147 @@ def sync_all_deals_stakeholders_org_task(
             "completed_at": datetime.now(UTC).isoformat(),
             "error": str(exc),
             "error_type": type(exc).__name__,
+        }
+
+
+@app.task(
+    name="stakeholder.sync_all_deals_stakeholders_all_orgs",
+    bind=False,
+    max_retries=0,
+    acks_late=True,
+    soft_time_limit=300,  # 5 minutes (coordinator task)
+    time_limit=360,
+)
+def sync_all_deals_stakeholders_all_orgs_task() -> dict[str, Any]:
+    """Tier 1: Sync stakeholders for ALL deals in ALL approved organizations.
+
+    This is a coordinator task that:
+    1. Queries master DB for all approved organizations
+    2. Dispatches Tier 2 tasks (sync_all_deals_stakeholders_org_task) for each org
+    3. Returns summary of dispatched tasks
+
+    Useful for:
+    - Initial system setup
+    - Manual re-sync across all organizations
+    - Testing/debugging
+
+    Returns:
+        Dictionary with dispatch summary:
+        {
+            "status": "completed",
+            "started_at": "...",
+            "completed_at": "...",
+            "summary": {
+                "total_orgs": N,
+                "orgs_triggered": N,
+                "orgs_skipped": N
+            },
+            "org_tasks": [...]
+        }
+    """
+    started_at = datetime.now(UTC).isoformat()
+
+    async def _dispatch_all_orgs() -> dict[str, Any]:
+        """Query orgs and dispatch Tier 2 tasks."""
+        logger.info("Tier 1: Starting stakeholder sync for all organizations")
+
+        # Query all approved organizations from master DB
+        org_ids: list[UUID] = []
+        async for master_session in acquire_master_async_session():
+            stmt = select(Organisation.organisation_id).where(  # type: ignore
+                Organisation.status == OrganisationStatus.APPROVED
+            )
+            result = await master_session.execute(stmt)
+            org_ids = [row[0] for row in result.all()]
+
+        if not org_ids:
+            logger.warning("No approved organizations found for stakeholder sync")
+            return {
+                "status": "completed",
+                "started_at": started_at,
+                "completed_at": datetime.now(UTC).isoformat(),
+                "summary": {
+                    "total_orgs": 0,
+                    "orgs_triggered": 0,
+                    "orgs_skipped": 0,
+                },
+                "org_tasks": [],
+            }
+
+        logger.info("Found %d approved organization(s) for stakeholder sync", len(org_ids))
+
+        # Dispatch Tier 2 task for each organization
+        org_tasks = []
+        orgs_triggered = 0
+        orgs_skipped = 0
+
+        for org_id in org_ids:
+            try:
+                task = sync_all_deals_stakeholders_org_task.apply_async(  # type: ignore
+                    kwargs={"organisation_id": str(org_id)},
+                )
+                org_tasks.append(
+                    {
+                        "org_id": str(org_id),
+                        "task_id": task.id,
+                        "status": "triggered",
+                    }
+                )
+                orgs_triggered += 1
+                logger.debug(
+                    "Dispatched stakeholder sync for org: %s (task_id=%s)",
+                    org_id,
+                    task.id,
+                )
+            except Exception as e:
+                logger.error(
+                    "Failed to dispatch stakeholder sync for org %s: %s",
+                    org_id,
+                    str(e),
+                    exc_info=True,
+                )
+                org_tasks.append(
+                    {
+                        "org_id": str(org_id),
+                        "status": "failed",
+                        "error": str(e),
+                    }
+                )
+                orgs_skipped += 1
+
+        completed_at = datetime.now(UTC).isoformat()
+
+        logger.info(
+            "Stakeholder sync dispatch complete: triggered=%d skipped=%d total=%d",
+            orgs_triggered,
+            orgs_skipped,
+            len(org_ids),
+        )
+
+        return {
+            "status": "completed",
+            "started_at": started_at,
+            "completed_at": completed_at,
+            "summary": {
+                "total_orgs": len(org_ids),
+                "orgs_triggered": orgs_triggered,
+                "orgs_skipped": orgs_skipped,
+            },
+            "org_tasks": org_tasks,
+        }
+
+    try:
+        return run_async(_dispatch_all_orgs())
+    except Exception as e:
+        logger.error(
+            "Stakeholder all-orgs sync failed: error=%s",
+            str(e),
+            exc_info=True,
+        )
+        return {
+            "status": "failed",
+            "started_at": started_at,
+            "completed_at": datetime.now(UTC).isoformat(),
+            "error": str(e),
+            "error_type": type(e).__name__,
         }

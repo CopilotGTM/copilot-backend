@@ -80,7 +80,7 @@ def list_organizations():
         if not organizations:
             print("No organizations found.")
             return []
-        print("\n📋 Organizations (derived schemas):")
+        print("\n[LIST] Organizations (derived schemas):")
         print("-" * 140)
         print(
             f"{'ID':<36} {'Name':<26} {'Schema':<22} {'Exists':<8} {'Status':<12} {'Created':<19}"
@@ -110,7 +110,7 @@ def list_organizations():
         print("Total organizations:", len(organizations))
         return organizations
     except Exception as e:
-        print(f"❌ Failed to list organizations: {e}")
+        print(f"[ERROR] Failed to list organizations: {e}")
         return []
     finally:
         session.close()
@@ -146,7 +146,7 @@ def run_migrations_for_orgs(
                 stmt = select(Organisation).where(Organisation.organisation_id == org_id)
                 org = session.exec(stmt).one_or_none()
                 if not org:
-                    print(f"❌ Organization not found: {org_id}")
+                    print(f"[ERROR] Organization not found: {org_id}")
                 else:
                     target_orgs.append(org)
 
@@ -158,7 +158,7 @@ def run_migrations_for_orgs(
 
         # Precheck: gather current revisions
         if precheck:
-            print("\n🔍 Precheck (no changes will be made):")
+            print("\n[PRECHECK] (no changes will be made):")
             from sqlalchemy import text as sa_text
 
             with engine.connect() as conn:
@@ -181,7 +181,7 @@ def run_migrations_for_orgs(
 
         for organization in target_orgs:
             org_id = organization.organisation_id
-            print(f"\n🔄 Migrating organization: {org_id}")
+            print(f"\n[MIGRATING] organization: {org_id}")
             schema_name = get_schema_name(org_id)
             # Verify schema exists (skip if missing)
             schema_exists = False
@@ -193,18 +193,18 @@ def run_migrations_for_orgs(
                     )
                     schema_exists = res.fetchone() is not None
             except Exception as e:
-                print(f"⚠️ Could not verify schema existence for {schema_name}: {e}")
+                print(f"[WARNING] Could not verify schema existence for {schema_name}: {e}")
 
             if not schema_exists:
-                print(f"❌ Schema '{schema_name}' does not exist (skipping)")
+                print(f"[ERROR] Schema '{schema_name}' does not exist (skipping)")
                 failed.append(org_id)
                 if fail_fast:
-                    print("⛔ Fail-fast enabled: stopping further migrations.")
+                    print("[STOP] Fail-fast enabled: stopping further migrations.")
                     break
                 continue
 
-            print(f"📁 Schema: {schema_name}")
-            print(f"🎯 Target version: {target_version}")
+            print(f"  Schema: {schema_name}")
+            print(f"  Target version: {target_version}")
             try:
                 result = migration_manager.run_organization_migration(
                     schema_name=schema_name,
@@ -213,30 +213,30 @@ def run_migrations_for_orgs(
                 )
                 if result.success:
                     print(
-                        f"✅ Successfully migrated organization: {org_id} in {result.duration:.2f}s"
+                        f"[OK] Successfully migrated organization: {org_id} in {result.duration:.2f}s"
                     )
                     migrated.append(org_id)
                 else:
-                    print(f"❌ Migration failed for organization {org_id}: {result.error}")
+                    print(f"[ERROR] Migration failed for organization {org_id}: {result.error}")
                     failed.append(org_id)
                     if fail_fast:
-                        print("⛔ Fail-fast enabled: stopping further migrations.")
+                        print("[STOP] Fail-fast enabled: stopping further migrations.")
                         break
             except Exception as e:
-                print(f"❌ Exception during migration for organization {org_id}: {str(e)}")
+                print(f"[ERROR] Exception during migration for organization {org_id}: {str(e)}")
                 failed.append(org_id)
                 if fail_fast:
-                    print("⛔ Fail-fast enabled: stopping further migrations.")
+                    print("[STOP] Fail-fast enabled: stopping further migrations.")
                     break
 
-        print("\n🎉 Migration process completed!")
-        print(f"✅ Success: {len(migrated)} | ❌ Failed: {len(failed)}")
+        print("\n[DONE] Migration process completed!")
+        print(f"[OK] Success: {len(migrated)} | [ERROR] Failed: {len(failed)}")
         if migrated:
             print("Succeeded:", ", ".join(str(i) for i in migrated))
         if failed:
             print("Failed:   ", ", ".join(str(i) for i in failed))
     except Exception as e:
-        print(f"❌ Failed to run migrations: {str(e)}")
+        print(f"[ERROR] Failed to run migrations: {str(e)}")
     finally:
         session.close()
 
@@ -257,10 +257,10 @@ def main():
         return
 
     if migrate_all:
-        print("🚀 Running organization migrations for ALL organizations")
+        print("[RUN] Running organization migrations for ALL organizations")
     else:
-        print(f"🚀 Running organization migrations for {len(args.org_ids)} organization(s)")
-    print(f"🎯 Target version: {args.target_version}")
+        print(f"[RUN] Running organization migrations for {len(args.org_ids)} organization(s)")
+    print(f"  Target version: {args.target_version}")
 
     run_migrations_for_orgs(
         args.org_ids,

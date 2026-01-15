@@ -132,10 +132,15 @@ class ProductionMigrationManager:
             current_rev = self._get_current_revision(schema_name)
             logger.info(f"Current revision for {schema_name}: {current_rev}")
 
-            # Get head revision to check if migration needed
+            # Get head revision for comparison
             head_rev = self._get_head_revision()
-            if current_rev == head_rev:
-                logger.info(f"Schema {schema_name} already at head revision {head_rev}, skipping migration")
+
+            # Determine actual target revision
+            effective_target = head_rev if target_revision == "head" else target_revision
+
+            # Check if already at target revision
+            if current_rev == effective_target:
+                logger.info(f"Schema {schema_name} already at target revision {effective_target}, skipping migration")
                 return MigrationResult(
                     schema_name=schema_name,
                     success=True,
@@ -143,14 +148,31 @@ class ProductionMigrationManager:
                     applied_migrations=[],
                 )
 
-            # Run migration
-            logger.info(
-                f"Running migration upgrade for {schema_name} to {target_revision} (this may take a while for new schemas)"
-            )
-            sys.stdout.flush()
-            sys.stderr.flush()
-            
-            command.upgrade(cfg, target_revision)
+            # Determine if we need to upgrade or downgrade
+            # If target_revision is "head" -> always upgrade
+            # If target is a specific revision, check if it's before or after current
+            is_downgrade = False
+            if target_revision != "head" and current_rev:
+                # Check if target revision is an ancestor of current (downgrade needed)
+                is_downgrade = self._is_ancestor_revision(target_revision, current_rev)
+
+            if is_downgrade:
+                logger.info(
+                    f"Running migration DOWNGRADE for {schema_name} to {target_revision}"
+                )
+                sys.stdout.flush()
+                sys.stderr.flush()
+
+                command.downgrade(cfg, target_revision)
+            else:
+                # Run upgrade
+                logger.info(
+                    f"Running migration upgrade for {schema_name} to {target_revision} (this may take a while for new schemas)"
+                )
+                sys.stdout.flush()
+                sys.stderr.flush()
+
+                command.upgrade(cfg, target_revision)
             
             logger.info(f"Migration upgrade completed for {schema_name}")
             sys.stdout.flush()
@@ -390,6 +412,49 @@ class ProductionMigrationManager:
                 return False
         except Exception as e:
             logger.error(f"Failed to validate revision {revision}: {str(e)}")
+            return False
+
+    def _is_ancestor_revision(self, target_revision: str, current_revision: str) -> bool:
+        """Check if target_revision is an ancestor of current_revision (i.e., downgrade needed).
+
+        Returns True if target_revision comes before current_revision in the migration chain.
+        """
+        try:
+            cfg = Config("migrations/org_migrations/alembic.ini")
+            script_dir = ScriptDirectory.from_config(cfg)
+
+            # Walk backwards from current_revision to see if we hit target_revision
+            revision = script_dir.get_revision(current_revision)
+            if revision is None:
+                return False
+
+            visited = set()
+            while revision:
+                if revision.revision in visited:
+                    break
+                visited.add(revision.revision)
+
+                # Check down_revision(s)
+                down_revisions = revision.down_revision
+                if down_revisions is None:
+                    break
+
+                # Handle both single down_revision and tuple of down_revisions
+                if isinstance(down_revisions, str):
+                    down_revisions = (down_revisions,)
+
+                if target_revision in down_revisions:
+                    return True
+
+                # Continue walking backwards
+                if down_revisions:
+                    revision = script_dir.get_revision(down_revisions[0])
+                else:
+                    break
+
+            return False
+        except Exception as e:
+            logger.warning(f"Could not determine revision ancestry: {e}")
             return False
 
 

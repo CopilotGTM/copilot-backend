@@ -2,21 +2,23 @@
 
 This module provides Celery tasks for matching calendar events to CRM deals.
 
-TRIGGERS:
----------
-1. Calendar sync completes → match_calendar_to_deals_org_task (all new events)
-2. Stakeholder added → match_calendar_to_deals_task (single deal re-match)
-3. Manual refresh → match_calendar_to_deals_task (single deal re-match)
+Task 2a: match_calendar_to_deals_task - Match calendar events to a single deal
+Task 2b: match_calendar_to_deals_org_task - Match calendar events for an entire org
+Task 2c: match_calendar_to_deals_all_orgs_task - Match calendar events for ALL orgs (Tier 1)
 
-ARCHITECTURE:
--------------
-    Calendar Sync (org_task.py)
-            │
-            └─→ match_calendar_to_deals_org_task (process all events for org)
+ARCHITECTURE (Three-Tier System):
+---------------------------------
+    Tier 1: match_calendar_to_deals_all_orgs_task (all orgs - coordinator)
+                        │
+                        └─→ Dispatches Tier 2 for each approved org
 
-    Task 1 (stakeholder sync) with PARTICIPANT_ADDED
-            │
-            └─→ match_calendar_to_deals_task (re-match single deal)
+    Tier 2: match_calendar_to_deals_org_task (org-level)
+                        │
+                        └─→ Processes all calendar events for the org
+
+    Tier 3: match_calendar_to_deals_task (per-deal)
+                        │
+                        └─→ Re-matches calendar events for a single deal
 """
 
 from __future__ import annotations
@@ -26,8 +28,11 @@ from typing import Any
 from uuid import UUID
 
 from celery import Task
+from sqlalchemy import select
 
+from src.api.dependencies.master_dependencies import acquire_master_async_session
 from src.api.dependencies.organisation_dependencies import acquire_org_async_session
+from src.domain.models.master_tables import Organisation, OrganisationStatus
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.workers.deal_worker.celery_app import app
@@ -221,4 +226,147 @@ def match_calendar_to_deals_task(
             "completed_at": datetime.now(UTC).isoformat(),
             "error": str(exc),
             "error_type": type(exc).__name__,
+        }
+
+
+@app.task(
+    name="deal.match_calendar_to_deals_all_orgs",
+    bind=False,
+    max_retries=0,
+    acks_late=True,
+    soft_time_limit=300,  # 5 minutes (coordinator task)
+    time_limit=360,
+)
+def match_calendar_to_deals_all_orgs_task() -> dict[str, Any]:
+    """Tier 1: Match calendar events to deals for ALL approved organizations.
+
+    This is a coordinator task that:
+    1. Queries master DB for all approved organizations
+    2. Dispatches Tier 2 tasks (match_calendar_to_deals_org_task) for each org
+    3. Returns summary of dispatched tasks
+
+    Useful for:
+    - Initial system setup
+    - Manual re-sync across all organizations
+    - Testing/debugging
+
+    Returns:
+        Dictionary with dispatch summary:
+        {
+            "status": "completed",
+            "started_at": "...",
+            "completed_at": "...",
+            "summary": {
+                "total_orgs": N,
+                "orgs_triggered": N,
+                "orgs_skipped": N
+            },
+            "org_tasks": [...]
+        }
+    """
+    started_at = datetime.now(UTC).isoformat()
+
+    async def _dispatch_all_orgs() -> dict[str, Any]:
+        """Query orgs and dispatch Tier 2 tasks."""
+        logger.info("Tier 1: Starting calendar matching for all organizations")
+
+        # Query all approved organizations from master DB
+        org_ids: list[UUID] = []
+        async for master_session in acquire_master_async_session():
+            stmt = select(Organisation.organisation_id).where(  # type: ignore
+                Organisation.status == OrganisationStatus.APPROVED
+            )
+            result = await master_session.execute(stmt)
+            org_ids = [row[0] for row in result.all()]
+
+        if not org_ids:
+            logger.warning("No approved organizations found for calendar matching")
+            return {
+                "status": "completed",
+                "started_at": started_at,
+                "completed_at": datetime.now(UTC).isoformat(),
+                "summary": {
+                    "total_orgs": 0,
+                    "orgs_triggered": 0,
+                    "orgs_skipped": 0,
+                },
+                "org_tasks": [],
+            }
+
+        logger.info("Found %d approved organization(s) for calendar matching", len(org_ids))
+
+        # Dispatch Tier 2 task for each organization
+        org_tasks = []
+        orgs_triggered = 0
+        orgs_skipped = 0
+
+        for org_id in org_ids:
+            try:
+                task = match_calendar_to_deals_org_task.apply_async(  # type: ignore
+                    kwargs={"organisation_id": str(org_id)},
+                )
+                org_tasks.append(
+                    {
+                        "org_id": str(org_id),
+                        "task_id": task.id,
+                        "status": "triggered",
+                    }
+                )
+                orgs_triggered += 1
+                logger.debug(
+                    "Dispatched calendar matching for org: %s (task_id=%s)",
+                    org_id,
+                    task.id,
+                )
+            except Exception as e:
+                logger.error(
+                    "Failed to dispatch calendar matching for org %s: %s",
+                    org_id,
+                    str(e),
+                    exc_info=True,
+                )
+                org_tasks.append(
+                    {
+                        "org_id": str(org_id),
+                        "status": "failed",
+                        "error": str(e),
+                    }
+                )
+                orgs_skipped += 1
+
+        completed_at = datetime.now(UTC).isoformat()
+
+        logger.info(
+            "Calendar matching dispatch complete: triggered=%d skipped=%d total=%d",
+            orgs_triggered,
+            orgs_skipped,
+            len(org_ids),
+        )
+
+        return {
+            "status": "completed",
+            "started_at": started_at,
+            "completed_at": completed_at,
+            "summary": {
+                "total_orgs": len(org_ids),
+                "orgs_triggered": orgs_triggered,
+                "orgs_skipped": orgs_skipped,
+            },
+            "org_tasks": org_tasks,
+        }
+
+    try:
+        return run_async(_dispatch_all_orgs())
+    except Exception as e:
+        logger.error(
+            "Calendar matching all-orgs failed: error=%s",
+            str(e),
+            exc_info=True,
+        )
+        return {
+            "status": "failed",
+            "started_at": started_at,
+            "completed_at": datetime.now(UTC).isoformat(),
+            "error": str(e),
+            "error_type": type(e).__name__,
         }
