@@ -61,7 +61,7 @@ async def create_chat(
     payload: ChatSessionCreate = Body(...),
     service: ChatSessionService = Depends(get_chat_session_service),
     _rl: None = Depends(rate_limit_user_write),
-):
+) -> GenericResponse[ChatSessionOut]:
     try:
         chat = await service.create_session(
             title=payload.title,
@@ -88,7 +88,7 @@ async def delete_chat(
     payload: DeleteChat = Body(...),
     service: ChatSessionService = Depends(get_chat_session_service),
     _rl: None = Depends(rate_limit_user_write),
-):
+) -> GenericResponse[ChatSessionOut]:
     try:
         chat = await service.delete_session(
             session_id=payload.session_id,
@@ -114,7 +114,7 @@ async def rename_chat(
     payload: RenameChat = Body(...),
     service: ChatSessionService = Depends(get_chat_session_service),
     _rl: None = Depends(rate_limit_user_write),
-):
+) -> GenericResponse[ChatSessionOut]:
     try:
         chat = await service.rename_session(
             session_id=payload.session_id,
@@ -145,7 +145,7 @@ async def list_chats(
     cursor: str | None = Query(None, description="Opaque cursor from previous page"),
     service: ChatSessionService = Depends(get_chat_session_service),
     _rl_read: None = Depends(rate_limit_user_read),
-):
+) -> GenericResponse[ChatSessionsPage]:
     try:
         items, next_cursor = await service.list_sessions(
             limit=limit,
@@ -172,7 +172,7 @@ async def search_chats(
     limit: int = Query(10, ge=1, le=50),
     service: ChatSessionService = Depends(get_chat_session_service),
     _rl_read: None = Depends(rate_limit_user_read),
-):
+) -> GenericResponse[ChatSessionsPage]:
     try:
         items = await service.search_sessions(
             q=q,
@@ -198,7 +198,7 @@ async def favorite_chat(
     payload: FavoriteChat = Body(...),
     service: ChatSessionService = Depends(get_chat_session_service),
     _rl: None = Depends(rate_limit_user_write),
-):
+) -> GenericResponse[ChatSessionOut]:
     try:
         chat = await service.set_favorite(
             session_id=payload.session_id,

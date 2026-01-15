@@ -5,6 +5,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
+from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
@@ -96,11 +97,12 @@ def _map_note_to_schema(note: CRMActivity, source: str) -> DealNoteItem:
 )
 async def get_deal_notes(
     deal_id: UUID,
+    response: FastAPIResponse,
     limit: int = Query(50, ge=1, le=100, description="Maximum notes per page"),
     cursor: str | None = Query(None, description="Pagination cursor from previous response"),
     sort: str = Query("desc", pattern="^(asc|desc)$", description="Sort order by created date"),
     service: DealNotesService = Depends(get_deal_notes_service),
-):
+) -> GenericResponse[DealNotesPage]:
     """Get paginated notes for a deal.
 
     Returns both CRM-synced notes (from HubSpot/Salesforce) and user-created notes.
@@ -143,10 +145,14 @@ async def get_deal_notes(
 
     except DealNotesServiceError as exc:
         logger.warning("Deal notes access error: %s", exc.message, exc_info=True)
-        return Response.error_response(message=exc.message, status_code=exc.status_code)
+        return Response.error_response(
+            message=exc.message, status_code=exc.status_code, response=response
+        )
     except Exception as exc:
         logger.error("Unexpected error getting notes for deal %s: %s", deal_id, exc, exc_info=True)
-        return Response.error_response(message=_UNEXPECTED_ERR_MSG, status_code=500)
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
 
 
 @deal_notes_router.post(
@@ -159,9 +165,10 @@ async def get_deal_notes(
 async def create_deal_note(
     deal_id: UUID,
     request: CreateNoteRequest,
+    response: FastAPIResponse,
     user_ids: UserIDs = Depends(get_current_user),
     service: DealNotesService = Depends(get_deal_notes_service),
-):
+) -> GenericResponse[DealNoteItem]:
     """Create a new user-generated note for a deal.
 
     User-created notes are stored alongside CRM-synced notes but are
@@ -184,19 +191,18 @@ async def create_deal_note(
         # Map to response schema
         note_schema = _map_note_to_schema(note, service.determine_note_source(note))
 
-        # Response.success_response always returns 200, so use the underlying
-        # response builder to return 201 while keeping the standard envelope.
-        return Response._response(
-            status_code=201,
-            status="SUCCESS",
+        return Response.created_response(
             message="Note created successfully",
             data=note_schema,
+            response=response,
         )
 
     except DealNotesServiceError as exc:
         logger.warning("Failed to create note: %s", exc.message, exc_info=True)
         await service.session.rollback()
-        return Response.error_response(message=exc.message, status_code=exc.status_code)
+        return Response.error_response(
+            message=exc.message, status_code=exc.status_code, response=response
+        )
     except Exception as exc:
         logger.error(
             "Unexpected error creating note for deal %s: %s",
@@ -205,4 +211,6 @@ async def create_deal_note(
             exc_info=True,
         )
         await service.session.rollback()
-        return Response.error_response(message=_UNEXPECTED_ERR_MSG, status_code=500)
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )

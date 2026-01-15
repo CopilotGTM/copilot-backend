@@ -12,6 +12,7 @@ Handles:
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, Request
+from fastapi import Response as FastAPIResponse
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.organisation_dependencies import (
@@ -96,6 +97,7 @@ async def get_webhook_service():
 )
 async def initiate_oauth_flow(
     request: OAuthInitiateRequest,
+    response: FastAPIResponse,
     user: User = Depends(user_auth),
     oauth_service: OAuthIntegrationService = Depends(get_oauth_service),
     _rl: None = Depends(rate_limit_user_write),
@@ -127,7 +129,7 @@ async def initiate_oauth_flow(
             unavailable.status,
         )
         return Response.bad_request_error_response(
-            message=IntegrationErrors.INTEGRATION_NOT_AVAILABLE
+            message=IntegrationErrors.INTEGRATION_NOT_AVAILABLE, response=response
         )
     except NangoConnectionError as e:
         error_detail = OAuthIntegrationService.extract_nango_error_message(e.payload)
@@ -147,9 +149,9 @@ async def initiate_oauth_flow(
         )
         if e.status_code == 400:
             message = error_detail or IntegrationErrors.INTEGRATION_PROVIDER_NOT_CONFIGURED
-            return Response.bad_request_error_response(message=message)
+            return Response.bad_request_error_response(message=message, response=response)
         return Response.internal_server_error_response(
-            message=IntegrationErrors.OAUTH_INITIATION_FAILED
+            message=IntegrationErrors.OAUTH_INITIATION_FAILED, response=response
         )
     except Exception as e:
         logger.error(
@@ -161,7 +163,7 @@ async def initiate_oauth_flow(
             exc_info=True,
         )
         return Response.internal_server_error_response(
-            message=IntegrationErrors.OAUTH_INITIATION_FAILED
+            message=IntegrationErrors.OAUTH_INITIATION_FAILED, response=response
         )
 
 
@@ -178,6 +180,7 @@ async def initiate_oauth_flow(
 )
 async def disconnect_integration(
     integration_id: UUID,
+    response: FastAPIResponse,
     service: IntegrationService = Depends(get_integration_service),
     _rl: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[None]:
@@ -196,13 +199,13 @@ async def disconnect_integration(
                 f"Integration {integration_id} not found for org {service.user_ids.organisation_id}"
             )
             return Response.not_found_error_response(
-                message=IntegrationErrors.INTEGRATION_NOT_FOUND
+                message=IntegrationErrors.INTEGRATION_NOT_FOUND, response=response
             )
 
         if integration.is_active is False:
             logger.warning(f"Integration {integration_id} is does not exist or is already inactive")
             return Response.bad_request_error_response(
-                message=IntegrationErrors.INTEGRATION_ALREADY_INACTIVE
+                message=IntegrationErrors.INTEGRATION_ALREADY_INACTIVE, response=response
             )
 
         # Validate connection_id exists before deletion
@@ -210,7 +213,9 @@ async def disconnect_integration(
             logger.error(
                 f"Integration {integration_id} has no connection_id, cannot delete from Nango"  # noqa: S608  # nosec B608
             )
-            return Response.bad_request_error_response(message="Integration has no connection ID")
+            return Response.bad_request_error_response(
+                message="Integration has no connection ID", response=response
+            )
 
         # Delete integration (includes Nango cleanup)
         await service.delete_integration_from_nango(
@@ -236,7 +241,9 @@ async def disconnect_integration(
         logger.warning(
             f"Integration {integration_id} not found for org {service.user_ids.organisation_id}: {str(e)}"
         )
-        return Response.not_found_error_response(message=IntegrationErrors.INTEGRATION_NOT_FOUND)
+        return Response.not_found_error_response(
+            message=IntegrationErrors.INTEGRATION_NOT_FOUND, response=response
+        )
     except Exception as e:
         logger.error(
             f"Failed to disconnect integration {integration_id} "
@@ -244,7 +251,7 @@ async def disconnect_integration(
             exc_info=True,
         )
         return Response.internal_server_error_response(
-            message=IntegrationErrors.INTEGRATION_DISCONNECTION_FAILED
+            message=IntegrationErrors.INTEGRATION_DISCONNECTION_FAILED, response=response
         )
 
 
