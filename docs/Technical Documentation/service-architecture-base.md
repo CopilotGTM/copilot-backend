@@ -302,6 +302,13 @@ API Surface (FastAPI)
 - Admin Auth: `POST /admin/auth/login`, `POST /admin/auth/reset-password`, `POST /admin/auth/refresh-token`, `POST /admin/auth/forgot-password`, `POST /admin/auth/logout`, `POST /admin/auth/change-password` in `src/api/routers/admin/admin_auth_handler.py:1`.
 - Admin Organisations: `POST /admin/organisations/create_organisation`, `GET /admin/organisations/list_organisations`, `GET /admin/organisations/countries`, `GET /admin/organisations/all_organisations_history`, `GET /admin/organisations/{organisation_id}`, `PUT /admin/organisations/{organisation_id}/update`, `PUT /admin/organisations/{organisation_id}/status`, `GET /admin/organisations/{organisation_id}/history` in `src/api/routers/admin/organizations_handler.py:1`.
 - Admin Users: `POST /admin/users/create_user`, `GET /admin/users/{user_id}/profile`, `GET /admin/users/list_users`, `PUT /admin/users/{user_id}/admin_status`, `GET /admin/users/history/organisation/{organisation_id}`, `PUT /admin/users/{user_id}/update` in `src/api/routers/admin/users_handler.py:1`.
+- CRM Deals: `GET /users/crm/deals`, `GET /users/crm/deals/{deal_id}`, `GET /users/crm/deals/stats`, `POST /users/crm/deals/{deal_id}/summary` in `src/api/routers/crm/deals_handler.py:1`.
+- CRM Stakeholders: `GET /users/crm/deals/{deal_id}/stakeholders` (list), `GET /users/crm/deals/{deal_id}/stakeholders/{stakeholder_id}` (detail with engagement history), `POST /users/crm/deals/{deal_id}/stakeholders/{stakeholder_id}/approve`, `POST /users/crm/deals/{deal_id}/stakeholders/{stakeholder_id}/reject`, `GET /users/crm/deals/{deal_id}/stakeholders/available-contacts`, `POST /users/crm/deals/{deal_id}/stakeholders/add-from-contacts` in `src/api/routers/crm/stakeholders_handler.py:1`.
+- CRM Stakeholder Insights: `GET /users/crm/deals/{deal_id}/stakeholder-insights`, `POST /users/crm/deals/{deal_id}/stakeholder-insights/{insight_id}/acknowledge`, `POST /users/crm/deals/{deal_id}/stakeholder-insights/{insight_id}/dismiss`, `POST /users/crm/deals/{deal_id}/stakeholder-insights/{insight_id}/resolve` in `src/api/routers/crm/stakeholder_insights_handler.py:1`.
+- CRM Meetings: `GET /users/crm/deals/{deal_id}/meetings`, `PATCH /users/crm/deals/{deal_id}/meetings/{event_id}/status`, `POST /users/crm/deals/{deal_id}/meetings/{event_id}/briefing`, `POST /users/crm/deals/{deal_id}/meetings/{event_id}/summary`, `POST /users/crm/deals/{deal_id}/meetings/{event_id}/followup` in `src/api/routers/crm/meetings_handler.py:1`.
+- CRM Deal Timeline: `GET /users/crm/deals/{deal_id}/timeline`, `GET /users/crm/timeline/{timeline_event_id}` in `src/api/routers/crm/deal_timeline_handler.py:1`.
+- CRM Deal Notes: `GET /users/crm/deals/{deal_id}/notes`, `POST /users/crm/deals/{deal_id}/notes` in `src/api/routers/crm/deal_notes_handler.py:1`.
+- CRM Risks/Blockers: `GET /users/crm/deals/{deal_id}/risks-blockers`, `GET /users/crm/risks-blockers/{risk_blocker_id}`, `POST /users/crm/deals/{deal_id}/risks-blockers`, `PUT /users/crm/risks-blockers/{risk_blocker_id}`, `POST /users/crm/risks-blockers/{risk_blocker_id}/confirm`, `POST /users/crm/risks-blockers/{risk_blocker_id}/dismiss`, `POST /users/crm/risks-blockers/{risk_blocker_id}/resolve`, `POST /users/crm/risks-blockers/{risk_blocker_id}/reopen`, `DELETE /users/crm/risks-blockers/{risk_blocker_id}` in `src/api/routers/crm/risks_blockers_handler.py:1`.
 
 Workers & Tasks (Celery)
 
@@ -315,9 +322,12 @@ Workers & Tasks (Celery)
 - **Content Worker** (`src/workers/content_worker/`): Queues `content_generation`, `deck_generation`, `slides`.
 - **Organization Worker** (`src/workers/organization_worker/`): Exchange `organization`, queue `organization`.
   - `organization.create` → queue `organization`
-- **Deal Worker** (`src/workers/deal_worker/`): Exchange `deal`, queues `deal`, `deal_jobs`.
+- **Deal Worker** (`src/workers/deal_worker/`): Exchange `deal`, queues `deal`, `deal_jobs`, `deal_mappers`.
   - `risk_blocker.extract_deal_risks_blockers_task` → queue `deal`
   - `deal_timeline.*` → queue `deal_jobs`
+  - `stakeholder_tasks.sync_deal_stakeholders_task`, `stakeholder_tasks.sync_org_stakeholders_task` → queue `deal_mappers`
+  - `email_matching_tasks.match_emails_to_deal_task`, `email_matching_tasks.match_org_emails_task` → queue `deal_mappers`
+  - `calendar_matching_tasks.match_calendar_events_to_deal_task`, `calendar_matching_tasks.match_org_calendar_events_task` → queue `deal_mappers`
 
 Core Utilities (Quick Index)
 
@@ -353,6 +363,17 @@ Service Layer Index
 - Knowledge SSE: `src/service/knowledge_base/knowledge_sse_service.py:1` — pub/sub stream of KB source events.
 - Admin Auth: `src/service/admin/admin_auth_service.py:1` — super admin login flows and token handling.
 - Org/User Mgmt: `src/service/orgnisation/organization_management.py:1`, `src/service/orgnisation/user_management.py:1` — org and user lifecycle.
+- CRM Deals: `src/service/crm/deals_access_service.py:1` — list/filter deals, get deal detail, stats.
+- CRM Deal Jobs: `src/service/crm/deal_job_service.py:1` — create/manage deal summary jobs.
+- CRM Stakeholders: `src/service/crm/stakeholders_service.py:1` — list stakeholders, approve/reject, add from contacts, get detail with engagement history.
+- CRM Stakeholder Insights: `src/service/crm/stakeholder_insight_service.py:1` — list/filter insights, acknowledge/dismiss/resolve.
+- CRM Meetings: `src/service/crm/meetings_service.py:1` — list meetings, update status.
+- CRM Meeting Jobs: `src/service/crm/deal_meeting_job_service.py:1` — create/manage meeting briefing/summary/followup jobs.
+- CRM Deal Timeline: `src/service/crm/deal_timeline_service.py:1` — list timeline events (emails, meetings), get event detail.
+- CRM Deal Notes: `src/service/crm/deal_notes_service.py:1` — list notes, create user notes.
+- CRM Risks/Blockers: `src/service/crm/risk_blocker_service.py:1` — list/create/update risks and blockers, confirm/dismiss/resolve/reopen.
+- CRM Deal Sync: `src/service/integrations/crm_deal_sync_service.py:1` — sync deals from CRM integrations.
+- Stakeholder Sync: `src/workers/deal_worker/services/stakeholder_sync_service.py:1` — sync stakeholders from CRM participants.
 
 Schemas (Primary Models)
 
@@ -362,6 +383,7 @@ Schemas (Primary Models)
 - Uploads (attachments): `src/api/schemas/upload_models.py:1` — `PresignRequest/Response`, `FinalizeRequest`, batch models, `AttachmentEventUpdate`.
 - Knowledge upload/access: `src/api/schemas/knowledge_upload_models.py:1`, `src/api/schemas/knowledge_access_models.py:1` — presign/finalize/status/list/stats, `KnowledgeSourceEventUpdate`.
 - Technical content: `src/api/schemas/technical_deck_models.py:1`.
+- CRM: `src/api/schemas/crm_models.py:1` — `DealListItem`, `DealDetail`, `DealsPage`, `DealsStats`, `StakeholderDetail`, `StakeholderFullDetail` (with engagement history), `StakeholderEngagementSnapshot`, `StakeholderInsightDetail`, `DealMeetingResponse`, `TimelineEvent`, `TimelinePage`, `RiskBlockerDetail`, `RiskBlockerListItem`.
 
 Event Contracts (Streams/PubSub)
 

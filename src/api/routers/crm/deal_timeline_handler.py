@@ -70,7 +70,7 @@ async def get_deal_timeline(
     start_date: datetime | None = Query(None, description="Filter events after this date"),
     end_date: datetime | None = Query(None, description="Filter events before this date"),
     include_excluded: bool = Query(False, description="Include excluded/hidden events"),
-    sort: str = Query("desc", regex="^(asc|desc)$", description="Sort order"),
+    sort: str = Query("desc", pattern="^(asc|desc)$", description="Sort order"),
 ) -> GenericResponse[TimelinePage]:
     """
     Get timeline events for a deal.

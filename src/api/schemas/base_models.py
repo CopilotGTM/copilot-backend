@@ -6,8 +6,8 @@ T = TypeVar("T")
 
 
 class GenericResponse(BaseModel, Generic[T]):
-    status: str = Field(..., example="SUCCESS")
-    message: str = Field(..., example="Request successful")
+    status: str = Field(examples=["SUCCESS"])
+    message: str = Field(examples=["Request successful"])
     data: T | None = None
 
     # Pydantic v2 config

@@ -8,6 +8,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 from src.domain.models.organisation_tables.sync.crm.stakeholders import (
+    ApprovalStatus,
     DecisionPower,
     StakeholderSource,
     StakeholderStance,
@@ -168,7 +169,19 @@ class DealsStats(BaseModel):
 
 
 class StakeholderDetail(BaseModel):
-    """Detailed view of a deal stakeholder."""
+    """Detailed view of a deal stakeholder.
+
+    Score Fields:
+    - champion_potential: 0-100 scale (percentage, e.g., 85 means 85%)
+    - engagement_score: 0-100 scale (percentage, e.g., 70 means 70%)
+
+    Source Information:
+    - source: Where the stakeholder was discovered (CRM, CALENDAR_DISCOVERY, EMAIL_DISCOVERY, MANUAL)
+    - approval_status: Whether the stakeholder is approved for deal matching
+        - CRM stakeholders are always APPROVED
+        - Discovery stakeholders (first 5 per source) are auto-APPROVED
+        - Additional discovery stakeholders are PENDING until approved
+    """
 
     stakeholder_id: UUID
     deal_id: UUID
@@ -179,14 +192,95 @@ class StakeholderDetail(BaseModel):
     external_links: list[StakeholderLink] | None = None
     stance: StakeholderStance
     decision_power: DecisionPower
-    champion_potential: float
+    champion_potential: float = Field(
+        ..., description="Champion potential score (0-100 scale, e.g., 85 = 85%)"
+    )
     motivation: str | None = None
     pain_points: list[str] | None = None
     keywords: list[str] | None = None
     last_contact_at: datetime | None = None
-    engagement_score: float
+    engagement_score: float = Field(
+        ..., description="Engagement score (0-100 scale, e.g., 70 = 70%)"
+    )
     temperature: StakeholderTemperature
-    source: StakeholderSource
+    source: StakeholderSource = Field(
+        ...,
+        description="Where the stakeholder was discovered (CRM, CALENDAR_DISCOVERY, EMAIL_DISCOVERY, MANUAL)",
+    )
+    approval_status: ApprovalStatus = Field(
+        ...,
+        description="Approval status (APPROVED, PENDING, REJECTED). Only APPROVED stakeholders are used for deal matching.",
+    )
+
+    model_config = {"from_attributes": True}
+
+
+class StakeholderEngagementSnapshot(BaseModel):
+    """A point-in-time snapshot of stakeholder engagement metrics.
+
+    Used to track how a stakeholder's engagement has changed over time.
+    """
+
+    recorded_at: datetime = Field(..., description="When this snapshot was recorded")
+    stance: str | None = Field(None, description="Stakeholder stance at this point")
+    temperature: str | None = Field(None, description="Engagement temperature at this point")
+    engagement_score: float | None = Field(None, description="Engagement score (0-100)")
+    champion_potential: float | None = Field(None, description="Champion potential (0-100)")
+    decision_power: str | None = Field(None, description="Decision power level at this point")
+
+
+class StakeholderFullDetail(BaseModel):
+    """Full stakeholder detail including engagement history.
+
+    This is returned when fetching a single stakeholder and includes
+    the engagement history showing how the stakeholder's metrics have
+    changed over time (e.g., from COLD to WARM to HOT).
+
+    Score Fields:
+    - champion_potential: 0-100 scale (percentage, e.g., 85 means 85%)
+    - engagement_score: 0-100 scale (percentage, e.g., 70 means 70%)
+
+    History:
+    - engagement_history: Up to 15 most recent snapshots showing metric changes
+    """
+
+    stakeholder_id: UUID
+    deal_id: UUID
+    contact_id: UUID | None = None
+    email: str
+    name: str | None = None
+    job_title: str | None = None
+    department: str | None = Field(
+        None, description="Inferred department from title or external sources"
+    )
+    external_links: list[StakeholderLink] | None = None
+    stance: StakeholderStance
+    decision_power: DecisionPower
+    champion_potential: float = Field(
+        ..., description="Champion potential score (0-100 scale, e.g., 85 = 85%)"
+    )
+    motivation: str | None = None
+    pain_points: list[str] | None = None
+    keywords: list[str] | None = None
+    last_contact_at: datetime | None = None
+    engagement_score: float = Field(
+        ..., description="Engagement score (0-100 scale, e.g., 70 = 70%)"
+    )
+    temperature: StakeholderTemperature
+    source: StakeholderSource = Field(
+        ...,
+        description="Where the stakeholder was discovered (CRM, CALENDAR_DISCOVERY, EMAIL_DISCOVERY, MANUAL)",
+    )
+    approval_status: ApprovalStatus = Field(
+        ...,
+        description="Approval status (APPROVED, PENDING, REJECTED). Only APPROVED stakeholders are used for deal matching.",
+    )
+    engagement_history: list[StakeholderEngagementSnapshot] = Field(
+        default_factory=list,
+        description="Historical engagement snapshots showing how metrics changed over time (newest first, max 15 entries)",
+    )
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 
@@ -199,14 +293,152 @@ class StakeholderLink(BaseModel):
 
 
 class CreateStakeholderRequest(BaseModel):
-    """Request model for creating a new stakeholder."""
+    """Request model for manually creating a new stakeholder.
 
-    email: str
-    name: str | None = None
-    job_title: str | None = None
-    external_links: list[StakeholderLink] | None = None
-    stance: StakeholderStance = StakeholderStance.UNKNOWN
-    decision_power: DecisionPower = DecisionPower.UNKNOWN
+    Field Categories for Frontend UI:
+
+    REQUIRED (always show):
+    - email: Must be unique per deal
+
+    PRIMARY (show prominently):
+    - name, job_title, stance, decision_power
+    - These are the most commonly filled fields
+
+    SECONDARY (collapsible/advanced section):
+    - department, champion_potential, motivation, pain_points, external_links
+    - Power users may want to fill these upfront
+
+    AUTO-SET (not in request):
+    - source: Set to MANUAL
+    - approval_status: Set to APPROVED
+    - temperature: Set to UNKNOWN (calculated later)
+    - engagement_score: Set to 0 (calculated later)
+    """
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # REQUIRED
+    # ─────────────────────────────────────────────────────────────────────────
+    email: str = Field(
+        ...,
+        description="Email address (required, must be unique per deal)",
+        json_schema_extra={"ui_category": "required"},
+    )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # PRIMARY FIELDS (show prominently in UI)
+    # ─────────────────────────────────────────────────────────────────────────
+    name: str | None = Field(
+        None,
+        description="Full name of the stakeholder (strongly recommended)",
+        json_schema_extra={"ui_category": "primary", "ui_hint": "recommended"},
+    )
+    job_title: str | None = Field(
+        None,
+        description="Job title (e.g., 'VP of Engineering', 'Director of IT')",
+        json_schema_extra={"ui_category": "primary"},
+    )
+    stance: StakeholderStance = Field(
+        StakeholderStance.UNKNOWN,
+        description="Stakeholder's attitude toward your solution. UNKNOWN if not yet assessed.",
+        json_schema_extra={
+            "ui_category": "primary",
+            "ui_component": "select",
+            "options": [
+                {"value": "UNKNOWN", "label": "Unknown", "description": "Not yet determined"},
+                {
+                    "value": "CHAMPION",
+                    "label": "Champion",
+                    "description": "Actively advocates for your solution",
+                },
+                {"value": "SUPPORTER", "label": "Supporter", "description": "Generally positive"},
+                {"value": "NEUTRAL", "label": "Neutral", "description": "No strong opinion"},
+                {
+                    "value": "DETRACTOR",
+                    "label": "Detractor",
+                    "description": "Has concerns or objections",
+                },
+                {"value": "BLOCKER", "label": "Blocker", "description": "Actively opposing"},
+            ],
+        },
+    )
+    decision_power: DecisionPower = Field(
+        DecisionPower.UNKNOWN,
+        description="Stakeholder's role in the buying decision",
+        json_schema_extra={
+            "ui_category": "primary",
+            "ui_component": "select",
+            "options": [
+                {"value": "UNKNOWN", "label": "Unknown", "description": "Not yet determined"},
+                {
+                    "value": "DECISION_MAKER",
+                    "label": "Decision Maker",
+                    "description": "Has final authority and budget sign-off",
+                },
+                {
+                    "value": "INFLUENCER",
+                    "label": "Influencer",
+                    "description": "Can sway decision makers",
+                },
+                {
+                    "value": "EVALUATOR",
+                    "label": "Evaluator",
+                    "description": "Assesses technical/functional fit",
+                },
+                {
+                    "value": "GATEKEEPER",
+                    "label": "Gatekeeper",
+                    "description": "Controls access to decision makers",
+                },
+                {
+                    "value": "END_USER",
+                    "label": "End User",
+                    "description": "Will use the product daily",
+                },
+            ],
+        },
+    )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # SECONDARY FIELDS (collapsible in UI)
+    # ─────────────────────────────────────────────────────────────────────────
+    department: str | None = Field(
+        None,
+        description="Department (e.g., 'Engineering', 'Finance', 'IT')",
+        json_schema_extra={"ui_category": "secondary"},
+    )
+    champion_potential: float | None = Field(
+        None,
+        ge=0,
+        le=100,
+        description="Your assessment of champion potential (0-100). Leave empty if unknown - defaults to 50 (neutral).",
+        json_schema_extra={
+            "ui_category": "secondary",
+            "ui_component": "slider",
+            "default_value": 50,
+            "presets": [
+                {"value": 0, "label": "Very Low"},
+                {"value": 25, "label": "Low"},
+                {"value": 50, "label": "Moderate (default)"},
+                {"value": 75, "label": "High"},
+                {"value": 100, "label": "Very High"},
+            ],
+        },
+    )
+    motivation: str | None = Field(
+        None,
+        description="What drives this stakeholder? What do they care about?",
+        json_schema_extra={"ui_category": "secondary", "ui_component": "textarea"},
+    )
+    pain_points: list[str] | None = Field(
+        None,
+        description="Challenges or problems they've mentioned",
+        json_schema_extra={"ui_category": "secondary", "ui_component": "tags"},
+    )
+    external_links: list[StakeholderLink] | None = Field(
+        None,
+        description="External profile links (LinkedIn, Twitter, etc.)",
+        json_schema_extra={"ui_category": "secondary"},
+    )
 
 
 class AvailableContactItem(BaseModel):
@@ -262,6 +494,27 @@ class AddContactsAsStakeholdersResponse(BaseModel):
     total_requested: int = Field(..., description="Total number of contacts requested")
     total_added: int = Field(..., description="Number of contacts successfully added")
     total_skipped: int = Field(..., description="Number of contacts skipped")
+
+
+class StakeholderListResponse(BaseModel):
+    """Response for listing stakeholders with deal context.
+
+    Includes company_domain for frontend domain validation when adding new stakeholders.
+    """
+
+    company_domain: str | None = Field(
+        None,
+        description="Company domain for the deal (e.g., 'acmecorp.com'). "
+        "Frontend should validate that new stakeholder emails match this domain.",
+    )
+    company_name: str | None = Field(
+        None,
+        description="Company name for display purposes.",
+    )
+    stakeholders: list[StakeholderDetail] = Field(
+        default_factory=list,
+        description="List of stakeholders for the deal.",
+    )
 
 
 class DealJobResponse(BaseModel):

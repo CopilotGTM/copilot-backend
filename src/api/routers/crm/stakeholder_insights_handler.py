@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
+from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
@@ -105,6 +106,7 @@ def _model_to_response(insight: DealStakeholderInsight) -> StakeholderInsightRes
 )
 async def list_stakeholder_insights(
     deal_id: UUID,
+    response: FastAPIResponse,
     service: StakeholderInsightService = Depends(get_insight_service),
     limit: int = Query(20, ge=1, le=50, description="Number of insights to return"),
     status: str | None = Query(
@@ -162,11 +164,15 @@ async def list_stakeholder_insights(
         )
 
     except StakeholderInsightServiceError as e:
-        logger.warning(f"Stakeholder insight service error: {e.message}")
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+        logger.warning("Stakeholder insight service error: %s", e.message)
+        return Response.error_response(
+            message=e.message, status_code=e.status_code, response=response
+        )
     except Exception:
         logger.exception("Failed to list stakeholder insights")
-        raise HTTPException(status_code=500, detail=_UNEXPECTED_ERR_MSG) from None
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
 
 
 @stakeholder_insights_router.post(
@@ -179,6 +185,7 @@ async def list_stakeholder_insights(
 async def acknowledge_insight(
     deal_id: UUID,
     insight_id: UUID,
+    response: FastAPIResponse,
     service: StakeholderInsightService = Depends(get_insight_service),
 ) -> GenericResponse[StakeholderInsightResponse]:
     """Mark an insight as acknowledged."""
@@ -191,11 +198,15 @@ async def acknowledge_insight(
         )
 
     except StakeholderInsightServiceError as e:
-        logger.warning(f"Stakeholder insight service error: {e.message}")
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+        logger.warning("Acknowledge insight service error: %s", e.message)
+        return Response.error_response(
+            message=e.message, status_code=e.status_code, response=response
+        )
     except Exception:
         logger.exception("Failed to acknowledge insight")
-        raise HTTPException(status_code=500, detail=_UNEXPECTED_ERR_MSG) from None
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
 
 
 @stakeholder_insights_router.post(
@@ -208,6 +219,7 @@ async def acknowledge_insight(
 async def dismiss_insight(
     deal_id: UUID,
     insight_id: UUID,
+    response: FastAPIResponse,
     service: StakeholderInsightService = Depends(get_insight_service),
 ) -> GenericResponse[StakeholderInsightResponse]:
     """Dismiss an insight as not relevant."""
@@ -220,11 +232,15 @@ async def dismiss_insight(
         )
 
     except StakeholderInsightServiceError as e:
-        logger.warning(f"Stakeholder insight service error: {e.message}")
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+        logger.warning("Dismiss insight service error: %s", e.message)
+        return Response.error_response(
+            message=e.message, status_code=e.status_code, response=response
+        )
     except Exception:
         logger.exception("Failed to dismiss insight")
-        raise HTTPException(status_code=500, detail=_UNEXPECTED_ERR_MSG) from None
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
 
 
 @stakeholder_insights_router.post(
@@ -237,6 +253,7 @@ async def dismiss_insight(
 async def resolve_insight(
     deal_id: UUID,
     insight_id: UUID,
+    response: FastAPIResponse,
     body: ResolveInsightRequest | None = None,
     service: StakeholderInsightService = Depends(get_insight_service),
 ) -> GenericResponse[StakeholderInsightResponse]:
@@ -251,11 +268,15 @@ async def resolve_insight(
         )
 
     except StakeholderInsightServiceError as e:
-        logger.warning(f"Stakeholder insight service error: {e.message}")
-        raise HTTPException(status_code=e.status_code, detail=e.message) from None
+        logger.warning("Resolve insight service error: %s", e.message)
+        return Response.error_response(
+            message=e.message, status_code=e.status_code, response=response
+        )
     except Exception:
         logger.exception("Failed to resolve insight")
-        raise HTTPException(status_code=500, detail=_UNEXPECTED_ERR_MSG) from None
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
 
 
 __all__ = ["stakeholder_insights_router"]

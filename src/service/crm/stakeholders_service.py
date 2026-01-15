@@ -10,11 +10,15 @@ from sqlmodel import col
 from src.api.schemas.crm_models import (
     AddContactsAsStakeholdersResponse,
     AvailableContactItem,
+    CreateStakeholderRequest,
     SkippedContact,
     StakeholderDetail,
+    StakeholderListResponse,
 )
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
+from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
 from src.domain.models.organisation_tables.sync.crm.stakeholders import (
+    ApprovalStatus,
     DealStakeholder,
     StakeholderSource,
 )
@@ -43,14 +47,242 @@ class StakeholdersService:
     def session(self) -> AsyncSession:
         return self.org_session
 
-    async def list_stakeholders_by_deal(self, deal_id: UUID) -> list[DealStakeholder]:
-        """Get all stakeholders associated with a specific deal."""
+    async def list_stakeholders_by_deal(
+        self,
+        deal_id: UUID,
+        include_pending: bool = True,
+        include_rejected: bool = False,
+    ) -> StakeholderListResponse:
+        """Get stakeholders associated with a specific deal.
+
+        Args:
+            deal_id: The deal to get stakeholders for.
+            include_pending: Include PENDING stakeholders (default True).
+            include_rejected: Include REJECTED stakeholders (default False).
+
+        Returns:
+            StakeholderListResponse with company_domain for frontend validation
+            and list of stakeholders filtered by approval_status.
+        """
+        # Get deal to fetch company_domain for frontend validation
+        deal_stmt = select(CRMDeal).where(
+            col(CRMDeal.deal_id) == deal_id,
+            col(CRMDeal.organisation_id) == self.organisation_id,
+        )
+        deal_result = await self.session.execute(deal_stmt)
+        deal = deal_result.scalar_one_or_none()
+
+        company_domain = deal.company_domain if deal else None
+        company_name = deal.company_name if deal else None
+
+        # Build list of approval statuses to include
+        statuses = [ApprovalStatus.APPROVED]
+        if include_pending:
+            statuses.append(ApprovalStatus.PENDING)
+        if include_rejected:
+            statuses.append(ApprovalStatus.REJECTED)
+
         stmt = select(DealStakeholder).where(
+            col(DealStakeholder.deal_id) == deal_id,
+            col(DealStakeholder.organisation_id) == self.organisation_id,
+            col(DealStakeholder.approval_status).in_(statuses),
+        )
+        result = await self.session.execute(stmt)
+        stakeholders = list(result.scalars().all())
+
+        return StakeholderListResponse(
+            company_domain=company_domain,
+            company_name=company_name,
+            stakeholders=[StakeholderDetail.model_validate(s) for s in stakeholders],
+        )
+
+    async def get_stakeholder(self, deal_id: UUID, stakeholder_id: UUID) -> DealStakeholder | None:
+        """Get a specific stakeholder by ID."""
+        stmt = select(DealStakeholder).where(
+            col(DealStakeholder.stakeholder_id) == stakeholder_id,
             col(DealStakeholder.deal_id) == deal_id,
             col(DealStakeholder.organisation_id) == self.organisation_id,
         )
         result = await self.session.execute(stmt)
-        return list(result.scalars().all())
+        return result.scalar_one_or_none()
+
+    async def get_stakeholder_detail(self, deal_id: UUID, stakeholder_id: UUID) -> dict | None:
+        """Get full stakeholder detail including engagement history.
+
+        Returns the stakeholder with all fields including engagement_history
+        which shows how the stakeholder's metrics changed over time.
+
+        Args:
+            deal_id: The deal ID.
+            stakeholder_id: The stakeholder ID.
+
+        Returns:
+            Dict with full stakeholder detail and engagement history, or None if not found.
+        """
+        stakeholder = await self.get_stakeholder(deal_id, stakeholder_id)
+        if not stakeholder:
+            return None
+
+        # Format engagement history from JSONB field
+        engagement_history = []
+        raw_history = stakeholder.stakeholder_engagement_history or []
+        for snapshot in raw_history:
+            if isinstance(snapshot, dict):
+                engagement_history.append(
+                    {
+                        "recorded_at": snapshot.get("recorded_at"),
+                        "stance": snapshot.get("stance"),
+                        "temperature": snapshot.get("temperature"),
+                        "engagement_score": snapshot.get("engagement_score"),
+                        "champion_potential": snapshot.get("champion_potential"),
+                        "decision_power": snapshot.get("decision_power"),
+                    }
+                )
+
+        return {
+            "stakeholder_id": stakeholder.stakeholder_id,
+            "deal_id": stakeholder.deal_id,
+            "contact_id": stakeholder.contact_id,
+            "email": stakeholder.email,
+            "name": stakeholder.name,
+            "job_title": stakeholder.job_title,
+            "department": stakeholder.department,
+            "external_links": stakeholder.external_links,
+            "stance": stakeholder.stance,
+            "decision_power": stakeholder.decision_power,
+            "champion_potential": stakeholder.champion_potential,
+            "motivation": stakeholder.motivation,
+            "pain_points": stakeholder.pain_points,
+            "keywords": stakeholder.keywords,
+            "last_contact_at": stakeholder.last_contact_at,
+            "engagement_score": stakeholder.engagement_score,
+            "temperature": stakeholder.temperature,
+            "source": stakeholder.source,
+            "approval_status": stakeholder.approval_status,
+            "engagement_history": engagement_history,
+            "created_at": stakeholder.created_at,
+            "updated_at": stakeholder.updated_at,
+        }
+
+    async def approve_stakeholder(self, deal_id: UUID, stakeholder_id: UUID) -> DealStakeholder:
+        """Approve a PENDING stakeholder for deal matching.
+
+        Args:
+            deal_id: The deal ID.
+            stakeholder_id: The stakeholder to approve.
+
+        Returns:
+            The updated stakeholder.
+
+        Raises:
+            StakeholdersServiceError: If stakeholder not found or already approved.
+        """
+        stakeholder = await self.get_stakeholder(deal_id, stakeholder_id)
+        if not stakeholder:
+            raise StakeholdersServiceError("Stakeholder not found", status_code=404)
+
+        if stakeholder.approval_status == ApprovalStatus.APPROVED:
+            raise StakeholdersServiceError("Stakeholder is already approved", status_code=400)
+
+        stakeholder.approval_status = ApprovalStatus.APPROVED
+        await self.session.commit()
+        await self.session.refresh(stakeholder)
+        return stakeholder
+
+    async def reject_stakeholder(self, deal_id: UUID, stakeholder_id: UUID) -> DealStakeholder:
+        """Reject a stakeholder to exclude from deal matching.
+
+        Args:
+            deal_id: The deal ID.
+            stakeholder_id: The stakeholder to reject.
+
+        Returns:
+            The updated stakeholder.
+
+        Raises:
+            StakeholdersServiceError: If stakeholder not found or already rejected.
+        """
+        stakeholder = await self.get_stakeholder(deal_id, stakeholder_id)
+        if not stakeholder:
+            raise StakeholdersServiceError("Stakeholder not found", status_code=404)
+
+        if stakeholder.approval_status == ApprovalStatus.REJECTED:
+            raise StakeholdersServiceError("Stakeholder is already rejected", status_code=400)
+
+        stakeholder.approval_status = ApprovalStatus.REJECTED
+        await self.session.commit()
+        await self.session.refresh(stakeholder)
+        return stakeholder
+
+    async def create_stakeholder(
+        self, deal_id: UUID, request: CreateStakeholderRequest
+    ) -> StakeholderDetail:
+        """Manually create a new stakeholder for a deal.
+
+        Args:
+            deal_id: The deal to add the stakeholder to.
+            request: The stakeholder creation request with user-provided details.
+
+        Returns:
+            The created stakeholder as StakeholderDetail DTO.
+
+        Raises:
+            StakeholdersServiceError: If email already exists for this deal.
+        """
+        # Check for duplicate email
+        existing_stmt = select(DealStakeholder).where(
+            col(DealStakeholder.deal_id) == deal_id,
+            col(DealStakeholder.organisation_id) == self.organisation_id,
+            col(DealStakeholder.email) == request.email.lower().strip(),
+        )
+        existing_result = await self.session.execute(existing_stmt)
+        if existing_result.scalar_one_or_none():
+            raise StakeholdersServiceError(
+                "A stakeholder with this email already exists for this deal",
+                status_code=409,
+            )
+
+        # Convert external_links from Pydantic models to dicts
+        external_links_data = None
+        if request.external_links:
+            external_links_data = [
+                {
+                    "platform": link.platform,
+                    "url": link.url,
+                    "label": link.label,
+                    "added_at": link.added_at.isoformat() if link.added_at else None,
+                }
+                for link in request.external_links
+            ]
+
+        # Create the stakeholder with manual source
+        # Use neutral defaults for optional numeric fields
+        champion_potential = (
+            request.champion_potential if request.champion_potential is not None else 50.0
+        )
+
+        new_stakeholder = DealStakeholder(
+            organisation_id=self.organisation_id,
+            deal_id=deal_id,
+            contact_id=None,  # Manual adds have no CRM contact
+            email=request.email.lower().strip(),
+            name=request.name,
+            job_title=request.job_title,
+            department=request.department,
+            external_links=external_links_data,
+            stance=request.stance,
+            decision_power=request.decision_power,
+            champion_potential=champion_potential,
+            motivation=request.motivation,
+            pain_points=request.pain_points,
+            source=StakeholderSource.MANUAL,
+            approval_status=ApprovalStatus.APPROVED,  # Manual adds are trusted
+        )
+        self.session.add(new_stakeholder)
+        await self.session.commit()
+        await self.session.refresh(new_stakeholder)
+
+        return StakeholderDetail.model_validate(new_stakeholder)
 
     async def list_available_contacts(
         self, deal_id: UUID, query: str | None = None, limit: int = 50
@@ -125,7 +357,7 @@ class StakeholdersService:
         contacts_map = {c.contact_id: c for c in result.scalars().all()}
 
         # Get existing stakeholder emails for this deal
-        existing_stmt = select(DealStakeholder.email, DealStakeholder.contact_id).where(
+        existing_stmt = select(DealStakeholder.email, DealStakeholder.contact_id).where(  # type: ignore
             col(DealStakeholder.deal_id) == deal_id,
             col(DealStakeholder.organisation_id) == self.organisation_id,
         )
