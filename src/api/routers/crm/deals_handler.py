@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
+from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
@@ -101,6 +102,7 @@ async def get_deal_job_service(
     """,
 )
 async def list_deals(
+    response: FastAPIResponse,
     limit: int = Query(
         50, ge=1, le=100, description="Maximum deals per page (ignored if fetch_all=true)"
     ),
@@ -120,7 +122,7 @@ async def list_deals(
     q: str | None = Query(None, description="Case-insensitive search on deal name"),
     service: DealsAccessService = Depends(get_deals_access_service),
     _rl_read: None = Depends(rate_limit_user_read),
-):
+) -> GenericResponse[DealsPage]:
     """List CRM deals with optional filters and pagination.
 
     Args:
@@ -221,12 +223,14 @@ async def list_deals(
         return Response.error_response(
             message=e.message,
             status_code=e.status_code,
+            response=response,
         )
     except Exception as e:
         logger.error("Unexpected error listing deals: %s", e, exc_info=True)
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG,
             status_code=500,
+            response=response,
         )
 
 
@@ -246,9 +250,10 @@ async def list_deals(
     """,
 )
 async def get_deals_stats(
+    response: FastAPIResponse,
     service: DealsAccessService = Depends(get_deals_access_service),
     _rl_read: None = Depends(rate_limit_user_read),
-):
+) -> GenericResponse[DealsStats]:
     """Calculate and return aggregate statistics for deals.
 
     Returns:
@@ -266,12 +271,14 @@ async def get_deals_stats(
         return Response.error_response(
             message=e.message,
             status_code=e.status_code,
+            response=response,
         )
     except Exception as e:
         logger.error("Unexpected error calculating stats: %s", e, exc_info=True)
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG,
             status_code=500,
+            response=response,
         )
 
 
@@ -295,10 +302,11 @@ async def get_deals_stats(
 )
 async def get_deal(
     deal_id: UUID,
+    response: FastAPIResponse,
     service: DealsAccessService = Depends(get_deals_access_service),
     deal_job_service: DealJobService = Depends(get_deal_job_service),
     _rl_read: None = Depends(rate_limit_user_read),
-):
+) -> GenericResponse[DealDetail]:
     """Retrieve detailed information for a single deal.
 
     Args:
@@ -314,6 +322,7 @@ async def get_deal(
             return Response.error_response(
                 message="Deal not found",
                 status_code=404,
+                response=response,
             )
 
         # Fetch deal team members (owners, collaborators, split_owners)
@@ -414,12 +423,14 @@ async def get_deal(
         return Response.error_response(
             message=e.message,
             status_code=e.status_code,
+            response=response,
         )
     except Exception as e:
         logger.error("Unexpected error getting deal %s: %s", deal_id, e, exc_info=True)
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG,
             status_code=500,
+            response=response,
         )
 
 
@@ -430,6 +441,7 @@ async def get_deal(
     description="Manually trigger the background task to identify meetings associated with deals and create tasks.",
 )
 async def trigger_deal_meeting_processing(
+    response: FastAPIResponse,
     user: UserIDs = Depends(get_current_user),
 ) -> GenericResponse[dict]:
     """Trigger the deal meeting processing task."""
@@ -440,15 +452,16 @@ async def trigger_deal_meeting_processing(
             queue="deal",
             routing_key="deal",
         )
-        return Response.success_response(  # type: ignore[return-value]
+        return Response.success_response(
             message="Deal meeting processing triggered successfully",
             data={"task_id": task_id},
         )
     except Exception as e:
         logger.error(f"Failed to trigger deal meeting processing: {e}", exc_info=True)
-        return Response.error_response(  # type: ignore[return-value]
+        return Response.error_response(
             message="Failed to trigger processing",
             status_code=500,
+            response=response,
         )
 
 
@@ -475,8 +488,9 @@ async def trigger_deal_meeting_processing(
 )
 async def generate_deal_summary(
     deal_id: UUID,
+    response: FastAPIResponse,
     service: DealJobService = Depends(get_deal_job_service),
-):
+) -> GenericResponse[DealJobResponse]:
     """
     Generate an AI-powered summary for a deal.
 
@@ -500,16 +514,22 @@ async def generate_deal_summary(
                 job_type=str(job.job_type),
                 status=str(job.status),
             ),
+            response=response,
         )
     except DealJobServiceError as e:
         logger.warning("Deal summary job error: %s", e.message, exc_info=True)
         return Response.error_response(
             message=e.message,
             status_code=e.status_code,
+            response=response,
         )
     except Exception:
         logger.exception("Failed to initiate deal summary for deal %s", deal_id)
-        return Response.internal_server_error_response("Failed to initiate deal summary")
+        return Response.error_response(
+            message="Failed to initiate deal summary",
+            status_code=500,
+            response=response,
+        )
 
 
 @deals_router.get(

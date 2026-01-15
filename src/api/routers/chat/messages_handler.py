@@ -1,6 +1,7 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, Query, Request
+from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
@@ -53,11 +54,12 @@ async def get_chat_message_service(
     summary="Send a user message (persist + enqueue job)",
 )
 async def send_message(
+    response: FastAPIResponse,
     payload: SendMessageRequest = Body(...),
     service: ChatMessageService = Depends(get_chat_message_service),
     user_ids: UserIDs = Depends(get_current_user),
     _rl: None = Depends(rate_limit_user_write),
-):
+) -> GenericResponse[SendMessageResponse]:
     try:
         # Map attachments to IDs, respecting order if provided
         attach_ids: list[UUID] | None = payload.attachments
@@ -81,7 +83,7 @@ async def send_message(
         resp = SendMessageResponse(
             job_id=job.job_id,
             user_message_id=user_message.message_id,
-            assistant_message_id=assistant_message_id,
+            assistant_message_id=UUID(assistant_message_id),
         )
 
         # Commit before enqueueing so the worker can always see the job/message.
@@ -128,16 +130,18 @@ async def send_message(
                 await service.db.commit()
             except Exception:
                 await service.db.rollback()
-            return Response.internal_server_error_response("Failed to schedule message processing.")
+            return Response.internal_server_error_response(
+                "Failed to schedule message processing.", response=response
+            )
 
         return Response.success_response("Message accepted", resp)
     except ValueError as e:
         await service.db.rollback()
-        return Response.bad_request_error_response(str(e))
+        return Response.bad_request_error_response(str(e), response=response)
     except Exception as e:
         await service.db.rollback()
         logger.error("send_message failed: %s", e, exc_info=True)
-        return Response.internal_server_error_response("Unable to send message")
+        return Response.internal_server_error_response("Unable to send message", response=response)
 
 
 @router.get(
@@ -185,6 +189,7 @@ async def message_events(
 )
 async def list_messages(
     session_id: UUID,
+    response: FastAPIResponse,
     limit: int = Query(20, ge=1, le=100),
     cursor: str | None = Query(
         None, description="Opaque cursor returned by previous page (omit for first)"
@@ -193,7 +198,7 @@ async def list_messages(
     message_type: ChatMessageType | None = Query(None, description="Filter by type"),
     service: ChatMessageService = Depends(get_chat_message_service),
     _rl_read: None = Depends(rate_limit_user_read),
-):
+) -> GenericResponse[ChatMessagesPage]:
     try:
         msgs, next_cursor = await service.list_messages(
             session_id=session_id,
@@ -213,10 +218,10 @@ async def list_messages(
         page = ChatMessagesPage(items=items, cursor=next_cursor)
         return Response.success_response("Messages listed", page)
     except ValueError as e:
-        return Response.bad_request_error_response(str(e))
+        return Response.bad_request_error_response(str(e), response=response)
     except Exception as e:
         logger.error("Unexpected error listing messages: %s", e, exc_info=True)
-        return Response.internal_server_error_response("Unable to list messages")
+        return Response.internal_server_error_response("Unable to list messages", response=response)
 
 
 @router.post(
@@ -226,10 +231,11 @@ async def list_messages(
     summary="Provide feedback (thumbs up/down) for a message",
 )
 async def provide_message_feedback(
+    response: FastAPIResponse,
     payload: MessageFeedbackRequest = Body(...),
     service: ChatMessageService = Depends(get_chat_message_service),
     _rl: None = Depends(rate_limit_user_write),
-):
+) -> GenericResponse[MessageFeedbackResponse]:
     """Provide feedback on a chat message.
 
     Users can give thumbs up (+1), thumbs down (-1), or clear feedback (0).
@@ -245,8 +251,8 @@ async def provide_message_feedback(
         # Commit the transaction
         await service.db.commit()
 
-        # Build response
-        response = MessageFeedbackResponse(
+        # Build response data
+        feedback_data = MessageFeedbackResponse(
             message_id=updated_message.message_id,
             feedback_score=updated_message.feedback_score,
         )
@@ -257,13 +263,15 @@ async def provide_message_feedback(
             payload.feedback_score,
         )
 
-        return Response.success_response("Feedback updated successfully", response)
+        return Response.success_response("Feedback updated successfully", feedback_data)
 
     except ValueError as e:
         await service.db.rollback()
         logger.warning("Invalid feedback request: %s", e)
-        return Response.bad_request_error_response(str(e))
+        return Response.bad_request_error_response(str(e), response=response)
     except Exception as e:
         await service.db.rollback()
         logger.error("Failed to update message feedback: %s", e, exc_info=True)
-        return Response.internal_server_error_response("Unable to update feedback")
+        return Response.internal_server_error_response(
+            "Unable to update feedback", response=response
+        )

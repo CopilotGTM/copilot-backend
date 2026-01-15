@@ -7,7 +7,7 @@ variant that matches your endpoint/service.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncGenerator, AsyncIterator, Iterator
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, status
@@ -98,7 +98,7 @@ async def get_org_async_session(
 
 async def acquire_org_async_session(
     organisation_id: UUID,
-) -> AsyncIterator[AsyncSession]:
+) -> AsyncGenerator[AsyncSession, None]:
     """Imperative helper for async code outside FastAPI dependency system."""
     async for s in _async_org_session_gen(organisation_id):
         yield s

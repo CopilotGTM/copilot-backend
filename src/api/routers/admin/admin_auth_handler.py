@@ -1,6 +1,7 @@
 from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, Depends, Request
+from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.master_dependencies import get_master_async_session
 from src.api.dependencies.rate_limit import rate_limit_admin_login, rate_limit_password_reset
@@ -69,9 +70,10 @@ async def get_admin_auth_service(
 @router.post("/login", response_model=GenericResponse[AdminLoginResponse], tags=["admin_auth"])
 async def admin_login(
     login_request: AdminLoginRequest,
+    response: FastAPIResponse,
     service: AdminAuthService = Depends(get_admin_auth_service),
     _rl_admin_login: None = Depends(rate_limit_admin_login),
-):
+) -> GenericResponse[AdminLoginResponse]:
     """
     Super Admin login endpoint.
     Verifies credentials and returns admin details and session tokens.
@@ -92,17 +94,31 @@ async def admin_login(
                 message="Login successful", data=result.to_response_data()
             )
 
+        # Fallback for unexpected result type
+        logger.error("Unexpected login result type: %s", type(result))
+        return Response.internal_server_error_response(
+            message=AdminAuthErrors.LOGIN_FAILED, response=response
+        )
+
     except AdminNotFoundError:
-        return Response.unauthorized_error_response(AdminAuthErrors.USER_NOT_FOUND)
+        return Response.unauthorized_error_response(
+            AdminAuthErrors.USER_NOT_FOUND, response=response
+        )
     except AdminNotApprovedError:
-        return Response.forbidden_error_response(AdminAuthErrors.ACCOUNT_NOT_APPROVED)
+        return Response.forbidden_error_response(
+            AdminAuthErrors.ACCOUNT_NOT_APPROVED, response=response
+        )
     except AdminNotActiveError:
-        return Response.forbidden_error_response(AdminAuthErrors.ACCOUNT_NOT_ACTIVE)
+        return Response.forbidden_error_response(
+            AdminAuthErrors.ACCOUNT_NOT_ACTIVE, response=response
+        )
     except InvalidCredentialsError:
-        return Response.unauthorized_error_response(AdminAuthErrors.INVALID_CREDENTIALS)
+        return Response.unauthorized_error_response(
+            AdminAuthErrors.INVALID_CREDENTIALS, response=response
+        )
     except AdminAuthServiceError as e:
         logger.error("Login service error: %s", e.message)
-        return Response.internal_server_error_response(message=e.message)
+        return Response.internal_server_error_response(message=e.message, response=response)
     except Exception as e:
         logger.error(
             "Error during super admin login for email %s: %s",
@@ -110,14 +126,17 @@ async def admin_login(
             str(e),
             exc_info=True,
         )
-        return Response.internal_server_error_response(message=AdminAuthErrors.LOGIN_FAILED)
+        return Response.internal_server_error_response(
+            message=AdminAuthErrors.LOGIN_FAILED, response=response
+        )
 
 
-@router.post("/reset-password", tags=["admin_auth"])
+@router.post("/reset-password", response_model=GenericResponse[None], tags=["admin_auth"])
 async def reset_password(
     password_request: AdminResetPasswordRequest,
+    response: FastAPIResponse,
     service: AdminAuthService = Depends(get_admin_auth_service),
-):
+) -> GenericResponse[None]:
     """
     First-time or forgot-password reset endpoint for Super Admin.
     Requires a Supabase recovery token.
@@ -134,16 +153,22 @@ async def reset_password(
         )
 
     except PasswordMismatchError:
-        return Response.bad_request_error_response(AdminAuthErrors.PASSWORD_MISMATCH)
+        return Response.bad_request_error_response(
+            AdminAuthErrors.PASSWORD_MISMATCH, response=response
+        )
     except InvalidRecoveryTokenError:
-        return Response.bad_request_error_response(AdminAuthErrors.INVALID_RECOVERY_TOKEN)
+        return Response.bad_request_error_response(
+            AdminAuthErrors.INVALID_RECOVERY_TOKEN, response=response
+        )
     except AdminNotFoundError:
-        return Response.unauthorized_error_response(AdminAuthErrors.UNAUTHORIZED)
+        return Response.unauthorized_error_response(AdminAuthErrors.UNAUTHORIZED, response=response)
     except AdminAuthServiceError as e:
-        return Response.bad_request_error_response(e.message)
+        return Response.bad_request_error_response(e.message, response=response)
     except Exception as e:
         logger.error("Error during password reset: %s", str(e), exc_info=True)
-        return Response.internal_server_error_response(AdminAuthErrors.PASSWORD_RESET_FAILED)
+        return Response.internal_server_error_response(
+            AdminAuthErrors.PASSWORD_RESET_FAILED, response=response
+        )
 
 
 @router.post(
@@ -151,7 +176,10 @@ async def reset_password(
     response_model=GenericResponse[AdminRefreshTokenResponse],
     tags=["admin_auth"],
 )
-async def refresh_token(refresh_request: AdminRefreshTokenRequest):
+async def refresh_token(
+    refresh_request: AdminRefreshTokenRequest,
+    response: FastAPIResponse,
+) -> GenericResponse[AdminRefreshTokenResponse]:
     """Refresh the access token using a refresh token."""
     try:
         session_data = supabase_admin_client.refresh_access_token(refresh_request.refresh_token)
@@ -167,30 +195,35 @@ async def refresh_token(refresh_request: AdminRefreshTokenRequest):
             )
 
         logger.warning("Refresh token is invalid or expired.")
-        return Response.unauthorized_error_response(AdminAuthErrors.REFRESH_TOKEN_INVALID)
+        return Response.unauthorized_error_response(
+            AdminAuthErrors.REFRESH_TOKEN_INVALID, response=response
+        )
     except SupabaseAuthError as e:
         logger.error(f"Token refresh failed: {e.message}")
         if e.status_code == 400:
-            return Response.bad_request_error_response(e.message)
+            return Response.bad_request_error_response(e.message, response=response)
         elif e.status_code == 401:
-            return Response.unauthorized_error_response(e.message)
+            return Response.unauthorized_error_response(e.message, response=response)
         elif e.status_code == 404:
-            return Response.not_found_error_response(e.message)
+            return Response.not_found_error_response(e.message, response=response)
         elif e.status_code == 409:
-            return Response.conflict_error_response(e.message)
+            return Response.conflict_error_response(e.message, response=response)
         else:
-            return Response.internal_server_error_response(message=e.message)
+            return Response.internal_server_error_response(message=e.message, response=response)
     except Exception as e:
         logger.error("Error during token refresh: %s", str(e), exc_info=True)
-        return Response.internal_server_error_response(AdminAuthErrors.REFRESH_TOKEN_FAILED)
+        return Response.internal_server_error_response(
+            AdminAuthErrors.REFRESH_TOKEN_FAILED, response=response
+        )
 
 
-@router.post("/forgot-password", tags=["admin_auth"])
+@router.post("/forgot-password", response_model=GenericResponse[None], tags=["admin_auth"])
 async def forgot_password(
     forgot_password_request: AdminForgotPasswordRequest,
+    response: FastAPIResponse,
     service: AdminAuthService = Depends(get_admin_auth_service),
     _rl_password_reset: None = Depends(rate_limit_password_reset),
-):
+) -> GenericResponse[None]:
     """Triggers a password reset email for a super admin.
     Rate limited to 3 requests per 15 minutes, 10 per hour.
     """
@@ -206,16 +239,19 @@ async def forgot_password(
             str(e),
             exc_info=True,
         )
-        return Response.internal_server_error_response(AdminAuthErrors.FORGOT_PASSWORD_FAILED)
+        return Response.internal_server_error_response(
+            AdminAuthErrors.FORGOT_PASSWORD_FAILED, response=response
+        )
 
 
-@router.post("/logout", tags=["admin_auth"])
+@router.post("/logout", response_model=GenericResponse[None], tags=["admin_auth"])
 async def admin_logout(
     logout_request: AdminLogoutRequest,
     request: Request,
+    response: FastAPIResponse,
     current_admin: SuperAdmin = Depends(admin_auth),
     service: AdminAuthService = Depends(get_admin_auth_service),
-):
+) -> GenericResponse[None]:
     """Unified logout endpoint for super admin."""
     try:
         bearer_token = _extract_bearer_token(request)
@@ -228,25 +264,28 @@ async def admin_logout(
         return Response.success_response(message=message)
 
     except AdminNotFoundError:
-        return Response.not_found_error_response(AdminAuthErrors.USER_NOT_FOUND)
+        return Response.not_found_error_response(AdminAuthErrors.USER_NOT_FOUND, response=response)
     except AdminAuthServiceError as e:
         if e.error_code == "EMAIL_REQUIRED":
-            return Response.bad_request_error_response(e.message)
+            return Response.bad_request_error_response(e.message, response=response)
         if e.error_code == "UNAUTHORIZED":
-            return Response.unauthorized_error_response(e.message)
-        return Response.internal_server_error_response(e.message)
+            return Response.unauthorized_error_response(e.message, response=response)
+        return Response.internal_server_error_response(e.message, response=response)
     except Exception as e:
         logger.error("Error during logout: %s", str(e), exc_info=True)
-        return Response.internal_server_error_response(AdminAuthErrors.LOGOUT_FAILED)
+        return Response.internal_server_error_response(
+            AdminAuthErrors.LOGOUT_FAILED, response=response
+        )
 
 
-@router.post("/change-password", tags=["admin_auth"])
+@router.post("/change-password", response_model=GenericResponse[None], tags=["admin_auth"])
 async def change_password(
     password_request: AdminChangePasswordRequest,
     request: Request,
+    response: FastAPIResponse,
     current_admin: SuperAdmin = Depends(admin_auth),
     service: AdminAuthService = Depends(get_admin_auth_service),
-):
+) -> GenericResponse[None]:
     """Change password for an active, logged-in Super Admin."""
     try:
         bearer_token = _extract_bearer_token(request)
@@ -261,7 +300,9 @@ async def change_password(
         )
 
     except InvalidCredentialsError:
-        return Response.unauthorized_error_response(AdminAuthErrors.INCORRECT_CURRENT_PASSWORD)
+        return Response.unauthorized_error_response(
+            AdminAuthErrors.INCORRECT_CURRENT_PASSWORD, response=response
+        )
     except Exception as e:
         logger.error(
             "Error during password change for email %s: %s",
@@ -269,4 +310,6 @@ async def change_password(
             str(e),
             exc_info=True,
         )
-        return Response.internal_server_error_response(AdminAuthErrors.PASSWORD_CHANGE_FAILED)
+        return Response.internal_server_error_response(
+            AdminAuthErrors.PASSWORD_CHANGE_FAILED, response=response
+        )

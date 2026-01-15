@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
+from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
@@ -77,19 +78,25 @@ async def get_deal_meeting_job_service(
 )
 async def get_deal_meetings(
     deal_id: UUID,
+    response: FastAPIResponse,
     service: MeetingsService = Depends(get_meetings_service),
-):
+) -> GenericResponse[list[DealMeetingResponse]]:
     """
     Get all meetings associated with a specific deal.
     """
     try:
         meetings = await service.list_meetings_by_deal(deal_id)
         return Response.success_response("Meetings retrieved successfully", meetings)
-    except HTTPException:
-        raise
+    except MeetingsServiceError as e:
+        logger.warning("Meetings service error: %s", e.message)
+        return Response.error_response(
+            message=e.message, status_code=e.status_code, response=response
+        )
     except Exception:
         logger.exception("Failed to retrieve meetings for deal %s", deal_id)
-        return Response.internal_server_error_response("Failed to retrieve meetings")
+        return Response.error_response(
+            message="Failed to retrieve meetings", status_code=500, response=response
+        )
 
 
 @meetings_router.post(
@@ -101,8 +108,9 @@ async def initiate_meeting_job(
     deal_id: UUID,
     event_id: UUID,
     job_type: str,
+    response: FastAPIResponse,
     service: DealMeetingJobService = Depends(get_deal_meeting_job_service),
-):
+) -> GenericResponse[DealJobResponse]:
     """
     Initiate a meeting job (briefing, summary, or followup).
 
@@ -116,9 +124,10 @@ async def initiate_meeting_job(
     # Validate job type
     if job_type not in MEETING_JOB_TYPE_MAP:
         logger.warning("Invalid meeting job type requested: %s", job_type)
-        raise HTTPException(
+        return Response.error_response(
+            message=f"Invalid job type: {job_type}. Must be one of: {list(MEETING_JOB_TYPE_MAP.keys())}",
             status_code=400,
-            detail=f"Invalid job type: {job_type}. Must be one of: {list(MEETING_JOB_TYPE_MAP.keys())}",
+            response=response,
         )
 
     deal_job_type = MEETING_JOB_TYPE_MAP[job_type]
@@ -141,16 +150,18 @@ async def initiate_meeting_job(
                 job_type=str(job.job_type),
                 status=str(job.status),
             ),
+            response=response,
         )
     except DealMeetingJobServiceError as e:
-        if e.status_code == 404:
-            raise HTTPException(status_code=404, detail=e.message) from e
-        raise HTTPException(status_code=e.status_code, detail=e.message) from e
-    except HTTPException:
-        raise
+        logger.warning("Meeting job service error: %s", e.message)
+        return Response.error_response(
+            message=e.message, status_code=e.status_code, response=response
+        )
     except Exception:
         logger.exception("Failed to initiate %s for deal %s event %s", job_type, deal_id, event_id)
-        return Response.internal_server_error_response(f"Failed to initiate {job_type}")
+        return Response.error_response(
+            message=f"Failed to initiate {job_type}", status_code=500, response=response
+        )
 
 
 @meetings_router.get(
@@ -200,8 +211,9 @@ async def update_meeting_status(
     deal_id: UUID,
     event_id: UUID,
     request: UpdateMeetingStatusRequest,
+    response: FastAPIResponse,
     service: MeetingsService = Depends(get_meetings_service),
-):
+) -> GenericResponse[None]:
     """
     Update the status of a meeting association (e.g., CONFIRM or REJECT).
     """
@@ -209,11 +221,12 @@ async def update_meeting_status(
         await service.update_meeting_status(deal_id, event_id, request.status)
         return Response.success_response(f"Meeting status updated to {request.status.value}")
     except MeetingsServiceError as e:
-        if e.status_code == 404:
-            raise HTTPException(status_code=404, detail=e.message) from e
-        raise HTTPException(status_code=e.status_code, detail=e.message) from e
-    except HTTPException:
-        raise
+        logger.warning("Meeting status update error: %s", e.message)
+        return Response.error_response(
+            message=e.message, status_code=e.status_code, response=response
+        )
     except Exception:
         logger.exception("Failed to update meeting status for deal %s event %s", deal_id, event_id)
-        return Response.internal_server_error_response("Failed to update meeting status")
+        return Response.error_response(
+            message="Failed to update meeting status", status_code=500, response=response
+        )

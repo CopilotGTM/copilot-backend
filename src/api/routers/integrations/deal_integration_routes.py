@@ -11,6 +11,7 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends
+from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
@@ -61,6 +62,7 @@ async def get_integration_service(
 )
 async def list_available_deal_integrations(
     deal_id: UUID,
+    response: FastAPIResponse,
     service: IntegrationService = Depends(get_integration_service),
     user_ids: UserIDs = Depends(get_current_user),
 ) -> GenericResponse[AvailableIntegrationsResponse]:
@@ -145,7 +147,9 @@ async def list_available_deal_integrations(
     except Exception as e:
         logger.error("Error listing available deal integrations: %s", str(e), exc_info=True)
         return Response.error_response(
-            message="Failed to retrieve available deal integrations", status_code=500
+            message="Failed to retrieve available deal integrations",
+            status_code=500,
+            response=response,
         )
 
 
@@ -158,6 +162,7 @@ async def list_available_deal_integrations(
 async def link_channel_to_deal(
     deal_id: UUID,
     channel_data: ChannelLinkRequest,
+    response: FastAPIResponse,
     service: IntegrationService = Depends(get_integration_service),
     user_ids: UserIDs = Depends(get_current_user),
 ) -> GenericResponse[ChannelLinkResponse]:
@@ -194,13 +199,15 @@ async def link_channel_to_deal(
             data=response_data,
         )
     except ValueError as e:
-        return Response.error_response(message=str(e), status_code=404)
+        return Response.error_response(message=str(e), status_code=404, response=response)
     except Exception as e:
         logger.error(
             f"Failed to link channel to deal {deal_id}: {str(e)}",
             exc_info=True,
         )
-        return Response.internal_server_error_response(message="Failed to link channel")
+        return Response.internal_server_error_response(
+            message="Failed to link channel", response=response
+        )
 
 
 @router.delete(
@@ -212,6 +219,7 @@ async def link_channel_to_deal(
 async def remove_channel_from_deal(
     deal_id: UUID,
     channel_id: UUID,
+    response: FastAPIResponse,
     service: IntegrationService = Depends(get_integration_service),
     user_ids: UserIDs = Depends(get_current_user),
 ) -> GenericResponse[EmptyResponse]:
@@ -233,12 +241,16 @@ async def remove_channel_from_deal(
         if success:
             return Response.success_response(message="Channel removed successfully")
         else:
-            return Response.error_response(message="Channel link not found", status_code=404)
+            return Response.error_response(
+                message="Channel link not found", status_code=404, response=response
+            )
     except Exception as e:
         logger.error(
             f"Failed to remove channel {channel_id} from deal {deal_id}: {str(e)}", exc_info=True
         )
-        return Response.internal_server_error_response(message="Failed to remove channel")
+        return Response.internal_server_error_response(
+            message="Failed to remove channel", response=response
+        )
 
 
 @router.get(
@@ -249,6 +261,7 @@ async def remove_channel_from_deal(
 )
 async def list_integration_channels(
     integration_id: UUID,
+    response: FastAPIResponse,
     deal_id: UUID | None = None,
     service: IntegrationService = Depends(get_integration_service),
 ) -> GenericResponse[ChannelListResponse]:
@@ -276,10 +289,12 @@ async def list_integration_channels(
             data=response_data,
         )
     except ValueError as e:
-        return Response.error_response(message=str(e), status_code=404)
+        return Response.error_response(message=str(e), status_code=404, response=response)
     except Exception as e:
         logger.error(
             f"Failed to list channels for integration {integration_id}: {str(e)}",
             exc_info=True,
         )
-        return Response.internal_server_error_response(message="Failed to retrieve channels")
+        return Response.internal_server_error_response(
+            message="Failed to retrieve channels", response=response
+        )

@@ -10,6 +10,7 @@ Handles:
 """
 
 from fastapi import APIRouter, Depends
+from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
@@ -54,6 +55,7 @@ async def get_integration_service(
     description="Get all available integration types and show which ones the user has already connected.",
 )
 async def list_available_integrations(
+    response: FastAPIResponse,
     service: IntegrationService = Depends(get_integration_service),
     user_ids: UserIDs = Depends(get_current_user),
 ) -> GenericResponse[AvailableIntegrationsResponse]:
@@ -121,5 +123,5 @@ async def list_available_integrations(
             exc_info=True,
         )
         return Response.internal_server_error_response(
-            message=IntegrationErrors.INTEGRATION_LIST_FAILED
+            message=IntegrationErrors.INTEGRATION_LIST_FAILED, response=response
         )

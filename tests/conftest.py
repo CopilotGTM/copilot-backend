@@ -66,7 +66,9 @@ def client(mocker):
     importlib.reload(fastapi_app)
 
     # Patch Redis client used during app creation
-    mocker.patch("src.api.fastapi_app.get_redis_client", return_value=fakeredis.FakeRedis())
+    mocker.patch(
+        "src.infra.messaging.redis_client.get_redis_client", return_value=fakeredis.FakeRedis()
+    )
 
     # Patch auth verification dependency (module path to the function used in router dependencies)
     mocker.patch(

@@ -3,6 +3,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, Query, status
+from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
@@ -63,7 +64,7 @@ async def get_upload_service(
         yield service
     finally:
         try:
-            await service.close()  # type: ignore[attr-defined]
+            await service.close()
         except Exception:
             logger.debug("UploadService close failed", exc_info=True)
 
@@ -75,6 +76,7 @@ async def get_upload_service(
     summary="Batch presign multiple attachments",
 )
 async def presign_batch(
+    response: FastAPIResponse,
     payload: AttachmentBatchPresignRequest = Body(...),
     service: UploadService = Depends(get_upload_service),
     _rl: None = Depends(rate_limit_user_write),
@@ -88,12 +90,12 @@ async def presign_batch(
                 attachment_id=att.attachment_id,
                 filename=att.filename,
                 mimetype=att.mimetype,
-                upload_url=url,
+                upload_url=url,  # type: ignore[arg-type]
                 size_bytes=getattr(att, "size_bytes", None),
                 success=True,
                 error_message=None,
                 expires_in_seconds=expiry_minutes * 60,
-                status=_get_status_str(AttachmentStatus.PENDING_UPLOAD),
+                status=AttachmentStatus.PENDING_UPLOAD,
             )
             for att, url in created
         ]
@@ -110,7 +112,7 @@ async def presign_batch(
                     error_message=err.get("error_message"),
                     size_bytes=None,
                     expires_in_seconds=0,
-                    status=_get_status_str(AttachmentStatus.FAILED),
+                    status=AttachmentStatus.FAILED,
                 )
             )
         all_files = success_entries + failed_entries
@@ -121,17 +123,24 @@ async def presign_batch(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 message="All presign operations failed",
                 data=resp,
+                response=response,
             )
         if failed_entries:
             message = f"Batch presign completed with {len(failed_entries)} errors"
         return Response.success_response(message=message, data=resp)
     except UploadServiceError as e:
-        return Response.error_response(status_code=e.status_code, message=e.message)
+        return Response.error_response(
+            status_code=e.status_code, message=e.message, response=response
+        )
     except ValueError as e:
-        return Response.error_response(status_code=status.HTTP_400_BAD_REQUEST, message=str(e))
+        return Response.error_response(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            message=str(e),
+            response=response,
+        )
     except Exception:
         logger.error("Unexpected error in attachment batch presign", exc_info=True)
-        return Response.internal_server_error_response(UNEXPECTED_ERROR_MSG)
+        return Response.internal_server_error_response(UNEXPECTED_ERROR_MSG, response=response)
 
 
 @upload_router.post(
@@ -141,6 +150,7 @@ async def presign_batch(
     summary="Batch finalize multiple attachments",
 )
 async def finalize_batch(
+    response: FastAPIResponse,
     payload: AttachmentBatchFinalizeRequest = Body(...),
     service: UploadService = Depends(get_upload_service),
     _rl: None = Depends(rate_limit_user_write),
@@ -180,12 +190,15 @@ async def finalize_batch(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             message="All finalize operations failed",
             data=resp,
+            response=response,
         )
     except UploadServiceError as e:
-        return Response.error_response(status_code=e.status_code, message=e.message)
+        return Response.error_response(
+            status_code=e.status_code, message=e.message, response=response
+        )
     except Exception:
         logger.error("Unexpected error in attachment batch finalize", exc_info=True)
-        return Response.internal_server_error_response(UNEXPECTED_ERROR_MSG)
+        return Response.internal_server_error_response(UNEXPECTED_ERROR_MSG, response=response)
 
 
 @upload_router.get(
@@ -240,6 +253,7 @@ async def stream_attachments(
     summary="Get SAS URL for direct client upload (minimal response)",
 )
 async def presign_upload(
+    response: FastAPIResponse,
     payload: PresignRequest = Body(...),
     service: UploadService = Depends(get_upload_service),
     _rl: None = Depends(rate_limit_user_write),
@@ -257,22 +271,28 @@ async def presign_upload(
             attachment_id=attachment.attachment_id,
             filename=attachment.filename,
             mimetype=attachment.mimetype,
-            upload_url=str(upload_url),
+            upload_url=upload_url,  # type: ignore[arg-type]
             size_bytes=attachment.size_bytes,
             expires_in_seconds=expiry_minutes * 60,
-            status=_get_status_str(AttachmentStatus.PENDING_UPLOAD),
+            status=AttachmentStatus.PENDING_UPLOAD,
             success=True,
             error_message=None,
         )
         return Response.success_response(message="Presigned upload URL created", data=resp)
     except UploadServiceError as e:
-        return Response.error_response(status_code=e.status_code, message=e.message)
+        return Response.error_response(
+            status_code=e.status_code, message=e.message, response=response
+        )
     except ValueError as e:
         logger.warning("Presign request validation failed for user %s: %s", service.user_id, e)
-        return Response.error_response(status_code=status.HTTP_400_BAD_REQUEST, message=str(e))
+        return Response.error_response(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            message=str(e),
+            response=response,
+        )
     except Exception as e:
         logger.error("Unexpected error in attachment presign: %s", e, exc_info=True)
-        return Response.internal_server_error_response(UNEXPECTED_ERROR_MSG)
+        return Response.internal_server_error_response(UNEXPECTED_ERROR_MSG, response=response)
 
 
 @upload_router.post(
@@ -282,6 +302,7 @@ async def presign_upload(
     summary="Finalize a previously presigned upload",
 )
 async def finalize_upload(
+    response: FastAPIResponse,
     payload: FinalizeRequest = Body(...),
     service: UploadService = Depends(get_upload_service),
     _rl: None = Depends(rate_limit_user_write),
@@ -308,18 +329,20 @@ async def finalize_upload(
         resp = UploadedAttachmentResponse(
             attachment_id=attachment.attachment_id,
             uploaded_at=attachment.created_at,
-            status=_get_status_str(attachment.status),
+            status=attachment.status,
         )
         return Response.success_response(message="Attachment finalized", data=resp)
     except UploadServiceError as e:
-        return Response.error_response(status_code=e.status_code, message=e.message)
+        return Response.error_response(
+            status_code=e.status_code, message=e.message, response=response
+        )
     except Exception:
         logger.error(
             "Unexpected error finalizing attachment %s",
             payload.attachment_id,
             exc_info=True,
         )
-        return Response.internal_server_error_response(UNEXPECTED_ERROR_MSG)
+        return Response.internal_server_error_response(UNEXPECTED_ERROR_MSG, response=response)
 
 
 @upload_router.get(
@@ -330,6 +353,7 @@ async def finalize_upload(
 )
 async def get_attachment_status(
     attachment_id: UUID,
+    response: FastAPIResponse,
     service: UploadService = Depends(get_upload_service),
 ):
     """
@@ -343,17 +367,20 @@ async def get_attachment_status(
             return Response.error_response(
                 status_code=status.HTTP_404_NOT_FOUND,
                 message=f"Attachment {attachment_id} not found",
+                response=response,
             )
 
         # Keep get endpoint minimal — only return id, timestamp and logical status.
         resp = UploadedAttachmentResponse(
             attachment_id=attachment.attachment_id,
             uploaded_at=attachment.created_at,
-            status=_get_status_str(getattr(attachment, "status", None)),
+            status=attachment.status,
         )
         return Response.success_response(message="Attachment status retrieved", data=resp)
     except UploadServiceError as e:
-        return Response.error_response(status_code=e.status_code, message=e.message)
+        return Response.error_response(
+            status_code=e.status_code, message=e.message, response=response
+        )
     except Exception:
         logger.error("Unexpected error retrieving attachment %s", attachment_id, exc_info=True)
-        return Response.internal_server_error_response(UNEXPECTED_ERROR_MSG)
+        return Response.internal_server_error_response(UNEXPECTED_ERROR_MSG, response=response)

@@ -381,3 +381,8 @@ class ChatMessageService:
         await self.db.flush()
         await self.db.refresh(message)
         return message
+
+    async def close(self) -> None:
+        """Close any resources held by the service, including the database session."""
+        if self.db:
+            await self.db.close()

@@ -3,6 +3,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
+from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
@@ -43,6 +44,7 @@ async def get_upload_service(
 )
 async def download_attachment(
     attachment_id: UUID,
+    response: FastAPIResponse,
     expires_minutes: int = Query(30, ge=1, le=120),
     service: UploadService = Depends(get_upload_service),
     _rl_read: None = Depends(rate_limit_user_read),
@@ -56,7 +58,11 @@ async def download_attachment(
         )
         return Response.success_response("Download URL generated", resp)
     except UploadServiceError as e:
-        return Response.error_response(status_code=e.status_code, message=e.message)
+        return Response.error_response(
+            status_code=e.status_code, message=e.message, response=response
+        )
     except Exception as e:  # pragma: no cover
         logger.error("Unexpected error generating attachment download URL: %s", e, exc_info=True)
-        return Response.internal_server_error_response("An unexpected error occurred")
+        return Response.internal_server_error_response(
+            "An unexpected error occurred", response=response
+        )
