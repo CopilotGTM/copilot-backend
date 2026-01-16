@@ -1,0 +1,81 @@
+{{- if .Values.enabled -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "promtail.fullname" . }}-config
+  labels:
+    {{- include "promtail.labels" . | nindent 4 }}
+data:
+  promtail-config.yaml: |
+    server:
+      http_listen_port: 9080
+      grpc_listen_port: 0
+
+    positions:
+      filename: /tmp/positions.yaml
+
+    clients:
+      - url: {{ include "promtail.lokiUrl" . }}
+
+    scrape_configs:
+      # Scrape logs from Kubernetes pods
+      - job_name: kubernetes-pods
+        kubernetes_sd_configs:
+          - role: pod
+        pipeline_stages:
+          # Try to parse JSON logs (when LOG_FORMAT=json is set)
+          - json:
+              expressions:
+                level: level
+                logger: logger
+                request_id: request_id
+                celery_task_id: celery_task_id
+                celery_task_name: celery_task_name
+                celery_queue: celery_queue
+          # Add parsed fields as labels (only if they exist)
+          - labels:
+              level:
+              logger:
+          # Output the original log line
+          - output:
+              source: message
+        relabel_configs:
+          # Keep only pods in the same namespace as the release
+          - source_labels: [__meta_kubernetes_namespace]
+            action: keep
+            regex: {{ .Release.Namespace }}
+          # Only collect logs from copilot containers
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+            action: keep
+            regex: (copilot-backend|worker|flower|webservice)
+          # Use pod name as instance label
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          # Use container name
+          - source_labels: [__meta_kubernetes_container_name]
+            target_label: container
+          # Use namespace
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          # Add node name
+          - source_labels: [__meta_kubernetes_pod_node_name]
+            target_label: node
+          # Add app label
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+            target_label: app
+          # Add instance label (worker alias name)
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_instance]
+            target_label: instance
+          {{- range $key, $value := .Values.extraLabels }}
+          # Static label: {{ $key }}
+          - target_label: {{ $key }}
+            replacement: {{ $value }}
+          {{- end }}
+          # Set path to container logs
+          - replacement: /var/log/pods/*$1/*.log
+            separator: /
+            source_labels:
+              - __meta_kubernetes_pod_uid
+              - __meta_kubernetes_pod_container_name
+            target_label: __path__
+{{- end }}

@@ -36,6 +36,11 @@ variables:
   - name: ENABLE_FLOWER
     value: 'true'
 
+  # Observability Stack (Loki + Promtail + Grafana)
+  # Access via: kubectl port-forward svc/copilot-backend-grafana 3001:3000 -n copilotgtm
+  - name: ENABLE_OBSERVABILITY
+    value: 'true'
+
   # Image repositories
   - name: API_IMAGE_REPOSITORY
     value: 'copilot-backend-api'
@@ -438,6 +443,9 @@ stages:
                     if [ "$(ENABLE_FLOWER)" = "true" ]; then
                       EXTRA_HELM_ARGS="$EXTRA_HELM_ARGS --set flower.enabled=true --set global.celery.enableEvents=true"
                     fi
+                    if [ "$(ENABLE_OBSERVABILITY)" = "true" ]; then
+                      EXTRA_HELM_ARGS="$EXTRA_HELM_ARGS --set loki.enabled=true --set promtail.enabled=true --set grafana.enabled=true"
+                    fi
 
                     helm upgrade --install "$HELM_RELEASE_NAME" "$CHART_PATH" \
                       --namespace copilotgtm \
@@ -467,6 +475,7 @@ stages:
                       --set chat-worker.image.tag="$BUILD_BUILDID" \
                       --set organization-worker.image.repository="$ACR_LOGIN_SERVER/$(LIGHT_IMAGE_REPOSITORY)" \
                       --set organization-worker.image.tag="$BUILD_BUILDID" \
+                      --set organization-worker.autoscaling.enabled=true \
                       --set integrations-worker.image.repository="$ACR_LOGIN_SERVER/$(INTEGRATIONS_IMAGE_REPOSITORY)" \
                       --set integrations-worker.image.tag="$BUILD_BUILDID" \
                       --set deal-worker.image.repository="$ACR_LOGIN_SERVER/$(LIGHT_IMAGE_REPOSITORY)" \
@@ -474,6 +483,8 @@ stages:
                       --set deal-worker.autoscaling.enabled=true \
                       --set deal-beat.image.repository="$ACR_LOGIN_SERVER/$(LIGHT_IMAGE_REPOSITORY)" \
                       --set deal-beat.image.tag="$BUILD_BUILDID" \
+                      --set integrations-beat.image.repository="$ACR_LOGIN_SERVER/$(INTEGRATIONS_IMAGE_REPOSITORY)" \
+                      --set integrations-beat.image.tag="$BUILD_BUILDID" \
                       --set api.secrets.DATABASE_HOST="$(DATABASE_HOST)" \
                       --set api.secrets.DATABASE_USER="$(DATABASE_USER)" \
                       --set api.secrets.DATABASE_PORT="$(DATABASE_PORT)" \
@@ -516,13 +527,15 @@ stages:
                       --set integrations-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
                       --set deal-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
                       --set deal-beat.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
+                      --set integrations-beat.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
                       --set knowledge-extract-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
                       --set knowledge-upload-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
                       --set organization-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
                       --set chat-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
                       --set integrations-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
                       --set deal-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
-                      --set deal-beat.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)"
+                      --set deal-beat.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
+                      --set integrations-beat.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)"
                   displayName: Helm Upgrade/Install (Dev)
                   env:
                     HELM_RELEASE_NAME: $(HELM_RELEASE_NAME)

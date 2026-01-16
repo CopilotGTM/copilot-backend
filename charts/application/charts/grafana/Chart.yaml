@@ -1,0 +1,6 @@
+apiVersion: v2
+name: grafana
+description: Grafana visualization dashboard for logs and metrics
+type: application
+version: 0.1.0
+appVersion: "10.3.1"

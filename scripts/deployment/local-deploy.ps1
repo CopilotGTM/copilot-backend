@@ -17,23 +17,26 @@
 param(
     [string]$DeployEnvironment = "dev",
     [switch]$EnableFlower,
+    [switch]$EnableObservability,
     [switch]$UseSeparatedImages,
     [switch]$Help
 )
 
 # Show usage if help is requested
 if ($Help) {
-    Write-Host "Usage: .\local-deploy.ps1 [-DeployEnvironment <env>] [-EnableFlower] [-Help]"
+    Write-Host "Usage: .\local-deploy.ps1 [-DeployEnvironment <env>] [-EnableFlower] [-EnableObservability] [-Help]"
     Write-Host ""
     Write-Host "Parameters:"
-    Write-Host "  -DeployEnvironment  Target environment (default: dev)"
-    Write-Host "  -EnableFlower       Deploy Flower UI and enable Celery events (internal access via port-forward)"
-    Write-Host "  -Help              Show this help message"
+    Write-Host "  -DeployEnvironment    Target environment (default: dev)"
+    Write-Host "  -EnableFlower         Deploy Flower UI and enable Celery events (internal access via port-forward)"
+    Write-Host "  -EnableObservability  Deploy Loki + Promtail + Grafana for log observability (port-forward access)"
+    Write-Host "  -Help                 Show this help message"
     Write-Host ""
     Write-Host "Example:"
     Write-Host "  .\local-deploy.ps1                        # Deploy to dev environment"
     Write-Host "  .\local-deploy.ps1 -EnableFlower          # Deploy Flower UI (internal)"
-    Write-Host "  .\local-deploy.ps1 -DeployEnvironment staging  # Deploy to staging"
+    Write-Host "  .\local-deploy.ps1 -EnableObservability   # Deploy Grafana/Loki observability stack"
+    Write-Host "  .\local-deploy.ps1 -EnableFlower -EnableObservability  # Deploy both"
     exit 0
 }
 
@@ -332,6 +335,8 @@ function Deploy-WithHelm {
         "--set", "deal-worker.autoscaling.enabled=true",
         "--set", "deal-beat.image.repository=$lightRepo",
         "--set", "deal-beat.image.tag=$IMAGE_TAG",
+        "--set", "integrations-beat.image.repository=$integrationsRepo",
+        "--set", "integrations-beat.image.tag=$IMAGE_TAG",
         "--set", "chat-worker.autoscaling.enabled=true",
         "--set", "api.secrets.DATABASE_HOST=$($env:DATABASE_HOST)",
         "--set", "api.secrets.DATABASE_USER=$($env:DATABASE_USER)",
@@ -377,13 +382,15 @@ function Deploy-WithHelm {
         "--set", "integrations-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
         "--set", "deal-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
         "--set", "deal-beat.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
+        "--set", "integrations-beat.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
         "--set", "knowledge-extract-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
         "--set", "knowledge-upload-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
         "--set", "organization-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
         "--set", "chat-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
         "--set", "integrations-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
         "--set", "deal-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
-        "--set", "deal-beat.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)"
+        "--set", "deal-beat.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
+        "--set", "integrations-beat.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)"
     )
 
     if ($EnableFlower) {
@@ -392,6 +399,15 @@ function Deploy-WithHelm {
             "--set", "flower.enabled=true",
             "--set", "flower.ingress.enabled=false",
             "--set", "global.celery.enableEvents=true"
+        )
+    }
+
+    if ($EnableObservability) {
+        Write-Host "Observability enabled: deploying Loki + Promtail + Grafana..."
+        $helmArgs += @(
+            "--set", "loki.enabled=true",
+            "--set", "promtail.enabled=true",
+            "--set", "grafana.enabled=true"
         )
     }
 
@@ -498,9 +514,16 @@ function Main {
     Write-Success "Deployment completed successfully!"
 
     if ($EnableFlower) {
+        Write-Host ""
         Write-Host "Flower UI is deployed (internal). Access it from your machine with:"
-        Write-Host "kubectl port-forward -n $NAMESPACE svc/$HELM_RELEASE_NAME-flower 5555:5555"
-        Write-Host "Then open: http://localhost:5555"
+        Write-Host "  kubectl port-forward -n $NAMESPACE svc/$HELM_RELEASE_NAME-flower 5555:5555"
+        Write-Host "  Then open: http://localhost:5555"
+    }
+    if ($EnableObservability) {
+        Write-Host ""
+        Write-Host "Observability Stack is deployed. Access Grafana from your machine with:"
+        Write-Host "  kubectl port-forward -n $NAMESPACE svc/$HELM_RELEASE_NAME-grafana 3001:3000"
+        Write-Host "  Then open: http://localhost:3001 (admin/admin)"
     }
     Write-Host ""
     Write-Host "🚀 Your application should now be running with the latest changes."
