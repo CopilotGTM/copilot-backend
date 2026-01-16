@@ -3,6 +3,7 @@ Tasks for the deal worker.
 """
 
 from .deal_mappers import (
+    match_calendar_to_deals_all_orgs_task,
     match_calendar_to_deals_org_task,
     match_calendar_to_deals_task,
     match_email_to_deals_org_task,
@@ -12,11 +13,6 @@ from .deal_mappers import (
 )
 from .deal_meeting_tasks import process_deal_meeting_job
 from .deal_summary_tasks import process_deal_summary_job
-from .deal_tasks import (
-    process_deal_meetings_task,
-    process_single_deal_task,
-    trigger_deal_meeting_processing_all_orgs,
-)
 from .deal_timeline_tasks import (
     exclude_timeline_event_task,
     sync_deal_timeline_task,
@@ -38,6 +34,7 @@ __all__ = [
     "sync_deal_stakeholders_task",
     "sync_all_deals_stakeholders_org_task",
     # Deal mappers - Task 2: Calendar Matching
+    "match_calendar_to_deals_all_orgs_task",
     "match_calendar_to_deals_org_task",
     "match_calendar_to_deals_task",
     # Deal mappers - Task 3: Email Matching
@@ -47,10 +44,6 @@ __all__ = [
     "process_deal_meeting_job",
     # Deal summary tasks (deal-level)
     "process_deal_summary_job",
-    # Deal tasks
-    "process_deal_meetings_task",
-    "process_single_deal_task",
-    "trigger_deal_meeting_processing_all_orgs",
     # Stakeholder analysis tasks
     "analyze_deal_stakeholders_task",
     "analyze_org_stakeholders_task",

@@ -44,10 +44,6 @@ class DealWorkerConfig(BaseWorkerConfig):
 
         # Route tasks to queues in a compact, readable way
         deal_queue_tasks = (
-            # Deal matching and processing tasks
-            "deal.process_deal_meetings_task",
-            "deal.trigger_deal_meeting_processing_all_orgs",
-            "deal.process_single_deal_task",
             # Stakeholder sync
             "stakeholder.sync_deal_stakeholders",
             "stakeholder.sync_all_deals_stakeholders_org",
@@ -93,6 +89,13 @@ class DealWorkerConfig(BaseWorkerConfig):
             "hourly-deal-mapping": {
                 "task": "stakeholder.sync_all_deals_stakeholders_all_orgs",
                 "schedule": crontab(minute=0),  # Every hour at :00
+                "options": {"queue": "deal", "routing_key": "deal"},
+            },
+            # HOURLY: Timeline sync - safety net to fill gaps from missed inline creation
+            # Runs at :30 to avoid overlap with deal-mapping at :00
+            "hourly-timeline-sync": {
+                "task": "deal.trigger_timeline_sync_all_orgs",
+                "schedule": crontab(minute=30),  # Every hour at :30
                 "options": {"queue": "deal", "routing_key": "deal"},
             },
             # NIGHTLY: Heavy LLM tasks (2 AM UTC)

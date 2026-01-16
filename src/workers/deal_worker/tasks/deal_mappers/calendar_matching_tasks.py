@@ -36,7 +36,9 @@ from src.domain.models.master_tables import Organisation, OrganisationStatus
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.workers.deal_worker.celery_app import app
-from src.workers.deal_worker.services.deal_meeting_matcher import DealMeetingMatcher
+from src.workers.deal_worker.services.deal_mapper_services.deal_meeting_matcher import (
+    DealMeetingMatcher,
+)
 
 logger = get_logger(__name__)
 
