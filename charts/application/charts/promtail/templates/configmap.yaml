@@ -44,10 +44,11 @@ data:
           - source_labels: [__meta_kubernetes_namespace]
             action: keep
             regex: {{ .Release.Namespace }}
-          # Only collect logs from copilot containers (worker, webservice, flower)
+          # Only collect logs from copilot app pods (api, workers, flower, beats)
+          # Exclude infrastructure pods (loki, promtail, grafana)
           - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
             action: keep
-            regex: (worker|webservice|flower)
+            regex: (api|.*-worker|.*-beat|flower)
           # Use pod name
           - source_labels: [__meta_kubernetes_pod_name]
             target_label: pod
@@ -60,24 +61,27 @@ data:
           # Add node name
           - source_labels: [__meta_kubernetes_pod_node_name]
             target_label: node
-          # Set app label: "copilot-backend" for API (webservice), "worker" for workers
+          # Set app label: "copilot-backend" for API, "worker" for workers (for overview queries)
           - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
             target_label: app
-            regex: webservice
+            regex: api
             replacement: copilot-backend
           - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
             target_label: app
-            regex: (worker|flower)
-            replacement: $1
-          # Extract component name from pod name for instance label
-          # Pod names like: copilot-backend-deal-worker-5d8f7c6b9-xyz12 -> deal-worker
-          # Pod names like: copilot-backend-api-5d8f7c6b9-xyz12 -> api
-          # Component names contain only lowercase letters and hyphens (no digits)
-          # This distinguishes them from the replicaset hash which contains digits
-          - source_labels: [__meta_kubernetes_pod_name]
+            regex: .*-worker
+            replacement: worker
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+            target_label: app
+            regex: .*-beat
+            replacement: worker
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+            target_label: app
+            regex: flower
+            replacement: flower
+          # Use app.kubernetes.io/name directly as instance label
+          # This gives us: api, deal-worker, chat-worker, integrations-worker, etc.
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
             target_label: instance
-            regex: '{{ .Release.Name }}-([a-z-]+)-[a-z0-9]+-[a-z0-9]+$'
-            replacement: $1
           {{- range $key, $value := .Values.extraLabels }}
           # Static label: {{ $key }}
           - target_label: {{ $key }}

@@ -21,7 +21,7 @@ data:
           "id": 100,
           "options": {
             "code": { "language": "plaintext", "showLineNumbers": false },
-            "content": "**Click any error count** to see those specific errors  |  **Trace a Request**: Copy request_id -> Paste in Request ID box  |  **Set LOG_FORMAT=json** for full tracing",
+            "content": "**Click any stat** to drill down in Explore  |  **Click Request ID** in Failed Requests table to trace full journey  |  **Set LOG_FORMAT=json** for request correlation",
             "mode": "markdown"
           },
           "type": "text",
@@ -40,6 +40,10 @@ data:
           "fieldConfig": {
             "defaults": {
               "color": { "mode": "palette-classic" },
+              "links": [{
+                "title": "View All Logs in Explore",
+                "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"refId\":\"A\",\"expr\":\"{app=~\\\"copilot-backend|worker\\\"}\"}],\"range\":{\"from\":\"${__from}\",\"to\":\"${__to}\"}}"
+              }],
               "mappings": [],
               "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
             }
@@ -68,6 +72,10 @@ data:
           "fieldConfig": {
             "defaults": {
               "color": { "mode": "thresholds" },
+              "links": [{
+                "title": "View All Errors in Explore",
+                "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"refId\":\"A\",\"expr\":\"{app=~\\\"copilot-backend|worker\\\"} |~ \\\"(?i)error|exception|critical\\\"\"}],\"range\":{\"from\":\"${__from}\",\"to\":\"${__to}\"}}"
+              }],
               "mappings": [],
               "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
             }
@@ -96,6 +104,10 @@ data:
           "fieldConfig": {
             "defaults": {
               "color": { "mode": "thresholds" },
+              "links": [{
+                "title": "View All Warnings in Explore",
+                "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"refId\":\"A\",\"expr\":\"{app=~\\\"copilot-backend|worker\\\"} |~ \\\"(?i)warning|warn\\\"\"}],\"range\":{\"from\":\"${__from}\",\"to\":\"${__to}\"}}"
+              }],
               "mappings": [],
               "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }] }
             }
@@ -162,7 +174,7 @@ data:
               "color": { "mode": "thresholds" },
               "links": [{
                 "title": "View API Errors",
-                "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"refId\":\"A\",\"expr\":\"{app=\\\"copilot-backend\\\"} |~ \\\"(?i)error|exception|critical\\\"\"}],\"range\":{\"from\":\"now-1h\",\"to\":\"now\"}}"
+                "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"refId\":\"A\",\"expr\":\"{app=\\\"copilot-backend\\\"} |~ \\\"(?i)error|exception|critical\\\"\"}],\"range\":{\"from\":\"${__from}\",\"to\":\"${__to}\"}}"
               }],
               "mappings": [],
               "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
@@ -194,7 +206,7 @@ data:
               "color": { "mode": "thresholds" },
               "links": [{
                 "title": "View Deal Worker Errors",
-                "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"refId\":\"A\",\"expr\":\"{instance=\\\"deal-worker\\\"} |~ \\\"(?i)error|exception|critical\\\"\"}],\"range\":{\"from\":\"now-1h\",\"to\":\"now\"}}"
+                "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"refId\":\"A\",\"expr\":\"{instance=\\\"deal-worker\\\"} |~ \\\"(?i)error|exception|critical\\\"\"}],\"range\":{\"from\":\"${__from}\",\"to\":\"${__to}\"}}"
               }],
               "mappings": [],
               "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
@@ -226,7 +238,7 @@ data:
               "color": { "mode": "thresholds" },
               "links": [{
                 "title": "View Chat Worker Errors",
-                "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"refId\":\"A\",\"expr\":\"{instance=\\\"chat-worker\\\"} |~ \\\"(?i)error|exception|critical\\\"\"}],\"range\":{\"from\":\"now-1h\",\"to\":\"now\"}}"
+                "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"refId\":\"A\",\"expr\":\"{instance=\\\"chat-worker\\\"} |~ \\\"(?i)error|exception|critical\\\"\"}],\"range\":{\"from\":\"${__from}\",\"to\":\"${__to}\"}}"
               }],
               "mappings": [],
               "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
@@ -258,7 +270,7 @@ data:
               "color": { "mode": "thresholds" },
               "links": [{
                 "title": "View Integrations Errors",
-                "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"refId\":\"A\",\"expr\":\"{instance=\\\"integrations-worker\\\"} |~ \\\"(?i)error|exception|critical\\\"\"}],\"range\":{\"from\":\"now-1h\",\"to\":\"now\"}}"
+                "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"refId\":\"A\",\"expr\":\"{instance=\\\"integrations-worker\\\"} |~ \\\"(?i)error|exception|critical\\\"\"}],\"range\":{\"from\":\"${__from}\",\"to\":\"${__to}\"}}"
               }],
               "mappings": [],
               "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
@@ -290,7 +302,7 @@ data:
               "color": { "mode": "thresholds" },
               "links": [{
                 "title": "View Knowledge Errors",
-                "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"refId\":\"A\",\"expr\":\"{instance=~\\\".*knowledge.*\\\"} |~ \\\"(?i)error|exception|critical\\\"\"}],\"range\":{\"from\":\"now-1h\",\"to\":\"now\"}}"
+                "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"refId\":\"A\",\"expr\":\"{instance=~\\\"knowledge.*\\\"} |~ \\\"(?i)error|exception|critical\\\"\"}],\"range\":{\"from\":\"${__from}\",\"to\":\"${__to}\"}}"
               }],
               "mappings": [],
               "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
@@ -322,7 +334,7 @@ data:
               "color": { "mode": "thresholds" },
               "links": [{
                 "title": "View Organization Errors",
-                "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"refId\":\"A\",\"expr\":\"{instance=\\\"organization-worker\\\"} |~ \\\"(?i)error|exception|critical\\\"\"}],\"range\":{\"from\":\"now-1h\",\"to\":\"now\"}}"
+                "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"refId\":\"A\",\"expr\":\"{instance=\\\"organization-worker\\\"} |~ \\\"(?i)error|exception|critical\\\"\"}],\"range\":{\"from\":\"${__from}\",\"to\":\"${__to}\"}}"
               }],
               "mappings": [],
               "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
@@ -443,7 +455,13 @@ data:
             "overrides": [
               {
                 "matcher": { "id": "byName", "options": "request_id" },
-                "properties": [{ "id": "custom.width", "value": 280 }]
+                "properties": [
+                  { "id": "custom.width", "value": 320 },
+                  { "id": "links", "value": [{
+                    "title": "Trace this Request ID",
+                    "url": "/d/copilot-logs/copilot-backend-logs?var-request_id=${__data.fields.request_id}&from=${__from}&to=${__to}"
+                  }]}
+                ]
               }
             ]
           },
@@ -461,8 +479,8 @@ data:
             "queryType": "instant",
             "refId": "A"
           }],
-          "title": "Failed Request IDs (copy -> paste above)",
-          "description": "Requires LOG_FORMAT=json",
+          "title": "Failed Request IDs (click to trace)",
+          "description": "Click a Request ID to see its full journey across API and Workers. Requires LOG_FORMAT=json",
           "transformations": [
             { "id": "organize", "options": { "renameByName": { "Value": "Errors" } } }
           ],

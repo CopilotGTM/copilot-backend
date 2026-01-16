@@ -240,10 +240,51 @@ function Build-AndPushImage {
 }
 
 function Get-AzureKeyVaultSecrets {
-    Write-Header "Retrieving Secrets from Azure Key Vault"
+    Write-Header "Checking Secrets Configuration"
+
+    # List of required secrets
+    $requiredSecrets = @(
+        "AZURE_OPENAI_API_KEY",
+        "AZURE_EMBEDDER_OPENAI_API_KEY",
+        "DATABASE_PASSWORD",
+        "REDIS_PASSWORD",
+        "RESEND_API_KEY",
+        "SUPABASE_ANON_KEY",
+        "SUPABASE_JWT_SECRET",
+        "SUPABASE_SERVICE_ROLE_KEY",
+        "NANGO_SECRET_KEY"
+    )
+
+    # Check if all secrets are already set from .env.development
+    $allSecretsPresent = $true
+    foreach ($secret in $requiredSecrets) {
+        $value = [Environment]::GetEnvironmentVariable($secret)
+        if (-not $value) {
+            $allSecretsPresent = $false
+            Write-Host "  Missing: $secret"
+        }
+    }
+
+    # Ensure NANGO_BASE_URL is set
+    if (-not $env:NANGO_BASE_URL) {
+        $env:NANGO_BASE_URL = "https://api.nango.dev"
+    }
+
+    if ($allSecretsPresent) {
+        Write-Success "All secrets already present from .env.development - skipping Key Vault retrieval"
+        return
+    }
+
+    # If any secrets are missing, try to retrieve from Key Vault
+    Write-Host "Some secrets missing - attempting to retrieve from Azure Key Vault..."
 
     # Key Vault name for infrastructure secrets (from .env.development)
     $KEY_VAULT_NAME = $env:AZURE_KEY_VAULT_NAME
+
+    if (-not $KEY_VAULT_NAME) {
+        Write-Warning "AZURE_KEY_VAULT_NAME not set and some secrets are missing. Please ensure all secrets are in .env.development"
+        return
+    }
 
     Write-Host "Retrieving secrets from Key Vault: $KEY_VAULT_NAME"
 
@@ -258,19 +299,36 @@ function Get-AzureKeyVaultSecrets {
         }
     }
 
-    # Get secrets from Key Vault (hidden values)
-    $env:AZURE_OPENAI_API_KEY = Get-SecretSafely $KEY_VAULT_NAME "azure-openai-api-key"
-    $env:AZURE_EMBEDDER_OPENAI_API_KEY = Get-SecretSafely $KEY_VAULT_NAME "azure-embedder-openai-api-key"
-    $env:DATABASE_PASSWORD = Get-SecretSafely $KEY_VAULT_NAME "database-password"
-    $env:REDIS_PASSWORD = Get-SecretSafely $KEY_VAULT_NAME "redis-password"
-    $env:RESEND_API_KEY = Get-SecretSafely $KEY_VAULT_NAME "resend-api-key"
-    $env:SUPABASE_ANON_KEY = Get-SecretSafely $KEY_VAULT_NAME "supabase-anon-key"
-    $env:SUPABASE_JWT_SECRET = Get-SecretSafely $KEY_VAULT_NAME "supabase-jwt-secret"
-    $env:SUPABASE_SERVICE_ROLE_KEY = Get-SecretSafely $KEY_VAULT_NAME "supabase-service-role-key"
-    $env:NANGO_BASE_URL = "https://api.nango.dev"
-    $env:NANGO_SECRET_KEY = Get-SecretSafely $KEY_VAULT_NAME "nango-secret-key"
+    # Only fetch secrets that are not already set
+    if (-not $env:AZURE_OPENAI_API_KEY) {
+        $env:AZURE_OPENAI_API_KEY = Get-SecretSafely $KEY_VAULT_NAME "azure-openai-api-key"
+    }
+    if (-not $env:AZURE_EMBEDDER_OPENAI_API_KEY) {
+        $env:AZURE_EMBEDDER_OPENAI_API_KEY = Get-SecretSafely $KEY_VAULT_NAME "azure-embedder-openai-api-key"
+    }
+    if (-not $env:DATABASE_PASSWORD) {
+        $env:DATABASE_PASSWORD = Get-SecretSafely $KEY_VAULT_NAME "database-password"
+    }
+    if (-not $env:REDIS_PASSWORD) {
+        $env:REDIS_PASSWORD = Get-SecretSafely $KEY_VAULT_NAME "redis-password"
+    }
+    if (-not $env:RESEND_API_KEY) {
+        $env:RESEND_API_KEY = Get-SecretSafely $KEY_VAULT_NAME "resend-api-key"
+    }
+    if (-not $env:SUPABASE_ANON_KEY) {
+        $env:SUPABASE_ANON_KEY = Get-SecretSafely $KEY_VAULT_NAME "supabase-anon-key"
+    }
+    if (-not $env:SUPABASE_JWT_SECRET) {
+        $env:SUPABASE_JWT_SECRET = Get-SecretSafely $KEY_VAULT_NAME "supabase-jwt-secret"
+    }
+    if (-not $env:SUPABASE_SERVICE_ROLE_KEY) {
+        $env:SUPABASE_SERVICE_ROLE_KEY = Get-SecretSafely $KEY_VAULT_NAME "supabase-service-role-key"
+    }
+    if (-not $env:NANGO_SECRET_KEY) {
+        $env:NANGO_SECRET_KEY = Get-SecretSafely $KEY_VAULT_NAME "nango-secret-key"
+    }
 
-    Write-Success "Secrets retrieved from Key Vault and configuration set"
+    Write-Success "Secrets configuration complete"
 }
 
 function Deploy-WithHelm {
