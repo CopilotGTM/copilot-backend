@@ -44,15 +44,15 @@ data:
           - source_labels: [__meta_kubernetes_namespace]
             action: keep
             regex: {{ .Release.Namespace }}
-          # Only collect logs from copilot containers
+          # Only collect logs from copilot containers (worker, webservice, flower)
           - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
             action: keep
-            regex: (copilot-backend|worker|flower|webservice)
-          # Use pod name as instance label
+            regex: (worker|webservice|flower)
+          # Use pod name
           - source_labels: [__meta_kubernetes_pod_name]
             target_label: pod
           # Use container name
-          - source_labels: [__meta_kubernetes_container_name]
+          - source_labels: [__meta_kubernetes_pod_container_name]
             target_label: container
           # Use namespace
           - source_labels: [__meta_kubernetes_namespace]
@@ -60,12 +60,24 @@ data:
           # Add node name
           - source_labels: [__meta_kubernetes_pod_node_name]
             target_label: node
-          # Add app label
+          # Set app label: "copilot-backend" for API (webservice), "worker" for workers
           - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
             target_label: app
-          # Add instance label (worker alias name)
-          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_instance]
+            regex: webservice
+            replacement: copilot-backend
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+            target_label: app
+            regex: (worker|flower)
+            replacement: $1
+          # Extract component name from pod name for instance label
+          # Pod names like: copilot-backend-deal-worker-5d8f7c6b9-xyz12 -> deal-worker
+          # Pod names like: copilot-backend-api-5d8f7c6b9-xyz12 -> api
+          # Component names contain only lowercase letters and hyphens (no digits)
+          # This distinguishes them from the replicaset hash which contains digits
+          - source_labels: [__meta_kubernetes_pod_name]
             target_label: instance
+            regex: '{{ .Release.Name }}-([a-z-]+)-[a-z0-9]+-[a-z0-9]+$'
+            replacement: $1
           {{- range $key, $value := .Values.extraLabels }}
           # Static label: {{ $key }}
           - target_label: {{ $key }}

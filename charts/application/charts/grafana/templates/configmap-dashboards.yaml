@@ -212,7 +212,7 @@ data:
           },
           "targets": [{
             "datasource": { "type": "loki", "uid": "loki" },
-            "expr": "sum(count_over_time({instance=~\".*deal-worker.*\"} |~ \"(?i)error|exception|critical\"[$__range]))",
+            "expr": "sum(count_over_time({instance=\"deal-worker\"} |~ \"(?i)error|exception|critical\"[$__range]))",
             "queryType": "instant",
             "refId": "A"
           }],
@@ -244,7 +244,7 @@ data:
           },
           "targets": [{
             "datasource": { "type": "loki", "uid": "loki" },
-            "expr": "sum(count_over_time({instance=~\".*chat-worker.*\"} |~ \"(?i)error|exception|critical\"[$__range]))",
+            "expr": "sum(count_over_time({instance=\"chat-worker\"} |~ \"(?i)error|exception|critical\"[$__range]))",
             "queryType": "instant",
             "refId": "A"
           }],
@@ -276,7 +276,7 @@ data:
           },
           "targets": [{
             "datasource": { "type": "loki", "uid": "loki" },
-            "expr": "sum(count_over_time({instance=~\".*integrations-worker.*\"} |~ \"(?i)error|exception|critical\"[$__range]))",
+            "expr": "sum(count_over_time({instance=\"integrations-worker\"} |~ \"(?i)error|exception|critical\"[$__range]))",
             "queryType": "instant",
             "refId": "A"
           }],
@@ -308,7 +308,7 @@ data:
           },
           "targets": [{
             "datasource": { "type": "loki", "uid": "loki" },
-            "expr": "sum(count_over_time({instance=~\".*knowledge.*\"} |~ \"(?i)error|exception|critical\"[$__range]))",
+            "expr": "sum(count_over_time({instance=~\"knowledge.*\"} |~ \"(?i)error|exception|critical\"[$__range]))",
             "queryType": "instant",
             "refId": "A"
           }],
@@ -340,7 +340,7 @@ data:
           },
           "targets": [{
             "datasource": { "type": "loki", "uid": "loki" },
-            "expr": "sum(count_over_time({instance=~\".*organization-worker.*\"} |~ \"(?i)error|exception|critical\"[$__range]))",
+            "expr": "sum(count_over_time({instance=\"organization-worker\"} |~ \"(?i)error|exception|critical\"[$__range]))",
             "queryType": "instant",
             "refId": "A"
           }],
@@ -538,7 +538,7 @@ data:
           },
           "targets": [{
             "datasource": { "type": "loki", "uid": "loki" },
-            "expr": "{instance=~\".*deal-worker.*\"} |~ \"$search\"",
+            "expr": "{instance=\"deal-worker\"} |~ \"$search\"",
             "queryType": "range",
             "refId": "A"
           }],
@@ -569,7 +569,7 @@ data:
           },
           "targets": [{
             "datasource": { "type": "loki", "uid": "loki" },
-            "expr": "{instance=~\".*chat-worker.*\"} |~ \"$search\"",
+            "expr": "{instance=\"chat-worker\"} |~ \"$search\"",
             "queryType": "range",
             "refId": "A"
           }],
@@ -592,7 +592,7 @@ data:
           },
           "targets": [{
             "datasource": { "type": "loki", "uid": "loki" },
-            "expr": "{instance=~\".*integrations-worker.*\"} |~ \"$search\"",
+            "expr": "{instance=\"integrations-worker\"} |~ \"$search\"",
             "queryType": "range",
             "refId": "A"
           }],
@@ -620,7 +620,7 @@ data:
               },
               "targets": [{
                 "datasource": { "type": "loki", "uid": "loki" },
-                "expr": "{instance=~\".*knowledge.*\"} |~ \"$search\"",
+                "expr": "{instance=~\"knowledge.*\"} |~ \"$search\"",
                 "queryType": "range",
                 "refId": "A"
               }],
@@ -643,7 +643,7 @@ data:
               },
               "targets": [{
                 "datasource": { "type": "loki", "uid": "loki" },
-                "expr": "{instance=~\".*organization-worker.*\"} |~ \"$search\"",
+                "expr": "{instance=\"organization-worker\"} |~ \"$search\"",
                 "queryType": "range",
                 "refId": "A"
               }],
