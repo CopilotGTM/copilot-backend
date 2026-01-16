@@ -3,6 +3,7 @@ Tasks for the deal worker.
 """
 
 from .deal_mappers import (
+    exclude_timeline_event_task,
     match_calendar_to_deals_all_orgs_task,
     match_calendar_to_deals_org_task,
     match_calendar_to_deals_task,
@@ -10,15 +11,12 @@ from .deal_mappers import (
     match_email_to_deals_task,
     sync_all_deals_stakeholders_org_task,
     sync_deal_stakeholders_task,
+    sync_deal_timeline_task,
+    sync_org_timeline_task,
+    trigger_timeline_sync_all_orgs_task,
 )
 from .deal_meeting_tasks import process_deal_meeting_job
 from .deal_summary_tasks import process_deal_summary_job
-from .deal_timeline_tasks import (
-    exclude_timeline_event_task,
-    sync_deal_timeline_task,
-    sync_org_timeline_task,
-    trigger_timeline_sync_all_orgs,
-)
 from .risk_blocker_extraction_tasks import (
     extract_deal_risks_blockers_task,
     trigger_extraction_all_orgs,
@@ -55,5 +53,5 @@ __all__ = [
     "sync_deal_timeline_task",
     "sync_org_timeline_task",
     "exclude_timeline_event_task",
-    "trigger_timeline_sync_all_orgs",
+    "trigger_timeline_sync_all_orgs_task",
 ]
