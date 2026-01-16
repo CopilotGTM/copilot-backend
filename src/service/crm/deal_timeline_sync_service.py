@@ -14,6 +14,7 @@ See docs/Development Documentation/deal-timeline-feature.md for design details.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any, cast
 from uuid import UUID
@@ -27,7 +28,10 @@ from src.domain.models.organisation_tables.sync.calendar import (
     CalendarEvent,
     CalendarEventDealAssociation,
 )
-from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
+from src.domain.models.organisation_tables.sync.crm.deals import (
+    CRMDeal,
+    CRMDealStageHistory,
+)
 from src.domain.models.organisation_tables.sync.email_models import (
     DealEmailAssociation,
     Email,
@@ -40,6 +44,7 @@ from src.domain.models.organisation_tables.sync.timeline_models import (
 )
 from src.infra.utils.logger import get_logger
 from src.service.crm.timeline_event_source_resolver import (
+    resolve_crm_event_source,
     resolve_email_event_source,
     resolve_meeting_event_source,
 )
@@ -115,11 +120,13 @@ class DealTimelineSyncService:
             event_types: Optional filter - only sync specific event types
 
         Returns:
-            Stats dict: {emails_synced, meetings_synced, total_created, total_skipped}
+            Stats dict with counts for each event type synced
         """
         results = {
             "emails_synced": 0,
             "meetings_synced": 0,
+            "stage_changes_synced": 0,
+            "deal_created_synced": 0,
             "total_created": 0,
             "total_skipped": 0,
         }
@@ -139,6 +146,18 @@ class DealTimelineSyncService:
             results["total_created"] += meeting_stats["created"]
             results["total_skipped"] += meeting_stats["skipped"]
 
+        if not event_types or TimelineEventType.STAGE_CHANGE in event_types:
+            stage_stats = await self._sync_stage_change_timeline_events(deal_id, existing_keys)
+            results["stage_changes_synced"] = stage_stats["synced"]
+            results["total_created"] += stage_stats["created"]
+            results["total_skipped"] += stage_stats["skipped"]
+
+        if not event_types or TimelineEventType.DEAL_CREATED in event_types:
+            created_stats = await self._sync_deal_created_timeline_event(deal_id, existing_keys)
+            results["deal_created_synced"] = created_stats["synced"]
+            results["total_created"] += created_stats["created"]
+            results["total_skipped"] += created_stats["skipped"]
+
         await self.session.flush()
 
         logger.info(
@@ -150,6 +169,7 @@ class DealTimelineSyncService:
     async def sync_organisation_timeline(
         self,
         deal_ids: list[UUID] | None = None,
+        event_types: list[TimelineEventType] | None = None,
         batch_size: int = 50,
     ) -> dict[str, int]:
         """
@@ -159,6 +179,7 @@ class DealTimelineSyncService:
 
         Args:
             deal_ids: Optional list of specific deal IDs to sync
+            event_types: Optional filter - only sync specific event types
             batch_size: Number of deals to process per batch
 
         Returns:
@@ -168,6 +189,8 @@ class DealTimelineSyncService:
             "deals_processed": 0,
             "emails_synced": 0,
             "meetings_synced": 0,
+            "stage_changes_synced": 0,
+            "deal_created_synced": 0,
             "total_created": 0,
             "total_skipped": 0,
         }
@@ -193,10 +216,12 @@ class DealTimelineSyncService:
             batch = ids_to_process[i : i + batch_size]
 
             for deal_id in batch:
-                deal_stats = await self.sync_deal_timeline(deal_id)
+                deal_stats = await self.sync_deal_timeline(deal_id, event_types)
                 results["deals_processed"] += 1
                 results["emails_synced"] += deal_stats["emails_synced"]
                 results["meetings_synced"] += deal_stats["meetings_synced"]
+                results["stage_changes_synced"] += deal_stats["stage_changes_synced"]
+                results["deal_created_synced"] += deal_stats["deal_created_synced"]
                 results["total_created"] += deal_stats["total_created"]
                 results["total_skipped"] += deal_stats["total_skipped"]
 
@@ -254,7 +279,7 @@ class DealTimelineSyncService:
             .on_conflict_do_nothing(constraint="uq_timeline_event_source")
         )
         result = await self.session.execute(stmt)
-        return (result.rowcount or 0) > 0
+        return (getattr(result, "rowcount", 0) or 0) > 0
 
     async def _sync_email_timeline_events(
         self,
@@ -411,6 +436,132 @@ class DealTimelineSyncService:
             else:
                 stats["skipped"] += 1
                 existing_keys.add(key)
+
+        return stats
+
+    async def _sync_stage_change_timeline_events(
+        self,
+        deal_id: UUID,
+        existing_keys: set[tuple[str, str]],
+    ) -> dict[str, int]:
+        """Batch sync stage history records → timeline events."""
+        stats = {"synced": 0, "created": 0, "skipped": 0}
+
+        history_table: Table = _table(CRMDealStageHistory)
+        integration_table: Table = _table(KnowledgeIntegration)
+
+        # Fetch all stage history records for this deal with integration data
+        stmt = (
+            select(CRMDealStageHistory, KnowledgeIntegration)
+            .outerjoin(
+                KnowledgeIntegration,
+                history_table.c.integration_id == integration_table.c.integration_id,
+            )
+            .where(
+                history_table.c.organisation_id == self.organisation_id,
+                history_table.c.deal_id == deal_id,
+                history_table.c.is_deleted.is_(False),
+            )
+        )
+        result = await self.session.execute(stmt)
+
+        for history, integration in result:
+            stats["synced"] += 1
+            key = (TimelineEventType.STAGE_CHANGE.value, str(history.external_id))
+
+            if key in existing_keys:
+                stats["skipped"] += 1
+                continue
+
+            # Build history entry dict for builder function
+            history_entry = {
+                "external_id": history.external_id,
+                "deal_id": history.deal_id,
+                "stage_external_id": history.stage_external_id,
+                "from_stage_external_id": history.from_stage_external_id,
+                "entered_at": history.entered_at,
+                # Stage names/labels may not be available in history table
+                "stage_name": None,
+                "stage_label": None,
+                "from_stage_name": None,
+                "from_stage_label": None,
+            }
+
+            # Resolve event source
+            integration_type = getattr(integration, "integration_type", None)
+            resolved_source = resolve_crm_event_source(integration_type)
+
+            timeline_event = build_stage_change_timeline_event(
+                organisation_id=self.organisation_id,
+                deal_id=deal_id,
+                history_entry=history_entry,
+                event_source=resolved_source,
+            )
+            created = await self._insert_timeline_event_ignore_conflict(timeline_event)
+            if created:
+                stats["created"] += 1
+                existing_keys.add(key)
+            else:
+                stats["skipped"] += 1
+                existing_keys.add(key)
+
+        return stats
+
+    async def _sync_deal_created_timeline_event(
+        self,
+        deal_id: UUID,
+        existing_keys: set[tuple[str, str]],
+    ) -> dict[str, int]:
+        """Create DEAL_CREATED timeline event for an existing deal."""
+        stats = {"synced": 0, "created": 0, "skipped": 0}
+
+        # Check if already exists
+        key = (TimelineEventType.DEAL_CREATED.value, str(deal_id))
+        if key in existing_keys:
+            stats["synced"] = 1
+            stats["skipped"] = 1
+            return stats
+
+        deal_table: Table = _table(CRMDeal)
+        integration_table: Table = _table(KnowledgeIntegration)
+
+        # Fetch deal with integration data
+        stmt = (
+            select(CRMDeal, KnowledgeIntegration)
+            .outerjoin(
+                KnowledgeIntegration,
+                deal_table.c.integration_id == integration_table.c.integration_id,
+            )
+            .where(
+                deal_table.c.organisation_id == self.organisation_id,
+                deal_table.c.deal_id == deal_id,
+            )
+        )
+        result = await self.session.execute(stmt)
+        row = result.first()
+
+        if not row:
+            return stats
+
+        deal, integration = row
+        stats["synced"] = 1
+
+        # Resolve event source
+        integration_type = getattr(integration, "integration_type", None)
+        resolved_source = resolve_crm_event_source(integration_type)
+
+        timeline_event = build_deal_created_timeline_event(
+            organisation_id=self.organisation_id,
+            deal=deal,
+            event_source=resolved_source,
+        )
+        created = await self._insert_timeline_event_ignore_conflict(timeline_event)
+        if created:
+            stats["created"] = 1
+            existing_keys.add(key)
+        else:
+            stats["skipped"] = 1
+            existing_keys.add(key)
 
         return stats
 
@@ -593,5 +744,134 @@ def build_meeting_timeline_event(
         status=_enum_value(association.status),
         participant_names=participant_names[:4],  # Max 4 for preview
         participant_count=participant_count,
+        event_metadata=metadata,
+    )
+
+
+def build_stage_change_timeline_event(
+    organisation_id: UUID,
+    deal_id: UUID,
+    history_entry: dict[str, Any],
+    event_source: TimelineEventSource | None = None,
+) -> DealTimelineEvent:
+    """
+    Build a timeline event for a deal stage change.
+
+    This is a pure function that creates a DealTimelineEvent object.
+    Called by DealSyncService for inline creation when stage history is recorded.
+
+    Args:
+        organisation_id: Org UUID
+        deal_id: Deal UUID
+        history_entry: Dictionary containing stage history data with keys:
+            - external_id or history_id: Unique identifier
+            - stage_external_id or stage_name: New stage identifier
+            - from_stage_external_id or from_stage_name: Previous stage identifier
+            - entered_at: Timestamp when stage was entered
+            - stage_label: Display label for new stage (optional)
+            - from_stage_label: Display label for previous stage (optional)
+        event_source: Source CRM system (CRM_HUBSPOT, CRM_SALESFORCE)
+
+    Returns:
+        DealTimelineEvent (not yet added to session)
+    """
+    # Extract stage information
+    old_stage = history_entry.get("from_stage_external_id") or history_entry.get("from_stage_name")
+    new_stage = history_entry.get("stage_external_id") or history_entry.get("stage_name")
+    entered_at = history_entry.get("entered_at") or datetime.now(UTC)
+
+    # Get display labels if available
+    old_stage_label = history_entry.get("from_stage_label")
+    new_stage_label = history_entry.get("stage_label")
+
+    # Use labels for display if available, fall back to stage IDs
+    old_display = old_stage_label or old_stage
+    new_display = new_stage_label or new_stage
+
+    # Build title
+    title = f"Stage: {old_display} → {new_display}" if old_display else f"Stage: {new_display}"
+
+    # Build source_record_id from history_id or external_id
+    source_id = history_entry.get("history_id") or history_entry.get("external_id")
+
+    resolved_source = event_source or TimelineEventSource.CRM_HUBSPOT
+
+    return DealTimelineEvent(
+        organisation_id=organisation_id,
+        deal_id=deal_id,
+        event_type=TimelineEventType.STAGE_CHANGE,
+        event_source=resolved_source,
+        event_timestamp=entered_at,
+        source_record_id=str(source_id) if source_id else str(deal_id),
+        title=title[:500],
+        subtitle=None,
+        direction=None,
+        status=None,
+        participant_names=[],
+        participant_count=0,
+        event_metadata={
+            "old_stage": old_stage,
+            "new_stage": new_stage,
+            "old_stage_label": old_stage_label,
+            "new_stage_label": new_stage_label,
+        },
+    )
+
+
+def build_deal_created_timeline_event(
+    organisation_id: UUID,
+    deal: CRMDeal,
+    event_source: TimelineEventSource | None = None,
+) -> DealTimelineEvent:
+    """
+    Build a timeline event for deal creation.
+
+    This is a pure function that creates a DealTimelineEvent object.
+    Called by DealSyncService for inline creation when a new deal is synced.
+
+    Args:
+        organisation_id: Org UUID
+        deal: The newly created CRMDeal record
+        event_source: Source CRM system (CRM_HUBSPOT, CRM_SALESFORCE)
+
+    Returns:
+        DealTimelineEvent (not yet added to session)
+    """
+    # Use source_created_at if available (from CRM), otherwise use created_at
+    created_at = deal.source_created_at or deal.created_at
+
+    # Build title
+    title = f"Deal Created: {deal.name}" if deal.name else "Deal Created"
+
+    # Build subtitle with initial stage if available
+    subtitle = None
+    if deal.stage_name:
+        subtitle = f"Initial Stage: {deal.stage_name}"
+
+    resolved_source = event_source or TimelineEventSource.CRM_HUBSPOT
+
+    # Build metadata
+    metadata: dict[str, Any] = {
+        "initial_stage": deal.stage_name,
+        "pipeline_name": deal.pipeline_name,
+    }
+    if deal.owner_id:
+        metadata["owner_id"] = str(deal.owner_id)
+    if deal.amount is not None:
+        metadata["amount"] = deal.amount
+
+    return DealTimelineEvent(
+        organisation_id=organisation_id,
+        deal_id=deal.deal_id,
+        event_type=TimelineEventType.DEAL_CREATED,
+        event_source=resolved_source,
+        event_timestamp=created_at,
+        source_record_id=str(deal.deal_id),
+        title=title[:500],
+        subtitle=subtitle[:500] if subtitle else None,
+        direction=None,
+        status=None,
+        participant_names=[],
+        participant_count=0,
         event_metadata=metadata,
     )

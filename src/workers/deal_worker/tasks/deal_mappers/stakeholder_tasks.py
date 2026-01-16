@@ -38,7 +38,9 @@ from src.domain.models.master_tables import Organisation, OrganisationStatus
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.workers.deal_worker.celery_app import app
-from src.workers.deal_worker.services.stakeholder_sync_service import StakeholderSyncService
+from src.workers.deal_worker.services.deal_mapper_services.stakeholder_sync_service import (
+    StakeholderSyncService,
+)
 from src.workers.deal_worker.tasks.deal_mappers.calendar_matching_tasks import (
     match_calendar_to_deals_task,
 )

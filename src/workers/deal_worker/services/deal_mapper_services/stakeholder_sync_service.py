@@ -312,11 +312,16 @@ class StakeholderSyncService:
             existing: Existing DealStakeholder if found by email
 
         Returns:
-            True if created new stakeholder, False if updated existing
+            True if created new stakeholder, False if updated existing.
+            Returns False without changes if stakeholder was REMOVED by user.
         """
         email = participant.related_email.lower()  # type: ignore
 
         if existing:
+            # Respect user decision: if stakeholder was REMOVED, don't reactivate
+            if existing.approval_status == ApprovalStatus.REMOVED:
+                return False
+
             # TODO: Currently updates fields unconditionally. Future improvement:
             # Compare old vs new values before updating to avoid unnecessary DB writes
             # and misleading updated_at timestamps. Should only update if values differ.

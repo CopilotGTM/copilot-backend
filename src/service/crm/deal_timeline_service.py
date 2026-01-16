@@ -276,6 +276,21 @@ class DealTimelineService:
                 "attendee_count": event.participant_count,
             }
 
+        if event_type == TimelineEventType.STAGE_CHANGE.value:
+            return {
+                "old_stage": metadata.get("old_stage"),
+                "new_stage": metadata.get("new_stage"),
+                "old_stage_label": metadata.get("old_stage_label"),
+                "new_stage_label": metadata.get("new_stage_label"),
+            }
+
+        if event_type == TimelineEventType.DEAL_CREATED.value:
+            return {
+                "initial_stage": metadata.get("initial_stage"),
+                "pipeline_name": metadata.get("pipeline_name"),
+                "amount": metadata.get("amount"),
+            }
+
         # Fallback for unknown types
         return {"preview": event.title}
 
@@ -290,6 +305,13 @@ class DealTimelineService:
             return await self._fetch_email_event_data(event)
         if event_type == TimelineEventType.MEETING.value:
             return await self._fetch_meeting_event_data(event)
+
+        # STAGE_CHANGE and DEAL_CREATED don't need enrichment - all data is in metadata
+        if event_type in (
+            TimelineEventType.STAGE_CHANGE.value,
+            TimelineEventType.DEAL_CREATED.value,
+        ):
+            return self._build_preview_event_data(event)
 
         # Fallback
         return {"preview": event.title}

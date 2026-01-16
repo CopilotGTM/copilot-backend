@@ -14,8 +14,8 @@ Usage:
     from src.workers.deal_worker.client import send_deal_task_async
 
     task_id = await send_deal_task_async(
-        "deal.process_deal_meetings_task",
-        args=[org_id],
+        "deal.match_calendar_to_deals_org",
+        kwargs={"organisation_id": org_id},
         queue="deal"
     )
 """

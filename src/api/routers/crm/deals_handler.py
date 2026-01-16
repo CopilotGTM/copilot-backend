@@ -447,8 +447,8 @@ async def trigger_deal_meeting_processing(
     """Trigger the deal meeting processing task."""
     try:
         task_id = await send_deal_task_async(
-            "deal.process_deal_meetings_task",
-            args=[str(user.organisation_id)],
+            "deal.match_calendar_to_deals_org",
+            kwargs={"organisation_id": str(user.organisation_id)},
             queue="deal",
             routing_key="deal",
         )

@@ -90,3 +90,28 @@ def resolve_meeting_event_source(
 
     _ = event  # reserved for future conference-provider inference
     return resolve_calendar_event_source(calendar_integration_type)
+
+
+def resolve_crm_event_source(
+    integration_type: IntegrationType | str | None,
+) -> TimelineEventSource:
+    """Resolve source for CRM timeline events (stage change, deal created).
+
+    Returns:
+        TimelineEventSource.CRM_HUBSPOT or CRM_SALESFORCE based on integration type.
+        Defaults to CRM_HUBSPOT if integration type is unknown or None.
+    """
+    if integration_type is None:
+        return TimelineEventSource.CRM_HUBSPOT
+
+    it = (
+        integration_type
+        if isinstance(integration_type, IntegrationType)
+        else IntegrationType(str(integration_type))
+    )
+    if it == IntegrationType.SALESFORCE:
+        return TimelineEventSource.CRM_SALESFORCE
+    if it == IntegrationType.HUBSPOT:
+        return TimelineEventSource.CRM_HUBSPOT
+
+    return TimelineEventSource.CRM_HUBSPOT

@@ -20,6 +20,11 @@ from src.domain.models.organisation_tables.sync.crm import (
     CRMPipeline,
 )
 from src.infra.utils.logger import get_logger
+from src.service.crm.deal_timeline_sync_service import (
+    build_deal_created_timeline_event,
+    build_stage_change_timeline_event,
+)
+from src.service.crm.timeline_event_source_resolver import resolve_crm_event_source
 from src.service.integrations.core import BaseSyncService
 from src.workers.integrations_worker.utils.sync_metadata import (
     SyncAction,
@@ -83,6 +88,10 @@ class DealSyncService(BaseSyncService[CRMDeal]):
         pipeline_map = await self._load_pipeline_map(integration.integration_id)
         stage_map = await self._load_stage_map(integration.integration_id)
 
+        # Resolve event source for timeline events
+        integration_type = getattr(integration, "integration_type", None)
+        event_source = resolve_crm_event_source(integration_type)
+
         now = utcnow()
         participants_to_upsert: list[tuple[CRMDeal, dict[str, Any], CRMParticipantType]] = []
         history_entries: list[dict[str, Any]] = []
@@ -123,6 +132,13 @@ class DealSyncService(BaseSyncService[CRMDeal]):
 
                 if is_new:
                     result.increment_created()
+                    # Create DEAL_CREATED timeline event for new deals
+                    timeline_event = build_deal_created_timeline_event(
+                        organisation_id=self.organisation_id,
+                        deal=record,
+                        event_source=event_source,
+                    )
+                    self.db.add(timeline_event)
                 else:
                     result.increment_updated()
 
@@ -245,6 +261,10 @@ class DealSyncService(BaseSyncService[CRMDeal]):
         pipeline_map = await self._load_pipeline_map(integration.integration_id)
         stage_map = await self._load_stage_map(integration.integration_id)
 
+        # Resolve event source for timeline events
+        integration_type = getattr(integration, "integration_type", None)
+        event_source = resolve_crm_event_source(integration_type)
+
         now = utcnow()
         participants_to_upsert: list[tuple[CRMDeal, dict[str, Any], CRMParticipantType]] = []
         history_entries: list[dict[str, Any]] = []
@@ -305,6 +325,14 @@ class DealSyncService(BaseSyncService[CRMDeal]):
                     deals_processed += 1
                     result.increment_processed()
                     result.increment_created()
+
+                    # Create DEAL_CREATED timeline event for new deals
+                    timeline_event = build_deal_created_timeline_event(
+                        organisation_id=self.organisation_id,
+                        deal=record,
+                        event_source=event_source,
+                    )
+                    self.db.add(timeline_event)
 
                 else:
                     # Existing record - check for meaningful changes before updating
@@ -909,7 +937,7 @@ class DealSyncService(BaseSyncService[CRMDeal]):
         integration: KnowledgeIntegration,
         history_entries: list[dict[str, Any]],
     ) -> int:
-        """Upsert stage history entries."""
+        """Upsert stage history entries and create timeline events."""
         if not history_entries:
             return 0
 
@@ -926,6 +954,10 @@ class DealSyncService(BaseSyncService[CRMDeal]):
             result = await self.db.execute(stmt)
             existing = {row.external_id: row for row in result.scalars().all()}
 
+        # Resolve event source for timeline events
+        integration_type = getattr(integration, "integration_type", None)
+        event_source = resolve_crm_event_source(integration_type)
+
         processed = 0
         for entry in history_entries:
             external_id = entry.get("external_id")
@@ -933,6 +965,8 @@ class DealSyncService(BaseSyncService[CRMDeal]):
                 continue
 
             record = existing.get(external_id)
+            is_new_record = record is None
+
             if not record:
                 record = CRMDealStageHistory(
                     organisation_id=self.organisation_id,
@@ -968,6 +1002,16 @@ class DealSyncService(BaseSyncService[CRMDeal]):
 
             self.db.add(record)
             processed += 1
+
+            # Create STAGE_CHANGE timeline event for new records
+            if is_new_record:
+                timeline_event = build_stage_change_timeline_event(
+                    organisation_id=self.organisation_id,
+                    deal_id=entry["deal_id"],
+                    history_entry=entry,
+                    event_source=event_source,
+                )
+                self.db.add(timeline_event)
 
         await self.db.commit()
         return processed
@@ -1207,6 +1251,7 @@ class DealSyncService(BaseSyncService[CRMDeal]):
             stage_row = _stage_map.get(stage_value)
             exited_at = stage_events[idx + 1][0] if idx + 1 < len(stage_events) else None
             from_stage = stage_events[idx - 1][1] if idx > 0 else None
+            from_stage_row = _stage_map.get(from_stage) if from_stage else None
 
             history_entries.append(
                 self._build_stage_history_entry(
@@ -1216,6 +1261,7 @@ class DealSyncService(BaseSyncService[CRMDeal]):
                     exited_at=exited_at,
                     from_stage=from_stage,
                     stage_row=stage_row,
+                    from_stage_row=from_stage_row,
                     raw_entry=raw_entry,
                     amount_history=amount_history,
                     probability_history=probability_history,
@@ -1235,6 +1281,7 @@ class DealSyncService(BaseSyncService[CRMDeal]):
         exited_at: datetime | None,
         from_stage: str | None,
         stage_row: CRMDealStage | None,
+        from_stage_row: CRMDealStage | None,
         raw_entry: Any,
         amount_history: list[tuple[datetime, Any, dict[str, Any]]],
         probability_history: list[tuple[datetime, Any, dict[str, Any]]],
@@ -1262,7 +1309,11 @@ class DealSyncService(BaseSyncService[CRMDeal]):
             "deal_id": deal_record.deal_id,
             "stage_id": stage_row.stage_id if stage_row else None,
             "stage_external_id": stage_value,
+            "stage_name": stage_row.name if stage_row else None,
+            "stage_label": stage_row.label if stage_row else None,
             "from_stage_external_id": from_stage,
+            "from_stage_name": from_stage_row.name if from_stage_row else None,
+            "from_stage_label": from_stage_row.label if from_stage_row else None,
             "entered_at": entered_at,
             "exited_at": exited_at,
             "elapsed_seconds": elapsed_seconds,
