@@ -1,7 +1,12 @@
 # =============================================================================
-# Docker Compose for Local Development
+# Docker Compose for Local Development - Security Hardened
 # =============================================================================
-# This file sets up the Copilot Backend services for local development.
+# Compliance: CIS Docker Benchmark v1.8.0, OWASP Docker Security
+#
+# Security Features Applied:
+#   - no-new-privileges: Prevents privilege escalation
+#   - cap_drop: ALL: Drops all Linux capabilities
+#   - Resource limits: Prevents resource exhaustion
 #
 # Azure Authentication: Mounts your local ~/.azure credentials into containers
 # so they can authenticate with Azure services (Key Vault, Storage, etc.)
@@ -19,6 +24,45 @@
 
 name: copilot-backend
 
+# =============================================================================
+# Common Security Configuration (YAML Anchors)
+# =============================================================================
+x-security-opts: &security-opts
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
+x-worker-resources: &worker-resources
+  deploy:
+    resources:
+      limits:
+        cpus: '2'
+        memory: 2G
+      reservations:
+        cpus: '0.25'
+        memory: 256M
+
+x-knowledge-worker-resources: &knowledge-worker-resources
+  deploy:
+    resources:
+      limits:
+        cpus: '4'
+        memory: 8G
+      reservations:
+        cpus: '0.5'
+        memory: 1G
+
+x-api-resources: &api-resources
+  deploy:
+    resources:
+      limits:
+        cpus: '2'
+        memory: 2G
+      reservations:
+        cpus: '0.25'
+        memory: 512M
+
 services:
   # ---------------------------------------------------------------------------
   # Redis - Local instance (replaces Azure Redis for development)
@@ -26,6 +70,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: copilot-redis
+    <<: *security-opts
     ports:
       - "6379:6379"
     dns:
@@ -41,6 +86,14 @@ services:
       retries: 5
     networks:
       - copilot-network
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
 
   # ---------------------------------------------------------------------------
   # API Service (FastAPI Backend)
@@ -51,6 +104,8 @@ services:
       dockerfile: Dockerfile.local
       target: api
     container_name: copilot-api
+    <<: *security-opts
+    <<: *api-resources
     command: /app/.venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8080 --reload
     ports:
       - "8080:8080"
@@ -98,6 +153,8 @@ services:
       dockerfile: Dockerfile.local
       target: knowledge-worker
     container_name: copilot-knowledge-extract-worker
+    <<: *security-opts
+    <<: *knowledge-worker-resources
     dns:
       - 8.8.8.8
       - 8.8.4.4
@@ -121,6 +178,8 @@ services:
     volumes:
       - azure-data:/home/appuser/.azure
       - ./src:/app/src:ro
+      # ML model cache (persistent)
+      - model-cache:/app/.cache
     depends_on:
       redis:
         condition: service_healthy
@@ -137,6 +196,8 @@ services:
       dockerfile: Dockerfile.local
       target: knowledge-worker
     container_name: copilot-knowledge-upload-worker
+    <<: *security-opts
+    <<: *knowledge-worker-resources
     dns:
       - 8.8.8.8
       - 8.8.4.4
@@ -160,6 +221,7 @@ services:
     volumes:
       - azure-data:/home/appuser/.azure
       - ./src:/app/src:ro
+      - model-cache:/app/.cache
     depends_on:
       redis:
         condition: service_healthy
@@ -176,6 +238,8 @@ services:
       dockerfile: Dockerfile.local
       target: light-worker
     container_name: copilot-organization-worker
+    <<: *security-opts
+    <<: *worker-resources
     dns:
       - 8.8.8.8
       - 8.8.4.4
@@ -215,6 +279,8 @@ services:
       dockerfile: Dockerfile.local
       target: light-worker
     container_name: copilot-chat-worker
+    <<: *security-opts
+    <<: *worker-resources
     dns:
       - 8.8.8.8
       - 8.8.4.4
@@ -254,6 +320,8 @@ services:
       dockerfile: Dockerfile.local
       target: integrations-worker
     container_name: copilot-integrations-worker
+    <<: *security-opts
+    <<: *worker-resources
     dns:
       - 8.8.8.8
       - 8.8.4.4
@@ -292,6 +360,8 @@ services:
       dockerfile: Dockerfile.local
       target: integrations-worker
     container_name: copilot-integrations-beat
+    <<: *security-opts
+    <<: *worker-resources
     dns:
       - 8.8.8.8
       - 8.8.4.4
@@ -319,6 +389,7 @@ services:
     networks:
       - copilot-network
     # profiles: ["integrations"]
+
   # ---------------------------------------------------------------------------
   # Deal Worker (handles deal-meeting matching, email matching, stakeholders)
   # ---------------------------------------------------------------------------
@@ -328,6 +399,8 @@ services:
       dockerfile: Dockerfile.local
       target: light-worker
     container_name: copilot-deal-worker
+    <<: *security-opts
+    <<: *worker-resources
     dns:
       - 8.8.8.8
       - 8.8.4.4
@@ -366,6 +439,8 @@ services:
       dockerfile: Dockerfile.local
       target: light-worker
     container_name: copilot-deal-beat
+    <<: *security-opts
+    <<: *worker-resources
     dns:
       - 8.8.8.8
       - 8.8.4.4
@@ -393,12 +468,14 @@ services:
     networks:
       - copilot-network
     # profiles: ["chat"]
+
   # ---------------------------------------------------------------------------
   # Flower - Celery Monitoring UI (Optional)
   # ---------------------------------------------------------------------------
   flower:
     image: mher/flower:latest
     container_name: copilot-flower
+    <<: *security-opts
     ports:
       - "5555:5555"
     environment:
@@ -409,6 +486,11 @@ services:
         condition: service_healthy
     networks:
       - copilot-network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
     # profiles:
     #   - monitoring
 
@@ -418,10 +500,11 @@ services:
   loki:
     image: grafana/loki:2.9.4
     container_name: copilot-loki
+    <<: *security-opts
     ports:
       - "3100:3100"
     volumes:
-      - ./docker/loki/loki-config.yml:/etc/loki/local-config.yaml
+      - ./docker/loki/loki-config.yml:/etc/loki/local-config.yaml:ro
       - loki-data:/loki
     command: -config.file=/etc/loki/local-config.yaml
     healthcheck:
@@ -431,6 +514,11 @@ services:
       retries: 5
     networks:
       - copilot-network
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
     # profiles:
     #   - monitoring
 
@@ -440,8 +528,9 @@ services:
   promtail:
     image: grafana/promtail:2.9.4
     container_name: copilot-promtail
+    <<: *security-opts
     volumes:
-      - ./docker/loki/promtail-config.yml:/etc/promtail/config.yml
+      - ./docker/loki/promtail-config.yml:/etc/promtail/config.yml:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
     command: -config.file=/etc/promtail/config.yml
@@ -450,6 +539,11 @@ services:
         condition: service_healthy
     networks:
       - copilot-network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
     # profiles:
     #   - monitoring
 
@@ -460,6 +554,7 @@ services:
   grafana:
     image: grafana/grafana:10.3.1
     container_name: copilot-grafana
+    <<: *security-opts
     ports:
       - "3001:3000"
     environment:
@@ -469,14 +564,19 @@ services:
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
     volumes:
-      - ./docker/grafana/provisioning:/etc/grafana/provisioning
-      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
     depends_on:
       loki:
         condition: service_healthy
     networks:
       - copilot-network
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
     # profiles:
     #   - monitoring
 
@@ -500,4 +600,6 @@ volumes:
   loki-data:
     driver: local
   grafana-data:
+    driver: local
+  model-cache:
     driver: local
