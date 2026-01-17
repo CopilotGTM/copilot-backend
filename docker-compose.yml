@@ -84,7 +84,9 @@ services:
   redis:
     image: redis:7-alpine
     container_name: copilot-redis
-    <<: *common-security
+    security_opt:
+      - no-new-privileges:true
+    # Note: Redis needs capabilities for file operations, so we don't drop ALL
     ports:
       - "6379:6379"
     dns:
