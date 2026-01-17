@@ -28,18 +28,17 @@ name: copilot-backend
 # Common Security & Resource Configuration (YAML Anchors)
 # =============================================================================
 # Combined anchors (YAML only allows one << merge key per level)
+# Note: cap_drop: ALL is NOT used here for local development compatibility
+#       (needed for az login, permission fixes, etc.)
+#       Use cap_drop in Kubernetes/Helm for production hardening.
 
 x-common-security: &common-security
   security_opt:
     - no-new-privileges:true
-  cap_drop:
-    - ALL
 
 x-api-service: &api-service
   security_opt:
     - no-new-privileges:true
-  cap_drop:
-    - ALL
   deploy:
     resources:
       limits:
@@ -52,8 +51,6 @@ x-api-service: &api-service
 x-worker-service: &worker-service
   security_opt:
     - no-new-privileges:true
-  cap_drop:
-    - ALL
   deploy:
     resources:
       limits:
@@ -66,8 +63,6 @@ x-worker-service: &worker-service
 x-knowledge-worker-service: &knowledge-worker-service
   security_opt:
     - no-new-privileges:true
-  cap_drop:
-    - ALL
   deploy:
     resources:
       limits:
