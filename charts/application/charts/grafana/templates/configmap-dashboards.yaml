@@ -74,7 +74,7 @@ data:
               "color": { "mode": "thresholds" },
               "links": [{
                 "title": "View All Errors in Explore",
-                "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"refId\":\"A\",\"expr\":\"{app=~\\\"copilot-backend|worker\\\"} |~ \\\"(?i)error|exception|critical\\\"\"}],\"range\":{\"from\":\"${__from}\",\"to\":\"${__to}\"}}"
+                "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"refId\":\"A\",\"expr\":\"{app=~\\\"copilot-backend|worker\\\"} | json | level=~\\\"(?i)error|critical\\\"\"}],\"range\":{\"from\":\"${__from}\",\"to\":\"${__to}\"}}"
               }],
               "mappings": [],
               "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
@@ -92,7 +92,7 @@ data:
           },
           "targets": [{
             "datasource": { "type": "loki", "uid": "loki" },
-            "expr": "sum(count_over_time({app=~\"copilot-backend|worker\"} |~ \"(?i)error|exception|critical\"[$__range]))",
+            "expr": "sum(count_over_time({app=~\"copilot-backend|worker\"} | json | level=~\"(?i)error|critical\"[$__range]))",
             "queryType": "instant",
             "refId": "A"
           }],
@@ -174,7 +174,7 @@ data:
               "color": { "mode": "thresholds" },
               "links": [{
                 "title": "View API Errors",
-                "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"refId\":\"A\",\"expr\":\"{app=\\\"copilot-backend\\\"} |~ \\\"(?i)error|exception|critical\\\"\"}],\"range\":{\"from\":\"${__from}\",\"to\":\"${__to}\"}}"
+                "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"refId\":\"A\",\"expr\":\"{app=\\\"copilot-backend\\\"} | json | level=~\\\"(?i)error|critical\\\"\"}],\"range\":{\"from\":\"${__from}\",\"to\":\"${__to}\"}}"
               }],
               "mappings": [],
               "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
@@ -192,7 +192,7 @@ data:
           },
           "targets": [{
             "datasource": { "type": "loki", "uid": "loki" },
-            "expr": "sum(count_over_time({app=\"copilot-backend\"} |~ \"(?i)error|exception|critical\"[$__range]))",
+            "expr": "sum(count_over_time({app=\"copilot-backend\"} | json | level=~\"(?i)error|critical\"[$__range]))",
             "queryType": "instant",
             "refId": "A"
           }],
@@ -206,7 +206,7 @@ data:
               "color": { "mode": "thresholds" },
               "links": [{
                 "title": "View Deal Worker Errors",
-                "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"refId\":\"A\",\"expr\":\"{instance=\\\"deal-worker\\\"} |~ \\\"(?i)error|exception|critical\\\"\"}],\"range\":{\"from\":\"${__from}\",\"to\":\"${__to}\"}}"
+                "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"refId\":\"A\",\"expr\":\"{instance=\\\"deal-worker\\\"} | json | level=~\\\"(?i)error|critical\\\"\"}],\"range\":{\"from\":\"${__from}\",\"to\":\"${__to}\"}}"
               }],
               "mappings": [],
               "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
@@ -224,7 +224,7 @@ data:
           },
           "targets": [{
             "datasource": { "type": "loki", "uid": "loki" },
-            "expr": "sum(count_over_time({instance=\"deal-worker\"} |~ \"(?i)error|exception|critical\"[$__range]))",
+            "expr": "sum(count_over_time({instance=\"deal-worker\"} | json | level=~\"(?i)error|critical\"[$__range]))",
             "queryType": "instant",
             "refId": "A"
           }],
@@ -238,7 +238,7 @@ data:
               "color": { "mode": "thresholds" },
               "links": [{
                 "title": "View Chat Worker Errors",
-                "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"refId\":\"A\",\"expr\":\"{instance=\\\"chat-worker\\\"} |~ \\\"(?i)error|exception|critical\\\"\"}],\"range\":{\"from\":\"${__from}\",\"to\":\"${__to}\"}}"
+                "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"refId\":\"A\",\"expr\":\"{instance=\\\"chat-worker\\\"} | json | level=~\\\"(?i)error|critical\\\"\"}],\"range\":{\"from\":\"${__from}\",\"to\":\"${__to}\"}}"
               }],
               "mappings": [],
               "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
@@ -256,7 +256,7 @@ data:
           },
           "targets": [{
             "datasource": { "type": "loki", "uid": "loki" },
-            "expr": "sum(count_over_time({instance=\"chat-worker\"} |~ \"(?i)error|exception|critical\"[$__range]))",
+            "expr": "sum(count_over_time({instance=\"chat-worker\"} | json | level=~\"(?i)error|critical\"[$__range]))",
             "queryType": "instant",
             "refId": "A"
           }],
@@ -270,7 +270,7 @@ data:
               "color": { "mode": "thresholds" },
               "links": [{
                 "title": "View Integrations Errors",
-                "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"refId\":\"A\",\"expr\":\"{instance=\\\"integrations-worker\\\"} |~ \\\"(?i)error|exception|critical\\\"\"}],\"range\":{\"from\":\"${__from}\",\"to\":\"${__to}\"}}"
+                "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"refId\":\"A\",\"expr\":\"{instance=\\\"integrations-worker\\\"} | json | level=~\\\"(?i)error|critical\\\"\"}],\"range\":{\"from\":\"${__from}\",\"to\":\"${__to}\"}}"
               }],
               "mappings": [],
               "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
@@ -288,7 +288,7 @@ data:
           },
           "targets": [{
             "datasource": { "type": "loki", "uid": "loki" },
-            "expr": "sum(count_over_time({instance=\"integrations-worker\"} |~ \"(?i)error|exception|critical\"[$__range]))",
+            "expr": "sum(count_over_time({instance=\"integrations-worker\"} | json | level=~\"(?i)error|critical\"[$__range]))",
             "queryType": "instant",
             "refId": "A"
           }],
@@ -302,7 +302,7 @@ data:
               "color": { "mode": "thresholds" },
               "links": [{
                 "title": "View Knowledge Errors",
-                "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"refId\":\"A\",\"expr\":\"{instance=~\\\"knowledge.*\\\"} |~ \\\"(?i)error|exception|critical\\\"\"}],\"range\":{\"from\":\"${__from}\",\"to\":\"${__to}\"}}"
+                "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"refId\":\"A\",\"expr\":\"{instance=~\\\"knowledge.*\\\"} | json | level=~\\\"(?i)error|critical\\\"\"}],\"range\":{\"from\":\"${__from}\",\"to\":\"${__to}\"}}"
               }],
               "mappings": [],
               "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
@@ -320,7 +320,7 @@ data:
           },
           "targets": [{
             "datasource": { "type": "loki", "uid": "loki" },
-            "expr": "sum(count_over_time({instance=~\"knowledge.*\"} |~ \"(?i)error|exception|critical\"[$__range]))",
+            "expr": "sum(count_over_time({instance=~\"knowledge.*\"} | json | level=~\"(?i)error|critical\"[$__range]))",
             "queryType": "instant",
             "refId": "A"
           }],
@@ -334,7 +334,7 @@ data:
               "color": { "mode": "thresholds" },
               "links": [{
                 "title": "View Organization Errors",
-                "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"refId\":\"A\",\"expr\":\"{instance=\\\"organization-worker\\\"} |~ \\\"(?i)error|exception|critical\\\"\"}],\"range\":{\"from\":\"${__from}\",\"to\":\"${__to}\"}}"
+                "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"refId\":\"A\",\"expr\":\"{instance=\\\"organization-worker\\\"} | json | level=~\\\"(?i)error|critical\\\"\"}],\"range\":{\"from\":\"${__from}\",\"to\":\"${__to}\"}}"
               }],
               "mappings": [],
               "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }
@@ -352,7 +352,7 @@ data:
           },
           "targets": [{
             "datasource": { "type": "loki", "uid": "loki" },
-            "expr": "sum(count_over_time({instance=\"organization-worker\"} |~ \"(?i)error|exception|critical\"[$__range]))",
+            "expr": "sum(count_over_time({instance=\"organization-worker\"} | json | level=~\"(?i)error|critical\"[$__range]))",
             "queryType": "instant",
             "refId": "A"
           }],
@@ -391,7 +391,7 @@ data:
           },
           "targets": [{
             "datasource": { "type": "loki", "uid": "loki" },
-            "expr": "sum by(instance) (count_over_time({instance=~\"$service\"}[1m]))",
+            "expr": "sum by(instance) (count_over_time({app=~\"copilot-backend|worker\"}[1m]))",
             "legendFormat": "{{ "{{" }}instance{{ "}}" }}",
             "queryType": "range",
             "refId": "A"
@@ -475,7 +475,7 @@ data:
           },
           "targets": [{
             "datasource": { "type": "loki", "uid": "loki" },
-            "expr": "topk(15, sum by(request_id) (count_over_time({app=~\"copilot-backend|worker\"} | json | request_id != \"-\" | request_id != \"\" |~ \"(?i)error|exception|critical\"[$__range])))",
+            "expr": "topk(15, sum by(request_id) (count_over_time({app=~\"copilot-backend|worker\"} | json | request_id != \"-\" | request_id != \"\" | level=~\"(?i)error|critical\"[$__range])))",
             "queryType": "instant",
             "refId": "A"
           }],
@@ -502,7 +502,7 @@ data:
           },
           "targets": [{
             "datasource": { "type": "loki", "uid": "loki" },
-            "expr": "{instance=~\"$service\"} |~ \"(?i)error|exception|critical|traceback\"",
+            "expr": "{instance=~\"$service\"} | json | level=~\"(?i)error|critical\"",
             "queryType": "range",
             "refId": "A"
           }],

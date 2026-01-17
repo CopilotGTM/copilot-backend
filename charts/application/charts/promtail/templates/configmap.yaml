@@ -36,9 +36,7 @@ data:
           - labels:
               level:
               logger:
-          # Output the original log line
-          - output:
-              source: message
+            # Keep original log line (JSON when LOG_FORMAT=json) for full context
         relabel_configs:
           # Keep only pods in the same namespace as the release
           - source_labels: [__meta_kubernetes_namespace]
