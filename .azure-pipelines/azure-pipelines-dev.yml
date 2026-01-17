@@ -275,86 +275,104 @@ stages:
           # ===================================================================
           # Build API Image - FastAPI application with aiohttp for async Key Vault
           # Target: api (installs 'api' extra from pyproject.toml)
+          # Note: Using script instead of Docker@2 buildAndPush because
+          #       buildAndPush ignores the 'arguments' input (no cache support)
           # ===================================================================
-          - task: Docker@2
+          - script: |
+              echo "##[section]🔨 Building API Image with cache..."
+              docker build \
+                --target api \
+                --build-arg BUILDKIT_INLINE_CACHE=1 \
+                --cache-from=$(ACR_LOGIN_SERVER)/$(API_IMAGE_REPOSITORY):latest \
+                -t $(ACR_LOGIN_SERVER)/$(API_IMAGE_REPOSITORY):$(Build.BuildId) \
+                -t $(ACR_LOGIN_SERVER)/$(API_IMAGE_REPOSITORY):latest \
+                -f Dockerfile \
+                .
+
+              echo "##[section]📤 Pushing API Image..."
+              docker push $(ACR_LOGIN_SERVER)/$(API_IMAGE_REPOSITORY):$(Build.BuildId)
+              docker push $(ACR_LOGIN_SERVER)/$(API_IMAGE_REPOSITORY):latest
+              echo "##[section]✅ API Image complete"
             displayName: 'Build & Push API Image (target: api)'
-            inputs:
-              containerRegistry: '$(ACR_SERVICE_CONNECTION)'
-              repository: '$(API_IMAGE_REPOSITORY)'
-              command: 'buildAndPush'
-              Dockerfile: '**/Dockerfile'
-              tags: |
-                $(Build.BuildId)
-                latest
-              arguments: |
-                --target api
-                --build-arg BUILDKIT_INLINE_CACHE=1
-                --cache-from=$(ACR_LOGIN_SERVER)/$(API_IMAGE_REPOSITORY):latest
             env:
               DOCKER_BUILDKIT: 1
+              ACR_LOGIN_SERVER: $(ACR_LOGIN_SERVER)
+              API_IMAGE_REPOSITORY: $(API_IMAGE_REPOSITORY)
 
           # ===================================================================
           # Build Knowledge Worker - Heavy ML/Document processing
           # Target: knowledge-worker (installs 'knowledge' extra)
           # ===================================================================
-          - task: Docker@2
+          - script: |
+              echo "##[section]🔨 Building Knowledge Worker Image with cache..."
+              docker build \
+                --target knowledge-worker \
+                --build-arg BUILDKIT_INLINE_CACHE=1 \
+                --cache-from=$(ACR_LOGIN_SERVER)/$(KNOWLEDGE_IMAGE_REPOSITORY):latest \
+                -t $(ACR_LOGIN_SERVER)/$(KNOWLEDGE_IMAGE_REPOSITORY):$(Build.BuildId) \
+                -t $(ACR_LOGIN_SERVER)/$(KNOWLEDGE_IMAGE_REPOSITORY):latest \
+                -f Dockerfile \
+                .
+
+              echo "##[section]📤 Pushing Knowledge Worker Image..."
+              docker push $(ACR_LOGIN_SERVER)/$(KNOWLEDGE_IMAGE_REPOSITORY):$(Build.BuildId)
+              docker push $(ACR_LOGIN_SERVER)/$(KNOWLEDGE_IMAGE_REPOSITORY):latest
+              echo "##[section]✅ Knowledge Worker Image complete"
             displayName: 'Build & Push Knowledge Worker Image (target: knowledge-worker)'
-            inputs:
-              containerRegistry: '$(ACR_SERVICE_CONNECTION)'
-              repository: '$(KNOWLEDGE_IMAGE_REPOSITORY)'
-              command: 'buildAndPush'
-              Dockerfile: '**/Dockerfile'
-              tags: |
-                $(Build.BuildId)
-                latest
-              arguments: |
-                --target knowledge-worker
-                --build-arg BUILDKIT_INLINE_CACHE=1
-                --cache-from=$(ACR_LOGIN_SERVER)/$(KNOWLEDGE_IMAGE_REPOSITORY):latest
             env:
               DOCKER_BUILDKIT: 1
+              ACR_LOGIN_SERVER: $(ACR_LOGIN_SERVER)
+              KNOWLEDGE_IMAGE_REPOSITORY: $(KNOWLEDGE_IMAGE_REPOSITORY)
 
           # ===================================================================
           # Build Light Worker - Chat, Deal, Organization workers
           # Target: light-worker (installs 'workers-light' extra)
           # ===================================================================
-          - task: Docker@2
+          - script: |
+              echo "##[section]🔨 Building Light Worker Image with cache..."
+              docker build \
+                --target light-worker \
+                --build-arg BUILDKIT_INLINE_CACHE=1 \
+                --cache-from=$(ACR_LOGIN_SERVER)/$(LIGHT_IMAGE_REPOSITORY):latest \
+                -t $(ACR_LOGIN_SERVER)/$(LIGHT_IMAGE_REPOSITORY):$(Build.BuildId) \
+                -t $(ACR_LOGIN_SERVER)/$(LIGHT_IMAGE_REPOSITORY):latest \
+                -f Dockerfile \
+                .
+
+              echo "##[section]📤 Pushing Light Worker Image..."
+              docker push $(ACR_LOGIN_SERVER)/$(LIGHT_IMAGE_REPOSITORY):$(Build.BuildId)
+              docker push $(ACR_LOGIN_SERVER)/$(LIGHT_IMAGE_REPOSITORY):latest
+              echo "##[section]✅ Light Worker Image complete"
             displayName: 'Build & Push Light Worker Image (target: light-worker)'
-            inputs:
-              containerRegistry: '$(ACR_SERVICE_CONNECTION)'
-              repository: '$(LIGHT_IMAGE_REPOSITORY)'
-              command: 'buildAndPush'
-              Dockerfile: '**/Dockerfile'
-              tags: |
-                $(Build.BuildId)
-                latest
-              arguments: |
-                --target light-worker
-                --build-arg BUILDKIT_INLINE_CACHE=1
-                --cache-from=$(ACR_LOGIN_SERVER)/$(LIGHT_IMAGE_REPOSITORY):latest
             env:
               DOCKER_BUILDKIT: 1
+              ACR_LOGIN_SERVER: $(ACR_LOGIN_SERVER)
+              LIGHT_IMAGE_REPOSITORY: $(LIGHT_IMAGE_REPOSITORY)
 
           # ===================================================================
           # Build Integrations Worker - CRM/Third-party sync
           # Target: integrations-worker (installs 'integrations' extra)
           # ===================================================================
-          - task: Docker@2
+          - script: |
+              echo "##[section]🔨 Building Integrations Worker Image with cache..."
+              docker build \
+                --target integrations-worker \
+                --build-arg BUILDKIT_INLINE_CACHE=1 \
+                --cache-from=$(ACR_LOGIN_SERVER)/$(INTEGRATIONS_IMAGE_REPOSITORY):latest \
+                -t $(ACR_LOGIN_SERVER)/$(INTEGRATIONS_IMAGE_REPOSITORY):$(Build.BuildId) \
+                -t $(ACR_LOGIN_SERVER)/$(INTEGRATIONS_IMAGE_REPOSITORY):latest \
+                -f Dockerfile \
+                .
+
+              echo "##[section]📤 Pushing Integrations Worker Image..."
+              docker push $(ACR_LOGIN_SERVER)/$(INTEGRATIONS_IMAGE_REPOSITORY):$(Build.BuildId)
+              docker push $(ACR_LOGIN_SERVER)/$(INTEGRATIONS_IMAGE_REPOSITORY):latest
+              echo "##[section]✅ Integrations Worker Image complete"
             displayName: 'Build & Push Integrations Worker Image (target: integrations-worker)'
-            inputs:
-              containerRegistry: '$(ACR_SERVICE_CONNECTION)'
-              repository: '$(INTEGRATIONS_IMAGE_REPOSITORY)'
-              command: 'buildAndPush'
-              Dockerfile: '**/Dockerfile'
-              tags: |
-                $(Build.BuildId)
-                latest
-              arguments: |
-                --target integrations-worker
-                --build-arg BUILDKIT_INLINE_CACHE=1
-                --cache-from=$(ACR_LOGIN_SERVER)/$(INTEGRATIONS_IMAGE_REPOSITORY):latest
             env:
               DOCKER_BUILDKIT: 1
+              ACR_LOGIN_SERVER: $(ACR_LOGIN_SERVER)
+              INTEGRATIONS_IMAGE_REPOSITORY: $(INTEGRATIONS_IMAGE_REPOSITORY)
 
           - script: |
               echo "##[section]✅ Build Complete!"
