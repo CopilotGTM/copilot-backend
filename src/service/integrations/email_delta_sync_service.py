@@ -31,10 +31,10 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import attributes
-from src.api.dependencies.organisation_dependencies import acquire_org_async_session
 from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
 from src.domain.models.organisation_tables.sync.email_models import EmailFolder
 from src.infra.config.nango_provider_mapping import to_nango_connect_integration_key
+from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.service.integrations.email_sync_service import EmailSyncService
 from src.service.integrations.nango_client import NangoClient

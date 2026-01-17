@@ -49,6 +49,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.local
+      target: api
     container_name: copilot-api
     command: /app/.venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8080 --reload
     ports:
@@ -95,6 +96,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.local
+      target: knowledge-worker
     container_name: copilot-knowledge-extract-worker
     dns:
       - 8.8.8.8
@@ -124,7 +126,7 @@ services:
         condition: service_healthy
     networks:
       - copilot-network
-    profiles: ["knowledge"]
+    # profiles: ["knowledge"]
 
   # ---------------------------------------------------------------------------
   # Knowledge Upload Worker
@@ -133,6 +135,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.local
+      target: knowledge-worker
     container_name: copilot-knowledge-upload-worker
     dns:
       - 8.8.8.8
@@ -162,7 +165,7 @@ services:
         condition: service_healthy
     networks:
       - copilot-network
-    profiles: ["knowledge"]
+    # profiles: ["knowledge"]
 
   # ---------------------------------------------------------------------------
   # Organization Worker
@@ -171,6 +174,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.local
+      target: light-worker
     container_name: copilot-organization-worker
     dns:
       - 8.8.8.8
@@ -200,7 +204,7 @@ services:
         condition: service_healthy
     networks:
       - copilot-network
-    profiles: ["organization"]
+    # profiles: ["organization"]
 
   # ---------------------------------------------------------------------------
   # Chat Worker (handles attachments, chat_processing, chat_messages)
@@ -209,6 +213,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.local
+      target: light-worker
     container_name: copilot-chat-worker
     dns:
       - 8.8.8.8
@@ -238,7 +243,7 @@ services:
         condition: service_healthy
     networks:
       - copilot-network
-    # profiles: ["chat"]
+    profiles: ["chat"]
 
   # ---------------------------------------------------------------------------
   # Integrations Worker (handles CRM/third-party sync)
@@ -247,6 +252,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.local
+      target: integrations-worker
     container_name: copilot-integrations-worker
     dns:
       - 8.8.8.8
@@ -284,6 +290,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.local
+      target: integrations-worker
     container_name: copilot-integrations-beat
     dns:
       - 8.8.8.8
@@ -311,7 +318,7 @@ services:
         condition: service_healthy
     networks:
       - copilot-network
-    profiles: ["integrations"]
+    # profiles: ["integrations"]
   # ---------------------------------------------------------------------------
   # Deal Worker (handles deal-meeting matching, email matching, stakeholders)
   # ---------------------------------------------------------------------------
@@ -319,6 +326,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.local
+      target: light-worker
     container_name: copilot-deal-worker
     dns:
       - 8.8.8.8
@@ -356,6 +364,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.local
+      target: light-worker
     container_name: copilot-deal-beat
     dns:
       - 8.8.8.8
@@ -383,7 +392,7 @@ services:
         condition: service_healthy
     networks:
       - copilot-network
-    profiles: ["chat"]
+    # profiles: ["chat"]
   # ---------------------------------------------------------------------------
   # Flower - Celery Monitoring UI (Optional)
   # ---------------------------------------------------------------------------
@@ -400,8 +409,76 @@ services:
         condition: service_healthy
     networks:
       - copilot-network
-    profiles:
-      - monitoring
+    # profiles:
+    #   - monitoring
+
+  # ---------------------------------------------------------------------------
+  # Loki - Log Aggregation (collects and stores logs)
+  # ---------------------------------------------------------------------------
+  loki:
+    image: grafana/loki:2.9.4
+    container_name: copilot-loki
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./docker/loki/loki-config.yml:/etc/loki/local-config.yaml
+      - loki-data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3100/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - copilot-network
+    # profiles:
+    #   - monitoring
+
+  # ---------------------------------------------------------------------------
+  # Promtail - Log Shipper (collects Docker logs and sends to Loki)
+  # ---------------------------------------------------------------------------
+  promtail:
+    image: grafana/promtail:2.9.4
+    container_name: copilot-promtail
+    volumes:
+      - ./docker/loki/promtail-config.yml:/etc/promtail/config.yml
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      loki:
+        condition: service_healthy
+    networks:
+      - copilot-network
+    # profiles:
+    #   - monitoring
+
+  # ---------------------------------------------------------------------------
+  # Grafana - Visualization & Dashboards
+  # Access at: http://localhost:3001 (admin/admin)
+  # ---------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:10.3.1
+    container_name: copilot-grafana
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+    volumes:
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      loki:
+        condition: service_healthy
+    networks:
+      - copilot-network
+    # profiles:
+    #   - monitoring
 
 # =============================================================================
 # Networks
@@ -419,4 +496,8 @@ volumes:
   redis-data:
     driver: local
   azure-data:
+    driver: local
+  loki-data:
+    driver: local
+  grafana-data:
     driver: local

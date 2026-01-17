@@ -2,17 +2,21 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
+from typing import Literal
 
 from src.agents.common.json_extractor import JsonExtractor
-from src.api.schemas.chat_stream_models import (
+from src.infra.messaging.chat_stream_models import (
     AgentSwitch,
     AnswerMetrics,
     FieldSingleSelect,
     QuestionPrompt,
     SourcesReplace,
+    Suggestion,
     SuggestionsReplace,
 )
 from src.infra.utils.logger import get_logger
+
+ConfidenceLevel = Literal["high", "medium", "low", "neutral"]
 
 logger = get_logger()
 
@@ -61,7 +65,9 @@ class MetadataParser:
 
     def _yield_suggestions_frame(self, response_data: dict):
         if "suggested_questions" in response_data:
-            suggestions = [str(q) for q in response_data.get("suggested_questions", [])]
+            suggestions: list[str | Suggestion] = [
+                str(q) for q in response_data.get("suggested_questions", [])
+            ]
             if suggestions:
                 yield SuggestionsReplace(items=suggestions)
 
@@ -117,7 +123,7 @@ class MetadataParser:
         if isinstance(switch, dict) and switch.get("to"):
             yield AgentSwitch(
                 from_agent="GENERAL_CHAT",
-                to_agent=switch.get("to"),
+                to_agent=switch.get("to"),  # type: ignore
                 reason=switch.get("reason") or "Agent switch requested",
             )
         elif isinstance(switch, str) and switch.strip():
@@ -127,7 +133,7 @@ class MetadataParser:
                 reason="Agent switch requested",
             )
 
-    def _convert_confidence_score(self, confidence_value) -> str | None:
+    def _convert_confidence_score(self, confidence_value) -> ConfidenceLevel | None:
         if confidence_value is None:
             return None
 
@@ -137,7 +143,7 @@ class MetadataParser:
             "low",
             "neutral",
         ]:
-            return confidence_value
+            return confidence_value  # type: ignore[return-value]
 
         if isinstance(confidence_value, int | float):
             if confidence_value >= 0.8:

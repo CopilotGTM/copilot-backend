@@ -416,3 +416,103 @@ flower:
     limits:
       cpu: "250m"
       memory: "256Mi"
+
+# =============================================================================
+# OBSERVABILITY STACK (Loki + Promtail + Grafana)
+# =============================================================================
+# Self-hosted log aggregation and visualization for development/staging environments
+# Access via port-forward: kubectl port-forward svc/<release>-grafana 3000:3000
+# Default credentials: admin/admin
+
+# Loki - Log aggregation and storage
+loki:
+  enabled: false
+  replicaCount: 1
+  image:
+    repository: grafana/loki
+    tag: "2.9.4"
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 3100
+  persistence:
+    enabled: true
+    size: 10Gi
+    storageClass: ""  # Uses default storage class
+  config:
+    retentionPeriod: 168h  # 7 days
+    maxStreamsPerUser: 10000
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "512Mi"
+    limits:
+      cpu: "500m"
+      memory: "1Gi"
+
+# Promtail - Log collection agent (DaemonSet)
+promtail:
+  enabled: false
+  image:
+    repository: grafana/promtail
+    tag: "2.9.4"
+    pullPolicy: IfNotPresent
+  loki:
+    serviceName: ""  # Defaults to <release>-loki
+    port: 3100
+  extraLabels:
+    environment: development
+    cluster: aks
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+    limits:
+      cpu: "200m"
+      memory: "128Mi"
+  tolerations:
+    - effect: NoSchedule
+      operator: Exists
+    - effect: NoExecute
+      operator: Exists
+
+# Grafana - Log visualization dashboard
+# Access via: kubectl port-forward svc/<release>-grafana 3000:3000
+grafana:
+  enabled: false
+  replicaCount: 1
+  image:
+    repository: grafana/grafana
+    tag: "10.3.1"
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 3000
+  admin:
+    user: admin
+    password: admin  # Override in production!
+  loki:
+    serviceName: ""  # Defaults to <release>-loki
+    port: 3100
+  persistence:
+    enabled: false
+    size: 1Gi
+    storageClass: ""
+  config:
+    disableGravatar: true
+    disableAnalytics: true
+    checkForUpdates: false
+  ingress:
+    enabled: false
+    className: "azure-application-gateway"
+    annotations:
+      appgw.ingress.kubernetes.io/backend-protocol: "http"
+    hosts: []
+    tls: []
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"

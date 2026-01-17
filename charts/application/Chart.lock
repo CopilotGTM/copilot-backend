@@ -26,5 +26,17 @@ dependencies:
 - name: worker
   repository: file://./charts/worker
   version: 0.1.0
-digest: sha256:ad9261163f5ed2ea592d0f67dd9137db24905fa13663be92f3eca573baa235f8
-generated: "2026-01-01T10:28:30.5685846+05:30"
+- name: worker
+  repository: file://./charts/worker
+  version: 0.1.0
+- name: loki
+  repository: file://./charts/loki
+  version: 0.1.0
+- name: promtail
+  repository: file://./charts/promtail
+  version: 0.1.0
+- name: grafana
+  repository: file://./charts/grafana
+  version: 0.1.0
+digest: sha256:e7fc92d452c720babf947520e214ac4773078bdb96b634fb0adaa9368df7f87d
+generated: "2026-01-16T15:43:58.6281581+05:30"

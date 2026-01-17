@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.api.schemas.knowledge_upload_models import KnowledgeSourceEventUpdate
+from src.infra.messaging.event_models import KnowledgeSourceEventUpdate
 from src.infra.messaging.knowledge_source_status_publish import (
     publish_source_status,
 )

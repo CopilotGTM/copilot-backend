@@ -15,7 +15,7 @@ logger = get_logger()
 class Authentication:
     cookie_name: str = "auth-storage"
 
-    async def verify_session(
+    def verify_session(
         self,
         *,
         master_session: Session = Depends(get_master_session),

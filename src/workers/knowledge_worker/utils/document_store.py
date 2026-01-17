@@ -5,8 +5,8 @@ import hashlib
 from typing import Any
 from uuid import UUID
 
-from src.api.dependencies.organisation_dependencies import acquire_org_session
 from src.domain.models.organisation_tables.knowledge_models import OrganisationDocument
+from src.infra.database.sessions import acquire_org_session
 from src.infra.utils.logger import get_logger
 
 logger = get_logger("document_store")

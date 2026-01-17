@@ -601,6 +601,7 @@ dependencies = [
 
 [package.optional-dependencies]
 api = [
+    { name = "aiohttp" },
     { name = "azure-mgmt-storage" },
     { name = "azure-storage-blob" },
     { name = "eventlet" },
@@ -664,6 +665,7 @@ full = [
 ]
 integrations = [
     { name = "aiohttp" },
+    { name = "beautifulsoup4" },
     { name = "fsspec" },
 ]
 knowledge = [
@@ -741,6 +743,7 @@ requires-dist = [
     { name = "agno", marker = "extra == 'full'", specifier = "~=1.8.1" },
     { name = "agno", marker = "extra == 'knowledge'", specifier = "~=1.8.1" },
     { name = "agno", marker = "extra == 'workers-light'", specifier = "~=1.8.1" },
+    { name = "aiohttp", marker = "extra == 'api'", specifier = ">=3.9.0" },
     { name = "aiohttp", marker = "extra == 'full'", specifier = "==3.9.1" },
     { name = "aiohttp", marker = "extra == 'integrations'", specifier = "==3.9.1" },
     { name = "alembic", specifier = "==1.16.4" },
@@ -756,6 +759,7 @@ requires-dist = [
     { name = "azure-storage-blob", marker = "extra == 'full'", specifier = "==12.25.1" },
     { name = "azure-storage-blob", marker = "extra == 'knowledge'", specifier = "==12.25.1" },
     { name = "azure-storage-blob", marker = "extra == 'workers-light'", specifier = "==12.25.1" },
+    { name = "beautifulsoup4", marker = "extra == 'integrations'", specifier = ">=4.12.0" },
     { name = "celery", specifier = "~=5.5.3" },
     { name = "crawl4ai", marker = "extra == 'full'", specifier = "~=0.4.0" },
     { name = "crawl4ai", marker = "extra == 'workers-light'", specifier = "~=0.4.0" },

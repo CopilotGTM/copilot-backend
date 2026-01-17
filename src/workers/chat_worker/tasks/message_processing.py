@@ -8,13 +8,13 @@ from uuid import UUID
 from celery.exceptions import Retry
 
 from src.agents.orchestrator import run_agent_for_chat
-from src.api.dependencies.organisation_dependencies import acquire_org_session
 from src.domain.models.organisation_tables.chat_message_models import (
     ChatMessage,
     ChatMessageRole,
 )
 from src.domain.models.organisation_tables.chat_session_models import ChatSession
 from src.domain.models.organisation_tables.job_models import ChatMessageJob, JobStatus
+from src.infra.database.sessions import acquire_org_session
 from src.infra.messaging.redis_channels import channel_for_chat_job
 from src.infra.messaging.redis_client import get_redis_client
 from src.infra.messaging.redis_streams import xadd_json_frame
@@ -290,7 +290,7 @@ async def _consume_agent_stream(
 
     # Acquire async session for agent tools
     from src.agents.context import AgentContext
-    from src.api.dependencies.organisation_dependencies import acquire_org_async_session
+    from src.infra.database.sessions import acquire_org_async_session
 
     async for session in acquire_org_async_session(organisation_id):
         # Build context once for the entire agent execution

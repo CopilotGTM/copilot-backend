@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from src.api.schemas.knowledge_upload_models import KnowledgeSourceEventUpdate
+from src.infra.messaging.event_models import KnowledgeSourceEventUpdate
 from src.infra.messaging.publishers import RedisPublisher
 from src.infra.utils.logger import get_logger
 

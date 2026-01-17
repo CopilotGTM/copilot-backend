@@ -36,6 +36,11 @@ variables:
   - name: ENABLE_FLOWER
     value: 'true'
 
+  # Observability Stack (Loki + Promtail + Grafana)
+  # Access via: kubectl port-forward svc/copilot-backend-grafana 3001:3000 -n copilotgtm
+  - name: ENABLE_OBSERVABILITY
+    value: 'true'
+
   # Image repositories
   - name: API_IMAGE_REPOSITORY
     value: 'copilot-backend-api'
@@ -221,9 +226,13 @@ stages:
               containerRegistry: '$(ACR_SERVICE_CONNECTION)'
               command: 'login'
 
+          # ===================================================================
+          # Pull cache images - only pull target-specific images (not full)
+          # Each target has its own dependency set, so cross-cache is not useful
+          # ===================================================================
           - script: |
               echo "##[section]🚀 Pulling cache images from ACR for faster builds..."
-              docker pull $(ACR_LOGIN_SERVER)/copilot-backend:latest || echo "⚠️ No latest full image found"
+              echo "Note: Only pulling target-specific images for optimal caching"
               docker pull $(ACR_LOGIN_SERVER)/$(API_IMAGE_REPOSITORY):latest || echo "⚠️ No latest api image found"
               docker pull $(ACR_LOGIN_SERVER)/$(KNOWLEDGE_IMAGE_REPOSITORY):latest || echo "⚠️ No latest knowledge image found"
               docker pull $(ACR_LOGIN_SERVER)/$(LIGHT_IMAGE_REPOSITORY):latest || echo "⚠️ No latest light-worker image found"
@@ -234,6 +243,10 @@ stages:
               DOCKER_BUILDKIT: '1'
             continueOnError: 'true'
 
+          # ===================================================================
+          # Build API Image - FastAPI application with aiohttp for async Key Vault
+          # Target: api (installs 'api' extra from pyproject.toml)
+          # ===================================================================
           - task: Docker@2
             displayName: 'Build & Push API Image (target: api)'
             inputs:
@@ -248,10 +261,13 @@ stages:
                 --target api
                 --build-arg BUILDKIT_INLINE_CACHE=1
                 --cache-from=$(ACR_LOGIN_SERVER)/$(API_IMAGE_REPOSITORY):latest
-                --cache-from=$(ACR_LOGIN_SERVER)/copilot-backend:latest
             env:
               DOCKER_BUILDKIT: 1
 
+          # ===================================================================
+          # Build Knowledge Worker - Heavy ML/Document processing
+          # Target: knowledge-worker (installs 'knowledge' extra)
+          # ===================================================================
           - task: Docker@2
             displayName: 'Build & Push Knowledge Worker Image (target: knowledge-worker)'
             inputs:
@@ -266,10 +282,13 @@ stages:
                 --target knowledge-worker
                 --build-arg BUILDKIT_INLINE_CACHE=1
                 --cache-from=$(ACR_LOGIN_SERVER)/$(KNOWLEDGE_IMAGE_REPOSITORY):latest
-                --cache-from=$(ACR_LOGIN_SERVER)/copilot-backend:latest
             env:
               DOCKER_BUILDKIT: 1
 
+          # ===================================================================
+          # Build Light Worker - Chat, Deal, Organization workers
+          # Target: light-worker (installs 'workers-light' extra)
+          # ===================================================================
           - task: Docker@2
             displayName: 'Build & Push Light Worker Image (target: light-worker)'
             inputs:
@@ -284,10 +303,13 @@ stages:
                 --target light-worker
                 --build-arg BUILDKIT_INLINE_CACHE=1
                 --cache-from=$(ACR_LOGIN_SERVER)/$(LIGHT_IMAGE_REPOSITORY):latest
-                --cache-from=$(ACR_LOGIN_SERVER)/copilot-backend:latest
             env:
               DOCKER_BUILDKIT: 1
 
+          # ===================================================================
+          # Build Integrations Worker - CRM/Third-party sync
+          # Target: integrations-worker (installs 'integrations' extra)
+          # ===================================================================
           - task: Docker@2
             displayName: 'Build & Push Integrations Worker Image (target: integrations-worker)'
             inputs:
@@ -302,33 +324,17 @@ stages:
                 --target integrations-worker
                 --build-arg BUILDKIT_INLINE_CACHE=1
                 --cache-from=$(ACR_LOGIN_SERVER)/$(INTEGRATIONS_IMAGE_REPOSITORY):latest
-                --cache-from=$(ACR_LOGIN_SERVER)/copilot-backend:latest
-            env:
-              DOCKER_BUILDKIT: 1
-
-          - task: Docker@2
-            displayName: 'Build Docker Image with Cache'
-            inputs:
-              containerRegistry: '$(ACR_SERVICE_CONNECTION)'
-              repository: 'copilot-backend'
-              command: 'buildAndPush'
-              Dockerfile: '**/Dockerfile'
-              tags: |
-                $(Build.BuildId)
-                latest
-              arguments: |
-                --build-arg BUILDKIT_INLINE_CACHE=1
-                --cache-from=$(ACR_LOGIN_SERVER)/copilot-backend:latest
             env:
               DOCKER_BUILDKIT: 1
 
           - script: |
               echo "##[section]✅ Build Complete!"
-              echo "📦 Image: $(ACR_LOGIN_SERVER)/copilot-backend:$(Build.BuildId)"
               echo "📦 API: $(ACR_LOGIN_SERVER)/$(API_IMAGE_REPOSITORY):$(Build.BuildId)"
-              echo "📦 Knowledge: $(ACR_LOGIN_SERVER)/$(KNOWLEDGE_IMAGE_REPOSITORY):$(Build.BuildId)"
+              echo "📦 Knowledge Worker: $(ACR_LOGIN_SERVER)/$(KNOWLEDGE_IMAGE_REPOSITORY):$(Build.BuildId)"
               echo "📦 Light Worker: $(ACR_LOGIN_SERVER)/$(LIGHT_IMAGE_REPOSITORY):$(Build.BuildId)"
-              echo "📦 Integrations: $(ACR_LOGIN_SERVER)/$(INTEGRATIONS_IMAGE_REPOSITORY):$(Build.BuildId)"
+              echo "📦 Integrations Worker: $(ACR_LOGIN_SERVER)/$(INTEGRATIONS_IMAGE_REPOSITORY):$(Build.BuildId)"
+              echo ""
+              echo "Note: Using separated images - each with its own optimized dependencies"
             displayName: 'Build Summary'
 
           # ===================================================================
@@ -378,8 +384,7 @@ stages:
                 fi
               }
 
-              # Cleanup each repository
-              cleanup_repo "copilot-backend"
+              # Cleanup each repository (separated images only - no full copilot-backend)
               cleanup_repo "$API_IMAGE_REPOSITORY"
               cleanup_repo "$KNOWLEDGE_IMAGE_REPOSITORY"
               cleanup_repo "$LIGHT_IMAGE_REPOSITORY"
@@ -438,6 +443,9 @@ stages:
                     if [ "$(ENABLE_FLOWER)" = "true" ]; then
                       EXTRA_HELM_ARGS="$EXTRA_HELM_ARGS --set flower.enabled=true --set global.celery.enableEvents=true"
                     fi
+                    if [ "$(ENABLE_OBSERVABILITY)" = "true" ]; then
+                      EXTRA_HELM_ARGS="$EXTRA_HELM_ARGS --set loki.enabled=true --set promtail.enabled=true --set grafana.enabled=true"
+                    fi
 
                     helm upgrade --install "$HELM_RELEASE_NAME" "$CHART_PATH" \
                       --namespace copilotgtm \
@@ -467,6 +475,7 @@ stages:
                       --set chat-worker.image.tag="$BUILD_BUILDID" \
                       --set organization-worker.image.repository="$ACR_LOGIN_SERVER/$(LIGHT_IMAGE_REPOSITORY)" \
                       --set organization-worker.image.tag="$BUILD_BUILDID" \
+                      --set organization-worker.autoscaling.enabled=true \
                       --set integrations-worker.image.repository="$ACR_LOGIN_SERVER/$(INTEGRATIONS_IMAGE_REPOSITORY)" \
                       --set integrations-worker.image.tag="$BUILD_BUILDID" \
                       --set deal-worker.image.repository="$ACR_LOGIN_SERVER/$(LIGHT_IMAGE_REPOSITORY)" \
@@ -474,6 +483,8 @@ stages:
                       --set deal-worker.autoscaling.enabled=true \
                       --set deal-beat.image.repository="$ACR_LOGIN_SERVER/$(LIGHT_IMAGE_REPOSITORY)" \
                       --set deal-beat.image.tag="$BUILD_BUILDID" \
+                      --set integrations-beat.image.repository="$ACR_LOGIN_SERVER/$(INTEGRATIONS_IMAGE_REPOSITORY)" \
+                      --set integrations-beat.image.tag="$BUILD_BUILDID" \
                       --set api.secrets.DATABASE_HOST="$(DATABASE_HOST)" \
                       --set api.secrets.DATABASE_USER="$(DATABASE_USER)" \
                       --set api.secrets.DATABASE_PORT="$(DATABASE_PORT)" \
@@ -516,13 +527,15 @@ stages:
                       --set integrations-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
                       --set deal-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
                       --set deal-beat.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
+                      --set integrations-beat.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
                       --set knowledge-extract-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
                       --set knowledge-upload-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
                       --set organization-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
                       --set chat-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
                       --set integrations-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
                       --set deal-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
-                      --set deal-beat.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)"
+                      --set deal-beat.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
+                      --set integrations-beat.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)"
                   displayName: Helm Upgrade/Install (Dev)
                   env:
                     HELM_RELEASE_NAME: $(HELM_RELEASE_NAME)

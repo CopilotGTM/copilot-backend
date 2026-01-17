@@ -16,24 +16,32 @@
 
 param(
     [string]$DeployEnvironment = "dev",
-    [switch]$EnableFlower,
-    [switch]$UseSeparatedImages,
+    [bool]$EnableFlower = $true,
+    [bool]$EnableObservability = $true,
+    [bool]$UseSeparatedImages = $true,
+    [bool]$UseFullImageForWorkers = $false,
+    [bool]$UseFullImageForApi = $false,
     [switch]$Help
 )
 
 # Show usage if help is requested
 if ($Help) {
-    Write-Host "Usage: .\local-deploy.ps1 [-DeployEnvironment <env>] [-EnableFlower] [-Help]"
+    Write-Host "Usage: .\local-deploy.ps1 [-DeployEnvironment <env>] [-EnableFlower <bool>] [-EnableObservability <bool>] [-UseSeparatedImages <bool>] [-Help]"
     Write-Host ""
     Write-Host "Parameters:"
-    Write-Host "  -DeployEnvironment  Target environment (default: dev)"
-    Write-Host "  -EnableFlower       Deploy Flower UI and enable Celery events (internal access via port-forward)"
-    Write-Host "  -Help              Show this help message"
+    Write-Host "  -DeployEnvironment    Target environment (default: dev)"
+    Write-Host "  -EnableFlower         Deploy Flower UI and enable Celery events (default: true)"
+    Write-Host "  -EnableObservability  Deploy Loki + Promtail + Grafana for log observability (default: true)"
+    Write-Host "  -UseSeparatedImages   Build separate images per component (default: true, matches pipeline)"
+    Write-Host "  -UseFullImageForWorkers Build worker images using the 'full' target to include API deps (default: false)"
+    Write-Host "  -UseFullImageForApi   Build API image using the 'full' target (default: false)"
+    Write-Host "  -Help                 Show this help message"
     Write-Host ""
     Write-Host "Example:"
-    Write-Host "  .\local-deploy.ps1                        # Deploy to dev environment"
-    Write-Host "  .\local-deploy.ps1 -EnableFlower          # Deploy Flower UI (internal)"
-    Write-Host "  .\local-deploy.ps1 -DeployEnvironment staging  # Deploy to staging"
+    Write-Host "  .\local-deploy.ps1                              # Deploy with all features enabled"
+    Write-Host "  .\local-deploy.ps1 -EnableFlower `$false         # Deploy without Flower UI"
+    Write-Host "  .\local-deploy.ps1 -EnableObservability `$false  # Deploy without observability stack"
+    Write-Host "  .\local-deploy.ps1 -UseSeparatedImages `$false   # Use legacy single image"
     exit 0
 }
 
@@ -212,11 +220,24 @@ function Build-AndPushImage {
     # Separated images: build Dockerfile targets and push to distinct repositories
     Write-Host "Building separated images (Dockerfile targets) with tag: $IMAGE_TAG"
 
+    $apiTarget = if ($UseFullImageForApi) { "full" } else { "api" }
+    $knowledgeTarget = if ($UseFullImageForWorkers) { "full" } else { "knowledge-worker" }
+    $lightWorkerTarget = if ($UseFullImageForWorkers) { "full" } else { "light-worker" }
+    $integrationsTarget = if ($UseFullImageForWorkers) { "full" } else { "integrations-worker" }
+
+    if ($UseFullImageForApi) {
+        Write-Warning "Using 'full' image target for API to include async Key Vault deps (aiohttp) in local deploy."
+    }
+
+    if ($UseFullImageForWorkers) {
+        Write-Warning "Using 'full' image target for workers to ensure API deps (fastapi) are present."
+    }
+
     $repoToTarget = @(
-        @{ Repo = $API_IMAGE_REPOSITORY; Target = "api" },
-        @{ Repo = $KNOWLEDGE_IMAGE_REPOSITORY; Target = "knowledge-worker" },
-        @{ Repo = $LIGHT_IMAGE_REPOSITORY; Target = "light-worker" },
-        @{ Repo = $INTEGRATIONS_IMAGE_REPOSITORY; Target = "integrations-worker" }
+        @{ Repo = $API_IMAGE_REPOSITORY; Target = $apiTarget },
+        @{ Repo = $KNOWLEDGE_IMAGE_REPOSITORY; Target = $knowledgeTarget },
+        @{ Repo = $LIGHT_IMAGE_REPOSITORY; Target = $lightWorkerTarget },
+        @{ Repo = $INTEGRATIONS_IMAGE_REPOSITORY; Target = $integrationsTarget }
     )
 
     foreach ($item in $repoToTarget) {
@@ -237,10 +258,51 @@ function Build-AndPushImage {
 }
 
 function Get-AzureKeyVaultSecrets {
-    Write-Header "Retrieving Secrets from Azure Key Vault"
+    Write-Header "Checking Secrets Configuration"
+
+    # List of required secrets
+    $requiredSecrets = @(
+        "AZURE_OPENAI_API_KEY",
+        "AZURE_EMBEDDER_OPENAI_API_KEY",
+        "DATABASE_PASSWORD",
+        "REDIS_PASSWORD",
+        "RESEND_API_KEY",
+        "SUPABASE_ANON_KEY",
+        "SUPABASE_JWT_SECRET",
+        "SUPABASE_SERVICE_ROLE_KEY",
+        "NANGO_SECRET_KEY"
+    )
+
+    # Check if all secrets are already set from .env.development
+    $allSecretsPresent = $true
+    foreach ($secret in $requiredSecrets) {
+        $value = [Environment]::GetEnvironmentVariable($secret)
+        if (-not $value) {
+            $allSecretsPresent = $false
+            Write-Host "  Missing: $secret"
+        }
+    }
+
+    # Ensure NANGO_BASE_URL is set
+    if (-not $env:NANGO_BASE_URL) {
+        $env:NANGO_BASE_URL = "https://api.nango.dev"
+    }
+
+    if ($allSecretsPresent) {
+        Write-Success "All secrets already present from .env.development - skipping Key Vault retrieval"
+        return
+    }
+
+    # If any secrets are missing, try to retrieve from Key Vault
+    Write-Host "Some secrets missing - attempting to retrieve from Azure Key Vault..."
 
     # Key Vault name for infrastructure secrets (from .env.development)
     $KEY_VAULT_NAME = $env:AZURE_KEY_VAULT_NAME
+
+    if (-not $KEY_VAULT_NAME) {
+        Write-Warning "AZURE_KEY_VAULT_NAME not set and some secrets are missing. Please ensure all secrets are in .env.development"
+        return
+    }
 
     Write-Host "Retrieving secrets from Key Vault: $KEY_VAULT_NAME"
 
@@ -255,19 +317,36 @@ function Get-AzureKeyVaultSecrets {
         }
     }
 
-    # Get secrets from Key Vault (hidden values)
-    $env:AZURE_OPENAI_API_KEY = Get-SecretSafely $KEY_VAULT_NAME "azure-openai-api-key"
-    $env:AZURE_EMBEDDER_OPENAI_API_KEY = Get-SecretSafely $KEY_VAULT_NAME "azure-embedder-openai-api-key"
-    $env:DATABASE_PASSWORD = Get-SecretSafely $KEY_VAULT_NAME "database-password"
-    $env:REDIS_PASSWORD = Get-SecretSafely $KEY_VAULT_NAME "redis-password"
-    $env:RESEND_API_KEY = Get-SecretSafely $KEY_VAULT_NAME "resend-api-key"
-    $env:SUPABASE_ANON_KEY = Get-SecretSafely $KEY_VAULT_NAME "supabase-anon-key"
-    $env:SUPABASE_JWT_SECRET = Get-SecretSafely $KEY_VAULT_NAME "supabase-jwt-secret"
-    $env:SUPABASE_SERVICE_ROLE_KEY = Get-SecretSafely $KEY_VAULT_NAME "supabase-service-role-key"
-    $env:NANGO_BASE_URL = "https://api.nango.dev"
-    $env:NANGO_SECRET_KEY = Get-SecretSafely $KEY_VAULT_NAME "nango-secret-key"
+    # Only fetch secrets that are not already set
+    if (-not $env:AZURE_OPENAI_API_KEY) {
+        $env:AZURE_OPENAI_API_KEY = Get-SecretSafely $KEY_VAULT_NAME "azure-openai-api-key"
+    }
+    if (-not $env:AZURE_EMBEDDER_OPENAI_API_KEY) {
+        $env:AZURE_EMBEDDER_OPENAI_API_KEY = Get-SecretSafely $KEY_VAULT_NAME "azure-embedder-openai-api-key"
+    }
+    if (-not $env:DATABASE_PASSWORD) {
+        $env:DATABASE_PASSWORD = Get-SecretSafely $KEY_VAULT_NAME "database-password"
+    }
+    if (-not $env:REDIS_PASSWORD) {
+        $env:REDIS_PASSWORD = Get-SecretSafely $KEY_VAULT_NAME "redis-password"
+    }
+    if (-not $env:RESEND_API_KEY) {
+        $env:RESEND_API_KEY = Get-SecretSafely $KEY_VAULT_NAME "resend-api-key"
+    }
+    if (-not $env:SUPABASE_ANON_KEY) {
+        $env:SUPABASE_ANON_KEY = Get-SecretSafely $KEY_VAULT_NAME "supabase-anon-key"
+    }
+    if (-not $env:SUPABASE_JWT_SECRET) {
+        $env:SUPABASE_JWT_SECRET = Get-SecretSafely $KEY_VAULT_NAME "supabase-jwt-secret"
+    }
+    if (-not $env:SUPABASE_SERVICE_ROLE_KEY) {
+        $env:SUPABASE_SERVICE_ROLE_KEY = Get-SecretSafely $KEY_VAULT_NAME "supabase-service-role-key"
+    }
+    if (-not $env:NANGO_SECRET_KEY) {
+        $env:NANGO_SECRET_KEY = Get-SecretSafely $KEY_VAULT_NAME "nango-secret-key"
+    }
 
-    Write-Success "Secrets retrieved from Key Vault and configuration set"
+    Write-Success "Secrets configuration complete"
 }
 
 function Deploy-WithHelm {
@@ -332,6 +411,8 @@ function Deploy-WithHelm {
         "--set", "deal-worker.autoscaling.enabled=true",
         "--set", "deal-beat.image.repository=$lightRepo",
         "--set", "deal-beat.image.tag=$IMAGE_TAG",
+        "--set", "integrations-beat.image.repository=$integrationsRepo",
+        "--set", "integrations-beat.image.tag=$IMAGE_TAG",
         "--set", "chat-worker.autoscaling.enabled=true",
         "--set", "api.secrets.DATABASE_HOST=$($env:DATABASE_HOST)",
         "--set", "api.secrets.DATABASE_USER=$($env:DATABASE_USER)",
@@ -362,6 +443,7 @@ function Deploy-WithHelm {
         "--set", "api.secrets.APP_NAME=$($env:APP_NAME)",
         "--set", "api.secrets.APP_URL=$($env:APP_URL)",
         "--set", "api.secrets.ADMIN_APP_URL=$($env:ADMIN_APP_URL)",
+        "--set", "api.secrets.LOG_FORMAT=json",
         "--set", "api.secrets.SUPER_ADMIN_EMAIL=$($env:SUPER_ADMIN_EMAIL)",
         "--set", "api.secrets.WEB_APP_NAME=$($env:WEB_APP_NAME)",
         "--set", "api.secrets.AZURE_EMBEDDER_OPENAI_API_KEY=$($env:AZURE_EMBEDDER_OPENAI_API_KEY)",
@@ -377,13 +459,15 @@ function Deploy-WithHelm {
         "--set", "integrations-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
         "--set", "deal-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
         "--set", "deal-beat.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
+        "--set", "integrations-beat.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
         "--set", "knowledge-extract-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
         "--set", "knowledge-upload-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
         "--set", "organization-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
         "--set", "chat-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
         "--set", "integrations-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
         "--set", "deal-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
-        "--set", "deal-beat.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)"
+        "--set", "deal-beat.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
+        "--set", "integrations-beat.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)"
     )
 
     if ($EnableFlower) {
@@ -392,6 +476,15 @@ function Deploy-WithHelm {
             "--set", "flower.enabled=true",
             "--set", "flower.ingress.enabled=false",
             "--set", "global.celery.enableEvents=true"
+        )
+    }
+
+    if ($EnableObservability) {
+        Write-Host "Observability enabled: deploying Loki + Promtail + Grafana..."
+        $helmArgs += @(
+            "--set", "loki.enabled=true",
+            "--set", "promtail.enabled=true",
+            "--set", "grafana.enabled=true"
         )
     }
 
@@ -432,6 +525,17 @@ function Deploy-WithHelm {
     kubectl rollout status deployment copilot-backend-deal-beat -n $NAMESPACE --timeout=300s
     
     Write-Success "Worker restarts completed"
+
+    if ($EnableObservability) {
+        Write-Host "Restarting observability components to apply latest values..."
+        kubectl rollout restart deployment copilot-backend-grafana -n $NAMESPACE
+        kubectl rollout restart statefulset copilot-backend-loki -n $NAMESPACE
+        kubectl rollout restart daemonset copilot-backend-promtail -n $NAMESPACE
+
+        Write-Host "Waiting for observability rollouts to complete..."
+        kubectl rollout status deployment copilot-backend-grafana -n $NAMESPACE --timeout=300s
+        kubectl rollout status statefulset copilot-backend-loki -n $NAMESPACE --timeout=300s
+    }
     
     # Verify GPU configuration was applied
     Write-Host "Verifying GPU configuration..."
@@ -498,9 +602,16 @@ function Main {
     Write-Success "Deployment completed successfully!"
 
     if ($EnableFlower) {
+        Write-Host ""
         Write-Host "Flower UI is deployed (internal). Access it from your machine with:"
-        Write-Host "kubectl port-forward -n $NAMESPACE svc/$HELM_RELEASE_NAME-flower 5555:5555"
-        Write-Host "Then open: http://localhost:5555"
+        Write-Host "  kubectl port-forward -n $NAMESPACE svc/$HELM_RELEASE_NAME-flower 5555:5555"
+        Write-Host "  Then open: http://localhost:5555"
+    }
+    if ($EnableObservability) {
+        Write-Host ""
+        Write-Host "Observability Stack is deployed. Access Grafana from your machine with:"
+        Write-Host "  kubectl port-forward -n $NAMESPACE svc/$HELM_RELEASE_NAME-grafana 3001:3000"
+        Write-Host "  Then open: http://localhost:3001 (admin/admin)"
     }
     Write-Host ""
     Write-Host "🚀 Your application should now be running with the latest changes."

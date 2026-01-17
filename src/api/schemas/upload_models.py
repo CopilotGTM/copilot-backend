@@ -7,6 +7,9 @@ from pydantic import BaseModel, Field, HttpUrl, field_validator
 from src.domain.models.organisation_tables.chat_message_models import AttachmentStatus
 from src.infra.config.configs import chat_file_upload_config
 
+# Re-export event model from infra for backwards compatibility
+from src.infra.messaging.event_models import AttachmentEventUpdate as AttachmentEventUpdate
+
 # Centralized constants for validation, sourced from the application config.
 # This makes the API schema the single source of truth for request validation.
 MAX_FILE_SIZE_BYTES = chat_file_upload_config.MAX_FILE_SIZE_BYTES
@@ -166,19 +169,3 @@ class AttachmentBatchFinalizeResult(BaseModel):
 class AttachmentBatchFinalizeResponse(BaseModel):
     results: list[AttachmentBatchFinalizeResult]
     errors: list[dict] = Field(default_factory=list)
-
-
-class AttachmentEventUpdate(BaseModel):
-    """Pydantic model matching the SSE source update payload.
-
-    Named exactly as requested: `sourceenvetupdate`.
-    """
-
-    attachment_id: str
-    status: str
-    updated_at: str | None = None
-    error_message: str | None = None
-    thumbnail_small_url: str | None = None
-
-    # Pydantic v2 config
-    model_config = {"from_attributes": True}

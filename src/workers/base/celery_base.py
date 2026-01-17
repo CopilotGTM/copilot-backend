@@ -1,9 +1,12 @@
+import logging
+from json import dumps as json_dumps
 from typing import Any
 
 from celery import Celery
-from celery.signals import task_postrun, task_prerun
+from celery.signals import task_failure, task_postrun, task_prerun
 
 from src.infra.observability.context import load_from_headers, reset_context, set_celery_context
+from src.infra.utils.logger import get_logger
 
 _signals_registered = False
 
@@ -42,6 +45,40 @@ def _register_observability_signals() -> None:
     def _task_postrun_handler(task_id=None, task=None, **kwargs):  # noqa: ARG001
         reset_context()
 
+    @task_failure.connect(weak=False)
+    def _task_failure_handler(
+        task_id=None,
+        exception=None,
+        args=None,
+        kwargs=None,
+        traceback=None,  # noqa: A002 - matches Celery signature
+        einfo=None,
+        task=None,
+        **extra,
+    ):  # noqa: ANN001, ARG001 - Celery signal signature
+        logger = get_logger("celery_task")
+        payload = {
+            "event": "celery_task_failed",
+            "task_id": str(task_id) if task_id else None,
+            "task_name": getattr(task, "name", None),
+            "args": args,
+            "kwargs": kwargs,
+            "exception": repr(exception) if exception else None,
+            "traceback": traceback,
+            "signal_extra": extra or None,
+        }
+        try:
+            message = json_dumps(payload, ensure_ascii=False, default=str)
+        except Exception:
+            message = (
+                f"celery_task_failed task_id={task_id} task_name={getattr(task, 'name', None)}"
+            )
+
+        if einfo:
+            logger.error(message)
+        else:
+            logger.error(message)
+
 
 def create_celery_app(worker_name, config, tasks_module):
     """Factory function to create a Celery app for a specific worker."""
@@ -54,6 +91,9 @@ def create_celery_app(worker_name, config, tasks_module):
         backend=config.backend_url,
         include=[tasks_module],
     )
+
+    # Reduce noisy success logs that include "errors" fields and trip dashboards.
+    logging.getLogger("celery.app.trace").setLevel(logging.WARNING)
 
     # Apply SSL options if they are present in the config
     if config.ssl_config:

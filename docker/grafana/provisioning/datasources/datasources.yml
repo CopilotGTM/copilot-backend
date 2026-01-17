@@ -1,0 +1,24 @@
+# Grafana Datasource Provisioning
+# Auto-configures Loki as the default data source
+
+apiVersion: 1
+
+datasources:
+  # Loki - Log Aggregation
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    isDefault: true
+    editable: false
+    jsonData:
+      maxLines: 1000
+      derivedFields:
+        # Link request_id for correlation
+        - name: request_id
+          matcherRegex: '"request_id":"([^"]+)"'
+          url: ''
+        - name: celery_task_id
+          matcherRegex: '"celery_task_id":"([^"]+)"'
+          url: ''

@@ -12,8 +12,8 @@ from uuid import UUID
 
 from sqlalchemy import select
 
-from src.api.dependencies.master_dependencies import acquire_master_async_session
 from src.domain.models.master_tables import Organisation, OrganisationStatus
+from src.infra.database.sessions import acquire_master_async_session
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.workers.integrations_worker.celery_app import app

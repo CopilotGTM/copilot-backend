@@ -14,10 +14,10 @@ from celery import Task
 from sqlalchemy import select
 from sqlalchemy.orm import attributes
 
-from src.api.dependencies.organisation_dependencies import acquire_org_async_session
 from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
 from src.domain.models.organisation_tables.sync.integration_models import SyncStatus
 from src.infra.config.nango_provider_mapping import to_nango_provider_key
+from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.service.integrations import NangoClient

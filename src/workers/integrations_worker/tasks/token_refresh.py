@@ -9,8 +9,7 @@ from contextlib import suppress
 
 from celery import Task
 
-from src.api.dependencies.master_dependencies import acquire_master_session
-from src.api.dependencies.organisation_dependencies import acquire_org_session
+from src.infra.database.sessions import acquire_master_session, acquire_org_session
 from src.infra.utils.logger import get_logger
 from src.service.integrations.token_refresh_service import refresh_all_expiring_tokens
 from src.workers.integrations_worker.celery_app import app

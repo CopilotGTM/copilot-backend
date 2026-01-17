@@ -55,3 +55,16 @@ dependencies:
   repository: "file://./charts/worker"
   alias: integrations-beat
   condition: integrations-beat.enabled
+# Observability Stack (Loki + Promtail + Grafana)
+- name: loki
+  version: "0.1.0"
+  repository: "file://./charts/loki"
+  condition: loki.enabled
+- name: promtail
+  version: "0.1.0"
+  repository: "file://./charts/promtail"
+  condition: promtail.enabled
+- name: grafana
+  version: "0.1.0"
+  repository: "file://./charts/grafana"
+  condition: grafana.enabled
