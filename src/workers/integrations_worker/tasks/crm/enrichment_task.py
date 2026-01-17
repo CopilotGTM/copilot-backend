@@ -37,11 +37,11 @@ def _trigger_stakeholder_sync(organisation_id: str) -> bool:
         True if task was dispatched successfully, False otherwise
     """
     try:
-        from src.workers.deal_worker.tasks.deal_mappers import (
-            sync_all_deals_stakeholders_org_task,
+        app.send_task(
+            "stakeholder.sync_all_deals_stakeholders_org",
+            args=[organisation_id],
+            queue="deal",
         )
-
-        sync_all_deals_stakeholders_org_task.delay(organisation_id)  # type: ignore[attr-defined]
         logger.info(
             "Triggered org-level stakeholder sync after CRM initial sync: org=%s",
             organisation_id,

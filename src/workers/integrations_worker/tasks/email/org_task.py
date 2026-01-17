@@ -95,9 +95,9 @@ def sync_email_org_task(
         async for session in acquire_org_async_session(org_id):
             # Query all active email integrations
             stmt = select(KnowledgeIntegration).where(
-                KnowledgeIntegration.integration_type.in_(EMAIL_INTEGRATION_TYPES),
-                KnowledgeIntegration.is_active == True,  # noqa: E712
-                KnowledgeIntegration.connection_id.isnot(None),
+                KnowledgeIntegration.integration_type.in_(EMAIL_INTEGRATION_TYPES),  # type: ignore
+                KnowledgeIntegration.is_active == True,  # noqa: E712 # type: ignore
+                KnowledgeIntegration.connection_id.isnot(None),  # type: ignore
             )
             result = await session.execute(stmt)
             integrations = result.scalars().all()
@@ -213,11 +213,11 @@ def sync_email_org_task(
 
             # Dispatch Task 3: Match emails to deals
             if total_messages > 0:
-                from src.workers.deal_worker.tasks.deal_mappers import (
-                    match_email_to_deals_org_task,
+                app.send_task(
+                    "deal.match_email_to_deals_org",
+                    args=[organisation_id],
+                    queue="deal",
                 )
-
-                match_email_to_deals_org_task.delay(organisation_id)
                 logger.info("Dispatched email matching task for org %s", org_id)
 
             return {

@@ -858,7 +858,7 @@ def build_deal_created_timeline_event(
     if deal.owner_id:
         metadata["owner_id"] = str(deal.owner_id)
     if deal.amount is not None:
-        metadata["amount"] = deal.amount
+        metadata["amount"] = float(deal.amount)
 
     return DealTimelineEvent(
         organisation_id=organisation_id,

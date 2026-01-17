@@ -37,6 +37,7 @@ from src.infra.database.sessions import (
 )
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
+from src.infra.utils.task_lock import acquire_task_lock, release_task_lock
 from src.workers.deal_worker.celery_app import app
 from src.workers.deal_worker.services.deal_mapper_services.deal_email_matcher import (
     DealEmailMatcher,
@@ -63,13 +64,15 @@ def match_email_to_deals_org_task(
     This task is typically triggered after email sync completes.
     It processes unmatched emails and matches them against active deals.
 
+    Uses Redis lock to prevent concurrent execution for the same org.
+
     Args:
         organisation_id: UUID of the organization (string)
 
     Returns:
         Dictionary with matching results:
         {
-            "status": "success" | "failed",
+            "status": "success" | "failed" | "skipped",
             "organisation_id": "...",
             "started_at": "...",
             "completed_at": "...",
@@ -80,6 +83,21 @@ def match_email_to_deals_org_task(
         }
     """
     started_at = datetime.now(UTC).isoformat()
+
+    # Acquire distributed lock to prevent concurrent execution for same org
+    lock_key = f"task_lock:match_email_to_deals_org:{organisation_id}"
+    if not acquire_task_lock(lock_key, ttl=660):  # TTL matches time_limit
+        logger.info(
+            "Task 3 (org): Skipping - another task already running for org %s",
+            organisation_id,
+        )
+        return {
+            "status": "skipped",
+            "reason": "already_running",
+            "organisation_id": organisation_id,
+            "started_at": started_at,
+            "completed_at": datetime.now(UTC).isoformat(),
+        }
 
     logger.info(
         "Task 3 (org): Matching emails to deals for org %s",
@@ -133,6 +151,8 @@ def match_email_to_deals_org_task(
             "error": str(exc),
             "error_type": type(exc).__name__,
         }
+    finally:
+        release_task_lock(lock_key)
 
 
 @app.task(
