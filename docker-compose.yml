@@ -25,35 +25,21 @@
 name: copilot-backend
 
 # =============================================================================
-# Common Security Configuration (YAML Anchors)
+# Common Security & Resource Configuration (YAML Anchors)
 # =============================================================================
-x-security-opts: &security-opts
+# Combined anchors (YAML only allows one << merge key per level)
+
+x-common-security: &common-security
   security_opt:
     - no-new-privileges:true
   cap_drop:
     - ALL
 
-x-worker-resources: &worker-resources
-  deploy:
-    resources:
-      limits:
-        cpus: '2'
-        memory: 2G
-      reservations:
-        cpus: '0.25'
-        memory: 256M
-
-x-knowledge-worker-resources: &knowledge-worker-resources
-  deploy:
-    resources:
-      limits:
-        cpus: '4'
-        memory: 8G
-      reservations:
-        cpus: '0.5'
-        memory: 1G
-
-x-api-resources: &api-resources
+x-api-service: &api-service
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
   deploy:
     resources:
       limits:
@@ -63,6 +49,34 @@ x-api-resources: &api-resources
         cpus: '0.25'
         memory: 512M
 
+x-worker-service: &worker-service
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  deploy:
+    resources:
+      limits:
+        cpus: '2'
+        memory: 2G
+      reservations:
+        cpus: '0.25'
+        memory: 256M
+
+x-knowledge-worker-service: &knowledge-worker-service
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  deploy:
+    resources:
+      limits:
+        cpus: '4'
+        memory: 8G
+      reservations:
+        cpus: '0.5'
+        memory: 1G
+
 services:
   # ---------------------------------------------------------------------------
   # Redis - Local instance (replaces Azure Redis for development)
@@ -70,7 +84,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: copilot-redis
-    <<: *security-opts
+    <<: *common-security
     ports:
       - "6379:6379"
     dns:
@@ -104,8 +118,7 @@ services:
       dockerfile: Dockerfile.local
       target: api
     container_name: copilot-api
-    <<: *security-opts
-    <<: *api-resources
+    <<: *api-service
     command: /app/.venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8080 --reload
     ports:
       - "8080:8080"
@@ -153,8 +166,7 @@ services:
       dockerfile: Dockerfile.local
       target: knowledge-worker
     container_name: copilot-knowledge-extract-worker
-    <<: *security-opts
-    <<: *knowledge-worker-resources
+    <<: *knowledge-worker-service
     dns:
       - 8.8.8.8
       - 8.8.4.4
@@ -196,8 +208,7 @@ services:
       dockerfile: Dockerfile.local
       target: knowledge-worker
     container_name: copilot-knowledge-upload-worker
-    <<: *security-opts
-    <<: *knowledge-worker-resources
+    <<: *knowledge-worker-service
     dns:
       - 8.8.8.8
       - 8.8.4.4
@@ -238,8 +249,7 @@ services:
       dockerfile: Dockerfile.local
       target: light-worker
     container_name: copilot-organization-worker
-    <<: *security-opts
-    <<: *worker-resources
+    <<: *worker-service
     dns:
       - 8.8.8.8
       - 8.8.4.4
@@ -279,8 +289,7 @@ services:
       dockerfile: Dockerfile.local
       target: light-worker
     container_name: copilot-chat-worker
-    <<: *security-opts
-    <<: *worker-resources
+    <<: *worker-service
     dns:
       - 8.8.8.8
       - 8.8.4.4
@@ -320,8 +329,7 @@ services:
       dockerfile: Dockerfile.local
       target: integrations-worker
     container_name: copilot-integrations-worker
-    <<: *security-opts
-    <<: *worker-resources
+    <<: *worker-service
     dns:
       - 8.8.8.8
       - 8.8.4.4
@@ -360,8 +368,7 @@ services:
       dockerfile: Dockerfile.local
       target: integrations-worker
     container_name: copilot-integrations-beat
-    <<: *security-opts
-    <<: *worker-resources
+    <<: *worker-service
     dns:
       - 8.8.8.8
       - 8.8.4.4
@@ -399,8 +406,7 @@ services:
       dockerfile: Dockerfile.local
       target: light-worker
     container_name: copilot-deal-worker
-    <<: *security-opts
-    <<: *worker-resources
+    <<: *worker-service
     dns:
       - 8.8.8.8
       - 8.8.4.4
@@ -439,8 +445,7 @@ services:
       dockerfile: Dockerfile.local
       target: light-worker
     container_name: copilot-deal-beat
-    <<: *security-opts
-    <<: *worker-resources
+    <<: *worker-service
     dns:
       - 8.8.8.8
       - 8.8.4.4
@@ -475,7 +480,7 @@ services:
   flower:
     image: mher/flower:latest
     container_name: copilot-flower
-    <<: *security-opts
+    <<: *common-security
     ports:
       - "5555:5555"
     environment:
@@ -500,7 +505,7 @@ services:
   loki:
     image: grafana/loki:2.9.4
     container_name: copilot-loki
-    <<: *security-opts
+    <<: *common-security
     ports:
       - "3100:3100"
     volumes:
@@ -528,7 +533,7 @@ services:
   promtail:
     image: grafana/promtail:2.9.4
     container_name: copilot-promtail
-    <<: *security-opts
+    <<: *common-security
     volumes:
       - ./docker/loki/promtail-config.yml:/etc/promtail/config.yml:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -554,7 +559,7 @@ services:
   grafana:
     image: grafana/grafana:10.3.1
     container_name: copilot-grafana
-    <<: *security-opts
+    <<: *common-security
     ports:
       - "3001:3000"
     environment:
