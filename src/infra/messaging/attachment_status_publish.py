@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from src.api.schemas.upload_models import AttachmentEventUpdate
+from src.infra.messaging.event_models import AttachmentEventUpdate
 from src.infra.messaging.publishers import RedisPublisher
 from src.infra.messaging.redis_channels import channel_for_attachment_update_status
 from src.infra.utils.logger import get_logger

@@ -36,10 +36,12 @@ from uuid import UUID
 from celery import Task
 from sqlalchemy import select
 
-from src.api.dependencies.master_dependencies import acquire_master_async_session
-from src.api.dependencies.organisation_dependencies import acquire_org_async_session
 from src.domain.models.master_tables import Organisation, OrganisationStatus
 from src.domain.models.organisation_tables.sync.timeline_models import TimelineEventType
+from src.infra.database.sessions import (
+    acquire_master_async_session,
+    acquire_org_async_session,
+)
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.service.crm.deal_timeline_service import DealTimelineService

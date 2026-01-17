@@ -4,8 +4,8 @@ from collections.abc import AsyncIterator
 
 from src.agents.base import Agent
 from src.agents.context import AgentContext
-from src.api.schemas.chat_stream_models import Frame
 from src.domain.models.organisation_tables.chat_message_models import ChatMessage
+from src.infra.messaging.chat_stream_models import Frame
 
 
 class RouterAgent(Agent):

@@ -174,7 +174,7 @@ STOPSIGNAL SIGTERM
 CMD ["uvicorn", "src.main:app", \
     "--host", "0.0.0.0", \
     "--port", "8080", \
-    "--workers", "4", \
+    "--workers", "2", \
     "--timeout-keep-alive", "75", \
     "--timeout-graceful-shutdown", "30"]
 
@@ -193,8 +193,12 @@ ENV HF_HOME=/app/.cache/huggingface \
 
 COPY --from=builder-knowledge --chown=appuser:appuser /app/.venv /app/.venv
 
-# Copy application code
-COPY --chown=appuser:appuser src/ ./src/
+# Copy application code (excluding src/api - workers don't need API layer)
+COPY --chown=appuser:appuser src/domain/ ./src/domain/
+COPY --chown=appuser:appuser src/infra/ ./src/infra/
+COPY --chown=appuser:appuser src/workers/ ./src/workers/
+COPY --chown=appuser:appuser src/service/ ./src/service/
+COPY --chown=appuser:appuser src/agents/ ./src/agents/
 COPY --chown=appuser:appuser migrations/ ./migrations/
 COPY --chown=appuser:appuser scripts/ ./scripts/
 
@@ -221,8 +225,12 @@ LABEL component="light-worker" \
 
 COPY --from=builder-light --chown=appuser:appuser /app/.venv /app/.venv
 
-# Copy application code
-COPY --chown=appuser:appuser src/ ./src/
+# Copy application code (excluding src/api - workers don't need API layer)
+COPY --chown=appuser:appuser src/domain/ ./src/domain/
+COPY --chown=appuser:appuser src/infra/ ./src/infra/
+COPY --chown=appuser:appuser src/workers/ ./src/workers/
+COPY --chown=appuser:appuser src/service/ ./src/service/
+COPY --chown=appuser:appuser src/agents/ ./src/agents/
 COPY --chown=appuser:appuser migrations/ ./migrations/
 COPY --chown=appuser:appuser scripts/ ./scripts/
 
@@ -251,8 +259,12 @@ LABEL component="integrations-worker" \
 
 COPY --from=builder-integrations --chown=appuser:appuser /app/.venv /app/.venv
 
-# Copy application code
-COPY --chown=appuser:appuser src/ ./src/
+# Copy application code (excluding src/api - workers don't need API layer)
+COPY --chown=appuser:appuser src/domain/ ./src/domain/
+COPY --chown=appuser:appuser src/infra/ ./src/infra/
+COPY --chown=appuser:appuser src/workers/ ./src/workers/
+COPY --chown=appuser:appuser src/service/ ./src/service/
+COPY --chown=appuser:appuser src/agents/ ./src/agents/
 COPY --chown=appuser:appuser migrations/ ./migrations/
 COPY --chown=appuser:appuser scripts/ ./scripts/
 

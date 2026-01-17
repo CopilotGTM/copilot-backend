@@ -17,8 +17,8 @@ from src.agents.tools.registry import get_tools_for_agent
 from src.agents.tools.transparent_tools import AgentCapabilities
 from src.agents.utils import prepare_messages
 from src.agents.workflows.general.prompts.general_prompt import get_general_prompt
-from src.api.schemas.chat_stream_models import AnswerDelta, Finalize, Frame
 from src.domain.models.organisation_tables import ChatMessage
+from src.infra.messaging.chat_stream_models import AnswerDelta, Finalize, Frame
 from src.infra.utils.logger import get_logger
 
 load_dotenv()

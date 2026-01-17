@@ -16,27 +16,32 @@
 
 param(
     [string]$DeployEnvironment = "dev",
-    [switch]$EnableFlower,
-    [switch]$EnableObservability,
-    [switch]$UseSeparatedImages,
+    [bool]$EnableFlower = $true,
+    [bool]$EnableObservability = $true,
+    [bool]$UseSeparatedImages = $true,
+    [bool]$UseFullImageForWorkers = $false,
+    [bool]$UseFullImageForApi = $false,
     [switch]$Help
 )
 
 # Show usage if help is requested
 if ($Help) {
-    Write-Host "Usage: .\local-deploy.ps1 [-DeployEnvironment <env>] [-EnableFlower] [-EnableObservability] [-Help]"
+    Write-Host "Usage: .\local-deploy.ps1 [-DeployEnvironment <env>] [-EnableFlower <bool>] [-EnableObservability <bool>] [-UseSeparatedImages <bool>] [-Help]"
     Write-Host ""
     Write-Host "Parameters:"
     Write-Host "  -DeployEnvironment    Target environment (default: dev)"
-    Write-Host "  -EnableFlower         Deploy Flower UI and enable Celery events (internal access via port-forward)"
-    Write-Host "  -EnableObservability  Deploy Loki + Promtail + Grafana for log observability (port-forward access)"
+    Write-Host "  -EnableFlower         Deploy Flower UI and enable Celery events (default: true)"
+    Write-Host "  -EnableObservability  Deploy Loki + Promtail + Grafana for log observability (default: true)"
+    Write-Host "  -UseSeparatedImages   Build separate images per component (default: true, matches pipeline)"
+    Write-Host "  -UseFullImageForWorkers Build worker images using the 'full' target to include API deps (default: false)"
+    Write-Host "  -UseFullImageForApi   Build API image using the 'full' target (default: false)"
     Write-Host "  -Help                 Show this help message"
     Write-Host ""
     Write-Host "Example:"
-    Write-Host "  .\local-deploy.ps1                        # Deploy to dev environment"
-    Write-Host "  .\local-deploy.ps1 -EnableFlower          # Deploy Flower UI (internal)"
-    Write-Host "  .\local-deploy.ps1 -EnableObservability   # Deploy Grafana/Loki observability stack"
-    Write-Host "  .\local-deploy.ps1 -EnableFlower -EnableObservability  # Deploy both"
+    Write-Host "  .\local-deploy.ps1                              # Deploy with all features enabled"
+    Write-Host "  .\local-deploy.ps1 -EnableFlower `$false         # Deploy without Flower UI"
+    Write-Host "  .\local-deploy.ps1 -EnableObservability `$false  # Deploy without observability stack"
+    Write-Host "  .\local-deploy.ps1 -UseSeparatedImages `$false   # Use legacy single image"
     exit 0
 }
 
@@ -215,11 +220,24 @@ function Build-AndPushImage {
     # Separated images: build Dockerfile targets and push to distinct repositories
     Write-Host "Building separated images (Dockerfile targets) with tag: $IMAGE_TAG"
 
+    $apiTarget = if ($UseFullImageForApi) { "full" } else { "api" }
+    $knowledgeTarget = if ($UseFullImageForWorkers) { "full" } else { "knowledge-worker" }
+    $lightWorkerTarget = if ($UseFullImageForWorkers) { "full" } else { "light-worker" }
+    $integrationsTarget = if ($UseFullImageForWorkers) { "full" } else { "integrations-worker" }
+
+    if ($UseFullImageForApi) {
+        Write-Warning "Using 'full' image target for API to include async Key Vault deps (aiohttp) in local deploy."
+    }
+
+    if ($UseFullImageForWorkers) {
+        Write-Warning "Using 'full' image target for workers to ensure API deps (fastapi) are present."
+    }
+
     $repoToTarget = @(
-        @{ Repo = $API_IMAGE_REPOSITORY; Target = "api" },
-        @{ Repo = $KNOWLEDGE_IMAGE_REPOSITORY; Target = "knowledge-worker" },
-        @{ Repo = $LIGHT_IMAGE_REPOSITORY; Target = "light-worker" },
-        @{ Repo = $INTEGRATIONS_IMAGE_REPOSITORY; Target = "integrations-worker" }
+        @{ Repo = $API_IMAGE_REPOSITORY; Target = $apiTarget },
+        @{ Repo = $KNOWLEDGE_IMAGE_REPOSITORY; Target = $knowledgeTarget },
+        @{ Repo = $LIGHT_IMAGE_REPOSITORY; Target = $lightWorkerTarget },
+        @{ Repo = $INTEGRATIONS_IMAGE_REPOSITORY; Target = $integrationsTarget }
     )
 
     foreach ($item in $repoToTarget) {
@@ -425,6 +443,7 @@ function Deploy-WithHelm {
         "--set", "api.secrets.APP_NAME=$($env:APP_NAME)",
         "--set", "api.secrets.APP_URL=$($env:APP_URL)",
         "--set", "api.secrets.ADMIN_APP_URL=$($env:ADMIN_APP_URL)",
+        "--set", "api.secrets.LOG_FORMAT=json",
         "--set", "api.secrets.SUPER_ADMIN_EMAIL=$($env:SUPER_ADMIN_EMAIL)",
         "--set", "api.secrets.WEB_APP_NAME=$($env:WEB_APP_NAME)",
         "--set", "api.secrets.AZURE_EMBEDDER_OPENAI_API_KEY=$($env:AZURE_EMBEDDER_OPENAI_API_KEY)",
@@ -506,6 +525,17 @@ function Deploy-WithHelm {
     kubectl rollout status deployment copilot-backend-deal-beat -n $NAMESPACE --timeout=300s
     
     Write-Success "Worker restarts completed"
+
+    if ($EnableObservability) {
+        Write-Host "Restarting observability components to apply latest values..."
+        kubectl rollout restart deployment copilot-backend-grafana -n $NAMESPACE
+        kubectl rollout restart statefulset copilot-backend-loki -n $NAMESPACE
+        kubectl rollout restart daemonset copilot-backend-promtail -n $NAMESPACE
+
+        Write-Host "Waiting for observability rollouts to complete..."
+        kubectl rollout status deployment copilot-backend-grafana -n $NAMESPACE --timeout=300s
+        kubectl rollout status statefulset copilot-backend-loki -n $NAMESPACE --timeout=300s
+    }
     
     # Verify GPU configuration was applied
     Write-Host "Verifying GPU configuration..."

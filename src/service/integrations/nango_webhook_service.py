@@ -13,10 +13,6 @@ from uuid import UUID
 
 from fastapi.responses import JSONResponse
 from sqlalchemy import desc, select
-from src.api.dependencies.master_dependencies import acquire_master_async_session
-from src.api.dependencies.organisation_dependencies import (
-    acquire_org_async_session,
-)
 from src.api.utils.http_response import Response
 from src.domain.models.master_tables import (
     OrganisationIntegrationDetails,
@@ -27,6 +23,10 @@ from src.domain.models.organisation_tables.sync import (
     IntegrationScope,
     IntegrationType,
     KnowledgeIntegration,
+)
+from src.infra.database.sessions import (
+    acquire_master_async_session,
+    acquire_org_async_session,
 )
 from src.infra.utils.logger import get_logger
 from src.service.integrations import NangoClient

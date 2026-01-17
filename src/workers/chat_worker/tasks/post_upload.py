@@ -2,15 +2,15 @@ from __future__ import annotations
 
 import contextlib
 
-from src.api.dependencies.organisation_dependencies import acquire_org_session
-from src.api.schemas.upload_models import AttachmentEventUpdate
 from src.domain.models.organisation_tables.chat_message_models import (
     Attachment,
     AttachmentStatus,
 )
 from src.infra.config.configs import thumbnail_config
+from src.infra.database.sessions import acquire_org_session
 from src.infra.media.thumbnail_generator import generate_thumbnails
 from src.infra.messaging.attachment_status_publish import publish_attachment_status
+from src.infra.messaging.event_models import AttachmentEventUpdate
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger

@@ -19,14 +19,14 @@ from src.api.schemas.crm_models import (
 from src.api.utils.http_response import Response
 from src.domain.models.organisation_tables.job_models import DealJobType, JobStatus
 from src.infra.utils.logger import get_logger
-from src.service.crm import (
-    MeetingsService,
-    MeetingsServiceError,
-)
 from src.service.crm.deal_job_sse_service import DealJobSSEService
 from src.service.crm.deal_meeting_job_service import (
     DealMeetingJobService,
     DealMeetingJobServiceError,
+)
+from src.service.crm.meetings_service import (
+    MeetingsService,
+    MeetingsServiceError,
 )
 from sse_starlette.sse import EventSourceResponse
 

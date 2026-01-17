@@ -28,8 +28,8 @@ from uuid import UUID
 
 from celery import Task
 
-from src.api.dependencies.organisation_dependencies import acquire_org_async_session
 from src.domain.models.organisation_tables.job_models import DealJobs, JobStatus
+from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.workers.deal_worker.celery_app import app

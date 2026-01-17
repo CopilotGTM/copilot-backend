@@ -8,8 +8,8 @@ if TYPE_CHECKING:
     from src.agents.context import AgentContext
 
 from src.agents.models import ChatAgentOutput
-from src.api.schemas.chat_stream_models import Frame
 from src.domain.models.organisation_tables.chat_message_models import ChatMessage
+from src.infra.messaging.chat_stream_models import Frame
 
 
 class Agent(ABC):
@@ -22,6 +22,6 @@ class Agent(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def run_stream(self, message_list: list[ChatMessage]) -> AsyncIterator[Frame]:
+    def run_stream(self, message_list: list[ChatMessage]) -> AsyncIterator[Frame]:
         """Run the agent and stream back frames."""
         ...

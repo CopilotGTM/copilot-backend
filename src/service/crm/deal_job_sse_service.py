@@ -11,8 +11,8 @@ import json
 from collections.abc import AsyncGenerator
 from uuid import UUID
 
-from src.api.dependencies.organisation_dependencies import acquire_org_async_session
 from src.domain.models.organisation_tables.job_models import DealJobs, JobStatus
+from src.infra.database.sessions import acquire_org_async_session
 from src.infra.messaging.redis_channels import channel_for_deal_job
 from src.infra.messaging.redis_streams import AsyncRedisStreams
 from src.infra.utils.logger import get_logger

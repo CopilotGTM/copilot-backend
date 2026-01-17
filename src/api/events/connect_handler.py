@@ -3,10 +3,10 @@ from uuid import UUID
 
 from socketio.exceptions import ConnectionRefusedError
 from sqlmodel import select
-from src.api.dependencies.master_dependencies import acquire_master_session
 from src.api.events.socket_app import sio
 from src.domain.models.authentication import Authentication
 from src.domain.models.master_tables import User
+from src.infra.database.sessions import acquire_master_session
 from src.infra.utils.logger import get_logger
 from starlette.concurrency import run_in_threadpool
 

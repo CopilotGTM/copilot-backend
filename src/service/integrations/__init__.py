@@ -11,9 +11,12 @@ This module provides services for:
 from .calendar_sync_service import CalendarSyncService
 from .integration_service import IntegrationService
 from .nango_client import NangoClient
-from .nango_webhook_service import NangoWebhookService, webhook_service
 from .token_refresh_service import TokenRefreshService
 
+# Note: NangoWebhookService is intentionally NOT exported here because it has
+# FastAPI dependencies. Workers should not depend on FastAPI. Import directly
+# if needed: from src.service.integrations.nango_webhook_service import ...
+#
 # Note: DealChannelMessagesService is intentionally NOT exported here to avoid
 # circular imports. The service imports from workers/providers, and workers/tasks
 # imports back from service. Import directly from the module if needed:
@@ -23,7 +26,5 @@ __all__ = [
     "NangoClient",
     "IntegrationService",
     "TokenRefreshService",
-    "NangoWebhookService",
-    "webhook_service",
     "CalendarSyncService",
 ]

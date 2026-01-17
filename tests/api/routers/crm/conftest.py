@@ -1494,7 +1494,7 @@ class FakeMeetingsService:
 
     async def update_meeting_status(self, deal_id: UUID, event_id: UUID, status: str):
         """Update meeting status."""
-        from src.service.crm import MeetingsServiceError
+        from src.service.crm.meetings_service import MeetingsServiceError
 
         meeting = self._meeting_by_event.get(event_id)
         if not meeting or meeting.deal_id != deal_id:

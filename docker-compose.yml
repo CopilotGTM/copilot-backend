@@ -49,6 +49,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.local
+      target: api
     container_name: copilot-api
     command: /app/.venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8080 --reload
     ports:
@@ -95,6 +96,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.local
+      target: knowledge-worker
     container_name: copilot-knowledge-extract-worker
     dns:
       - 8.8.8.8
@@ -124,7 +126,7 @@ services:
         condition: service_healthy
     networks:
       - copilot-network
-    profiles: ["knowledge"]
+    # profiles: ["knowledge"]
 
   # ---------------------------------------------------------------------------
   # Knowledge Upload Worker
@@ -133,6 +135,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.local
+      target: knowledge-worker
     container_name: copilot-knowledge-upload-worker
     dns:
       - 8.8.8.8
@@ -162,7 +165,7 @@ services:
         condition: service_healthy
     networks:
       - copilot-network
-    profiles: ["knowledge"]
+    # profiles: ["knowledge"]
 
   # ---------------------------------------------------------------------------
   # Organization Worker
@@ -171,6 +174,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.local
+      target: light-worker
     container_name: copilot-organization-worker
     dns:
       - 8.8.8.8
@@ -200,7 +204,7 @@ services:
         condition: service_healthy
     networks:
       - copilot-network
-    profiles: ["organization"]
+    # profiles: ["organization"]
 
   # ---------------------------------------------------------------------------
   # Chat Worker (handles attachments, chat_processing, chat_messages)
@@ -209,6 +213,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.local
+      target: light-worker
     container_name: copilot-chat-worker
     dns:
       - 8.8.8.8
@@ -238,7 +243,7 @@ services:
         condition: service_healthy
     networks:
       - copilot-network
-    # profiles: ["chat"]
+    profiles: ["chat"]
 
   # ---------------------------------------------------------------------------
   # Integrations Worker (handles CRM/third-party sync)
@@ -247,6 +252,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.local
+      target: integrations-worker
     container_name: copilot-integrations-worker
     dns:
       - 8.8.8.8
@@ -284,6 +290,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.local
+      target: integrations-worker
     container_name: copilot-integrations-beat
     dns:
       - 8.8.8.8
@@ -311,7 +318,7 @@ services:
         condition: service_healthy
     networks:
       - copilot-network
-    profiles: ["integrations"]
+    # profiles: ["integrations"]
   # ---------------------------------------------------------------------------
   # Deal Worker (handles deal-meeting matching, email matching, stakeholders)
   # ---------------------------------------------------------------------------
@@ -319,6 +326,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.local
+      target: light-worker
     container_name: copilot-deal-worker
     dns:
       - 8.8.8.8
@@ -356,6 +364,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.local
+      target: light-worker
     container_name: copilot-deal-beat
     dns:
       - 8.8.8.8
@@ -383,7 +392,7 @@ services:
         condition: service_healthy
     networks:
       - copilot-network
-    profiles: ["chat"]
+    # profiles: ["chat"]
   # ---------------------------------------------------------------------------
   # Flower - Celery Monitoring UI (Optional)
   # ---------------------------------------------------------------------------
@@ -400,8 +409,8 @@ services:
         condition: service_healthy
     networks:
       - copilot-network
-    profiles:
-      - monitoring
+    # profiles:
+    #   - monitoring
 
   # ---------------------------------------------------------------------------
   # Loki - Log Aggregation (collects and stores logs)
@@ -422,8 +431,8 @@ services:
       retries: 5
     networks:
       - copilot-network
-    profiles:
-      - monitoring
+    # profiles:
+    #   - monitoring
 
   # ---------------------------------------------------------------------------
   # Promtail - Log Shipper (collects Docker logs and sends to Loki)
@@ -441,8 +450,8 @@ services:
         condition: service_healthy
     networks:
       - copilot-network
-    profiles:
-      - monitoring
+    # profiles:
+    #   - monitoring
 
   # ---------------------------------------------------------------------------
   # Grafana - Visualization & Dashboards
@@ -468,8 +477,8 @@ services:
         condition: service_healthy
     networks:
       - copilot-network
-    profiles:
-      - monitoring
+    # profiles:
+    #   - monitoring
 
 # =============================================================================
 # Networks

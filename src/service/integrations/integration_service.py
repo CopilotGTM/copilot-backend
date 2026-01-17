@@ -11,7 +11,6 @@ from uuid import UUID
 
 from sqlalchemy import Boolean, and_, cast, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from src.api.dependencies.organisation_dependencies import UserIDs
 from src.domain.models.organisation_tables.sync import (
     IntegrationScope,
     IntegrationType,
@@ -19,6 +18,7 @@ from src.domain.models.organisation_tables.sync import (
     MessagingChannel,
     MessagingDealLink,
 )
+from src.infra.auth.user_context import UserIDs
 from src.infra.config.nango_provider_mapping import (
     to_nango_connect_integration_key,
 )

@@ -7,9 +7,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.agents.context import AgentContext
 from src.agents.registry import resolve_agent
-from src.api.schemas.chat_stream_models import Frame
 from src.domain.models.organisation_tables.chat_message_models import ChatMessage
 from src.domain.models.organisation_tables.chat_session_models import ChatType
+from src.infra.messaging.chat_stream_models import Frame
 
 
 async def run_agent_for_chat(

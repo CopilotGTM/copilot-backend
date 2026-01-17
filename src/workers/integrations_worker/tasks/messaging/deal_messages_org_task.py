@@ -26,7 +26,7 @@ from uuid import UUID
 
 from celery import Task
 
-from src.api.dependencies.organisation_dependencies import acquire_org_async_session
+from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.service.integrations.deal_channel_messages_service import (

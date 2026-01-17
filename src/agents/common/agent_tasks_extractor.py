@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
-from src.api.schemas.chat_stream_models import TaskItem, TaskListFrame, TaskUpdate
+from src.infra.messaging.chat_stream_models import TaskItem, TaskListFrame, TaskUpdate
 from src.infra.utils.logger import get_logger
 
 logger = get_logger()

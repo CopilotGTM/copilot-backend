@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.api.dependencies.organisation_dependencies import UserIDs
 from src.api.schemas.integrations import OAuthInitiateResponse
 from src.domain.models.master_tables import User
 from src.domain.models.organisation_tables.sync import IntegrationType
+from src.infra.auth.user_context import UserIDs
 from src.infra.config.integrations_metadata import (
     AvailabilityStatus,
     IntegrationMetadata,

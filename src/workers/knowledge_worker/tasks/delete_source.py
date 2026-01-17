@@ -16,13 +16,13 @@ from __future__ import annotations
 import contextlib
 from datetime import UTC, datetime
 
-from src.api.dependencies.organisation_dependencies import acquire_org_session
-from src.api.schemas.knowledge_upload_models import KnowledgeSourceEventUpdate
 from src.domain.models.organisation_tables.job_models import (
     JobStatus,
     KnowledgeProcessingJob,
 )
 from src.domain.models.organisation_tables.knowledge_models import OrganisationSource
+from src.infra.database.sessions import acquire_org_session
+from src.infra.messaging.event_models import KnowledgeSourceEventUpdate
 from src.infra.messaging.knowledge_source_status_publish import publish_source_status
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
 from src.infra.utils.async_runner import run_async

@@ -1,8 +1,10 @@
 """Organisation-level database session dependencies (sync + async).
 
-Centralizes acquisition of organisation (tenant) database sessions for both
-sync and async contexts, backed by provider singletons. Use the sync or async
-variant that matches your endpoint/service.
+FastAPI-specific dependencies that wrap the core session functions from infra.
+Use get_org_session/get_org_async_session in FastAPI endpoints with authentication.
+
+For non-FastAPI code (workers, services), import directly from:
+    from src.infra.database.sessions import acquire_org_session, acquire_org_async_session
 """
 
 from __future__ import annotations
@@ -11,24 +13,19 @@ from collections.abc import AsyncGenerator, AsyncIterator, Iterator
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, status
-from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
-from src.domain.models.authentication import Authentication
 from src.domain.models.master_tables import User
 from src.infra.auth.user_auth import user_auth
-from src.infra.database.factory import get_async_provider, get_sync_provider
 
-auth = Authentication()
-
-
-class UserIDs(BaseModel):
-    """A Pydantic model to hold user and organisation IDs for type safety."""
-
-    user_id: UUID
-    organisation_id: UUID
-    user_name: str | None = None
-    user_email: str | None = None
+# Import core functions from infra (no FastAPI dependencies)
+from src.infra.auth.user_context import UserIDs as UserIDs
+from src.infra.database.sessions import (
+    acquire_org_async_session as _acquire_org_async_session,
+)
+from src.infra.database.sessions import (
+    acquire_org_session as _acquire_org_session,
+)
 
 
 def get_current_user(user: User = Depends(user_auth)) -> UserIDs:
@@ -52,14 +49,7 @@ def get_current_user(user: User = Depends(user_auth)) -> UserIDs:
     )
 
 
-# ---- SYNC ----
-
-
-def _sync_org_session_gen(organisation_id: UUID) -> Iterator[Session]:
-    """Generator function that yields a synchronous organisation database session."""
-    provider = get_sync_provider()
-    with provider.tenant_session(str(organisation_id)) as session:  # type: ignore
-        yield session
+# ---- SYNC FastAPI Dependencies ----
 
 
 def get_org_session(user_ids: UserIDs = Depends(get_current_user)) -> Iterator[Session]:
@@ -67,22 +57,10 @@ def get_org_session(user_ids: UserIDs = Depends(get_current_user)) -> Iterator[S
 
     Use in endpoint signatures: `session: Session = Depends(get_org_session)`.
     """
-    yield from _sync_org_session_gen(user_ids.organisation_id)
+    yield from _acquire_org_session(user_ids.organisation_id)
 
 
-def acquire_org_session(organisation_id: UUID) -> Iterator[Session]:
-    """Imperative helper for sync code outside FastAPI dependency system."""
-    return _sync_org_session_gen(organisation_id)
-
-
-# ---- ASYNC ----
-
-
-async def _async_org_session_gen(organisation_id: UUID) -> AsyncIterator[AsyncSession]:
-    """Generator function that yields an asynchronous organisation database session."""
-    provider = get_async_provider()
-    async with provider.tenant_session(str(organisation_id)) as session:  # type: ignore
-        yield session
+# ---- ASYNC FastAPI Dependencies ----
 
 
 async def get_org_async_session(
@@ -92,19 +70,26 @@ async def get_org_async_session(
 
     Use in endpoint signatures: `session: AsyncSession = Depends(get_org_async_session)`.
     """
-    async for s in _async_org_session_gen(user_ids.organisation_id):
+    async for s in _acquire_org_async_session(user_ids.organisation_id):
         yield s
+
+
+# ---- Re-exports for backwards compatibility ----
+# NOTE: For new code, import from src.infra.database.sessions instead
+
+
+def acquire_org_session(organisation_id: UUID) -> Iterator[Session]:
+    """Acquire a sync org session. For new code, use src.infra.database.sessions."""
+    return _acquire_org_session(organisation_id)
 
 
 async def acquire_org_async_session(
     organisation_id: UUID,
 ) -> AsyncGenerator[AsyncSession, None]:
-    """Imperative helper for async code outside FastAPI dependency system."""
-    async for s in _async_org_session_gen(organisation_id):
+    """Acquire an async org session. For new code, use src.infra.database.sessions."""
+    async for s in _acquire_org_async_session(organisation_id):
         yield s
 
-
-# ---- __all__ ----
 
 __all__ = [
     "get_org_session",

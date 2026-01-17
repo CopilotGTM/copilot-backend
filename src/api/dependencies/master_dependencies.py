@@ -1,8 +1,10 @@
 """Master-level database session dependencies (sync + async).
 
-Centralizes acquisition of master (shared/public) database sessions for both
-sync and async contexts, backed by provider singletons. Use the sync or async
-variant that matches your endpoint/service.
+FastAPI-specific dependencies that wrap the core session functions from infra.
+Use get_master_session/get_master_async_session in FastAPI endpoints.
+
+For non-FastAPI code (workers, services), import directly from:
+    from src.infra.database.sessions import acquire_master_session
 """
 
 from __future__ import annotations
@@ -11,16 +13,14 @@ from collections.abc import AsyncGenerator, Generator
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
-from src.infra.database.factory import get_async_provider, get_sync_provider
 
-
-def _sync_master_session_gen() -> Generator[Session, None, None]:
-    """Generator function that yields a synchronous master database session."""
-    # Retrieve the synchronous database provider
-    provider = get_sync_provider()
-    # Open a new session and yield it to the caller
-    with provider.master_session() as session:
-        yield session
+# Import core functions from infra (no FastAPI dependencies)
+from src.infra.database.sessions import (
+    acquire_master_async_session as _acquire_master_async_session,
+)
+from src.infra.database.sessions import (
+    acquire_master_session as _acquire_master_session,
+)
 
 
 def get_master_session() -> Generator[Session, None, None]:
@@ -28,23 +28,7 @@ def get_master_session() -> Generator[Session, None, None]:
 
     Use in endpoint signatures: `session: Session = Depends(get_master_session)`.
     """
-    # Delegate to the generator function to yield the session
-    yield from _sync_master_session_gen()
-
-
-def acquire_master_session() -> Generator[Session, None, None]:
-    """Imperative helper for sync code outside FastAPI dependency system."""
-    # Return the generator for manual iteration
-    return _sync_master_session_gen()
-
-
-async def _async_master_session_gen() -> AsyncGenerator[AsyncSession, None]:
-    """Generator function that yields an asynchronous master database session."""
-    # Retrieve the asynchronous database provider
-    provider = get_async_provider()
-    # Open a new async session and yield it to the caller
-    async with provider.master_session() as session:
-        yield session
+    yield from _acquire_master_session()
 
 
 async def get_master_async_session() -> AsyncGenerator[AsyncSession, None]:
@@ -52,18 +36,22 @@ async def get_master_async_session() -> AsyncGenerator[AsyncSession, None]:
 
     Use in endpoint signatures: `session: AsyncSession = Depends(get_master_async_session)`.
     """
-    # Asynchronously iterate over the generator and yield the session
-    async for s in _async_master_session_gen():
+    async for s in _acquire_master_async_session():
         yield s
 
 
+# Re-export for backwards compatibility
+# NOTE: For new code, import from src.infra.database.sessions instead
+def acquire_master_session() -> Generator[Session, None, None]:
+    """Acquire a sync master session. For new code, use src.infra.database.sessions."""
+    return _acquire_master_session()
+
+
 def acquire_master_async_session() -> AsyncGenerator[AsyncSession, None]:
-    """Imperative helper for async code outside FastAPI dependency system."""
-    # Return the async generator for manual iteration
-    return _async_master_session_gen()
+    """Acquire an async master session. For new code, use src.infra.database.sessions."""
+    return _acquire_master_async_session()
 
 
-# A list of all public members of this module
 __all__ = [
     "get_master_session",
     "acquire_master_session",

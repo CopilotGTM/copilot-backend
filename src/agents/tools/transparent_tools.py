@@ -11,7 +11,7 @@ from collections.abc import Callable
 from typing import Any
 from uuid import uuid4
 
-from src.api.schemas.chat_stream_models import ProgressUpdate, ThinkingUpdate, ToolUsage
+from src.infra.messaging.chat_stream_models import ProgressUpdate, ThinkingUpdate, ToolUsage
 
 
 class TransparentToolManager:

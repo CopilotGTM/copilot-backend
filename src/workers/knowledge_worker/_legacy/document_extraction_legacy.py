@@ -9,7 +9,6 @@ from uuid import UUID
 
 from billiard.exceptions import TimeLimitExceeded
 from celery.exceptions import SoftTimeLimitExceeded
-from src.api.dependencies.organisation_dependencies import acquire_org_session
 from src.domain.models.organisation_tables.job_models import (
     JobStatus,
     KnowledgeProcessingJob,
@@ -18,6 +17,7 @@ from src.domain.models.organisation_tables.knowledge_models import (
     OrganisationSource,
     OrganisationSourceStatus,
 )
+from src.infra.database.sessions import acquire_org_session
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
 from src.infra.utils.logger import get_logger
 from src.workers.knowledge_worker.celery_app import app

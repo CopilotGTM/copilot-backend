@@ -7,6 +7,11 @@ from uuid import UUID
 from pydantic import BaseModel, Field, HttpUrl, field_validator
 from src.infra.config.configs import knowledge_file_upload_config
 
+# Re-export event model from infra for backwards compatibility
+from src.infra.messaging.event_models import (
+    KnowledgeSourceEventUpdate as KnowledgeSourceEventUpdate,
+)
+
 # Knowledge base specific constants (can later be moved to its own config class)
 KNOWLEDGE_MAX_FILE_SIZE_BYTES = knowledge_file_upload_config.MAX_FILE_SIZE_BYTES
 KNOWLEDGE_ALLOWED_MIMETYPES = set(knowledge_file_upload_config.ALLOWED_MIMETYPES)
@@ -100,23 +105,3 @@ class KnowledgeSourceResponse(BaseModel):
     thumbnail_medium_path: str | None = None
 
     model_config = {"from_attributes": True}
-
-
-class KnowledgeSourceEventUpdate(BaseModel):
-    """Pydantic model matching the SSE source update payload.
-
-    Named exactly as requested: `sourceenvetupdate`.
-    """
-
-    source_id: str
-    status: str
-    updated_at: str | None = None
-    error_message: str | None = None
-    progress: int | None = None
-    thumbnail_small_url: str | None = None
-    thumbnail_medium_url: str | None = None
-
-    model_config = {
-        "from_attributes": True,
-        "extra": "allow",
-    }

@@ -3,7 +3,6 @@ from __future__ import annotations
 import contextlib
 from uuid import UUID
 
-from src.api.dependencies.organisation_dependencies import acquire_org_session
 from src.domain.models.organisation_tables.job_models import (
     JobStatus,
     KnowledgeProcessingJob,
@@ -12,6 +11,7 @@ from src.domain.models.organisation_tables.knowledge_models import (
     OrganisationSource,
     OrganisationSourceStatus,
 )
+from src.infra.database.sessions import acquire_org_session
 from src.infra.media.thumbnail_generator import (
     generate_thumbnail_sas_urls,
     generate_thumbnails,

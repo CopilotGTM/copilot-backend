@@ -18,7 +18,6 @@ from migrations.migration_manager import migration_manager
 from sqlalchemy import and_, or_, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
-from src.api.dependencies.master_dependencies import acquire_master_session
 from src.domain.models.master_tables import (
     Organisation,
     OrganisationActionHistory,
@@ -31,6 +30,7 @@ from src.infra.config.configs import (
     database_config,
     secret_manager_config,
 )
+from src.infra.database.sessions import acquire_master_session
 from src.infra.utils.cursor import decode_cursor, encode_cursor
 from src.infra.utils.logger import get_logger
 from src.infra.utils.resource_naming import (
