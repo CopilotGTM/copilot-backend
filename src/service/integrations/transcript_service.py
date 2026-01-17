@@ -13,6 +13,7 @@ Usage:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -20,7 +21,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync.calendar import CalendarEvent
-from src.domain.models.organisation_tables.sync.integration_models import KnowledgeIntegration
+from src.domain.models.organisation_tables.sync.integration_models import (
+    IntegrationType,
+    KnowledgeIntegration,
+)
 from src.domain.models.organisation_tables.sync.meeting_intelligence import (
     Meeting,
     MeetingSource,
@@ -31,6 +35,16 @@ from src.infra.utils.logger import get_logger
 from src.service.integrations.nango_client import NangoClient
 
 logger = get_logger(__name__)
+
+
+@dataclass
+class TranscriptFetchResult:
+    """Result of a transcript fetch attempt."""
+
+    success: bool
+    meeting: Meeting | None = None
+    error: str | None = None
+    should_retry_other_integration: bool = False
 
 
 class TranscriptService:
@@ -147,6 +161,264 @@ class TranscriptService:
             Meeting or None
         """
         return await self._get_existing_meeting(event_id)
+
+    async def find_integration_by_email(self, email: str) -> KnowledgeIntegration | None:
+        """
+        Find an active calendar integration by email address.
+
+        Args:
+            email: Email address to search for
+
+        Returns:
+            KnowledgeIntegration or None
+        """
+        if not email:
+            return None
+
+        stmt = select(KnowledgeIntegration).where(
+            col(KnowledgeIntegration.organisation_id) == self.organisation_id,
+            col(KnowledgeIntegration.integration_email) == email.lower(),
+            col(KnowledgeIntegration.is_active) == True,  # noqa: E712
+            col(KnowledgeIntegration.integration_type).in_(
+                [
+                    IntegrationType.OUTLOOK_CALENDAR,
+                    IntegrationType.GOOGLE_CALENDAR,
+                ]
+            ),
+            col(KnowledgeIntegration.connection_id).isnot(None),
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().first()
+
+    async def find_integrations_for_event(self, event: CalendarEvent) -> list[KnowledgeIntegration]:
+        """
+        Find all integrations that could potentially fetch transcript for an event.
+
+        Returns integrations in priority order:
+        1. Meeting organizer's integration (if available)
+        2. Other attendees' integrations
+
+        Args:
+            event: The calendar event
+
+        Returns:
+            List of integrations to try, in priority order
+        """
+        integrations: list[KnowledgeIntegration] = []
+        seen_emails: set[str] = set()
+
+        # Priority 1: Try organizer's integration
+        if event.organiser_email:
+            organizer_email = event.organiser_email.lower()
+            organizer_integration = await self.find_integration_by_email(organizer_email)
+            if organizer_integration:
+                integrations.append(organizer_integration)
+                seen_emails.add(organizer_email)
+                logger.debug(
+                    "Found organizer integration for event %s: %s",
+                    event.event_id,
+                    organizer_email,
+                )
+
+        # Priority 2: Try event's default integration (the one that synced it)
+        if event.integration_id:
+            default_integration = await self._get_integration(event.integration_id)
+            if default_integration and default_integration.connection_id:
+                email = (default_integration.integration_email or "").lower()
+                if email not in seen_emails:
+                    integrations.append(default_integration)
+                    seen_emails.add(email)
+
+        # Priority 3: Try attendees' integrations
+        if hasattr(event, "attendees") and event.attendees:
+            for attendee in event.attendees:
+                if not attendee.email:
+                    continue
+                attendee_email = attendee.email.lower()
+                if attendee_email in seen_emails:
+                    continue
+
+                attendee_integration = await self.find_integration_by_email(attendee_email)
+                if attendee_integration:
+                    integrations.append(attendee_integration)
+                    seen_emails.add(attendee_email)
+
+        return integrations
+
+    async def try_fetch_with_integration(
+        self,
+        event: CalendarEvent,
+        integration: KnowledgeIntegration,
+        existing_meeting: Meeting | None = None,
+    ) -> TranscriptFetchResult:
+        """
+        Try to fetch transcript using a specific integration.
+
+        This method attempts to fetch the transcript using the given integration's
+        credentials. It returns a result indicating success, failure, or whether
+        to try another integration.
+
+        Args:
+            event: The calendar event
+            integration: The integration to use for fetching
+            existing_meeting: Existing Meeting record (if any)
+
+        Returns:
+            TranscriptFetchResult with success status and meeting
+        """
+        if not integration.connection_id:
+            return TranscriptFetchResult(
+                success=False,
+                error="Integration has no connection_id",
+                should_retry_other_integration=True,
+            )
+
+        # Check provider support
+        if event.online_meeting_provider == "teamsForBusiness":
+            return await self._try_fetch_teams_with_integration(
+                event, integration, existing_meeting
+            )
+        elif event.online_meeting_provider == "zoom":
+            return TranscriptFetchResult(
+                success=False,
+                error="Zoom transcripts not yet implemented",
+                should_retry_other_integration=False,
+            )
+        elif event.online_meeting_provider == "googleMeet":
+            return TranscriptFetchResult(
+                success=False,
+                error="Google Meet transcripts not available via API",
+                should_retry_other_integration=False,
+            )
+        else:
+            return TranscriptFetchResult(
+                success=False,
+                error=f"Unknown provider: {event.online_meeting_provider}",
+                should_retry_other_integration=False,
+            )
+
+    async def _try_fetch_teams_with_integration(
+        self,
+        event: CalendarEvent,
+        integration: KnowledgeIntegration,
+        existing_meeting: Meeting | None,
+    ) -> TranscriptFetchResult:
+        """Try to fetch Teams transcript with a specific integration."""
+        # Create or get Meeting record
+        meeting = existing_meeting
+        if not meeting:
+            meeting = Meeting(
+                organisation_id=self.organisation_id,
+                calendar_event_id=event.event_id,
+                source=MeetingSource.TEAMS_TRANSCRIPT,
+                status=MeetingStatus.FETCHING,
+            )
+            self.session.add(meeting)
+            await self.session.flush()
+        else:
+            meeting.status = MeetingStatus.FETCHING
+            await self.session.flush()
+
+        try:
+            nango = NangoClient()
+
+            # Resolve meeting ID
+            actual_meeting_id = await self._resolve_teams_meeting_id(
+                nango=nango,
+                connection_id=integration.connection_id,
+                join_url=event.conference_link,
+            )
+
+            if not actual_meeting_id:
+                # Could not resolve meeting ID - try another integration
+                logger.info(
+                    "Could not resolve Teams meeting ID with integration %s for event %s",
+                    integration.integration_email,
+                    event.event_id,
+                )
+                return TranscriptFetchResult(
+                    success=False,
+                    meeting=meeting,
+                    error="Could not resolve Teams meeting ID",
+                    should_retry_other_integration=True,
+                )
+
+            # Fetch transcript
+            transcript_data = await self._call_teams_api(
+                nango=nango,
+                connection_id=integration.connection_id,
+                online_meeting_id=actual_meeting_id,
+            )
+
+            if not transcript_data:
+                # No transcript found - could be permissions or no recording
+                logger.info(
+                    "No transcript found with integration %s for event %s",
+                    integration.integration_email,
+                    event.event_id,
+                )
+                return TranscriptFetchResult(
+                    success=False,
+                    meeting=meeting,
+                    error="No transcript found",
+                    should_retry_other_integration=True,
+                )
+
+            # Parse and save transcript
+            full_transcript, segments = self._parse_teams_transcript(
+                transcript_data, meeting.meeting_id
+            )
+
+            # Update meeting record
+            meeting.status = MeetingStatus.READY
+            meeting.full_transcript = full_transcript
+            meeting.transcript_fetched_at = datetime.now(UTC)
+            meeting.transcript_language = transcript_data.get("language")
+            meeting.source_data = {
+                **(transcript_data.get("metadata", {})),
+                "fetched_with_integration": str(integration.integration_id),
+                "fetched_with_email": integration.integration_email,
+            }
+
+            # Delete old segments if refetching
+            if existing_meeting:
+                old_segments_stmt = select(TranscriptSegment).where(
+                    col(TranscriptSegment.meeting_id) == meeting.meeting_id
+                )
+                old_result = await self.session.execute(old_segments_stmt)
+                for old_seg in old_result.scalars().all():
+                    await self.session.delete(old_seg)
+
+            # Add new segments
+            for segment in segments:
+                self.session.add(segment)
+
+            logger.info(
+                "Fetched Teams transcript for event %s using %s: %d segments, %d chars",
+                event.event_id,
+                integration.integration_email,
+                len(segments),
+                len(full_transcript),
+            )
+
+            return TranscriptFetchResult(success=True, meeting=meeting)
+
+        except Exception as e:
+            error_msg = str(e).lower()
+            # Connection/auth errors might work with another integration
+            should_retry = "connection" in error_msg or "auth" in error_msg or "403" in error_msg
+            logger.warning(
+                "Failed to fetch transcript with integration %s: %s (retry=%s)",
+                integration.integration_email,
+                str(e),
+                should_retry,
+            )
+            return TranscriptFetchResult(
+                success=False,
+                meeting=meeting,
+                error=str(e)[:500],
+                should_retry_other_integration=should_retry,
+            )
 
     # -------------------------------------------------------------------------
     # Private Methods

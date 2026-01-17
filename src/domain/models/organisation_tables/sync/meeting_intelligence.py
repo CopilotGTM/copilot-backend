@@ -31,6 +31,7 @@ from sqlalchemy import (
     Column,
     DateTime,
     Index,
+    Integer,
     Numeric,
     String,
     Text,
@@ -163,6 +164,17 @@ class Meeting(TimestampMixin, SQLModel, table=True):
     is_deleted: bool = Field(
         default=False,
         sa_column=Column(Boolean, server_default=text("false"), nullable=False),
+    )
+
+    # Transcript fetch tracking for scheduled task retry logic
+    transcript_fetch_attempts: int = Field(
+        default=0,
+        sa_column=Column(
+            Integer,
+            nullable=False,
+            server_default=text("0"),
+        ),
+        description="Number of transcript fetch attempts. Used by scheduled task to limit retries.",
     )
 
     # Relationships - Note: lazy="selectin" prevents N+1 queries

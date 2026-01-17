@@ -35,6 +35,9 @@ from src.service.crm.timeline_event_source_resolver import (
 
 logger = get_logger("deal_timeline_service")
 
+# Maximum characters for email body in API response (prevents huge payloads)
+MAX_EMAIL_BODY_LENGTH = 50000
+
 
 def _table(model: Any) -> Table:
     """Safely extract the SQLAlchemy table for a mapped model."""
@@ -278,17 +281,39 @@ class DealTimelineService:
 
         if event_type == TimelineEventType.STAGE_CHANGE.value:
             return {
-                "old_stage": metadata.get("old_stage"),
-                "new_stage": metadata.get("new_stage"),
+                # Stage transition - internal IDs (UUIDs)
+                "old_stage_id": metadata.get("old_stage_id"),
+                "new_stage_id": metadata.get("new_stage_id"),
+                # Display labels for frontend
                 "old_stage_label": metadata.get("old_stage_label"),
                 "new_stage_label": metadata.get("new_stage_label"),
+                # Legacy keys for backwards compatibility (external IDs)
+                "old_stage": metadata.get("old_stage") or metadata.get("old_stage_external_id"),
+                "new_stage": metadata.get("new_stage") or metadata.get("new_stage_external_id"),
+                # Deal context
+                "deal_name": metadata.get("deal_name"),
+                "company_name": metadata.get("company_name"),
+                "amount": metadata.get("amount"),
+                "currency": metadata.get("currency"),
+                "pipeline_name": metadata.get("pipeline_name"),
             }
 
         if event_type == TimelineEventType.DEAL_CREATED.value:
             return {
+                # Deal information
+                "deal_name": metadata.get("deal_name"),
                 "initial_stage": metadata.get("initial_stage"),
                 "pipeline_name": metadata.get("pipeline_name"),
                 "amount": metadata.get("amount"),
+                "currency": metadata.get("currency"),
+                # Company information
+                "company_name": metadata.get("company_name"),
+                "company_domain": metadata.get("company_domain"),
+                # Owner information
+                "owner_name": metadata.get("owner_name"),
+                # Primary contact
+                "primary_contact_name": metadata.get("primary_contact_name"),
+                "primary_contact_email": metadata.get("primary_contact_email"),
             }
 
         # Fallback for unknown types
@@ -352,6 +377,44 @@ class DealTimelineService:
             email_result = await self.session.execute(email_stmt)
             email = email_result.scalar_one_or_none()
 
+        # Process body content with truncation
+        body_text = None
+        body_html = None
+        body_truncated = False
+        body_length = 0
+
+        if email:
+            if email.body_text:
+                body_length = len(email.body_text)
+                if body_length > MAX_EMAIL_BODY_LENGTH:
+                    body_text = email.body_text[:MAX_EMAIL_BODY_LENGTH]
+                    body_truncated = True
+                else:
+                    body_text = email.body_text
+
+            if email.body_html:
+                html_length = len(email.body_html)
+                if html_length > MAX_EMAIL_BODY_LENGTH:
+                    body_html = email.body_html[:MAX_EMAIL_BODY_LENGTH]
+                    body_truncated = True
+                else:
+                    body_html = email.body_html
+                # Use HTML length if no text body
+                if not email.body_text:
+                    body_length = html_length
+
+        # Process attachments metadata
+        attachments_data = None
+        if email and email.has_attachments and email.attachments:
+            attachments_data = [
+                {
+                    "name": att.get("name"),
+                    "size": att.get("size"),
+                    "mime_type": att.get("mime_type"),
+                }
+                for att in email.attachments
+            ]
+
         return {
             # Preview fields
             "subject": (email.subject if email else None)
@@ -360,10 +423,24 @@ class DealTimelineService:
             "snippet": (email.snippet if email else None) or event.subtitle,
             "from_email": email.from_email if email else preview.get("from_email"),
             # Detail enrichment
+            "from_name": email.from_name if email else None,
             "to_emails": email.to_emails if email else None,
             "cc_emails": email.cc_emails if email else None,
             "thread_id": email.thread_id if email else None,
+            # Body content
+            "body_text": body_text,
+            "body_html": body_html,
+            "body_truncated": body_truncated if body_truncated else None,
+            "body_length": body_length if body_length > 0 else None,
+            # Attachments
             "has_attachments": email.has_attachments if email else None,
+            "attachments": attachments_data,
+            # Timing
+            "received_at": email.received_at.isoformat() if email and email.received_at else None,
+            "sent_at": email.sent_at.isoformat() if email and email.sent_at else None,
+            "direction": (_enum_value(email.direction) or "").upper()
+            if email and email.direction
+            else None,
         }
 
     async def _fetch_meeting_event_data(self, event: DealTimelineEvent) -> dict[str, Any]:

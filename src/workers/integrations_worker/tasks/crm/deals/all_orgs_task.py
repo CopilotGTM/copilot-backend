@@ -19,7 +19,7 @@ Architecture:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -36,9 +36,9 @@ from src.workers.integrations_worker.celery_app import app
 
 @dataclass(slots=True)
 class OrgTaskDispatch:
-    org_id: UUID
+    org_id: str  # UUID as string for JSON serialization
     status: str = "triggered"
-    task_id: UUID | None = None
+    task_id: str | None = None  # UUID as string for JSON serialization
     error: str | None = None
 
 
@@ -130,8 +130,8 @@ def sync_crm_deals_all_orgs_task() -> dict[str, Any]:
                 # Update dispatch results
                 org_tasks.append(
                     OrgTaskDispatch(
-                        org_id=organisation,
-                        task_id=UUID(task.id),
+                        org_id=str(organisation),
+                        task_id=task.id,
                     )
                 )
                 orgs_triggered += 1
@@ -149,7 +149,7 @@ def sync_crm_deals_all_orgs_task() -> dict[str, Any]:
                 )
                 org_tasks.append(
                     OrgTaskDispatch(
-                        org_id=organisation,
+                        org_id=str(organisation),
                         status="failed",
                         error=str(e),
                     )
@@ -174,7 +174,7 @@ def sync_crm_deals_all_orgs_task() -> dict[str, Any]:
                 "orgs_triggered": orgs_triggered,
                 "orgs_skipped": orgs_skipped,
             },
-            "org_tasks": org_tasks,
+            "org_tasks": [asdict(task) for task in org_tasks],
         }
 
     try:

@@ -142,7 +142,8 @@ class SyncService:
             upserted += 1
 
         # Update integration metadata
-        integration.last_synced_at = datetime.now(UTC)
+        # Use naive datetime for TIMESTAMP WITHOUT TIME ZONE column
+        integration.last_synced_at = datetime.now(UTC).replace(tzinfo=None)
         self.db.add(integration)
 
         await self.db.commit()

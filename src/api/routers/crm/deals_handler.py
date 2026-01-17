@@ -379,16 +379,18 @@ async def get_deal(
             active_jobs_data = await deal_job_service.get_active_deal_jobs_status(deal_id)
             if active_jobs_data:
                 active_deal_jobs = DealSummaryJobsStatus.model_validate(active_jobs_data)
+                logger.debug(
+                    "Active deal jobs found for deal %s: %s",
+                    deal_id,
+                    active_jobs_data,
+                )
         except Exception as jobs_err:
-            logger.debug("Could not fetch active deal jobs for %s: %s", deal_id, jobs_err)
+            logger.warning(
+                "Could not fetch active deal jobs for %s: %s", deal_id, jobs_err, exc_info=True
+            )
 
-        # Compute deal_summary_status dynamically
-        deal_summary_status = "NOT_STARTED"
+        # Get deal summary data (frontend derives status from active_deal_jobs and deal_summary_data)
         deal_summary_data = getattr(deal, "deal_summary_data", None)
-        if active_deal_jobs and active_deal_jobs.deal_summary:
-            deal_summary_status = "IN_PROGRESS"
-        elif deal_summary_data:
-            deal_summary_status = "COMPLETED"
 
         # Build streamlined response
         detail = DealDetail(
@@ -411,7 +413,6 @@ async def get_deal(
             deal_health=deal_health,
             deal_health_reason=deal_health_reason,
             time_tracked=None,  # Placeholder for future implementation
-            deal_summary_status=deal_summary_status,
             deal_summary_data=deal_summary_data,
             active_deal_jobs=active_deal_jobs,
         )

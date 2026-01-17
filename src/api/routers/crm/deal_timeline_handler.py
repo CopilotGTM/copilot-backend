@@ -15,7 +15,7 @@ from src.api.dependencies.organisation_dependencies import (
 )
 from src.api.dependencies.rate_limit import rate_limit_user_read
 from src.api.schemas.base_models import GenericResponse
-from src.api.schemas.crm_models import (
+from src.api.schemas.deal_timeline_models import (
     TimelineEvent,
     TimelinePage,
 )

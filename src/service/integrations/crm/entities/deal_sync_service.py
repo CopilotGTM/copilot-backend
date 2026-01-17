@@ -182,7 +182,9 @@ class DealSyncService(BaseSyncService[CRMDeal]):
                 integration_id=str(integration.integration_id),
             )
 
-        history_synced = await self._upsert_stage_history(integration, history_entries)
+        history_synced = await self._upsert_stage_history(
+            integration, history_entries, stage_map=stage_map
+        )
 
         result.metadata.update(
             {
@@ -400,7 +402,9 @@ class DealSyncService(BaseSyncService[CRMDeal]):
                 integration_id=str(integration.integration_id),
             )
 
-        history_synced = await self._upsert_stage_history(integration, history_entries)
+        history_synced = await self._upsert_stage_history(
+            integration, history_entries, stage_map=stage_map
+        )
 
         # Log incremental sync summary
         logger.info(
@@ -932,14 +936,43 @@ class DealSyncService(BaseSyncService[CRMDeal]):
         await self.db.commit()
         return processed
 
+    def _resolve_stage_label(
+        self,
+        stage_map: dict[str, CRMDealStage],
+        external_id: str | None,
+    ) -> tuple[str | None, str | None]:
+        """Resolve stage external_id to (internal_stage_id, display_label).
+
+        Returns:
+            Tuple of (stage_id as string, display_label)
+            Falls back to external_id for label if not found in lookup
+        """
+        if not external_id:
+            return None, None
+
+        stage = stage_map.get(external_id)
+        if stage:
+            # Use label if available, otherwise name
+            display_label = stage.label or stage.name
+            stage_id = str(stage.stage_id)
+            return stage_id, display_label
+
+        # Fallback: return external_id as label
+        return None, external_id
+
     async def _upsert_stage_history(
         self,
         integration: KnowledgeIntegration,
         history_entries: list[dict[str, Any]],
+        stage_map: dict[str, CRMDealStage] | None = None,
     ) -> int:
         """Upsert stage history entries and create timeline events."""
         if not history_entries:
             return 0
+
+        # Load stage map if not provided (for resolving labels)
+        if stage_map is None:
+            stage_map = await self._load_stage_map(integration.integration_id)
 
         now = utcnow()
         ext_ids = [entry["external_id"] for entry in history_entries if entry.get("external_id")]
@@ -1005,10 +1038,28 @@ class DealSyncService(BaseSyncService[CRMDeal]):
 
             # Create STAGE_CHANGE timeline event for new records
             if is_new_record:
+                # Resolve stage labels from stage_map
+                new_stage_id, new_stage_label = self._resolve_stage_label(
+                    stage_map, entry.get("stage_external_id")
+                )
+                old_stage_id, old_stage_label = self._resolve_stage_label(
+                    stage_map, entry.get("from_stage_external_id")
+                )
+
+                # Enrich entry with resolved labels and internal IDs
+                enriched_entry = {
+                    **entry,
+                    "history_id": str(record.history_id),
+                    "stage_id": new_stage_id,
+                    "from_stage_id": old_stage_id,
+                    "stage_label": new_stage_label,
+                    "from_stage_label": old_stage_label,
+                }
+
                 timeline_event = build_stage_change_timeline_event(
                     organisation_id=self.organisation_id,
                     deal_id=entry["deal_id"],
-                    history_entry=entry,
+                    history_entry=enriched_entry,
                     event_source=event_source,
                 )
                 self.db.add(timeline_event)
