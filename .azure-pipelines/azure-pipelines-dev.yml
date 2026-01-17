@@ -123,6 +123,35 @@ stages:
         steps:
           - checkout: self
 
+          # ===================================================================
+          # Dockerfile Linting with Hadolint (CIS Docker Benchmark compliance)
+          # ===================================================================
+          - script: |
+              echo "##[section]🐳 Linting Dockerfiles with Hadolint..."
+
+              # Install Hadolint if not present
+              if ! command -v hadolint &> /dev/null; then
+                echo "Installing Hadolint..."
+                wget -qO /usr/local/bin/hadolint https://github.com/hadolint/hadolint/releases/download/v2.12.0/hadolint-Linux-x86_64
+                chmod +x /usr/local/bin/hadolint
+              fi
+
+              echo ""
+              echo "Linting Dockerfile (production)..."
+              hadolint Dockerfile --format tty || HADOLINT_FAILED=1
+
+              echo ""
+              echo "Linting Dockerfile.local (development)..."
+              hadolint Dockerfile.local --format tty || HADOLINT_FAILED=1
+
+              if [ "$HADOLINT_FAILED" = "1" ]; then
+                echo "##[warning]⚠️ Hadolint found issues - review above warnings"
+              else
+                echo "##[section]✅ Dockerfile linting passed!"
+              fi
+            displayName: '🐳 Dockerfile Lint (Hadolint)'
+            continueOnError: true
+
           - script: |
               curl -LsSf https://astral.sh/uv/install.sh | sh
               echo "##vso[task.prependpath]$HOME/.local/bin"
@@ -246,86 +275,104 @@ stages:
           # ===================================================================
           # Build API Image - FastAPI application with aiohttp for async Key Vault
           # Target: api (installs 'api' extra from pyproject.toml)
+          # Note: Using script instead of Docker@2 buildAndPush because
+          #       buildAndPush ignores the 'arguments' input (no cache support)
           # ===================================================================
-          - task: Docker@2
+          - script: |
+              echo "##[section]🔨 Building API Image with cache..."
+              docker build \
+                --target api \
+                --build-arg BUILDKIT_INLINE_CACHE=1 \
+                --cache-from=$(ACR_LOGIN_SERVER)/$(API_IMAGE_REPOSITORY):latest \
+                -t $(ACR_LOGIN_SERVER)/$(API_IMAGE_REPOSITORY):$(Build.BuildId) \
+                -t $(ACR_LOGIN_SERVER)/$(API_IMAGE_REPOSITORY):latest \
+                -f Dockerfile \
+                .
+
+              echo "##[section]📤 Pushing API Image..."
+              docker push $(ACR_LOGIN_SERVER)/$(API_IMAGE_REPOSITORY):$(Build.BuildId)
+              docker push $(ACR_LOGIN_SERVER)/$(API_IMAGE_REPOSITORY):latest
+              echo "##[section]✅ API Image complete"
             displayName: 'Build & Push API Image (target: api)'
-            inputs:
-              containerRegistry: '$(ACR_SERVICE_CONNECTION)'
-              repository: '$(API_IMAGE_REPOSITORY)'
-              command: 'buildAndPush'
-              Dockerfile: '**/Dockerfile'
-              tags: |
-                $(Build.BuildId)
-                latest
-              arguments: |
-                --target api
-                --build-arg BUILDKIT_INLINE_CACHE=1
-                --cache-from=$(ACR_LOGIN_SERVER)/$(API_IMAGE_REPOSITORY):latest
             env:
               DOCKER_BUILDKIT: 1
+              ACR_LOGIN_SERVER: $(ACR_LOGIN_SERVER)
+              API_IMAGE_REPOSITORY: $(API_IMAGE_REPOSITORY)
 
           # ===================================================================
           # Build Knowledge Worker - Heavy ML/Document processing
           # Target: knowledge-worker (installs 'knowledge' extra)
           # ===================================================================
-          - task: Docker@2
+          - script: |
+              echo "##[section]🔨 Building Knowledge Worker Image with cache..."
+              docker build \
+                --target knowledge-worker \
+                --build-arg BUILDKIT_INLINE_CACHE=1 \
+                --cache-from=$(ACR_LOGIN_SERVER)/$(KNOWLEDGE_IMAGE_REPOSITORY):latest \
+                -t $(ACR_LOGIN_SERVER)/$(KNOWLEDGE_IMAGE_REPOSITORY):$(Build.BuildId) \
+                -t $(ACR_LOGIN_SERVER)/$(KNOWLEDGE_IMAGE_REPOSITORY):latest \
+                -f Dockerfile \
+                .
+
+              echo "##[section]📤 Pushing Knowledge Worker Image..."
+              docker push $(ACR_LOGIN_SERVER)/$(KNOWLEDGE_IMAGE_REPOSITORY):$(Build.BuildId)
+              docker push $(ACR_LOGIN_SERVER)/$(KNOWLEDGE_IMAGE_REPOSITORY):latest
+              echo "##[section]✅ Knowledge Worker Image complete"
             displayName: 'Build & Push Knowledge Worker Image (target: knowledge-worker)'
-            inputs:
-              containerRegistry: '$(ACR_SERVICE_CONNECTION)'
-              repository: '$(KNOWLEDGE_IMAGE_REPOSITORY)'
-              command: 'buildAndPush'
-              Dockerfile: '**/Dockerfile'
-              tags: |
-                $(Build.BuildId)
-                latest
-              arguments: |
-                --target knowledge-worker
-                --build-arg BUILDKIT_INLINE_CACHE=1
-                --cache-from=$(ACR_LOGIN_SERVER)/$(KNOWLEDGE_IMAGE_REPOSITORY):latest
             env:
               DOCKER_BUILDKIT: 1
+              ACR_LOGIN_SERVER: $(ACR_LOGIN_SERVER)
+              KNOWLEDGE_IMAGE_REPOSITORY: $(KNOWLEDGE_IMAGE_REPOSITORY)
 
           # ===================================================================
           # Build Light Worker - Chat, Deal, Organization workers
           # Target: light-worker (installs 'workers-light' extra)
           # ===================================================================
-          - task: Docker@2
+          - script: |
+              echo "##[section]🔨 Building Light Worker Image with cache..."
+              docker build \
+                --target light-worker \
+                --build-arg BUILDKIT_INLINE_CACHE=1 \
+                --cache-from=$(ACR_LOGIN_SERVER)/$(LIGHT_IMAGE_REPOSITORY):latest \
+                -t $(ACR_LOGIN_SERVER)/$(LIGHT_IMAGE_REPOSITORY):$(Build.BuildId) \
+                -t $(ACR_LOGIN_SERVER)/$(LIGHT_IMAGE_REPOSITORY):latest \
+                -f Dockerfile \
+                .
+
+              echo "##[section]📤 Pushing Light Worker Image..."
+              docker push $(ACR_LOGIN_SERVER)/$(LIGHT_IMAGE_REPOSITORY):$(Build.BuildId)
+              docker push $(ACR_LOGIN_SERVER)/$(LIGHT_IMAGE_REPOSITORY):latest
+              echo "##[section]✅ Light Worker Image complete"
             displayName: 'Build & Push Light Worker Image (target: light-worker)'
-            inputs:
-              containerRegistry: '$(ACR_SERVICE_CONNECTION)'
-              repository: '$(LIGHT_IMAGE_REPOSITORY)'
-              command: 'buildAndPush'
-              Dockerfile: '**/Dockerfile'
-              tags: |
-                $(Build.BuildId)
-                latest
-              arguments: |
-                --target light-worker
-                --build-arg BUILDKIT_INLINE_CACHE=1
-                --cache-from=$(ACR_LOGIN_SERVER)/$(LIGHT_IMAGE_REPOSITORY):latest
             env:
               DOCKER_BUILDKIT: 1
+              ACR_LOGIN_SERVER: $(ACR_LOGIN_SERVER)
+              LIGHT_IMAGE_REPOSITORY: $(LIGHT_IMAGE_REPOSITORY)
 
           # ===================================================================
           # Build Integrations Worker - CRM/Third-party sync
           # Target: integrations-worker (installs 'integrations' extra)
           # ===================================================================
-          - task: Docker@2
+          - script: |
+              echo "##[section]🔨 Building Integrations Worker Image with cache..."
+              docker build \
+                --target integrations-worker \
+                --build-arg BUILDKIT_INLINE_CACHE=1 \
+                --cache-from=$(ACR_LOGIN_SERVER)/$(INTEGRATIONS_IMAGE_REPOSITORY):latest \
+                -t $(ACR_LOGIN_SERVER)/$(INTEGRATIONS_IMAGE_REPOSITORY):$(Build.BuildId) \
+                -t $(ACR_LOGIN_SERVER)/$(INTEGRATIONS_IMAGE_REPOSITORY):latest \
+                -f Dockerfile \
+                .
+
+              echo "##[section]📤 Pushing Integrations Worker Image..."
+              docker push $(ACR_LOGIN_SERVER)/$(INTEGRATIONS_IMAGE_REPOSITORY):$(Build.BuildId)
+              docker push $(ACR_LOGIN_SERVER)/$(INTEGRATIONS_IMAGE_REPOSITORY):latest
+              echo "##[section]✅ Integrations Worker Image complete"
             displayName: 'Build & Push Integrations Worker Image (target: integrations-worker)'
-            inputs:
-              containerRegistry: '$(ACR_SERVICE_CONNECTION)'
-              repository: '$(INTEGRATIONS_IMAGE_REPOSITORY)'
-              command: 'buildAndPush'
-              Dockerfile: '**/Dockerfile'
-              tags: |
-                $(Build.BuildId)
-                latest
-              arguments: |
-                --target integrations-worker
-                --build-arg BUILDKIT_INLINE_CACHE=1
-                --cache-from=$(ACR_LOGIN_SERVER)/$(INTEGRATIONS_IMAGE_REPOSITORY):latest
             env:
               DOCKER_BUILDKIT: 1
+              ACR_LOGIN_SERVER: $(ACR_LOGIN_SERVER)
+              INTEGRATIONS_IMAGE_REPOSITORY: $(INTEGRATIONS_IMAGE_REPOSITORY)
 
           - script: |
               echo "##[section]✅ Build Complete!"
@@ -336,6 +383,127 @@ stages:
               echo ""
               echo "Note: Using separated images - each with its own optimized dependencies"
             displayName: 'Build Summary'
+
+          # ===================================================================
+          # Security: Vulnerability Scanning with Trivy
+          # Scans images for CRITICAL and HIGH vulnerabilities
+          # ===================================================================
+          - script: |
+              echo "##[section]🔒 Installing Trivy vulnerability scanner..."
+
+              # Install Trivy if not present
+              if ! command -v trivy &> /dev/null; then
+                curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.49.1
+              fi
+
+              trivy --version
+              echo ""
+            displayName: 'Install Trivy Scanner'
+
+          - script: |
+              echo "##[section]🔍 Scanning API image for vulnerabilities..."
+              trivy image \
+                --severity CRITICAL,HIGH \
+                --ignore-unfixed \
+                --no-progress \
+                --format table \
+                $(ACR_LOGIN_SERVER)/$(API_IMAGE_REPOSITORY):$(Build.BuildId)
+
+              echo ""
+              echo "##[section]✅ API image scan complete"
+            displayName: '🔍 Trivy Scan: API Image'
+            env:
+              ACR_LOGIN_SERVER: $(ACR_LOGIN_SERVER)
+              API_IMAGE_REPOSITORY: $(API_IMAGE_REPOSITORY)
+            continueOnError: true
+
+          - script: |
+              echo "##[section]🔍 Scanning Light Worker image for vulnerabilities..."
+              trivy image \
+                --severity CRITICAL,HIGH \
+                --ignore-unfixed \
+                --no-progress \
+                --format table \
+                $(ACR_LOGIN_SERVER)/$(LIGHT_IMAGE_REPOSITORY):$(Build.BuildId)
+
+              echo ""
+              echo "##[section]✅ Light Worker image scan complete"
+            displayName: '🔍 Trivy Scan: Light Worker'
+            env:
+              ACR_LOGIN_SERVER: $(ACR_LOGIN_SERVER)
+              LIGHT_IMAGE_REPOSITORY: $(LIGHT_IMAGE_REPOSITORY)
+            continueOnError: true
+
+          - script: |
+              echo "##[section]🔍 Scanning Integrations Worker image for vulnerabilities..."
+              trivy image \
+                --severity CRITICAL,HIGH \
+                --ignore-unfixed \
+                --no-progress \
+                --format table \
+                $(ACR_LOGIN_SERVER)/$(INTEGRATIONS_IMAGE_REPOSITORY):$(Build.BuildId)
+
+              echo ""
+              echo "##[section]✅ Integrations Worker image scan complete"
+            displayName: '🔍 Trivy Scan: Integrations Worker'
+            env:
+              ACR_LOGIN_SERVER: $(ACR_LOGIN_SERVER)
+              INTEGRATIONS_IMAGE_REPOSITORY: $(INTEGRATIONS_IMAGE_REPOSITORY)
+            continueOnError: true
+
+          - script: |
+              echo "##[section]🔍 Scanning Knowledge Worker image for vulnerabilities..."
+              echo "Note: This image is larger and may take longer to scan"
+              trivy image \
+                --severity CRITICAL,HIGH \
+                --ignore-unfixed \
+                --no-progress \
+                --format table \
+                $(ACR_LOGIN_SERVER)/$(KNOWLEDGE_IMAGE_REPOSITORY):$(Build.BuildId)
+
+              echo ""
+              echo "##[section]✅ Knowledge Worker image scan complete"
+            displayName: '🔍 Trivy Scan: Knowledge Worker'
+            env:
+              ACR_LOGIN_SERVER: $(ACR_LOGIN_SERVER)
+              KNOWLEDGE_IMAGE_REPOSITORY: $(KNOWLEDGE_IMAGE_REPOSITORY)
+            continueOnError: true
+
+          - script: |
+              echo "##[section]📊 Generating vulnerability report (JSON)..."
+
+              # Generate JSON reports for all images
+              trivy image \
+                --severity CRITICAL,HIGH \
+                --ignore-unfixed \
+                --no-progress \
+                --format json \
+                --output trivy-api-report.json \
+                $(ACR_LOGIN_SERVER)/$(API_IMAGE_REPOSITORY):$(Build.BuildId) || true
+
+              trivy image \
+                --severity CRITICAL,HIGH \
+                --ignore-unfixed \
+                --no-progress \
+                --format json \
+                --output trivy-light-worker-report.json \
+                $(ACR_LOGIN_SERVER)/$(LIGHT_IMAGE_REPOSITORY):$(Build.BuildId) || true
+
+              echo "##[section]✅ Vulnerability reports generated"
+            displayName: 'Generate Trivy Reports (JSON)'
+            env:
+              ACR_LOGIN_SERVER: $(ACR_LOGIN_SERVER)
+              API_IMAGE_REPOSITORY: $(API_IMAGE_REPOSITORY)
+              LIGHT_IMAGE_REPOSITORY: $(LIGHT_IMAGE_REPOSITORY)
+            continueOnError: true
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Upload Trivy Vulnerability Reports'
+            inputs:
+              targetPath: '.'
+              artifact: 'trivy-reports'
+              patterns: 'trivy-*.json'
+            condition: succeededOrFailed()
 
           # ===================================================================
           # ACR Cleanup - Keep only last 10 images per repository

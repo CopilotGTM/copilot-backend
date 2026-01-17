@@ -1,8 +1,10 @@
 # syntax=docker/dockerfile:1.6
 # ============================================================================
-# Multi-Stage Dockerfile for Copilot Backend
+# SECURITY-HARDENED Multi-Stage Dockerfile for Copilot Backend (Production)
 # ============================================================================
-# This Dockerfile supports multiple build targets for different components:
+# Compliance: CIS Docker Benchmark v1.8.0, OWASP Docker Security
+#
+# Targets:
 #   - api:              FastAPI application (default)
 #   - knowledge-worker: Heavy ML/Document processing worker (~3GB image)
 #   - light-worker:     Chat, Deal, Organization, Content workers (~500MB)
@@ -14,16 +16,17 @@
 #   docker build --target knowledge-worker -t copilot-backend-knowledge:latest .
 #   docker build --target light-worker -t copilot-backend-workers:latest .
 #   docker build --target integrations-worker -t copilot-backend-integrations:latest .
-#   docker build --target full -t copilot-backend-full:latest .  # Dev/testing
 # ============================================================================
 
 # Build args for flexibility
 ARG PYTHON_VERSION=3.11.10
 ARG UV_VERSION=0.5.13
-ARG WORKERS=4
+# Security: Fixed UID/GID for reproducibility and K8s compatibility (CIS 4.1)
+ARG APP_UID=10001
+ARG APP_GID=10001
 
 # ============================================================================
-# Stage 0: UV installer (workaround for --from variable expansion)
+# Stage 0: UV installer
 # ============================================================================
 FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
 
@@ -33,8 +36,8 @@ FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
 FROM python:${PYTHON_VERSION}-slim-bookworm AS builder-base
 
 LABEL maintainer="copilotgtm-team@company.com" \
-      version="2.0.0" \
-      description="Copilot Backend - Multi-Stage Build"
+      version="2.2.0" \
+      description="Copilot Backend - Security Hardened Build"
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -48,48 +51,44 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     g++ \
     libpq-dev \
-    && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* \
     && apt-get clean
 
 COPY --from=uv /uv /usr/local/bin/uv
 
 WORKDIR /app
 
-# Copy dependency files
 COPY pyproject.toml uv.lock .python-version ./
 
 # ============================================================================
-# Stage 2a: API Builder - Install API dependencies
+# Stage 2a: API Builder
 # ============================================================================
 FROM builder-base AS builder-api
 
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-install-project --extra api --verbose \
+    uv sync --frozen --no-dev --no-install-project --extra api \
     && find /app/.venv -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true \
-    && find /app/.venv -type f -name "*.pyc" -delete \
-    && find /app/.venv -type f -name "*.pyo" -delete
+    && find /app/.venv -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
 
 # ============================================================================
-# Stage 2b: Knowledge Worker Builder - Install heavy ML dependencies
+# Stage 2b: Knowledge Worker Builder
 # ============================================================================
 FROM builder-base AS builder-knowledge
 
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-install-project --extra knowledge --verbose \
+    uv sync --frozen --no-dev --no-install-project --extra knowledge \
     && find /app/.venv -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true \
-    && find /app/.venv -type f -name "*.pyc" -delete \
-    && find /app/.venv -type f -name "*.pyo" -delete
+    && find /app/.venv -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
 
 # ============================================================================
-# Stage 2c: Light Worker Builder - Install lightweight worker dependencies
+# Stage 2c: Light Worker Builder
 # ============================================================================
 FROM builder-base AS builder-light
 
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-install-project --extra workers-light --verbose \
+    uv sync --frozen --no-dev --no-install-project --extra workers-light \
     && find /app/.venv -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true \
-    && find /app/.venv -type f -name "*.pyc" -delete \
-    && find /app/.venv -type f -name "*.pyo" -delete
+    && find /app/.venv -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
 
 # ============================================================================
 # Stage 2d: Integrations Worker Builder
@@ -97,80 +96,107 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 FROM builder-base AS builder-integrations
 
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-install-project --extra integrations --verbose \
+    uv sync --frozen --no-dev --no-install-project --extra integrations \
     && find /app/.venv -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true \
-    && find /app/.venv -type f -name "*.pyc" -delete \
-    && find /app/.venv -type f -name "*.pyo" -delete
+    && find /app/.venv -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
 
 # ============================================================================
-# Stage 2e: Full Builder - All dependencies (Development/Testing)
+# Stage 2e: Full Builder
 # ============================================================================
 FROM builder-base AS builder-full
 
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-install-project --extra full --verbose \
+    uv sync --frozen --no-dev --no-install-project --extra full \
     && find /app/.venv -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true \
-    && find /app/.venv -type f -name "*.pyc" -delete \
-    && find /app/.venv -type f -name "*.pyo" -delete
+    && find /app/.venv -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
 
 # ============================================================================
-# Stage 3: Runtime Base - Common runtime configuration
+# Stage 3a: Runtime Base for Workers (minimal - no curl)
 # ============================================================================
-FROM python:${PYTHON_VERSION}-slim-bookworm AS runtime-base
+FROM python:${PYTHON_VERSION}-slim-bookworm AS runtime-base-worker
+
+ARG APP_UID
+ARG APP_GID
+
+# Security and OCI compliance labels
+LABEL org.opencontainers.image.vendor="CopilotGTM" \
+      org.opencontainers.image.title="Copilot Backend Worker" \
+      org.opencontainers.image.description="Production worker runtime - security hardened" \
+      org.opencontainers.image.licenses="Proprietary" \
+      org.opencontainers.image.base.name="python:${PYTHON_VERSION}-slim-bookworm" \
+      # Security compliance markers
+      com.copilotgtm.security.cis-benchmark="1.8.0" \
+      com.copilotgtm.security.non-root="true" \
+      com.copilotgtm.security.read-only-supported="true" \
+      com.copilotgtm.security.no-curl="true"
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH="/app" \
     PATH="/app/.venv/bin:$PATH" \
-    PYTHONPATH="/app:$PYTHONPATH" \
-    UV_LINK_MODE=copy \
-    HOME=/home/appuser
+    HOME=/home/appuser \
+    # Security: Disable pip version check
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Install runtime system dependencies
+# Minimal runtime dependencies (no curl - workers use Python HTTP libs)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
-    curl \
     ca-certificates \
-    && rm -rf /var/lib/apt/lists/* \
-    && apt-get clean
-
-# Create non-root user
-RUN groupadd -r appuser && useradd -r -g appuser appuser
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* \
+    && apt-get clean \
+    # Security: Create non-root user with fixed UID/GID
+    && groupadd -r -g ${APP_GID} appuser \
+    && useradd -r -u ${APP_UID} -g appuser -d /home/appuser -s /sbin/nologin appuser \
+    # Create required directories with proper ownership
+    && mkdir -p /app /home/appuser /tmp /var/log \
+    && chown -R appuser:appuser /app /home/appuser /tmp /var/log
 
 WORKDIR /app
 
 # ============================================================================
+# Stage 3b: Runtime Base for API (with curl for healthcheck)
+# ============================================================================
+FROM runtime-base-worker AS runtime-base-api
+
+# API needs curl for HTTP healthcheck
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* \
+    && apt-get clean
+
+# Override label to indicate curl is present
+LABEL com.copilotgtm.security.no-curl="false"
+
+# ============================================================================
 # Target: API - FastAPI Application
 # ============================================================================
-FROM runtime-base AS api
+FROM runtime-base-api AS api
 
 LABEL component="api" \
-      description="FastAPI Application"
+      org.opencontainers.image.title="Copilot Backend API" \
+      description="FastAPI Application - Production"
 
 # Production Python optimizations
 ENV PYTHONOPTIMIZE=1
 
 COPY --from=builder-api --chown=appuser:appuser /app/.venv /app/.venv
 
-# Copy application code
 COPY --chown=appuser:appuser src/ ./src/
 COPY --chown=appuser:appuser migrations/ ./migrations/
 COPY --chown=appuser:appuser scripts/ ./scripts/
 
 RUN find ./scripts -type f -name "*.sh" -exec sed -i 's/\r$//' {} +
 
-RUN mkdir -p /var/log /tmp && \
-    chown -R appuser:appuser /var/log /tmp
-
 USER appuser
 
 EXPOSE 8080
 
-# Ensure SIGTERM is properly handled for graceful shutdown
+# Health check for container orchestration
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
+
 STOPSIGNAL SIGTERM
 
-# Exec form ensures signals propagate correctly to uvicorn
-# --timeout-keep-alive: Match K8s ingress timeout to prevent connection resets
-# --timeout-graceful-shutdown: Allow in-flight requests to complete on shutdown
 CMD ["uvicorn", "src.main:app", \
     "--host", "0.0.0.0", \
     "--port", "8080", \
@@ -181,19 +207,19 @@ CMD ["uvicorn", "src.main:app", \
 # ============================================================================
 # Target: Knowledge Worker - Heavy ML/Document Processing
 # ============================================================================
-FROM runtime-base AS knowledge-worker
+FROM runtime-base-worker AS knowledge-worker
 
 LABEL component="knowledge-worker" \
+      org.opencontainers.image.title="Copilot Knowledge Worker" \
       description="Knowledge Worker - Document Processing with ML"
 
-# Additional environment for ML models
+# ML model cache directories
 ENV HF_HOME=/app/.cache/huggingface \
     TRANSFORMERS_CACHE=/app/.cache/huggingface/transformers \
     SENTENCE_TRANSFORMERS_HOME=/app/.cache/sentence-transformers
 
 COPY --from=builder-knowledge --chown=appuser:appuser /app/.venv /app/.venv
 
-# Copy application code (excluding src/api - workers don't need API layer)
 COPY --chown=appuser:appuser src/domain/ ./src/domain/
 COPY --chown=appuser:appuser src/infra/ ./src/infra/
 COPY --chown=appuser:appuser src/workers/ ./src/workers/
@@ -202,30 +228,31 @@ COPY --chown=appuser:appuser src/agents/ ./src/agents/
 COPY --chown=appuser:appuser migrations/ ./migrations/
 COPY --chown=appuser:appuser scripts/ ./scripts/
 
-RUN find ./scripts -type f -name "*.sh" -exec sed -i 's/\r$//' {} +
-
-# Create directories with proper permissions including ML cache
-RUN mkdir -p /var/log /tmp /app/.cache /home/appuser && \
-    chown -R appuser:appuser /var/log /tmp /app/.cache /home/appuser
+RUN find ./scripts -type f -name "*.sh" -exec sed -i 's/\r$//' {} + \
+    && mkdir -p /app/.cache \
+    && chown -R appuser:appuser /app/.cache
 
 USER appuser
 
-# Knowledge worker runs Celery
-CMD celery -A src.workers.knowledge_worker.celery_app worker \
-    --loglevel=info \
-    --pool=prefork
+# Health check using celery inspect (no curl needed)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD celery -A src.workers.knowledge_worker.celery_app inspect ping -d celery@$HOSTNAME || exit 1
+
+CMD ["celery", "-A", "src.workers.knowledge_worker.celery_app", "worker", \
+    "--loglevel=info", \
+    "--pool=prefork"]
 
 # ============================================================================
 # Target: Light Worker - Chat, Deal, Organization, Content Workers
 # ============================================================================
-FROM runtime-base AS light-worker
+FROM runtime-base-worker AS light-worker
 
 LABEL component="light-worker" \
+      org.opencontainers.image.title="Copilot Light Worker" \
       description="Lightweight Workers - Chat, Deal, Organization, Content"
 
 COPY --from=builder-light --chown=appuser:appuser /app/.venv /app/.venv
 
-# Copy application code (excluding src/api - workers don't need API layer)
 COPY --chown=appuser:appuser src/domain/ ./src/domain/
 COPY --chown=appuser:appuser src/infra/ ./src/infra/
 COPY --chown=appuser:appuser src/workers/ ./src/workers/
@@ -236,30 +263,25 @@ COPY --chown=appuser:appuser scripts/ ./scripts/
 
 RUN find ./scripts -type f -name "*.sh" -exec sed -i 's/\r$//' {} +
 
-RUN mkdir -p /var/log /tmp && \
-    chown -R appuser:appuser /var/log /tmp
-
 USER appuser
 
-# Default: chat worker (override with environment or command args)
 # CELERY_APP can be: chat_worker, deal_worker, organization_worker, content_worker
 ENV CELERY_APP=chat_worker
 
-CMD celery -A src.workers.${CELERY_APP}.celery_app worker \
-    --loglevel=info \
-    --pool=prefork
+# Using exec for proper signal handling with variable expansion
+CMD ["sh", "-c", "exec celery -A src.workers.${CELERY_APP}.celery_app worker --loglevel=info --pool=prefork"]
 
 # ============================================================================
 # Target: Integrations Worker - CRM/Third-Party Sync
 # ============================================================================
-FROM runtime-base AS integrations-worker
+FROM runtime-base-worker AS integrations-worker
 
 LABEL component="integrations-worker" \
+      org.opencontainers.image.title="Copilot Integrations Worker" \
       description="Integrations Worker - CRM Sync"
 
 COPY --from=builder-integrations --chown=appuser:appuser /app/.venv /app/.venv
 
-# Copy application code (excluding src/api - workers don't need API layer)
 COPY --chown=appuser:appuser src/domain/ ./src/domain/
 COPY --chown=appuser:appuser src/infra/ ./src/infra/
 COPY --chown=appuser:appuser src/workers/ ./src/workers/
@@ -270,48 +292,49 @@ COPY --chown=appuser:appuser scripts/ ./scripts/
 
 RUN find ./scripts -type f -name "*.sh" -exec sed -i 's/\r$//' {} +
 
-RUN mkdir -p /var/log /tmp && \
-    chown -R appuser:appuser /var/log /tmp
-
 USER appuser
 
-CMD celery -A src.workers.integrations_worker.celery_app worker \
-    --loglevel=info \
-    --pool=prefork
+# Health check using celery inspect (no curl needed)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD celery -A src.workers.integrations_worker.celery_app inspect ping -d celery@$HOSTNAME || exit 1
+
+CMD ["celery", "-A", "src.workers.integrations_worker.celery_app", "worker", \
+    "--loglevel=info", \
+    "--pool=prefork"]
 
 # ============================================================================
-# Target: Full - All Dependencies (Development/Testing/Default)
+# Target: Full - All Dependencies (Development/Testing)
 # ============================================================================
-FROM runtime-base AS full
+FROM runtime-base-api AS full
 
 LABEL component="full" \
+      org.opencontainers.image.title="Copilot Backend Full" \
       description="Full Image - All Dependencies (Development)"
 
-# Additional environment for ML models
+# ML model cache directories
 ENV HF_HOME=/app/.cache/huggingface \
     TRANSFORMERS_CACHE=/app/.cache/huggingface/transformers \
     SENTENCE_TRANSFORMERS_HOME=/app/.cache/sentence-transformers
 
 COPY --from=builder-full --chown=appuser:appuser /app/.venv /app/.venv
 
-# Copy application code
 COPY --chown=appuser:appuser src/ ./src/
 COPY --chown=appuser:appuser migrations/ ./migrations/
 COPY --chown=appuser:appuser scripts/ ./scripts/
 
-RUN find ./scripts -type f -name "*.sh" -exec sed -i 's/\r$//' {} +
-
-RUN mkdir -p /var/log /tmp /app/.cache /home/appuser && \
-    chown -R appuser:appuser /var/log /tmp /app/.cache /home/appuser
+RUN find ./scripts -type f -name "*.sh" -exec sed -i 's/\r$//' {} + \
+    && mkdir -p /app/.cache \
+    && chown -R appuser:appuser /app/.cache
 
 USER appuser
 
 EXPOSE 8080
 
-# Ensure SIGTERM is properly handled for graceful shutdown
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
+
 STOPSIGNAL SIGTERM
 
-# Exec form ensures signals propagate correctly to uvicorn
 CMD ["uvicorn", "src.main:app", \
     "--host", "0.0.0.0", \
     "--port", "8080", \
@@ -320,6 +343,6 @@ CMD ["uvicorn", "src.main:app", \
     "--timeout-graceful-shutdown", "30"]
 
 # ============================================================================
-# Default Target (for backward compatibility)
+# Default Target (backward compatibility)
 # ============================================================================
 FROM full AS runtime

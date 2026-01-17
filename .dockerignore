@@ -1,6 +1,9 @@
 # ============================================================================
 # Production-Grade Docker Ignore File
 # ============================================================================
+# This file reduces Docker build context size for faster builds and smaller
+# images. Patterns are organized by category for maintainability.
+# ============================================================================
 
 # Python runtime files
 __pycache__/
@@ -14,6 +17,7 @@ build/
 .eggs/
 *.egg
 *pycache
+*.pyi
 
 # Virtual environments
 *venv
@@ -25,14 +29,18 @@ env/
 # Testing
 .pytest_cache/
 .coverage
+coverage.xml
 htmlcov/
 *.cover
 .hypothesis/
 .tox/
+.nox/
 test-local-scripts/
 tests/
+conftest.py
+pytest.ini
 
-# IDEs
+# IDEs and editors
 *.idea
 *.vscode
 *.pycharm
@@ -42,6 +50,8 @@ tests/
 *.swo
 *~
 .DS_Store
+Thumbs.db
+*.sublime-*
 
 # Environment files (exclude all except potential example)
 .env
@@ -60,17 +70,21 @@ docs/
 .git/
 .gitignore
 .gitattributes
+.gitmodules
 
 # CI/CD
 .github/
 .gitlab-ci.yml
 .circleci/
 .azure-pipelines/
-azure-pipelines.yml
+azure-pipelines*.yml
 
-# Local testing
-testing_local
+# Local development
+testing_local/
 test-local-scripts/
+docker/
+docker-compose*.yml
+Dockerfile.local
 
 # Cache directories
 cache/
@@ -78,25 +92,52 @@ cache/
 .uv_cache/
 .ruff_cache/
 .mypy_cache/
+.pytype/
 
 # Requirements (no longer needed with pyproject.toml)
-requirements.txt
-requirements_dev.txt
+requirements*.txt
 
 # Development tools
 .pre-commit-config.yaml
 Makefile
+.editorconfig
+.pylintrc
+.flake8
+ruff.toml
+pyproject.toml.bak
 
 # Logs and temporary files
 *.log
 logs/
 tmp/
 temp/
+*.tmp
 
-# Kubernetes/Helm
+# Kubernetes/Helm (for production builds)
 charts/
 *.yaml
 !pyproject.toml
+
+# Build artifacts
+*.whl
+*.tar.gz
+*.zip
+
+# Jupyter notebooks (if any)
+*.ipynb
+.ipynb_checkpoints/
+
+# Node modules (if any frontend assets)
+node_modules/
+package-lock.json
+yarn.lock
+
+# Secrets and credentials (never include in build context)
+*.pem
+*.key
+*.crt
+credentials/
+secrets/
 
 # Migration scripts (if already applied)
 # Uncomment if migrations are pre-applied:
