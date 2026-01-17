@@ -197,7 +197,7 @@ services:
         condition: service_healthy
     networks:
       - copilot-network
-    # profiles: ["knowledge"]
+    profiles: ["knowledge"]
 
   # ---------------------------------------------------------------------------
   # Knowledge Upload Worker
@@ -238,7 +238,7 @@ services:
         condition: service_healthy
     networks:
       - copilot-network
-    # profiles: ["knowledge"]
+    profiles: ["knowledge"]
 
   # ---------------------------------------------------------------------------
   # Organization Worker
@@ -278,7 +278,7 @@ services:
         condition: service_healthy
     networks:
       - copilot-network
-    # profiles: ["organization"]
+    profiles: ["organization"]
 
   # ---------------------------------------------------------------------------
   # Chat Worker (handles attachments, chat_processing, chat_messages)
@@ -318,7 +318,7 @@ services:
         condition: service_healthy
     networks:
       - copilot-network
-    profiles: ["chat"]
+    # profiles: ["chat"]
 
   # ---------------------------------------------------------------------------
   # Integrations Worker (handles CRM/third-party sync)
@@ -496,8 +496,8 @@ services:
         limits:
           cpus: '0.5'
           memory: 256M
-    # profiles:
-    #   - monitoring
+    profiles:
+      - monitoring
 
   # ---------------------------------------------------------------------------
   # Loki - Log Aggregation (collects and stores logs)
@@ -524,8 +524,8 @@ services:
         limits:
           cpus: '1'
           memory: 1G
-    # profiles:
-    #   - monitoring
+    profiles:
+      - monitoring
 
   # ---------------------------------------------------------------------------
   # Promtail - Log Shipper (collects Docker logs and sends to Loki)
@@ -549,8 +549,8 @@ services:
         limits:
           cpus: '0.5'
           memory: 256M
-    # profiles:
-    #   - monitoring
+    profiles:
+      - monitoring
 
   # ---------------------------------------------------------------------------
   # Grafana - Visualization & Dashboards
@@ -582,8 +582,8 @@ services:
         limits:
           cpus: '1'
           memory: 512M
-    # profiles:
-    #   - monitoring
+    profiles:
+      - monitoring
 
 # =============================================================================
 # Networks
