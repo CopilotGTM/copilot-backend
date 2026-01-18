@@ -27,6 +27,9 @@ logger = get_logger("knowledge_access_service")
 # Job type constant for deletion tracking
 DELETE_SOURCE_JOB_TYPE = "delete_source"
 
+# Common error message (Sonar rule S1192)
+_SOURCE_NOT_FOUND_MSG = "Source not found or access denied"
+
 
 def _get_status_str(status_enum):
     """Safely get the string value of a status enum."""
@@ -71,6 +74,13 @@ class KnowledgeAccessService:
     ) -> tuple[list[OrganisationSource], str | None]:
         """Return page of sources (key‑set pagination).
 
+        Visibility rules:
+        - COMPLETED files: visible to ALL users in the organisation
+        - Other statuses (pending, processing, failed, etc.): visible ONLY to the uploader
+
+        This allows knowledge sharing once files are ready, while keeping
+        in-progress/failed uploads private to the owner for tracking.
+
         Args:
             limit: Max items to return
             cursor: Pagination cursor from previous response
@@ -81,16 +91,24 @@ class KnowledgeAccessService:
 
         Returns (items, next_cursor).
         """
-        # Base filters: organisation scope + exclude soft-deleted
+        # Visibility logic:
+        # - Show COMPLETED files to everyone in the org
+        # - Show non-completed files only to the uploader (owner)
+        visibility_filter = or_(
+            OrganisationSource.status == OrganisationSourceStatus.COMPLETED.value,  # type: ignore[arg-type]
+            OrganisationSource.user_id == self.user_id,  # type: ignore[arg-type]
+        )
+
+        # Base filters: organisation scope + visibility rules + exclude soft-deleted
         stmt = select(OrganisationSource).where(
             OrganisationSource.organisation_id == self.organisation_id,  # type: ignore[arg-type]
-            OrganisationSource.user_id == self.user_id,  # type: ignore[arg-type]
-            OrganisationSource.is_deleted.is_(False),
+            visibility_filter,
+            OrganisationSource.is_deleted.is_(False),  # type: ignore[union-attr]
         )
 
         if statuses:
             # User explicitly requested specific statuses - include them
-            status_values = [s.value if hasattr(s, "value") else str(s) for s in statuses]
+            status_values = [getattr(s, "value", str(s)) for s in statuses]
             stmt = stmt.where(OrganisationSource.status.in_(status_values))  # type: ignore[attr-defined]
         else:
             # No status filter provided - exclude 'failed' by default
@@ -100,7 +118,7 @@ class KnowledgeAccessService:
             )
 
         if source_types:
-            type_values = [s.value if hasattr(s, "value") else str(s) for s in source_types]
+            type_values = [getattr(s, "value", str(s)) for s in source_types]
             stmt = stmt.where(OrganisationSource.source_type.in_(type_values))  # type: ignore[attr-defined]
 
         if q:
@@ -151,8 +169,15 @@ class KnowledgeAccessService:
         download_filename: str | None = None,
     ) -> str:
         src: OrganisationSource | None = await self.org_session.get(OrganisationSource, source_id)
-        if not src or src.organisation_id != self.organisation_id or src.user_id != self.user_id:
-            raise KnowledgeAccessServiceError("Source not found or access denied", status_code=404)
+        if not src or src.organisation_id != self.organisation_id:
+            raise KnowledgeAccessServiceError(_SOURCE_NOT_FOUND_MSG, status_code=404)
+
+        # Access check: owner can always download, others can only download COMPLETED files
+        is_owner = src.user_id == self.user_id
+        is_completed = _get_status_str(src.status) == OrganisationSourceStatus.COMPLETED.value
+        if not is_owner and not is_completed:
+            raise KnowledgeAccessServiceError(_SOURCE_NOT_FOUND_MSG, status_code=404)
+
         if not src.storage_path:
             raise KnowledgeAccessServiceError("Source has no storage path", status_code=400)
         try:
@@ -220,8 +245,8 @@ class KnowledgeAccessService:
         from datetime import UTC, datetime, timedelta
 
         base_filters = [
-            OrganisationSource.organisation_id == self.organisation_id,
-            OrganisationSource.is_deleted.is_(False),
+            OrganisationSource.organisation_id == self.organisation_id,  # type: ignore[arg-type]
+            OrganisationSource.is_deleted.is_(False),  # type: ignore[union-attr]
         ]
 
         status_stmt = (
@@ -263,8 +288,8 @@ class KnowledgeAccessService:
             .select_from(OrganisationSource)
             .where(
                 *base_filters,
-                OrganisationSource.status == OrganisationSourceStatus.FAILED.value,
-                OrganisationSource.updated_at >= cutoff_24h,
+                OrganisationSource.status == OrganisationSourceStatus.FAILED.value,  # type: ignore[arg-type]
+                OrganisationSource.updated_at >= cutoff_24h,  # type: ignore[arg-type]
             )
         )
         recent_failures_res = await self.org_session.execute(recent_failures_stmt)
@@ -310,7 +335,7 @@ class KnowledgeAccessService:
                     {
                         "source_id": str(source_id),
                         "reason": "not_found",
-                        "message": "Source not found or access denied",
+                        "message": _SOURCE_NOT_FOUND_MSG,
                     }
                 )
                 continue
