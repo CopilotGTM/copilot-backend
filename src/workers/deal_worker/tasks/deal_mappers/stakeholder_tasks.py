@@ -31,6 +31,7 @@ from uuid import UUID
 
 from celery import Task
 from sqlalchemy import select
+from sqlmodel import col
 
 from src.domain.models.master_tables import Organisation, OrganisationStatus
 from src.infra.database.sessions import (
@@ -96,16 +97,17 @@ def sync_deal_stakeholders_task(
         org_uuid = UUID(organisation_id)
         deal_uuid = UUID(deal_id)
 
+        # Deal-level: Pass session to constructor (sync_for_deal requires it)
         async for session in acquire_org_async_session(org_uuid):
-            service = StakeholderSyncService(session, org_uuid)
+            service = StakeholderSyncService(org_uuid, session=session)
             result = await service.sync_for_deal(deal_uuid)
 
             rematching_triggered = False
 
             # Trigger re-matching if new stakeholders were created
             if trigger_rematching and result.requires_rematching:
-                match_calendar_to_deals_task.delay(organisation_id, deal_id)  # type: ignore
-                match_email_to_deals_task.delay(organisation_id, deal_id)  # type: ignore
+                match_calendar_to_deals_task.delay(organisation_id, deal_id)
+                match_email_to_deals_task.delay(organisation_id, deal_id)
                 rematching_triggered = True
 
             logger.info(
@@ -203,70 +205,60 @@ def sync_all_deals_stakeholders_org_task(
     async def _run() -> dict[str, Any]:
         org_uuid = UUID(organisation_id)
 
-        async for session in acquire_org_async_session(org_uuid):
-            # Call service method to sync all deals
-            service = StakeholderSyncService(session, org_uuid)
-            result = await service.sync_for_organisation()
+        # Org-level: StakeholderSyncService manages its own sessions (fresh session pattern)
+        service = StakeholderSyncService(org_uuid)
+        result = await service.sync_for_organisation()
 
-            # Trigger calendar and email matching for the entire org
-            # ALWAYS trigger when trigger_deal_matching=True, not just when new CRM stakeholders
-            # This ensures discovered stakeholders (CALENDAR_DISCOVERY, EMAIL_DISCOVERY)
-            # from previous runs are used to find more meetings
-            deal_matching_triggered = False
-            if trigger_deal_matching:
-                try:
-                    from src.workers.deal_worker.tasks.deal_mappers.calendar_matching_tasks import (
-                        match_calendar_to_deals_org_task,
-                    )
-                    from src.workers.deal_worker.tasks.deal_mappers.email_matching_tasks import (
-                        match_email_to_deals_org_task,
-                    )
+        # Trigger calendar and email matching for the entire org
+        # ALWAYS trigger when trigger_deal_matching=True, not just when new CRM stakeholders
+        # This ensures discovered stakeholders (CALENDAR_DISCOVERY, EMAIL_DISCOVERY)
+        # from previous runs are used to find more meetings
+        deal_matching_triggered = False
+        if trigger_deal_matching:
+            try:
+                from src.workers.deal_worker.tasks.deal_mappers.calendar_matching_tasks import (
+                    match_calendar_to_deals_org_task,
+                )
+                from src.workers.deal_worker.tasks.deal_mappers.email_matching_tasks import (
+                    match_email_to_deals_org_task,
+                )
 
-                    match_calendar_to_deals_org_task.delay(organisation_id)  # type: ignore
-                    match_email_to_deals_org_task.delay(organisation_id)  # type: ignore
-                    deal_matching_triggered = True
-                    logger.info(
-                        "Triggered calendar/email matching for org %s",
-                        organisation_id,
-                    )
-                except Exception as e:
-                    result.errors.append(f"Failed to trigger deal matching: {str(e)}")
-                    logger.warning(
-                        "Failed to trigger deal matching for org %s: %s",
-                        organisation_id,
-                        str(e),
-                    )
+                match_calendar_to_deals_org_task.delay(organisation_id)
+                match_email_to_deals_org_task.delay(organisation_id)
+                deal_matching_triggered = True
+                logger.info(
+                    "Triggered calendar/email matching for org %s",
+                    organisation_id,
+                )
+            except Exception as e:
+                result.errors.append(f"Failed to trigger deal matching: {str(e)}")
+                logger.warning(
+                    "Failed to trigger deal matching for org %s: %s",
+                    organisation_id,
+                    str(e),
+                )
 
-            # Determine overall status
-            if result.failed_deals == 0:
-                status = "completed"
-            elif result.successful_deals == 0:
-                status = "failed"
-            else:
-                status = "partial"
+        # Determine overall status
+        if result.failed_deals == 0:
+            status = "completed"
+        elif result.successful_deals == 0:
+            status = "failed"
+        else:
+            status = "partial"
 
-            return {
-                "status": status,
-                "organisation_id": organisation_id,
-                "started_at": started_at,
-                "completed_at": datetime.now(UTC).isoformat(),
-                "total_deals": result.total_deals,
-                "successful_deals": result.successful_deals,
-                "failed_deals": result.failed_deals,
-                "stakeholders_created": result.stakeholders_created,
-                "stakeholders_updated": result.stakeholders_updated,
-                "stakeholders_deactivated": result.stakeholders_deactivated,
-                "deal_matching_triggered": deal_matching_triggered,
-                "errors": result.errors[:10] if result.errors else [],
-            }
-
-        # Session not acquired
         return {
-            "status": "failed",
+            "status": status,
             "organisation_id": organisation_id,
             "started_at": started_at,
             "completed_at": datetime.now(UTC).isoformat(),
-            "error": "Failed to acquire database session",
+            "total_deals": result.total_deals,
+            "successful_deals": result.successful_deals,
+            "failed_deals": result.failed_deals,
+            "stakeholders_created": result.stakeholders_created,
+            "stakeholders_updated": result.stakeholders_updated,
+            "stakeholders_deactivated": result.stakeholders_deactivated,
+            "deal_matching_triggered": deal_matching_triggered,
+            "errors": result.errors[:10] if result.errors else [],
         }
 
     try:
@@ -337,8 +329,8 @@ def sync_all_deals_stakeholders_all_orgs_task() -> dict[str, Any]:
         # Query all approved organizations from master DB
         org_ids: list[UUID] = []
         async for master_session in acquire_master_async_session():
-            stmt = select(Organisation.organisation_id).where(  # type: ignore
-                Organisation.status == OrganisationStatus.APPROVED
+            stmt = select(col(Organisation.organisation_id)).where(
+                col(Organisation.status) == OrganisationStatus.APPROVED
             )
             result = await master_session.execute(stmt)
             org_ids = [row[0] for row in result.all()]
@@ -366,7 +358,7 @@ def sync_all_deals_stakeholders_all_orgs_task() -> dict[str, Any]:
 
         for org_id in org_ids:
             try:
-                task = sync_all_deals_stakeholders_org_task.apply_async(  # type: ignore
+                task = sync_all_deals_stakeholders_org_task.apply_async(
                     kwargs={"organisation_id": str(org_id)},
                 )
                 org_tasks.append(

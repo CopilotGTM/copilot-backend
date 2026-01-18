@@ -28,12 +28,10 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlmodel import col
 
 from src.domain.models.master_tables import Organisation, OrganisationStatus
-from src.infra.database.sessions import (
-    acquire_master_async_session,
-    acquire_org_async_session,
-)
+from src.infra.database.sessions import acquire_master_async_session
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.infra.utils.task_lock import acquire_task_lock, release_task_lock
@@ -85,29 +83,20 @@ def fetch_meeting_transcripts_org_task(
     async def _run() -> dict[str, Any]:
         org_uuid = UUID(organisation_id)
 
-        # Acquire org session
-        async for session in acquire_org_async_session(org_uuid):
-            service = TranscriptFetchTaskService(session, org_uuid)
-            result = await service.process_all()
-
-            return {
-                "status": "success",
-                "organisation_id": organisation_id,
-                "started_at": started_at,
-                "completed_at": datetime.now(UTC).isoformat(),
-                "meetings_found": result.meetings_found,
-                "transcripts_fetched": result.transcripts_fetched,
-                "transcripts_pending": result.transcripts_pending,
-                "transcripts_not_available": result.transcripts_not_available,
-                "transcripts_failed": result.transcripts_failed,
-            }
+        # Org-level: TranscriptFetchTaskService manages its own sessions (fresh session pattern)
+        service = TranscriptFetchTaskService(org_uuid)
+        result = await service.process_all()
 
         return {
-            "status": "failed",
+            "status": "success",
             "organisation_id": organisation_id,
             "started_at": started_at,
             "completed_at": datetime.now(UTC).isoformat(),
-            "error": "Failed to acquire database session",
+            "meetings_found": result.meetings_found,
+            "transcripts_fetched": result.transcripts_fetched,
+            "transcripts_pending": result.transcripts_pending,
+            "transcripts_not_available": result.transcripts_not_available,
+            "transcripts_failed": result.transcripts_failed,
         }
 
     try:
@@ -156,8 +145,8 @@ def trigger_transcript_fetch_all_orgs_task() -> dict[str, Any]:
         # Acquire master session to get all approved org IDs
         async for master_session in acquire_master_async_session():
             # Get all approved org IDs
-            stmt = select(Organisation.organisation_id).where(  # type: ignore
-                Organisation.status == OrganisationStatus.APPROVED
+            stmt = select(col(Organisation.organisation_id)).where(
+                col(Organisation.status) == OrganisationStatus.APPROVED
             )
             result = await master_session.execute(stmt)
             org_ids = [row[0] for row in result.all()]  # list of organisation_id UUIDs
@@ -182,7 +171,7 @@ def trigger_transcript_fetch_all_orgs_task() -> dict[str, Any]:
         for org_id in org_ids:
             try:
                 # Trigger Tier 2 task for this org
-                task = fetch_meeting_transcripts_org_task.apply_async(  # type: ignore[attr-defined]
+                task = fetch_meeting_transcripts_org_task.apply_async(
                     kwargs={"organisation_id": str(org_id)},
                 )
                 org_tasks.append(

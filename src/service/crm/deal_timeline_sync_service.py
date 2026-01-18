@@ -22,7 +22,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import QueryableAttribute, selectinload
+from sqlalchemy.orm import selectinload
 from sqlalchemy.sql.schema import Table
 from src.domain.models.organisation_tables.sync.calendar import (
     CalendarEvent,
@@ -43,6 +43,7 @@ from src.domain.models.organisation_tables.sync.timeline_models import (
     TimelineEventSource,
     TimelineEventType,
 )
+from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.service.crm.timeline_event_source_resolver import (
     resolve_crm_event_source,
@@ -82,6 +83,10 @@ def _enum_value(val: Enum | str | None) -> str | None:
 class DealTimelineSyncService:
     """Service for batch timeline sync operations.
 
+    Uses fresh session pattern for better connection management:
+    - Org-level: Acquires fresh session per batch, releases between batches
+    - Deal-level: Uses session passed to constructor
+
     Use this service for:
     - Backfilling timeline events from existing associations
     - Syncing timeline for a single deal
@@ -91,19 +96,24 @@ class DealTimelineSyncService:
     methods directly in DealEmailMatcher/DealMeetingMatcher.
     """
 
-    def __init__(self, session: AsyncSession, organisation_id: UUID):
-        """Initialize the service with an org-scoped session.
+    def __init__(self, organisation_id: UUID, session: AsyncSession | None = None):
+        """Initialize the service with organisation context.
 
         Args:
-            session: Async database session scoped to the organisation
             organisation_id: UUID of the organisation
+            session: Optional async database session. If not provided,
+                     sync_organisation_timeline() will acquire fresh sessions.
+                     Required for sync_deal_timeline().
         """
-        self.session = session
         self.organisation_id = organisation_id
+        self._session = session  # Optional - used by sync_deal_timeline()
         self._stage_lookup_cache: dict[str, dict[str, Any]] | None = None
 
-    async def _get_stage_lookup(self) -> dict[str, dict[str, Any]]:
+    async def _get_stage_lookup(self, session: AsyncSession) -> dict[str, dict[str, Any]]:
         """Build a lookup map of stage external_id -> stage info.
+
+        Args:
+            session: Database session to use
 
         Returns dict mapping external_id to:
         {
@@ -120,7 +130,7 @@ class DealTimelineSyncService:
             stage_table.c.organisation_id == self.organisation_id,
             stage_table.c.is_deleted.is_(False),
         )
-        result = await self.session.execute(stmt)
+        result = await session.execute(stmt)
         stages = result.scalars().all()
 
         self._stage_lookup_cache = {
@@ -169,6 +179,8 @@ class DealTimelineSyncService:
         """
         Sync all timeline events for a single deal.
 
+        Requires session to be passed in constructor (used for deal-level tasks).
+
         Creates timeline events for all associations that don't already have them.
         Uses the unique constraint to avoid duplicates.
 
@@ -178,6 +190,41 @@ class DealTimelineSyncService:
 
         Returns:
             Stats dict with counts for each event type synced
+        """
+        if self._session is None:
+            raise ValueError(
+                "Session required for sync_deal_timeline(). Pass session to constructor."
+            )
+        session = self._session
+
+        results = await self._sync_deal_timeline_internal(session, deal_id, event_types)
+        await session.flush()
+
+        logger.info(
+            f"Timeline sync for deal {deal_id}: "
+            f"created={results['total_created']}, skipped={results['total_skipped']}"
+        )
+        return results
+
+    async def _sync_deal_timeline_internal(
+        self,
+        session: AsyncSession,
+        deal_id: UUID,
+        event_types: list[TimelineEventType] | None = None,
+    ) -> dict[str, int]:
+        """
+        Internal method to sync timeline events for a single deal.
+
+        Used by both sync_deal_timeline (with passed session) and
+        sync_organisation_timeline (with fresh session per batch).
+
+        Args:
+            session: Database session to use
+            deal_id: Deal UUID
+            event_types: Optional filter - only sync specific event types
+
+        Returns:
+            Stats dict with counts (does NOT flush/commit - caller handles it)
         """
         results = {
             "emails_synced": 0,
@@ -189,38 +236,38 @@ class DealTimelineSyncService:
         }
 
         # Fetch existing timeline events for this deal (for dedup)
-        existing_keys = await self._get_existing_event_keys(deal_id)
+        existing_keys = await self._get_existing_event_keys(session, deal_id)
 
         if not event_types or TimelineEventType.EMAIL in event_types:
-            email_stats = await self._sync_email_timeline_events(deal_id, existing_keys)
+            email_stats = await self._sync_email_timeline_events(session, deal_id, existing_keys)
             results["emails_synced"] = email_stats["synced"]
             results["total_created"] += email_stats["created"]
             results["total_skipped"] += email_stats["skipped"]
 
         if not event_types or TimelineEventType.MEETING in event_types:
-            meeting_stats = await self._sync_meeting_timeline_events(deal_id, existing_keys)
+            meeting_stats = await self._sync_meeting_timeline_events(
+                session, deal_id, existing_keys
+            )
             results["meetings_synced"] = meeting_stats["synced"]
             results["total_created"] += meeting_stats["created"]
             results["total_skipped"] += meeting_stats["skipped"]
 
         if not event_types or TimelineEventType.STAGE_CHANGE in event_types:
-            stage_stats = await self._sync_stage_change_timeline_events(deal_id, existing_keys)
+            stage_stats = await self._sync_stage_change_timeline_events(
+                session, deal_id, existing_keys
+            )
             results["stage_changes_synced"] = stage_stats["synced"]
             results["total_created"] += stage_stats["created"]
             results["total_skipped"] += stage_stats["skipped"]
 
         if not event_types or TimelineEventType.DEAL_CREATED in event_types:
-            created_stats = await self._sync_deal_created_timeline_event(deal_id, existing_keys)
+            created_stats = await self._sync_deal_created_timeline_event(
+                session, deal_id, existing_keys
+            )
             results["deal_created_synced"] = created_stats["synced"]
             results["total_created"] += created_stats["created"]
             results["total_skipped"] += created_stats["skipped"]
 
-        await self.session.flush()
-
-        logger.info(
-            f"Timeline sync for deal {deal_id}: "
-            f"created={results['total_created']}, skipped={results['total_skipped']}"
-        )
         return results
 
     async def sync_organisation_timeline(
@@ -231,6 +278,9 @@ class DealTimelineSyncService:
     ) -> dict[str, int]:
         """
         Sync timeline events for all deals in the organisation.
+
+        Uses fresh session pattern: acquires a new session for each batch,
+        releasing connections between batch processing.
 
         Processes in batches to manage memory and transaction size.
 
@@ -252,39 +302,51 @@ class DealTimelineSyncService:
             "total_skipped": 0,
         }
 
-        # Get deal IDs to process
+        # Phase 1: Get deal IDs to process (fresh session)
+        ids_to_process: list[UUID] = []
         if deal_ids:
             ids_to_process = deal_ids
         else:
-            deal_table: Table = _table(CRMDeal)
-            stmt = select(deal_table.c.deal_id).where(
-                deal_table.c.organisation_id == self.organisation_id,
-                deal_table.c.is_deleted.is_(False),
-            )
-            result = await self.session.execute(stmt)
-            ids_to_process = list(result.scalars().all())
+            async for session in acquire_org_async_session(self.organisation_id):
+                deal_table: Table = _table(CRMDeal)
+                stmt = select(deal_table.c.deal_id).where(
+                    deal_table.c.organisation_id == self.organisation_id,
+                    deal_table.c.is_deleted.is_(False),
+                )
+                result = await session.execute(stmt)
+                ids_to_process = list(result.scalars().all())
+
+        if not ids_to_process:
+            logger.info(f"No deals to sync timeline for org {self.organisation_id}")
+            return results
 
         logger.info(
             f"Syncing timeline for {len(ids_to_process)} deals in org {self.organisation_id}"
         )
 
-        # Process in batches
+        # Phase 2: Process in batches (fresh session per batch)
         for i in range(0, len(ids_to_process), batch_size):
             batch = ids_to_process[i : i + batch_size]
 
-            for deal_id in batch:
-                deal_stats = await self.sync_deal_timeline(deal_id, event_types)
-                results["deals_processed"] += 1
-                results["emails_synced"] += deal_stats["emails_synced"]
-                results["meetings_synced"] += deal_stats["meetings_synced"]
-                results["stage_changes_synced"] += deal_stats["stage_changes_synced"]
-                results["deal_created_synced"] += deal_stats["deal_created_synced"]
-                results["total_created"] += deal_stats["total_created"]
-                results["total_skipped"] += deal_stats["total_skipped"]
+            async for session in acquire_org_async_session(self.organisation_id):
+                # Clear stage lookup cache for fresh session
+                self._stage_lookup_cache = None
 
-            # Commit after each batch
-            await self.session.commit()
-            logger.debug(f"Committed timeline sync batch {i // batch_size + 1}")
+                for deal_id in batch:
+                    deal_stats = await self._sync_deal_timeline_internal(
+                        session, deal_id, event_types
+                    )
+                    results["deals_processed"] += 1
+                    results["emails_synced"] += deal_stats["emails_synced"]
+                    results["meetings_synced"] += deal_stats["meetings_synced"]
+                    results["stage_changes_synced"] += deal_stats["stage_changes_synced"]
+                    results["deal_created_synced"] += deal_stats["deal_created_synced"]
+                    results["total_created"] += deal_stats["total_created"]
+                    results["total_skipped"] += deal_stats["total_skipped"]
+
+                # Commit after each batch
+                await session.commit()
+                logger.debug(f"Committed timeline sync batch {i // batch_size + 1}")
 
         logger.info(
             f"Organisation timeline sync complete: {results['deals_processed']} deals, "
@@ -296,8 +358,15 @@ class DealTimelineSyncService:
     # Private Helpers
     # -------------------------------------------------------------------------
 
-    async def _get_existing_event_keys(self, deal_id: UUID) -> set[tuple[str, str]]:
-        """Get existing (event_type, source_record_id) pairs for a deal."""
+    async def _get_existing_event_keys(
+        self, session: AsyncSession, deal_id: UUID
+    ) -> set[tuple[str, str]]:
+        """Get existing (event_type, source_record_id) pairs for a deal.
+
+        Args:
+            session: Database session to use
+            deal_id: Deal UUID
+        """
         t: Table = _table(DealTimelineEvent)
         stmt = select(
             t.c.event_type,
@@ -306,7 +375,7 @@ class DealTimelineSyncService:
             t.c.organisation_id == self.organisation_id,
             t.c.deal_id == deal_id,
         )
-        result = await self.session.execute(stmt)
+        result = await session.execute(stmt)
         # Normalise event_type to a string so callers can safely compare keys
         # regardless of whether SQLAlchemy materialises it as an Enum or str.
         keys: set[tuple[str, str]] = set()
@@ -315,11 +384,17 @@ class DealTimelineSyncService:
             keys.add((event_type_str, source_record_id))
         return keys
 
-    async def _insert_timeline_event_ignore_conflict(self, event: DealTimelineEvent) -> bool:
+    async def _insert_timeline_event_ignore_conflict(
+        self, session: AsyncSession, event: DealTimelineEvent
+    ) -> bool:
         """Insert a timeline event, ignoring duplicates.
 
         This makes batch sync resilient to concurrent executions (or overlapping
         backfills) without relying on a precomputed key set.
+
+        Args:
+            session: Database session to use
+            event: Timeline event to insert
 
         Returns:
             True if inserted, False if skipped due to unique conflict.
@@ -335,15 +410,22 @@ class DealTimelineSyncService:
             .values(**values)
             .on_conflict_do_nothing(constraint="uq_timeline_event_source")
         )
-        result = await self.session.execute(stmt)
+        result = await session.execute(stmt)
         return (getattr(result, "rowcount", 0) or 0) > 0
 
     async def _sync_email_timeline_events(
         self,
+        session: AsyncSession,
         deal_id: UUID,
         existing_keys: set[tuple[str, str]],
     ) -> dict[str, int]:
-        """Batch sync email associations → timeline events."""
+        """Batch sync email associations → timeline events.
+
+        Args:
+            session: Database session to use
+            deal_id: Deal UUID
+            existing_keys: Set of existing (event_type, source_record_id) pairs
+        """
         stats = {"synced": 0, "created": 0, "skipped": 0}
 
         assoc_table: Table = _table(DealEmailAssociation)
@@ -368,7 +450,7 @@ class DealTimelineSyncService:
                 assoc_table.c.deal_id == deal_id,
             )
         )
-        result = await self.session.execute(stmt)
+        result = await session.execute(stmt)
 
         for assoc, email, integration in result:
             stats["synced"] += 1
@@ -388,7 +470,7 @@ class DealTimelineSyncService:
                 email=email,
                 event_source=resolved_source,
             )
-            created = await self._insert_timeline_event_ignore_conflict(timeline_event)
+            created = await self._insert_timeline_event_ignore_conflict(session, timeline_event)
             if created:
                 stats["created"] += 1
                 existing_keys.add(key)
@@ -400,10 +482,17 @@ class DealTimelineSyncService:
 
     async def _sync_meeting_timeline_events(
         self,
+        session: AsyncSession,
         deal_id: UUID,
         existing_keys: set[tuple[str, str]],
     ) -> dict[str, int]:
-        """Batch sync meeting associations → timeline events."""
+        """Batch sync meeting associations → timeline events.
+
+        Args:
+            session: Database session to use
+            deal_id: Deal UUID
+            existing_keys: Set of existing (event_type, source_record_id) pairs
+        """
         stats = {"synced": 0, "created": 0, "skipped": 0}
 
         assoc_table: Table = _table(CalendarEventDealAssociation)
@@ -412,8 +501,8 @@ class DealTimelineSyncService:
 
         # Fetch all meeting associations for this deal with event data.
         # Use selectinload for attendees/user_states to avoid lazy-load issues in async context.
-        attendees_attr: QueryableAttribute[Any] = CalendarEvent.attendees  # type: ignore[assignment]
-        user_states_attr: QueryableAttribute[Any] = CalendarEvent.user_states  # type: ignore[assignment]
+        attendees_attr = cast(Any, CalendarEvent.attendees)
+        user_states_attr = cast(Any, CalendarEvent.user_states)
         stmt = (
             select(CalendarEventDealAssociation, CalendarEvent)
             .outerjoin(
@@ -428,7 +517,7 @@ class DealTimelineSyncService:
                 assoc_table.c.deal_id == deal_id,
             )
         )
-        result = await self.session.execute(stmt)
+        result = await session.execute(stmt)
         rows = list(result.all())
 
         # Bulk fetch integration types for all integration_ids referenced by these events.
@@ -448,7 +537,7 @@ class DealTimelineSyncService:
             it_stmt = select(KnowledgeIntegration).where(
                 integration_table.c.integration_id.in_(integration_ids)
             )
-            it_result = await self.session.execute(it_stmt)
+            it_result = await session.execute(it_stmt)
             integration_type_by_id = {
                 row.integration_id: row.integration_type for row in it_result.scalars().all()
             }
@@ -486,7 +575,7 @@ class DealTimelineSyncService:
                 event=event,
                 event_source=resolved_source,
             )
-            created = await self._insert_timeline_event_ignore_conflict(timeline_event)
+            created = await self._insert_timeline_event_ignore_conflict(session, timeline_event)
             if created:
                 stats["created"] += 1
                 existing_keys.add(key)
@@ -498,14 +587,21 @@ class DealTimelineSyncService:
 
     async def _sync_stage_change_timeline_events(
         self,
+        session: AsyncSession,
         deal_id: UUID,
         existing_keys: set[tuple[str, str]],
     ) -> dict[str, int]:
-        """Batch sync stage history records → timeline events."""
+        """Batch sync stage history records → timeline events.
+
+        Args:
+            session: Database session to use
+            deal_id: Deal UUID
+            existing_keys: Set of existing (event_type, source_record_id) pairs
+        """
         stats = {"synced": 0, "created": 0, "skipped": 0}
 
         # Get stage lookup for resolving external_id -> name/label
-        stage_lookup = await self._get_stage_lookup()
+        stage_lookup = await self._get_stage_lookup(session)
 
         history_table: Table = _table(CRMDealStageHistory)
         integration_table: Table = _table(KnowledgeIntegration)
@@ -523,7 +619,7 @@ class DealTimelineSyncService:
                 history_table.c.is_deleted.is_(False),
             )
         )
-        result = await self.session.execute(stmt)
+        result = await session.execute(stmt)
 
         for history, integration in result:
             stats["synced"] += 1
@@ -568,7 +664,7 @@ class DealTimelineSyncService:
                 history_entry=history_entry,
                 event_source=resolved_source,
             )
-            created = await self._insert_timeline_event_ignore_conflict(timeline_event)
+            created = await self._insert_timeline_event_ignore_conflict(session, timeline_event)
             if created:
                 stats["created"] += 1
                 existing_keys.add(key)
@@ -580,10 +676,17 @@ class DealTimelineSyncService:
 
     async def _sync_deal_created_timeline_event(
         self,
+        session: AsyncSession,
         deal_id: UUID,
         existing_keys: set[tuple[str, str]],
     ) -> dict[str, int]:
-        """Create DEAL_CREATED timeline event for an existing deal."""
+        """Create DEAL_CREATED timeline event for an existing deal.
+
+        Args:
+            session: Database session to use
+            deal_id: Deal UUID
+            existing_keys: Set of existing (event_type, source_record_id) pairs
+        """
         stats = {"synced": 0, "created": 0, "skipped": 0}
 
         # Check if already exists
@@ -608,7 +711,7 @@ class DealTimelineSyncService:
                 deal_table.c.deal_id == deal_id,
             )
         )
-        result = await self.session.execute(stmt)
+        result = await session.execute(stmt)
         row = result.first()
 
         if not row:
@@ -626,7 +729,7 @@ class DealTimelineSyncService:
             deal=deal,
             event_source=resolved_source,
         )
-        created = await self._insert_timeline_event_ignore_conflict(timeline_event)
+        created = await self._insert_timeline_event_ignore_conflict(session, timeline_event)
         if created:
             stats["created"] = 1
             existing_keys.add(key)
