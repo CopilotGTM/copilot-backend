@@ -801,20 +801,37 @@ class NangoClient:
             logger.error(f"Proxy request failed: {str(e)}")
             raise NangoConnectionError(f"Proxy request failed: {str(e)}") from None
 
-    def parse_token_expiry(self, expires_in: int | None = None) -> datetime | None:
+    def parse_token_expiry(self, expires_value: int | str | None = None) -> datetime | None:
         """
         Parse token expiry time.
 
         Args:
-            expires_in: Number of seconds until token expires
+            expires_value: Either:
+                - Number of seconds until token expires (int or string of int)
+                - ISO datetime string (e.g., '2026-01-18T13:09:12.606Z')
 
         Returns:
-            DateTime when token expires, or None if no expiry
+            DateTime when token expires (naive UTC), or None if no expiry
         """
-        if expires_in is None:
+        if expires_value is None:
             return None
 
-        return datetime.now(UTC) + timedelta(seconds=expires_in)
+        # If it's a string, check if it's an ISO datetime or seconds
+        if isinstance(expires_value, str):
+            # ISO datetime string (contains 'T')
+            if "T" in expires_value:
+                # Parse ISO datetime and return as naive UTC
+                # Handle 'Z' suffix (UTC indicator)
+                iso_str = expires_value.replace("Z", "+00:00")
+                parsed = datetime.fromisoformat(iso_str)
+                # Return naive datetime (remove timezone for DB compatibility)
+                return parsed.replace(tzinfo=None)
+            else:
+                # It's a string of seconds
+                return datetime.utcnow() + timedelta(seconds=int(expires_value))
+
+        # It's an int (seconds)
+        return datetime.utcnow() + timedelta(seconds=expires_value)
 
     def is_token_expiring_soon(
         self,

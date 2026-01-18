@@ -1,255 +1,239 @@
 """
 Celery tasks for integration token refresh operations.
 
-These tasks handle automatic token refresh to maintain
-continuous OAuth connectivity for integrations.
+Three-tier architecture:
+    Celery Beat (every 30 min)
+        |
+    refresh_tokens_task [Tier 1 - all orgs]
+        |
+    refresh_tokens_org_task [Tier 2] (one per org, calls service)
+        |
+    refresh_token_task [Tier 3] (manual/on-demand only)
 """
 
-from contextlib import suppress
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from typing import Any
+from uuid import UUID
 
 from celery import Task
+from sqlalchemy import select
+from sqlmodel import col
 
-from src.infra.database.sessions import acquire_master_session, acquire_org_session
+from src.domain.models.master_tables import Organisation, OrganisationStatus
+from src.infra.database.sessions import acquire_master_async_session
+from src.infra.observability.context import correlation_headers
+from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
-from src.service.integrations.token_refresh_service import refresh_all_expiring_tokens
+from src.service.integrations.token_refresh_service import TokenRefreshService
 from src.workers.integrations_worker.celery_app import app
 
 logger = get_logger(__name__)
 
 
-class TokenRefreshTask(Task):
-    """
-    Base task class for token refresh operations.
-
-    Handles database session management and error handling.
-    """
-
-    def __call__(self, *args, **kwargs):
-        """Execute task with proper session management."""
-        return self.run(*args, **kwargs)
-
-
 @app.task(
-    bind=True,
-    base=TokenRefreshTask,
-    name="integrations.refresh_expiring_tokens",
-    max_retries=3,
-    default_retry_delay=300,  # 5 minutes
+    name="integrations.refresh_tokens",
+    bind=False,
+    max_retries=0,
+    acks_late=True,
 )
-def refresh_expiring_tokens_task(self, buffer_hours: int = 2):
+def refresh_tokens_task(buffer_hours: int = 2) -> dict[str, Any]:
     """
-    Scheduled task to refresh expiring OAuth tokens.
+    Tier 1: Dispatch token refresh for all approved organizations.
 
-    This task runs hourly via Celery beat to proactively refresh
-    tokens before they expire.
-
-    Args:
-        buffer_hours: Check for tokens expiring within this many hours (default: 2)
-
-    Returns:
-        Dict with refresh results summary
+    Triggered by: Celery Beat (scheduled every 30 minutes)
+    Dispatches: refresh_tokens_org_task for each approved organization
     """
-    logger.info(f"Starting scheduled token refresh task (buffer: {buffer_hours}h)")
+    started_at = datetime.now(UTC).isoformat()
 
-    try:
-        # Get master session to iterate through organizations
-        master_session_gen = acquire_master_session()
-        master_session = next(master_session_gen)
-
-        try:
-            # Query all organizations
-            from src.domain.models.master_tables.organisation import Organisation
-
-            organisations = (
-                master_session.query(Organisation).filter(Organisation.status == "ACTIVE").all()
-            )
-
-            logger.info(f"Processing {len(organisations)} active organizations")
-
-            total_summary = {
-                "organizations_processed": 0,
-                "total_integrations_checked": 0,
-                "total_successful_refreshes": 0,
-                "total_failed_refreshes": 0,
-                "total_deactivated": 0,
-            }
-
-            # Process each organization
-            for org in organisations:
-                try:
-                    org_id = org.organisation_id
-                    logger.info(f"Processing integrations for org {org_id}")
-
-                    # Get tenant session for this org
-                    tenant_session_gen = acquire_org_session(org_id)
-                    tenant_session = next(tenant_session_gen)
-
-                    try:
-                        # Run refresh for this org
-                        import asyncio
-
-                        summary = asyncio.run(
-                            refresh_all_expiring_tokens(
-                                db_session=tenant_session, buffer_hours=buffer_hours
-                            )
-                        )
-
-                        # Aggregate results
-                        total_summary["organizations_processed"] += 1
-                        total_summary["total_integrations_checked"] += summary["total_checked"]
-                        total_summary["total_successful_refreshes"] += summary[
-                            "successful_refreshes"
-                        ]
-                        total_summary["total_failed_refreshes"] += summary["failed_refreshes"]
-                        total_summary["total_deactivated"] += summary["deactivated"]
-
-                        logger.info(
-                            f"Org {org_id}: {summary['successful_refreshes']} successful, "
-                            f"{summary['failed_refreshes']} failed"
-                        )
-
-                    finally:
-                        # Close tenant session
-                        with suppress(StopIteration):
-                            next(tenant_session_gen)
-
-                except Exception as e:
-                    logger.error(
-                        f"Failed to process integrations for org {org.organisation_id}: {str(e)}",
-                        exc_info=True,
-                    )
-                    # Continue with next org
-                    continue
-
-            logger.info(
-                f"Token refresh task complete: {total_summary['organizations_processed']} orgs, "
-                f"{total_summary['total_integrations_checked']} integrations checked, "
-                f"{total_summary['total_successful_refreshes']} refreshed, "
-                f"{total_summary['total_failed_refreshes']} failed"
-            )
-
-            return total_summary
-
-        finally:
-            # Close master session
-            with suppress(StopIteration):
-                next(master_session_gen)
-
-    except Exception as e:
-        logger.error(f"Token refresh task failed: {str(e)}", exc_info=True)
-
-        # Retry on failure
-        try:
-            raise self.retry(exc=e)
-        except self.MaxRetriesExceededError:
-            logger.error("Max retries exceeded for token refresh task")
-            return {
-                "error": str(e),
-                "organizations_processed": 0,
-                "total_integrations_checked": 0,
-                "total_successful_refreshes": 0,
-                "total_failed_refreshes": 0,
-                "total_deactivated": 0,
-            }
-
-
-@app.task(
-    bind=True,
-    name="integrations.refresh_single_integration",
-    max_retries=3,
-    default_retry_delay=60,  # 1 minute
-)
-def refresh_single_integration_task(self, organisation_id: str, integration_id: str):
-    """
-    Manually trigger token refresh for a specific integration.
-
-    Can be called from API endpoint or on-demand.
-
-    Args:
-        organisation_id: Organization ID
-        integration_id: Integration ID to refresh
-
-    Returns:
-        Dict with refresh result
-    """
-    from uuid import UUID
-
-    logger.info(
-        f"Starting manual token refresh for integration {integration_id} in org {organisation_id}"
-    )
-
-    try:
-        org_uuid = UUID(organisation_id)
-        int_uuid = UUID(integration_id)
-
-        tenant_session_gen = acquire_org_session(org_uuid)
-        tenant_session = next(tenant_session_gen)
-
-        try:
-            from src.service.integrations import NangoClient, TokenRefreshService
-
-            nango = NangoClient()
-            service = TokenRefreshService(db_session=tenant_session, nango_client=nango)
-
-            try:
-                # Get the integration
-                from sqlalchemy import and_, select
-
-                from src.domain.models.organisation_tables.sync import KnowledgeIntegration
-
-                stmt = select(KnowledgeIntegration).where(
-                    and_(
-                        KnowledgeIntegration.integration_id == int_uuid,
-                        KnowledgeIntegration.organisation_id == org_uuid,
-                    )
-                )
-
-                result = tenant_session.execute(stmt)
-                integration = result.scalar_one_or_none()
-
-                if not integration:
-                    logger.warning(f"Integration {integration_id} not found")
-                    return {
-                        "success": False,
-                        "error": "Integration not found",
-                        "integration_id": integration_id,
-                    }
-
-                # Refresh the token
-                import asyncio
-
-                refresh_result = asyncio.run(service.refresh_integration_token(integration))
-
-                logger.info(
-                    f"Manual token refresh for integration {integration_id}: "
-                    f"{'success' if refresh_result['success'] else 'failed'}"
-                )
-
-                return refresh_result
-
-            finally:
-                import asyncio
-
-                asyncio.run(nango.close())
-
-        finally:
-            # Close tenant session
-            with suppress(StopIteration):
-                next(tenant_session_gen)
-
-    except Exception as e:
-        logger.error(
-            f"Failed to manually refresh integration {integration_id}: {str(e)}",
-            exc_info=True,
+    async def _dispatch_all_orgs() -> dict[str, Any]:
+        logger.info(
+            "Starting token refresh for all organizations (Tier 1), buffer=%dh", buffer_hours
         )
 
-        # Retry on failure
-        try:
-            raise self.retry(exc=e)
-        except self.MaxRetriesExceededError:
-            logger.error(f"Max retries exceeded for integration {integration_id}")
+        # Query all approved organizations
+        org_ids: list[UUID] = []
+        async for master_session in acquire_master_async_session():
+            stmt = select(col(Organisation.organisation_id)).where(
+                col(Organisation.status) == OrganisationStatus.APPROVED
+            )
+            result = await master_session.execute(stmt)
+            org_ids = [row[0] for row in result.all()]
+
+        if not org_ids:
             return {
-                "success": False,
-                "error": str(e),
-                "integration_id": integration_id,
+                "status": "completed",
+                "started_at": started_at,
+                "completed_at": datetime.now(UTC).isoformat(),
+                "summary": {"total_orgs": 0, "orgs_triggered": 0, "orgs_skipped": 0},
+                "org_tasks": [],
             }
+
+        logger.info("Found %d approved organization(s) for token refresh", len(org_ids))
+
+        # Dispatch Tier 2 for each organization
+        org_tasks = []
+        orgs_triggered = 0
+        orgs_skipped = 0
+
+        for org_id in org_ids:
+            try:
+                task = refresh_tokens_org_task.apply_async(
+                    kwargs={"organisation_id": str(org_id), "buffer_hours": buffer_hours},
+                    headers=correlation_headers(),
+                )
+                org_tasks.append({"org_id": str(org_id), "task_id": task.id, "status": "triggered"})
+                orgs_triggered += 1
+            except Exception as e:
+                logger.error("Failed to dispatch token refresh for org %s: %s", org_id, str(e))
+                org_tasks.append({"org_id": str(org_id), "status": "failed", "error": str(e)})
+                orgs_skipped += 1
+
+        return {
+            "status": "completed",
+            "started_at": started_at,
+            "completed_at": datetime.now(UTC).isoformat(),
+            "summary": {
+                "total_orgs": len(org_ids),
+                "orgs_triggered": orgs_triggered,
+                "orgs_skipped": orgs_skipped,
+            },
+            "org_tasks": org_tasks,
+        }
+
+    try:
+        return run_async(_dispatch_all_orgs())
+    except Exception as e:
+        logger.error("Token refresh all-orgs task failed: error=%s", str(e), exc_info=True)
+        return {
+            "status": "failed",
+            "started_at": started_at,
+            "completed_at": datetime.now(UTC).isoformat(),
+            "error": str(e),
+            "error_type": type(e).__name__,
+        }
+
+
+@app.task(
+    name="integrations.refresh_tokens_org",
+    bind=True,
+    max_retries=2,
+    default_retry_delay=120,
+    acks_late=True,
+    soft_time_limit=300,
+    time_limit=330,
+)
+def refresh_tokens_org_task(
+    self: Task,
+    organisation_id: str,
+    buffer_hours: int = 2,
+) -> dict[str, Any]:
+    """
+    Tier 2: Refresh tokens needing refresh in one organization.
+
+    Refreshes tokens that have no expiry set (NULL) or are expiring soon.
+
+    Triggered by: refresh_tokens_task (Tier 1)
+    Calls: TokenRefreshService which manages its own sessions (fresh session pattern)
+    """
+    started_at = datetime.now(UTC).isoformat()
+    org_id = UUID(organisation_id)
+
+    async def _refresh_org() -> dict[str, Any]:
+        logger.info(
+            "Starting token refresh for organization (Tier 2): %s, buffer=%dh", org_id, buffer_hours
+        )
+
+        # Org-level: TokenRefreshService manages its own sessions (fresh session pattern)
+        service = TokenRefreshService(organisation_id=org_id)
+        result = await service.refresh_org_tokens_async(buffer_hours=buffer_hours)
+
+        return {
+            "status": result.get("status", "completed"),
+            "organisation_id": organisation_id,
+            "started_at": started_at,
+            "completed_at": datetime.now(UTC).isoformat(),
+            **result,
+        }
+
+    try:
+        return run_async(_refresh_org())
+    except Exception as e:
+        logger.error(
+            "Token refresh org task failed: org=%s error=%s", organisation_id, str(e), exc_info=True
+        )
+        if self.request.retries < self.max_retries:
+            raise self.retry(exc=e) from e
+        return {
+            "status": "failed",
+            "organisation_id": organisation_id,
+            "started_at": started_at,
+            "completed_at": datetime.now(UTC).isoformat(),
+            "error": str(e),
+            "error_type": type(e).__name__,
+        }
+
+
+@app.task(
+    name="integrations.refresh_token",
+    bind=True,
+    max_retries=3,
+    default_retry_delay=60,
+    acks_late=True,
+    soft_time_limit=120,
+    time_limit=150,
+)
+def refresh_token_task(
+    self: Task,
+    organisation_id: str,
+    integration_id: str,
+) -> dict[str, Any]:
+    """
+    Tier 3: Refresh token for a single integration (manual/on-demand only).
+
+    This task is NOT called by the scheduled flow. Use it for:
+    - Manual refresh from API endpoint
+    - On-demand refresh triggered by other services
+    """
+    started_at = datetime.now(UTC).isoformat()
+    org_id = UUID(organisation_id)
+    int_id = UUID(integration_id)
+
+    async def _refresh_integration() -> dict[str, Any]:
+        logger.info("Starting manual token refresh (Tier 3): org=%s integration=%s", org_id, int_id)
+
+        # Service manages its own session (fresh session pattern)
+        service = TokenRefreshService(organisation_id=org_id)
+        result = await service.refresh_single_token_async(integration_id=int_id)
+
+        return {
+            "status": "success" if result["success"] else "failed",
+            "organisation_id": organisation_id,
+            "integration_id": integration_id,
+            "started_at": started_at,
+            "completed_at": datetime.now(UTC).isoformat(),
+            **result,
+        }
+
+    try:
+        return run_async(_refresh_integration())
+    except Exception as e:
+        logger.error(
+            "Token refresh failed: org=%s integration=%s error=%s",
+            organisation_id,
+            integration_id,
+            str(e),
+            exc_info=True,
+        )
+        if self.request.retries < self.max_retries:
+            raise self.retry(exc=e) from e
+        return {
+            "status": "failed",
+            "organisation_id": organisation_id,
+            "integration_id": integration_id,
+            "started_at": started_at,
+            "completed_at": datetime.now(UTC).isoformat(),
+            "error": str(e),
+            "error_type": type(e).__name__,
+        }

@@ -34,13 +34,17 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
         )
 
         self.task_routes = {
-            # Token refresh tasks
-            "integrations.refresh_expiring_tokens": {
+            # Token refresh tasks (three-tier architecture)
+            "integrations.refresh_tokens": {
                 "queue": "integrations",
                 "routing_key": "integrations",
             },
-            "integrations.refresh_single_integration": {
-                "queue": "integrations_priority",  # Priority queue for manual refresh
+            "integrations.refresh_tokens_org": {
+                "queue": "integrations",
+                "routing_key": "integrations",
+            },
+            "integrations.refresh_token": {
+                "queue": "integrations_priority",  # Priority queue for single refresh
                 "routing_key": "integrations_priority",
             },
             # Generic data sync task (used by three-tier tasks)
@@ -226,14 +230,14 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
             },
         }
 
-        # maintenance_schedule = {
-        #     "refresh-expiring-oauth-tokens": {
-        #         "task": "integrations.refresh_expiring_tokens",
-        #         "schedule": crontab(minute=0),  # Hourly token refresh window
-        #         "kwargs": {"buffer_hours": 2},
-        #         "options": {"queue": "integrations", "routing_key": "integrations"},
-        #     },
-        # }
+        maintenance_schedule = {
+            "refresh-tokens": {
+                "task": "integrations.refresh_tokens",
+                "schedule": crontab(minute="*/30"),  # Every 30 minutes
+                "kwargs": {"buffer_hours": 2},
+                "options": {"queue": "integrations", "routing_key": "integrations"},
+            },
+        }
 
         communication_schedule = {
             # US business hours (12:00-23:00 UTC)
@@ -273,6 +277,6 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
 
         self.beat_schedule = {
             **crm_schedule,
-            # **maintenance_schedule,
+            **maintenance_schedule,
             **communication_schedule,
         }

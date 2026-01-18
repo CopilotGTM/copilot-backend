@@ -7,9 +7,24 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 from src.infra.utils.logger import get_logger
-from src.service.integrations.nango_client import NangoClient
+from src.service.integrations.nango_client import NangoClient, NangoConnectionError
 
 logger = get_logger(__name__)
+
+
+class TokenExpiredError(Exception):
+    """Raised when the integration token has expired and cannot be auto-refreshed."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        connection_id: str | None = None,
+        provider: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.connection_id = connection_id
+        self.provider = provider
 
 
 class BaseFetcher(ABC):
@@ -95,6 +110,10 @@ class BaseFetcher(ABC):
 
         Returns:
             Combined list of all records across pages
+
+        Raises:
+            TokenExpiredError: If authentication fails (401/403)
+            NangoConnectionError: If API request fails after retries
         """
         all_records: list[dict[str, Any]] = []
         params = params or {}
@@ -111,13 +130,38 @@ class BaseFetcher(ABC):
                 self.connection_id,
             )
 
-            response = await self.nango_client.proxy_request(
-                provider_config_key=self.provider_config_key,
-                connection_id=self.connection_id,
-                endpoint=endpoint,
-                method="GET",
-                params=params,
-            )
+            try:
+                response = await self.nango_client.proxy_request(
+                    provider_config_key=self.provider_config_key,
+                    connection_id=self.connection_id,
+                    endpoint=endpoint,
+                    method="GET",
+                    params=params,
+                )
+            except NangoConnectionError as e:
+                # Check if it's an auth error (401/403)
+                if e.status_code in (401, 403):
+                    logger.error(
+                        "Auth error during paginated fetch (provider=%s, connection=%s, endpoint=%s): %s",
+                        self.provider_config_key,
+                        self.connection_id,
+                        endpoint,
+                        str(e),
+                    )
+                    raise TokenExpiredError(
+                        f"Authentication failed for {self.provider_config_key}: {str(e)}",
+                        connection_id=self.connection_id,
+                        provider=self.provider_config_key,
+                    ) from e
+                logger.error(
+                    "Connection error during paginated fetch (provider=%s, connection=%s, endpoint=%s, page=%d): %s",
+                    self.provider_config_key,
+                    self.connection_id,
+                    endpoint,
+                    page,
+                    str(e),
+                )
+                raise
 
             if not response or not isinstance(response, dict):
                 break
@@ -163,6 +207,10 @@ class BaseFetcher(ABC):
 
         Returns:
             Combined list of all records
+
+        Raises:
+            TokenExpiredError: If authentication fails (401/403)
+            NangoConnectionError: If API request fails after retries
         """
         all_records: list[dict[str, Any]] = []
 
@@ -177,13 +225,39 @@ class BaseFetcher(ABC):
                 endpoint,
             )
 
-            response = await self.nango_client.proxy_request(
-                provider_config_key=self.provider_config_key,
-                connection_id=self.connection_id,
-                endpoint=endpoint,
-                method="POST",
-                data={"ids": batch},
-            )
+            try:
+                response = await self.nango_client.proxy_request(
+                    provider_config_key=self.provider_config_key,
+                    connection_id=self.connection_id,
+                    endpoint=endpoint,
+                    method="POST",
+                    data={"ids": batch},
+                )
+            except NangoConnectionError as e:
+                # Check if it's an auth error (401/403)
+                if e.status_code in (401, 403):
+                    logger.error(
+                        "Auth error during batch fetch (provider=%s, connection=%s, endpoint=%s): %s",
+                        self.provider_config_key,
+                        self.connection_id,
+                        endpoint,
+                        str(e),
+                    )
+                    raise TokenExpiredError(
+                        f"Authentication failed for {self.provider_config_key}: {str(e)}",
+                        connection_id=self.connection_id,
+                        provider=self.provider_config_key,
+                    ) from e
+                logger.error(
+                    "Connection error during batch fetch (provider=%s, connection=%s, endpoint=%s, batch=%d-%d): %s",
+                    self.provider_config_key,
+                    self.connection_id,
+                    endpoint,
+                    i,
+                    i + len(batch),
+                    str(e),
+                )
+                raise
 
             if response and isinstance(response, dict):
                 records = self._extract_records_from_response(response)

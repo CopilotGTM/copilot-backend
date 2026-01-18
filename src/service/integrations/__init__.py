@@ -10,7 +10,7 @@ This module provides services for:
 
 from .calendar_sync_service import CalendarSyncService
 from .integration_service import IntegrationService
-from .nango_client import NangoClient
+from .nango_client import NangoClient, NangoConnectionError
 from .token_refresh_service import TokenRefreshService
 
 # Note: NangoWebhookService is intentionally NOT exported here because it has
@@ -24,6 +24,7 @@ from .token_refresh_service import TokenRefreshService
 
 __all__ = [
     "NangoClient",
+    "NangoConnectionError",
     "IntegrationService",
     "TokenRefreshService",
     "CalendarSyncService",

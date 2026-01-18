@@ -58,16 +58,18 @@ from .messaging import (
     sync_messaging_channels_org_task,
 )
 
-# Token refresh tasks
+# Token refresh tasks (three-tier architecture)
 from .token_refresh import (
-    refresh_expiring_tokens_task,
-    refresh_single_integration_task,
+    refresh_token_task,
+    refresh_tokens_org_task,
+    refresh_tokens_task,
 )
 
 __all__ = [
-    # Token refresh
-    "refresh_expiring_tokens_task",
-    "refresh_single_integration_task",
+    # Token refresh (three-tier architecture)
+    "refresh_tokens_task",
+    "refresh_tokens_org_task",
+    "refresh_token_task",
     # Calendar sync (three-tier architecture)
     "sync_calendar_all_orgs_task",
     "sync_calendar_org_task",

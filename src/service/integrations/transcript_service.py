@@ -32,7 +32,7 @@ from src.domain.models.organisation_tables.sync.meeting_intelligence import (
     TranscriptSegment,
 )
 from src.infra.utils.logger import get_logger
-from src.service.integrations.nango_client import NangoClient
+from src.service.integrations.nango_client import NangoClient, NangoConnectionError
 
 logger = get_logger(__name__)
 
@@ -320,6 +320,15 @@ class TranscriptService:
             await self.session.flush()
 
         try:
+            # Guard: connection_id must be set
+            if not integration.connection_id:
+                return TranscriptFetchResult(
+                    success=False,
+                    meeting=meeting,
+                    error="Integration has no connection_id",
+                    should_retry_other_integration=True,
+                )
+
             nango = NangoClient()
 
             # Resolve meeting ID
@@ -403,21 +412,35 @@ class TranscriptService:
 
             return TranscriptFetchResult(success=True, meeting=meeting)
 
-        except Exception as e:
-            error_msg = str(e).lower()
-            # Connection/auth errors might work with another integration
-            should_retry = "connection" in error_msg or "auth" in error_msg or "403" in error_msg
+        except NangoConnectionError as e:
+            # Connection/auth errors - should retry with another integration
+            # Check status_code for auth errors (401/403)
+            is_auth_error = e.status_code in (401, 403) if e.status_code else False
             logger.warning(
-                "Failed to fetch transcript with integration %s: %s (retry=%s)",
+                "%s fetching transcript with integration %s: %s (will retry with other integration)",
+                "Auth error" if is_auth_error else "Connection error",
                 integration.integration_email,
                 str(e),
-                should_retry,
             )
             return TranscriptFetchResult(
                 success=False,
                 meeting=meeting,
                 error=str(e)[:500],
-                should_retry_other_integration=should_retry,
+                should_retry_other_integration=True,
+            )
+
+        except Exception as e:
+            # Other unexpected errors - don't retry (likely not auth-related)
+            logger.warning(
+                "Unexpected error fetching transcript with integration %s: %s (will not retry)",
+                integration.integration_email,
+                str(e),
+            )
+            return TranscriptFetchResult(
+                success=False,
+                meeting=meeting,
+                error=str(e)[:500],
+                should_retry_other_integration=False,
             )
 
     # -------------------------------------------------------------------------
@@ -482,6 +505,10 @@ class TranscriptService:
             Meeting with transcript, or None if fetch failed
         """
         # Get integration for connection_id
+        if not event.integration_id:
+            logger.warning(f"No integration_id for event {event.event_id}")
+            return existing_meeting
+
         integration = await self._get_integration(event.integration_id)
         if not integration or not integration.connection_id:
             logger.warning(f"No integration/connection found for event {event.event_id}")
