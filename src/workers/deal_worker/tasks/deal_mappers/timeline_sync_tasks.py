@@ -35,6 +35,7 @@ from uuid import UUID
 
 from celery import Task
 from sqlalchemy import select
+from sqlmodel import col
 
 from src.domain.models.master_tables import Organisation, OrganisationStatus
 from src.domain.models.organisation_tables.sync.timeline_models import TimelineEventType
@@ -96,8 +97,8 @@ def trigger_timeline_sync_all_orgs_task() -> dict[str, Any]:
     async def _dispatch_all_orgs() -> dict[str, Any]:
         org_ids: list[UUID] = []
         async for master_session in acquire_master_async_session():
-            stmt = select(Organisation.organisation_id).where(  # type: ignore
-                Organisation.status == OrganisationStatus.APPROVED
+            stmt = select(col(Organisation.organisation_id)).where(
+                col(Organisation.status) == OrganisationStatus.APPROVED
             )
             result = await master_session.execute(stmt)
             org_ids = [row[0] for row in result.all()]
@@ -118,7 +119,7 @@ def trigger_timeline_sync_all_orgs_task() -> dict[str, Any]:
 
         for org_id in org_ids:
             try:
-                sync_org_timeline_task.apply_async(  # type: ignore
+                sync_org_timeline_task.apply_async(
                     kwargs={"organisation_id": str(org_id)},
                 )
                 orgs_triggered += 1
@@ -209,28 +210,19 @@ def sync_org_timeline_task(
         parsed_deal_ids = [UUID(d) for d in deal_ids] if deal_ids else None
         parsed_types = [TimelineEventType(t) for t in event_types] if event_types else None
 
-        async for session in acquire_org_async_session(org_uuid):
-            service = DealTimelineSyncService(session, org_uuid)
-            result = await service.sync_organisation_timeline(
-                deal_ids=parsed_deal_ids,
-                event_types=parsed_types,
-                batch_size=batch_size,
-            )
-            await session.commit()
-            return {
-                "status": "success",
-                "organisation_id": organisation_id,
-                "started_at": started_at,
-                "completed_at": datetime.now(UTC).isoformat(),
-                **result,
-            }
-
+        # Org-level: DealTimelineSyncService manages its own sessions (fresh session pattern)
+        service = DealTimelineSyncService(org_uuid)
+        result = await service.sync_organisation_timeline(
+            deal_ids=parsed_deal_ids,
+            event_types=parsed_types,
+            batch_size=batch_size,
+        )
         return {
-            "status": "failed",
+            "status": "success",
             "organisation_id": organisation_id,
             "started_at": started_at,
             "completed_at": datetime.now(UTC).isoformat(),
-            "error": "Failed to acquire database session",
+            **result,
         }
 
     try:
@@ -307,8 +299,9 @@ def sync_deal_timeline_task(
     async def _run() -> dict[str, Any]:
         parsed_types = [TimelineEventType(t) for t in event_types] if event_types else None
 
+        # Deal-level: Pass session to constructor (sync_deal_timeline requires it)
         async for session in acquire_org_async_session(org_uuid):
-            service = DealTimelineSyncService(session, org_uuid)
+            service = DealTimelineSyncService(org_uuid, session=session)
             result = await service.sync_deal_timeline(deal_uuid, parsed_types)
             await session.commit()
             return {

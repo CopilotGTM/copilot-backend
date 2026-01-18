@@ -34,7 +34,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 from sqlalchemy import select
@@ -52,6 +52,7 @@ from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     StakeholderStance,
     StakeholderTemperature,
 )
+from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -108,25 +109,41 @@ class OrgStakeholderSyncResult:
 class StakeholderSyncService:
     """Syncs stakeholders from CRM deal participants.
 
-    Usage (per-deal):
-        service = StakeholderSyncService(session, organisation_id)
-        result = await service.sync_for_deal(deal_id)
-        if result.requires_rematching:
-            # Dispatch Task 2/3
+    Uses fresh session pattern for better connection management:
+    - Org-level: Acquires fresh session per deal, releases between deals
+    - Deal-level: Uses session passed to constructor
 
     Usage (org-level - for initial sync):
-        service = StakeholderSyncService(session, organisation_id)
+        service = StakeholderSyncService(organisation_id)
         result = await service.sync_for_organisation()
         if result.requires_rematching:
             # Dispatch Task 2/3 for entire org
+
+    Usage (per-deal):
+        service = StakeholderSyncService(organisation_id, session=session)
+        result = await service.sync_for_deal(deal_id)
+        if result.requires_rematching:
+            # Dispatch Task 2/3
     """
 
-    def __init__(self, session: AsyncSession, organisation_id: UUID) -> None:
-        self.session = session
+    def __init__(self, organisation_id: UUID, session: AsyncSession | None = None) -> None:
+        """
+        Initialize the stakeholder sync service.
+
+        Args:
+            organisation_id: UUID of the organisation
+            session: Optional async database session. If not provided,
+                     sync_for_organisation() will acquire fresh sessions.
+                     Required for sync_for_deal().
+        """
         self.organisation_id = organisation_id
+        self._session = session  # Optional - used by sync_for_deal()
 
     async def sync_for_organisation(self) -> OrgStakeholderSyncResult:
         """Sync stakeholders for ALL deals in the organization.
+
+        Uses fresh session pattern: acquires a new session for each deal,
+        releasing connections between deal processing.
 
         This is used after CRM initial sync to ensure all deals have their
         stakeholders synced before calendar/email matching runs.
@@ -136,12 +153,15 @@ class StakeholderSyncService:
         """
         result = OrgStakeholderSyncResult(organisation_id=self.organisation_id)
 
-        # Get all deal IDs for this org
-        stmt = select(CRMDeal.deal_id).where(  # type: ignore
-            col(CRMDeal.organisation_id) == self.organisation_id
-        )
-        query_result = await self.session.execute(stmt)
-        deal_ids = [row[0] for row in query_result.all()]
+        # Phase 1: Get all deal IDs (fresh session)
+        deal_ids: list[UUID] = []
+        async for session in acquire_org_async_session(self.organisation_id):
+            stmt = select(col(CRMDeal.deal_id)).where(
+                col(CRMDeal.organisation_id) == self.organisation_id
+            )
+            query_result = await session.execute(stmt)
+            deal_ids = [row[0] for row in query_result.all()]
+
         result.total_deals = len(deal_ids)
 
         if result.total_deals == 0:
@@ -154,31 +174,30 @@ class StakeholderSyncService:
             self.organisation_id,
         )
 
-        # Sync stakeholders for each deal
+        # Phase 2: Process each deal with fresh session per deal
         for deal_id in deal_ids:
-            try:
-                deal_result = await self.sync_for_deal(deal_id)
-                result.successful_deals += 1
-                result.stakeholders_created += deal_result.created
-                result.stakeholders_updated += deal_result.updated
-                result.stakeholders_deactivated += deal_result.deactivated
+            async for session in acquire_org_async_session(self.organisation_id):
+                try:
+                    deal_result = await self._sync_deal_internal(session, deal_id)
+                    result.successful_deals += 1
+                    result.stakeholders_created += deal_result.created
+                    result.stakeholders_updated += deal_result.updated
+                    result.stakeholders_deactivated += deal_result.deactivated
 
-                if deal_result.errors:
-                    result.errors.extend(deal_result.errors[:3])  # Limit per deal
+                    if deal_result.errors:
+                        result.errors.extend(deal_result.errors[:3])  # Limit per deal
 
-            except Exception as e:
-                # CRITICAL: Rollback to clear the failed transaction state
-                # Otherwise all subsequent queries will fail with:
-                # "current transaction is aborted, commands ignored until end of transaction block"
-                await self.session.rollback()
+                    await session.commit()
 
-                result.failed_deals += 1
-                result.errors.append(f"Deal {deal_id}: {str(e)}")
-                logger.warning(
-                    "Failed to sync stakeholders for deal %s: %s",
-                    deal_id,
-                    str(e),
-                )
+                except Exception as e:
+                    await session.rollback()
+                    result.failed_deals += 1
+                    result.errors.append(f"Deal {deal_id}: {str(e)}")
+                    logger.warning(
+                        "Failed to sync stakeholders for deal %s: %s",
+                        deal_id,
+                        str(e),
+                    )
 
         logger.info(
             "Org stakeholder sync complete: org=%s deals=%d/%d created=%d updated=%d",
@@ -194,6 +213,8 @@ class StakeholderSyncService:
     async def sync_for_deal(self, deal_id: UUID) -> StakeholderSyncResult:
         """Sync stakeholders for a deal from CRMDealParticipant records.
 
+        Requires session to be passed in constructor (used for deal-level tasks).
+
         Only processes participants where participant_type = CONTACT.
 
         Args:
@@ -202,8 +223,41 @@ class StakeholderSyncService:
         Returns:
             StakeholderSyncResult with counts and requires_rematching flag
         """
+        if self._session is None:
+            raise ValueError("Session required for sync_for_deal(). Pass session to constructor.")
+        session = self._session
+
+        result = await self._sync_deal_internal(session, deal_id)
+        await session.commit()
+
+        logger.info(
+            "Stakeholder sync for deal %s: created=%d updated=%d deactivated=%d skipped=%d",
+            deal_id,
+            result.created,
+            result.updated,
+            result.deactivated,
+            result.skipped,
+        )
+
+        return result
+
+    async def _sync_deal_internal(
+        self, session: AsyncSession, deal_id: UUID
+    ) -> StakeholderSyncResult:
+        """Internal method to sync stakeholders for a deal.
+
+        Used by both sync_for_deal (with passed session) and
+        sync_for_organisation (with fresh session per deal).
+
+        Args:
+            session: Database session to use
+            deal_id: UUID of the deal to sync
+
+        Returns:
+            StakeholderSyncResult with counts (does NOT commit - caller handles it)
+        """
         # Load deal with participants
-        deal = await self._load_deal(deal_id)
+        deal = await self._load_deal(session, deal_id)
         if not deal:
             return StakeholderSyncResult(
                 deal_id=deal_id,
@@ -216,7 +270,7 @@ class StakeholderSyncService:
         )
 
         # Load existing stakeholders
-        existing_stakeholders = await self._load_stakeholders(deal_id)
+        existing_stakeholders = await self._load_stakeholders(session, deal_id)
         existing_by_email: dict[str, DealStakeholder] = {
             s.email.lower(): s for s in existing_stakeholders if s.email
         }
@@ -243,6 +297,7 @@ class StakeholderSyncService:
             seen_emails.add(email)
 
             was_created = await self._ensure_stakeholder(
+                session,
                 deal=deal,
                 participant=participant,
                 existing=existing_by_email.get(email),
@@ -263,43 +318,46 @@ class StakeholderSyncService:
             if should_deactivate:
                 stakeholder.is_deleted = True
                 stakeholder.updated_at = datetime.now(UTC)
-                self.session.add(stakeholder)
+                session.add(stakeholder)
                 result.deactivated += 1
-
-        await self.session.commit()
-
-        logger.info(
-            "Stakeholder sync for deal %s: created=%d updated=%d deactivated=%d skipped=%d",
-            deal_id,
-            result.created,
-            result.updated,
-            result.deactivated,
-            result.skipped,
-        )
 
         return result
 
-    async def _load_deal(self, deal_id: UUID) -> CRMDeal | None:
-        """Load deal with participants."""
+    async def _load_deal(self, session: AsyncSession, deal_id: UUID) -> CRMDeal | None:
+        """Load deal with participants.
+
+        Args:
+            session: Database session to use
+            deal_id: UUID of the deal to load
+        """
+        deal_participants_rel = cast(Any, CRMDeal.participants)
         stmt = (
             select(CRMDeal)
             .where(col(CRMDeal.deal_id) == deal_id)
-            .options(selectinload(CRMDeal.participants))  # type: ignore
+            .options(selectinload(deal_participants_rel))
         )
-        result = await self.session.execute(stmt)
+        result = await session.execute(stmt)
         return result.scalars().first()
 
-    async def _load_stakeholders(self, deal_id: UUID) -> list[DealStakeholder]:
-        """Load existing stakeholders for a deal."""
+    async def _load_stakeholders(
+        self, session: AsyncSession, deal_id: UUID
+    ) -> list[DealStakeholder]:
+        """Load existing stakeholders for a deal.
+
+        Args:
+            session: Database session to use
+            deal_id: UUID of the deal
+        """
         stmt = select(DealStakeholder).where(
             col(DealStakeholder.deal_id) == deal_id,
             col(DealStakeholder.organisation_id) == self.organisation_id,
         )
-        result = await self.session.execute(stmt)
+        result = await session.execute(stmt)
         return list(result.scalars().all())
 
     async def _ensure_stakeholder(
         self,
+        session: AsyncSession,
         deal: CRMDeal,
         participant: CRMDealParticipant,
         existing: DealStakeholder | None = None,
@@ -307,6 +365,7 @@ class StakeholderSyncService:
         """Create or update a stakeholder from a CRMDealParticipant.
 
         Args:
+            session: Database session to use
             deal: The CRMDeal record
             participant: The CRMDealParticipant record (must be type=CONTACT)
             existing: Existing DealStakeholder if found by email
@@ -315,7 +374,13 @@ class StakeholderSyncService:
             True if created new stakeholder, False if updated existing.
             Returns False without changes if stakeholder was REMOVED by user.
         """
-        email = participant.related_email.lower()  # type: ignore
+        if not participant.related_email:
+            logger.warning(
+                "Participant %s has no related_email, skipping",
+                participant.participant_id,
+            )
+            return False
+        email = participant.related_email.lower()
 
         if existing:
             # Respect user decision: if stakeholder was REMOVED, don't reactivate
@@ -340,9 +405,9 @@ class StakeholderSyncService:
             # job_title should come from CRMContact.job_title via enrichment
 
             # Enrich from CRMContact (fixes bad job_title values from old sync)
-            await self._enrich_from_contact(existing, email)
+            await self._enrich_from_contact(session, existing, email)
 
-            self.session.add(existing)
+            session.add(existing)
             return False
 
         # Create new stakeholder
@@ -366,22 +431,29 @@ class StakeholderSyncService:
         )
 
         # Enrich from CRMContact if available
-        await self._enrich_from_contact(stakeholder, email)
+        await self._enrich_from_contact(session, stakeholder, email)
 
-        self.session.add(stakeholder)
+        session.add(stakeholder)
         return True
 
-    async def _enrich_from_contact(self, stakeholder: DealStakeholder, email: str) -> None:
+    async def _enrich_from_contact(
+        self, session: AsyncSession, stakeholder: DealStakeholder, email: str
+    ) -> None:
         """Enrich stakeholder with CRMContact data if available.
 
         CRMContact is the authoritative source for job_title, so we always
         overwrite (fixes bad values from old sync that used relationship_role).
+
+        Args:
+            session: Database session to use
+            stakeholder: The stakeholder to enrich
+            email: Email address to look up
         """
         stmt = select(CRMContact).where(
             col(CRMContact.organisation_id) == self.organisation_id,
             col(CRMContact.email) == email,
         )
-        result = await self.session.execute(stmt)
+        result = await session.execute(stmt)
         contact = result.scalars().first()
 
         if contact:

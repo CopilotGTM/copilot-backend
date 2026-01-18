@@ -311,18 +311,14 @@ class CreateStakeholderRequest(BaseModel):
     - engagement_score: Set to 0 (calculated later)
     """
 
-    # ─────────────────────────────────────────────────────────────────────────
     # REQUIRED
-    # ─────────────────────────────────────────────────────────────────────────
     email: str = Field(
         ...,
         description="Email address (required, must be unique per deal)",
         json_schema_extra={"ui_category": "required"},
     )
 
-    # ─────────────────────────────────────────────────────────────────────────
     # PRIMARY FIELDS (show prominently in UI)
-    # ─────────────────────────────────────────────────────────────────────────
     name: str | None = Field(
         None,
         description="Full name of the stakeholder (strongly recommended)",
@@ -394,9 +390,7 @@ class CreateStakeholderRequest(BaseModel):
         },
     )
 
-    # ─────────────────────────────────────────────────────────────────────────
     # SECONDARY FIELDS (collapsible in UI)
-    # ─────────────────────────────────────────────────────────────────────────
     department: str | None = Field(
         None,
         description="Department (e.g., 'Engineering', 'Finance', 'IT')",
@@ -549,9 +543,7 @@ class DealSummaryJobsStatus(BaseModel):
     # Future: stakeholder_analysis, deal_risk_analysis, etc.
 
 
-# ---------------------------------------------------------------------------
 # Meeting Models
-# ---------------------------------------------------------------------------
 
 
 class MeetingAttendee(BaseModel):

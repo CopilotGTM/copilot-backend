@@ -14,12 +14,13 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from sqlmodel import col
 from src.domain.models.organisation_tables.sync.calendar import (
     AssociationStatus,
     CalendarEvent,
@@ -29,6 +30,7 @@ from src.domain.models.organisation_tables.sync.meeting_intelligence import (
     Meeting,
     MeetingStatus,
 )
+from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.service.integrations.transcript_service import TranscriptService
 
@@ -57,25 +59,32 @@ class TranscriptFetchResult:
 class TranscriptFetchTaskService:
     """Service for fetching transcripts for deal-associated meetings.
 
+    Uses fresh session pattern for better connection management:
+    - Org-level: Acquires fresh session per parallel meeting task
+    - Each parallel task is independent with its own session + TranscriptService
+    - Sessions are released between meetings, not held during external API calls
+
     Simple approach:
     1. Single query to get all meetings needing transcript fetch
-    2. Process them in parallel with integration priority
+    2. Process them in parallel with integration priority (fresh session per task)
     3. Track results
     """
 
-    def __init__(self, session: AsyncSession, organisation_id: UUID):
+    def __init__(self, organisation_id: UUID):
         """Initialize the service.
 
         Args:
-            session: Async database session scoped to the organisation
             organisation_id: UUID of the organisation
         """
-        self.session = session
         self.organisation_id = organisation_id
-        self.transcript_service = TranscriptService(session, organisation_id)
 
-    async def get_meetings_needing_fetch(self) -> list[CalendarEvent]:
+    async def _get_meetings_needing_fetch_internal(
+        self, session: AsyncSession
+    ) -> list[CalendarEvent]:
         """Get all meetings that need transcript fetch for the organisation.
+
+        Args:
+            session: Database session to use for query.
 
         Single query that returns meetings where:
         - Associated with a deal (active association)
@@ -91,42 +100,52 @@ class TranscriptFetchTaskService:
         """
         now = datetime.now(UTC)
 
+        attendees_rel = cast(Any, CalendarEvent.attendees)
         stmt = (
             select(CalendarEvent)
-            .options(selectinload(CalendarEvent.attendees))  # type: ignore
+            .options(selectinload(attendees_rel))
             .join(
                 CalendarEventDealAssociation,
-                CalendarEventDealAssociation.event_id == CalendarEvent.event_id,  # type: ignore
+                col(CalendarEventDealAssociation.event_id) == col(CalendarEvent.event_id),
             )
-            .outerjoin(Meeting, Meeting.calendar_event_id == CalendarEvent.event_id)  # type: ignore
+            .outerjoin(
+                Meeting,
+                col(Meeting.calendar_event_id) == col(CalendarEvent.event_id),
+            )
             .where(
-                CalendarEvent.organisation_id == self.organisation_id,  # type: ignore
-                CalendarEvent.end_at < now,  # type: ignore  # Meeting has ended
-                CalendarEvent.online_meeting_id.isnot(None),  # type: ignore  # Has online meeting
-                CalendarEventDealAssociation.status == AssociationStatus.ACTIVE,  # type: ignore
+                col(CalendarEvent.organisation_id) == self.organisation_id,
+                col(CalendarEvent.end_at) < now,  # Meeting has ended
+                col(CalendarEvent.online_meeting_id).isnot(None),  # Has online meeting
+                col(CalendarEventDealAssociation.status) == AssociationStatus.ACTIVE,
                 or_(
                     # No Meeting record yet → first attempt
-                    Meeting.meeting_id.is_(None),  # type: ignore
+                    col(Meeting.meeting_id).is_(None),
                     # PENDING with attempts < MAX → retry
                     and_(
-                        Meeting.status == MeetingStatus.PENDING,  # type: ignore
-                        Meeting.transcript_fetch_attempts < TRANSCRIPT_MAX_FETCH_ATTEMPTS,  # type: ignore
+                        col(Meeting.status) == MeetingStatus.PENDING,
+                        col(Meeting.transcript_fetch_attempts) < TRANSCRIPT_MAX_FETCH_ATTEMPTS,
                     ),
                     # FAILED with attempts < MAX → retry
                     and_(
-                        Meeting.status == MeetingStatus.FAILED,  # type: ignore
-                        Meeting.transcript_fetch_attempts < TRANSCRIPT_MAX_FETCH_ATTEMPTS,  # type: ignore
+                        col(Meeting.status) == MeetingStatus.FAILED,
+                        col(Meeting.transcript_fetch_attempts) < TRANSCRIPT_MAX_FETCH_ATTEMPTS,
                     ),
                 ),
             )
             .distinct()  # In case a meeting is associated with multiple deals
         )
 
-        result = await self.session.execute(stmt)
+        result = await session.execute(stmt)
         return list(result.scalars().all())
 
-    async def process_single_meeting(self, event: CalendarEvent) -> dict[str, Any]:
+    async def _process_single_meeting_internal(
+        self, session: AsyncSession, event: CalendarEvent
+    ) -> dict[str, Any]:
         """Process a single meeting: try to fetch transcript with owner first, then fallback.
+
+        Args:
+            session: Database session to use for queries and writes.
+            event: CalendarEvent to process (with attendees already loaded).
 
         Returns:
             Dict with result: {"status": "fetched"|"pending"|"not_available"|"failed", ...}
@@ -137,12 +156,15 @@ class TranscriptFetchTaskService:
             "integrations_tried": 0,
         }
 
+        # Create TranscriptService with this session
+        transcript_service = TranscriptService(session, self.organisation_id)
+
         # Get existing Meeting record (if any)
-        existing_meeting = await self.transcript_service.get_meeting_by_event(event.event_id)
+        existing_meeting = await transcript_service.get_meeting_by_event(event.event_id)
         current_attempts = existing_meeting.transcript_fetch_attempts if existing_meeting else 0
 
         # Find integrations to try (owner first, then attendees)
-        integrations = await self.transcript_service.find_integrations_for_event(event)
+        integrations = await transcript_service.find_integrations_for_event(event)
 
         if not integrations:
             logger.warning(
@@ -162,7 +184,7 @@ class TranscriptFetchTaskService:
                     status_message="No integrations available to fetch transcript",
                     transcript_fetch_attempts=new_attempts,
                 )
-                self.session.add(meeting)
+                session.add(meeting)
             else:
                 existing_meeting.transcript_fetch_attempts = new_attempts
                 if new_attempts >= TRANSCRIPT_MAX_FETCH_ATTEMPTS:
@@ -172,7 +194,7 @@ class TranscriptFetchTaskService:
                     existing_meeting.status = MeetingStatus.PENDING
                     existing_meeting.status_message = f"No integrations available (attempt {new_attempts}/{TRANSCRIPT_MAX_FETCH_ATTEMPTS})"
 
-            await self.session.commit()
+            await session.commit()
             result["status"] = (
                 "not_available" if new_attempts >= TRANSCRIPT_MAX_FETCH_ATTEMPTS else "pending"
             )
@@ -184,7 +206,7 @@ class TranscriptFetchTaskService:
         for integration in integrations:
             result["integrations_tried"] += 1
 
-            fetch_result = await self.transcript_service.try_fetch_with_integration(
+            fetch_result = await transcript_service.try_fetch_with_integration(
                 event=event,
                 integration=integration,
                 existing_meeting=meeting,
@@ -196,7 +218,7 @@ class TranscriptFetchTaskService:
                 # Success! Transcript fetched
                 if meeting:
                     meeting.transcript_fetch_attempts = current_attempts + 1
-                    await self.session.commit()
+                    await session.commit()
                 result["status"] = "fetched"
                 result["fetched_with"] = integration.integration_email
                 logger.info(
@@ -252,34 +274,55 @@ class TranscriptFetchTaskService:
                     TRANSCRIPT_MAX_FETCH_ATTEMPTS,
                 )
 
-            await self.session.commit()
+            await session.commit()
 
         return result
 
-    async def process_meetings_parallel(
+    async def _process_meetings_parallel(
         self,
         events: list[CalendarEvent],
         max_concurrent: int = TRANSCRIPT_PARALLEL_FETCH_LIMIT,
     ) -> list[dict[str, Any]]:
-        """Process multiple meetings in parallel with concurrency limit."""
+        """Process multiple meetings in parallel with concurrency limit.
+
+        Each parallel task acquires its own fresh session to avoid holding
+        connections during external API calls (Teams/Zoom/Meet).
+
+        Args:
+            events: List of CalendarEvent objects (with attendees already loaded).
+            max_concurrent: Maximum concurrent tasks (default 3).
+
+        Returns:
+            List of result dictionaries from each meeting processing.
+        """
         semaphore = asyncio.Semaphore(max_concurrent)
 
         async def process_with_semaphore(event: CalendarEvent) -> dict[str, Any]:
             async with semaphore:
-                try:
-                    return await self.process_single_meeting(event)
-                except Exception as e:
-                    logger.error(
-                        "Error processing event %s: %s",
-                        event.event_id,
-                        str(e),
-                        exc_info=True,
-                    )
-                    return {
-                        "event_id": str(event.event_id),
-                        "status": "failed",
-                        "error": str(e),
-                    }
+                # Each parallel task gets its own fresh session
+                async for session in acquire_org_async_session(self.organisation_id):
+                    try:
+                        return await self._process_single_meeting_internal(session, event)
+                    except Exception as e:
+                        await session.rollback()
+                        logger.error(
+                            "Error processing event %s: %s",
+                            event.event_id,
+                            str(e),
+                            exc_info=True,
+                        )
+                        return {
+                            "event_id": str(event.event_id),
+                            "status": "failed",
+                            "error": str(e),
+                        }
+
+                # Session not acquired (shouldn't happen)
+                return {
+                    "event_id": str(event.event_id),
+                    "status": "failed",
+                    "error": "Failed to acquire database session",
+                }
 
         tasks = [process_with_semaphore(event) for event in events]
         return await asyncio.gather(*tasks)
@@ -287,16 +330,25 @@ class TranscriptFetchTaskService:
     async def process_all(self) -> TranscriptFetchResult:
         """Process transcript fetch for all eligible meetings in the organisation.
 
-        Simple flow:
-        1. Get all meetings needing fetch (single query)
-        2. Process in parallel
-        3. Return results
+        Uses fresh session pattern for better connection management:
+        - Phase 1: Fresh session to query meetings needing fetch
+        - Phase 2: Parallel processing, each task gets its own fresh session
+
+        This ensures connections are released between meetings and not held
+        during external API calls to Teams/Zoom/Meet.
+
+        Returns:
+            TranscriptFetchResult with aggregate counts.
         """
         result = TranscriptFetchResult()
 
-        # Single query to get all meetings needing transcript fetch
-        events = await self.get_meetings_needing_fetch()
-        result.meetings_found = len(events)
+        # Phase 1: Query meetings needing fetch (fresh session for read)
+        events: list[CalendarEvent] = []
+        async for session in acquire_org_async_session(self.organisation_id):
+            events = await self._get_meetings_needing_fetch_internal(session)
+            result.meetings_found = len(events)
+            # Session released after this block - events are detached but
+            # attendees were eagerly loaded via selectinload
 
         if not events:
             logger.info("No meetings need transcript fetch for org %s", self.organisation_id)
@@ -308,8 +360,8 @@ class TranscriptFetchTaskService:
             self.organisation_id,
         )
 
-        # Process all meetings in parallel
-        processing_results = await self.process_meetings_parallel(events)
+        # Phase 2: Process meetings in parallel (each task gets fresh session)
+        processing_results = await self._process_meetings_parallel(events)
 
         # Aggregate results
         for res in processing_results:

@@ -30,6 +30,7 @@ from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     StakeholderTemperature,
 )
 from src.domain.models.organisation_tables.sync.integration_models import KnowledgeIntegration
+from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.service.crm.deal_timeline_sync_service import build_meeting_timeline_event
 from src.service.crm.timeline_event_source_resolver import resolve_meeting_event_source
@@ -45,18 +46,20 @@ class DealMeetingMatcher:
 
     def __init__(
         self,
-        session: AsyncSession,
         organisation_id: UUID,
+        session: AsyncSession | None = None,
     ):
         """
-        Initialize the matcher with session and organisation context.
+        Initialize the matcher with organisation context.
 
         Args:
-            session: Async database session for the organisation
             organisation_id: UUID of the organisation
+            session: Optional async database session. If not provided,
+                     process_organisation() will acquire fresh sessions.
+                     Required for process_deal().
         """
-        self.session = session
         self.organisation_id = organisation_id
+        self._session = session  # Optional - used by process_deal()
         self._contact_cache_by_id: dict[UUID, CRMContact] = {}
         self._contact_cache_by_external: dict[str, CRMContact] = {}
 
@@ -103,7 +106,9 @@ class DealMeetingMatcher:
             if normalized:
                 collector.add(normalized)
 
-    async def _get_contact_by_id(self, contact_id: UUID) -> CRMContact | None:
+    async def _get_contact_by_id(
+        self, session: AsyncSession, contact_id: UUID
+    ) -> CRMContact | None:
         """Retrieve a contact by its local ID, using a local cache."""
         if contact_id in self._contact_cache_by_id:
             return self._contact_cache_by_id[contact_id]
@@ -111,7 +116,7 @@ class DealMeetingMatcher:
             col(CRMContact.organisation_id) == self.organisation_id,
             col(CRMContact.contact_id) == contact_id,
         )
-        result = await self.session.execute(stmt)
+        result = await session.execute(stmt)
         contact = result.scalars().first()
         if contact:
             self._contact_cache_by_id[contact_id] = contact
@@ -119,7 +124,9 @@ class DealMeetingMatcher:
                 self._contact_cache_by_external[contact.external_id] = contact
         return contact
 
-    async def _get_contact_by_external_id(self, external_id: str) -> CRMContact | None:
+    async def _get_contact_by_external_id(
+        self, session: AsyncSession, external_id: str
+    ) -> CRMContact | None:
         """Retrieve a contact by its external ID, using a local cache."""
         cached = self._contact_cache_by_external.get(external_id)
         if cached:
@@ -128,14 +135,14 @@ class DealMeetingMatcher:
             col(CRMContact.organisation_id) == self.organisation_id,
             col(CRMContact.external_id) == external_id,
         )
-        result = await self.session.execute(stmt)
+        result = await session.execute(stmt)
         contact = result.scalars().first()
         if contact:
             self._contact_cache_by_external[external_id] = contact
             self._contact_cache_by_id[contact.contact_id] = contact
         return contact
 
-    async def _collect_contact_emails(self, deal: CRMDeal) -> set[str]:
+    async def _collect_contact_emails(self, session: AsyncSession, deal: CRMDeal) -> set[str]:
         """Collect all approved stakeholder emails for a deal.
 
         Uses DealStakeholder table which contains:
@@ -152,7 +159,7 @@ class DealMeetingMatcher:
             col(DealStakeholder.is_deleted).is_(False),
             col(DealStakeholder.approval_status) == ApprovalStatus.APPROVED,
         )
-        result = await self.session.execute(stmt)
+        result = await session.execute(stmt)
         stakeholder_emails = result.scalars().all()
 
         for email in stakeholder_emails:
@@ -231,6 +238,7 @@ class DealMeetingMatcher:
 
     async def _discover_stakeholders_from_event(
         self,
+        session: AsyncSession,
         deal: CRMDeal,
         event: CalendarEvent,
         customer_domains: set[str],
@@ -247,6 +255,7 @@ class DealMeetingMatcher:
         beyond that they are PENDING (require user approval).
 
         Args:
+            session: Database session to use.
             deal: The CRM deal.
             event: Calendar event with attendees.
             customer_domains: Set of customer email domains.
@@ -280,7 +289,7 @@ class DealMeetingMatcher:
                 col(DealStakeholder.deal_id) == deal.deal_id,
                 col(DealStakeholder.email) == email,
             )
-            result = await self.session.execute(stmt)
+            result = await session.execute(stmt)
             if result.scalars().first():
                 continue  # Already exists
 
@@ -289,7 +298,7 @@ class DealMeetingMatcher:
                 col(DealStakeholder.deal_id) == deal.deal_id,
                 col(DealStakeholder.source) == StakeholderSource.CALENDAR_DISCOVERY,
             )
-            count_result = await self.session.execute(count_stmt)
+            count_result = await session.execute(count_stmt)
             current_count = count_result.scalar() or 0
 
             approval_status = (
@@ -311,7 +320,7 @@ class DealMeetingMatcher:
                 temperature=StakeholderTemperature.UNKNOWN,
                 engagement_score=0.0,
             )
-            self.session.add(stakeholder)
+            session.add(stakeholder)
             discovered += 1
 
             if approval_status == ApprovalStatus.PENDING:
@@ -327,6 +336,10 @@ class DealMeetingMatcher:
         """
         Process all open deals for the organisation.
 
+        Uses fresh session pattern for better connection management:
+        - Phase 1: Fresh session for setup (handle cancellations, fetch deals)
+        - Phase 2: Fresh session for processing all deals
+
         Returns:
             Stats dictionary with deals_processed, meetings_linked, and cancelled counts.
         """
@@ -336,49 +349,69 @@ class DealMeetingMatcher:
             "cancelled": 0,
         }
 
-        # STEP 0: Handle cancelled meetings FIRST (before matching new ones)
-        # This ensures we clean up any previously-mapped meetings that are now cancelled
-        cancelled_count = await self._handle_cancelled_associations()
-        stats["cancelled"] = cancelled_count
+        # Phase 1: Setup (fresh session)
+        # - Handle cancelled meetings
+        # - Fetch all open deals
+        deals: list[CRMDeal] = []
+        async for session in acquire_org_async_session(self.organisation_id):
+            # STEP 0: Handle cancelled meetings FIRST (before matching new ones)
+            # This ensures we clean up any previously-mapped meetings that are now cancelled
+            cancelled_count = await self._handle_cancelled_associations(session)
+            stats["cancelled"] = cancelled_count
+            await session.commit()
 
-        # Fetch all open deals
-        deal_participants_rel = cast(Any, CRMDeal.participants)
+            # Fetch all open deals
+            deal_participants_rel = cast(Any, CRMDeal.participants)
 
-        stmt = (
-            select(CRMDeal)
-            .options(selectinload(deal_participants_rel))
-            .where(
-                col(CRMDeal.organisation_id) == self.organisation_id,
-                col(CRMDeal.deal_status) == CRMDealStatus.OPEN,
-                col(CRMDeal.is_deleted).is_(False),
+            stmt = (
+                select(CRMDeal)
+                .options(selectinload(deal_participants_rel))
+                .where(
+                    col(CRMDeal.organisation_id) == self.organisation_id,
+                    col(CRMDeal.deal_status) == CRMDealStatus.OPEN,
+                    col(CRMDeal.is_deleted).is_(False),
+                )
             )
-        )
-        result = await self.session.execute(stmt)
-        deals = result.scalars().all()
+            result = await session.execute(stmt)
+            deals = list(result.scalars().all())
 
         logger.info(f"Processing {len(deals)} open deals for organisation {self.organisation_id}")
 
-        for deal in deals:
-            stats["deals_processed"] += 1
-            # Collect customer domains from deal participants
-            customer_domains = self._collect_customer_domains(deal)
-            team_emails = self._collect_team_emails(deal)
+        if not deals:
+            return stats
 
-            linked_count = await self._find_and_link_meetings(deal, customer_domains, team_emails)
-            stats["meetings_linked"] += linked_count
+        # Phase 2: Process deals (fresh session)
+        async for session in acquire_org_async_session(self.organisation_id):
+            for deal in deals:
+                stats["deals_processed"] += 1
+                # Collect customer domains from deal participants
+                customer_domains = self._collect_customer_domains(deal)
+                team_emails = self._collect_team_emails(deal)
 
-        await self.session.commit()
+                linked_count = await self._find_and_link_meetings(
+                    session, deal, customer_domains, team_emails
+                )
+                stats["meetings_linked"] += linked_count
+
+            await session.commit()
+
         return stats
 
     async def process_deal(self, deal_id: UUID) -> dict[str, int]:
         """
         Process a single deal.
 
+        Requires session to be passed in constructor (used for deal-level tasks).
+
         Returns:
             Stats dictionary with deals_processed, meetings_linked, and cancelled counts.
         """
+        if self._session is None:
+            raise ValueError("Session required for process_deal(). Pass session to constructor.")
+        session = self._session
+
         # STEP 0: Handle cancelled meetings FIRST for this deal
-        cancelled_count = await self._handle_cancelled_associations(deal_id=deal_id)
+        cancelled_count = await self._handle_cancelled_associations(session, deal_id=deal_id)
 
         deal_participants_rel = cast(Any, CRMDeal.participants)
         stmt = (
@@ -389,7 +422,7 @@ class DealMeetingMatcher:
                 col(CRMDeal.deal_id) == deal_id,
             )
         )
-        result = await self.session.execute(stmt)
+        result = await session.execute(stmt)
         deal = result.scalars().first()
 
         if not deal:
@@ -400,9 +433,11 @@ class DealMeetingMatcher:
         customer_domains = self._collect_customer_domains(deal)
         team_emails = self._collect_team_emails(deal)
 
-        linked_count = await self._find_and_link_meetings(deal, customer_domains, team_emails)
+        linked_count = await self._find_and_link_meetings(
+            session, deal, customer_domains, team_emails
+        )
 
-        await self.session.commit()
+        await session.commit()
 
         return {
             "deals_processed": 1,
@@ -412,6 +447,7 @@ class DealMeetingMatcher:
 
     async def _find_and_link_meetings(
         self,
+        session: AsyncSession,
         deal: CRMDeal,
         customer_domains: set[str],
         team_emails: set[str],
@@ -428,6 +464,7 @@ class DealMeetingMatcher:
         - Only ONE contact needs to be present (not all)
 
         Args:
+            session: Database session to use.
             deal: The CRM deal to match meetings for.
             customer_domains: Set of customer email domains (derived from CRM contacts).
             team_emails: Set of team member emails.
@@ -440,7 +477,7 @@ class DealMeetingMatcher:
             return 0
 
         # 2. Collect all known emails for deal contacts
-        contact_emails = await self._collect_contact_emails(deal)
+        contact_emails = await self._collect_contact_emails(session, deal)
         contact_emails -= team_emails  # Remove team emails to avoid self-matching
 
         if not contact_emails:
@@ -456,6 +493,7 @@ class DealMeetingMatcher:
 
         # PASS 1: Team member is ORGANIZER (highest confidence - score 1.0)
         organizer_count = await self._match_events_as_organizer(
+            session,
             deal,
             team_email_list,
             contact_email_list,
@@ -467,6 +505,7 @@ class DealMeetingMatcher:
 
         # PASS 2: Team member is ATTENDEE only (lower confidence - score 0.8)
         attendee_count = await self._match_events_as_attendee(
+            session,
             deal,
             team_email_list,
             contact_email_list,
@@ -486,6 +525,7 @@ class DealMeetingMatcher:
 
     async def _match_events_as_organizer(
         self,
+        session: AsyncSession,
         deal: CRMDeal,
         team_email_list: list[str],
         contact_email_list: list[str],
@@ -501,6 +541,7 @@ class DealMeetingMatcher:
         - At least one customer contact is attending
 
         Args:
+            session: Database session to use.
             deal: The CRM deal to match.
             team_email_list: List of team member emails.
             contact_email_list: List of customer contact emails.
@@ -536,10 +577,11 @@ class DealMeetingMatcher:
             .distinct()
         )
 
-        events_result = await self.session.execute(events_stmt)
+        events_result = await session.execute(events_stmt)
         matching_events = list(events_result.scalars().all())
 
         return await self._create_associations(
+            session,
             deal,
             matching_events,
             match_score=1.0,
@@ -550,6 +592,7 @@ class DealMeetingMatcher:
 
     async def _match_events_as_attendee(
         self,
+        session: AsyncSession,
         deal: CRMDeal,
         team_email_list: list[str],
         contact_email_list: list[str],
@@ -565,6 +608,7 @@ class DealMeetingMatcher:
         - At least one customer contact is also attending
 
         Args:
+            session: Database session to use.
             deal: The CRM deal to match.
             team_email_list: List of team member emails.
             contact_email_list: List of customer contact emails.
@@ -610,10 +654,11 @@ class DealMeetingMatcher:
             .distinct()
         )
 
-        events_result = await self.session.execute(events_stmt)
+        events_result = await session.execute(events_stmt)
         matching_events = list(events_result.scalars().all())
 
         return await self._create_associations(
+            session,
             deal,
             matching_events,
             match_score=0.8,
@@ -624,6 +669,7 @@ class DealMeetingMatcher:
 
     async def _create_associations(
         self,
+        session: AsyncSession,
         deal: CRMDeal,
         events: list[CalendarEvent],
         match_score: float,
@@ -635,6 +681,7 @@ class DealMeetingMatcher:
         Create associations for matched events.
 
         Args:
+            session: Database session to use.
             deal: The CRM deal.
             events: List of matching calendar events.
             match_score: Confidence score for the match (1.0 = organizer, 0.8 = attendee).
@@ -650,20 +697,22 @@ class DealMeetingMatcher:
         # Preload integration types for this batch (avoid N+1 queries)
         integration_ids: set[UUID] = set()
         for event in events:
-            if getattr(event, "integration_id", None):
-                integration_ids.add(event.integration_id)  # type: ignore
+            evt_integration_id = getattr(event, "integration_id", None)
+            if evt_integration_id is not None:
+                integration_ids.add(evt_integration_id)
             for state in getattr(event, "user_states", None) or []:
-                if getattr(state, "integration_id", None):
-                    integration_ids.add(state.integration_id)
+                state_integration_id = getattr(state, "integration_id", None)
+                if state_integration_id is not None:
+                    integration_ids.add(state_integration_id)
 
         integration_type_by_id: dict[UUID, Any] = {}
         if integration_ids:
             it_stmt = select(
-                KnowledgeIntegration.integration_id,  # type: ignore
-                KnowledgeIntegration.integration_type,  # type: ignore
-            ).where(KnowledgeIntegration.integration_id.in_(integration_ids))  # type: ignore
-            it_result = await self.session.execute(it_stmt)
-            integration_type_by_id = dict(it_result.all())  # type: ignore
+                col(KnowledgeIntegration.integration_id),
+                col(KnowledgeIntegration.integration_type),
+            ).where(col(KnowledgeIntegration.integration_id).in_(integration_ids))
+            it_result = await session.execute(it_stmt)
+            integration_type_by_id = {row[0]: row[1] for row in it_result.all()}
 
         for event in events:
             # Skip if already linked in a previous pass
@@ -701,14 +750,15 @@ class DealMeetingMatcher:
                 )
                 .on_conflict_do_nothing(constraint="uq_calendar_event_deal")
             )
-            result = await self.session.execute(stmt)
+            result = await session.execute(stmt)
 
             # Only proceed if insert succeeded (not a duplicate)
             if (getattr(result, "rowcount", 0) or 0) > 0:
                 # Create timeline event inline (same transaction)
                 calendar_integration_type = None
-                if getattr(event, "integration_id", None) in integration_type_by_id:
-                    calendar_integration_type = integration_type_by_id.get(event.integration_id)  # type: ignore
+                evt_int_id = getattr(event, "integration_id", None)
+                if evt_int_id is not None and evt_int_id in integration_type_by_id:
+                    calendar_integration_type = integration_type_by_id.get(evt_int_id)
                 else:
                     user_states = getattr(event, "user_states", None) or []
                     sorted_states = sorted(
@@ -728,19 +778,21 @@ class DealMeetingMatcher:
                     event=event,
                     event_source=resolved_source,
                 )
-                self.session.add(timeline_event)
+                session.add(timeline_event)
 
                 linked_count += 1
                 linked_event_ids.add(event.event_id)
 
                 # Discover stakeholders from event attendees (only customer domain)
                 await self._discover_stakeholders_from_event(
-                    deal, event, customer_domains, team_emails
+                    session, deal, event, customer_domains, team_emails
                 )
 
         return linked_count
 
-    async def _handle_cancelled_associations(self, deal_id: UUID | None = None) -> int:
+    async def _handle_cancelled_associations(
+        self, session: AsyncSession, deal_id: UUID | None = None
+    ) -> int:
         """
         Update associations to CANCELLED status when their events are cancelled.
 
@@ -752,6 +804,7 @@ class DealMeetingMatcher:
         - CANCELLED = external event (meeting was cancelled)
 
         Args:
+            session: Database session to use.
             deal_id: Optional deal ID to scope the check. If None, checks all deals in org.
 
         Returns:
@@ -775,7 +828,7 @@ class DealMeetingMatcher:
         if deal_id is not None:
             stmt = stmt.where(col(CalendarEventDealAssociation.deal_id) == deal_id)
 
-        result = await self.session.execute(stmt)
+        result = await session.execute(stmt)
         associations = result.scalars().all()
 
         updated_count = 0
@@ -797,18 +850,18 @@ class DealMeetingMatcher:
 
 
 async def process_deal_meetings(
-    session: AsyncSession,
     organisation_id: UUID,
 ) -> dict[str, int]:
     """
     Process deal meetings for an organisation.
 
+    Uses fresh session pattern - no session needed from caller.
+
     Args:
-        session: Async database session for the organisation
         organisation_id: UUID of the organisation
 
     Returns:
         Dictionary with processing statistics.
     """
-    matcher = DealMeetingMatcher(session, organisation_id)
+    matcher = DealMeetingMatcher(organisation_id)
     return await matcher.process_organisation()

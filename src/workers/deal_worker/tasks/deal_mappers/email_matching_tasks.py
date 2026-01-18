@@ -29,6 +29,7 @@ from uuid import UUID
 
 from celery import Task
 from sqlalchemy import select
+from sqlmodel import col
 
 from src.domain.models.master_tables import Organisation, OrganisationStatus
 from src.infra.database.sessions import (
@@ -107,27 +108,20 @@ def match_email_to_deals_org_task(
     async def _run() -> dict[str, Any]:
         org_uuid = UUID(organisation_id)
 
-        async for session in acquire_org_async_session(org_uuid):
-            matcher = DealEmailMatcher(session, org_uuid)
-            stats = await matcher.process_organisation()
-
-            return {
-                "status": "success",
-                "organisation_id": organisation_id,
-                "started_at": started_at,
-                "completed_at": datetime.now(UTC).isoformat(),
-                "emails_processed": stats.get("emails_processed", 0),
-                "emails_matched": stats.get("emails_matched", 0),
-                "associations_created": stats.get("associations_created", 0),
-                "deals_with_matches": stats.get("deals_with_matches", 0),
-            }
+        # DealEmailMatcher now manages its own sessions per batch
+        # No need to acquire a session here - it uses fresh sessions internally
+        matcher = DealEmailMatcher(org_uuid)
+        stats = await matcher.process_organisation()
 
         return {
-            "status": "failed",
+            "status": "success",
             "organisation_id": organisation_id,
             "started_at": started_at,
             "completed_at": datetime.now(UTC).isoformat(),
-            "error": "Failed to acquire database session",
+            "emails_processed": stats.get("emails_processed", 0),
+            "emails_matched": stats.get("emails_matched", 0),
+            "associations_created": stats.get("associations_created", 0),
+            "deals_with_matches": stats.get("deals_with_matches", 0),
         }
 
     try:
@@ -199,7 +193,8 @@ def match_email_to_deals_task(
         deal_uuid = UUID(deal_id)
 
         async for session in acquire_org_async_session(org_uuid):
-            matcher = DealEmailMatcher(session, org_uuid)
+            # process_deal requires session passed in constructor
+            matcher = DealEmailMatcher(org_uuid, session=session)
             stats = await matcher.process_deal(deal_uuid)
 
             return {
@@ -290,8 +285,8 @@ def match_email_to_deals_all_orgs_task() -> dict[str, Any]:
         # Query all approved organizations from master DB
         org_ids: list[UUID] = []
         async for master_session in acquire_master_async_session():
-            stmt = select(Organisation.organisation_id).where(  # type: ignore
-                Organisation.status == OrganisationStatus.APPROVED
+            stmt = select(col(Organisation.organisation_id)).where(
+                col(Organisation.status) == OrganisationStatus.APPROVED
             )
             result = await master_session.execute(stmt)
             org_ids = [row[0] for row in result.all()]
@@ -319,7 +314,7 @@ def match_email_to_deals_all_orgs_task() -> dict[str, Any]:
 
         for org_id in org_ids:
             try:
-                task = match_email_to_deals_org_task.apply_async(  # type: ignore
+                task = match_email_to_deals_org_task.apply_async(
                     kwargs={"organisation_id": str(org_id)},
                 )
                 org_tasks.append(

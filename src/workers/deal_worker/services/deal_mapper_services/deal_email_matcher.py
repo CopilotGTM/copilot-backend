@@ -44,6 +44,7 @@ from src.domain.models.organisation_tables.sync.email_models import (
     Email,
 )
 from src.domain.models.organisation_tables.sync.integration_models import KnowledgeIntegration
+from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.service.crm.deal_timeline_sync_service import build_email_timeline_event
 from src.service.crm.timeline_event_source_resolver import resolve_email_event_source
@@ -53,7 +54,7 @@ logger = get_logger(__name__)
 
 # Configuration constants
 MIN_MATCH_SCORE = 0.7
-BATCH_SIZE = 500
+BATCH_SIZE = 500  # Max emails to fetch per run
 MAX_EMAIL_DISCOVERY_AUTO_APPROVED = 5
 
 # Calendar invite subject patterns (case-insensitive)
@@ -98,18 +99,20 @@ class DealEmailMatcher:
 
     def __init__(
         self,
-        session: AsyncSession,
         organisation_id: UUID,
+        session: AsyncSession | None = None,
     ):
         """
-        Initialize the matcher with session and organisation context.
+        Initialize the matcher with organisation context.
 
         Args:
-            session: Async database session for the organisation
             organisation_id: UUID of the organisation
+            session: Optional async database session. If not provided,
+                     process_organisation() will acquire fresh sessions per batch.
+                     Required for process_deal().
         """
-        self.session = session
         self.organisation_id = organisation_id
+        self._session = session  # Optional - used by process_deal()
 
         # In-memory lookup maps (populated by _build_stakeholder_maps)
         self._team_email_to_deals: dict[str, set[UUID]] = {}
@@ -167,11 +170,18 @@ class DealEmailMatcher:
 
     async def _discover_stakeholders_from_email(
         self,
+        session: AsyncSession,
         email: Email,
         deal_id: UUID,
         info: DealStakeholderInfo,
     ) -> int:
         """Discover new stakeholders from email participants.
+
+        Args:
+            session: Database session to use for queries and inserts.
+            email: Email object to extract participants from.
+            deal_id: UUID of the deal to add stakeholders to.
+            info: DealStakeholderInfo with existing stakeholder data.
 
         Only adds participants who:
         - Have email domain matching customer domains
@@ -222,7 +232,7 @@ class DealEmailMatcher:
                 col(DealStakeholder.deal_id) == deal_id,
                 col(DealStakeholder.email) == participant_email,
             )
-            result = await self.session.execute(stmt)
+            result = await session.execute(stmt)
             if result.scalars().first():
                 continue  # Already exists
 
@@ -231,7 +241,7 @@ class DealEmailMatcher:
                 col(DealStakeholder.deal_id) == deal_id,
                 col(DealStakeholder.source) == StakeholderSource.EMAIL_DISCOVERY,
             )
-            count_result = await self.session.execute(count_stmt)
+            count_result = await session.execute(count_stmt)
             current_count = count_result.scalar() or 0
 
             approval_status = (
@@ -253,7 +263,7 @@ class DealEmailMatcher:
                 temperature=StakeholderTemperature.UNKNOWN,
                 engagement_score=0.0,
             )
-            self.session.add(stakeholder)
+            session.add(stakeholder)
             discovered += 1
 
             if approval_status == ApprovalStatus.PENDING:
@@ -265,9 +275,12 @@ class DealEmailMatcher:
 
         return discovered
 
-    async def _build_stakeholder_maps(self) -> None:
+    async def _build_stakeholder_maps(self, session: AsyncSession) -> None:
         """
         Load all active deals and build stakeholder-to-deal lookup maps.
+
+        Args:
+            session: Database session to use for queries.
 
         Populates:
         - _team_email_to_deals: Maps team member emails to their deal IDs
@@ -291,7 +304,7 @@ class DealEmailMatcher:
                 col(CRMDeal.is_deleted).is_(False),
             )
         )
-        result = await self.session.execute(stmt)
+        result = await session.execute(stmt)
         deals = result.scalars().all()
 
         logger.info(f"Building stakeholder maps for {len(deals)} active deals")
@@ -306,7 +319,7 @@ class DealEmailMatcher:
             self._collect_team_emails(deal, info)
 
             # Collect contact emails from DealStakeholder table
-            await self._collect_stakeholder_emails(deal.deal_id, info)
+            await self._collect_stakeholder_emails(session, deal.deal_id, info)
 
             # Collect company domains for stakeholder discovery
             info.company_domains = self._collect_company_domains(deal)
@@ -354,9 +367,16 @@ class DealEmailMatcher:
                 if email:
                     info.team_emails.add(email)
 
-    async def _collect_stakeholder_emails(self, deal_id: UUID, info: DealStakeholderInfo) -> None:
+    async def _collect_stakeholder_emails(
+        self, session: AsyncSession, deal_id: UUID, info: DealStakeholderInfo
+    ) -> None:
         """
         Collect contact emails from DealStakeholder table.
+
+        Args:
+            session: Database session to use for queries.
+            deal_id: UUID of the deal to collect stakeholders for.
+            info: DealStakeholderInfo object to populate.
 
         Uses DealStakeholder table which contains:
         - CRM-synced contacts (source=CRM)
@@ -371,7 +391,7 @@ class DealEmailMatcher:
             col(DealStakeholder.is_deleted).is_(False),
             col(DealStakeholder.approval_status) == ApprovalStatus.APPROVED,
         )
-        result = await self.session.execute(stmt)
+        result = await session.execute(stmt)
         stakeholder_emails = result.scalars().all()
 
         for email in stakeholder_emails:
@@ -379,9 +399,12 @@ class DealEmailMatcher:
             if normalized and normalized not in info.team_emails:
                 info.contact_emails.add(normalized)
 
-    async def _get_unprocessed_emails(self) -> list[Email]:
+    async def _get_unprocessed_emails(self, session: AsyncSession) -> list[Email]:
         """
         Get emails that have not been processed for deal matching.
+
+        Args:
+            session: Database session to use for queries.
 
         Returns emails with valid internet_message_id that are not yet
         in the deal_email_associations table.
@@ -406,7 +429,7 @@ class DealEmailMatcher:
             .limit(BATCH_SIZE)
         )
 
-        result = await self.session.execute(stmt)
+        result = await session.execute(stmt)
         emails = list(result.scalars().all())
 
         logger.info(f"Found {len(emails)} unprocessed emails to match")
@@ -576,6 +599,7 @@ class DealEmailMatcher:
 
     async def _create_association(
         self,
+        session: AsyncSession,
         email: Email,
         match: EmailMatchResult,
         integration_type: Any | None = None,
@@ -583,16 +607,26 @@ class DealEmailMatcher:
         """
         Create a DealEmailAssociation for a matched email-deal pair.
 
+        Args:
+            session: Database session to use for inserts.
+            email: Email object to create association for.
+            match: EmailMatchResult with deal and score info.
+            integration_type: Optional integration type for timeline event.
+
         Also creates a corresponding timeline event in the same transaction.
 
         Returns the created association or None if it already exists.
         """
         # Create new association using INSERT ... ON CONFLICT DO NOTHING
         # This handles race conditions when multiple tasks process the same org
+        if not email.internet_message_id:
+            logger.warning("Email %s has no internet_message_id, skipping", email.email_id)
+            return None
+
         association = DealEmailAssociation(
             organisation_id=self.organisation_id,
             deal_id=match.deal_id,
-            internet_message_id=email.internet_message_id,  # type: ignore
+            internet_message_id=email.internet_message_id,
             status=AssociationStatus.ACTIVE,
             match_score=match.score,
             direction=match.direction,
@@ -619,7 +653,7 @@ class DealEmailMatcher:
             )
             .on_conflict_do_nothing(constraint="uq_deal_email")
         )
-        result = await self.session.execute(stmt)
+        result = await session.execute(stmt)
 
         # Only create timeline event if insert succeeded (not a duplicate)
         if (getattr(result, "rowcount", 0) or 0) > 0:
@@ -632,7 +666,7 @@ class DealEmailMatcher:
                 email=email,
                 event_source=resolved_source,
             )
-            self.session.add(timeline_event)
+            session.add(timeline_event)
             return association
 
         return None
@@ -641,11 +675,12 @@ class DealEmailMatcher:
         """
         Process email matching for all active deals in the organisation.
 
-        Uses Email-First batch approach:
-        1. Build stakeholder maps from all active deals
-        2. Query unprocessed emails
-        3. Match each email to relevant deals
-        4. Create associations for matches above threshold
+        Uses fresh session per batch pattern for robust connection management:
+        1. Session 1: Build stakeholder maps + get unprocessed emails
+        2. For each batch: Fresh session to process and commit
+
+        This ensures connections are fully released between batches,
+        preventing long-held transactions and connection exhaustion.
 
         Returns:
             Stats dictionary with processing results.
@@ -659,69 +694,81 @@ class DealEmailMatcher:
             "stakeholders_discovered": 0,
         }
 
-        # Step 1: Build stakeholder maps
-        await self._build_stakeholder_maps()
-
-        if not self._deal_info:
-            logger.info(f"No active deals found for organisation {self.organisation_id}")
-            return stats
-
-        # Step 2: Get unprocessed emails
-        emails = await self._get_unprocessed_emails()
-
-        if not emails:
-            logger.info(f"No unprocessed emails found for organisation {self.organisation_id}")
-            return stats
-
-        # Preload integration types for this batch (avoid N+1 queries)
-        integration_ids = {e.integration_id for e in emails if getattr(e, "integration_id", None)}
+        # =================================================================
+        # Phase 1: Setup - Build maps and get emails (single session)
+        # =================================================================
+        emails: list[Email] = []
         integration_type_by_id: dict[UUID, Any] = {}
-        if integration_ids:
-            it_stmt = select(
-                KnowledgeIntegration.integration_id,
-                KnowledgeIntegration.integration_type,
-            ).where(KnowledgeIntegration.integration_id.in_(integration_ids))  # type: ignore
-            it_result = await self.session.execute(it_stmt)
-            integration_type_by_id = dict(it_result.all())  # type: ignore
 
-        # Track which deals got matches
+        async for session in acquire_org_async_session(self.organisation_id):
+            # Step 1: Build stakeholder maps
+            await self._build_stakeholder_maps(session)
+
+            if not self._deal_info:
+                logger.info(f"No active deals found for organisation {self.organisation_id}")
+                return stats
+
+            # Step 2: Get unprocessed emails
+            emails = await self._get_unprocessed_emails(session)
+
+            if not emails:
+                logger.info(f"No unprocessed emails found for organisation {self.organisation_id}")
+                return stats
+
+            # Preload integration types for this batch (avoid N+1 queries)
+            integration_ids = {
+                e.integration_id for e in emails if getattr(e, "integration_id", None)
+            }
+            if integration_ids:
+                it_stmt = select(
+                    KnowledgeIntegration.integration_id,
+                    KnowledgeIntegration.integration_type,
+                ).where(col(KnowledgeIntegration.integration_id).in_(integration_ids))
+                it_result = await session.execute(it_stmt)
+                integration_type_by_id = {row[0]: row[1] for row in it_result.all()}
+
+            # No commit needed - read-only operations
+            # Session closes here, connection returns to pool
+
+        # =================================================================
+        # Phase 2: Process emails (fresh session)
+        # =================================================================
         deals_matched: set[UUID] = set()
 
-        # Step 3 & 4: Match emails and create associations
-        for email in emails:
-            stats["emails_processed"] += 1
+        async for session in acquire_org_async_session(self.organisation_id):
+            for email in emails:
+                stats["emails_processed"] += 1
 
-            # Skip calendar invite emails (already matched via calendar sync)
-            if self._is_calendar_invite_email(email):
-                stats["calendar_invites_skipped"] += 1
-                continue
+                if self._is_calendar_invite_email(email):
+                    stats["calendar_invites_skipped"] += 1
+                    continue
 
-            matches = self._match_email_to_deals(email)
+                matches = self._match_email_to_deals(email)
 
-            if matches:
-                stats["emails_matched"] += 1
+                if matches:
+                    stats["emails_matched"] += 1
 
-                for match in matches:
-                    association = await self._create_association(
-                        email,
-                        match,
-                        integration_type=integration_type_by_id.get(email.integration_id),
-                    )
-                    if association:
-                        stats["associations_created"] += 1
-                        deals_matched.add(match.deal_id)
+                    for match in matches:
+                        association = await self._create_association(
+                            session,
+                            email,
+                            match,
+                            integration_type=integration_type_by_id.get(email.integration_id),
+                        )
+                        if association:
+                            stats["associations_created"] += 1
+                            deals_matched.add(match.deal_id)
 
-                        # Discover new stakeholders from email participants
-                        info = self._deal_info.get(match.deal_id)
-                        if info:
-                            discovered = await self._discover_stakeholders_from_email(
-                                email, match.deal_id, info
-                            )
-                            stats["stakeholders_discovered"] += discovered
+                            info = self._deal_info.get(match.deal_id)
+                            if info:
+                                discovered = await self._discover_stakeholders_from_email(
+                                    session, email, match.deal_id, info
+                                )
+                                stats["stakeholders_discovered"] += discovered
+
+            await session.commit()
 
         stats["deals_with_matches"] = len(deals_matched)
-
-        await self.session.commit()
 
         logger.info(
             f"Email matching completed for org {self.organisation_id}: "
@@ -740,12 +787,19 @@ class DealEmailMatcher:
         Re-matches all emails against this specific deal's stakeholders.
         Used when a new stakeholder is added to find historical emails.
 
+        Requires session to be passed in constructor.
+
         Args:
             deal_id: UUID of the deal to re-match.
 
         Returns:
             Stats dictionary with processing results.
         """
+        if self._session is None:
+            raise ValueError("Session is required for process_deal(). Pass session in constructor.")
+
+        session = self._session
+
         stats = {
             "emails_processed": 0,
             "emails_matched": 0,
@@ -765,7 +819,7 @@ class DealEmailMatcher:
                 col(CRMDeal.deal_id) == deal_id,
             )
         )
-        result = await self.session.execute(stmt)
+        result = await session.execute(stmt)
         deal = result.scalars().first()
 
         if not deal:
@@ -778,7 +832,7 @@ class DealEmailMatcher:
             integration_id=deal.integration_id,
         )
         self._collect_team_emails(deal, info)
-        await self._collect_stakeholder_emails(deal.deal_id, info)
+        await self._collect_stakeholder_emails(session, deal.deal_id, info)
         info.company_domains = self._collect_company_domains(deal)
 
         if not info.team_emails or not info.contact_emails:
@@ -798,7 +852,7 @@ class DealEmailMatcher:
 
         # Get all emails involving this deal's stakeholders
         all_stakeholder_emails = list(info.team_emails | info.contact_emails)
-        emails = await self._get_emails_for_stakeholders(all_stakeholder_emails)
+        emails = await self._get_emails_for_stakeholders(session, all_stakeholder_emails)
 
         if not emails:
             logger.info(f"No emails found for deal {deal_id} stakeholders")
@@ -811,9 +865,9 @@ class DealEmailMatcher:
             it_stmt = select(
                 KnowledgeIntegration.integration_id,
                 KnowledgeIntegration.integration_type,
-            ).where(KnowledgeIntegration.integration_id.in_(integration_ids))  # type: ignore
-            it_result = await self.session.execute(it_stmt)
-            integration_type_by_id = dict(it_result.all())  # type: ignore
+            ).where(col(KnowledgeIntegration.integration_id).in_(integration_ids))
+            it_result = await session.execute(it_stmt)
+            integration_type_by_id = {row[0]: row[1] for row in it_result.all()}
 
         # Match and create associations
         for email in emails:
@@ -832,6 +886,7 @@ class DealEmailMatcher:
                 stats["emails_matched"] += 1
                 for match in matches:
                     association = await self._create_association(
+                        session,
                         email,
                         match,
                         integration_type=integration_type_by_id.get(email.integration_id),
@@ -841,11 +896,11 @@ class DealEmailMatcher:
 
                         # Discover new stakeholders from email participants
                         discovered = await self._discover_stakeholders_from_email(
-                            email, match.deal_id, info
+                            session, email, match.deal_id, info
                         )
                         stats["stakeholders_discovered"] += discovered
 
-        await self.session.commit()
+        await session.commit()
 
         logger.info(
             f"Email matching for deal {deal_id}: "
@@ -857,8 +912,15 @@ class DealEmailMatcher:
 
         return stats
 
-    async def _get_emails_for_stakeholders(self, stakeholder_emails: list[str]) -> list[Email]:
-        """Get all emails involving any of the given stakeholder emails."""
+    async def _get_emails_for_stakeholders(
+        self, session: AsyncSession, stakeholder_emails: list[str]
+    ) -> list[Email]:
+        """Get all emails involving any of the given stakeholder emails.
+
+        Args:
+            session: Database session to use for queries.
+            stakeholder_emails: List of email addresses to search for.
+        """
         if not stakeholder_emails:
             return []
 
@@ -880,23 +942,23 @@ class DealEmailMatcher:
             .limit(1000)  # Reasonable limit for single deal
         )
 
-        result = await self.session.execute(stmt)
+        result = await session.execute(stmt)
         return list(result.scalars().all())
 
 
 async def process_deal_emails(
-    session: AsyncSession,
     organisation_id: UUID,
 ) -> dict[str, int]:
     """
     Process email matching for an organisation.
 
+    Uses fresh session per batch pattern internally.
+
     Args:
-        session: Async database session for the organisation
         organisation_id: UUID of the organisation
 
     Returns:
         Dictionary with processing statistics.
     """
-    matcher = DealEmailMatcher(session, organisation_id)
+    matcher = DealEmailMatcher(organisation_id)
     return await matcher.process_organisation()
