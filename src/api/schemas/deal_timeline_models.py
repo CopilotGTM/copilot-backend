@@ -16,6 +16,11 @@ from pydantic import BaseModel, Field
 class EmailEventData(BaseModel):
     """Email-specific data for timeline events."""
 
+    # Source ID for API calls (e.g., fetching full email details)
+    email_id: str | None = Field(
+        None, description="Internal UUID of the email record for API calls"
+    )
+
     # Provider UI metadata (derived from TimelineEvent.event_source)
     provider_logo_url: str | None = None
 
@@ -60,6 +65,11 @@ class MeetingSummary(BaseModel):
 
 class MeetingEventData(BaseModel):
     """Meeting-specific data for timeline events."""
+
+    # Source ID for API calls (e.g., summary generation, prep generation)
+    calendar_event_id: str | None = Field(
+        None, description="Internal UUID of the calendar event for API calls"
+    )
 
     # Provider UI metadata (derived from TimelineEvent.event_source)
     provider_logo_url: str | None = None
