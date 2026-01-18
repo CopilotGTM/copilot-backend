@@ -4,393 +4,316 @@ Token Refresh Service for Integration Management.
 Handles automatic token refresh for OAuth integrations to ensure
 continuous connectivity without requiring user reauthorization.
 
-Key Features:
-- Proactive token refresh before expiry
-- Batch processing of expiring tokens
-- Error handling and retry logic
-- Integration deactivation on failure
-- Email notifications for failed refreshes
+Uses the "fresh session pattern" - manages its own database sessions
+internally to avoid holding connections open during long-running operations.
 """
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import and_, select
-from sqlalchemy.orm import Session
-from src.domain.models.organisation_tables.sync import KnowledgeIntegration
-from src.infra.config.configs import nango_integration_config
+from sqlalchemy import and_, or_, select
+from sqlmodel import col
+from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
+from src.infra.config.nango_provider_mapping import to_nango_provider_key
+from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.service.integrations.nango_client import NangoClient
 
 logger = get_logger(__name__)
+
+# Maximum consecutive refresh failures before deactivating an integration
+TOKEN_REFRESH_MAX_FAILURES = 3
 
 
 class TokenRefreshService:
     """
     Service for managing OAuth token refresh operations.
 
-    This service handles:
-    - Identifying integrations with expiring tokens
-    - Batch refresh operations
-    - Error handling and integration deactivation
-    - Notification of refresh failures
+    Uses the "fresh session pattern":
+    - For org-level operations: fetches IDs first, then processes each item with a fresh session
+    - This prevents holding database connections open during long-running Nango API calls
     """
 
-    def __init__(self, db_session: Session, nango_client: NangoClient):
+    def __init__(self, organisation_id: UUID):
         """
         Initialize token refresh service.
 
         Args:
-            db_session: Database session for querying integrations
-            nango_client: Nango client for token refresh operations
+            organisation_id: Organization UUID for database session acquisition
         """
-        self.db = db_session
-        self.nango = nango_client
-        self.buffer_minutes = nango_integration_config.INTEGRATION_TOKEN_REFRESH_BUFFER_MINUTES
+        self.organisation_id = organisation_id
 
-    def get_expiring_integrations(self, buffer_hours: int = 2) -> list[KnowledgeIntegration]:
+    async def refresh_org_tokens_async(self, buffer_hours: int = 2) -> dict[str, Any]:
         """
-        Get all active integrations with tokens expiring within the buffer period.
+        Refresh tokens that need refreshing for the organization.
 
-        Args:
-            buffer_hours: How many hours ahead to check for expiring tokens (default: 2)
+        Refreshes tokens that:
+        1. Have no expiry set (NULL) - to populate expiry from Nango
+        2. Are expiring within buffer_hours - to refresh before expiration
 
-        Returns:
-            List of integrations that need token refresh
-        """
-        try:
-            expiry_threshold = datetime.now(UTC) + timedelta(hours=buffer_hours)
-
-            stmt = select(KnowledgeIntegration).where(
-                and_(
-                    KnowledgeIntegration.is_active,
-                    KnowledgeIntegration.access_token_expires_at.isnot(None),
-                    KnowledgeIntegration.access_token_expires_at <= expiry_threshold,
-                )
-            )
-
-            result = self.db.execute(stmt)
-            integrations = result.scalars().all()
-
-            logger.info(
-                f"Found {len(integrations)} integrations with tokens expiring "
-                f"within {buffer_hours} hours"
-            )
-
-            return list(integrations)
-
-        except Exception as e:
-            logger.error(f"Failed to query expiring integrations: {str(e)}", exc_info=True)
-            return []
-
-    async def refresh_integration_token(self, integration: KnowledgeIntegration) -> dict[str, Any]:
-        """
-        Refresh token for a single integration.
-
-        Args:
-            integration: Integration to refresh
-
-        Returns:
-            Dict with keys:
-                - success (bool): Whether refresh succeeded
-                - integration_id (UUID): Integration ID
-                - error (str|None): Error message if failed
-                - new_expiry (datetime|None): New token expiry time
-        """
-        integration_id = integration.integration_id
-        org_id = integration.organisation_id
-
-        try:
-            logger.info(
-                f"Refreshing token for integration {integration_id} "
-                f"(org: {org_id}, type: {integration.integration_type.value})"
-            )
-
-            # Call Nango to refresh the token
-            connection = await self.nango.get_connection(
-                provider=integration.integration_type.value,
-                connection_id=integration.connection_id,
-                force_refresh=True,  # Force refresh even if not expired
-            )
-
-            # Extract new token expiry from connection
-            credentials = connection.get("credentials", {})
-            new_expiry = None
-
-            if "expires_at" in credentials:
-                new_expiry = self.nango.parse_token_expiry(credentials["expires_at"])
-
-            # Update database with new expiry times
-            if new_expiry:
-                integration.access_token_expires_at = new_expiry
-                integration.updated_at = datetime.now(UTC)
-                self.db.commit()
-
-                logger.info(
-                    f"Successfully refreshed token for integration {integration_id}. "
-                    f"New expiry: {new_expiry}"
-                )
-            else:
-                logger.warning(
-                    f"Token refreshed for integration {integration_id} but no expiry "
-                    f"information returned"
-                )
-
-            return {
-                "success": True,
-                "integration_id": integration_id,
-                "error": None,
-                "new_expiry": new_expiry,
-            }
-
-        except Exception as e:
-            error_msg = f"Token refresh failed: {str(e)}"
-            logger.error(
-                f"Failed to refresh token for integration {integration_id} "
-                f"(org: {org_id}): {error_msg}",
-                exc_info=True,
-            )
-
-            return {
-                "success": False,
-                "integration_id": integration_id,
-                "error": error_msg,
-                "new_expiry": None,
-            }
-
-    async def refresh_expiring_tokens(self, buffer_hours: int = 2) -> dict[str, Any]:
-        """
-        Batch refresh all expiring tokens.
-
-        This is the main method called by the Celery task.
+        Uses fresh session pattern:
+        1. Fetch integration IDs needing refresh (close session)
+        2. For each integration, open fresh session, refresh token, close session
 
         Args:
             buffer_hours: How many hours ahead to check for expiring tokens
 
         Returns:
-            Dict with keys:
-                - total_checked (int): Number of integrations checked
-                - successful_refreshes (int): Number of successful refreshes
-                - failed_refreshes (int): Number of failed refreshes
-                - deactivated (int): Number of integrations deactivated
-                - results (List[Dict]): Detailed results for each refresh
+            Dict with summary of refresh results
         """
-        logger.info(f"Starting batch token refresh with {buffer_hours}h buffer")
+        expiry_threshold = datetime.utcnow() + timedelta(hours=buffer_hours)
 
-        # Get all integrations needing refresh
-        integrations = await self.get_expiring_integrations(buffer_hours)
+        logger.info(
+            "Checking tokens for org: %s (expiry_threshold=%s)",
+            self.organisation_id,
+            expiry_threshold.isoformat(),
+        )
 
-        if not integrations:
-            logger.info("No integrations need token refresh")
+        # Step 1: Fetch integration IDs that need refresh (then close session)
+        # Refresh if: expiry is NULL OR expiry <= threshold
+        integration_ids: list[UUID] = []
+        async for session in acquire_org_async_session(self.organisation_id):
+            stmt = select(col(KnowledgeIntegration.integration_id)).where(
+                and_(
+                    col(KnowledgeIntegration.is_active) == True,  # noqa: E712
+                    col(KnowledgeIntegration.connection_id).isnot(None),
+                    or_(
+                        col(KnowledgeIntegration.access_token_expires_at).is_(None),
+                        col(KnowledgeIntegration.access_token_expires_at) <= expiry_threshold,
+                    ),
+                )
+            )
+            result = await session.execute(stmt)
+            integration_ids = [row[0] for row in result.all()]
+        # Session closed here
+
+        if not integration_ids:
+            logger.info("No integrations need token refresh for org: %s", self.organisation_id)
             return {
-                "total_checked": 0,
-                "successful_refreshes": 0,
-                "failed_refreshes": 0,
-                "deactivated": 0,
-                "results": [],
+                "status": "completed",
+                "summary": {
+                    "total_integrations": 0,
+                    "successful": 0,
+                    "failed": 0,
+                    "deactivated": 0,
+                },
+                "integration_results": [],
             }
 
-        # Process each integration
-        results = []
+        logger.info(
+            "Found %d integration(s) with expiring tokens for org: %s",
+            len(integration_ids),
+            self.organisation_id,
+        )
+
+        # Step 2: Process each integration with a fresh session
+        integration_results = []
         successful = 0
         failed = 0
         deactivated = 0
 
-        for integration in integrations:
-            result = await self.refresh_integration_token(integration)
-            results.append(result)
+        for integration_id in integration_ids:
+            result = await self._refresh_single_integration(integration_id)
+            integration_results.append(result)
 
-            if result["success"]:
+            if result.get("success"):
                 successful += 1
             else:
                 failed += 1
-                # Deactivate integration on failure
-                deactivated_count = self._handle_refresh_failure(integration, result["error"])
-                deactivated += deactivated_count
+                if result.get("deactivated"):
+                    deactivated += 1
 
-        summary = {
-            "total_checked": len(integrations),
-            "successful_refreshes": successful,
-            "failed_refreshes": failed,
-            "deactivated": deactivated,
-            "results": results,
-        }
+        # Determine overall status
+        if failed == 0:
+            status = "completed"
+        elif successful == 0:
+            status = "failed"
+        else:
+            status = "partial"
 
         logger.info(
-            f"Batch token refresh complete: {successful} successful, "
-            f"{failed} failed, {deactivated} deactivated"
+            "Token refresh complete for org %s: successful=%d failed=%d deactivated=%d",
+            self.organisation_id,
+            successful,
+            failed,
+            deactivated,
         )
 
-        return summary
+        return {
+            "status": status,
+            "summary": {
+                "total_integrations": len(integration_ids),
+                "successful": successful,
+                "failed": failed,
+                "deactivated": deactivated,
+            },
+            "integration_results": integration_results,
+        }
 
-    def _handle_refresh_failure(self, integration: KnowledgeIntegration, error_message: str) -> int:
+    async def refresh_single_token_async(self, integration_id: UUID) -> dict[str, Any]:
         """
-        Handle token refresh failure by deactivating integration.
+        Refresh token for a single integration (for manual/on-demand use).
 
         Args:
-            integration: Failed integration
-            error_message: Error message from refresh attempt
+            integration_id: Integration UUID to refresh
 
         Returns:
-            Number of integrations deactivated (0 or 1)
+            Dict with refresh result
         """
-        try:
-            integration.is_active = False
-            integration.last_sync_status = "FAILED"
-            integration.last_sync_error = f"Token refresh failed: {error_message}"
-            integration.updated_at = datetime.now(UTC)
+        return await self._refresh_single_integration(integration_id)
 
-            self.db.commit()
-
-            logger.warning(
-                f"Deactivated integration {integration.integration_id} due to token refresh failure"
-            )
-
-            # Log failure for monitoring
-            self._log_refresh_failure(integration)
-
-            return 1
-
-        except Exception as e:
-            logger.error(
-                f"Failed to deactivate integration {integration.integration_id}: {str(e)}",
-                exc_info=True,
-            )
-            return 0
-
-    def _log_refresh_failure(self, integration: KnowledgeIntegration) -> None:
+    async def _refresh_single_integration(self, integration_id: UUID) -> dict[str, Any]:
         """
-        Log token refresh failure for monitoring.
+        Refresh token for a single integration with fresh session.
 
-        This logs the failure so ops team can track integration health.
-        In production, this should trigger user notifications.
+        Opens a new session, fetches integration, calls Nango, updates DB, closes session.
 
         Args:
-            integration: Failed integration
-
-        Note:
-            Email notifications should be implemented when email worker is available.
-            For now, logs are sufficient for monitoring via CloudWatch/DataDog.
-        """
-        try:
-            logger.warning(
-                "Token refresh failed for integration: "
-                "integration_id=%s type=%s org=%s - User may need to reauthorize",
-                integration.integration_id,
-                integration.integration_type.value,
-                integration.organisation_id,
-                extra={
-                    "integration_id": str(integration.integration_id),
-                    "integration_type": integration.integration_type.value,
-                    "organisation_id": str(integration.organisation_id),
-                    "action_required": "reauthorization",
-                },
-            )
-        except Exception as e:
-            logger.error(
-                "Failed to log refresh failure for integration %s: %s",
-                integration.integration_id,
-                str(e),
-                exc_info=True,
-            )
-
-    def check_integration_health(
-        self,
-        integration_id: UUID,
-        organisation_id: UUID,
-    ) -> dict[str, Any]:
-        """
-        Check health of a specific integration's tokens.
-
-        Args:
-            integration_id: Integration to check
-            organisation_id: Organization ID for security check
+            integration_id: Integration UUID to refresh
 
         Returns:
-            Dict with keys:
-                - is_healthy (bool): Whether token is healthy
-                - needs_refresh (bool): Whether token needs refresh soon
-                - expires_at (datetime|None): Token expiry time
-                - time_until_expiry (str|None): Human-readable time until expiry
+            Dict with refresh result
         """
+        nango = NangoClient()
         try:
-            stmt = select(KnowledgeIntegration).where(
-                and_(
-                    KnowledgeIntegration.integration_id == integration_id,
-                    KnowledgeIntegration.organisation_id == organisation_id,
+            async for session in acquire_org_async_session(self.organisation_id):
+                # Fetch integration
+                stmt = select(KnowledgeIntegration).where(
+                    col(KnowledgeIntegration.integration_id) == integration_id
                 )
-            )
+                result = await session.execute(stmt)
+                integration = result.scalar_one_or_none()
 
-            result = self.db.execute(stmt)
-            integration = result.scalar_one_or_none()
+                if not integration:
+                    return {
+                        "success": False,
+                        "integration_id": str(integration_id),
+                        "error": "Integration not found",
+                        "deactivated": False,
+                    }
 
-            if not integration:
-                return {
-                    "is_healthy": False,
-                    "needs_refresh": False,
-                    "expires_at": None,
-                    "time_until_expiry": None,
-                    "error": "Integration not found",
-                }
+                if not integration.connection_id:
+                    return {
+                        "success": False,
+                        "integration_id": str(integration_id),
+                        "error": "Integration has no connection_id",
+                        "deactivated": False,
+                    }
 
-            if not integration.access_token_expires_at:
-                return {
-                    "is_healthy": True,
-                    "needs_refresh": False,
-                    "expires_at": None,
-                    "time_until_expiry": "No expiry",
-                }
+                try:
+                    # Get the correct Nango provider key from our mapping
+                    integration_type = integration.integration_type
+                    if isinstance(integration_type, str):
+                        integration_type = IntegrationType(integration_type)
+                    provider_key = to_nango_provider_key(integration_type)
 
-            now = datetime.now(UTC)
-            expires_at = integration.access_token_expires_at
-            time_until_expiry = expires_at - now
+                    logger.info(
+                        "Refreshing token: org=%s integration=%s type=%s provider=%s",
+                        self.organisation_id,
+                        integration_id,
+                        integration_type.value,
+                        provider_key,
+                    )
 
-            is_expired = expires_at <= now
-            needs_refresh = self.nango.is_token_expiring_soon(
-                expires_at, buffer_minutes=self.buffer_minutes
-            )
+                    # Call Nango to refresh the token
+                    connection = await nango.get_connection(
+                        provider=provider_key,
+                        connection_id=integration.connection_id,
+                        force_refresh=True,
+                    )
 
+                    # Extract new token expiry
+                    credentials = connection.get("credentials", {})
+                    new_expiry = None
+                    if "expires_at" in credentials:
+                        new_expiry = nango.parse_token_expiry(credentials["expires_at"])
+
+                    # Update integration record
+                    if new_expiry:
+                        integration.access_token_expires_at = new_expiry
+
+                    # Reset failure count on success
+                    self._reset_failure_count(integration)
+                    integration.updated_at = datetime.utcnow()
+                    session.add(integration)
+                    await session.commit()
+
+                    logger.info(
+                        "Token refreshed: integration=%s new_expiry=%s",
+                        integration_id,
+                        new_expiry,
+                    )
+
+                    return {
+                        "success": True,
+                        "integration_id": str(integration_id),
+                        "new_expiry": new_expiry.isoformat() if new_expiry else None,
+                        "deactivated": False,
+                    }
+
+                except Exception as e:
+                    logger.error(
+                        "Token refresh failed: org=%s integration=%s error=%s",
+                        self.organisation_id,
+                        integration_id,
+                        str(e),
+                        exc_info=True,
+                    )
+
+                    # Increment failure count
+                    failure_count = self._increment_failure_count(integration)
+                    integration.last_sync_status = "FAILED"
+                    integration.last_sync_error = f"Token refresh failed: {str(e)[:200]}"
+                    integration.updated_at = datetime.utcnow()
+
+                    # Deactivate after max failures
+                    was_deactivated = False
+                    if failure_count >= TOKEN_REFRESH_MAX_FAILURES:
+                        integration.is_active = False
+                        was_deactivated = True
+                        logger.warning(
+                            "Deactivated integration %s after %d consecutive failures",
+                            integration_id,
+                            failure_count,
+                        )
+
+                    session.add(integration)
+                    await session.commit()
+
+                    return {
+                        "success": False,
+                        "integration_id": str(integration_id),
+                        "error": str(e)[:200],
+                        "failure_count": failure_count,
+                        "deactivated": was_deactivated,
+                    }
+
+            # Session not acquired
             return {
-                "is_healthy": not is_expired,
-                "needs_refresh": needs_refresh,
-                "expires_at": expires_at,
-                "time_until_expiry": str(time_until_expiry),
+                "success": False,
+                "integration_id": str(integration_id),
+                "error": "Failed to acquire database session",
+                "deactivated": False,
             }
+        finally:
+            await nango.close()
 
-        except Exception as e:
-            logger.error(
-                f"Failed to check integration health for {integration_id}: {str(e)}",
-                exc_info=True,
-            )
-            return {
-                "is_healthy": False,
-                "needs_refresh": False,
-                "expires_at": None,
-                "time_until_expiry": None,
-                "error": str(e),
-            }
+    def _increment_failure_count(self, integration: KnowledgeIntegration) -> int:
+        """Increment the failure count and return the new value."""
+        metadata = dict(integration.connection_metadata or {})
+        current_count = metadata.get("token_refresh_failures", 0)
+        new_count = current_count + 1
+        metadata["token_refresh_failures"] = new_count
+        metadata["last_refresh_failure_at"] = datetime.utcnow().isoformat()
+        integration.connection_metadata = metadata
+        return new_count
 
-
-# Convenience function for use in Celery tasks
-async def refresh_all_expiring_tokens(db_session: Session, buffer_hours: int = 2) -> dict[str, Any]:
-    """
-    Convenience function to refresh all expiring tokens.
-
-    This is the main entry point for the Celery scheduled task.
-
-    Args:
-        db_session: Database session
-        buffer_hours: How many hours ahead to check for expiring tokens
-
-    Returns:
-        Summary dict with refresh results
-    """
-    nango = NangoClient()
-    service = TokenRefreshService(db_session=db_session, nango_client=nango)
-
-    try:
-        result = await service.refresh_expiring_tokens(buffer_hours=buffer_hours)
-        return result
-    finally:
-        await nango.close()
+    def _reset_failure_count(self, integration: KnowledgeIntegration) -> None:
+        """Reset the failure count on successful refresh."""
+        metadata = dict(integration.connection_metadata or {})
+        if "token_refresh_failures" in metadata:
+            del metadata["token_refresh_failures"]
+        if "last_refresh_failure_at" in metadata:
+            del metadata["last_refresh_failure_at"]
+        integration.connection_metadata = metadata
