@@ -96,9 +96,9 @@ class DealWorkerConfig(BaseWorkerConfig):
             # },
             # # HOURLY: Timeline sync - safety net to fill gaps from missed inline creation
             # # Runs at :30 to avoid overlap with deal-mapping at :00
-            "hourly-timeline-sync": {
+            "timeline-sync": {
                 "task": "deal.trigger_timeline_sync_all_orgs",
-                "schedule": crontab(minute=40),  # Every hour at :30
+                "schedule": crontab(minute="*/5"),  # Every 5 minutes
                 "options": {"queue": "deal", "routing_key": "deal"},
             },
             # # NIGHTLY: Heavy LLM tasks (2 AM UTC)

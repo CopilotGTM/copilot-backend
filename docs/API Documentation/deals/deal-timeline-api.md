@@ -71,6 +71,9 @@ export interface TimelineEvent {
 
 // EMAIL event_data
 export interface EmailEventData {
+  // Source ID for API calls (e.g., fetching full email details)
+  email_id?: string | null;           // Internal UUID of the email record
+
   // Provider icon/logo URL (derived from event_source)
   provider_logo_url?: string | null;
 
@@ -109,6 +112,9 @@ export interface EmailAttachment {
 
 // MEETING event_data
 export interface MeetingEventData {
+  // Source ID for API calls (e.g., summary generation, prep generation)
+  calendar_event_id?: string | null;  // Internal UUID of the calendar event
+
   // Provider icon/logo URL (derived from event_source)
   provider_logo_url?: string | null;
 
@@ -225,6 +231,7 @@ Authorization: Bearer <token>
         "event_source": "CALENDAR_GOOGLE",
         "event_timestamp": "2025-01-15T10:00:00Z",
         "event_data": {
+          "calendar_event_id": "d5e6f7a8-1234-5678-9abc-def012345678",
           "provider_logo_url": "https://api.nango.dev/images/template-logos/google-calendar.svg",
           "title": "Q1 Planning Call with Acme Corp",
           "duration_minutes": 60,
@@ -241,6 +248,7 @@ Authorization: Bearer <token>
         "event_source": "EMAIL_GMAIL",
         "event_timestamp": "2025-01-14T15:30:00Z",
         "event_data": {
+          "email_id": "e1f2a3b4-5678-9abc-def0-abcdef123456",
           "provider_logo_url": "https://app.nango.dev/images/template-logos/google-mail.svg",
           "subject": "Re: Proposal Review",
           "snippet": "Thanks for sending over the proposal. I've reviewed it with...",
@@ -284,6 +292,7 @@ Authorization: Bearer <token>
     "event_source": "CALENDAR_GOOGLE",
     "event_timestamp": "2025-01-15T10:00:00Z",
     "event_data": {
+      "calendar_event_id": "d5e6f7a8-1234-5678-9abc-def012345678",
       "provider_logo_url": "https://api.nango.dev/images/template-logos/google-calendar.svg",
       "title": "Q1 Planning Call with Acme Corp",
       "duration_minutes": 60,
@@ -319,6 +328,7 @@ Authorization: Bearer <token>
     "event_source": "EMAIL_GMAIL",
     "event_timestamp": "2025-01-14T15:30:00Z",
     "event_data": {
+      "email_id": "e1f2a3b4-5678-9abc-def0-abcdef123456",
       "provider_logo_url": "https://app.nango.dev/images/template-logos/google-mail.svg",
       "subject": "Re: Proposal Review",
       "snippet": "Thanks for sending over the proposal. I've reviewed it with the team...",
@@ -517,6 +527,27 @@ function isStageChangeEvent(event: TimelineEvent): event is TimelineEvent & { ev
 
 function isDealCreatedEvent(event: TimelineEvent): event is TimelineEvent & { event_data: DealCreatedEventData } {
   return event.event_type === "DEAL_CREATED";
+}
+```
+
+### Source IDs for Subsequent API Calls
+
+Timeline events include source IDs that must be used when calling other APIs:
+
+| Event Type | Source ID Field | Used For |
+|------------|-----------------|----------|
+| EMAIL | `event_data.email_id` | Fetching full email details |
+| MEETING | `event_data.calendar_event_id` | Meeting summary, prep, followup job APIs |
+
+**Important**: Do NOT use `TimelineEvent.id` (which is `timeline_event_id`) when calling meeting job APIs. You must use `event_data.calendar_event_id`.
+
+```typescript
+// WRONG - will cause ForeignKeyViolationError
+initiateMeetingJob(dealId, event.id, "summary");
+
+// CORRECT - use calendar_event_id from event_data
+if (isMeetingEvent(event) && event.event_data.calendar_event_id) {
+  initiateMeetingJob(dealId, event.event_data.calendar_event_id, "summary");
 }
 ```
 

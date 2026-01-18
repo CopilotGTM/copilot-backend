@@ -387,17 +387,17 @@ class DealTimelineSyncService:
     async def _insert_timeline_event_ignore_conflict(
         self, session: AsyncSession, event: DealTimelineEvent
     ) -> bool:
-        """Insert a timeline event, ignoring duplicates.
+        """Insert a timeline event, or update metadata if it already exists.
 
-        This makes batch sync resilient to concurrent executions (or overlapping
-        backfills) without relying on a precomputed key set.
+        Uses upsert pattern to ensure existing events get updated metadata
+        (e.g., calendar_event_id, email_id) on re-sync.
 
         Args:
             session: Database session to use
-            event: Timeline event to insert
+            event: Timeline event to insert or update
 
         Returns:
-            True if inserted, False if skipped due to unique conflict.
+            True if inserted or updated, False if no changes.
         """
         values: dict[str, Any] = event.model_dump()  # SQLModel / Pydantic v2
 
@@ -405,10 +405,22 @@ class DealTimelineSyncService:
         values["event_type"] = _enum_value(values.get("event_type"))
         values["event_source"] = _enum_value(values.get("event_source"))
 
+        # Fields to update on conflict (metadata and timestamps)
+        update_fields = {
+            "event_metadata": values.get("event_metadata"),
+            "title": values.get("title"),
+            "subtitle": values.get("subtitle"),
+            "participant_count": values.get("participant_count"),
+            "updated_at": datetime.now(UTC),
+        }
+
         stmt = (
             insert(DealTimelineEvent)
             .values(**values)
-            .on_conflict_do_nothing(constraint="uq_timeline_event_source")
+            .on_conflict_do_update(
+                constraint="uq_timeline_event_source",
+                set_=update_fields,
+            )
         )
         result = await session.execute(stmt)
         return (getattr(result, "rowcount", 0) or 0) > 0
@@ -807,8 +819,11 @@ def build_email_timeline_event(
     # Build metadata
     metadata: dict[str, Any] = {
         "internet_message_id": association.internet_message_id,
+        "from_email": sender_email,
     }
     if email:
+        # Source ID for API calls
+        metadata["email_id"] = str(email.email_id)
         metadata["has_attachments"] = email.has_attachments
         metadata["thread_id"] = email.thread_id
 
@@ -890,7 +905,10 @@ def build_meeting_timeline_event(
                     participant_names.append(name)
 
     # Build metadata
-    metadata: dict[str, Any] = {}
+    metadata: dict[str, Any] = {
+        # Source ID for API calls (e.g., summary generation)
+        "calendar_event_id": str(association.event_id),
+    }
     if duration_minutes:
         metadata["duration_minutes"] = duration_minutes
     if event:

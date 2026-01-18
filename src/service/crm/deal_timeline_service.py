@@ -138,6 +138,7 @@ class DealTimelineService:
             stmt = stmt.where(t.c.excluded_at.is_(None))
 
         # Filter by event types
+        type_values: list[str] = []
         if event_types:
             type_values = [t.value if hasattr(t, "value") else str(t) for t in event_types]
             stmt = stmt.where(t.c.event_type.in_(type_values))
@@ -267,6 +268,8 @@ class DealTimelineService:
 
         if event_type == TimelineEventType.EMAIL.value:
             return {
+                # Source ID for API calls (e.g., fetching full email)
+                "email_id": metadata.get("email_id"),
                 "subject": event.title,
                 "snippet": event.subtitle,
                 "from_email": metadata.get("from_email"),
@@ -274,6 +277,8 @@ class DealTimelineService:
 
         if event_type == TimelineEventType.MEETING.value:
             return {
+                # Source ID for API calls (e.g., summary generation)
+                "calendar_event_id": metadata.get("calendar_event_id"),
                 "title": event.title,
                 "duration_minutes": metadata.get("duration_minutes"),
                 "attendee_count": event.participant_count,
@@ -416,6 +421,8 @@ class DealTimelineService:
             ]
 
         return {
+            # Source ID for API calls
+            "email_id": str(email.email_id) if email else None,
             # Preview fields
             "subject": (email.subject if email else None)
             or association.email_subject
@@ -513,6 +520,8 @@ class DealTimelineService:
             }
 
         return {
+            # Source ID for API calls (e.g., summary generation)
+            "calendar_event_id": str(association.event_id),
             # Preview fields
             "title": title,
             "duration_minutes": duration_minutes,
@@ -594,8 +603,11 @@ class DealTimelineService:
         # Build metadata
         metadata: dict[str, Any] = {
             "internet_message_id": association.internet_message_id,
+            "from_email": sender_email,
         }
         if email:
+            # Source ID for API calls (e.g., fetching full email details)
+            metadata["email_id"] = str(email.email_id)
             metadata["has_attachments"] = email.has_attachments
             metadata["thread_id"] = email.thread_id
 
@@ -704,7 +716,10 @@ class DealTimelineService:
             subtitle = f"Duration: {duration} mins"
 
         # Build metadata
-        metadata: dict[str, Any] = {}
+        metadata: dict[str, Any] = {
+            # Source ID for API calls (e.g., summary generation, prep generation)
+            "calendar_event_id": str(association.event_id),
+        }
         if duration:
             metadata["duration_minutes"] = duration
         if event:
@@ -768,7 +783,7 @@ class DealTimelineService:
         )
 
         result = await self.session.execute(stmt)
-        return result.rowcount > 0
+        return (getattr(result, "rowcount", 0) or 0) > 0
 
     async def update_timeline_event_status(self, timeline_event_id: UUID, status: str) -> bool:
         """
@@ -794,7 +809,7 @@ class DealTimelineService:
         )
 
         result = await self.session.execute(stmt)
-        return result.rowcount > 0
+        return (getattr(result, "rowcount", 0) or 0) > 0
 
     async def get_existing_timeline_event(
         self,
