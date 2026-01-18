@@ -288,11 +288,11 @@ def sync_calendar_org_task(
 
                 # Dispatch Task 2: Match calendar events to deals
                 if total_events > 0:
-                    from src.workers.deal_worker.tasks.deal_mappers import (
-                        match_calendar_to_deals_org_task,
+                    app.send_task(
+                        "deal.match_calendar_to_deals_org",
+                        args=[organisation_id],
+                        queue="deal",
                     )
-
-                    match_calendar_to_deals_org_task.delay(organisation_id)  # type: ignore
                     logger.info("Dispatched calendar matching task for org %s", org_id)
 
                 return {

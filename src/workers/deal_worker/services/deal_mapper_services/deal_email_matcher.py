@@ -20,6 +20,7 @@ from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy import func, or_
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlmodel import col, select
@@ -586,18 +587,8 @@ class DealEmailMatcher:
 
         Returns the created association or None if it already exists.
         """
-        # Check if association already exists (defensive)
-        stmt = select(DealEmailAssociation).where(
-            col(DealEmailAssociation.deal_id) == match.deal_id,
-            col(DealEmailAssociation.internet_message_id) == email.internet_message_id,
-        )
-        result = await self.session.execute(stmt)
-        existing = result.scalars().first()
-
-        if existing:
-            return None
-
-        # Create new association
+        # Create new association using INSERT ... ON CONFLICT DO NOTHING
+        # This handles race conditions when multiple tasks process the same org
         association = DealEmailAssociation(
             organisation_id=self.organisation_id,
             deal_id=match.deal_id,
@@ -610,20 +601,41 @@ class DealEmailMatcher:
             email_date=email.received_at or email.sent_at,
         )
 
-        self.session.add(association)
-
-        # Create timeline event inline (same transaction)
-        resolved_source = resolve_email_event_source(integration_type)
-        timeline_event = build_email_timeline_event(
-            organisation_id=self.organisation_id,
-            deal_id=match.deal_id,
-            association=association,
-            email=email,
-            event_source=resolved_source,
+        stmt = (
+            insert(DealEmailAssociation)
+            .values(
+                association_id=association.association_id,
+                organisation_id=association.organisation_id,
+                deal_id=association.deal_id,
+                internet_message_id=association.internet_message_id,
+                status=association.status,
+                match_score=association.match_score,
+                direction=association.direction,
+                matched_stakeholder_emails=association.matched_stakeholder_emails,
+                email_subject=association.email_subject,
+                email_date=association.email_date,
+                created_at=association.created_at,
+                updated_at=association.updated_at,
+            )
+            .on_conflict_do_nothing(constraint="uq_deal_email")
         )
-        self.session.add(timeline_event)
+        result = await self.session.execute(stmt)
 
-        return association
+        # Only create timeline event if insert succeeded (not a duplicate)
+        if (getattr(result, "rowcount", 0) or 0) > 0:
+            # Create timeline event inline (same transaction)
+            resolved_source = resolve_email_event_source(integration_type)
+            timeline_event = build_email_timeline_event(
+                organisation_id=self.organisation_id,
+                deal_id=match.deal_id,
+                association=association,
+                email=email,
+                event_source=resolved_source,
+            )
+            self.session.add(timeline_event)
+            return association
+
+        return None
 
     async def process_organisation(self) -> dict[str, int]:
         """
@@ -668,9 +680,9 @@ class DealEmailMatcher:
             it_stmt = select(
                 KnowledgeIntegration.integration_id,
                 KnowledgeIntegration.integration_type,
-            ).where(KnowledgeIntegration.integration_id.in_(integration_ids))
+            ).where(KnowledgeIntegration.integration_id.in_(integration_ids))  # type: ignore
             it_result = await self.session.execute(it_stmt)
-            integration_type_by_id = dict(it_result.all())
+            integration_type_by_id = dict(it_result.all())  # type: ignore
 
         # Track which deals got matches
         deals_matched: set[UUID] = set()
@@ -799,9 +811,9 @@ class DealEmailMatcher:
             it_stmt = select(
                 KnowledgeIntegration.integration_id,
                 KnowledgeIntegration.integration_type,
-            ).where(KnowledgeIntegration.integration_id.in_(integration_ids))
+            ).where(KnowledgeIntegration.integration_id.in_(integration_ids))  # type: ignore
             it_result = await self.session.execute(it_stmt)
-            integration_type_by_id = dict(it_result.all())
+            integration_type_by_id = dict(it_result.all())  # type: ignore
 
         # Match and create associations
         for email in emails:

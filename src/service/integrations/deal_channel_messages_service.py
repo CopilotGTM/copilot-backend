@@ -636,7 +636,8 @@ class DealChannelMessagesService:
         channel_result = await self.db.execute(channel_stmt)
         channel = channel_result.scalar_one_or_none()
         if channel:
-            channel.last_synced_at = datetime.now(UTC)
+            # Use naive datetime for TIMESTAMP WITHOUT TIME ZONE column
+            channel.last_synced_at = datetime.now(UTC).replace(tzinfo=None)
             if delta_link:
                 channel.last_sync_cursor = delta_link
             await self.db.commit()

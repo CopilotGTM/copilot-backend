@@ -26,6 +26,10 @@ from .stakeholder_analysis_tasks import (
     analyze_org_stakeholders_task,
     trigger_stakeholder_analysis_all_orgs,
 )
+from .transcript_fetch_tasks import (
+    fetch_meeting_transcripts_org_task,
+    trigger_transcript_fetch_all_orgs_task,
+)
 
 __all__ = [
     # Deal mappers - Task 1: Stakeholder Sync
@@ -54,4 +58,7 @@ __all__ = [
     "sync_org_timeline_task",
     "exclude_timeline_event_task",
     "trigger_timeline_sync_all_orgs_task",
+    # Transcript fetch tasks
+    "fetch_meeting_transcripts_org_task",
+    "trigger_transcript_fetch_all_orgs_task",
 ]

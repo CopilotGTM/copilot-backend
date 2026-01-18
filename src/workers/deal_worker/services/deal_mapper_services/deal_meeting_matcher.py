@@ -4,6 +4,7 @@ from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy import func, or_, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
 from sqlmodel import col
@@ -669,30 +670,45 @@ class DealMeetingMatcher:
             if event.event_id in linked_event_ids:
                 continue
 
-            # Check if association already exists in database
-            assoc_stmt = select(CalendarEventDealAssociation).where(
-                col(CalendarEventDealAssociation.event_id) == event.event_id,
-                col(CalendarEventDealAssociation.deal_id) == deal.deal_id,
+            # Create new association using INSERT ... ON CONFLICT DO NOTHING
+            # This handles race conditions when multiple tasks process the same org
+            new_assoc = CalendarEventDealAssociation(
+                organisation_id=self.organisation_id,
+                event_id=event.event_id,
+                deal_id=deal.deal_id,
+                status=AssociationStatus.ACTIVE,
+                match_score=match_score,
+                meeting_prep_status=GenerationStatus.NOT_STARTED,
             )
-            assoc_result = await self.session.execute(assoc_stmt)
-            existing_assoc = assoc_result.scalars().first()
 
-            if not existing_assoc:
-                # Create new association
-                new_assoc = CalendarEventDealAssociation(
-                    organisation_id=self.organisation_id,
-                    event_id=event.event_id,
-                    deal_id=deal.deal_id,
-                    status=AssociationStatus.ACTIVE,
-                    match_score=match_score,
-                    meeting_prep_status=GenerationStatus.NOT_STARTED,
+            stmt = (
+                insert(CalendarEventDealAssociation)
+                .values(
+                    association_id=new_assoc.association_id,
+                    organisation_id=new_assoc.organisation_id,
+                    event_id=new_assoc.event_id,
+                    deal_id=new_assoc.deal_id,
+                    status=new_assoc.status,
+                    match_score=new_assoc.match_score,
+                    meeting_prep_status=new_assoc.meeting_prep_status,
+                    meeting_prep_data=None,
+                    meeting_summary_status=GenerationStatus.NOT_STARTED,
+                    meeting_summary_data=None,
+                    meeting_followup_status=GenerationStatus.NOT_STARTED,
+                    meeting_followup_data=None,
+                    created_at=new_assoc.created_at,
+                    updated_at=new_assoc.updated_at,
                 )
-                self.session.add(new_assoc)
+                .on_conflict_do_nothing(constraint="uq_calendar_event_deal")
+            )
+            result = await self.session.execute(stmt)
 
+            # Only proceed if insert succeeded (not a duplicate)
+            if (getattr(result, "rowcount", 0) or 0) > 0:
                 # Create timeline event inline (same transaction)
                 calendar_integration_type = None
                 if getattr(event, "integration_id", None) in integration_type_by_id:
-                    calendar_integration_type = integration_type_by_id.get(event.integration_id)
+                    calendar_integration_type = integration_type_by_id.get(event.integration_id)  # type: ignore
                 else:
                     user_states = getattr(event, "user_states", None) or []
                     sorted_states = sorted(

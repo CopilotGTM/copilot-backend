@@ -205,7 +205,23 @@ class DealJobService:
         active_summary_job = await self.get_active_job(deal_id, DealJobType.DEAL_SUMMARY)
 
         if not active_summary_job:
+            logger.debug("No active deal summary job found for deal %s", deal_id)
             return None
+
+        # Ensure job_id exists before returning
+        if not active_summary_job.job_id:
+            logger.warning(
+                "Active deal summary job found but job_id is None for deal %s",
+                deal_id,
+            )
+            return None
+
+        logger.debug(
+            "Active deal summary job found: deal=%s job_id=%s status=%s",
+            deal_id,
+            active_summary_job.job_id,
+            active_summary_job.status,
+        )
 
         return {
             "deal_summary": {

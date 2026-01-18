@@ -30,6 +30,7 @@ from src.domain.models.organisation_tables.sync.calendar import (
 )
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDeal,
+    CRMDealStage,
     CRMDealStageHistory,
 )
 from src.domain.models.organisation_tables.sync.email_models import (
@@ -99,6 +100,62 @@ class DealTimelineSyncService:
         """
         self.session = session
         self.organisation_id = organisation_id
+        self._stage_lookup_cache: dict[str, dict[str, Any]] | None = None
+
+    async def _get_stage_lookup(self) -> dict[str, dict[str, Any]]:
+        """Build a lookup map of stage external_id -> stage info.
+
+        Returns dict mapping external_id to:
+        {
+            "stage_id": UUID (internal),
+            "name": str (display name),
+            "label": str | None (optional label),
+        }
+        """
+        if self._stage_lookup_cache is not None:
+            return self._stage_lookup_cache
+
+        stage_table: Table = _table(CRMDealStage)
+        stmt = select(CRMDealStage).where(
+            stage_table.c.organisation_id == self.organisation_id,
+            stage_table.c.is_deleted.is_(False),
+        )
+        result = await self.session.execute(stmt)
+        stages = result.scalars().all()
+
+        self._stage_lookup_cache = {
+            stage.external_id: {
+                "stage_id": stage.stage_id,
+                "name": stage.name,
+                "label": stage.label,
+            }
+            for stage in stages
+        }
+        return self._stage_lookup_cache
+
+    def _resolve_stage_label(
+        self,
+        stage_lookup: dict[str, dict[str, Any]],
+        external_id: str | None,
+    ) -> tuple[str | None, str | None]:
+        """Resolve stage external_id to (internal_stage_id, display_label).
+
+        Returns:
+            Tuple of (stage_id as string, display_label)
+            Falls back to external_id if not found in lookup
+        """
+        if not external_id:
+            return None, None
+
+        stage_info = stage_lookup.get(external_id)
+        if stage_info:
+            # Use label if available, otherwise name
+            display_label = stage_info.get("label") or stage_info.get("name")
+            stage_id = str(stage_info["stage_id"])
+            return stage_id, display_label
+
+        # Fallback: return external_id as both ID and label
+        return None, external_id
 
     # -------------------------------------------------------------------------
     # Batch Sync Methods
@@ -447,6 +504,9 @@ class DealTimelineSyncService:
         """Batch sync stage history records → timeline events."""
         stats = {"synced": 0, "created": 0, "skipped": 0}
 
+        # Get stage lookup for resolving external_id -> name/label
+        stage_lookup = await self._get_stage_lookup()
+
         history_table: Table = _table(CRMDealStageHistory)
         integration_table: Table = _table(KnowledgeIntegration)
 
@@ -473,18 +533,29 @@ class DealTimelineSyncService:
                 stats["skipped"] += 1
                 continue
 
-            # Build history entry dict for builder function
+            # Resolve stage names/labels from lookup
+            new_stage_id, new_stage_label = self._resolve_stage_label(
+                stage_lookup, history.stage_external_id
+            )
+            old_stage_id, old_stage_label = self._resolve_stage_label(
+                stage_lookup, history.from_stage_external_id
+            )
+
+            # Build history entry dict for builder function with resolved labels
             history_entry = {
                 "external_id": history.external_id,
+                "history_id": str(history.history_id),
                 "deal_id": history.deal_id,
+                # Store internal stage IDs (UUIDs)
+                "stage_id": new_stage_id,
+                "from_stage_id": old_stage_id,
+                # Keep external IDs for reference
                 "stage_external_id": history.stage_external_id,
                 "from_stage_external_id": history.from_stage_external_id,
                 "entered_at": history.entered_at,
-                # Stage names/labels may not be available in history table
-                "stage_name": None,
-                "stage_label": None,
-                "from_stage_name": None,
-                "from_stage_label": None,
+                # Resolved display labels
+                "stage_label": new_stage_label,
+                "from_stage_label": old_stage_label,
             }
 
             # Resolve event source
@@ -753,6 +824,7 @@ def build_stage_change_timeline_event(
     deal_id: UUID,
     history_entry: dict[str, Any],
     event_source: TimelineEventSource | None = None,
+    deal_context: dict[str, Any] | None = None,
 ) -> DealTimelineEvent:
     """
     Build a timeline event for a deal stage change.
@@ -765,36 +837,67 @@ def build_stage_change_timeline_event(
         deal_id: Deal UUID
         history_entry: Dictionary containing stage history data with keys:
             - external_id or history_id: Unique identifier
-            - stage_external_id or stage_name: New stage identifier
-            - from_stage_external_id or from_stage_name: Previous stage identifier
+            - stage_id: Internal UUID for new stage (preferred)
+            - from_stage_id: Internal UUID for previous stage (preferred)
+            - stage_external_id: Provider's stage ID (fallback)
+            - from_stage_external_id: Provider's previous stage ID (fallback)
             - entered_at: Timestamp when stage was entered
-            - stage_label: Display label for new stage (optional)
-            - from_stage_label: Display label for previous stage (optional)
+            - stage_label: Display label for new stage
+            - from_stage_label: Display label for previous stage
         event_source: Source CRM system (CRM_HUBSPOT, CRM_SALESFORCE)
+        deal_context: Optional deal context for frontend display:
+            - deal_name, company_name, amount, currency, pipeline_name
 
     Returns:
         DealTimelineEvent (not yet added to session)
     """
-    # Extract stage information
-    old_stage = history_entry.get("from_stage_external_id") or history_entry.get("from_stage_name")
-    new_stage = history_entry.get("stage_external_id") or history_entry.get("stage_name")
     entered_at = history_entry.get("entered_at") or datetime.now(UTC)
 
-    # Get display labels if available
+    # Get display labels - these should be resolved by the caller
     old_stage_label = history_entry.get("from_stage_label")
     new_stage_label = history_entry.get("stage_label")
 
-    # Use labels for display if available, fall back to stage IDs
-    old_display = old_stage_label or old_stage
-    new_display = new_stage_label or new_stage
+    # Get internal stage IDs (UUIDs) - preferred for storage
+    old_stage_id = history_entry.get("from_stage_id")
+    new_stage_id = history_entry.get("stage_id")
 
-    # Build title
+    # Fallback to external IDs if internal not available
+    old_stage_external = history_entry.get("from_stage_external_id")
+    new_stage_external = history_entry.get("stage_external_id")
+
+    # Use labels for display, fall back to external IDs if labels not resolved
+    old_display = old_stage_label or old_stage_external
+    new_display = new_stage_label or new_stage_external
+
+    # Build title with human-readable labels
     title = f"Stage: {old_display} → {new_display}" if old_display else f"Stage: {new_display}"
 
     # Build source_record_id from history_id or external_id
     source_id = history_entry.get("history_id") or history_entry.get("external_id")
 
     resolved_source = event_source or TimelineEventSource.CRM_HUBSPOT
+
+    # Build metadata with internal IDs (preferred) and display labels
+    metadata: dict[str, Any] = {
+        # Internal stage IDs (UUIDs) - use these for lookups
+        "old_stage_id": old_stage_id,
+        "new_stage_id": new_stage_id,
+        # External IDs for reference/debugging
+        "old_stage_external_id": old_stage_external,
+        "new_stage_external_id": new_stage_external,
+        # Display labels for frontend
+        "old_stage_label": old_stage_label,
+        "new_stage_label": new_stage_label,
+    }
+
+    # Add deal context if provided (for frontend convenience)
+    if deal_context:
+        metadata["deal_name"] = deal_context.get("deal_name")
+        metadata["company_name"] = deal_context.get("company_name")
+        metadata["pipeline_name"] = deal_context.get("pipeline_name")
+        metadata["currency"] = deal_context.get("currency")
+        if deal_context.get("amount") is not None:
+            metadata["amount"] = float(deal_context["amount"])
 
     return DealTimelineEvent(
         organisation_id=organisation_id,
@@ -809,12 +912,7 @@ def build_stage_change_timeline_event(
         status=None,
         participant_names=[],
         participant_count=0,
-        event_metadata={
-            "old_stage": old_stage,
-            "new_stage": new_stage,
-            "old_stage_label": old_stage_label,
-            "new_stage_label": new_stage_label,
-        },
+        event_metadata=metadata,
     )
 
 
@@ -850,15 +948,26 @@ def build_deal_created_timeline_event(
 
     resolved_source = event_source or TimelineEventSource.CRM_HUBSPOT
 
-    # Build metadata
+    # Build metadata with deal and company information
     metadata: dict[str, Any] = {
+        # Deal information
+        "deal_name": deal.name,
         "initial_stage": deal.stage_name,
         "pipeline_name": deal.pipeline_name,
+        "currency": deal.currency,
+        # Company information
+        "company_name": deal.company_name,
+        "company_domain": deal.company_domain,
+        # Owner information
+        "owner_name": deal.owner_name,
+        # Primary contact
+        "primary_contact_name": deal.primary_contact_name,
+        "primary_contact_email": deal.primary_contact_email,
     }
     if deal.owner_id:
         metadata["owner_id"] = str(deal.owner_id)
     if deal.amount is not None:
-        metadata["amount"] = deal.amount
+        metadata["amount"] = float(deal.amount)
 
     return DealTimelineEvent(
         organisation_id=organisation_id,

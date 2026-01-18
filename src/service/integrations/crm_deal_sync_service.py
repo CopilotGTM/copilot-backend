@@ -137,7 +137,8 @@ class CRMDealSyncService:
             )
 
         # 3. Update integration status
-        integration.last_synced_at = sync_start
+        # Use naive datetime for TIMESTAMP WITHOUT TIME ZONE column
+        integration.last_synced_at = sync_start.replace(tzinfo=None)
         integration.last_sync_status = SyncStatus.SUCCESS.value
         integration.last_sync_error = None
         update_last_sync_timestamp(integration, "deals", sync_start)

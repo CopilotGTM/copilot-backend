@@ -194,9 +194,12 @@ export interface DealDetail {
 
   time_tracked: string | null;
 
-  deal_summary_status: string | null;
   deal_summary_data: Record<string, unknown> | null;
 
+  // Active deal-level jobs for SSE reconnection
+  // Frontend derives status: active_deal_jobs?.deal_summary?.job_id exists → IN_PROGRESS
+  //                         deal_summary_data exists → COMPLETED
+  //                         neither → NOT_STARTED
   active_deal_jobs: DealSummaryJobsStatus | null;
 }
 
@@ -665,7 +668,6 @@ Required
     "deal_health": "ON_TRACK",
     "deal_health_reason": "Multiple recent meetings with the buyer group present.",
     "time_tracked": null,
-    "deal_summary_status": "COMPLETED",
     "deal_summary_data": {
       "schema_version": "1.0",
       "generated_at": "2025-12-24T10:30:00Z",
@@ -682,10 +684,14 @@ Required
 
 ### Notes for Get Deal Details
 
-- **Deal Summary**: When `deal_summary_status` is `COMPLETED`, the `deal_summary_data` field contains AI-generated summary data including `deal_summary` and an AI-classified `deal_health`.
+- **Deal Summary**: When `deal_summary_data` exists, it contains AI-generated summary data including `deal_summary` and an AI-classified `deal_health`.
 - **Deal Health Reason (capture-only)**: `deal_health_reason` is stored for internal traceability but is **not displayed in the UI** for the current release.
-- **Active Jobs**: The `active_deal_jobs` field contains any currently running deal-level jobs (e.g., deal summary generation). Use this for SSE reconnection - if a job is `IN_PROGRESS`, subscribe to the SSE stream for real-time updates.
+- **Active Jobs**: The `active_deal_jobs` field contains any currently running deal-level jobs (e.g., deal summary generation). Use this for SSE reconnection - if `active_deal_jobs.deal_summary.job_id` exists, subscribe to the SSE stream for real-time updates.
 - **Job Statuses**: `PENDING` (queued), `IN_PROGRESS` (running), `COMPLETED` (done), `FAILED` (error).
+- **Deriving Summary Status (Frontend)**:
+  - If `active_deal_jobs?.deal_summary?.job_id` exists → Job is IN_PROGRESS (reconnect to SSE)
+  - If `deal_summary_data` exists → Summary is COMPLETED
+  - Neither → NOT_STARTED
 
 ### Error Responses for Get Deal Details
 
@@ -1124,22 +1130,19 @@ If the user navigates away and returns, check `active_deal_jobs` in the deal det
 ```typescript
 async function checkAndReconnectToSummaryJob(dealId: string) {
   const deal = await getDealById(dealId);
-  
-  // Check if there's an active summary job
-  if (deal.active_deal_jobs?.deal_summary) {
-    const { job_id, status } = deal.active_deal_jobs.deal_summary;
-    
-    if (status === 'IN_PROGRESS' || status === 'PENDING') {
-      // Reconnect to the stream
-      return subscribeToDealSummaryStream(dealId, job_id, callbacks);
-    }
+
+  // Check if there's an active summary job with a valid job_id
+  const activeJob = deal.active_deal_jobs?.deal_summary;
+  if (activeJob?.job_id) {
+    // Job is running - reconnect to the SSE stream
+    return subscribeToDealSummaryStream(dealId, activeJob.job_id, callbacks);
   }
-  
+
   // No active job - check if summary already exists
-  if (deal.deal_summary_status === 'COMPLETED' && deal.deal_summary_data) {
+  if (deal.deal_summary_data) {
     displayFinalSummary(deal.deal_summary_data);
   }
-  
+
   return null;
 }
 ```
