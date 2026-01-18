@@ -187,11 +187,35 @@ class KnowledgeFileUploadConfig:
         )
     )  # default 100MB if not set
 
+    # Default MIME types aligned with knowledge worker supported formats
+    _DEFAULT_KNOWLEDGE_MIMETYPES = (
+        # Documents
+        "application/pdf, "
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document, "  # DOCX
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation, "  # PPTX
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, "  # XLSX
+        # Text formats
+        "text/plain, "
+        "text/markdown, "
+        "text/x-markdown, "
+        "text/csv, "
+        "text/html, "
+        # Data formats
+        "application/json, "
+        "application/xml, "
+        "text/xml, "
+        # Images (for OCR processing)
+        "image/jpeg, "
+        "image/png, "
+        "image/webp, "
+        "image/gif"
+    )
+
     ALLOWED_MIMETYPES: list[str] = [
         item.strip()
         for item in os.getenv(
             "KNOWLEDGE_ALLOWED_MIMETYPES",
-            "application/pdf, text/plain",
+            _DEFAULT_KNOWLEDGE_MIMETYPES,
         ).split(",")
         if item.strip()
     ]
