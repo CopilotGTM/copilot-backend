@@ -2,7 +2,7 @@
 
 **Purpose**: A comprehensive technical reference for creating and maintaining Celery workers in the CopilotGTM backend. This document provides all the foundational knowledge, patterns, and step-by-step instructions required to create a new Celery worker.
 
-**Last Updated**: December 2025
+**Last Updated**: January 2026
 
 ---
 
@@ -14,6 +14,12 @@
 4. [Redis/Broker Configuration](#4-redisbroker-configuration)
 5. [Step-by-Step: Creating a New Worker](#5-step-by-step-creating-a-new-worker)
 6. [Task Implementation Patterns](#6-task-implementation-patterns)
+   - 6.1 Standard Task Pattern
+   - 6.2 Async Operations in Tasks
+   - 6.3 Long-Running Task Pattern
+   - 6.4 Storage Operations Pattern
+   - 6.5 Three-Tier Task Architecture (Scheduled Tasks)
+   - 6.6 Database Connection Management in Tasks
 7. [Signal Handlers & Lifecycle](#7-signal-handlers--lifecycle)
 8. [Error Handling & Retry Strategies](#8-error-handling--retry-strategies)
 9. [Status Publishing & Real-time Updates](#9-status-publishing--real-time-updates)
@@ -1009,6 +1015,133 @@ def task_with_storage(self, org_id: str, source_id: str):
         finally:
             loop.close()
 ```
+
+### 6.5 Three-Tier Task Architecture (Scheduled Tasks)
+
+For scheduled tasks that process all organizations, use the three-tier pattern:
+
+```text
+Celery Beat (scheduled)
+    │
+    ▼
+Tier 1: all_orgs_task [Dispatcher]
+    │   - Query all approved organizations
+    │   - Dispatch Tier 2 task for each org
+    │   - No business logic, just orchestration
+    ▼
+Tier 2: org_task [Per-Organization]
+    │   - Process one organization
+    │   - Calls service layer (fresh session pattern)
+    │   - Has retries and time limits
+    ▼
+Tier 3: single_item_task [Optional - Manual/On-Demand]
+        - Process single item
+        - Used for manual triggers or API-initiated tasks
+```
+
+**Tier 1 - Dispatcher (No retries, fast):**
+
+```python
+@app.task(
+    name="worker.process_all_orgs",
+    bind=False,
+    max_retries=0,      # Don't retry dispatcher
+    acks_late=True,
+    soft_time_limit=300,
+    time_limit=360,
+)
+def process_all_orgs_task() -> dict[str, Any]:
+    """Tier 1: Dispatch tasks for all approved organizations."""
+    async def _dispatch_all_orgs() -> dict[str, Any]:
+        org_ids: list[UUID] = []
+        async for master_session in acquire_master_async_session():
+            stmt = select(col(Organisation.organisation_id)).where(
+                col(Organisation.status) == OrganisationStatus.APPROVED
+            )
+            result = await master_session.execute(stmt)
+            org_ids = [row[0] for row in result.all()]
+        # Session released here
+
+        # Dispatch Tier 2 for each organization
+        for org_id in org_ids:
+            process_org_task.apply_async(
+                kwargs={"organisation_id": str(org_id)},
+            )
+
+        return {"status": "completed", "orgs_triggered": len(org_ids)}
+
+    return run_async(_dispatch_all_orgs())
+```
+
+**Tier 2 - Per-Organization (With retries, service calls):**
+
+```python
+@app.task(
+    name="worker.process_org",
+    bind=True,
+    max_retries=2,
+    default_retry_delay=60,
+    acks_late=True,
+    soft_time_limit=600,
+    time_limit=660,
+)
+def process_org_task(self: Task, organisation_id: str) -> dict[str, Any]:
+    """Tier 2: Process one organization."""
+    async def _run() -> dict[str, Any]:
+        org_uuid = UUID(organisation_id)
+        # Service manages its own sessions (fresh session pattern)
+        service = MyService(org_uuid)
+        result = await service.process_all()
+        return {"status": "success", **result}
+
+    try:
+        return run_async(_run())
+    except Exception as exc:
+        if self.request.retries < self.max_retries:
+            raise self.retry(exc=exc, countdown=60 * (2**self.request.retries)) from exc
+        return {"status": "failed", "error": str(exc)}
+```
+
+**Key Benefits:**
+- Tier 1 is fast and never retries (avoids duplicate dispatches)
+- Tier 2 failures don't affect other organizations
+- Each organization processes independently with its own retries
+- Easy to add distributed locking at Tier 2 level
+
+### 6.6 Database Connection Management in Tasks
+
+**CRITICAL: Release connections promptly, especially before long-running operations:**
+
+```python
+# CORRECT: Fresh session pattern - release before external calls
+async def process_with_external_api(org_id: UUID, item_id: UUID):
+    # 1. Load data (acquire session, use it, release it)
+    item_data = None
+    async for session in acquire_org_async_session(org_id):
+        item = await session.get(Model, item_id)
+        item_data = {"id": item.id, "value": item.value}  # Extract needed data
+    # Session released here
+
+    # 2. Make external API call (NO session held)
+    response = await external_api.long_running_call(item_data)  # LLM, etc.
+
+    # 3. Update with result (acquire new session)
+    async for session in acquire_org_async_session(org_id):
+        item = await session.get(Model, item_id)
+        item.result = response
+        await session.commit()
+    # Session released here
+```
+
+**When to release before external calls:**
+- LLM API calls (10-30+ seconds)
+- External service calls with unpredictable latency
+- Batch operations making multiple external calls
+
+**When it's OK to hold briefly:**
+- Quick API calls (< 1-2 seconds)
+- Simple validations or notifications
+- When transaction integrity requires it
 
 ---
 
