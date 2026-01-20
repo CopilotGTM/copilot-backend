@@ -89,6 +89,8 @@ class PipelineResult:
     tasks_triggered: int = 0
     meetings_processed: int = 0  # For backwards compatibility
     deal_summary_triggered: bool = False  # Whether deal summary was added to chain
+    risk_blocker_triggered: bool = False  # Whether risk blocker extraction was added to chain
+    stakeholder_analysis_triggered: bool = False  # Whether stakeholder analysis was added to chain
 
 
 class MeetingSummaryService:
@@ -385,6 +387,7 @@ class MeetingSummaryService:
         """Trigger deal summary directly without meeting summary chain.
 
         Used when all meeting summaries are done but deal summary is missing.
+        Chains: deal_summary → risk_blocker_extraction → stakeholder_analysis
         """
         deal_summary_job_id: UUID | None = None
 
@@ -407,22 +410,52 @@ class MeetingSummaryService:
 
         if deal_summary_job_id:
             try:
-                sig = signature(
+                # Build chain: deal_summary → risk_blocker → stakeholder_analysis
+                task_signatures = []
+
+                # Deal summary task
+                deal_summary_sig = signature(
                     "deal_summary_task.process",
                     args=[str(self.organisation_id), str(deal_summary_job_id)],
                     queue="deal_jobs",
+                    immutable=True,
                 )
-                sig.apply_async()
+                task_signatures.append(deal_summary_sig)
                 result.deal_summary_triggered = True
-                result.tasks_triggered = 1
+
+                # Risk blocker extraction task
+                risk_blocker_sig = signature(
+                    "risk_blocker.extract_deal_risks_blockers_task",
+                    args=[str(self.organisation_id), str(deal_id)],
+                    queue="deal_jobs",
+                    immutable=True,
+                )
+                task_signatures.append(risk_blocker_sig)
+                result.risk_blocker_triggered = True
+
+                # Stakeholder analysis task
+                stakeholder_sig = signature(
+                    "stakeholder.analyze_deal_stakeholders_task",
+                    args=[str(self.organisation_id), str(deal_id)],
+                    queue="deal_jobs",
+                    immutable=True,
+                )
+                task_signatures.append(stakeholder_sig)
+                result.stakeholder_analysis_triggered = True
+
+                # Chain tasks: deal_summary → risk_blocker → stakeholder
+                task_chain = chain(*task_signatures)
+                task_chain.apply_async()
+                result.tasks_triggered = len(task_signatures)
+
                 logger.info(
-                    "Triggered deal summary task directly for deal %s job=%s",
+                    "Triggered chain for deal %s: deal_summary=%s → risk_blocker → stakeholder",
                     deal_id,
                     deal_summary_job_id,
                 )
             except Exception as e:
                 logger.error(
-                    "Failed to trigger deal summary task: deal=%s error=%s",
+                    "Failed to trigger deal summary chain: deal=%s error=%s",
                     deal_id,
                     str(e),
                 )
@@ -591,7 +624,7 @@ class MeetingSummaryService:
             )
             task_signatures.append(sig)
 
-        # Add deal summary task at the end of the chain
+        # Add deal summary task at the end of meeting summaries
         if deal_summary_job_id:
             deal_summary_sig = signature(
                 "deal_summary_task.process",
@@ -602,18 +635,40 @@ class MeetingSummaryService:
             task_signatures.append(deal_summary_sig)
             result.deal_summary_triggered = True
 
-        # Chain tasks: task1 | task2 | task3 | deal_summary → runs sequentially
+        # Add risk blocker extraction task after deal summary
+        risk_blocker_sig = signature(
+            "risk_blocker.extract_deal_risks_blockers_task",
+            args=[str(self.organisation_id), str(deal_id)],
+            queue="deal_jobs",
+            immutable=True,
+        )
+        task_signatures.append(risk_blocker_sig)
+        result.risk_blocker_triggered = True
+
+        # Add stakeholder analysis task after risk blocker
+        stakeholder_sig = signature(
+            "stakeholder.analyze_deal_stakeholders_task",
+            args=[str(self.organisation_id), str(deal_id)],
+            queue="deal_jobs",
+            immutable=True,
+        )
+        task_signatures.append(stakeholder_sig)
+        result.stakeholder_analysis_triggered = True
+
+        # Chain tasks: meeting_summaries → deal_summary → risk_blocker → stakeholder
         try:
             task_chain = chain(*task_signatures)
             task_chain.apply_async()
             result.tasks_triggered = len(task_signatures)
             logger.info(
                 "Triggered chain of %d tasks for deal %s (meeting_summaries=%d, "
-                "deal_summary=%s, created=%d, skipped=%d)",
+                "deal_summary=%s, risk_blocker=%s, stakeholder=%s, created=%d, skipped=%d)",
                 len(task_signatures),
                 deal_id,
                 len(job_ids),
                 result.deal_summary_triggered,
+                result.risk_blocker_triggered,
+                result.stakeholder_analysis_triggered,
                 result.jobs_created,
                 result.jobs_skipped,
             )

@@ -53,6 +53,8 @@ class DealTranscriptFetchResult:
     pipeline_triggered: bool = False
     pipeline_meetings_processed: int = 0
     pipeline_deal_summary_triggered: bool = False  # Deal summary added to chain
+    pipeline_risk_blocker_triggered: bool = False  # Risk blocker extraction added to chain
+    pipeline_stakeholder_triggered: bool = False  # Stakeholder analysis added to chain
     # Meeting prep (briefing) for upcoming meetings
     prep_triggered: bool = False
     prep_event_id: UUID | None = None
@@ -71,6 +73,8 @@ class TranscriptFetchResult:
     transcripts_failed: int = 0  # Error during fetch
     pipelines_triggered: int = 0
     deal_summaries_triggered: int = 0  # Deal summary tasks added to chains
+    risk_blockers_triggered: int = 0  # Risk blocker extraction tasks added to chains
+    stakeholder_analyses_triggered: int = 0  # Stakeholder analysis tasks added to chains
     fetching_reset: int = 0  # Meetings reset from FETCHING to PENDING
     # Meeting prep stats
     prep_jobs_created: int = 0
@@ -392,22 +396,26 @@ class TranscriptFetchTaskService:
         # The pipeline has its own query (_get_events_needing_summary) that finds
         # READY transcripts needing summaries - independent of transcript fetch results.
         # This ensures summaries are generated even if transcripts were fetched in previous runs.
-        # Chain: meeting summaries (oldest first) → deal summary
+        # Chain: meeting summaries (oldest first) → deal summary → risk blocker → stakeholder
         logger.info("  Triggering meeting summary pipeline for deal %s", deal_id)
         result.pipeline_triggered = True
         summary_service = MeetingSummaryService(self.organisation_id)
         pipeline_result = await summary_service.process_deal_pipeline(deal_id)
         result.pipeline_meetings_processed = pipeline_result.meetings_processed
         result.pipeline_deal_summary_triggered = pipeline_result.deal_summary_triggered
+        result.pipeline_risk_blocker_triggered = pipeline_result.risk_blocker_triggered
+        result.pipeline_stakeholder_triggered = pipeline_result.stakeholder_analysis_triggered
 
         logger.info(
             "  Pipeline result for deal %s: jobs_created=%d, jobs_skipped=%d, "
-            "tasks_triggered=%d, deal_summary_triggered=%s",
+            "tasks_triggered=%d, deal_summary=%s, risk_blocker=%s, stakeholder=%s",
             deal_id,
             pipeline_result.jobs_created,
             pipeline_result.jobs_skipped,
             pipeline_result.tasks_triggered,
             pipeline_result.deal_summary_triggered,
+            pipeline_result.risk_blocker_triggered,
+            pipeline_result.stakeholder_analysis_triggered,
         )
 
         # Phase 4: Check for upcoming meetings needing prep (within 2 days)
@@ -540,6 +548,10 @@ class TranscriptFetchTaskService:
                 result.pipelines_triggered += 1
             if deal_result.pipeline_deal_summary_triggered:
                 result.deal_summaries_triggered += 1
+            if deal_result.pipeline_risk_blocker_triggered:
+                result.risk_blockers_triggered += 1
+            if deal_result.pipeline_stakeholder_triggered:
+                result.stakeholder_analyses_triggered += 1
             # Track prep jobs
             if deal_result.prep_triggered:
                 result.prep_jobs_created += 1
@@ -556,8 +568,9 @@ class TranscriptFetchTaskService:
 
         logger.info(
             "Transcript fetch complete for org %s: deals=%d, meetings=%d, fetched=%d, "
-            "pending=%d, not_available=%d, failed=%d, pipelines=%d, deal_summaries_triggered=%d, "
-            "fetching_reset=%d, prep_created=%d, prep_skipped=%d, prep_waiting=%d",
+            "pending=%d, not_available=%d, failed=%d, pipelines=%d, deal_summaries=%d, "
+            "risk_blockers=%d, stakeholder_analyses=%d, fetching_reset=%d, "
+            "prep_created=%d, prep_skipped=%d, prep_waiting=%d",
             self.organisation_id,
             result.deals_processed,
             result.meetings_found,
@@ -567,6 +580,8 @@ class TranscriptFetchTaskService:
             result.transcripts_failed,
             result.pipelines_triggered,
             result.deal_summaries_triggered,
+            result.risk_blockers_triggered,
+            result.stakeholder_analyses_triggered,
             result.fetching_reset,
             result.prep_jobs_created,
             result.prep_jobs_skipped,

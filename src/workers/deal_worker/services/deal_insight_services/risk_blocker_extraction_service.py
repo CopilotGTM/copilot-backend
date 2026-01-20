@@ -123,7 +123,7 @@ class RiskBlockerExtractionService:
         if self.publisher:
             self.publisher.publish_progress(message, step, progress)
 
-    async def create_risk_blocker_from_extracted(
+    def create_risk_blocker_from_extracted(
         self,
         session: Any,
         deal_id: UUID,
