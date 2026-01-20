@@ -218,7 +218,7 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
             },
             "sync-crm-deals-all-orgs": {
                 "task": "integrations.sync_crm_deals_all_orgs",
-                "schedule": crontab(minute=30, hour="3,6,9,12,15,18"),
+                "schedule": crontab(minute="*/5"),
                 "kwargs": {},
                 "options": {"queue": "integrations", "routing_key": "integrations"},
             },
@@ -277,6 +277,6 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
 
         self.beat_schedule = {
             **crm_schedule,
-            **maintenance_schedule,
-            **communication_schedule,
+            # **maintenance_schedule,
+            # **communication_schedule,
         }

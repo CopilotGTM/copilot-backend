@@ -35,8 +35,8 @@ from src.agents.tools.base import execute_with_capabilities
 from src.domain.models.organisation_tables.sync.calendar import (
     CalendarEvent,
     CalendarEventDealAssociation,
+    GenerationStatus,
 )
-from src.domain.models.organisation_tables.sync.generation_status import GenerationStatus
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext

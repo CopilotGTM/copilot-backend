@@ -91,24 +91,24 @@ class DealWorkerConfig(BaseWorkerConfig):
         self.beat_schedule = {
             # HOURLY: Stakeholder sync → triggers calendar + email matching
             # This runs the full discovery cycle every hour
-            # "hourly-deal-mapping": {
-            #     "task": "stakeholder.sync_all_deals_stakeholders_all_orgs",
-            #     "schedule": crontab(minute=0),  # Every hour at :00
-            #     "options": {"queue": "deal", "routing_key": "deal"},
-            # },
+            "hourly-deal-mapping": {
+                "task": "stakeholder.sync_all_deals_stakeholders_all_orgs",
+                "schedule": crontab(minute=0),  # Every hour at :00
+                "options": {"queue": "deal", "routing_key": "deal"},
+            },
             # # HOURLY: Timeline sync - safety net to fill gaps from missed inline creation
             # # Runs at :30 to avoid overlap with deal-mapping at :00
-            # "timeline-sync": {
-            #     "task": "deal.trigger_timeline_sync_all_orgs",
-            #     "schedule": crontab(minute="*/5"),  # Every 5 minutes
-            #     "options": {"queue": "deal", "routing_key": "deal"},
-            # },
+            "timeline-sync": {
+                "task": "deal.trigger_timeline_sync_all_orgs",
+                "schedule": crontab(minute=30),  # Every 30 minutes
+                "options": {"queue": "deal", "routing_key": "deal"},
+            },
             # # NIGHTLY: Heavy LLM tasks (2 AM UTC)
-            # "nightly-stakeholder-analysis": {
-            #     "task": "stakeholder.trigger_analysis_all_orgs",
-            #     "schedule": crontab(hour=2, minute=0),
-            #     "options": {"queue": "deal", "routing_key": "deal"},
-            # },
+            "nightly-stakeholder-analysis": {
+                "task": "stakeholder.trigger_analysis_all_orgs",
+                "schedule": crontab(hour=2, minute=0),
+                "options": {"queue": "deal", "routing_key": "deal"},
+            },
             # HALF-HOURLY: Transcript fetch and meeting summary pipeline
             # Runs at :15 and :45 to avoid overlap with other scheduled tasks
             # After fetching transcripts, automatically triggers:
