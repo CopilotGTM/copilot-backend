@@ -226,9 +226,20 @@ class StakeholderAnalysisService:
         Returns:
             Dictionary with stakeholder info
         """
-        stance_val = stakeholder.stance.value if stakeholder.stance else "UNKNOWN"
-        power_val = stakeholder.decision_power.value if stakeholder.decision_power else "UNKNOWN"
-        temp_val = stakeholder.temperature.value if stakeholder.temperature else "COLD"
+        # Handle both enum and string values (DB stores as VARCHAR)
+        stance_val = (
+            stakeholder.stance.value if hasattr(stakeholder.stance, "value") else stakeholder.stance
+        ) or "UNKNOWN"
+        power_val = (
+            stakeholder.decision_power.value
+            if hasattr(stakeholder.decision_power, "value")
+            else stakeholder.decision_power
+        ) or "UNKNOWN"
+        temp_val = (
+            stakeholder.temperature.value
+            if hasattr(stakeholder.temperature, "value")
+            else stakeholder.temperature
+        ) or "COLD"
         last_contact = (
             stakeholder.last_contact_at.strftime("%Y-%m-%d")
             if stakeholder.last_contact_at
@@ -561,15 +572,20 @@ Look for each stakeholder by their email address in the attendee lists.
         Returns:
             True if snapshot was saved (change detected), False otherwise
         """
-        # Create snapshot of current values
+        # Create snapshot of current values (handle both enum and string values)
+        stance = stakeholder.stance
+        stance_val = (stance.value if hasattr(stance, "value") else stance) or "UNKNOWN"
+        temp = stakeholder.temperature
+        temp_val = (temp.value if hasattr(temp, "value") else temp) or "COLD"
+        power = stakeholder.decision_power
+        power_val = (power.value if hasattr(power, "value") else power) or "UNKNOWN"
+
         current_values = {
-            "stance": stakeholder.stance.value if stakeholder.stance else "UNKNOWN",
-            "temperature": stakeholder.temperature.value if stakeholder.temperature else "COLD",
+            "stance": stance_val,
+            "temperature": temp_val,
             "engagement_score": stakeholder.engagement_score,
             "champion_potential": stakeholder.champion_potential,
-            "decision_power": (
-                stakeholder.decision_power.value if stakeholder.decision_power else "UNKNOWN"
-            ),
+            "decision_power": power_val,
         }
 
         # Get previous snapshot for comparison

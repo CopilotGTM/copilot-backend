@@ -53,11 +53,10 @@ async def list_deal_emails(
     Returns:
         List of email dictionaries with association metadata.
     """
-    session = context.session
     organisation_id = context.organisation_id
 
-    if not session or not organisation_id:
-        logger.warning("list_deal_emails: missing session or organisation_id")
+    if not organisation_id:
+        logger.warning("list_deal_emails: missing organisation_id")
         return []
 
     # Use context deal_id if not provided
@@ -73,59 +72,61 @@ async def list_deal_emails(
         logger.warning(f"list_deal_emails: invalid deal_id format: {actual_deal_id}")
         return []
 
-    # Type-safe column access pattern
-    assoc_c = cast(Any, DealEmailAssociation).__table__.c
-    email_c = cast(Any, Email).__table__.c
+    # Acquire session on-demand (fresh session pattern)
+    async with context.acquire_session() as session:
+        # Type-safe column access pattern
+        assoc_c = cast(Any, DealEmailAssociation).__table__.c
+        email_c = cast(Any, Email).__table__.c
 
-    # Build base query for associations
-    stmt = (
-        select(DealEmailAssociation)
-        .where(
-            assoc_c.organisation_id == organisation_id,
-            assoc_c.deal_id == parsed_deal_id,
+        # Build base query for associations
+        stmt = (
+            select(DealEmailAssociation)
+            .where(
+                assoc_c.organisation_id == organisation_id,
+                assoc_c.deal_id == parsed_deal_id,
+            )
+            .order_by(assoc_c.email_date.desc())
+            .limit(limit)
         )
-        .order_by(assoc_c.email_date.desc())
-        .limit(limit)
-    )
 
-    # Apply direction filter
-    if direction:
-        direction_upper = direction.upper()
-        if direction_upper in ("INBOUND", "OUTBOUND", "INTERNAL"):
-            stmt = stmt.where(assoc_c.direction == direction_upper)
+        # Apply direction filter
+        if direction:
+            direction_upper = direction.upper()
+            if direction_upper in ("INBOUND", "OUTBOUND", "INTERNAL"):
+                stmt = stmt.where(assoc_c.direction == direction_upper)
 
-    # Apply status filter
-    if status:
-        status_upper = status.upper()
-        if status_upper in ("SUGGESTED", "CONFIRMED", "REJECTED"):
-            stmt = stmt.where(assoc_c.status == status_upper)
+        # Apply status filter
+        if status:
+            status_upper = status.upper()
+            if status_upper in ("SUGGESTED", "CONFIRMED", "REJECTED"):
+                stmt = stmt.where(assoc_c.status == status_upper)
 
-    try:
-        result = await session.execute(stmt)
-        associations = result.scalars().all()
-    except Exception as e:
-        logger.exception(f"list_deal_emails: error fetching associations: {e}")
-        return []
+        try:
+            result = await session.execute(stmt)
+            associations = result.scalars().all()
+        except Exception as e:
+            logger.exception(f"list_deal_emails: error fetching associations: {e}")
+            return []
 
-    if not associations:
-        logger.info(f"list_deal_emails: no emails found for deal {actual_deal_id}")
-        return []
+        if not associations:
+            logger.info(f"list_deal_emails: no emails found for deal {actual_deal_id}")
+            return []
 
-    # Get full email details for associations
-    internet_message_ids = [a.internet_message_id for a in associations]
+        # Get full email details for associations
+        internet_message_ids = [a.internet_message_id for a in associations]
 
-    email_stmt = select(Email).where(
-        email_c.organisation_id == organisation_id,
-        email_c.internet_message_id.in_(internet_message_ids),
-    )
+        email_stmt = select(Email).where(
+            email_c.organisation_id == organisation_id,
+            email_c.internet_message_id.in_(internet_message_ids),
+        )
 
-    try:
-        email_result = await session.execute(email_stmt)
-        emails = email_result.scalars().all()
-        email_map = {e.internet_message_id: e for e in emails}
-    except Exception as e:
-        logger.exception(f"list_deal_emails: error fetching emails: {e}")
-        email_map = {}
+        try:
+            email_result = await session.execute(email_stmt)
+            emails = email_result.scalars().all()
+            email_map = {e.internet_message_id: e for e in emails}
+        except Exception as e:
+            logger.exception(f"list_deal_emails: error fetching emails: {e}")
+            email_map = {}
 
     # Build output list
     output: list[dict[str, Any]] = []
@@ -198,8 +199,8 @@ def create_list_deal_emails(
             f"direction='{direction}', status='{status}'"
         )
 
-        if not context.session or not context.organisation_id:
-            logger.warning("list_deal_emails unavailable: missing session or organisation_id")
+        if not context.organisation_id:
+            logger.warning("list_deal_emails unavailable: missing organisation_id")
             return []
 
         async with db_session_lock():

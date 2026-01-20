@@ -145,8 +145,16 @@ async def search_contacts(
                         "deal_id": str(s.deal.deal_id),
                         "name": s.deal.name,
                         "company_name": s.deal.company_name,
-                        "role": s.decision_power.value if s.decision_power else None,
-                        "stance": s.stance.value if s.stance else None,
+                        "role": (
+                            s.decision_power.value
+                            if hasattr(s.decision_power, "value")
+                            else s.decision_power
+                        )
+                        if s.decision_power
+                        else None,
+                        "stance": (s.stance.value if hasattr(s.stance, "value") else s.stance)
+                        if s.stance
+                        else None,
                     }
                 )
 

@@ -4,6 +4,10 @@ This module handles dispatching the first sync for newly connected integrations.
 Called by nango_webhook_service after successful auth.
 
 See: docs/Technical Documentation/integration/sync_tasks/initial-sync-on-auth.md
+
+IMPORTANT: This service runs in the API context, which has different dependencies
+than the workers. It uses send_task() with task names instead of importing task
+modules directly to avoid pulling in worker-specific dependencies (like bs4).
 """
 
 from __future__ import annotations
@@ -12,6 +16,7 @@ from uuid import UUID
 
 from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
 from src.infra.utils.logger import get_logger
+from src.workers.integrations_worker.client import send_integrations_task
 
 logger = get_logger(__name__)
 
@@ -49,7 +54,7 @@ class InitialSyncService:
         Dispatches the appropriate integration-level (Tier 3) task based on type.
         For CRM, uses Celery chord for parallel entity sync.
 
-        Note: This method is synchronous because all task dispatches use .delay()
+        Note: This method is synchronous because all task dispatches use send_task()
         which returns immediately without blocking.
 
         Args:
@@ -102,37 +107,25 @@ class InitialSyncService:
 
     def _trigger_calendar_sync(self, org_id_str: str, int_id_str: str) -> None:
         """Trigger calendar initial sync."""
-        from src.workers.integrations_worker.tasks.calendar import (
-            sync_calendar_integration_task,
-        )
-
-        sync_calendar_integration_task.delay(  # type: ignore[attr-defined]
-            organisation_id=org_id_str,
-            integration_id=int_id_str,
+        send_integrations_task(
+            task_name="integrations.sync_calendar_integration",
+            kwargs={"organisation_id": org_id_str, "integration_id": int_id_str},
         )
         logger.info("Triggered initial calendar sync: integration=%s", int_id_str)
 
     def _trigger_email_sync(self, org_id_str: str, int_id_str: str) -> None:
         """Trigger email initial sync."""
-        from src.workers.integrations_worker.tasks.email import (
-            sync_email_integration_task,
-        )
-
-        sync_email_integration_task.delay(  # type: ignore[attr-defined]
-            organisation_id=org_id_str,
-            integration_id=int_id_str,
+        send_integrations_task(
+            task_name="integrations.sync_email_integration",
+            kwargs={"organisation_id": org_id_str, "integration_id": int_id_str},
         )
         logger.info("Triggered initial email sync: integration=%s", int_id_str)
 
     def _trigger_messaging_sync(self, org_id_str: str, int_id_str: str) -> None:
         """Trigger messaging initial sync."""
-        from src.workers.integrations_worker.tasks.messaging import (
-            sync_messaging_channels_integration_task,
-        )
-
-        sync_messaging_channels_integration_task.delay(  # type: ignore[attr-defined]
-            organisation_id=org_id_str,
-            integration_id=int_id_str,
+        send_integrations_task(
+            task_name="integrations.sync_messaging_channels_integration",
+            kwargs={"organisation_id": org_id_str, "integration_id": int_id_str},
         )
         logger.info("Triggered initial messaging sync: integration=%s", int_id_str)
 
@@ -141,6 +134,9 @@ class InitialSyncService:
 
         Dispatches all 6 CRM entity sync tasks in parallel, with enrichment
         running as a callback after all syncs complete.
+
+        Uses Celery's signature() to create task signatures from task names,
+        avoiding direct task imports which would pull in worker dependencies.
 
         Args:
             organisation_id: The organization UUID
@@ -157,34 +153,66 @@ class InitialSyncService:
             integration_type.value,
         )
 
-        from celery import chord, group
-        from src.workers.integrations_worker.tasks.crm import (
-            enrich_crm_after_initial_sync_task,
-            sync_crm_activities_org_task,
-            sync_crm_companies_org_task,
-            sync_crm_contacts_org_task,
-            sync_crm_deals_org_task,
-            sync_crm_pipelines_org_task,
-            sync_crm_users_org_task,
-        )
+        from celery import chord, group, signature
 
         org_id_str = str(organisation_id)
         int_id_str = str(integration.integration_id)
 
+        # Task names for CRM sync operations
+        task_companies = "integrations.sync_crm_companies_org"
+        task_contacts = "integrations.sync_crm_contacts_org"
+        task_deals = "integrations.sync_crm_deals_org"
+        task_users = "integrations.sync_crm_users_org"
+        task_pipelines = "integrations.sync_crm_pipelines_org"
+        task_activities = "integrations.sync_crm_activities_org"
+        task_enrichment = "integrations.enrich_crm_after_initial_sync"
+
+        # Queue for integrations worker - must be explicit since API client
+        # doesn't have worker's routing config
+        queue = "integrations"
+
         try:
-            # Run all sync tasks in parallel, then enrichment
+            # Create task signatures using task names (avoids importing task modules)
+            # Using signature() with args/kwargs instead of task.s()
+            # Must specify queue explicitly for API client
             sync_group = group(
-                sync_crm_companies_org_task.s(org_id_str, skip_enrichment=True),  # type: ignore[attr-defined]
-                sync_crm_contacts_org_task.s(org_id_str, skip_enrichment=True),  # type: ignore[attr-defined]
-                sync_crm_deals_org_task.s(org_id_str, skip_enrichment=True),  # type: ignore[attr-defined]
-                sync_crm_users_org_task.s(org_id_str, skip_enrichment=True),  # type: ignore[attr-defined]
-                sync_crm_pipelines_org_task.s(org_id_str),  # type: ignore[attr-defined]
-                sync_crm_activities_org_task.s(org_id_str, skip_enrichment=True),  # type: ignore[attr-defined]
+                signature(
+                    task_companies,
+                    args=[org_id_str],
+                    kwargs={"skip_enrichment": True},
+                    queue=queue,
+                ),
+                signature(
+                    task_contacts,
+                    args=[org_id_str],
+                    kwargs={"skip_enrichment": True},
+                    queue=queue,
+                ),
+                signature(
+                    task_deals, args=[org_id_str], kwargs={"skip_enrichment": True}, queue=queue
+                ),
+                signature(
+                    task_users, args=[org_id_str], kwargs={"skip_enrichment": True}, queue=queue
+                ),
+                signature(task_pipelines, args=[org_id_str], queue=queue),
+                signature(
+                    task_activities,
+                    args=[org_id_str],
+                    kwargs={"skip_enrichment": True},
+                    queue=queue,
+                ),
             )
 
-            chord(sync_group)(
-                enrich_crm_after_initial_sync_task.si(org_id_str, int_id_str)  # type: ignore[attr-defined]
+            # Enrichment task runs after all sync tasks complete
+            # immutable=True is equivalent to .si() - doesn't receive results from group
+            enrichment_sig = signature(
+                task_enrichment,
+                args=[org_id_str, int_id_str],
+                immutable=True,
+                queue=queue,
             )
+
+            chord(sync_group)(enrichment_sig)
 
             logger.info(
                 "Dispatched CRM sync chord: integration=%s (6 tasks + enrichment)",

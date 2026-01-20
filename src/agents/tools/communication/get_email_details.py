@@ -48,108 +48,113 @@ async def get_email_details(
     Returns:
         Email dictionary with full details, or None if not found.
     """
-    session = context.session
     organisation_id = context.organisation_id
 
-    if not session or not organisation_id:
-        logger.warning("get_email_details: missing session or organisation_id")
+    if not organisation_id:
+        logger.warning("get_email_details: missing organisation_id")
         return None
 
     if not internet_message_id:
         logger.warning("get_email_details: no internet_message_id provided")
         return None
 
-    # Type-safe column access pattern
-    email_c = cast(Any, Email).__table__.c
-    assoc_c = cast(Any, DealEmailAssociation).__table__.c
+    # Acquire session on-demand (fresh session pattern)
+    async with context.acquire_session() as session:
+        # Type-safe column access pattern
+        email_c = cast(Any, Email).__table__.c
+        assoc_c = cast(Any, DealEmailAssociation).__table__.c
 
-    # Fetch the email
-    email_stmt = select(Email).where(
-        email_c.organisation_id == organisation_id,
-        email_c.internet_message_id == internet_message_id,
-    )
+        # Fetch the email
+        email_stmt = select(Email).where(
+            email_c.organisation_id == organisation_id,
+            email_c.internet_message_id == internet_message_id,
+        )
 
-    try:
-        result = await session.execute(email_stmt)
-        email = result.scalar_one_or_none()
-    except Exception as e:
-        logger.exception(f"get_email_details: error fetching email: {e}")
-        return None
+        try:
+            result = await session.execute(email_stmt)
+            email = result.scalar_one_or_none()
+        except Exception as e:
+            logger.exception(f"get_email_details: error fetching email: {e}")
+            return None
 
-    if not email:
-        logger.info(f"get_email_details: email not found: {internet_message_id}")
-        return None
+        if not email:
+            logger.info(f"get_email_details: email not found: {internet_message_id}")
+            return None
 
-    # Build output
-    output: dict[str, Any] = {
-        "email_id": str(email.email_id),
-        "internet_message_id": email.internet_message_id,
-        "thread_id": email.thread_id,
-        "subject": email.subject,
-        "from_email": email.from_email,
-        "from_name": email.from_name,
-        "to_emails": email.to_emails or [],
-        "cc_emails": email.cc_emails or [],
-        "received_at": email.received_at.isoformat() if email.received_at else None,
-        "sent_at": email.sent_at.isoformat() if email.sent_at else None,
-        "direction": email.direction.value
-        if isinstance(email.direction, EmailDirection)
-        else email.direction,
-        "priority": email.priority.value
-        if isinstance(email.priority, EmailPriority)
-        else email.priority,
-        "is_read": email.is_read,
-        "is_starred": email.is_starred,
-        "is_important": email.is_important,
-        "has_attachments": email.has_attachments,
-        "labels": email.labels or [],
-    }
+        # Fetch deal associations while session is active
+        assoc_stmt = select(DealEmailAssociation).where(
+            assoc_c.organisation_id == organisation_id,
+            assoc_c.internet_message_id == internet_message_id,
+        )
 
-    # Include attachments metadata
-    if email.has_attachments and email.attachments:
-        output["attachments"] = [
-            {
-                "name": att.get("name"),
-                "size": att.get("size"),
-                "mime_type": att.get("mime_type"),
-            }
-            for att in email.attachments
-        ]
-    else:
-        output["attachments"] = []
+        try:
+            assoc_result = await session.execute(assoc_stmt)
+            associations = assoc_result.scalars().all()
+        except Exception as e:
+            logger.warning(f"get_email_details: error fetching associations: {e}")
+            associations = []
 
-    # Include body content
-    if include_body and email.body_text:
-        body = email.body_text
-        if max_body_length and len(body) > max_body_length:
-            output["body_text"] = body[:max_body_length]
+        # Build output (using loaded data, session can be closed)
+        output: dict[str, Any] = {
+            "email_id": str(email.email_id),
+            "internet_message_id": email.internet_message_id,
+            "thread_id": email.thread_id,
+            "subject": email.subject,
+            "from_email": email.from_email,
+            "from_name": email.from_name,
+            "to_emails": email.to_emails or [],
+            "cc_emails": email.cc_emails or [],
+            "received_at": email.received_at.isoformat() if email.received_at else None,
+            "sent_at": email.sent_at.isoformat() if email.sent_at else None,
+            "direction": email.direction.value
+            if isinstance(email.direction, EmailDirection)
+            else email.direction,
+            "priority": email.priority.value
+            if isinstance(email.priority, EmailPriority)
+            else email.priority,
+            "is_read": email.is_read,
+            "is_starred": email.is_starred,
+            "is_important": email.is_important,
+            "has_attachments": email.has_attachments,
+            "labels": email.labels or [],
+        }
+
+        # Include attachments metadata
+        if email.has_attachments and email.attachments:
+            output["attachments"] = [
+                {
+                    "name": att.get("name"),
+                    "size": att.get("size"),
+                    "mime_type": att.get("mime_type"),
+                }
+                for att in email.attachments
+            ]
+        else:
+            output["attachments"] = []
+
+        # Include body content
+        if include_body and email.body_text:
+            body = email.body_text
+            if max_body_length and len(body) > max_body_length:
+                output["body_text"] = body[:max_body_length]
+                output["body_truncated"] = True
+            else:
+                output["body_text"] = body
+                output["body_truncated"] = False
+            output["body_length"] = len(email.body_text)
+        elif include_body:
+            output["body_text"] = email.snippet  # Fall back to snippet
             output["body_truncated"] = True
-        else:
-            output["body_text"] = body
-            output["body_truncated"] = False
-        output["body_length"] = len(email.body_text)
-    elif include_body:
-        output["body_text"] = email.snippet  # Fall back to snippet
-        output["body_truncated"] = True
-        output["body_length"] = 0
+            output["body_length"] = 0
 
-    if include_html and email.body_html:
-        html = email.body_html
-        if max_body_length and len(html) > max_body_length:
-            output["body_html"] = html[:max_body_length]
-        else:
-            output["body_html"] = html
+        if include_html and email.body_html:
+            html = email.body_html
+            if max_body_length and len(html) > max_body_length:
+                output["body_html"] = html[:max_body_length]
+            else:
+                output["body_html"] = html
 
-    # Fetch deal associations
-    assoc_stmt = select(DealEmailAssociation).where(
-        assoc_c.organisation_id == organisation_id,
-        assoc_c.internet_message_id == internet_message_id,
-    )
-
-    try:
-        assoc_result = await session.execute(assoc_stmt)
-        associations = assoc_result.scalars().all()
-
+        # Add deal associations to output
         if associations:
             output["deal_associations"] = [
                 {
@@ -167,12 +172,9 @@ async def get_email_details(
             ]
         else:
             output["deal_associations"] = []
-    except Exception as e:
-        logger.warning(f"get_email_details: error fetching associations: {e}")
-        output["deal_associations"] = []
 
-    logger.info(f"get_email_details: returning details for email {internet_message_id}")
-    return output
+        logger.info(f"get_email_details: returning details for email {internet_message_id}")
+        return output
 
 
 def create_get_email_details(
@@ -203,8 +205,8 @@ def create_get_email_details(
             f"include_body={include_body}, max_body_length={max_body_length}"
         )
 
-        if not context.session or not context.organisation_id:
-            logger.warning("get_email_details unavailable: missing session or organisation_id")
+        if not context.organisation_id:
+            logger.warning("get_email_details unavailable: missing organisation_id")
             return None
 
         async with db_session_lock():

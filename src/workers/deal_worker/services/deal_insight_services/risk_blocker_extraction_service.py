@@ -302,7 +302,7 @@ class RiskBlockerExtractionService:
                     # Use source_type from agent output (agent specifies exact platform)
                     source_type = extracted_item.source_type
 
-                    await self.create_risk_blocker_from_extracted(
+                    self.create_risk_blocker_from_extracted(
                         session=session,
                         deal_id=deal_id,
                         extracted=extracted_item,
