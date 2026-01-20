@@ -2,7 +2,14 @@
 Tasks for the deal worker.
 """
 
-from .deal_insight_tasks import process_deal_summary_job
+from .deal_insight_tasks import (
+    analyze_deal_stakeholders_task,
+    analyze_org_stakeholders_task,
+    extract_deal_risks_blockers_task,
+    process_deal_summary_job,
+    trigger_extraction_all_orgs,
+    trigger_stakeholder_analysis_all_orgs,
+)
 from .deal_mappers import (
     exclude_timeline_event_task,
     match_calendar_to_deals_all_orgs_task,
@@ -17,15 +24,6 @@ from .deal_mappers import (
     trigger_timeline_sync_all_orgs_task,
 )
 from .meeting_insight_tasks import process_meeting_prep, process_meeting_summary
-from .risk_blocker_extraction_tasks import (
-    extract_deal_risks_blockers_task,
-    trigger_extraction_all_orgs,
-)
-from .stakeholder_analysis_tasks import (
-    analyze_deal_stakeholders_task,
-    analyze_org_stakeholders_task,
-    trigger_stakeholder_analysis_all_orgs,
-)
 from .transcript_fetch_tasks import (
     fetch_meeting_transcripts_org_task,
     trigger_transcript_fetch_all_orgs_task,

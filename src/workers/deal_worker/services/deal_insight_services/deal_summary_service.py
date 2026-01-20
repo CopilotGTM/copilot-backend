@@ -228,11 +228,15 @@ class DealSummaryService:
             email_count,
         )
 
-        # Phase 2: Call agent (agent manages its own session for tools)
-        async for session in acquire_org_async_session(self.organisation_id):
-            agent = DealSummaryAgent(session, self.organisation_id, self.publisher)
-            summary_data = await agent.generate(input_data)
-        # Session released after agent call
+        # Phase 2: Call agent (tools acquire sessions on-demand)
+        # Agent doesn't hold sessions - tools acquire on-demand via context.acquire_session()
+        # SECURITY: Both organisation_id and deal_id are baked into agent context (immutable)
+        agent = DealSummaryAgent(
+            organisation_id=self.organisation_id,
+            deal_id=deal_id,
+            publisher=self.publisher,
+        )
+        summary_data = await agent.generate(input_data)
 
         self._publish_progress("Saving results...", "saving", 0.95)
 

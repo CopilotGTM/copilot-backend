@@ -115,7 +115,7 @@ def fetch_meeting_transcripts_org_task(
             "transcripts_not_available": result.transcripts_not_available,
             "transcripts_failed": result.transcripts_failed,
             "pipelines_triggered": result.pipelines_triggered,
-            "deal_summaries_generated": result.deal_summaries_generated,
+            "deal_summaries_triggered": result.deal_summaries_triggered,
             "fetching_reset": result.fetching_reset,
             "prep_jobs_created": result.prep_jobs_created,
             "prep_jobs_skipped": result.prep_jobs_skipped,

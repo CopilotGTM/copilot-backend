@@ -241,13 +241,18 @@ class MeetingSummaryService:
             current_datetime=current_dt.isoformat(),
         )
 
-        # Phase 2: Call agent (agent manages its own session for tools)
+        # Phase 2: Call agent (tools acquire sessions on-demand)
         self._publish_progress("Generating summary with AI...", "Generation", 0.3)
 
-        async for session in acquire_org_async_session(self.organisation_id):
-            agent = SummaryAgent(session, self.organisation_id, self.publisher, org_name=org_name)
-            summary_data = await agent.generate(input_data)
-        # Session released after agent call
+        # Agent doesn't hold sessions - tools acquire on-demand via context.acquire_session()
+        # SECURITY: Both organisation_id and deal_id are baked into agent context (immutable)
+        agent = SummaryAgent(
+            organisation_id=self.organisation_id,
+            deal_id=self.deal_id,
+            publisher=self.publisher,
+            org_name=org_name,
+        )
+        summary_data = await agent.generate(input_data)
 
         self._publish_progress("Saving results...", "Saving", 0.9)
 
@@ -320,7 +325,8 @@ class MeetingSummaryService:
             col(DealJobs.status).in_([JobStatus.PENDING, JobStatus.IN_PROGRESS]),
         )
         result = await session.execute(stmt)
-        return result.scalars().first()
+        job: DealJobs | None = result.scalars().first()
+        return job
 
     async def _create_job(self, session, deal_id: UUID, event_id: UUID) -> DealJobs:
         """Create a DealJobs record for the meeting summary."""

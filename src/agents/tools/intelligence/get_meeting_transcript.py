@@ -3,6 +3,9 @@
 Tool for retrieving the transcript of a specific meeting.
 Integrates with TranscriptService to automatically fetch transcripts
 from providers (Teams, Zoom, etc.) if not already available.
+
+SECURITY: organisation_id is taken from context (immutable).
+This tool does NOT accept organisation_id as a parameter.
 """
 
 from __future__ import annotations
@@ -15,7 +18,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from src.agents.tools.base import db_session_lock, execute_with_capabilities
+from src.agents.tools.base import execute_with_capabilities
 from src.domain.models.organisation_tables.sync.calendar import CalendarEvent
 from src.domain.models.organisation_tables.sync.meeting_intelligence import (
     Meeting,
@@ -43,24 +46,27 @@ async def get_meeting_transcript(
     This tool integrates with TranscriptService to automatically fetch transcripts
     from providers (Teams, Zoom, etc.) if not already available in the database.
 
+    SECURITY: organisation_id is taken from context (immutable).
+    This prevents cross-org data access.
+
     Workflow:
     1. Call TranscriptService.ensure_transcript() to check/fetch transcript
-    2. Read and return the transcript data
+    2. Read and return the transcript data (using fresh session)
 
     Args:
         event_id: The calendar event UUID as a string
-        context: AgentContext containing session and organisation metadata
+        context: AgentContext containing organisation metadata
         output_format: "full" for concatenated text, "segments" for structured utterances
         max_length: Truncate to N characters (None = no limit)
 
     Returns:
         Transcript dictionary, or None if not found/available.
     """
-    session = context.session
+    # SECURITY: organisation_id comes from context, not parameters
     organisation_id = context.organisation_id
 
-    if not session or not organisation_id:
-        logger.warning("get_meeting_transcript: missing session or organisation_id")
+    if not organisation_id:
+        logger.warning("get_meeting_transcript: missing organisation_id in context")
         return None
 
     # Parse event_id
@@ -80,6 +86,7 @@ async def get_meeting_transcript(
     # -------------------------------------------------------------------
     # TranscriptService will check if transcript is already in DB,
     # and if not, attempt to fetch from the provider (Teams, Zoom, etc.)
+    # TranscriptService manages its own sessions
     transcript_service = TranscriptService(organisation_id)
     try:
         ensured_meeting = await transcript_service.ensure_transcript(parsed_event_id)
@@ -92,106 +99,112 @@ async def get_meeting_transcript(
         logger.warning(f"get_meeting_transcript: ensure_transcript failed: {e}")
 
     # -------------------------------------------------------------------
-    # STEP 2: Fetch meeting with transcript data
+    # STEP 2: Fetch meeting with transcript data (fresh session)
     # -------------------------------------------------------------------
     # Use table columns for SQLAlchemy operations (type-safe pattern)
     meeting_c = cast(Any, Meeting).__table__.c
     event_c = cast(Any, CalendarEvent).__table__.c
 
-    # Fetch meeting with transcript segments if needed
-    if output_format == "segments":
-        meeting_stmt = (
-            select(Meeting)
-            .options(selectinload(cast(Any, Meeting).transcript_segments))
-            .where(
+    meeting: Meeting | None = None
+    event: CalendarEvent | None = None
+
+    # Acquire fresh session for database read
+    async with context.acquire_session() as session:
+        # Fetch meeting with transcript segments if needed
+        if output_format == "segments":
+            meeting_stmt = (
+                select(Meeting)
+                .options(selectinload(cast(Any, Meeting).transcript_segments))
+                .where(
+                    meeting_c.organisation_id == organisation_id,
+                    meeting_c.calendar_event_id == parsed_event_id,
+                    meeting_c.is_deleted.is_(False),
+                )
+            )
+        else:
+            meeting_stmt = select(Meeting).where(
                 meeting_c.organisation_id == organisation_id,
                 meeting_c.calendar_event_id == parsed_event_id,
                 meeting_c.is_deleted.is_(False),
             )
-        )
-    else:
-        meeting_stmt = select(Meeting).where(
-            meeting_c.organisation_id == organisation_id,
-            meeting_c.calendar_event_id == parsed_event_id,
-            meeting_c.is_deleted.is_(False),
-        )
 
-    try:
-        meeting_result = await session.execute(meeting_stmt)
-        meeting = meeting_result.scalar_one_or_none()
-    except Exception as e:
-        logger.exception(f"get_meeting_transcript: error fetching meeting: {e}")
-        return None
+        try:
+            meeting_result = await session.execute(meeting_stmt)
+            meeting = meeting_result.scalar_one_or_none()
+        except Exception as e:
+            logger.exception(f"get_meeting_transcript: error fetching meeting: {e}")
+            return None
 
-    if not meeting:
-        logger.info(f"get_meeting_transcript: no meeting found for event: {event_id}")
-        return None
+        if not meeting:
+            logger.info(f"get_meeting_transcript: no meeting found for event: {event_id}")
+            return None
 
-    if meeting.status != MeetingStatus.READY:
-        logger.info(f"get_meeting_transcript: transcript not ready, status: {meeting.status}")
-        return {
+        if meeting.status != MeetingStatus.READY:
+            logger.info(f"get_meeting_transcript: transcript not ready, status: {meeting.status}")
+            return {
+                "event_id": event_id,
+                "transcript_available": False,
+                "status": meeting.status.value
+                if isinstance(meeting.status, MeetingStatus)
+                else meeting.status,
+                "status_message": meeting.status_message,
+            }
+
+        # Fetch event for title/date info
+        event_stmt = select(CalendarEvent).where(event_c.event_id == parsed_event_id)
+
+        try:
+            event_result = await session.execute(event_stmt)
+            event = event_result.scalar_one_or_none()
+        except Exception as e:
+            logger.exception(f"get_meeting_transcript: error fetching event: {e}")
+            event = None
+
+        # Build output (while session is still active for segments access)
+        output: dict[str, Any] = {
             "event_id": event_id,
-            "transcript_available": False,
-            "status": meeting.status.value
-            if isinstance(meeting.status, MeetingStatus)
-            else meeting.status,
-            "status_message": meeting.status_message,
+            "title": event.title if event else None,
+            "meeting_date": event.start_at.date().isoformat() if event and event.start_at else None,
+            "duration_seconds": meeting.duration_seconds,
+            "transcript_available": True,
+            "source": meeting.source.value
+            if isinstance(meeting.source, MeetingSource)
+            else meeting.source,
+            "language": meeting.transcript_language,
         }
 
-    # Fetch event for title/date info
-    event_stmt = select(CalendarEvent).where(event_c.event_id == parsed_event_id)
+        if output_format == "full":
+            full_text = meeting.full_transcript or ""
+            total_length = len(full_text)
 
-    try:
-        event_result = await session.execute(event_stmt)
-        event = event_result.scalar_one_or_none()
-    except Exception as e:
-        logger.exception(f"get_meeting_transcript: error fetching event: {e}")
-        event = None
+            if max_length and total_length > max_length:
+                output["full_text"] = full_text[:max_length]
+                output["truncated"] = True
+            else:
+                output["full_text"] = full_text
+                output["truncated"] = False
 
-    # Build output
-    output: dict[str, Any] = {
-        "event_id": event_id,
-        "title": event.title if event else None,
-        "meeting_date": event.start_at.date().isoformat() if event and event.start_at else None,
-        "duration_seconds": meeting.duration_seconds,
-        "transcript_available": True,
-        "source": meeting.source.value
-        if isinstance(meeting.source, MeetingSource)
-        else meeting.source,
-        "language": meeting.transcript_language,
-    }
+            output["total_length"] = total_length
 
-    if output_format == "full":
-        full_text = meeting.full_transcript or ""
-        total_length = len(full_text)
+        else:  # output_format == "segments"
+            segments = []
+            for seg in sorted(meeting.transcript_segments, key=lambda s: s.segment_index):
+                segments.append(
+                    {
+                        "index": seg.segment_index,
+                        "speaker_name": seg.speaker_name,
+                        "speaker_external_id": seg.speaker_external_id,
+                        "content": seg.content,
+                        "start_time_seconds": seg.start_time_seconds,
+                        "end_time_seconds": seg.end_time_seconds,
+                        "confidence": float(seg.confidence) if seg.confidence else None,
+                    }
+                )
 
-        if max_length and total_length > max_length:
-            output["full_text"] = full_text[:max_length]
-            output["truncated"] = True
-        else:
-            output["full_text"] = full_text
+            output["segments"] = segments
+            output["segment_count"] = len(segments)
             output["truncated"] = False
-
-        output["total_length"] = total_length
-
-    else:  # output_format == "segments"
-        segments = []
-        for seg in sorted(meeting.transcript_segments, key=lambda s: s.segment_index):
-            segments.append(
-                {
-                    "index": seg.segment_index,
-                    "speaker_name": seg.speaker_name,
-                    "speaker_external_id": seg.speaker_external_id,
-                    "content": seg.content,
-                    "start_time_seconds": seg.start_time_seconds,
-                    "end_time_seconds": seg.end_time_seconds,
-                    "confidence": float(seg.confidence) if seg.confidence else None,
-                }
-            )
-
-        output["segments"] = segments
-        output["segment_count"] = len(segments)
-        output["truncated"] = False
+    # Session released
 
     logger.info(f"get_meeting_transcript: returning transcript for event {event_id}")
     return output
@@ -201,7 +214,11 @@ def create_get_meeting_transcript(
     context: AgentContext,
     capabilities_getter: Callable[[], AgentCapabilities | None],
 ) -> Callable[..., Any]:
-    """Factory to create get_meeting_transcript tool bound to a context."""
+    """Factory to create get_meeting_transcript tool bound to a context.
+
+    SECURITY: The context contains the immutable organisation_id.
+    The tool does NOT accept organisation_id as a parameter.
+    """
 
     async def get_meeting_transcript_tool(
         event_id: str,
@@ -218,30 +235,32 @@ def create_get_meeting_transcript(
             event_id: The calendar event UUID (from list_deal_meetings)
             output_format: "full" for concatenated text, "segments" for speaker-attributed utterances
             max_length: Truncate to N characters (default: no limit)
+
+        Note: organisation_id is automatically set from context and cannot be overridden.
         """
         logger.info(
             f"[TOOL CALLED] get_meeting_transcript - event_id='{event_id}', "
             f"output_format='{output_format}', max_length={max_length}"
         )
 
-        if not context.session or not context.organisation_id:
-            logger.warning("get_meeting_transcript unavailable: missing session or organisation_id")
+        if not context.organisation_id:
+            logger.warning("get_meeting_transcript unavailable: missing organisation_id in context")
             return None
 
-        async with db_session_lock():
-            result = await execute_with_capabilities(
-                capabilities_getter(),
-                tool_name="GetMeetingTranscript",
-                tool_func=get_meeting_transcript,
-                parameters={
-                    "event_id": event_id,
-                    "context": context,
-                    "output_format": output_format,
-                    "max_length": max_length,
-                },
-                description=f"Getting transcript for meeting: {event_id}",
-                fallback_value=None,
-            )
+        # Tool acquires its own sessions on-demand, no lock needed
+        result = await execute_with_capabilities(
+            capabilities_getter(),
+            tool_name="GetMeetingTranscript",
+            tool_func=get_meeting_transcript,
+            parameters={
+                "event_id": event_id,
+                "context": context,
+                "output_format": output_format,
+                "max_length": max_length,
+            },
+            description=f"Getting transcript for meeting: {event_id}",
+            fallback_value=None,
+        )
 
         if result:
             available = result.get("transcript_available", False)

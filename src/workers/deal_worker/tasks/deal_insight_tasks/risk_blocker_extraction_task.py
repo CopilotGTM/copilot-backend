@@ -24,14 +24,16 @@ from uuid import UUID
 
 from celery import Task
 from sqlalchemy import select
+from sqlmodel import col
 
 from src.domain.models.master_tables.organisation_models import Organisation, OrganisationStatus
+from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal, CRMDealStatus
 from src.infra.database.factory import get_async_provider
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.workers.deal_worker.celery_app import app
-from src.workers.deal_worker.services.risk_blocker_extraction_service import (
+from src.workers.deal_worker.services.deal_insight_services.risk_blocker_extraction_service import (
     RiskBlockerExtractionService,
 )
 
@@ -75,17 +77,9 @@ def extract_deal_risks_blockers_task(
         org_uuid = UUID(organisation_id)
         deal_uuid = UUID(deal_id)
 
-        async for session in acquire_org_async_session(org_uuid):
-            try:
-                service = RiskBlockerExtractionService(
-                    session=session,
-                    organisation_id=org_uuid,
-                )
-                result = await service.process_deal(deal_uuid, force=force)
-                return result
-
-            except Exception:
-                raise
+        # Service manages its own sessions (fresh session pattern)
+        service = RiskBlockerExtractionService(org_uuid)
+        return await service.process_deal(deal_uuid, force=force)
 
     try:
         result = run_async(_run())
@@ -125,7 +119,7 @@ def trigger_extraction_all_orgs(self: Task) -> dict[str, int]:
         async with provider.master_session() as master_session:
             # Get all active organisations
             result = await master_session.execute(
-                select(Organisation).where(Organisation.status == OrganisationStatus.APPROVED)
+                select(Organisation).where(col(Organisation.status) == OrganisationStatus.APPROVED)
             )
             orgs = result.scalars().all()
 
@@ -134,16 +128,9 @@ def trigger_extraction_all_orgs(self: Task) -> dict[str, int]:
             try:
                 # Queue extraction for each org's deals
                 async for session in acquire_org_async_session(org.organisation_id):
-                    from sqlmodel import col
-
-                    from src.domain.models.organisation_tables.sync.crm.deals import (
-                        CRMDeal,
-                        CRMDealStatus,
-                    )
-
                     # Get only OPEN deals (skip won/lost/closed deals)
                     deal_result = await session.execute(
-                        select(CRMDeal.deal_id)
+                        select(col(CRMDeal.deal_id))
                         .where(
                             col(CRMDeal.organisation_id) == org.organisation_id,
                             col(CRMDeal.is_deleted).is_(False),

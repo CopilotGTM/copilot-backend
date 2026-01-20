@@ -3,6 +3,9 @@
 Given a calendar event id, return the associated deal metadata (if any).
 This enables tool-first agents to start from an event_id and discover the
 relevant deal context without the handler pre-loading it.
+
+SECURITY: organisation_id is taken from context (immutable).
+This tool does NOT accept organisation_id as a parameter.
 """
 
 from __future__ import annotations
@@ -14,7 +17,7 @@ from uuid import UUID
 
 from sqlalchemy import select
 
-from src.agents.tools.base import db_session_lock, execute_with_capabilities
+from src.agents.tools.base import execute_with_capabilities
 from src.domain.models.organisation_tables.sync.calendar import (
     AssociationStatus,
     CalendarEventDealAssociation,
@@ -35,18 +38,21 @@ async def get_meeting_deal_context(
 ) -> dict[str, Any] | None:
     """Return deal context for a meeting (best-effort).
 
+    SECURITY: organisation_id is taken from context (immutable).
+    This prevents cross-org data access.
+
     Args:
         event_id: Calendar event UUID as string
-        context: AgentContext containing session and organisation metadata
+        context: AgentContext containing organisation metadata
 
     Returns:
         Dict with deal_id/deal_name/company_name/deal_stage if found, else None.
     """
-    session = context.session
+    # SECURITY: organisation_id comes from context, not parameters
     organisation_id = context.organisation_id
 
-    if not session or not organisation_id:
-        logger.warning("get_meeting_deal_context: missing session or organisation_id")
+    if not organisation_id:
+        logger.warning("get_meeting_deal_context: missing organisation_id in context")
         return None
 
     try:
@@ -76,12 +82,15 @@ async def get_meeting_deal_context(
         .limit(1)
     )
 
-    try:
-        result = await session.execute(stmt)
-        row = result.first()
-    except Exception:
-        logger.exception("get_meeting_deal_context: error fetching deal context")
-        return None
+    # Acquire fresh session for database operations
+    async with context.acquire_session() as session:
+        try:
+            result = await session.execute(stmt)
+            row = result.first()
+        except Exception:
+            logger.exception("get_meeting_deal_context: error fetching deal context")
+            return None
+    # Session released
 
     if not row:
         return None
@@ -102,7 +111,11 @@ def create_get_meeting_deal_context(
     context: AgentContext,
     capabilities_getter: Callable[[], AgentCapabilities | None],
 ) -> Callable[..., Any]:
-    """Factory to create get_meeting_deal_context tool bound to a context."""
+    """Factory to create get_meeting_deal_context tool bound to a context.
+
+    SECURITY: The context contains the immutable organisation_id.
+    The tool does NOT accept organisation_id as a parameter.
+    """
 
     async def get_meeting_deal_context_tool(event_id: str) -> dict[str, Any] | None:
         """Get deal metadata associated with this meeting.
@@ -114,29 +127,28 @@ def create_get_meeting_deal_context(
         Args:
             event_id: Calendar event UUID
 
-        Returns:
-            Deal context dict, or None.
+        Note: organisation_id is automatically set from context and cannot be overridden.
         """
         logger.info(f"[TOOL CALLED] get_meeting_deal_context - event_id='{event_id}'")
 
-        if not context.session or not context.organisation_id:
+        if not context.organisation_id:
             logger.warning(
-                "get_meeting_deal_context unavailable: missing session or organisation_id"
+                "get_meeting_deal_context unavailable: missing organisation_id in context"
             )
             return None
 
-        async with db_session_lock():
-            result = await execute_with_capabilities(
-                capabilities_getter(),
-                tool_name="GetMeetingDealContext",
-                tool_func=get_meeting_deal_context,
-                parameters={
-                    "event_id": event_id,
-                    "context": context,
-                },
-                description=f"Getting deal context for meeting: {event_id}",
-                fallback_value=None,
-            )
+        # Tool acquires its own sessions on-demand, no lock needed
+        result = await execute_with_capabilities(
+            capabilities_getter(),
+            tool_name="GetMeetingDealContext",
+            tool_func=get_meeting_deal_context,
+            parameters={
+                "event_id": event_id,
+                "context": context,
+            },
+            description=f"Getting deal context for meeting: {event_id}",
+            fallback_value=None,
+        )
 
         if result:
             logger.info(

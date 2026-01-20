@@ -58,6 +58,13 @@ def process_meeting_summary(self: Task, organisation_id: str, job_id: str):
         job_uuid = UUID(job_id)
 
         # Phase 1: Load job context (fresh session)
+        # Initialize variables that will be set in the session block
+        deal_id: UUID
+        event_id: UUID
+        job_type_str: str
+        user_id: UUID
+        job_metadata: dict
+
         async for session in acquire_org_async_session(org_uuid):
             job = await session.get(DealJobs, job_uuid)
             if not job:
@@ -67,21 +74,24 @@ def process_meeting_summary(self: Task, organisation_id: str, job_id: str):
             if job.job_type != DealJobType.MEETING_SUMMARY:
                 raise RuntimeError(f"Invalid job type {job.job_type} for meeting summary task")
 
+            # Extract values before closing session
+            if not job.deal_id or not job.event_id:
+                raise NonRetryableJobError("Meeting summary requires event_id", "invalid_data")
+
+            deal_id = job.deal_id
+            event_id = job.event_id
+            job_type_str = str(job.job_type)
+            user_id = job.user_id
+            job_metadata = job.job_metadata or {}
+
             # Mark as IN_PROGRESS
             job.status = JobStatus.IN_PROGRESS
             await session.commit()
 
-        if not job.deal_id or not job.event_id:
-            raise NonRetryableJobError("Meeting summary requires event_id", "invalid_data")
-
-        deal_id: UUID = job.deal_id
-        event_id: UUID = job.event_id
-        job_type_str: str = str(job.job_type)
-
         # Determine if automated (for logging)
         is_automated = (
-            job.user_id == AUTOMATED_PIPELINE_USER_ID
-            or job.job_metadata.get("source") == "automated_pipeline"
+            user_id == AUTOMATED_PIPELINE_USER_ID
+            or job_metadata.get("source") == "automated_pipeline"
         )
 
         logger.info(

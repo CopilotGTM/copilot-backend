@@ -109,9 +109,7 @@ class MeetingPrepService:
 
         from src.agents.workflows.briefing import BriefingAgent, BriefingInput, EventDetails
 
-        # ─────────────────────────────────────────────────────────────────────
         # Phase 1: Load context (fresh session, release before agent call)
-        # ─────────────────────────────────────────────────────────────────────
         self._publish_progress("Loading context...", "Querying Database", 0.1)
 
         org_name: str | None = None
@@ -208,21 +206,22 @@ class MeetingPrepService:
             ),
         )
 
-        # ─────────────────────────────────────────────────────────────────────
-        # Phase 2: Call agent (agent manages its own session for tools)
-        # ─────────────────────────────────────────────────────────────────────
+        # Phase 2: Call agent (tools acquire sessions on-demand)
         self._publish_progress("Generating briefing with AI...", "Agent in Progress", 0.4)
 
-        async for session in acquire_org_async_session(self.organisation_id):
-            agent = BriefingAgent(session, self.organisation_id, self.publisher, org_name=org_name)
-            briefing_data = await agent.generate(input_data)
-        # Session released after agent call
+        # Agent doesn't hold sessions - tools acquire on-demand via context.acquire_session()
+        # SECURITY: Both organisation_id and deal_id are baked into agent context (immutable)
+        agent = BriefingAgent(
+            organisation_id=self.organisation_id,
+            deal_id=self.deal_id,
+            publisher=self.publisher,
+            org_name=org_name,
+        )
+        briefing_data = await agent.generate(input_data)
 
         self._publish_progress("Saving results...", "Saving Results", 0.9)
 
-        # ─────────────────────────────────────────────────────────────────────
         # Phase 3: Save result (fresh session)
-        # ─────────────────────────────────────────────────────────────────────
         briefing_dict = briefing_data.model_dump()
         wrapped_result = wrap_generated_content(briefing_dict)
 
@@ -240,9 +239,7 @@ class MeetingPrepService:
 
         return wrapped_result
 
-    # =========================================================================
     # Pipeline: Automatic Prep for Upcoming Meetings
-    # =========================================================================
 
     async def _get_next_meeting_needing_prep(self, deal_id: UUID) -> tuple[UUID, UUID] | None:
         """Get the next upcoming meeting that needs prep generation.
@@ -301,7 +298,8 @@ class MeetingPrepService:
             col(DealJobs.status).in_([JobStatus.PENDING, JobStatus.IN_PROGRESS]),
         )
         result = await session.execute(stmt)
-        return result.scalars().first()
+        job: DealJobs | None = result.scalars().first()
+        return job
 
     async def _create_prep_job(self, session, deal_id: UUID, event_id: UUID) -> DealJobs:
         """Create a DealJobs record for the meeting prep."""

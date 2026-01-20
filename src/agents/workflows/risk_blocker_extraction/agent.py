@@ -5,8 +5,13 @@ risks/blockers, then identifies new potential risks and blockers that
 could impact deal success. It includes deduplication logic to avoid
 creating duplicate entries.
 
-Follows the same pattern as DealSummaryAgent - receives minimal context
-and uses tools to fetch the data it needs.
+ARCHITECTURE: This agent does NOT hold database sessions during LLM calls.
+Tools acquire sessions on-demand via context.acquire_session().
+Sessions are released before any long-running operations (LLM calls).
+
+SECURITY BOUNDARIES (immutable, baked into context):
+- organisation_id: Tools use context.organisation_id, cannot accept as parameter
+- deal_id: Tools use context.deal_id, cannot query other deals
 """
 
 from __future__ import annotations
@@ -31,8 +36,6 @@ from src.agents.workflows.risk_blocker_extraction.prompts import (
 from src.infra.utils.logger import get_logger
 
 if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import AsyncSession
-
     from src.workers.deal_worker.services.deal_job_publisher import DealJobRedisPublisher
 
 logger = get_logger(__name__)
@@ -43,30 +46,43 @@ class RiskBlockerExtractionAgent:
 
     Uses Agno with tools to gather data from meetings and emails,
     then produces a structured RiskBlockerExtractionResult response.
-    Follows the same pattern as DealSummaryAgent.
+
+    ARCHITECTURE: This agent does NOT hold database sessions during LLM calls.
+    Tools acquire sessions on-demand via context.acquire_session().
+
+    SECURITY: organisation_id and deal_id are baked into context (immutable).
+    Tools cannot query data from other orgs or deals.
     """
 
     def __init__(
         self,
-        session: AsyncSession,
         organisation_id: UUID,
+        deal_id: UUID,
         publisher: DealJobRedisPublisher | None = None,
     ):
-        """Initialize the agent with database context.
+        """Initialize the agent with organisation and deal context.
+
+        ARCHITECTURE: No database session is passed. Tools acquire sessions
+        on-demand via context.acquire_session() and release them promptly.
+
+        SECURITY BOUNDARIES (immutable, baked into context):
+        - organisation_id: All tools use context.organisation_id for data access
+        - deal_id: All tools use context.deal_id - cannot query other deals
 
         Args:
-            session: Async database session
-            organisation_id: Organisation UUID
+            organisation_id: Organisation UUID (IMMUTABLE - security boundary)
+            deal_id: Deal UUID (IMMUTABLE - security boundary)
             publisher: Optional Redis publisher for progress updates
         """
-        self.session = session
         self.organisation_id = organisation_id
+        self.deal_id = deal_id
         self.publisher = publisher
 
-        # Build context for tools
+        # Build context for tools (no session - tools acquire on-demand)
+        # SECURITY: Both organisation_id and deal_id are immutable in context
         self.context = AgentContext(
-            session=session,
             organisation_id=organisation_id,
+            deal_id=deal_id,
         )
 
         # Get tools for this agent
@@ -117,6 +133,9 @@ class RiskBlockerExtractionAgent:
         3. List and read email content
         4. Identify new risks/blockers from the communications
 
+        SECURITY: deal_id is already baked into context (immutable).
+        Tools use context.deal_id and cannot query other deals.
+
         Args:
             input_data: Minimal deal context with counts and date ranges
 
@@ -125,7 +144,7 @@ class RiskBlockerExtractionAgent:
         """
         logger.info(
             "RiskBlockerExtractionAgent extracting for deal %s (%d meetings, %d emails, %d existing)",
-            input_data.deal_id,
+            self.deal_id,
             input_data.meeting_count,
             input_data.email_count,
             input_data.existing_risks_count + input_data.existing_blockers_count,
@@ -166,7 +185,7 @@ class RiskBlockerExtractionAgent:
 
         logger.info(
             "RiskBlockerExtractionAgent completed for deal %s: %d risks, %d blockers, %d new",
-            input_data.deal_id,
+            self.deal_id,
             result.total_risks,
             result.total_blockers,
             result.new_items_count,
