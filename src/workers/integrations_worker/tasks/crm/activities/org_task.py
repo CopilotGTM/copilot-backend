@@ -10,10 +10,12 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from celery import Task
+from celery import Task, chain, signature
 from sqlalchemy import select
 from sqlalchemy.orm import attributes
+from sqlmodel import col
 
+from src.domain.models.organisation_tables.job_models import DealJobs, DealJobType, JobStatus
 from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
 from src.domain.models.organisation_tables.sync.integration_models import SyncStatus
 from src.infra.config.nango_provider_mapping import to_nango_provider_key
@@ -25,6 +27,9 @@ from src.service.integrations.crm.enrichment import CRMEnrichmentOrchestrator
 from src.service.integrations.crm.entities import DealTaskSyncService
 from src.workers.integrations_worker.celery_app import app
 from src.workers.integrations_worker.providers.registry import get_fetcher
+
+# System user UUID for automated pipeline jobs
+AUTOMATED_PIPELINE_USER_ID = UUID("00000000-0000-0000-0000-000000000001")
 
 from ..utils import (
     CRM_INTEGRATION_TYPES,
@@ -135,6 +140,101 @@ def sync_crm_activities_org_task(
                     "completed" if failed == 0 else ("failed" if successful == 0 else "partial")
                 )
 
+                # Collect all deals with new notes from all integration results
+                all_deals_with_new_notes: set[UUID] = set()
+                for ir in integration_results:
+                    deals_notes = ir.get("deals_with_new_notes", [])
+                    for deal_id in deals_notes:
+                        if isinstance(deal_id, UUID):
+                            all_deals_with_new_notes.add(deal_id)
+                        elif isinstance(deal_id, str):
+                            all_deals_with_new_notes.add(UUID(deal_id))
+
+                # Trigger pipeline for deals with new notes
+                pipelines_triggered = 0
+                jobs_created = 0
+                jobs_skipped = 0
+
+                for deal_uuid in all_deals_with_new_notes:
+                    try:
+                        deal_summary_job_id: UUID | None = None
+
+                        # Check for existing active deal summary job
+                        stmt = select(DealJobs).where(
+                            col(DealJobs.organisation_id) == org_id,
+                            col(DealJobs.deal_id) == deal_uuid,
+                            col(DealJobs.event_id).is_(None),
+                            col(DealJobs.job_type) == DealJobType.DEAL_SUMMARY,
+                            col(DealJobs.status).in_([JobStatus.PENDING, JobStatus.IN_PROGRESS]),
+                        )
+                        result = await session.execute(stmt)
+                        existing_job = result.scalars().first()
+
+                        if existing_job:
+                            deal_summary_job_id = existing_job.job_id
+                            jobs_skipped += 1
+                        else:
+                            # Create new job
+                            job = DealJobs(
+                                organisation_id=org_id,
+                                user_id=AUTOMATED_PIPELINE_USER_ID,
+                                job_type=DealJobType.DEAL_SUMMARY,
+                                deal_id=deal_uuid,
+                                event_id=None,
+                                status=JobStatus.PENDING,
+                                job_metadata={
+                                    "source": "crm_notes_sync",
+                                    "trigger": "new_notes_synced",
+                                },
+                            )
+                            session.add(job)
+                            await session.flush()
+                            await session.refresh(job)
+                            deal_summary_job_id = job.job_id
+                            jobs_created += 1
+
+                        await session.commit()
+
+                        # Trigger the pipeline chain: risk_blocker → stakeholder → deal_summary
+                        if deal_summary_job_id:
+                            risk_blocker_sig = signature(
+                                "risk_blocker.extract_deal_risks_blockers_task",
+                                args=[organisation_id, str(deal_uuid)],
+                                queue="deal_jobs",
+                                immutable=True,
+                            )
+                            stakeholder_sig = signature(
+                                "stakeholder.analyze_deal_stakeholders_task",
+                                args=[organisation_id, str(deal_uuid)],
+                                queue="deal_jobs",
+                                immutable=True,
+                            )
+                            deal_summary_sig = signature(
+                                "deal_summary_task.process",
+                                args=[organisation_id, str(deal_summary_job_id)],
+                                queue="deal_jobs",
+                                immutable=True,
+                            )
+                            task_chain = chain(risk_blocker_sig, stakeholder_sig, deal_summary_sig)
+                            task_chain.apply_async()
+                            pipelines_triggered += 1
+
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to trigger pipeline for deal %s after notes sync: %s",
+                            deal_uuid,
+                            str(e),
+                        )
+
+                if pipelines_triggered > 0:
+                    logger.info(
+                        "Triggered %d deal pipelines after CRM notes sync "
+                        "(jobs_created=%d, jobs_skipped=%d)",
+                        pipelines_triggered,
+                        jobs_created,
+                        jobs_skipped,
+                    )
+
                 return {
                     "status": status,
                     "organisation_id": organisation_id,
@@ -145,6 +245,8 @@ def sync_crm_activities_org_task(
                         "successful": successful,
                         "failed": failed,
                         "total_records_synced": total_records,
+                        "deals_with_new_notes": len(all_deals_with_new_notes),
+                        "pipelines_triggered": pipelines_triggered,
                     },
                     "integration_results": integration_results,
                 }
@@ -301,4 +403,5 @@ async def _sync_activities_for_integration(
         "is_initial": is_initial,
         "metrics": metrics,
         "enrichment_metrics": enrichment_metrics,
+        "deals_with_new_notes": metrics.get("deals_with_new_notes", []),
     }

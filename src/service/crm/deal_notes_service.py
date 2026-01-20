@@ -7,9 +7,11 @@ from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID, uuid4
 
+from celery import chain, signature
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
+from src.domain.models.organisation_tables.job_models import DealJobs, DealJobType, JobStatus
 from src.domain.models.organisation_tables.sync.crm import CRMActivity, CRMActivityType
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
 from src.domain.models.organisation_tables.sync.crm.stakeholders import DealStakeholder
@@ -268,6 +270,100 @@ class DealNotesService:
         )
 
         return note
+
+    async def trigger_deal_insight_pipeline(
+        self,
+        deal_id: UUID,
+        user_id: UUID,
+        trigger_source: str = "note_creation",
+    ) -> UUID | None:
+        """Trigger the deal insight pipeline after note creation.
+
+        Creates a job for deal summary (with deduplication) and triggers:
+        risk_blocker → stakeholder → deal_summary chain.
+
+        Args:
+            deal_id: The deal UUID to process
+            user_id: User ID for job attribution
+            trigger_source: Source of the trigger for metadata
+
+        Returns:
+            The job ID if created/found, None if trigger failed
+        """
+        try:
+            org_id_str = str(self.organisation_id)
+            deal_id_str = str(deal_id)
+
+            # Check for existing active deal summary job
+            stmt = select(DealJobs).where(
+                col(DealJobs.organisation_id) == self.organisation_id,
+                col(DealJobs.deal_id) == deal_id,
+                col(DealJobs.event_id).is_(None),
+                col(DealJobs.job_type) == DealJobType.DEAL_SUMMARY,
+                col(DealJobs.status).in_([JobStatus.PENDING, JobStatus.IN_PROGRESS]),
+            )
+            result = await self.org_session.execute(stmt)
+            existing_job = result.scalars().first()
+
+            if existing_job:
+                deal_summary_job_id = existing_job.job_id
+            else:
+                # Create new job for deal summary
+                job = DealJobs(
+                    organisation_id=self.organisation_id,
+                    user_id=user_id,
+                    job_type=DealJobType.DEAL_SUMMARY,
+                    deal_id=deal_id,
+                    event_id=None,
+                    status=JobStatus.PENDING,
+                    job_metadata={
+                        "source": trigger_source,
+                        "trigger": "user_created_note",
+                    },
+                )
+                self.org_session.add(job)
+                await self.org_session.flush()
+                await self.org_session.refresh(job)
+                deal_summary_job_id = job.job_id
+                await self.org_session.commit()
+
+            # Build chain: risk_blocker → stakeholder → deal_summary (with job)
+            risk_blocker_sig = signature(
+                "risk_blocker.extract_deal_risks_blockers_task",
+                args=[org_id_str, deal_id_str],
+                queue="deal_jobs",
+                immutable=True,
+            )
+            stakeholder_sig = signature(
+                "stakeholder.analyze_deal_stakeholders_task",
+                args=[org_id_str, deal_id_str],
+                queue="deal_jobs",
+                immutable=True,
+            )
+            deal_summary_sig = signature(
+                "deal_summary_task.process",
+                args=[org_id_str, str(deal_summary_job_id)],
+                queue="deal_jobs",
+                immutable=True,
+            )
+            task_chain = chain(risk_blocker_sig, stakeholder_sig, deal_summary_sig)
+            task_chain.apply_async()
+
+            logger.info(
+                "Triggered deal insight pipeline after %s: deal=%s job=%s",
+                trigger_source,
+                deal_id,
+                deal_summary_job_id,
+            )
+            return deal_summary_job_id
+
+        except Exception as exc:
+            logger.warning(
+                "Failed to trigger deal insight pipeline: deal=%s error=%s",
+                deal_id,
+                str(exc),
+            )
+            return None
 
     async def _verify_deal_access(self, deal_id: UUID) -> CRMDeal:
         """Verify deal exists and belongs to this organization.

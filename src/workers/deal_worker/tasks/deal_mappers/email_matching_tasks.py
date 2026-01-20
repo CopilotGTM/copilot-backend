@@ -176,26 +176,32 @@ def match_email_to_deals_org_task(
 
                     await session.commit()
 
-                # Trigger the pipeline chain: deal_summary → risk_blocker
+                # Trigger the pipeline chain: risk_blocker → stakeholder → deal_summary (with job)
                 if deal_summary_job_id:
-                    deal_summary_sig = signature(
-                        "deal_summary_task.process",
-                        args=[organisation_id, str(deal_summary_job_id)],
-                        queue="deal_jobs",
-                        immutable=True,
-                    )
                     risk_blocker_sig = signature(
                         "risk_blocker.extract_deal_risks_blockers_task",
                         args=[organisation_id, str(deal_uuid)],
                         queue="deal_jobs",
                         immutable=True,
                     )
-                    task_chain = chain(deal_summary_sig, risk_blocker_sig)
+                    stakeholder_sig = signature(
+                        "stakeholder.analyze_deal_stakeholders_task",
+                        args=[organisation_id, str(deal_uuid)],
+                        queue="deal_jobs",
+                        immutable=True,
+                    )
+                    deal_summary_sig = signature(
+                        "deal_summary_task.process",
+                        args=[organisation_id, str(deal_summary_job_id)],
+                        queue="deal_jobs",
+                        immutable=True,
+                    )
+                    task_chain = chain(risk_blocker_sig, stakeholder_sig, deal_summary_sig)
                     task_chain.apply_async()
                     pipelines_triggered += 1
 
                     logger.debug(
-                        "Triggered deal summary + risk blocker chain for deal %s "
+                        "Triggered risk blocker + stakeholder + deal summary chain for deal %s "
                         "(job=%s) after email match",
                         deal_uuid,
                         deal_summary_job_id,

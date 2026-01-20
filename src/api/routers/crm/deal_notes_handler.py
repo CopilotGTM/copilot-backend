@@ -191,6 +191,14 @@ async def create_deal_note(
         # Map to response schema
         note_schema = _map_note_to_schema(note, service.determine_note_source(note))
 
+        # Trigger deal insight pipeline after note creation
+        # Chain: risk_blocker → stakeholder → deal_summary (with job)
+        await service.trigger_deal_insight_pipeline(
+            deal_id=deal_id,
+            user_id=user_ids.user_id,
+            trigger_source="note_creation",
+        )
+
         return Response.created_response(
             message="Note created successfully",
             data=note_schema,
