@@ -50,9 +50,11 @@ docker-compose up api redis deal-worker   # Start specific services
 ## Architecture
 
 ### Multi-Tenant Design
+
 Schema-based multi-tenancy where each organization gets an isolated PostgreSQL schema (`org_*`). The `public` schema contains global data (organisations, users, super_admins).
 
 ### Directory Structure
+
 ```
 src/
 ├── api/              # FastAPI routes, controllers, schemas
@@ -66,16 +68,21 @@ src/
 ```
 
 ### Celery Workers
+
 Six workers: `knowledge_worker`, `chat_worker`, `deal_worker`, `integrations_worker`, `organization_worker`, `content_worker`. Each has: `celery_app.py`, `config.py`, `client.py`, and `tasks/` directory.
 
 ### Automated Pipeline User ID
+
 Jobs created by automated pipelines (not user-triggered) use a sentinel user ID:
+
 ```python
 AUTOMATED_PIPELINE_USER_ID = UUID("00000000-0000-0000-0000-000000000001")
 ```
+
 This distinguishes automated jobs from user-initiated ones. Check `job.user_id == AUTOMATED_PIPELINE_USER_ID` or `job.job_metadata.get("source") == "automated_pipeline"` to identify automated jobs.
 
 ### Database Migrations
+
 ```
 migrations/
 ├── master_migrations/    # Alembic for public schema
@@ -95,6 +102,7 @@ uv run python -m scripts.test_local.investigate_timeline_data
 ```
 
 **Multi-Tenant Query Pattern:**
+
 ```python
 from src.infra.utils.resource_naming import get_schema_name
 
@@ -110,6 +118,7 @@ connect_args = {"options": f"-csearch_path={SCHEMA_NAME},public"}
 ```
 
 **Key Tables by Schema:**
+
 | Schema | Tables |
 |--------|--------|
 | `public` | organisations, users, super_admins |
@@ -132,6 +141,62 @@ connect_args = {"options": f"-csearch_path={SCHEMA_NAME},public"}
 2. **Use fresh session pattern in workers** - Especially for batch operations or when making multiple external calls
 3. **Don't let sessions span long operations** - Close sessions when work is done
 
+## CRITICAL: Agent Architecture
+
+**Agents follow a fresh session pattern with immutable security boundaries:**
+
+### Security Boundaries (Immutable)
+
+All agents receive `organisation_id` and optionally `deal_id` at initialization. These are baked into the `AgentContext` and **cannot be modified** by tools or prompts:
+
+```python
+# Example: Creating an agent with security boundaries
+agent = SummaryAgent(
+    organisation_id=org_uuid,  # REQUIRED - security boundary
+    deal_id=deal_uuid,         # REQUIRED for deal-scoped agents
+    publisher=publisher,       # Optional - for SSE progress updates
+)
+```
+
+### Agent Parameters
+
+| Agent | organisation_id | deal_id | Notes |
+|-------|-----------------|---------|-------|
+| `SummaryAgent` | Required | Required | Meeting summary generation |
+| `DealSummaryAgent` | Required | Required | Comprehensive deal summary |
+| `RiskBlockerExtractionAgent` | Required | Required | Extract risks/blockers from deal |
+| `BriefingAgent` | Required | Required | Meeting preparation briefing |
+| `StakeholderAnalysisAgent` | N/A | N/A | Stateless - receives context string |
+| `GeneralAgent` | Required | Optional | Chat agent - deal_id optional |
+
+### Fresh Session Pattern
+
+Agents do NOT hold database sessions during LLM calls:
+
+- Tools acquire sessions on-demand via `context.acquire_session()`
+- Sessions are released before any long-running operations (LLM calls)
+- This prevents connection pool exhaustion during slow LLM responses
+
+```python
+# WRONG: Passing session to agent
+agent = MyAgent(session=db_session)  # DON'T DO THIS
+
+# CORRECT: Agent acquires sessions via context
+agent = MyAgent(organisation_id=org_id, deal_id=deal_id)
+# Tools use: async for session in context.acquire_session(): ...
+```
+
+### Agent Model Configuration
+
+Agent models are configured in `src/infra/config/agent_config.py`. Configuration can be overridden via environment variables:
+
+```bash
+# Example: Override model for deal summary agent
+AGENT_DEAL_SUMMARY_MODEL=gpt-5-mini
+AGENT_DEAL_SUMMARY_DEBUG=false
+AGENT_DEAL_SUMMARY_TIMEOUT=180
+```
+
 ## Code Style
 
 - Line length: 100 characters
@@ -153,6 +218,7 @@ connect_args = {"options": f"-csearch_path={SCHEMA_NAME},public"}
 ## API Documentation Files
 
 When adding/modifying endpoints, update the relevant file in `docs/API Documentation/`:
+
 - `chat-api.md`, `chat-attachments-api.md`
 - `knowledge-base-api.md`
 - `integrations-api.md`

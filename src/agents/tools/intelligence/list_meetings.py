@@ -1,6 +1,13 @@
 """List deal meetings tool for agents.
 
 Tool for listing meetings associated with a deal.
+
+SECURITY BOUNDARIES (immutable, from context):
+- organisation_id: Prevents cross-org data access
+- deal_id: Prevents cross-deal data access (deal-scoped tool)
+
+This is a DEAL-SCOPED tool. It does NOT accept organisation_id or deal_id
+as parameters - both come from context.
 """
 
 from __future__ import annotations
@@ -9,12 +16,11 @@ import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
-from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from src.agents.tools.base import db_session_lock, execute_with_capabilities
+from src.agents.tools.base import execute_with_capabilities
 from src.domain.models.organisation_tables.sync.calendar import (
     AssociationStatus,
     CalendarEvent,
@@ -34,7 +40,6 @@ logger = logging.getLogger(__name__)
 
 
 async def list_deal_meetings(
-    deal_id: str,
     *,
     context: AgentContext,
     limit: int = 10,
@@ -46,9 +51,12 @@ async def list_deal_meetings(
     Returns meeting summary information including metadata about
     available transcripts and AI-generated insights.
 
+    SECURITY BOUNDARIES (from context, immutable):
+    - organisation_id: Prevents cross-org data access
+    - deal_id: Prevents cross-deal data access
+
     Args:
-        deal_id: The deal UUID as a string
-        context: AgentContext containing session and organisation metadata
+        context: AgentContext containing organisation and deal metadata
         limit: Maximum number of meetings to return (default: 10)
         include_past: Include meetings that have already occurred (default: True)
         include_upcoming: Include future meetings (default: True)
@@ -73,18 +81,16 @@ async def list_deal_meetings(
         - association_status: SUGGESTED, CONFIRMED, or REJECTED
         - match_score: Confidence score of deal association
     """
-    session = context.session
+    # SECURITY: Both organisation_id and deal_id come from context, not parameters
     organisation_id = context.organisation_id
+    deal_id = context.deal_id
 
-    if not session or not organisation_id:
-        logger.warning("list_deal_meetings: missing session or organisation_id")
+    if not organisation_id:
+        logger.warning("list_deal_meetings: missing organisation_id in context")
         return []
 
-    # Parse deal_id
-    try:
-        parsed_deal_id = UUID(deal_id)
-    except ValueError:
-        logger.warning(f"list_deal_meetings: invalid deal_id format: {deal_id}")
+    if not deal_id:
+        logger.warning("list_deal_meetings: missing deal_id in context")
         return []
 
     effective_limit = max(1, min(limit, 50))
@@ -105,7 +111,7 @@ async def list_deal_meetings(
         )
         .where(
             assoc_c.organisation_id == organisation_id,
-            assoc_c.deal_id == parsed_deal_id,
+            assoc_c.deal_id == deal_id,
             assoc_c.status == AssociationStatus.ACTIVE,  # Only include active associations
         )
         .join(CalendarEvent, assoc_c.event_id == event_c.event_id)
@@ -124,74 +130,77 @@ async def list_deal_meetings(
     # Order by start time (most recent first for past, soonest first for upcoming)
     stmt = stmt.order_by(event_c.start_at.desc()).limit(effective_limit)
 
-    try:
-        result = await session.execute(stmt)
-        associations = result.scalars().all()
-    except Exception as e:
-        logger.exception(f"list_deal_meetings: database error: {e}")
-        return []
+    # Acquire fresh session for database operations
+    async with context.acquire_session() as session:
+        try:
+            result = await session.execute(stmt)
+            associations = result.scalars().all()
+        except Exception as e:
+            logger.exception(f"list_deal_meetings: database error: {e}")
+            return []
 
-    # For each event, check if there's a Meeting record with transcript
-    event_ids = [assoc.event_id for assoc in associations]
+        # For each event, check if there's a Meeting record with transcript
+        event_ids = [assoc.event_id for assoc in associations]
 
-    meeting_c = cast(Any, Meeting).__table__.c
-    meeting_stmt = select(Meeting).where(
-        meeting_c.organisation_id == organisation_id,
-        meeting_c.calendar_event_id.in_(event_ids),
-        meeting_c.is_deleted.is_(False),
-    )
-
-    try:
-        meeting_result = await session.execute(meeting_stmt)
-        meetings = {m.calendar_event_id: m for m in meeting_result.scalars().all()}
-    except Exception as e:
-        logger.exception(f"list_deal_meetings: error fetching meetings: {e}")
-        meetings = {}
-
-    # Transform to output format
-    output: list[dict[str, Any]] = []
-    for assoc in associations:
-        event = assoc.event
-        meeting = meetings.get(event.event_id)
-
-        # Build attendee list
-        attendees = []
-        for att in event.attendees[:10]:  # Limit attendees in output
-            attendees.append(
-                {
-                    "email": att.email,
-                    "name": att.display_name,
-                    "response_status": att.response_status,
-                    "is_organiser": att.is_organiser,
-                }
-            )
-
-        output.append(
-            {
-                "event_id": str(event.event_id),
-                "title": event.title,
-                "start_at": event.start_at.isoformat() if event.start_at else None,
-                "end_at": event.end_at.isoformat() if event.end_at else None,
-                "status": event.status,
-                "organiser_name": event.organiser_name,
-                "organiser_email": event.organiser_email,
-                "attendee_count": event.attendee_count,
-                "attendees": attendees,
-                "location": event.location,
-                # Transcript/intelligence status
-                "has_transcript": meeting is not None and meeting.status == MeetingStatus.READY,
-                "has_summary": assoc.meeting_summary_status == GenerationStatus.COMPLETED,
-                "has_prep": assoc.meeting_prep_status == GenerationStatus.COMPLETED,
-                "has_followup": assoc.meeting_followup_status == GenerationStatus.COMPLETED,
-                # Association metadata
-                "association_status": assoc.status.value
-                if isinstance(assoc.status, AssociationStatus)
-                else assoc.status,
-                "match_score": assoc.match_score,
-            }
+        meeting_c = cast(Any, Meeting).__table__.c
+        meeting_stmt = select(Meeting).where(
+            meeting_c.organisation_id == organisation_id,
+            meeting_c.calendar_event_id.in_(event_ids),
+            meeting_c.is_deleted.is_(False),
         )
 
-    logger.info(f"list_deal_meetings: found {len(output)} meetings for deal {deal_id}")
+        try:
+            meeting_result = await session.execute(meeting_stmt)
+            meetings = {m.calendar_event_id: m for m in meeting_result.scalars().all()}
+        except Exception as e:
+            logger.exception(f"list_deal_meetings: error fetching meetings: {e}")
+            meetings = {}
+
+        # Transform to output format (while session is active)
+        output: list[dict[str, Any]] = []
+        for assoc in associations:
+            event = assoc.event
+            meeting = meetings.get(event.event_id)
+
+            # Build attendee list
+            attendees = []
+            for att in event.attendees[:10]:  # Limit attendees in output
+                attendees.append(
+                    {
+                        "email": att.email,
+                        "name": att.display_name,
+                        "response_status": att.response_status,
+                        "is_organiser": att.is_organiser,
+                    }
+                )
+
+            output.append(
+                {
+                    "event_id": str(event.event_id),
+                    "title": event.title,
+                    "start_at": event.start_at.isoformat() if event.start_at else None,
+                    "end_at": event.end_at.isoformat() if event.end_at else None,
+                    "status": event.status,
+                    "organiser_name": event.organiser_name,
+                    "organiser_email": event.organiser_email,
+                    "attendee_count": event.attendee_count,
+                    "attendees": attendees,
+                    "location": event.location,
+                    # Transcript/intelligence status
+                    "has_transcript": meeting is not None and meeting.status == MeetingStatus.READY,
+                    "has_summary": assoc.meeting_summary_status == GenerationStatus.COMPLETED,
+                    "has_prep": assoc.meeting_prep_status == GenerationStatus.COMPLETED,
+                    "has_followup": assoc.meeting_followup_status == GenerationStatus.COMPLETED,
+                    # Association metadata
+                    "association_status": assoc.status.value
+                    if isinstance(assoc.status, AssociationStatus)
+                    else assoc.status,
+                    "match_score": assoc.match_score,
+                }
+            )
+    # Session released
+
+    logger.info("list_deal_meetings: found %d meetings for deal %s", len(output), deal_id)
     return output
 
 
@@ -201,79 +210,66 @@ def create_list_deal_meetings(
 ) -> Callable[..., Any]:
     """Factory to create list_deal_meetings tool bound to a context.
 
-    Args:
-        context: AgentContext with session and organisation metadata
-        capabilities_getter: Callable that returns current AgentCapabilities
+    SECURITY BOUNDARIES (from context, immutable):
+    - organisation_id: Prevents cross-org data access
+    - deal_id: Prevents cross-deal data access
 
-    Returns:
-        Async function suitable for use as an agent tool
+    This is a DEAL-SCOPED tool. It does NOT accept organisation_id or deal_id
+    as parameters - both come from context.
     """
 
     async def list_deal_meetings_tool(
-        deal_id: str | None = None,
         limit: int = 10,
         include_past: bool = True,
         include_upcoming: bool = True,
     ) -> list[dict[str, Any]]:
-        """List all meetings associated with a deal.
+        """List all meetings associated with the current deal.
 
         Use this tool to see what meetings have occurred or are scheduled
         with a customer. Shows both past meetings (with transcript availability)
         and upcoming meetings.
 
         Args:
-            deal_id: The deal UUID to get meetings for. If not provided,
-                     uses the deal from the current context.
             limit: Maximum number of results (default: 10, max: 50)
             include_past: Include past meetings (default: True)
             include_upcoming: Include future meetings (default: True)
 
-        Returns:
-            List of meeting dictionaries with:
-            - event_id: Calendar event UUID (use for get_meeting_details)
-            - title: Meeting subject
-            - start_at, end_at: Meeting times
-            - organiser_name, organiser_email: Who organized
-            - attendees: List of attendees with response status
-            - has_transcript: True if transcript is available
-            - has_summary: True if AI meeting summary exists
-            - has_prep: True if meeting prep was generated
-            - has_followup: True if follow-up actions exist
-            - association_status: SUGGESTED or CONFIRMED
+        Note: organisation_id and deal_id are automatically set from context
+        and cannot be overridden. This tool only queries the current deal.
         """
         logger.info(
-            f"[TOOL CALLED] list_deal_meetings - deal_id='{deal_id}', "
-            f"limit={limit}, include_past={include_past}, include_upcoming={include_upcoming}"
+            "[TOOL CALLED] list_deal_meetings - limit=%d, include_past=%s, include_upcoming=%s",
+            limit,
+            include_past,
+            include_upcoming,
         )
 
-        if not context.session or not context.organisation_id:
-            logger.warning("list_deal_meetings unavailable: missing session or organisation_id")
+        if not context.organisation_id:
+            logger.warning("list_deal_meetings unavailable: missing organisation_id in context")
             return []
 
-        # Use deal_id from parameter or fall back to context
-        effective_deal_id = deal_id or context.deal_id
-        if not effective_deal_id:
-            logger.warning("list_deal_meetings: no deal_id provided and none in context")
+        if not context.deal_id:
+            logger.warning("list_deal_meetings unavailable: missing deal_id in context")
             return []
 
-        async with db_session_lock():
-            result = await execute_with_capabilities(
-                capabilities_getter(),
-                tool_name="ListDealMeetings",
-                tool_func=list_deal_meetings,
-                parameters={
-                    "deal_id": effective_deal_id,
-                    "context": context,
-                    "limit": limit,
-                    "include_past": include_past,
-                    "include_upcoming": include_upcoming,
-                },
-                description=f"Listing meetings for deal: {effective_deal_id}",
-                fallback_value=[],
-            )
+        # Tool acquires its own sessions on-demand, no lock needed
+        result = await execute_with_capabilities(
+            capabilities_getter(),
+            tool_name="ListDealMeetings",
+            tool_func=list_deal_meetings,
+            parameters={
+                "context": context,
+                "limit": limit,
+                "include_past": include_past,
+                "include_upcoming": include_upcoming,
+            },
+            description=f"Listing meetings for deal: {context.deal_id}",
+            fallback_value=[],
+        )
 
         logger.info(
-            f"[TOOL RESULT] list_deal_meetings returned {len(result) if result else 0} meetings"
+            "[TOOL RESULT] list_deal_meetings returned %d meetings",
+            len(result) if result else 0,
         )
         return list(result) if result else []
 

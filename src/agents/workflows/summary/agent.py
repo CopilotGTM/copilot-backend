@@ -21,12 +21,13 @@ from agno.agent import Agent
 from agno.models.azure import AzureOpenAI
 
 from src.agents.context import AgentContext
-from src.agents.tools.registry import ToolName, ToolRegistry
+from src.agents.tools.registry import get_tools_for_agent
 from src.agents.workflows.summary.models import SummaryData, SummaryInput
 from src.agents.workflows.summary.prompts import (
     build_summary_user_prompt,
     get_summary_system_prompt,
 )
+from src.infra.config.agent_config import agent_config
 from src.infra.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -86,35 +87,27 @@ class SummaryAgent:
         # Get tools for this agent
         tools = self._get_tools()
 
+        # Get model config
+        config = agent_config.get_config("summary_agent")
+
         # Create agent with tools
         self.agent = Agent(
-            model=AzureOpenAI(id="gpt-5-mini", api_version="2024-12-01-preview"),
+            model=AzureOpenAI(id=config.model, api_version=config.api_version),
             response_model=SummaryData,
             description=get_summary_system_prompt(self.context.org_name),
             tools=tools,
-            show_tool_calls=True,
+            show_tool_calls=config.show_tool_calls,
             markdown=True,
-            debug_mode=False,
+            debug_mode=config.debug_mode,
         )
 
     def _get_tools(self) -> list[Callable]:
-        """Get tools for summary generation.
+        """Get tools for meeting summary generation.
 
-        Returns:
-            List of tool functions the agent can use
+        Tools are defined in AGENT_TOOLS["SummaryAgent"] in registry.py.
         """
-        # Create registry without capabilities (not streaming to chat)
-        registry = ToolRegistry(self.context, lambda: None)
-
-        return registry.get_tools(
-            [
-                ToolName.GET_MEETING_TRANSCRIPT,
-                ToolName.GET_MEETING_DETAILS,
-                ToolName.GET_MEETING_DEAL_CONTEXT,
-                ToolName.LIST_DEAL_STAKEHOLDERS,
-                ToolName.GET_STAKEHOLDER_DETAILS,
-            ]
-        )
+        # Get tools from central registry (no capabilities - not streaming to chat)
+        return get_tools_for_agent("SummaryAgent", self.context, lambda: None)
 
     def _publish_progress(self, message: str, step: str, progress: float) -> None:
         """Publish progress update if publisher is available."""

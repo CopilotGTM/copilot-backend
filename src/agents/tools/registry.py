@@ -30,30 +30,71 @@ class ToolCategory(str, Enum):
 
 
 class ToolName(str, Enum):
-    """Canonical names for all available tools."""
+    """Canonical names for all available tools.
 
-    # Search tools
+    Tools are grouped by category:
+    - Search: Knowledge base and internet search
+    - Deal: Deal lookup, listing, and details
+    - Stakeholder: Stakeholder info and insights
+    - Meeting: Meeting details, transcripts, summaries
+    - Communication: Emails and notes
+    - Research: External research (Wikipedia, stocks, etc.)
+    - Calendar: Upcoming meetings and events
+    """
+
+    # -------------------------------------------------------------------------
+    # SEARCH TOOLS
+    # -------------------------------------------------------------------------
     SEARCH_INTERNAL_KNOWLEDGE = "search_internal_knowledge"
     SEARCH_INTERNET = "search_internet"
 
-    # CRM/Stakeholder tools
+    # -------------------------------------------------------------------------
+    # DEAL TOOLS - For deal lookup, listing, details, and summaries
+    # Used by: Chat Agent, Deal Summary Agent
+    # -------------------------------------------------------------------------
+    SEARCH_DEALS = "search_deals"  # Quick lookup by name/company
+    LIST_DEALS = "list_deals"  # List with filters (status, amount, etc.)
+    GET_DEAL_DETAILS = "get_deal_details"  # Full deal info with stakeholders/risks
+    GET_DEAL_SUMMARY = "get_deal_summary"  # AI-generated deal summary
+
+    # -------------------------------------------------------------------------
+    # STAKEHOLDER TOOLS - For stakeholder info and insights
+    # Used by: Chat Agent, Deal Agent, Briefing Agent
+    # -------------------------------------------------------------------------
     LIST_DEAL_STAKEHOLDERS = "list_deal_stakeholders"
     GET_STAKEHOLDER_DETAILS = "get_stakeholder_details"
-    GET_EXISTING_RISKS_BLOCKERS = "get_existing_risks_blockers"
-    LIST_DEAL_NOTES = "list_deal_notes"
     LIST_DEAL_STAKEHOLDER_INSIGHTS = "list_deal_stakeholder_insights"
+    GET_EXISTING_RISKS_BLOCKERS = "get_existing_risks_blockers"
 
-    # Meeting Intelligence tools
-    LIST_DEAL_MEETINGS = "list_deal_meetings"
-    GET_MEETING_DETAILS = "get_meeting_details"
+    # -------------------------------------------------------------------------
+    # MEETING TOOLS - For meeting details, transcripts, summaries
+    # Used by: Chat Agent, Meeting Summary Agent, Briefing Agent
+    # -------------------------------------------------------------------------
+    LIST_DEAL_MEETINGS = "list_deal_meetings"  # List meetings for a specific deal
+    LIST_MEETINGS_BY_DATE = "list_meetings_by_date"  # List meetings across all deals by date
+    GET_MEETING_DETAILS = "get_meeting_details"  # Full meeting info
+    GET_MEETING_SUMMARY = "get_meeting_summary"  # AI-generated meeting summary
     GET_MEETING_TRANSCRIPT = "get_meeting_transcript"
     GET_MEETING_DEAL_CONTEXT = "get_meeting_deal_context"
 
-    # Communication/Email tools
+    # -------------------------------------------------------------------------
+    # CONTACT TOOLS - For contact discovery across deals
+    # Used by: Chat Agent
+    # -------------------------------------------------------------------------
+    SEARCH_CONTACTS = "search_contacts"  # Search contacts by name/email/company
+
+    # -------------------------------------------------------------------------
+    # COMMUNICATION TOOLS - For emails and notes
+    # Used by: Chat Agent, Deal Agent, Briefing Agent, Risk/Blocker Agent
+    # -------------------------------------------------------------------------
     LIST_DEAL_EMAILS = "list_deal_emails"
     GET_EMAIL_DETAILS = "get_email_details"
+    LIST_DEAL_NOTES = "list_deal_notes"
 
-    # Research tools (free, no API keys required)
+    # -------------------------------------------------------------------------
+    # RESEARCH TOOLS - External research (free, no API keys required)
+    # Used by: Chat Agent
+    # -------------------------------------------------------------------------
     SEARCH_WIKIPEDIA = "search_wikipedia"
     GET_STOCK_INFO = "get_stock_info"
     GET_COMPANY_FINANCIALS = "get_company_financials"
@@ -61,36 +102,58 @@ class ToolName(str, Enum):
     SEARCH_ARXIV = "search_arxiv"
     EXTRACT_NEWS_ARTICLE = "extract_news_article"
 
-    # Legacy placeholders (to be implemented or removed)
-    GET_DEALS = "get_deals"
-    GET_DEAL_DETAILS = "get_deal_details"
-    GET_DEAL_STAGES = "get_deal_stages"
-    GET_CONTACTS = "get_contacts"
-    GET_STAKEHOLDERS = "get_stakeholders"  # Deprecated, use LIST_DEAL_STAKEHOLDERS
+    # -------------------------------------------------------------------------
+    # CALENDAR TOOLS - For upcoming meetings and events
+    # Used by: Meeting Agent, Briefing Agent
+    # -------------------------------------------------------------------------
+    GET_UPCOMING_MEETINGS = "get_upcoming_meetings"
+    GET_CALENDAR_EVENTS = "get_calendar_events"
 
-    # Intelligence tools (legacy placeholders)
-    GET_MEETING_SUMMARY = "get_meeting_summary"  # Deprecated, use GET_MEETING_DETAILS
-    GET_TRANSCRIPT = "get_transcript"  # Deprecated, use GET_MEETING_TRANSCRIPT
+    # -------------------------------------------------------------------------
+    # BRIEFING/FOLLOW-UP TOOLS - For meeting prep and action items
+    # Used by: Meeting Agent, Follow-Up Agent, Briefing Agent
+    # -------------------------------------------------------------------------
     GET_BRIEFING = "get_briefing"
     GET_FOLLOW_UPS = "get_follow_ups"
     GET_ACTION_ITEMS = "get_action_items"
 
-    # Calendar tools (to be implemented)
-    GET_UPCOMING_MEETINGS = "get_upcoming_meetings"
-    GET_CALENDAR_EVENTS = "get_calendar_events"
 
+# =============================================================================
+# AGENT-TO-TOOLS MAPPING
+# =============================================================================
+# Maps each agent class to the tools it can access.
+# All agents use get_tools_for_agent() to retrieve their tools from this mapping.
+#
+# IMPORTANT: Agent names must match the actual class names exactly.
+# =============================================================================
 
-# Agent-to-tools mapping
-# Each agent type maps to a set of tool names it can access
 AGENT_TOOLS: dict[str, set[ToolName]] = {
+    # -------------------------------------------------------------------------
+    # GeneralAgent - Chat Agent
+    # Location: src/agents/workflows/general/agent.py
+    # Purpose: Primary chat interface that handles user queries in the chat UI.
+    # -------------------------------------------------------------------------
     "GeneralAgent": {
+        # Search tools
         ToolName.SEARCH_INTERNAL_KNOWLEDGE,
         ToolName.SEARCH_INTERNET,
+        # Deal tools
+        ToolName.SEARCH_DEALS,
+        ToolName.LIST_DEALS,
+        ToolName.GET_DEAL_DETAILS,
+        ToolName.GET_DEAL_SUMMARY,
+        # Stakeholder tools
         ToolName.LIST_DEAL_STAKEHOLDERS,
         ToolName.GET_STAKEHOLDER_DETAILS,
         ToolName.LIST_DEAL_STAKEHOLDER_INSIGHTS,
+        # Meeting tools
         ToolName.LIST_DEAL_MEETINGS,
+        ToolName.LIST_MEETINGS_BY_DATE,
         ToolName.GET_MEETING_DETAILS,
+        ToolName.GET_MEETING_SUMMARY,
+        # Contact tools
+        ToolName.SEARCH_CONTACTS,
+        # Communication tools
         ToolName.LIST_DEAL_EMAILS,
         ToolName.GET_EMAIL_DETAILS,
         ToolName.LIST_DEAL_NOTES,
@@ -102,61 +165,72 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.SEARCH_ARXIV,
         ToolName.EXTRACT_NEWS_ARTICLE,
     },
-    "DealAgent": {
-        ToolName.SEARCH_INTERNAL_KNOWLEDGE,
-        ToolName.LIST_DEAL_STAKEHOLDERS,
-        ToolName.GET_STAKEHOLDER_DETAILS,
-        ToolName.LIST_DEAL_STAKEHOLDER_INSIGHTS,
-        ToolName.LIST_DEAL_MEETINGS,
-        ToolName.GET_MEETING_DETAILS,
-        ToolName.GET_MEETING_TRANSCRIPT,
-        ToolName.LIST_DEAL_EMAILS,
-        ToolName.GET_EMAIL_DETAILS,
-        ToolName.LIST_DEAL_NOTES,
-        ToolName.GET_DEALS,
-        ToolName.GET_DEAL_DETAILS,
-        ToolName.GET_DEAL_STAGES,
-        ToolName.GET_CONTACTS,
-    },
-    "MeetingAgent": {
-        ToolName.LIST_DEAL_MEETINGS,
-        ToolName.GET_MEETING_DETAILS,
-        ToolName.GET_MEETING_TRANSCRIPT,
-        ToolName.LIST_DEAL_STAKEHOLDERS,
-        ToolName.GET_BRIEFING,
-        ToolName.GET_UPCOMING_MEETINGS,
-    },
-    "FollowUpAgent": {
-        ToolName.GET_DEALS,
-        ToolName.LIST_DEAL_MEETINGS,
-        ToolName.GET_MEETING_DETAILS,
-        ToolName.GET_FOLLOW_UPS,
-        ToolName.GET_ACTION_ITEMS,
-    },
+    # -------------------------------------------------------------------------
+    # BriefingAgent - Meeting Briefing Agent
+    # Location: src/agents/workflows/briefing/agent.py
+    # Purpose: Generates comprehensive meeting prep briefings before calls.
+    # -------------------------------------------------------------------------
     "BriefingAgent": {
+        # Search tools
         ToolName.SEARCH_INTERNAL_KNOWLEDGE,
+        ToolName.SEARCH_INTERNET,
+        # Meeting tools
+        ToolName.GET_MEETING_DETAILS,
+        ToolName.LIST_DEAL_MEETINGS,
+        ToolName.GET_MEETING_TRANSCRIPT,
+        # Stakeholder tools
         ToolName.LIST_DEAL_STAKEHOLDERS,
         ToolName.GET_STAKEHOLDER_DETAILS,
-        ToolName.LIST_DEAL_STAKEHOLDER_INSIGHTS,
-        ToolName.LIST_DEAL_MEETINGS,
-        ToolName.GET_MEETING_DETAILS,
-        ToolName.GET_MEETING_TRANSCRIPT,
+        # Communication tools
         ToolName.LIST_DEAL_EMAILS,
         ToolName.GET_EMAIL_DETAILS,
-        ToolName.LIST_DEAL_NOTES,
-        ToolName.GET_DEALS,
-        ToolName.GET_DEAL_DETAILS,
-        ToolName.GET_BRIEFING,
-        ToolName.GET_UPCOMING_MEETINGS,
     },
-    "RiskBlockerExtractionAgent": {
-        ToolName.GET_EXISTING_RISKS_BLOCKERS,
+    # -------------------------------------------------------------------------
+    # SummaryAgent - Meeting Summary Agent
+    # Location: src/agents/workflows/summary/agent.py
+    # Purpose: Generates AI summaries from meeting transcripts.
+    # -------------------------------------------------------------------------
+    "SummaryAgent": {
+        # Meeting tools
+        ToolName.GET_MEETING_TRANSCRIPT,
+        ToolName.GET_MEETING_DETAILS,
+        ToolName.GET_MEETING_DEAL_CONTEXT,
+        # Stakeholder tools
+        ToolName.LIST_DEAL_STAKEHOLDERS,
+        ToolName.GET_STAKEHOLDER_DETAILS,
+    },
+    # -------------------------------------------------------------------------
+    # DealSummaryAgent - Deal Summary Agent
+    # Location: src/agents/workflows/deal_summary/agent.py
+    # Purpose: Generates comprehensive deal summaries from all deal data.
+    # -------------------------------------------------------------------------
+    "DealSummaryAgent": {
+        # Stakeholder tools
+        ToolName.LIST_DEAL_STAKEHOLDERS,
+        ToolName.GET_STAKEHOLDER_DETAILS,
+        # Meeting tools
         ToolName.LIST_DEAL_MEETINGS,
         ToolName.GET_MEETING_DETAILS,
         ToolName.GET_MEETING_TRANSCRIPT,
+        # Communication tools
         ToolName.LIST_DEAL_EMAILS,
         ToolName.GET_EMAIL_DETAILS,
-        ToolName.LIST_DEAL_NOTES,
+    },
+    # -------------------------------------------------------------------------
+    # RiskBlockerExtractionAgent - Risk/Blocker Extraction Agent
+    # Location: src/agents/workflows/risk_blocker_extraction/agent.py
+    # Purpose: Extracts risks and blockers from meetings, emails, and notes.
+    # -------------------------------------------------------------------------
+    "RiskBlockerExtractionAgent": {
+        # Risk/blocker tools
+        ToolName.GET_EXISTING_RISKS_BLOCKERS,
+        # Meeting tools
+        ToolName.LIST_DEAL_MEETINGS,
+        ToolName.GET_MEETING_DETAILS,
+        ToolName.GET_MEETING_TRANSCRIPT,
+        # Communication tools
+        ToolName.LIST_DEAL_EMAILS,
+        ToolName.GET_EMAIL_DETAILS,
     },
 }
 
@@ -165,24 +239,26 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     # Search
     ToolName.SEARCH_INTERNAL_KNOWLEDGE: ToolCategory.SEARCH,
     ToolName.SEARCH_INTERNET: ToolCategory.SEARCH,
+    # CRM/Deals
+    ToolName.SEARCH_DEALS: ToolCategory.CRM,
+    ToolName.LIST_DEALS: ToolCategory.CRM,
+    ToolName.GET_DEAL_DETAILS: ToolCategory.CRM,
+    ToolName.GET_DEAL_SUMMARY: ToolCategory.CRM,
     # CRM/Stakeholder
     ToolName.LIST_DEAL_STAKEHOLDERS: ToolCategory.CRM,
     ToolName.GET_STAKEHOLDER_DETAILS: ToolCategory.CRM,
-    ToolName.GET_DEALS: ToolCategory.CRM,
-    ToolName.GET_DEAL_DETAILS: ToolCategory.CRM,
-    ToolName.GET_DEAL_STAGES: ToolCategory.CRM,
-    ToolName.GET_CONTACTS: ToolCategory.CRM,
-    ToolName.GET_STAKEHOLDERS: ToolCategory.CRM,
     ToolName.GET_EXISTING_RISKS_BLOCKERS: ToolCategory.CRM,
     ToolName.LIST_DEAL_NOTES: ToolCategory.CRM,
     ToolName.LIST_DEAL_STAKEHOLDER_INSIGHTS: ToolCategory.CRM,
     # Meeting Intelligence
     ToolName.LIST_DEAL_MEETINGS: ToolCategory.INTELLIGENCE,
+    ToolName.LIST_MEETINGS_BY_DATE: ToolCategory.INTELLIGENCE,
     ToolName.GET_MEETING_DETAILS: ToolCategory.INTELLIGENCE,
     ToolName.GET_MEETING_TRANSCRIPT: ToolCategory.INTELLIGENCE,
     ToolName.GET_MEETING_DEAL_CONTEXT: ToolCategory.INTELLIGENCE,
     ToolName.GET_MEETING_SUMMARY: ToolCategory.INTELLIGENCE,
-    ToolName.GET_TRANSCRIPT: ToolCategory.INTELLIGENCE,
+    # Contacts
+    ToolName.SEARCH_CONTACTS: ToolCategory.CRM,
     ToolName.GET_BRIEFING: ToolCategory.INTELLIGENCE,
     ToolName.GET_FOLLOW_UPS: ToolCategory.INTELLIGENCE,
     ToolName.GET_ACTION_ITEMS: ToolCategory.INTELLIGENCE,
@@ -233,17 +309,24 @@ class ToolRegistry:
             create_list_deal_emails,
         )
         from src.agents.tools.crm import (
+            create_get_deal_details,
+            create_get_deal_summary,
             create_get_existing_risks_blockers,
             create_get_stakeholder_details,
             create_list_deal_notes,
             create_list_deal_stakeholder_insights,
             create_list_deal_stakeholders,
+            create_list_deals,
+            create_search_contacts,
+            create_search_deals,
         )
         from src.agents.tools.intelligence import (
             create_get_meeting_deal_context,
             create_get_meeting_details,
+            create_get_meeting_summary,
             create_get_meeting_transcript,
             create_list_deal_meetings,
+            create_list_meetings_by_date,
         )
         from src.agents.tools.research import (
             create_crawl_webpage,
@@ -266,6 +349,20 @@ class ToolRegistry:
             self.capabilities_getter
         )
 
+        # CRM/Deal tools
+        self._tool_factories[ToolName.SEARCH_DEALS] = lambda: create_search_deals(
+            self.context, self.capabilities_getter
+        )
+        self._tool_factories[ToolName.LIST_DEALS] = lambda: create_list_deals(
+            self.context, self.capabilities_getter
+        )
+        self._tool_factories[ToolName.GET_DEAL_DETAILS] = lambda: create_get_deal_details(
+            self.context, self.capabilities_getter
+        )
+        self._tool_factories[ToolName.GET_DEAL_SUMMARY] = lambda: create_get_deal_summary(
+            self.context, self.capabilities_getter
+        )
+
         # CRM/Stakeholder tools
         self._tool_factories[ToolName.LIST_DEAL_STAKEHOLDERS] = (
             lambda: create_list_deal_stakeholders(self.context, self.capabilities_getter)
@@ -283,11 +380,22 @@ class ToolRegistry:
             lambda: create_list_deal_stakeholder_insights(self.context, self.capabilities_getter)
         )
 
+        # Contact tools
+        self._tool_factories[ToolName.SEARCH_CONTACTS] = lambda: create_search_contacts(
+            self.context, self.capabilities_getter
+        )
+
         # Meeting Intelligence tools
         self._tool_factories[ToolName.LIST_DEAL_MEETINGS] = lambda: create_list_deal_meetings(
             self.context, self.capabilities_getter
         )
+        self._tool_factories[ToolName.LIST_MEETINGS_BY_DATE] = lambda: create_list_meetings_by_date(
+            self.context, self.capabilities_getter
+        )
         self._tool_factories[ToolName.GET_MEETING_DETAILS] = lambda: create_get_meeting_details(
+            self.context, self.capabilities_getter
+        )
+        self._tool_factories[ToolName.GET_MEETING_SUMMARY] = lambda: create_get_meeting_summary(
             self.context, self.capabilities_getter
         )
         self._tool_factories[ToolName.GET_MEETING_TRANSCRIPT] = (
@@ -326,7 +434,6 @@ class ToolRegistry:
         )
 
         # Legacy/placeholder tools - will be registered when implemented
-        # self._tool_factories[ToolName.GET_DEALS] = ...
         # self._tool_factories[ToolName.GET_BRIEFING] = ...
         # self._tool_factories[ToolName.GET_UPCOMING_MEETINGS] = ...
 

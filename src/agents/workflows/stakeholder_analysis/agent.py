@@ -16,6 +16,7 @@ from src.agents.workflows.stakeholder_analysis.models import DealStakeholdersAna
 from src.agents.workflows.stakeholder_analysis.prompts import (
     STAKEHOLDER_BATCH_ANALYSIS_SYSTEM_PROMPT,
 )
+from src.infra.config.agent_config import agent_config
 from src.infra.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -29,8 +30,11 @@ class StakeholderAnalysisAgent:
     """
 
     def __init__(self):
+        # Get model config
+        config = agent_config.get_config("stakeholder_analysis_agent")
+
         self.agent = Agent(
-            model=AzureOpenAI(id="gpt-5-mini", api_version="2024-12-01-preview"),
+            model=AzureOpenAI(id=config.model, api_version=config.api_version),
             response_model=DealStakeholdersAnalysisData,
             description=STAKEHOLDER_BATCH_ANALYSIS_SYSTEM_PROMPT,
             instructions=[

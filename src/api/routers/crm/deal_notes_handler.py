@@ -59,12 +59,16 @@ def _map_note_to_schema(note: CRMActivity, source: str) -> DealNoteItem:
     """Map CRMActivity to DealNoteItem schema.
 
     Args:
-        note: CRMActivity record
+        note: CRMActivity record (must have deal_id set)
         source: Determined source (user, hubspot, salesforce)
 
     Returns:
         DealNoteItem schema object
+
+    Raises:
+        AssertionError: If note.deal_id is None (should never happen for deal notes)
     """
+    assert note.deal_id is not None, "Note must have deal_id when mapping to DealNoteItem"
     is_user_created = note.integration_id is None
 
     return DealNoteItem(

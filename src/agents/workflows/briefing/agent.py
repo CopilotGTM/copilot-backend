@@ -22,12 +22,13 @@ from agno.agent import Agent
 from agno.models.azure import AzureOpenAI
 
 from src.agents.context import AgentContext
-from src.agents.tools.registry import ToolName, ToolRegistry
+from src.agents.tools.registry import get_tools_for_agent
 from src.agents.workflows.briefing.models import BriefingData, BriefingInput
 from src.agents.workflows.briefing.prompts import (
     build_briefing_user_prompt,
     get_briefing_system_prompt,
 )
+from src.infra.config.agent_config import agent_config
 from src.infra.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -86,43 +87,28 @@ class BriefingAgent:
         # Get tools for this agent (for deeper analysis)
         tools = self._get_tools()
 
+        # Get model config
+        config = agent_config.get_config("briefing_agent")
+
         # Create agent with tools
         self.agent = Agent(
-            model=AzureOpenAI(id="gpt-5", api_version="2024-12-01-preview"),
+            model=AzureOpenAI(id=config.model, api_version=config.api_version),
             response_model=BriefingData,
             description=get_briefing_system_prompt(self.context.org_name),
             tools=tools,
-            show_tool_calls=True,
+            show_tool_calls=config.show_tool_calls,
             markdown=True,
-            debug_mode=False,
+            debug_mode=config.debug_mode,
         )
 
     def _get_tools(self) -> list[Callable]:
         """Get tools for briefing generation.
 
-        This agent is tool-first: it must fetch the target meeting details
-        and then gather deal context via list tools.
+        Tools are defined in AGENT_TOOLS["BriefingAgent"] in registry.py.
+        This agent is tool-first: fetches meeting details then gathers deal context.
         """
-        # Create registry without capabilities (not streaming to chat)
-        registry = ToolRegistry(self.context, lambda: None)
-
-        return registry.get_tools(
-            [
-                # Research
-                ToolName.SEARCH_INTERNAL_KNOWLEDGE,
-                ToolName.SEARCH_INTERNET,
-                # First-step: identify call type and meeting metadata
-                ToolName.GET_MEETING_DETAILS,
-                # Lightweight context discovery
-                ToolName.LIST_DEAL_MEETINGS,
-                ToolName.LIST_DEAL_EMAILS,
-                ToolName.LIST_DEAL_STAKEHOLDERS,
-                # Deep dives
-                ToolName.GET_MEETING_TRANSCRIPT,
-                ToolName.GET_EMAIL_DETAILS,
-                ToolName.GET_STAKEHOLDER_DETAILS,
-            ]
-        )
+        # Get tools from central registry (no capabilities - not streaming to chat)
+        return get_tools_for_agent("BriefingAgent", self.context, lambda: None)
 
     def _publish_progress(self, message: str, step: str, progress: float) -> None:
         """Publish progress update if publisher is available."""

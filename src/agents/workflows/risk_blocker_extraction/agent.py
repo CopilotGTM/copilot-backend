@@ -24,7 +24,7 @@ from agno.agent import Agent
 from agno.models.azure import AzureOpenAI
 
 from src.agents.context import AgentContext
-from src.agents.tools.registry import ToolName, ToolRegistry
+from src.agents.tools.registry import get_tools_for_agent
 from src.agents.workflows.risk_blocker_extraction.models import (
     RiskBlockerExtractionInput,
     RiskBlockerExtractionResult,
@@ -33,6 +33,7 @@ from src.agents.workflows.risk_blocker_extraction.prompts import (
     RISK_BLOCKER_EXTRACTION_SYSTEM_PROMPT,
     build_risk_blocker_extraction_user_prompt,
 )
+from src.infra.config.agent_config import agent_config
 from src.infra.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -88,36 +89,27 @@ class RiskBlockerExtractionAgent:
         # Get tools for this agent
         tools = self._get_tools()
 
+        # Get model config
+        config = agent_config.get_config("risk_blocker_extraction_agent")
+
         # Create agent with tools
         self.agent = Agent(
-            model=AzureOpenAI(id="gpt-5", api_version="2024-12-01-preview"),
+            model=AzureOpenAI(id=config.model, api_version=config.api_version),
             response_model=RiskBlockerExtractionResult,
             description=RISK_BLOCKER_EXTRACTION_SYSTEM_PROMPT,
             tools=tools,
-            show_tool_calls=True,
+            show_tool_calls=config.show_tool_calls,
             markdown=True,
-            debug_mode=True,
+            debug_mode=config.debug_mode,
         )
 
     def _get_tools(self) -> list[Callable]:
         """Get tools for risk/blocker extraction.
 
-        Returns:
-            List of tool functions the agent can use
+        Tools are defined in AGENT_TOOLS["RiskBlockerExtractionAgent"] in registry.py.
         """
-        # Create registry without capabilities (not streaming to chat)
-        registry = ToolRegistry(self.context, lambda: None)
-
-        return registry.get_tools(
-            [
-                ToolName.GET_EXISTING_RISKS_BLOCKERS,
-                ToolName.LIST_DEAL_MEETINGS,
-                ToolName.GET_MEETING_DETAILS,
-                ToolName.GET_MEETING_TRANSCRIPT,
-                ToolName.LIST_DEAL_EMAILS,
-                ToolName.GET_EMAIL_DETAILS,
-            ]
-        )
+        # Get tools from central registry (no capabilities - not streaming to chat)
+        return get_tools_for_agent("RiskBlockerExtractionAgent", self.context, lambda: None)
 
     def _publish_progress(self, message: str, step: str, progress: float) -> None:
         """Publish progress update if publisher is available."""
