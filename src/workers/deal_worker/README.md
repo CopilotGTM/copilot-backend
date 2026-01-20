@@ -24,7 +24,9 @@ src/workers/deal_worker/
 |-- celery_app.py              # Celery bootstrap + signals + monitoring hook
 |-- config.py                  # Queue, routing, and beat schedule configuration
 |-- services/
-|   |-- deal_job_handlers.py   # Meeting job handlers (briefing/summary/follow-up)
+|   |-- deal_insight_services/ # Meeting-level AI services
+|   |   |-- meeting_prep_service.py    # Meeting briefing generation
+|   |   `-- meeting_summary_service.py # Meeting summary generation
 |   |-- deal_job_publisher.py  # Redis Stream publisher for SSE updates
 |   |-- deal_job_utils.py      # Shared helpers (context builders, fetchers)
 |   |-- deal_meeting_matcher.py
@@ -33,11 +35,13 @@ src/workers/deal_worker/
 |   `-- stakeholder_service.py
 |-- tasks/
 |   |-- __init__.py
-|   |-- deal_meeting_tasks.py
+|   |-- meeting_insight_tasks/ # Meeting-level AI tasks
+|   |   |-- meeting_prep_task.py
+|   |   `-- meeting_summary_task.py
+|   |-- deal_mappers.py
 |   |-- deal_summary_tasks.py
-|   |-- deal_tasks.py
 |   |-- stakeholder_analysis_tasks.py
-|   `-- stakeholder_tasks.py
+|   `-- transcript_fetch_tasks.py
 `-- utils/
 ```
 
@@ -51,7 +55,8 @@ src/workers/deal_worker/
   - `deal_meeting_matcher.py` - links meetings to deals and triggers attendee/domain-based stakeholder discovery.
   - `stakeholder_service.py` - persists stakeholders discovered from CRM contacts and meeting attendees.
   - `stakeholder_analysis_service.py` - batches stakeholders per deal, builds transcript context, runs `StakeholderAnalysisAgent`, and writes stance/power insights back.
-  - `deal_job_handlers.py` + `deal_job_publisher.py` - power the streaming meeting jobs (briefing, summary, follow-up) and publish progress/results via Redis Streams for SSE consumption.
+  - `deal_insight_services/` - Contains `MeetingPrepService` and `MeetingSummaryService` that power the AI-driven meeting briefings and summaries. Each follows the fresh session pattern for efficient DB connection management.
+  - `deal_job_publisher.py` - publishes progress/results via Redis Streams for SSE consumption.
   - `deal_summary_service.py` - orchestrates deal-level transcript aggregation and calls `DealSummaryAgent`, persisting the output on `CRMDeal`.
 
 ---
@@ -77,11 +82,12 @@ src/workers/deal_worker/
 | `deal.process_single_deal_task` | `deal` | Scopes processing to one deal (used from UI/API actions). |
 | `deal.trigger_deal_meeting_processing_all_orgs` | `deal` | Beat-triggered fan-out that enqueues `process_deal_meetings_task` for every approved org. |
 
-### Meeting Job Runner (`tasks/deal_meeting_tasks.py`)
+### Meeting Insight Tasks (`tasks/meeting_insight_tasks/`)
 
 | Task Name | Queue | Description |
 |-----------|-------|-------------|
-| `deal_meeting_task.process` | `deal_jobs` | Loads a `DealJobs` row, dispatches to `deal_job_handlers`, streams progress/results to Redis/SSE. Handles meeting briefings, meeting summaries, and upcoming follow-up jobs. |
+| `meeting_prep_task.process` | `deal_jobs` | Generates pre-meeting briefing via `MeetingPrepService`, streams progress/results to Redis/SSE. |
+| `meeting_summary_task.process` | `deal_jobs` | Generates post-meeting summary via `MeetingSummaryService`, streams progress/results to Redis/SSE. |
 
 ### Deal Summary (`tasks/deal_summary_tasks.py`)
 

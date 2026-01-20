@@ -31,7 +31,7 @@ from src.domain.models.organisation_tables.sync.risk_blocker_models import (
 )
 from src.infra.utils.logger import get_logger
 from src.workers.deal_worker.services.deal_job_publisher import DealJobRedisPublisher
-from src.workers.deal_worker.services.deal_job_utils import (
+from src.workers.deal_worker.utils.deal_job_utils import (
     count_deal_emails,
     count_deal_meetings,
     count_deal_risks_blockers,

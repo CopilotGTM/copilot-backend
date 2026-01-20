@@ -40,7 +40,7 @@ from src.domain.models.organisation_tables.sync.stakeholder_insight_models impor
     create_insight_action,
 )
 from src.infra.utils.logger import get_logger
-from src.service.integrations.transcript_service import TranscriptService
+from src.service.integrations.transcripts import TranscriptService
 
 logger = get_logger(__name__)
 
@@ -148,7 +148,7 @@ class StakeholderAnalysisService:
         if not events:
             return []
 
-        transcript_service = TranscriptService(self.session, self.organisation_id)
+        transcript_service = TranscriptService(self.organisation_id)
         results: list[tuple[CalendarEvent, Meeting]] = []
 
         for event in events:

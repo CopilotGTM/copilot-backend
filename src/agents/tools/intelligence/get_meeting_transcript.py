@@ -22,7 +22,7 @@ from src.domain.models.organisation_tables.sync.meeting_intelligence import (
     MeetingSource,
     MeetingStatus,
 )
-from src.service.integrations.transcript_service import TranscriptService
+from src.service.integrations.transcripts import TranscriptService
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
@@ -80,7 +80,7 @@ async def get_meeting_transcript(
     # -------------------------------------------------------------------
     # TranscriptService will check if transcript is already in DB,
     # and if not, attempt to fetch from the provider (Teams, Zoom, etc.)
-    transcript_service = TranscriptService(session, organisation_id)
+    transcript_service = TranscriptService(organisation_id)
     try:
         ensured_meeting = await transcript_service.ensure_transcript(parsed_event_id)
         if ensured_meeting:

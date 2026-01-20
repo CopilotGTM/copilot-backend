@@ -33,11 +33,11 @@ from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.workers.deal_worker.celery_app import app
-from src.workers.deal_worker.services.deal_job_publisher import DealJobRedisPublisher
-from src.workers.deal_worker.services.deal_summary_service import (
+from src.workers.deal_worker.services.deal_insight_services import (
     DealSummaryError,
     DealSummaryService,
 )
+from src.workers.deal_worker.services.deal_job_publisher import DealJobRedisPublisher
 
 logger = get_logger(__name__)
 
@@ -62,81 +62,93 @@ def process_deal_summary_job(self: Task, organisation_id: str, job_id: str):
         org_uuid = UUID(organisation_id)
         job_uuid = UUID(job_id)
 
+        # Phase 1: Load job context (fresh session)
         async for session in acquire_org_async_session(org_uuid):
-            # 1. Load job
             job = await session.get(DealJobs, job_uuid)
             if not job:
                 raise RuntimeError(f"Deal job {job_id} not found")
 
-            publisher = DealJobRedisPublisher(org_uuid, job_uuid, str(job.job_type))
+            deal_id: UUID | None = job.deal_id
+            job_type_str: str = str(job.job_type)
 
-            try:
-                # 2. Update status to IN_PROGRESS
-                job.status = JobStatus.IN_PROGRESS
-                await session.commit()
+            # Mark as IN_PROGRESS
+            job.status = JobStatus.IN_PROGRESS
+            await session.commit()
+            # Session released
 
-                # 3. Create service and generate summary
-                service = DealSummaryService(session, org_uuid, publisher)
-                result = await service.generate_summary(job.deal_id)
+        if not deal_id:
+            raise RuntimeError(f"Deal job {job_id} has no deal_id")
 
-                # 4. Save result to job
-                job.status = JobStatus.COMPLETED
-                job.result_data = result
-                await session.commit()
+        # Create publisher for SSE updates
+        publisher = DealJobRedisPublisher(org_uuid, job_uuid, job_type_str)
 
-                # 5. Finalize SSE stream
-                publisher.publish_result(result)
-                publisher.publish_finalize("done")
+        # Phase 2: Call service (service manages its own sessions)
+        try:
+            service = DealSummaryService(org_uuid, publisher)
+            result = await service.generate_summary(deal_id)
 
-                logger.info("Deal summary job completed: %s", job_id)
-                return {
-                    "status": "completed",
-                    "job_id": job_id,
-                    "job_type": str(job.job_type),
-                }
+        except DealSummaryError as e:
+            # Non-retryable business errors
+            logger.info(
+                "Deal summary job failed %s: %s (code=%s, retryable=%s)",
+                job_id,
+                e.message,
+                e.error_code,
+                e.retryable,
+            )
 
-            except DealSummaryError as e:
-                # Non-retryable business errors
-                logger.info(
-                    "Deal summary job failed %s: %s (code=%s, retryable=%s)",
-                    job_id,
-                    e.message,
-                    e.error_code,
-                    e.retryable,
-                )
-                try:
+            async for session in acquire_org_async_session(org_uuid):
+                job = await session.get(DealJobs, job_uuid)
+                if job:
                     job.status = JobStatus.FAILED
                     job.error_message = e.message
                     await session.commit()
 
-                    publisher.publish_error(e.message, e.error_code)
-                    publisher.publish_finalize("error")
-                except Exception:
-                    logger.error("Failed to update job status after error", exc_info=True)
+            publisher.publish_error(e.message, e.error_code)
+            publisher.publish_finalize("error")
 
-                if e.retryable:
-                    raise
+            if e.retryable:
+                raise
 
-                return {
-                    "status": "failed",
-                    "job_id": job_id,
-                    "error": e.message,
-                    "error_code": e.error_code,
-                    "retryable": False,
-                }
+            return {
+                "status": "failed",
+                "job_id": job_id,
+                "error": e.message,
+                "error_code": e.error_code,
+                "retryable": False,
+            }
 
-            except Exception as e:
-                logger.error("Deal summary job failed %s: %s", job_id, e, exc_info=True)
-                try:
+        except Exception as e:
+            logger.error("Deal summary job failed %s: %s", job_id, e, exc_info=True)
+
+            async for session in acquire_org_async_session(org_uuid):
+                job = await session.get(DealJobs, job_uuid)
+                if job:
                     job.status = JobStatus.FAILED
                     job.error_message = str(e)[:500]
                     job.retry_count += 1
                     await session.commit()
 
-                    publisher.publish_finalize("error")
-                except Exception:
-                    logger.error("Failed to update job status after error", exc_info=True)
-                raise
+            publisher.publish_finalize("error")
+            raise
+
+        # Phase 3: Save result (fresh session)
+        async for session in acquire_org_async_session(org_uuid):
+            job = await session.get(DealJobs, job_uuid)
+            if job:
+                job.status = JobStatus.COMPLETED
+                job.result_data = result
+                await session.commit()
+
+        publisher.publish_result(result)
+        publisher.publish_finalize("done")
+
+        logger.info("Deal summary job completed: %s", job_id)
+        return {
+            "status": "completed",
+            "job_id": job_id,
+            "job_type": job_type_str,
+        }
 
     try:
         return run_async(_run())

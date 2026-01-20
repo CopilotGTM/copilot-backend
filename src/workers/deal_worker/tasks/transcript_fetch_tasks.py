@@ -1,15 +1,27 @@
-"""Scheduled Transcript Fetch Tasks.
+"""Scheduled Transcript Fetch and Meeting Summary Pipeline Tasks.
 
-This module provides Celery tasks for fetching transcripts for deal-associated meetings.
-Business logic is delegated to TranscriptFetchTaskService.
+This module provides Celery tasks for:
+1. Fetching transcripts for deal-associated meetings
+2. Automatically generating meeting summaries (sequential, oldest first)
+3. Triggering deal summaries after all meetings are processed
 
-Architecture:
-    Tier 1: trigger_transcript_fetch_all_orgs_task (Beat: every 30 min)
+Business logic is delegated to TranscriptFetchTaskService which internally
+uses DealMeetingSummaryPipelineService for the summary generation.
+
+Architecture (Deal-Centric):
+    Tier 1: trigger_transcript_fetch_all_orgs_task (Beat: every 30 min at :15 and :45)
         → Tier 2: fetch_meeting_transcripts_org_task (per org)
             → TranscriptFetchTaskService.process_all()
-                - Single query to get all meetings needing fetch
-                - Process in parallel with integration priority
-                - Track results
+                - Get all deals needing transcript fetch
+                - For each deal (sequential):
+                    1. Fetch transcripts for that deal's meetings (parallel)
+                    2. Immediately trigger pipeline:
+                        - Generate meeting summaries (sequential, oldest first)
+                        - Generate deal summary after all meetings done
+                    3. Move to next deal
+
+    This is simpler than fetching all transcripts first, then triggering pipelines.
+    Each deal completes fully (transcripts → summaries) before moving to the next.
 
 Retry Logic:
     - When API returns empty transcript list, we can't tell if:
@@ -35,8 +47,10 @@ from src.infra.database.sessions import acquire_master_async_session
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.infra.utils.task_lock import acquire_task_lock, release_task_lock
-from src.service.crm.transcript_fetch_task_service import TranscriptFetchTaskService
 from src.workers.deal_worker.celery_app import app
+from src.workers.deal_worker.services.transcript_fetch_task_service import (
+    TranscriptFetchTaskService,
+)
 
 if TYPE_CHECKING:
     from celery import Task
@@ -50,8 +64,8 @@ logger = get_logger(__name__)
     acks_late=True,
     max_retries=2,
     default_retry_delay=60,
-    soft_time_limit=600,
-    time_limit=660,
+    soft_time_limit=3000,
+    time_limit=3300,
 )
 def fetch_meeting_transcripts_org_task(
     self: Task,
@@ -83,7 +97,9 @@ def fetch_meeting_transcripts_org_task(
     async def _run() -> dict[str, Any]:
         org_uuid = UUID(organisation_id)
 
-        # Org-level: TranscriptFetchTaskService manages its own sessions (fresh session pattern)
+        # Deal-centric processing:
+        # For each deal: fetch transcripts → trigger pipeline (meeting summaries → deal summary)
+        # Pipeline is triggered immediately after each deal's transcripts are fetched
         service = TranscriptFetchTaskService(org_uuid)
         result = await service.process_all()
 
@@ -92,11 +108,18 @@ def fetch_meeting_transcripts_org_task(
             "organisation_id": organisation_id,
             "started_at": started_at,
             "completed_at": datetime.now(UTC).isoformat(),
+            "deals_processed": result.deals_processed,
             "meetings_found": result.meetings_found,
             "transcripts_fetched": result.transcripts_fetched,
             "transcripts_pending": result.transcripts_pending,
             "transcripts_not_available": result.transcripts_not_available,
             "transcripts_failed": result.transcripts_failed,
+            "pipelines_triggered": result.pipelines_triggered,
+            "deal_summaries_generated": result.deal_summaries_generated,
+            "fetching_reset": result.fetching_reset,
+            "prep_jobs_created": result.prep_jobs_created,
+            "prep_jobs_skipped": result.prep_jobs_skipped,
+            "prep_waiting_for_summaries": result.prep_waiting_for_summaries,
         }
 
     try:

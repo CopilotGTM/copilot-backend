@@ -2,6 +2,7 @@
 Tasks for the deal worker.
 """
 
+from .deal_insight_tasks import process_deal_summary_job
 from .deal_mappers import (
     exclude_timeline_event_task,
     match_calendar_to_deals_all_orgs_task,
@@ -15,8 +16,7 @@ from .deal_mappers import (
     sync_org_timeline_task,
     trigger_timeline_sync_all_orgs_task,
 )
-from .deal_meeting_tasks import process_deal_meeting_job
-from .deal_summary_tasks import process_deal_summary_job
+from .meeting_insight_tasks import process_meeting_prep, process_meeting_summary
 from .risk_blocker_extraction_tasks import (
     extract_deal_risks_blockers_task,
     trigger_extraction_all_orgs,
@@ -42,8 +42,9 @@ __all__ = [
     # Deal mappers - Task 3: Email Matching
     "match_email_to_deals_org_task",
     "match_email_to_deals_task",
-    # Deal meeting tasks (meeting-level)
-    "process_deal_meeting_job",
+    # Meeting insight tasks (meeting-level)
+    "process_meeting_prep",
+    "process_meeting_summary",
     # Deal summary tasks (deal-level)
     "process_deal_summary_job",
     # Stakeholder analysis tasks

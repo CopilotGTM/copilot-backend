@@ -45,6 +45,8 @@ docker-compose up api redis deal-worker   # Start specific services
 | Scheduled tasks (all orgs) | See **Three-Tier Architecture** in celery guide (Section 6.5) |
 | Adding/modifying endpoints | Update relevant file in `docs/API Documentation/` |
 
+**Note on Agent-Calling Tasks**: Tasks that call AI agents (LLM workflows) do NOT follow the three-tier architecture unless specifically requested. These tasks operate at the deal+meeting level or deal level directly, with business logic extracted to service classes.
+
 ## Architecture
 
 ### Multi-Tenant Design
@@ -66,12 +68,52 @@ src/
 ### Celery Workers
 Six workers: `knowledge_worker`, `chat_worker`, `deal_worker`, `integrations_worker`, `organization_worker`, `content_worker`. Each has: `celery_app.py`, `config.py`, `client.py`, and `tasks/` directory.
 
+### Automated Pipeline User ID
+Jobs created by automated pipelines (not user-triggered) use a sentinel user ID:
+```python
+AUTOMATED_PIPELINE_USER_ID = UUID("00000000-0000-0000-0000-000000000001")
+```
+This distinguishes automated jobs from user-initiated ones. Check `job.user_id == AUTOMATED_PIPELINE_USER_ID` or `job.job_metadata.get("source") == "automated_pipeline"` to identify automated jobs.
+
 ### Database Migrations
 ```
 migrations/
 ├── master_migrations/    # Alembic for public schema
 └── org_migrations/       # Alembic for org_* schemas
 ```
+
+### Investigating Database Data
+
+To debug issues, use investigation scripts in `scripts/test_local/`:
+
+```bash
+# Investigate transcript/meeting data
+uv run python -m scripts.test_local.investigate_transcript_data
+
+# Investigate timeline data
+uv run python -m scripts.test_local.investigate_timeline_data
+```
+
+**Multi-Tenant Query Pattern:**
+```python
+from src.infra.utils.resource_naming import get_schema_name
+
+ORG_ID = "3ed09720-971e-4fb1-a1d9-bd5e57b432f1"
+SCHEMA_NAME = get_schema_name(ORG_ID)  # → org_3ed09720_971e_4fb1_a1d9_bd5e57b432f1
+
+# Set search_path to include org schema
+connect_args = {"options": f"-csearch_path={SCHEMA_NAME},public"}
+
+# Then query tables directly (no schema prefix needed)
+# Org tables: calendar_events, meetings, crm_deals, etc.
+# Public tables: organisations, users (access via public.tablename)
+```
+
+**Key Tables by Schema:**
+| Schema | Tables |
+|--------|--------|
+| `public` | organisations, users, super_admins |
+| `org_*` | crm_deals, calendar_events, meetings, calendar_event_deal_associations, knowledge_integrations, deal_jobs |
 
 ## CRITICAL: Organization Data Isolation
 
@@ -96,6 +138,8 @@ migrations/
 - Formatter/Linter: Ruff
 - Type hints required; MyPy for type checking
 - Pre-commit hooks: `uv run pre-commit run --all-files`
+
+**Note**: Only run `ruff check` and `mypy` when pushing code or creating a PR. Avoid running them after every step as it hampers development flow.
 
 ## External Services
 
