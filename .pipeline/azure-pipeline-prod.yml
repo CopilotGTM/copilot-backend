@@ -1,0 +1,53 @@
+# =========================================================================
+# Azure Terraform Infrastructure Pipeline (PROD ONLY)
+# Location: .pipeline/azure-pipeline-prod.yml
+# =========================================================================
+# This pipeline handles PROD environment deployments.
+# Triggered on: release/* branches
+# Requires approval via environment gate
+# =========================================================================
+
+trigger:
+  branches:
+    include:
+      - release/*
+  paths:
+    include:
+      - terraform/azure/prod/**
+      - terraform/azure/modules/**
+      - .pipeline/**
+
+pr:
+  branches:
+    include:
+      - release/*
+  paths:
+    include:
+      - terraform/azure/prod/**
+      - terraform/azure/modules/**
+      - .pipeline/**
+
+variables:
+  - name: TF_VERSION
+    value: '1.9.0'
+  - name: PROD_AGENT_POOL
+    value: 'StaticAgentPool-prod'
+
+stages:
+  # -------------------------------------------------------------------------
+  # PROD: Triggered on release/* branch, requires approval via environment gate
+  # -------------------------------------------------------------------------
+  - template: templates/terraform-env-stage.yml
+    parameters:
+      stageName: Prod
+      envName: prod
+      tfWorkingDir: terraform/azure/prod
+      azureServiceConnection: copilotgtm-arc-ci-cd-service--prod
+      variableGroupName: copilot-infra-secrets-prod
+      agentPoolName: $(PROD_AGENT_POOL)
+      tfVersion: ${{ variables.TF_VERSION }}
+      dependsOn: []
+      stageCondition: succeeded()
+      applyCondition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
+      approvalEnvironment: terraform-prod
+      artifactName: tfplan-prod

@@ -1,0 +1,54 @@
+# =========================================================================
+# Azure Terraform Infrastructure Pipeline (DEV ONLY)
+# Location: .pipeline/azure-pipeline-dev.yml
+# =========================================================================
+# This pipeline handles DEV environment deployments.
+# Triggered on: main branch
+# =========================================================================
+
+trigger:
+  branches:
+    include:
+      - main
+      - feature/*
+      - hotfix/*
+  paths:
+    include:
+      - terraform/azure/dev/**
+      - terraform/azure/modules/**
+      - .pipeline/**
+
+pr:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - terraform/azure/dev/**
+      - terraform/azure/modules/**
+      - .pipeline/**
+
+variables:
+  - name: TF_VERSION
+    value: '1.9.0'
+  - name: DEV_AGENT_POOL
+    value: 'StaticAgentPool'
+
+stages:
+  # -------------------------------------------------------------------------
+  # DEV: Triggered on main branch push (plan + apply)
+  # -------------------------------------------------------------------------
+  - template: templates/terraform-env-stage.yml
+    parameters:
+      stageName: Dev
+      envName: dev
+      tfWorkingDir: terraform/azure/dev
+      azureServiceConnection: copilotgtm-arc-ci-cd-service--dev
+      variableGroupName: copilot-infra-secrets-dev
+      agentPoolName: $(DEV_AGENT_POOL)
+      tfVersion: ${{ variables.TF_VERSION }}
+      dependsOn: []
+      stageCondition: succeeded()
+      applyCondition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'), ne(variables['Build.Reason'], 'PullRequest'))
+      approvalEnvironment: terraform-dev
+      artifactName: tfplan-dev

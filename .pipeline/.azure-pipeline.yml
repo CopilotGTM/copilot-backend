@@ -1,6 +1,11 @@
 # =========================================================================
-# Azure Terraform Infrastructure Pipeline (Production)
+# Azure Terraform Infrastructure Pipeline (COMBINED - DEPRECATED)
 # Location: .pipeline/.azure-pipeline.yml
+# =========================================================================
+# NOTE: This file contains both dev and prod stages in one pipeline.
+# For cleaner separation, use the environment-specific pipelines:
+#   - azure-pipeline-dev.yml  -> DEV only (main branch)
+#   - azure-pipeline-prod.yml -> PROD only (release/* branches)
 # =========================================================================
 # Design goals:
 # - Supports SOC2 private-access controls (Key Vault/Storage via Private Link)
