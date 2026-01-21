@@ -21,7 +21,7 @@ TRANSCRIPT_MAX_FETCH_ATTEMPTS = 2
 TRANSCRIPT_PARALLEL_FETCH_LIMIT = 3
 
 try:
-    from src.service.crm.transcript_fetch_task_service import (
+    from workers.deal_worker.services.transcript_fetch_task_service import (
         TRANSCRIPT_MAX_FETCH_ATTEMPTS,
         TRANSCRIPT_PARALLEL_FETCH_LIMIT,
         TranscriptFetchResult,

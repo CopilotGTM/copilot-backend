@@ -97,9 +97,7 @@ def enrich_crm_after_initial_sync_task(
 
         async for session in acquire_org_async_session(org_id):
             # Fetch the integration
-            stmt = select(KnowledgeIntegration).where(
-                KnowledgeIntegration.integration_id == int_id  # type: ignore[arg-type]
-            )
+            stmt = select(KnowledgeIntegration).where(KnowledgeIntegration.integration_id == int_id)
             result = await session.execute(stmt)
             integration = result.scalars().first()
 

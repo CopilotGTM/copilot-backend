@@ -1,6 +1,9 @@
 """Get stakeholder details tool for agents.
 
 Tool for retrieving detailed information about a specific stakeholder.
+
+SECURITY: organisation_id is taken from context (immutable).
+This tool does NOT accept organisation_id as a parameter.
 """
 
 from __future__ import annotations
@@ -12,7 +15,7 @@ from uuid import UUID
 
 from sqlalchemy import select
 
-from src.agents.tools.base import db_session_lock, execute_with_capabilities
+from src.agents.tools.base import execute_with_capabilities
 from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     DealStakeholder,
     DecisionPower,
@@ -38,18 +41,21 @@ async def get_stakeholder_details(
     Returns comprehensive stakeholder information including AI-extracted
     insights like motivation, pain points, and keywords.
 
+    SECURITY: organisation_id is taken from context (immutable).
+    This prevents cross-org data access.
+
     Args:
         stakeholder_id: The stakeholder UUID as a string
-        context: AgentContext containing session and organisation metadata
+        context: AgentContext containing organisation metadata
 
     Returns:
         Stakeholder dictionary with detailed information, or None if not found.
     """
-    session = context.session
+    # SECURITY: organisation_id comes from context, not parameters
     organisation_id = context.organisation_id
 
-    if not session or not organisation_id:
-        logger.warning("get_stakeholder_details: missing session or organisation_id")
+    if not organisation_id:
+        logger.warning("get_stakeholder_details: missing organisation_id in context")
         return None
 
     # Parse stakeholder_id
@@ -67,48 +73,51 @@ async def get_stakeholder_details(
         c.stakeholder_id == parsed_stakeholder_id,
     )
 
-    try:
-        result = await session.execute(stmt)
-        stakeholder = result.scalar_one_or_none()
-    except Exception as e:
-        logger.exception(f"get_stakeholder_details: database error: {e}")
-        return None
+    # Acquire fresh session for database operations
+    async with context.acquire_session() as session:
+        try:
+            result = await session.execute(stmt)
+            stakeholder = result.scalar_one_or_none()
+        except Exception as e:
+            logger.exception(f"get_stakeholder_details: database error: {e}")
+            return None
 
-    if not stakeholder:
-        logger.info(f"get_stakeholder_details: stakeholder not found: {stakeholder_id}")
-        return None
+        if not stakeholder:
+            logger.info(f"get_stakeholder_details: stakeholder not found: {stakeholder_id}")
+            return None
 
-    # Transform to output format with full details
-    output: dict[str, Any] = {
-        "stakeholder_id": str(stakeholder.stakeholder_id),
-        "deal_id": str(stakeholder.deal_id),
-        "email": stakeholder.email,
-        "name": stakeholder.name,
-        "job_title": stakeholder.job_title,
-        "department": stakeholder.department,
-        "stance": stakeholder.stance.value
-        if isinstance(stakeholder.stance, StakeholderStance)
-        else stakeholder.stance,
-        "decision_power": stakeholder.decision_power.value
-        if isinstance(stakeholder.decision_power, DecisionPower)
-        else stakeholder.decision_power,
-        "champion_potential": stakeholder.champion_potential,
-        "motivation": stakeholder.motivation,
-        "pain_points": stakeholder.pain_points or [],
-        "keywords": stakeholder.keywords or [],
-        "temperature": stakeholder.temperature.value
-        if isinstance(stakeholder.temperature, StakeholderTemperature)
-        else stakeholder.temperature,
-        "engagement_score": stakeholder.engagement_score,
-        "last_contact_at": stakeholder.last_contact_at.isoformat()
-        if stakeholder.last_contact_at
-        else None,
-        "external_links": stakeholder.external_links or [],
-        "contact_id": str(stakeholder.contact_id) if stakeholder.contact_id else None,
-        "source": stakeholder.source.value
-        if isinstance(stakeholder.source, StakeholderSource)
-        else stakeholder.source,
-    }
+        # Transform to output format with full details (while session is active)
+        output: dict[str, Any] = {
+            "stakeholder_id": str(stakeholder.stakeholder_id),
+            "deal_id": str(stakeholder.deal_id),
+            "email": stakeholder.email,
+            "name": stakeholder.name,
+            "job_title": stakeholder.job_title,
+            "department": stakeholder.department,
+            "stance": stakeholder.stance.value
+            if isinstance(stakeholder.stance, StakeholderStance)
+            else stakeholder.stance,
+            "decision_power": stakeholder.decision_power.value
+            if isinstance(stakeholder.decision_power, DecisionPower)
+            else stakeholder.decision_power,
+            "champion_potential": stakeholder.champion_potential,
+            "motivation": stakeholder.motivation,
+            "pain_points": stakeholder.pain_points or [],
+            "keywords": stakeholder.keywords or [],
+            "temperature": stakeholder.temperature.value
+            if isinstance(stakeholder.temperature, StakeholderTemperature)
+            else stakeholder.temperature,
+            "engagement_score": stakeholder.engagement_score,
+            "last_contact_at": stakeholder.last_contact_at.isoformat()
+            if stakeholder.last_contact_at
+            else None,
+            "external_links": stakeholder.external_links or [],
+            "contact_id": str(stakeholder.contact_id) if stakeholder.contact_id else None,
+            "source": stakeholder.source.value
+            if isinstance(stakeholder.source, StakeholderSource)
+            else stakeholder.source,
+        }
+    # Session released
 
     logger.info(f"get_stakeholder_details: found stakeholder {stakeholder_id}")
     return output
@@ -118,7 +127,11 @@ def create_get_stakeholder_details(
     context: AgentContext,
     capabilities_getter: Callable[[], AgentCapabilities | None],
 ) -> Callable[..., Any]:
-    """Factory to create get_stakeholder_details tool bound to a context."""
+    """Factory to create get_stakeholder_details tool bound to a context.
+
+    SECURITY: The context contains the immutable organisation_id.
+    The tool does NOT accept organisation_id as a parameter.
+    """
 
     async def get_stakeholder_details_tool(
         stakeholder_id: str,
@@ -131,27 +144,29 @@ def create_get_stakeholder_details(
 
         Args:
             stakeholder_id: The stakeholder UUID to get details for
+
+        Note: organisation_id is automatically set from context and cannot be overridden.
         """
         logger.info(f"[TOOL CALLED] get_stakeholder_details - stakeholder_id='{stakeholder_id}'")
 
-        if not context.session or not context.organisation_id:
+        if not context.organisation_id:
             logger.warning(
-                "get_stakeholder_details unavailable: missing session or organisation_id"
+                "get_stakeholder_details unavailable: missing organisation_id in context"
             )
             return None
 
-        async with db_session_lock():
-            result = await execute_with_capabilities(
-                capabilities_getter(),
-                tool_name="GetStakeholderDetails",
-                tool_func=get_stakeholder_details,
-                parameters={
-                    "stakeholder_id": stakeholder_id,
-                    "context": context,
-                },
-                description=f"Getting details for stakeholder: {stakeholder_id}",
-                fallback_value=None,
-            )
+        # Tool acquires its own sessions on-demand, no lock needed
+        result = await execute_with_capabilities(
+            capabilities_getter(),
+            tool_name="GetStakeholderDetails",
+            tool_func=get_stakeholder_details,
+            parameters={
+                "stakeholder_id": stakeholder_id,
+                "context": context,
+            },
+            description=f"Getting details for stakeholder: {stakeholder_id}",
+            fallback_value=None,
+        )
 
         if result:
             logger.info(

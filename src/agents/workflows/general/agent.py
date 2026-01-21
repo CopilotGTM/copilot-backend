@@ -18,6 +18,7 @@ from src.agents.tools.transparent_tools import AgentCapabilities
 from src.agents.utils import prepare_messages
 from src.agents.workflows.general.prompts.general_prompt import get_general_prompt
 from src.domain.models.organisation_tables import ChatMessage
+from src.infra.config.agent_config import agent_config
 from src.infra.messaging.chat_stream_models import AnswerDelta, Finalize, Frame
 from src.infra.utils.logger import get_logger
 
@@ -47,12 +48,15 @@ class GeneralAgent(BaseAgent):
         # Generate prompt with org_name from context (falls back to "Our Organization" if None)
         system_prompt = get_general_prompt(context.org_name)
 
+        # Get model config
+        config = agent_config.get_config("general_agent")
+
         self.general_agent = AgnoAgent(
-            model=AzureOpenAI(id="gpt-5", api_version="2024-12-01-preview"),
+            model=AzureOpenAI(id=config.model, api_version=config.api_version),
             description=system_prompt,
             structured_outputs=False,
-            debug_mode=False,  # Disabled - tool usage tracked via ToolUsage frames
-            show_tool_calls=False,  # Disabled - prevents tool call info in answer stream
+            debug_mode=config.debug_mode,
+            show_tool_calls=config.show_tool_calls,
             markdown=True,
             tools=self._tools,  # type: ignore[arg-type]
         )

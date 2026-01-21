@@ -83,6 +83,7 @@ class DealTaskSyncService(BaseSyncService[CRMDealTask]):
 
         now = utcnow()
         tasks_processed = 0
+        deals_with_new_notes: set[UUID] = set()
 
         for task in task_list:
             try:
@@ -121,6 +122,10 @@ class DealTaskSyncService(BaseSyncService[CRMDealTask]):
                 else:
                     result.increment_updated()
 
+                # Track deals with new notes for pipeline trigger
+                if record.deal_id and record.activity_type == CRMActivityType.NOTE.value:
+                    deals_with_new_notes.add(record.deal_id)
+
             except Exception as exc:
                 self._log_error("deal_task", task.get("id"), exc)
                 result.increment_failed()
@@ -144,6 +149,7 @@ class DealTaskSyncService(BaseSyncService[CRMDealTask]):
 
         return {
             "deal_tasks": tasks_processed,
+            "deals_with_new_notes": list(deals_with_new_notes),
             **result.to_dict(),
         }
 
@@ -201,6 +207,7 @@ class DealTaskSyncService(BaseSyncService[CRMDealTask]):
         now = utcnow()
         tasks_processed = 0
         tasks_skipped = 0
+        deals_with_new_notes: set[UUID] = set()
 
         for task in task_list:
             try:
@@ -266,6 +273,10 @@ class DealTaskSyncService(BaseSyncService[CRMDealTask]):
                 else:
                     result.increment_updated()
 
+                # Track deals with new notes for pipeline trigger
+                if record.deal_id and record.activity_type == CRMActivityType.NOTE.value:
+                    deals_with_new_notes.add(record.deal_id)
+
             except Exception as exc:
                 self._log_error("deal_task", task.get("id"), exc)
                 result.increment_failed()
@@ -297,6 +308,7 @@ class DealTaskSyncService(BaseSyncService[CRMDealTask]):
         return {
             "deal_tasks": tasks_processed,
             "skipped": tasks_skipped,
+            "deals_with_new_notes": list(deals_with_new_notes),
             **result.to_dict(),
         }
 

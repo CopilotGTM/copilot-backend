@@ -16,11 +16,18 @@ Architecture:
         |
     sync_deal_messages_integration_task [Tier 3 - this file]
         |
-    DealChannelMessagesService (for specific integration)
+    DealChannelMessagesService.sync_all_deal_channels_fresh(integration_id=...)
+
+Session Management:
+    This task follows the "fresh session" pattern to avoid holding database
+    connections during long-running external API calls:
+    1. Session 1: Validate integration exists and is active, release session
+    2. Service manages its own sessions internally for sync operations
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -38,6 +45,16 @@ from src.service.integrations.deal_channel_messages_service import (
 from src.workers.integrations_worker.celery_app import app
 
 logger = get_logger(__name__)
+
+
+@dataclass
+class IntegrationValidationData:
+    """Data extracted from integration validation."""
+
+    integration_type: str
+    is_valid: bool
+    error: str | None = None
+
 
 # Messaging integration types
 MESSAGING_INTEGRATION_TYPES = (IntegrationType.TEAMS,)
@@ -91,15 +108,24 @@ def sync_deal_messages_integration_task(
     int_id = UUID(integration_id)
 
     async def _sync_integration() -> dict[str, Any]:
-        """Sync deal messages for the specific integration."""
+        """Sync deal messages for the specific integration.
+
+        Uses fresh session pattern:
+        1. Quick session to validate integration, release
+        2. Service manages its own sessions for sync operations
+        """
         logger.info(
             "Starting manual deal messages sync (Tier 3): org=%s integration=%s",
             org_id,
             int_id,
         )
 
+        # ─────────────────────────────────────────────────────────────────────
+        # Phase 1: Validate integration (quick query, then release session)
+        # ─────────────────────────────────────────────────────────────────────
+        validation: IntegrationValidationData | None = None
+
         async for session in acquire_org_async_session(org_id):
-            # Validate the integration exists and is a messaging type
             stmt = select(KnowledgeIntegration).where(
                 KnowledgeIntegration.integration_id == int_id,
                 KnowledgeIntegration.integration_type.in_(MESSAGING_INTEGRATION_TYPES),
@@ -108,91 +134,94 @@ def sync_deal_messages_integration_task(
             integration = result.scalar_one_or_none()
 
             if not integration:
-                return {
-                    "status": "failed",
-                    "organisation_id": organisation_id,
-                    "integration_id": integration_id,
-                    "started_at": started_at,
-                    "completed_at": datetime.now(UTC).isoformat(),
-                    "error": "Integration not found or not a messaging integration",
-                }
+                validation = IntegrationValidationData(
+                    integration_type="",
+                    is_valid=False,
+                    error="Integration not found or not a messaging integration",
+                )
+            elif not integration.is_active:
+                validation = IntegrationValidationData(
+                    integration_type="",
+                    is_valid=False,
+                    error="Integration is not active",
+                )
+            elif not integration.connection_id:
+                validation = IntegrationValidationData(
+                    integration_type="",
+                    is_valid=False,
+                    error="Integration is not connected (no connection_id)",
+                )
+            else:
+                # Extract integration type
+                int_type = integration.integration_type
+                if isinstance(int_type, str):
+                    int_type = IntegrationType(int_type)
+                validation = IntegrationValidationData(
+                    integration_type=int_type.value,
+                    is_valid=True,
+                )
+        # Session is now released
 
-            if not integration.is_active:
-                return {
-                    "status": "failed",
-                    "organisation_id": organisation_id,
-                    "integration_id": integration_id,
-                    "started_at": started_at,
-                    "completed_at": datetime.now(UTC).isoformat(),
-                    "error": "Integration is not active",
-                }
-
-            if not integration.connection_id:
-                return {
-                    "status": "failed",
-                    "organisation_id": organisation_id,
-                    "integration_id": integration_id,
-                    "started_at": started_at,
-                    "completed_at": datetime.now(UTC).isoformat(),
-                    "error": "Integration is not connected (no connection_id)",
-                }
-
-            # Get integration type
-            int_type = integration.integration_type
-            if isinstance(int_type, str):
-                int_type = IntegrationType(int_type)
-
-            integration_type = int_type.value
-
-            # Sync deal messages using the service
-            # The service will sync channels accessible via this integration
-            service = DealChannelMessagesService(session, org_id)
-            sync_result = await service.sync_all_deal_channels(integration_id=int_id)
-
-            # Extract errors from failed channel results
-            errors = [
-                {
-                    "channel_id": str(cr.channel_id),
-                    "channel_name": cr.channel_name,
-                    "error": cr.error,
-                }
-                for cr in sync_result.channel_results
-                if cr.status == "failed" and cr.error
-            ]
-
-            completed_at = datetime.now(UTC).isoformat()
-
-            logger.info(
-                "Manual deal messages sync complete: org=%s integration=%s channels=%d messages=%d",
-                org_id,
-                int_id,
-                sync_result.channels_synced,
-                sync_result.messages_synced,
-            )
-
+        if not validation:
             return {
-                "status": sync_result.status,
+                "status": "failed",
                 "organisation_id": organisation_id,
                 "integration_id": integration_id,
-                "integration_type": integration_type,
                 "started_at": started_at,
-                "completed_at": completed_at,
-                "summary": {
-                    "channels_synced": sync_result.channels_synced,
-                    "channels_failed": sync_result.channels_failed,
-                    "messages_synced": sync_result.messages_synced,
-                },
-                "errors": errors if errors else None,
+                "completed_at": datetime.now(UTC).isoformat(),
+                "error": "Failed to acquire database session",
             }
 
-        # If async for didn't yield any sessions
+        if not validation.is_valid:
+            return {
+                "status": "failed",
+                "organisation_id": organisation_id,
+                "integration_id": integration_id,
+                "started_at": started_at,
+                "completed_at": datetime.now(UTC).isoformat(),
+                "error": validation.error,
+            }
+
+        # ─────────────────────────────────────────────────────────────────────
+        # Phase 2: Sync deal messages (service manages its own sessions)
+        # ─────────────────────────────────────────────────────────────────────
+        service = DealChannelMessagesService(None, org_id)
+        sync_result = await service.sync_all_deal_channels_fresh(integration_id=int_id)
+
+        # Extract errors from failed channel results
+        errors = [
+            {
+                "channel_id": str(cr.channel_id),
+                "channel_name": cr.channel_name,
+                "error": cr.error,
+            }
+            for cr in sync_result.channel_results
+            if cr.status == "failed" and cr.error
+        ]
+
+        completed_at = datetime.now(UTC).isoformat()
+
+        logger.info(
+            "Manual deal messages sync complete: org=%s integration=%s channels=%d messages=%d",
+            org_id,
+            int_id,
+            sync_result.channels_synced,
+            sync_result.messages_synced,
+        )
+
         return {
-            "status": "failed",
+            "status": sync_result.status,
             "organisation_id": organisation_id,
             "integration_id": integration_id,
+            "integration_type": validation.integration_type,
             "started_at": started_at,
-            "completed_at": datetime.now(UTC).isoformat(),
-            "error": "Failed to acquire database session",
+            "completed_at": completed_at,
+            "summary": {
+                "channels_synced": sync_result.channels_synced,
+                "channels_failed": sync_result.channels_failed,
+                "messages_synced": sync_result.messages_synced,
+            },
+            "errors": errors if errors else None,
         }
 
     try:

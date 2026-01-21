@@ -59,12 +59,16 @@ def _map_note_to_schema(note: CRMActivity, source: str) -> DealNoteItem:
     """Map CRMActivity to DealNoteItem schema.
 
     Args:
-        note: CRMActivity record
+        note: CRMActivity record (must have deal_id set)
         source: Determined source (user, hubspot, salesforce)
 
     Returns:
         DealNoteItem schema object
+
+    Raises:
+        AssertionError: If note.deal_id is None (should never happen for deal notes)
     """
+    assert note.deal_id is not None, "Note must have deal_id when mapping to DealNoteItem"
     is_user_created = note.integration_id is None
 
     return DealNoteItem(
@@ -190,6 +194,14 @@ async def create_deal_note(
 
         # Map to response schema
         note_schema = _map_note_to_schema(note, service.determine_note_source(note))
+
+        # Trigger deal insight pipeline after note creation
+        # Chain: risk_blocker → stakeholder → deal_summary (with job)
+        await service.trigger_deal_insight_pipeline(
+            deal_id=deal_id,
+            user_id=user_ids.user_id,
+            trigger_source="note_creation",
+        )
 
         return Response.created_response(
             message="Note created successfully",

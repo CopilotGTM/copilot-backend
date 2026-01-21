@@ -33,7 +33,7 @@ async def get_organisation_name(session: AsyncSession, org_id: UUID) -> str | No
     non-fatal and fall back to a default name.
     """
 
-    stmt = select(Organisation.organisation_name).where(
+    stmt = select(col(Organisation.organisation_name)).where(
         col(Organisation.organisation_id) == org_id,
     )
     try:
@@ -867,7 +867,7 @@ async def count_deal_risks_blockers(
     # Count active (non-dismissed) items by type
     stmt = (
         select(
-            DealRiskBlocker.item_type,
+            col(DealRiskBlocker.item_type),
             func.count().label("count"),
         )
         .where(
@@ -880,17 +880,18 @@ async def count_deal_risks_blockers(
                 ]
             ),
         )
-        .group_by(DealRiskBlocker.item_type)
+        .group_by(col(DealRiskBlocker.item_type))
     )
     result = await session.execute(stmt)
     rows = result.all()
 
-    counts = {"risks": 0, "blockers": 0, "total": 0}
+    counts: dict[str, int] = {"risks": 0, "blockers": 0, "total": 0}
     for row in rows:
-        if row.item_type == RiskBlockerType.RISK:
-            counts["risks"] = row.count
-        elif row.item_type == RiskBlockerType.BLOCKER:
-            counts["blockers"] = row.count
+        count_value = int(row[1])  # Access count by index to avoid Pylance confusion
+        if row[0] == RiskBlockerType.RISK:
+            counts["risks"] = count_value
+        elif row[0] == RiskBlockerType.BLOCKER:
+            counts["blockers"] = count_value
     counts["total"] = counts["risks"] + counts["blockers"]
 
     return counts

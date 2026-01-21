@@ -72,6 +72,8 @@ class DealWorkerConfig(BaseWorkerConfig):
         deal_jobs_queue_tasks = (
             # Deal meeting job tasks (briefing, summary, follow-up)
             "deal_meeting_task.process",
+            "meeting_summary_task.process",
+            "meeting_prep_task.process",
             "deal_summary_task.process",
             # Stakeholder analysis tasks (LLM heavy)
             "stakeholder.analyze_deal_stakeholders_task",
@@ -89,31 +91,34 @@ class DealWorkerConfig(BaseWorkerConfig):
         self.beat_schedule = {
             # HOURLY: Stakeholder sync → triggers calendar + email matching
             # This runs the full discovery cycle every hour
-            # "hourly-deal-mapping": {
-            #     "task": "stakeholder.sync_all_deals_stakeholders_all_orgs",
-            #     "schedule": crontab(minute=0),  # Every hour at :00
-            #     "options": {"queue": "deal", "routing_key": "deal"},
-            # },
+            "hourly-deal-mapping": {
+                "task": "stakeholder.sync_all_deals_stakeholders_all_orgs",
+                "schedule": crontab(minute=0),  # Every hour at :00
+                "options": {"queue": "deal", "routing_key": "deal"},
+            },
             # # HOURLY: Timeline sync - safety net to fill gaps from missed inline creation
             # # Runs at :30 to avoid overlap with deal-mapping at :00
             "timeline-sync": {
                 "task": "deal.trigger_timeline_sync_all_orgs",
-                "schedule": crontab(minute="*/5"),  # Every 5 minutes
+                "schedule": crontab(minute=30),  # Every 30 minutes
                 "options": {"queue": "deal", "routing_key": "deal"},
             },
             # # NIGHTLY: Heavy LLM tasks (2 AM UTC)
-            # "nightly-stakeholder-analysis": {
-            #     "task": "stakeholder.trigger_analysis_all_orgs",
-            #     "schedule": crontab(hour=2, minute=0),
-            #     "options": {"queue": "deal", "routing_key": "deal"},
-            # },
-            # HALF-HOURLY: Transcript fetch for deal-associated meetings
+            "nightly-stakeholder-analysis": {
+                "task": "stakeholder.trigger_analysis_all_orgs",
+                "schedule": crontab(hour=2, minute=0),
+                "options": {"queue": "deal", "routing_key": "deal"},
+            },
+            # HALF-HOURLY: Transcript fetch and meeting summary pipeline
             # Runs at :15 and :45 to avoid overlap with other scheduled tasks
-            # "half-hourly-transcript-fetch": {
-            #     "task": "deal.trigger_transcript_fetch_all_orgs",
-            #     "schedule": crontab(minute="15,45"),  # Every 30 minutes
-            #     "options": {"queue": "deal", "routing_key": "deal"},
-            # },
+            # After fetching transcripts, automatically triggers:
+            # - Meeting summaries (sequential, oldest first)
+            # - Deal summaries (after all meeting summaries complete)
+            "half-hourly-transcript-fetch-pipeline": {
+                "task": "deal.trigger_transcript_fetch_all_orgs",
+                "schedule": crontab(minute="5,35"),  # Every 30 minutes
+                "options": {"queue": "deal", "routing_key": "deal"},
+            },
         }
 
     @staticmethod

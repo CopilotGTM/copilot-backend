@@ -24,6 +24,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlmodel import col
 
 from src.domain.models.master_tables import Organisation, OrganisationStatus
 from src.infra.database.sessions import acquire_master_async_session
@@ -82,8 +83,8 @@ def sync_calendar_all_orgs_task() -> dict[str, Any]:
         # Query all approved organizations
         org_ids: list[UUID] = []
         async for master_session in acquire_master_async_session():
-            stmt = select(Organisation.organisation_id).where(  # type: ignore
-                Organisation.status == OrganisationStatus.APPROVED
+            stmt = select(col(Organisation.organisation_id)).where(
+                col(Organisation.status) == OrganisationStatus.APPROVED
             )
             result = await master_session.execute(stmt)
             org_ids = [row[0] for row in result.all()]
@@ -111,7 +112,7 @@ def sync_calendar_all_orgs_task() -> dict[str, Any]:
 
         for org_id in org_ids:
             try:
-                task = sync_calendar_org_task.apply_async(  # type: ignore
+                task = sync_calendar_org_task.apply_async(
                     kwargs={"organisation_id": str(org_id)},
                     headers=correlation_headers(),
                 )

@@ -60,15 +60,22 @@ async def internal_knowledge_base(
         context: AgentContext object (preferred, contains session + metadata)
     """
     # Extract parameters from context if provided
+    use_context_session = False
     if context:
-        session = context.session
         organisation_id = context.organisation_id
         user_id = user_id or context.user_id
         deal_id = deal_id or context.deal_id
+        # Use context's acquire_session if no explicit session provided
+        if session is None:
+            use_context_session = True
 
     # Validate required parameters
-    if not session or not organisation_id:
-        logger.warning("InternalKnowledgeBase: missing session or organisation_id")
+    if not organisation_id:
+        logger.warning("InternalKnowledgeBase: missing organisation_id")
+        return []
+
+    if not use_context_session and not session:
+        logger.warning("InternalKnowledgeBase: missing session")
         return []
 
     trimmed_query = (query or "").strip()
@@ -110,9 +117,15 @@ async def internal_knowledge_base(
     stmt = stmt.order_by(c.created_at.desc())
     stmt = stmt.limit(effective_limit)
 
+    # Execute query - acquire session on-demand if using context
     try:
-        result = await session.execute(stmt)
-        documents = result.scalars().all()
+        if use_context_session:
+            async with context.acquire_session() as ctx_session:  # type: ignore[union-attr]
+                result = await ctx_session.execute(stmt)
+                documents = result.scalars().all()
+        else:
+            result = await session.execute(stmt)  # type: ignore[union-attr]
+            documents = result.scalars().all()
     except Exception as exc:
         logger.warning("InternalKnowledgeBase query failed: %s", exc, exc_info=True)
         return []
@@ -181,8 +194,8 @@ def create_search_internal_knowledge(
         """
         logger.info(f"[TOOL CALLED] search_internal_knowledge - query='{query}', limit={limit}")
 
-        if not context.session or not context.organisation_id:
-            logger.warning("InternalKnowledgeBase unavailable: missing session or organisation_id")
+        if not context.organisation_id:
+            logger.warning("InternalKnowledgeBase unavailable: missing organisation_id")
             return []
 
         # Use lock to prevent concurrent session access
@@ -193,11 +206,9 @@ def create_search_internal_knowledge(
                 tool_name="InternalKnowledgeBase",
                 tool_func=internal_knowledge_base,
                 parameters={
-                    "session": context.session,
-                    "organisation_id": context.organisation_id,
+                    "context": context,  # Use context mode - acquires session on-demand
                     "query": query,
                     "limit": limit,
-                    "user_id": context.user_id,
                 },
                 description=f"Searching internal documents for: {query}",
                 fallback_value=[],

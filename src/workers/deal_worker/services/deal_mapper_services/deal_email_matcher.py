@@ -769,6 +769,7 @@ class DealEmailMatcher:
             await session.commit()
 
         stats["deals_with_matches"] = len(deals_matched)
+        stats["deals_matched_ids"] = list(deals_matched)  # Return actual deal IDs
 
         logger.info(
             f"Email matching completed for org {self.organisation_id}: "

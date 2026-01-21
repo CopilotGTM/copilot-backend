@@ -4,6 +4,10 @@ This module handles dispatching the first sync for newly connected integrations.
 Called by nango_webhook_service after successful auth.
 
 See: docs/Technical Documentation/integration/sync_tasks/initial-sync-on-auth.md
+
+IMPORTANT: This service runs in the API context, which has different dependencies
+than the workers. It uses send_task() with task names instead of importing task
+modules directly to avoid pulling in worker-specific dependencies (like bs4).
 """
 
 from __future__ import annotations
@@ -12,6 +16,7 @@ from uuid import UUID
 
 from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
 from src.infra.utils.logger import get_logger
+from src.workers.integrations_worker.client import send_integrations_task
 
 logger = get_logger(__name__)
 
@@ -21,13 +26,13 @@ class InitialSyncService:
 
     This service dispatches the appropriate Celery tasks when a user connects
     a new integration via OAuth. It handles all integration types:
-    - CRM (HubSpot, Salesforce) - Uses chord pattern for parallel sync
+    - CRM (HubSpot, Salesforce) - Uses chain pattern for sequential sync
     - Calendar (Google, Outlook) - Direct task dispatch
     - Email (Gmail, Outlook) - Direct task dispatch
     - Messaging (Teams) - Direct task dispatch
     """
 
-    # CRM integration types that use chord pattern for parallel sync
+    # CRM integration types that use chain pattern for sequential sync
     CRM_INTEGRATION_TYPES = {IntegrationType.HUBSPOT, IntegrationType.SALESFORCE}
 
     # Calendar integration types
@@ -47,9 +52,9 @@ class InitialSyncService:
         """Trigger initial sync for a newly connected/reactivated integration.
 
         Dispatches the appropriate integration-level (Tier 3) task based on type.
-        For CRM, uses Celery chord for parallel entity sync.
+        For CRM, uses Celery chain for sequential entity sync.
 
-        Note: This method is synchronous because all task dispatches use .delay()
+        Note: This method is synchronous because all task dispatches use send_task()
         which returns immediately without blocking.
 
         Args:
@@ -64,7 +69,7 @@ class InitialSyncService:
         int_id_str = str(integration.integration_id)
 
         try:
-            # CRM - uses chord pattern
+            # CRM - uses chain pattern for sequential sync
             if integration_type in self.CRM_INTEGRATION_TYPES:
                 self._trigger_crm_sync(organisation_id, integration)
                 return
@@ -102,45 +107,36 @@ class InitialSyncService:
 
     def _trigger_calendar_sync(self, org_id_str: str, int_id_str: str) -> None:
         """Trigger calendar initial sync."""
-        from src.workers.integrations_worker.tasks.calendar import (
-            sync_calendar_integration_task,
-        )
-
-        sync_calendar_integration_task.delay(  # type: ignore[attr-defined]
-            organisation_id=org_id_str,
-            integration_id=int_id_str,
+        send_integrations_task(
+            task_name="integrations.sync_calendar_integration",
+            kwargs={"organisation_id": org_id_str, "integration_id": int_id_str},
         )
         logger.info("Triggered initial calendar sync: integration=%s", int_id_str)
 
     def _trigger_email_sync(self, org_id_str: str, int_id_str: str) -> None:
         """Trigger email initial sync."""
-        from src.workers.integrations_worker.tasks.email import (
-            sync_email_integration_task,
-        )
-
-        sync_email_integration_task.delay(  # type: ignore[attr-defined]
-            organisation_id=org_id_str,
-            integration_id=int_id_str,
+        send_integrations_task(
+            task_name="integrations.sync_email_integration",
+            kwargs={"organisation_id": org_id_str, "integration_id": int_id_str},
         )
         logger.info("Triggered initial email sync: integration=%s", int_id_str)
 
     def _trigger_messaging_sync(self, org_id_str: str, int_id_str: str) -> None:
         """Trigger messaging initial sync."""
-        from src.workers.integrations_worker.tasks.messaging import (
-            sync_messaging_channels_integration_task,
-        )
-
-        sync_messaging_channels_integration_task.delay(  # type: ignore[attr-defined]
-            organisation_id=org_id_str,
-            integration_id=int_id_str,
+        send_integrations_task(
+            task_name="integrations.sync_messaging_channels_integration",
+            kwargs={"organisation_id": org_id_str, "integration_id": int_id_str},
         )
         logger.info("Triggered initial messaging sync: integration=%s", int_id_str)
 
     def _trigger_crm_sync(self, organisation_id: UUID, integration: KnowledgeIntegration) -> None:
-        """Trigger CRM initial sync using Celery chord for parallel execution.
+        """Trigger CRM initial sync using Celery chain for sequential execution.
 
-        Dispatches all 6 CRM entity sync tasks in parallel, with enrichment
-        running as a callback after all syncs complete.
+        Dispatches all 6 CRM entity sync tasks sequentially, with enrichment
+        running at the end after all syncs complete.
+
+        Uses the configured Celery client's signature() to create task signatures,
+        ensuring proper broker connection (Redis with SSL).
 
         Args:
             organisation_id: The organization UUID
@@ -157,41 +153,92 @@ class InitialSyncService:
             integration_type.value,
         )
 
-        from celery import chord, group
-        from src.workers.integrations_worker.tasks.crm import (
-            enrich_crm_after_initial_sync_task,
-            sync_crm_activities_org_task,
-            sync_crm_companies_org_task,
-            sync_crm_contacts_org_task,
-            sync_crm_deals_org_task,
-            sync_crm_pipelines_org_task,
-            sync_crm_users_org_task,
-        )
+        from celery import chain
+        from src.workers.integrations_worker.client import get_integrations_celery_client
+
+        # Get the configured Celery client with proper Redis broker
+        celery_app = get_integrations_celery_client()
 
         org_id_str = str(organisation_id)
         int_id_str = str(integration.integration_id)
 
+        # Task names for CRM sync operations
+        task_companies = "integrations.sync_crm_companies_org"
+        task_contacts = "integrations.sync_crm_contacts_org"
+        task_deals = "integrations.sync_crm_deals_org"
+        task_users = "integrations.sync_crm_users_org"
+        task_pipelines = "integrations.sync_crm_pipelines_org"
+        task_activities = "integrations.sync_crm_activities_org"
+        task_enrichment = "integrations.enrich_crm_after_initial_sync"
+
+        # Queue for integrations worker - must be explicit since API client
+        # doesn't have worker's routing config
+        queue = "integrations"
+
         try:
-            # Run all sync tasks in parallel, then enrichment
-            sync_group = group(
-                sync_crm_companies_org_task.s(org_id_str, skip_enrichment=True),  # type: ignore[attr-defined]
-                sync_crm_contacts_org_task.s(org_id_str, skip_enrichment=True),  # type: ignore[attr-defined]
-                sync_crm_deals_org_task.s(org_id_str, skip_enrichment=True),  # type: ignore[attr-defined]
-                sync_crm_users_org_task.s(org_id_str, skip_enrichment=True),  # type: ignore[attr-defined]
-                sync_crm_pipelines_org_task.s(org_id_str),  # type: ignore[attr-defined]
-                sync_crm_activities_org_task.s(org_id_str, skip_enrichment=True),  # type: ignore[attr-defined]
+            # Create task signatures using the configured Celery app
+            # Using celery_app.signature() ensures proper broker connection (Redis with SSL)
+            # Must specify queue explicitly for API client
+            # All signatures use immutable=True so they don't pass results to next task
+            sync_chain = chain(
+                celery_app.signature(
+                    task_companies,
+                    args=[org_id_str],
+                    kwargs={"skip_enrichment": True},
+                    queue=queue,
+                    immutable=True,
+                ),
+                celery_app.signature(
+                    task_contacts,
+                    args=[org_id_str],
+                    kwargs={"skip_enrichment": True},
+                    queue=queue,
+                    immutable=True,
+                ),
+                celery_app.signature(
+                    task_deals,
+                    args=[org_id_str],
+                    kwargs={"skip_enrichment": True},
+                    queue=queue,
+                    immutable=True,
+                ),
+                celery_app.signature(
+                    task_users,
+                    args=[org_id_str],
+                    kwargs={"skip_enrichment": True},
+                    queue=queue,
+                    immutable=True,
+                ),
+                celery_app.signature(
+                    task_pipelines,
+                    args=[org_id_str],
+                    queue=queue,
+                    immutable=True,
+                ),
+                celery_app.signature(
+                    task_activities,
+                    args=[org_id_str],
+                    kwargs={"skip_enrichment": True},
+                    queue=queue,
+                    immutable=True,
+                ),
+                # Enrichment task runs after all sync tasks complete
+                celery_app.signature(
+                    task_enrichment,
+                    args=[org_id_str, int_id_str],
+                    queue=queue,
+                    immutable=True,
+                ),
             )
 
-            chord(sync_group)(
-                enrich_crm_after_initial_sync_task.si(org_id_str, int_id_str)  # type: ignore[attr-defined]
-            )
+            sync_chain.apply_async()
 
             logger.info(
-                "Dispatched CRM sync chord: integration=%s (6 tasks + enrichment)",
+                "Dispatched CRM sync chain: integration=%s (6 tasks + enrichment)",
                 integration.integration_id,
             )
         except Exception as e:
-            logger.error("Failed to dispatch CRM sync chord: %s", str(e), exc_info=True)
+            logger.error("Failed to dispatch CRM sync chain: %s", str(e), exc_info=True)
 
 
 # Convenience singleton for easy import

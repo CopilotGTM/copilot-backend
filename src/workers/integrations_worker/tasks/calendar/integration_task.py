@@ -17,16 +17,25 @@ Architecture:
     sync_calendar_integration_task [Tier 3 - this file]
         |
     CalendarSyncService (direct call, same pattern as CRM/Email)
+
+Session Management:
+    This task follows the "fresh session" pattern to avoid holding database
+    connections during long-running external API calls:
+    1. Session 1: Query integration, validate, extract needed data, release session
+    2. Fetch events from external APIs (NO session held)
+    3. Session 2: Re-query integration, upsert events, update metadata, release
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
 from celery import Task
 from sqlalchemy import select
+from sqlmodel import col
 
 from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
 from src.infra.config.nango_provider_mapping import to_nango_provider_key
@@ -48,6 +57,27 @@ from src.workers.integrations_worker.providers.calendar.outlook_calendar import 
 )
 
 logger = get_logger(__name__)
+
+
+@dataclass
+class IntegrationFetchData:
+    """Data extracted from integration needed for fetching events.
+
+    This dataclass holds the minimal data needed to fetch events from
+    external APIs, allowing us to release the database session before
+    making potentially long-running API calls.
+    """
+
+    integration_id: UUID
+    connection_id: str
+    integration_type: IntegrationType
+    integration_type_value: str
+    provider: str
+    provider_config_key: str
+    is_initial: bool
+    last_synced_at: datetime | None
+    delta_link: str | None  # For Outlook incremental sync
+
 
 # Calendar integration types
 CALENDAR_INTEGRATION_TYPES = (
@@ -100,160 +130,90 @@ def sync_calendar_integration_task(
     int_id = UUID(integration_id)
 
     async def _sync_integration() -> dict[str, Any]:
-        """Sync the specific calendar integration."""
+        """Sync the specific calendar integration.
+
+        Uses fresh session pattern:
+        1. Session 1: Query integration, validate, extract data, release session
+        2. Fetch events from external APIs (NO session held)
+        3. Session 2: Re-query integration, upsert events, update metadata
+        """
         logger.info(
             "Starting manual calendar sync (Tier 3): org=%s integration=%s",
             org_id,
             int_id,
         )
 
-        nango = NangoClient()
-        try:
-            async for session in acquire_org_async_session(org_id):
-                # Query the specific integration
-                stmt = select(KnowledgeIntegration).where(
-                    KnowledgeIntegration.integration_id == int_id,
-                    KnowledgeIntegration.integration_type.in_(CALENDAR_INTEGRATION_TYPES),
-                )
-                result = await session.execute(stmt)
-                integration = result.scalar_one_or_none()
+        # Phase 1: Query integration and extract data needed for fetching
+        fetch_data: IntegrationFetchData | None = None
 
-                if not integration:
-                    return {
-                        "status": "failed",
-                        "organisation_id": organisation_id,
-                        "integration_id": integration_id,
-                        "started_at": started_at,
-                        "completed_at": datetime.now(UTC).isoformat(),
-                        "error": "Integration not found or not a calendar integration",
-                    }
+        async for session in acquire_org_async_session(org_id):
+            stmt = select(KnowledgeIntegration).where(
+                col(KnowledgeIntegration.integration_id) == int_id,
+                col(KnowledgeIntegration.integration_type).in_(CALENDAR_INTEGRATION_TYPES),
+            )
+            result = await session.execute(stmt)
+            integration = result.scalar_one_or_none()
 
-                if not integration.is_active:
-                    return {
-                        "status": "failed",
-                        "organisation_id": organisation_id,
-                        "integration_id": integration_id,
-                        "started_at": started_at,
-                        "completed_at": datetime.now(UTC).isoformat(),
-                        "error": "Integration is not active",
-                    }
-
-                if not integration.connection_id:
-                    return {
-                        "status": "failed",
-                        "organisation_id": organisation_id,
-                        "integration_id": integration_id,
-                        "started_at": started_at,
-                        "completed_at": datetime.now(UTC).isoformat(),
-                        "error": "Integration is not connected (no connection_id)",
-                    }
-
-                # Get provider details
-                int_type = (
-                    IntegrationType(integration.integration_type)
-                    if isinstance(integration.integration_type, str)
-                    else integration.integration_type
-                )
-                integration_type = int_type.value
-                category, provider = categorize_integration_type(int_type)
-                provider_config_key = to_nango_provider_key(int_type)
-                connection_id = integration.connection_id
-
-                logger.info(
-                    "Syncing calendar integration: org=%s integration=%s type=%s",
-                    org_id,
-                    int_id,
-                    integration_type,
-                )
-
-                # Determine if this is initial sync
-                is_initial = integration.last_synced_at is None
-
-                # Fetch events based on provider
-                if int_type == IntegrationType.GOOGLE_CALENDAR:
-                    events = await google_fetch_events(
-                        nango=nango,
-                        connection_id=connection_id,
-                        is_initial=is_initial,
-                        last_synced_at=integration.last_synced_at,
-                        provider_config_key=provider_config_key,
-                    )
-                    new_delta_link = None
-                elif int_type == IntegrationType.OUTLOOK_CALENDAR:
-                    # Get stored delta link for true incremental sync
-                    stored_delta_link = (integration.connection_metadata or {}).get(
-                        "outlook_delta_link"
-                    )
-                    fetch_result: FetchEventsResult = await outlook_fetch_events(
-                        nango=nango,
-                        connection_id=connection_id,
-                        is_initial=is_initial,
-                        last_synced_at=integration.last_synced_at,
-                        provider_config_key=provider_config_key,
-                        delta_link=stored_delta_link if not is_initial else None,
-                    )
-                    events = fetch_result.events
-                    new_delta_link = fetch_result.delta_link
-                else:
-                    return {
-                        "status": "failed",
-                        "organisation_id": organisation_id,
-                        "integration_id": integration_id,
-                        "started_at": started_at,
-                        "completed_at": datetime.now(UTC).isoformat(),
-                        "error": f"Unknown calendar provider: {int_type}",
-                    }
-
-                logger.info(
-                    "Fetched %d events for integration %s",
-                    len(events),
-                    int_id,
-                )
-
-                # Sync events to database
-                records_synced = await upsert_calendar_incremental(
-                    session=session,
-                    organisation_id=org_id,
-                    integration=integration,
-                    provider=provider,
-                    events=events,
-                )
-
-                # Save new deltaLink for Outlook (enables true incremental sync)
-                if new_delta_link and int_type == IntegrationType.OUTLOOK_CALENDAR:
-                    connection_metadata = dict(integration.connection_metadata or {})
-                    connection_metadata["outlook_delta_link"] = new_delta_link
-                    integration.connection_metadata = connection_metadata
-                    session.add(integration)
-                    await session.commit()
-                    logger.info(
-                        "Outlook calendar: saved new deltaLink for next sync (integration=%s)",
-                        int_id,
-                    )
-
-                # Update last_synced_at
-                integration.last_synced_at = datetime.now(UTC).replace(tzinfo=None)
-                session.add(integration)
-                await session.commit()
-
-                logger.info(
-                    "Manual calendar sync complete: org=%s integration=%s events_synced=%d",
-                    org_id,
-                    int_id,
-                    records_synced,
-                )
-
+            if not integration:
                 return {
-                    "status": "success",
+                    "status": "failed",
                     "organisation_id": organisation_id,
                     "integration_id": integration_id,
-                    "integration_type": integration_type,
                     "started_at": started_at,
                     "completed_at": datetime.now(UTC).isoformat(),
-                    "events_synced": records_synced,
+                    "error": "Integration not found or not a calendar integration",
                 }
 
-            # If async for didn't yield any sessions
+            if not integration.is_active:
+                return {
+                    "status": "failed",
+                    "organisation_id": organisation_id,
+                    "integration_id": integration_id,
+                    "started_at": started_at,
+                    "completed_at": datetime.now(UTC).isoformat(),
+                    "error": "Integration is not active",
+                }
+
+            if not integration.connection_id:
+                return {
+                    "status": "failed",
+                    "organisation_id": organisation_id,
+                    "integration_id": integration_id,
+                    "started_at": started_at,
+                    "completed_at": datetime.now(UTC).isoformat(),
+                    "error": "Integration is not connected (no connection_id)",
+                }
+
+            # Get provider details
+            int_type = (
+                IntegrationType(integration.integration_type)
+                if isinstance(integration.integration_type, str)
+                else integration.integration_type
+            )
+            _, provider = categorize_integration_type(int_type)
+            provider_config_key = to_nango_provider_key(int_type)
+
+            # Extract delta link for Outlook
+            delta_link = None
+            if int_type == IntegrationType.OUTLOOK_CALENDAR:
+                is_initial = integration.last_synced_at is None
+                if not is_initial:
+                    delta_link = (integration.connection_metadata or {}).get("outlook_delta_link")
+
+            fetch_data = IntegrationFetchData(
+                integration_id=integration.integration_id,
+                connection_id=integration.connection_id,
+                integration_type=int_type,
+                integration_type_value=int_type.value,
+                provider=provider,
+                provider_config_key=provider_config_key,
+                is_initial=integration.last_synced_at is None,
+                last_synced_at=integration.last_synced_at,
+                delta_link=delta_link,
+            )
+        # Session is now released
+
+        if not fetch_data:
             return {
                 "status": "failed",
                 "organisation_id": organisation_id,
@@ -262,8 +222,130 @@ def sync_calendar_integration_task(
                 "completed_at": datetime.now(UTC).isoformat(),
                 "error": "Failed to acquire database session",
             }
+
+        logger.info(
+            "Syncing calendar integration: org=%s integration=%s type=%s",
+            org_id,
+            int_id,
+            fetch_data.integration_type_value,
+        )
+
+        # Phase 2: Fetch events from external API (NO session held)
+        events: list[dict[str, Any]]
+        new_delta_link: str | None = None
+
+        nango = NangoClient()
+        try:
+            if fetch_data.integration_type == IntegrationType.GOOGLE_CALENDAR:
+                events = await google_fetch_events(
+                    nango=nango,
+                    connection_id=fetch_data.connection_id,
+                    is_initial=fetch_data.is_initial,
+                    last_synced_at=fetch_data.last_synced_at,
+                    provider_config_key=fetch_data.provider_config_key,
+                )
+            elif fetch_data.integration_type == IntegrationType.OUTLOOK_CALENDAR:
+                fetch_result: FetchEventsResult = await outlook_fetch_events(
+                    nango=nango,
+                    connection_id=fetch_data.connection_id,
+                    is_initial=fetch_data.is_initial,
+                    last_synced_at=fetch_data.last_synced_at,
+                    provider_config_key=fetch_data.provider_config_key,
+                    delta_link=fetch_data.delta_link,
+                )
+                events = fetch_result.events
+                new_delta_link = fetch_result.delta_link
+            else:
+                return {
+                    "status": "failed",
+                    "organisation_id": organisation_id,
+                    "integration_id": integration_id,
+                    "started_at": started_at,
+                    "completed_at": datetime.now(UTC).isoformat(),
+                    "error": f"Unknown calendar provider: {fetch_data.integration_type}",
+                }
         finally:
             await nango.close()
+
+        logger.info(
+            "Fetched %d events for integration %s",
+            len(events),
+            int_id,
+        )
+
+        # ─────────────────────────────────────────────────────────────────────
+        # Phase 3: Persist to database (acquire fresh session)
+        # ─────────────────────────────────────────────────────────────────────
+        async for session in acquire_org_async_session(org_id):
+            # Re-query integration to get fresh instance attached to session
+            stmt = select(KnowledgeIntegration).where(
+                col(KnowledgeIntegration.integration_id) == int_id,
+            )
+            result = await session.execute(stmt)
+            integration = result.scalar_one_or_none()
+
+            if not integration:
+                return {
+                    "status": "failed",
+                    "organisation_id": organisation_id,
+                    "integration_id": integration_id,
+                    "started_at": started_at,
+                    "completed_at": datetime.now(UTC).isoformat(),
+                    "error": "Integration no longer exists",
+                }
+
+            # Sync events to database
+            records_synced = await upsert_calendar_incremental(
+                session=session,
+                organisation_id=org_id,
+                integration=integration,
+                provider=fetch_data.provider,
+                events=events,
+            )
+
+            # Save new deltaLink for Outlook
+            if new_delta_link and fetch_data.integration_type == IntegrationType.OUTLOOK_CALENDAR:
+                connection_metadata = dict(integration.connection_metadata or {})
+                connection_metadata["outlook_delta_link"] = new_delta_link
+                integration.connection_metadata = connection_metadata
+                session.add(integration)
+                await session.commit()
+                logger.info(
+                    "Outlook calendar: saved new deltaLink (integration=%s)",
+                    int_id,
+                )
+
+            # Update last_synced_at
+            integration.last_synced_at = datetime.now(UTC).replace(tzinfo=None)
+            session.add(integration)
+            await session.commit()
+
+            logger.info(
+                "Manual calendar sync complete: org=%s integration=%s events_synced=%d",
+                org_id,
+                int_id,
+                records_synced,
+            )
+
+            return {
+                "status": "success",
+                "organisation_id": organisation_id,
+                "integration_id": integration_id,
+                "integration_type": fetch_data.integration_type_value,
+                "started_at": started_at,
+                "completed_at": datetime.now(UTC).isoformat(),
+                "events_synced": records_synced,
+            }
+        # Session released after this block
+
+        return {
+            "status": "failed",
+            "organisation_id": organisation_id,
+            "integration_id": integration_id,
+            "started_at": started_at,
+            "completed_at": datetime.now(UTC).isoformat(),
+            "error": "Failed to acquire database session for persist phase",
+        }
 
     try:
         result = run_async(_sync_integration())

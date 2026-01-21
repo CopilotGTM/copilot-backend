@@ -2,6 +2,13 @@
 
 This agent uses tools to fetch the transcript and stakeholder data,
 then produces a structured SummaryData output.
+
+ARCHITECTURE: This agent does NOT hold database sessions during LLM calls.
+Tools acquire sessions on-demand via context.acquire_session().
+Sessions are released before any long-running operations (LLM calls).
+
+SECURITY: organisation_id is baked into the context (immutable).
+Tools cannot accept organisation_id as a parameter, preventing cross-org access.
 """
 
 from __future__ import annotations
@@ -14,17 +21,16 @@ from agno.agent import Agent
 from agno.models.azure import AzureOpenAI
 
 from src.agents.context import AgentContext
-from src.agents.tools.registry import ToolName, ToolRegistry
+from src.agents.tools.registry import get_tools_for_agent
 from src.agents.workflows.summary.models import SummaryData, SummaryInput
 from src.agents.workflows.summary.prompts import (
     build_summary_user_prompt,
     get_summary_system_prompt,
 )
+from src.infra.config.agent_config import agent_config
 from src.infra.utils.logger import get_logger
 
 if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import AsyncSession
-
     from src.workers.deal_worker.services.deal_job_publisher import DealJobRedisPublisher
 
 logger = get_logger(__name__)
@@ -35,65 +41,73 @@ class SummaryAgent:
 
     Uses Agno with tools to fetch transcript and stakeholder data,
     then produces a structured SummaryData response.
+
+    ARCHITECTURE: This agent does NOT hold database sessions during LLM calls.
+    Tools acquire sessions on-demand via context.acquire_session().
+    This ensures connections are released before any long-running LLM operations.
+
+    SECURITY: organisation_id is baked into the context (immutable).
+    Tools use context.organisation_id and cannot accept it as a parameter.
     """
 
     def __init__(
         self,
-        session: AsyncSession,
         organisation_id: UUID,
+        deal_id: UUID,
         publisher: DealJobRedisPublisher | None = None,
         org_name: str | None = None,
     ):
-        """Initialize the agent with database context.
+        """Initialize the agent with organisation and deal context.
+
+        ARCHITECTURE: No database session is passed. Tools acquire sessions
+        on-demand via context.acquire_session() and release them promptly.
+
+        SECURITY BOUNDARIES (immutable, baked into context):
+        - organisation_id: All tools use context.organisation_id for data access.
+        - deal_id: All tools use context.deal_id - cannot query other deals.
 
         Args:
-            session: Async database session
-            organisation_id: Organisation UUID
+            organisation_id: Organisation UUID (IMMUTABLE - security boundary)
+            deal_id: Deal UUID (IMMUTABLE - security boundary, tools cannot query other deals)
             publisher: Optional Redis publisher for progress updates
+            org_name: Organisation display name for prompt personalization
         """
-        self.session = session
         self.organisation_id = organisation_id
+        self.deal_id = deal_id
         self.publisher = publisher
 
-        # Build context for tools
+        # Build context for tools (no session - tools acquire on-demand)
+        # SECURITY: Both organisation_id and deal_id are immutable in context
         self.context = AgentContext(
-            session=session,
             organisation_id=organisation_id,
+            deal_id=deal_id,
             org_name=org_name or "Our Organization",
         )
 
         # Get tools for this agent
         tools = self._get_tools()
 
+        # Get model config
+        config = agent_config.get_config("summary_agent")
+
         # Create agent with tools
         self.agent = Agent(
-            model=AzureOpenAI(id="gpt-5-mini", api_version="2024-12-01-preview"),
+            model=AzureOpenAI(id=config.model, api_version=config.api_version),
             response_model=SummaryData,
             description=get_summary_system_prompt(self.context.org_name),
             tools=tools,
-            show_tool_calls=True,
+            show_tool_calls=config.show_tool_calls,
             markdown=True,
-            debug_mode=False,
+            debug_mode=config.debug_mode,
         )
 
     def _get_tools(self) -> list[Callable]:
-        """Get tools for summary generation.
+        """Get tools for meeting summary generation.
 
-        Returns:
-            List of tool functions the agent can use
+        Tools are defined in AGENT_TOOLS["SummaryAgent"] in registry.py.
         """
-        # Create registry without capabilities (not streaming to chat)
-        registry = ToolRegistry(self.context, lambda: None)
-
-        return registry.get_tools(
-            [
-                ToolName.GET_MEETING_TRANSCRIPT,
-                ToolName.GET_MEETING_DETAILS,
-                ToolName.GET_MEETING_DEAL_CONTEXT,
-                ToolName.LIST_DEAL_STAKEHOLDERS,
-                ToolName.GET_STAKEHOLDER_DETAILS,
-            ]
-        )
+        # Get tools from central registry (no capabilities - not streaming to chat)
+        return get_tools_for_agent("SummaryAgent", self.context, lambda: None)
 
     def _publish_progress(self, message: str, step: str, progress: float) -> None:
         """Publish progress update if publisher is available."""

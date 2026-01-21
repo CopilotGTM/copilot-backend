@@ -6,7 +6,12 @@ This service handles the business logic for risk/blocker extraction:
 - Creating AI-suggested risk/blocker records
 
 The agent uses tools to gather meeting transcripts, emails, and existing
-risks/blockers as needed. This follows the same pattern as DealSummaryService.
+risks/blockers as needed.
+
+Follows fresh session pattern:
+- Phase 1: Load context (fresh session, release before LLM)
+- Phase 2: Call agent (agent manages its own sessions via tools)
+- Phase 3: Save result (fresh session)
 
 The Celery task delegates to this service for the actual work.
 """
@@ -17,7 +22,6 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy.ext.asyncio import AsyncSession
 from src.agents.workflows.risk_blocker_extraction import (
     ExtractedRiskBlocker,
     RiskBlockerExtractionAgent,
@@ -29,9 +33,10 @@ from src.domain.models.organisation_tables.sync.risk_blocker_models import (
     RiskBlockerSource,
     RiskBlockerStatus,
 )
+from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.workers.deal_worker.services.deal_job_publisher import DealJobRedisPublisher
-from src.workers.deal_worker.services.deal_job_utils import (
+from src.workers.deal_worker.utils.deal_job_utils import (
     count_deal_emails,
     count_deal_meetings,
     count_deal_risks_blockers,
@@ -87,25 +92,29 @@ class RiskBlockerExtractionService:
     - Meeting transcripts for analysis
     - Email content for analysis
 
+    Follows fresh session pattern:
+    - Phase 1: Load context (fresh session, release before LLM)
+    - Phase 2: Call agent (agent manages its own sessions via tools)
+    - Phase 3: Save result (fresh session)
+
     Usage:
-        service = RiskBlockerExtractionService(session, org_id, publisher)
+        service = RiskBlockerExtractionService(org_id, publisher)
         result = await service.run_extraction(deal_id)
     """
 
     def __init__(
         self,
-        session: AsyncSession,
         organisation_id: UUID,
         publisher: DealJobRedisPublisher | None = None,
     ):
         """Initialize the service.
 
+        SECURITY BOUNDARY: organisation_id is immutable - all queries use this value.
+
         Args:
-            session: Async database session for the organisation
-            organisation_id: UUID of the organisation
+            organisation_id: UUID of the organisation (IMMUTABLE - security boundary)
             publisher: Optional Redis publisher for progress updates
         """
-        self.session = session
         self.organisation_id = organisation_id
         self.publisher = publisher
 
@@ -114,8 +123,9 @@ class RiskBlockerExtractionService:
         if self.publisher:
             self.publisher.publish_progress(message, step, progress)
 
-    async def create_risk_blocker_from_extracted(
+    def create_risk_blocker_from_extracted(
         self,
+        session: Any,
         deal_id: UUID,
         extracted: ExtractedRiskBlocker,
         source_type: RiskBlockerSource,
@@ -124,6 +134,7 @@ class RiskBlockerExtractionService:
         """Create a risk/blocker record from an extracted item.
 
         Args:
+            session: Database session
             deal_id: UUID of the deal
             extracted: The extracted risk/blocker
             source_type: Source type (MEETING, EMAIL, etc.)
@@ -165,7 +176,7 @@ class RiskBlockerExtractionService:
             },
         )
 
-        self.session.add(item)
+        session.add(item)
         return item
 
     async def run_extraction(
@@ -177,6 +188,11 @@ class RiskBlockerExtractionService:
 
         The agent uses tools to gather data about meetings, emails, and
         existing risks/blockers, then identifies new items.
+
+        Follows fresh session pattern:
+        - Phase 1: Load context (fresh session, release before LLM)
+        - Phase 2: Call agent (agent manages its own sessions via tools)
+        - Phase 3: Save result (fresh session)
 
         Args:
             deal_id: UUID of the deal to extract from
@@ -191,31 +207,50 @@ class RiskBlockerExtractionService:
         """
         _ = force  # Reserved for future use
 
+        # Phase 1: Load context (fresh session, release before LLM)
         self._publish_progress("Loading deal context...", "context", 0.1)
 
-        # 1. Load deal
-        deal = await get_deal(self.session, self.organisation_id, deal_id)
-        if not deal:
-            raise DealNotFoundError(deal_id)
+        # Variables to hold context after session is released
+        deal_name: str = ""
+        company_name: str | None = None
+        deal_stage: str | None = None
+        meeting_count: int = 0
+        email_count: int = 0
+        risks_count: int = 0
+        blockers_count: int = 0
+        first_date: str | None = None
+        last_date: str | None = None
 
-        self._publish_progress("Checking deal data...", "checking", 0.15)
+        async for session in acquire_org_async_session(self.organisation_id):
+            # 1. Load deal
+            deal = await get_deal(session, self.organisation_id, deal_id)
+            if not deal:
+                raise DealNotFoundError(deal_id)
 
-        # 2. Get counts for agent planning
-        meeting_count = await count_deal_meetings(self.session, self.organisation_id, deal_id)
-        email_count = await count_deal_emails(self.session, self.organisation_id, deal_id)
+            self._publish_progress("Checking deal data...", "checking", 0.15)
 
-        if meeting_count == 0 and email_count == 0:
-            raise NoContentError(deal_id)
+            # 2. Get counts for agent planning
+            meeting_count = await count_deal_meetings(session, self.organisation_id, deal_id)
+            email_count = await count_deal_emails(session, self.organisation_id, deal_id)
 
-        # 3. Get existing risks/blockers count
-        risks_blockers = await count_deal_risks_blockers(
-            self.session, self.organisation_id, deal_id
-        )
+            if meeting_count == 0 and email_count == 0:
+                raise NoContentError(deal_id)
 
-        # 4. Get meeting date range
-        first_date, last_date = await get_deal_meeting_date_range(
-            self.session, self.organisation_id, deal_id
-        )
+            # 3. Get existing risks/blockers count
+            risks_blockers = await count_deal_risks_blockers(session, self.organisation_id, deal_id)
+            risks_count = risks_blockers["risks"]
+            blockers_count = risks_blockers["blockers"]
+
+            # 4. Get meeting date range
+            first_date, last_date = await get_deal_meeting_date_range(
+                session, self.organisation_id, deal_id
+            )
+
+            # Extract values before session is released
+            deal_name = deal.name or "Unnamed Deal"
+            company_name = deal.company_name
+            deal_stage = deal.stage_label or deal.stage_name
+        # Session released
 
         self._publish_progress(
             f"Found {meeting_count} meetings, {email_count} emails. Starting AI analysis...",
@@ -226,13 +261,13 @@ class RiskBlockerExtractionService:
         # 5. Build minimal input for the agent
         input_data = RiskBlockerExtractionInput(
             deal_id=str(deal_id),
-            deal_name=deal.name,
-            company_name=deal.company_name,
-            deal_stage=deal.stage_label or deal.stage_name,
+            deal_name=deal_name,
+            company_name=company_name,
+            deal_stage=deal_stage,
             meeting_count=meeting_count,
             email_count=email_count,
-            existing_risks_count=risks_blockers["risks"],
-            existing_blockers_count=risks_blockers["blockers"],
+            existing_risks_count=risks_count,
+            existing_blockers_count=blockers_count,
             first_meeting_date=first_date,
             last_meeting_date=last_date,
         )
@@ -242,32 +277,41 @@ class RiskBlockerExtractionService:
             deal_id,
             meeting_count,
             email_count,
-            risks_blockers["total"],
+            risks_count + blockers_count,
         )
 
-        # 6. Call the agent (it will use tools to gather data)
-        agent = RiskBlockerExtractionAgent(self.session, self.organisation_id, self.publisher)
+        # Phase 2: Call agent (tools acquire sessions on-demand)
+        # Agent doesn't hold sessions - tools acquire on-demand via context.acquire_session()
+        # SECURITY: Both organisation_id and deal_id are baked into agent context (immutable)
+        agent = RiskBlockerExtractionAgent(
+            organisation_id=self.organisation_id,
+            deal_id=deal_id,
+            publisher=self.publisher,
+        )
         result = await agent.extract(input_data)
 
+        # Phase 3: Save result (fresh session)
         self._publish_progress("Creating risk/blocker records...", "saving", 0.9)
 
-        # 7. Create records for non-duplicate items
         created_count = 0
 
-        for extracted_item in result.items:
-            if not extracted_item.is_duplicate:
-                # Use source_type from agent output (agent specifies exact platform)
-                source_type = extracted_item.source_type
+        async for session in acquire_org_async_session(self.organisation_id):
+            # Create records for non-duplicate items
+            for extracted_item in result.items:
+                if not extracted_item.is_duplicate:
+                    # Use source_type from agent output (agent specifies exact platform)
+                    source_type = extracted_item.source_type
 
-                await self.create_risk_blocker_from_extracted(
-                    deal_id=deal_id,
-                    extracted=extracted_item,
-                    source_type=source_type,
-                )
-                created_count += 1
+                    self.create_risk_blocker_from_extracted(
+                        session=session,
+                        deal_id=deal_id,
+                        extracted=extracted_item,
+                        source_type=source_type,
+                    )
+                    created_count += 1
 
-        # 8. Commit all new records
-        await self.session.commit()
+            # Commit all new records
+            await session.commit()
 
         self._publish_progress("Extraction complete!", "complete", 1.0)
 

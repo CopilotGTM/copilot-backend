@@ -218,7 +218,7 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
             },
             "sync-crm-deals-all-orgs": {
                 "task": "integrations.sync_crm_deals_all_orgs",
-                "schedule": crontab(minute=30, hour="3,6,9,12,15,18"),
+                "schedule": crontab(minute="*/55"),
                 "kwargs": {},
                 "options": {"queue": "integrations", "routing_key": "integrations"},
             },
@@ -233,7 +233,7 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
         maintenance_schedule = {
             "refresh-tokens": {
                 "task": "integrations.refresh_tokens",
-                "schedule": crontab(minute="*/30"),  # Every 30 minutes
+                "schedule": crontab(minute=0, hour="*/4"),  # Every 4 hours
                 "kwargs": {"buffer_hours": 2},
                 "options": {"queue": "integrations", "routing_key": "integrations"},
             },
