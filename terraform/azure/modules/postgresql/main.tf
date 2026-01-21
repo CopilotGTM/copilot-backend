@@ -9,7 +9,7 @@ resource "azurerm_postgresql_flexible_server" "db" {
   resource_group_name           = var.resource_group_name
   location                      = var.location
   version                       = var.db_version
-  sku_name                      = "B_Standard_B1ms"
+  sku_name                      = var.db_sku_name
   storage_mb                    = 65536
   backup_retention_days         = 7
   public_network_access_enabled = true

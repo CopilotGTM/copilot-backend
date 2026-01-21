@@ -532,6 +532,12 @@ variable "db_name" {
   default     = "copilotgtm-postgresdb"
 }
 
+variable "db_sku_name" {
+  description = "The SKU name for PostgreSQL. Burstable (B_*) for dev, GP_* for prod with PgBouncer."
+  type        = string
+  default     = "B_Standard_B1ms"
+}
+
 # -----------------------------------------------------------------
 # PgBouncer Configuration (Connection Pooling)
 # -----------------------------------------------------------------

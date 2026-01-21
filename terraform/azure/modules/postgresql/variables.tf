@@ -36,6 +36,12 @@ variable "db_name" {
   default     = ""
 }
 
+variable "db_sku_name" {
+  description = "The SKU name for the PostgreSQL Flexible Server. Burstable (B_*) does NOT support PgBouncer. Use General Purpose (GP_*) or Memory Optimized (MO_*) for PgBouncer."
+  type        = string
+  default     = "B_Standard_B1ms"
+}
+
 variable "key_vault_id" {
   description = "The ID of the Key Vault to store the database password."
   type        = string
