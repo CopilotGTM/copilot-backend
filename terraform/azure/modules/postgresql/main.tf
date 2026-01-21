@@ -32,6 +32,43 @@ resource "azurerm_postgresql_flexible_server_configuration" "vector_extension" {
   value     = "VECTOR"
 }
 
+# -----------------------------------------------------------------
+# PgBouncer Configuration (Built-in Connection Pooler)
+# -----------------------------------------------------------------
+resource "azurerm_postgresql_flexible_server_configuration" "pgbouncer_enabled" {
+  count     = var.pgbouncer_enabled ? 1 : 0
+  name      = "pgbouncer.enabled"
+  server_id = azurerm_postgresql_flexible_server.db.id
+  value     = "on"
+}
+
+resource "azurerm_postgresql_flexible_server_configuration" "pgbouncer_default_pool_size" {
+  count     = var.pgbouncer_enabled ? 1 : 0
+  name      = "pgbouncer.default_pool_size"
+  server_id = azurerm_postgresql_flexible_server.db.id
+  value     = tostring(var.pgbouncer_default_pool_size)
+
+  depends_on = [azurerm_postgresql_flexible_server_configuration.pgbouncer_enabled]
+}
+
+resource "azurerm_postgresql_flexible_server_configuration" "pgbouncer_max_client_conn" {
+  count     = var.pgbouncer_enabled ? 1 : 0
+  name      = "pgbouncer.max_client_conn"
+  server_id = azurerm_postgresql_flexible_server.db.id
+  value     = tostring(var.pgbouncer_max_client_conn)
+
+  depends_on = [azurerm_postgresql_flexible_server_configuration.pgbouncer_enabled]
+}
+
+resource "azurerm_postgresql_flexible_server_configuration" "pgbouncer_pool_mode" {
+  count     = var.pgbouncer_enabled ? 1 : 0
+  name      = "pgbouncer.pool_mode"
+  server_id = azurerm_postgresql_flexible_server.db.id
+  value     = var.pgbouncer_pool_mode
+
+  depends_on = [azurerm_postgresql_flexible_server_configuration.pgbouncer_enabled]
+}
+
 resource "azurerm_postgresql_flexible_server_firewall_rule" "allow_all" {
   name             = "allow-all-ips"
   server_id        = azurerm_postgresql_flexible_server.db.id
