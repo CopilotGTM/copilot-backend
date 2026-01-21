@@ -39,7 +39,7 @@ resource "azurerm_postgresql_flexible_server_configuration" "pgbouncer_enabled" 
   count     = var.pgbouncer_enabled ? 1 : 0
   name      = "pgbouncer.enabled"
   server_id = azurerm_postgresql_flexible_server.db.id
-  value     = "on"
+  value     = "True"
 }
 
 resource "azurerm_postgresql_flexible_server_configuration" "pgbouncer_default_pool_size" {
