@@ -532,6 +532,33 @@ variable "db_name" {
   default     = "copilotgtm-postgresdb"
 }
 
+# -----------------------------------------------------------------
+# PgBouncer Configuration (Connection Pooling)
+# -----------------------------------------------------------------
+variable "pgbouncer_enabled" {
+  description = "Enable PgBouncer connection pooling on PostgreSQL Flexible Server."
+  type        = bool
+  default     = false
+}
+
+variable "pgbouncer_default_pool_size" {
+  description = "Number of server connections per user/database pair for PgBouncer."
+  type        = number
+  default     = 50
+}
+
+variable "pgbouncer_max_client_conn" {
+  description = "Maximum number of client connections allowed by PgBouncer."
+  type        = number
+  default     = 200
+}
+
+variable "pgbouncer_pool_mode" {
+  description = "PgBouncer pool mode: 'session', 'transaction', or 'statement'."
+  type        = string
+  default     = "transaction"
+}
+
 variable "letsencrypt_email" {
   description = "Email address for Let's Encrypt registration"
   type        = string

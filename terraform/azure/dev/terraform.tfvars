@@ -20,6 +20,12 @@ project_name        = "copilotgtm"
 db_location = "centralus" # Same as location - can be different if needed
 db_name     = "copilotgtm-postgresdb-centralus-dev"
 
+# PgBouncer - Connection pooling to reduce DB connections across workers
+pgbouncer_enabled           = true
+pgbouncer_default_pool_size = 50  # Connections per user/database pair
+pgbouncer_max_client_conn   = 200 # Max client connections
+pgbouncer_pool_mode         = "transaction" # Release connection after transaction
+
 # -----------------------------------------------------------------
 # Networking
 # -----------------------------------------------------------------
