@@ -532,6 +532,39 @@ variable "db_name" {
   default     = "copilotgtm-postgresdb"
 }
 
+variable "db_sku_name" {
+  description = "The SKU name for PostgreSQL. Use GP_* (General Purpose) for PgBouncer support."
+  type        = string
+  default     = "B_Standard_B1ms"
+}
+
+# -----------------------------------------------------------------
+# PgBouncer Configuration (requires General Purpose tier or higher)
+# -----------------------------------------------------------------
+variable "pgbouncer_enabled" {
+  description = "Enable PgBouncer connection pooling. Requires GP_* or MO_* SKU."
+  type        = bool
+  default     = false
+}
+
+variable "pgbouncer_default_pool_size" {
+  description = "Number of server connections per user/database pair."
+  type        = number
+  default     = 50
+}
+
+variable "pgbouncer_max_client_conn" {
+  description = "Maximum number of client connections allowed."
+  type        = number
+  default     = 200
+}
+
+variable "pgbouncer_pool_mode" {
+  description = "Pool mode: session, transaction, or statement."
+  type        = string
+  default     = "transaction"
+}
+
 variable "letsencrypt_email" {
   description = "Email address for Let's Encrypt registration"
   type        = string

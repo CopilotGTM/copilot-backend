@@ -511,9 +511,17 @@ module "application_database" {
   resource_group_name = module.resource_group.resource_group_name
   location            = var.db_location
   db_name             = var.db_name
+  db_sku_name         = var.db_sku_name
   db_admin_user       = "CopilotGTMAdmin"
   db_admin_password   = random_password.db_admin.result
   key_vault_id        = module.database_key_vault.key_vault_id
+
+  # PgBouncer connection pooling (requires General Purpose tier or higher)
+  pgbouncer_enabled           = var.pgbouncer_enabled
+  pgbouncer_default_pool_size = var.pgbouncer_default_pool_size
+  pgbouncer_max_client_conn   = var.pgbouncer_max_client_conn
+  pgbouncer_pool_mode         = var.pgbouncer_pool_mode
+
   tags = {
     environment = var.env
     project     = var.project_name
@@ -592,7 +600,7 @@ resource "azuredevops_variable_group" "secrets" {
 
   variable {
     name  = "DATABASE_PORT"
-    value = tostring(module.application_database.db_port)
+    value = tostring(module.application_database.pgbouncer_port) # 6432 if PgBouncer enabled, 5432 otherwise
   }
 
   variable {

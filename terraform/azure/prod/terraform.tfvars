@@ -20,6 +20,16 @@ project_name        = "copilotgtm"
 db_location = "centralus" # Same as location - can be different if needed
 db_name     = "copilotgtm-postgresdb-centralus-prod"
 
+# PostgreSQL SKU - General Purpose required for PgBouncer
+# GP_Standard_D2s_v3 = 2 vCores, 8GB RAM (~$100/month)
+db_sku_name = "GP_Standard_D2s_v3"
+
+# PgBouncer - Connection pooling to share DB connections across all workers
+pgbouncer_enabled           = true
+pgbouncer_default_pool_size = 200 # Actual PostgreSQL connections (max 859 on GP_D2s_v3)
+pgbouncer_max_client_conn   = 500 # Max client connections from workers/API to PgBouncer
+pgbouncer_pool_mode         = "transaction" # Release connection after transaction
+
 # -----------------------------------------------------------------
 # Networking
 # -----------------------------------------------------------------
