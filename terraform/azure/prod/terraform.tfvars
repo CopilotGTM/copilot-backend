@@ -127,7 +127,7 @@ frontend_admin_yml_path  = "pipelines/.azure-pipelines/azure-pipelines.yml"
 
 terraform_repo_name = "copilot-app-infra"
 # terraform_pipeline_name = "infra-pipeline"               # Default
-# terraform_yml_path      = ".pipeline/.azure-pipeline.yml" # Default
+# terraform_yml_path      = ".pipeline/azure-pipeline-prod.yml" # Default (prod-specific)
 
 # -----------------------------------------------------------------
 # Cert-Manager & K8s
