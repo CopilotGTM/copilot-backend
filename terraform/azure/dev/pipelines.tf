@@ -52,11 +52,10 @@ resource "azuredevops_variable_group" "infra_secrets" {
 }
 
 # -----------------------------------------------------------------
-# Terraform Pipeline (Shared - handles both Dev and Prod)
+# Terraform Pipeline (DEV Environment)
 # -----------------------------------------------------------------
-# This single pipeline handles all environments using branch conditions:
-#   - main branch      → Dev stage runs
-#   - release/* branch → Prod stage runs
+# Uses dev-specific pipeline YAML: .pipeline/azure-pipeline-dev.yml
+# Triggered on: main, feature/*, hotfix/* branches
 # -----------------------------------------------------------------
 data "azuredevops_git_repository" "terraform_repo" {
   project_id = data.azuredevops_project.project.id
@@ -66,15 +65,13 @@ data "azuredevops_git_repository" "terraform_repo" {
 module "infra_pipeline" {
   source             = "../modules/pipeline"
   devops_project_id  = data.azuredevops_project.project.id
-  pipeline_name      = var.terraform_pipeline_name
+  pipeline_name      = "${var.terraform_pipeline_name}-${var.env}"
   repo_id            = data.azuredevops_git_repository.terraform_repo.id
   branch_name        = var.terraform_branch
   yml_path           = var.terraform_yml_path
   variable_group_ids = [azuredevops_variable_group.infra_secrets.id]
 
-  pipeline_variables = {
-    # No DEPLOY_ENVIRONMENT - stages determine their own environment
-  }
+  pipeline_variables = {}
 }
 
 # =================================================================

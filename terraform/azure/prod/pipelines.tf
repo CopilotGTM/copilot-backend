@@ -52,35 +52,28 @@ resource "azuredevops_variable_group" "infra_secrets" {
 }
 
 # -----------------------------------------------------------------
-# Terraform Pipeline
+# Terraform Pipeline (PROD Environment)
 # -----------------------------------------------------------------
-# NOTE: The infra pipeline is NOT created here.
-# A single pipeline (created by dev) handles both environments.
-# The pipeline YAML uses branch conditions:
-#   - main branch      → Dev stage runs
-#   - release/* branch → Prod stage runs
-#
-# Prod still needs: agent pool, variable group, service connection
+# Uses prod-specific pipeline YAML: .pipeline/azure-pipeline-prod.yml
+# Triggered on: release/* branches
+# Requires approval via environment gate
 # -----------------------------------------------------------------
 data "azuredevops_git_repository" "terraform_repo" {
   project_id = data.azuredevops_project.project.id
   name       = var.terraform_repo_name
 }
 
-# COMMENTED OUT: Single pipeline in dev handles both environments
-# module "infra_pipeline" {
-#   source             = "../modules/pipeline"
-#   devops_project_id  = data.azuredevops_project.project.id
-#   pipeline_name      = "${var.terraform_pipeline_name}-${var.env}"
-#   repo_id            = data.azuredevops_git_repository.terraform_repo.id
-#   branch_name        = var.terraform_branch
-#   yml_path           = var.terraform_yml_path
-#   variable_group_ids = [azuredevops_variable_group.infra_secrets.id]
-#
-#   pipeline_variables = {
-#     DEPLOY_ENVIRONMENT = var.env
-#   }
-# }
+module "infra_pipeline" {
+  source             = "../modules/pipeline"
+  devops_project_id  = data.azuredevops_project.project.id
+  pipeline_name      = "${var.terraform_pipeline_name}-${var.env}"
+  repo_id            = data.azuredevops_git_repository.terraform_repo.id
+  branch_name        = var.terraform_branch
+  yml_path           = var.terraform_yml_path
+  variable_group_ids = [azuredevops_variable_group.infra_secrets.id]
+
+  pipeline_variables = {}
+}
 
 # =================================================================
 # Backend Pipeline

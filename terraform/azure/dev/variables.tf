@@ -401,7 +401,7 @@ variable "infra_variable_group_name" {
 variable "terraform_yml_path" {
   description = "Path to the Azure Pipelines YAML file for Terraform."
   type        = string
-  default     = ".pipeline/.azure-pipeline.yml"
+  default     = ".pipeline/azure-pipeline-dev.yml"
 }
 
 variable "terraform_branch" {
@@ -530,6 +530,33 @@ variable "db_name" {
   description = "The name of the Database."
   type        = string
   default     = "copilotgtm-postgresdb"
+}
+
+# -----------------------------------------------------------------
+# PgBouncer Configuration (Connection Pooling)
+# -----------------------------------------------------------------
+variable "pgbouncer_enabled" {
+  description = "Enable PgBouncer connection pooling on PostgreSQL Flexible Server."
+  type        = bool
+  default     = false
+}
+
+variable "pgbouncer_default_pool_size" {
+  description = "Number of server connections per user/database pair for PgBouncer."
+  type        = number
+  default     = 50
+}
+
+variable "pgbouncer_max_client_conn" {
+  description = "Maximum number of client connections allowed by PgBouncer."
+  type        = number
+  default     = 200
+}
+
+variable "pgbouncer_pool_mode" {
+  description = "PgBouncer pool mode: 'session', 'transaction', or 'statement'."
+  type        = string
+  default     = "transaction"
 }
 
 variable "letsencrypt_email" {

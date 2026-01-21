@@ -20,6 +20,12 @@ project_name        = "copilotgtm"
 db_location = "centralus" # Same as location - can be different if needed
 db_name     = "copilotgtm-postgresdb-centralus-dev"
 
+# PgBouncer - Connection pooling to reduce DB connections across workers
+pgbouncer_enabled           = true
+pgbouncer_default_pool_size = 50  # Connections per user/database pair
+pgbouncer_max_client_conn   = 200 # Max client connections
+pgbouncer_pool_mode         = "transaction" # Release connection after transaction
+
 # -----------------------------------------------------------------
 # Networking
 # -----------------------------------------------------------------
@@ -127,7 +133,7 @@ frontend_admin_yml_path  = "pipelines/.azure-pipelines/azure-pipelines.yml"
 
 terraform_repo_name = "copilot-app-infra"
 # terraform_pipeline_name = "infra-pipeline"               # Default
-# terraform_yml_path      = ".pipeline/.azure-pipeline.yml" # Default
+# terraform_yml_path      = ".pipeline/azure-pipeline-dev.yml" # Default (dev-specific)
 
 # -----------------------------------------------------------------
 # Cert-Manager & K8s
