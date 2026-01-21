@@ -74,9 +74,12 @@ shutdown:
   remoteShutdown: false
 
 # Pod Disruption Budget to avoid all workers being evicted simultaneously (voluntary disruptions)
+# NOTE: minAvailable is set to 0 to allow cluster maintenance (node drains, upgrades)
+# With minAvailable: 1 and replicaCount: 1, node drains would deadlock.
+# Workers can tolerate brief restarts - tasks queue in Redis and retry on failure.
 pdb:
   enabled: true
-  minAvailable: 1
+  minAvailable: 0
 
 # ServiceAccount configuration (for workload identity / RBAC)
 serviceAccount:
