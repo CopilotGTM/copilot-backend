@@ -26,13 +26,13 @@ class InitialSyncService:
 
     This service dispatches the appropriate Celery tasks when a user connects
     a new integration via OAuth. It handles all integration types:
-    - CRM (HubSpot, Salesforce) - Uses chord pattern for parallel sync
+    - CRM (HubSpot, Salesforce) - Uses chain pattern for sequential sync
     - Calendar (Google, Outlook) - Direct task dispatch
     - Email (Gmail, Outlook) - Direct task dispatch
     - Messaging (Teams) - Direct task dispatch
     """
 
-    # CRM integration types that use chord pattern for parallel sync
+    # CRM integration types that use chain pattern for sequential sync
     CRM_INTEGRATION_TYPES = {IntegrationType.HUBSPOT, IntegrationType.SALESFORCE}
 
     # Calendar integration types
@@ -52,7 +52,7 @@ class InitialSyncService:
         """Trigger initial sync for a newly connected/reactivated integration.
 
         Dispatches the appropriate integration-level (Tier 3) task based on type.
-        For CRM, uses Celery chord for parallel entity sync.
+        For CRM, uses Celery chain for sequential entity sync.
 
         Note: This method is synchronous because all task dispatches use send_task()
         which returns immediately without blocking.
@@ -69,7 +69,7 @@ class InitialSyncService:
         int_id_str = str(integration.integration_id)
 
         try:
-            # CRM - uses chord pattern
+            # CRM - uses chain pattern for sequential sync
             if integration_type in self.CRM_INTEGRATION_TYPES:
                 self._trigger_crm_sync(organisation_id, integration)
                 return
@@ -130,10 +130,10 @@ class InitialSyncService:
         logger.info("Triggered initial messaging sync: integration=%s", int_id_str)
 
     def _trigger_crm_sync(self, organisation_id: UUID, integration: KnowledgeIntegration) -> None:
-        """Trigger CRM initial sync using Celery chord for parallel execution.
+        """Trigger CRM initial sync using Celery chain for sequential execution.
 
-        Dispatches all 6 CRM entity sync tasks in parallel, with enrichment
-        running as a callback after all syncs complete.
+        Dispatches all 6 CRM entity sync tasks sequentially, with enrichment
+        running at the end after all syncs complete.
 
         Uses Celery's signature() to create task signatures from task names,
         avoiding direct task imports which would pull in worker dependencies.
@@ -153,7 +153,7 @@ class InitialSyncService:
             integration_type.value,
         )
 
-        from celery import chord, group, signature
+        from celery import chain, signature
 
         org_id_str = str(organisation_id)
         int_id_str = str(integration.integration_id)
@@ -175,51 +175,66 @@ class InitialSyncService:
             # Create task signatures using task names (avoids importing task modules)
             # Using signature() with args/kwargs instead of task.s()
             # Must specify queue explicitly for API client
-            sync_group = group(
+            # All signatures use immutable=True so they don't pass results to next task
+            sync_chain = chain(
                 signature(
                     task_companies,
                     args=[org_id_str],
                     kwargs={"skip_enrichment": True},
                     queue=queue,
+                    immutable=True,
                 ),
                 signature(
                     task_contacts,
                     args=[org_id_str],
                     kwargs={"skip_enrichment": True},
                     queue=queue,
+                    immutable=True,
                 ),
                 signature(
-                    task_deals, args=[org_id_str], kwargs={"skip_enrichment": True}, queue=queue
+                    task_deals,
+                    args=[org_id_str],
+                    kwargs={"skip_enrichment": True},
+                    queue=queue,
+                    immutable=True,
                 ),
                 signature(
-                    task_users, args=[org_id_str], kwargs={"skip_enrichment": True}, queue=queue
+                    task_users,
+                    args=[org_id_str],
+                    kwargs={"skip_enrichment": True},
+                    queue=queue,
+                    immutable=True,
                 ),
-                signature(task_pipelines, args=[org_id_str], queue=queue),
+                signature(
+                    task_pipelines,
+                    args=[org_id_str],
+                    queue=queue,
+                    immutable=True,
+                ),
                 signature(
                     task_activities,
                     args=[org_id_str],
                     kwargs={"skip_enrichment": True},
                     queue=queue,
+                    immutable=True,
+                ),
+                # Enrichment task runs after all sync tasks complete
+                signature(
+                    task_enrichment,
+                    args=[org_id_str, int_id_str],
+                    queue=queue,
+                    immutable=True,
                 ),
             )
 
-            # Enrichment task runs after all sync tasks complete
-            # immutable=True is equivalent to .si() - doesn't receive results from group
-            enrichment_sig = signature(
-                task_enrichment,
-                args=[org_id_str, int_id_str],
-                immutable=True,
-                queue=queue,
-            )
-
-            chord(sync_group)(enrichment_sig)
+            sync_chain.apply_async()
 
             logger.info(
-                "Dispatched CRM sync chord: integration=%s (6 tasks + enrichment)",
+                "Dispatched CRM sync chain: integration=%s (6 tasks + enrichment)",
                 integration.integration_id,
             )
         except Exception as e:
-            logger.error("Failed to dispatch CRM sync chord: %s", str(e), exc_info=True)
+            logger.error("Failed to dispatch CRM sync chain: %s", str(e), exc_info=True)
 
 
 # Convenience singleton for easy import
