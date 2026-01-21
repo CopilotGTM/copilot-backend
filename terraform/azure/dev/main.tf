@@ -514,6 +514,13 @@ module "application_database" {
   db_admin_user       = "CopilotGTMAdmin"
   db_admin_password   = random_password.db_admin.result
   key_vault_id        = module.database_key_vault.key_vault_id
+
+  # PgBouncer connection pooling (reduces DB connections across workers)
+  pgbouncer_enabled           = var.pgbouncer_enabled
+  pgbouncer_default_pool_size = var.pgbouncer_default_pool_size
+  pgbouncer_max_client_conn   = var.pgbouncer_max_client_conn
+  pgbouncer_pool_mode         = var.pgbouncer_pool_mode
+
   tags = {
     environment = var.env
     project     = var.project_name

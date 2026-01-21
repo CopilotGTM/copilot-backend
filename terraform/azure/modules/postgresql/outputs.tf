@@ -32,3 +32,13 @@ output "db_password_secret_id" {
   description = "The ID of the Key Vault secret containing the database password."
   value       = azurerm_key_vault_secret.db_password.id
 }
+
+output "pgbouncer_enabled" {
+  description = "Whether PgBouncer is enabled on the server."
+  value       = var.pgbouncer_enabled
+}
+
+output "pgbouncer_port" {
+  description = "The port to use for PgBouncer connections (6432 if enabled, otherwise 5432)."
+  value       = var.pgbouncer_enabled ? 6432 : 5432
+}

@@ -59,3 +59,35 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+# -----------------------------------------------------------------
+# PgBouncer Configuration Variables
+# -----------------------------------------------------------------
+variable "pgbouncer_enabled" {
+  description = "Enable PgBouncer connection pooling on the PostgreSQL Flexible Server."
+  type        = bool
+  default     = false
+}
+
+variable "pgbouncer_default_pool_size" {
+  description = "Number of server connections per user/database pair for PgBouncer."
+  type        = number
+  default     = 50
+}
+
+variable "pgbouncer_max_client_conn" {
+  description = "Maximum number of client connections allowed by PgBouncer."
+  type        = number
+  default     = 200
+}
+
+variable "pgbouncer_pool_mode" {
+  description = "PgBouncer pool mode: 'session', 'transaction', or 'statement'. Transaction mode recommended for web apps."
+  type        = string
+  default     = "transaction"
+
+  validation {
+    condition     = contains(["session", "transaction", "statement"], var.pgbouncer_pool_mode)
+    error_message = "pgbouncer_pool_mode must be one of: session, transaction, statement."
+  }
+}
