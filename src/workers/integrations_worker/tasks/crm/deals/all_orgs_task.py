@@ -92,7 +92,7 @@ def sync_crm_deals_all_orgs_task() -> dict[str, Any]:
         # Query all approved organizations
         org_ids: list[UUID] = []
         async for master_session in acquire_master_async_session():
-            stmt = select(Organisation.organisation_id).where(  # type: ignore
+            stmt = select(Organisation.organisation_id).where(
                 Organisation.status == OrganisationStatus.APPROVED
             )
             result = await master_session.execute(stmt)
@@ -122,7 +122,7 @@ def sync_crm_deals_all_orgs_task() -> dict[str, Any]:
 
         for organisation in org_ids:
             try:
-                task = sync_crm_deals_org_task.apply_async(  # type: ignore
+                task = sync_crm_deals_org_task.apply_async(
                     kwargs={"organisation_id": str(organisation)},
                     headers=correlation_headers(),
                 )

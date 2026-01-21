@@ -12,6 +12,12 @@ Use cases:
 
 This task uses CRMDealSyncService.sync_integration() - same as org_task.py
 to ensure consistent behavior with scheduled sync (Tier 2).
+
+Session Management:
+    This task follows the "fresh session" pattern to avoid holding database
+    connections during long-running external API calls:
+    1. Session 1: Validate integration exists and is active, release session
+    2. Session 2: Acquire fresh session, sync via CRMDealSyncService, release session
 """
 
 from __future__ import annotations
@@ -88,7 +94,12 @@ def sync_crm_deals_integration_task(
     int_id = UUID(integration_id)
 
     async def _sync_integration() -> dict[str, Any]:
-        """Sync deals for the specific integration."""
+        """Sync deals for the specific integration.
+
+        Uses fresh session pattern:
+        1. Session 1: Validate integration exists and is active, release session
+        2. Session 2: Acquire fresh session, sync via CRMDealSyncService, release session
+        """
         logger.info(
             "Starting CRM deals sync for integration (Tier 3): org=%s integration=%s "
             "force_full=%s skip_enrichment=%s",
@@ -98,48 +109,81 @@ def sync_crm_deals_integration_task(
             skip_enrichment,
         )
 
+        # ─────────────────────────────────────────────────────────────────────
+        # Phase 1: Validate integration exists and is active
+        # Session is released after this block
+        # ─────────────────────────────────────────────────────────────────────
+        integration_valid = False
+
+        async for session in acquire_org_async_session(org_id):
+            # Query the specific integration
+            stmt = select(KnowledgeIntegration).where(
+                KnowledgeIntegration.integration_id == int_id,
+                KnowledgeIntegration.is_active,
+            )
+            result = await session.execute(stmt)
+            integration = result.scalar_one_or_none()
+
+            if not integration:
+                logger.error(
+                    "Integration not found or inactive: org=%s integration=%s",
+                    org_id,
+                    int_id,
+                )
+                return {
+                    "status": "failed",
+                    "organisation_id": organisation_id,
+                    "integration_id": integration_id,
+                    "started_at": started_at,
+                    "completed_at": datetime.now(UTC).isoformat(),
+                    "error": "Integration not found or inactive",
+                }
+
+            if not integration.connection_id:
+                logger.error(
+                    "Integration has no connection_id: org=%s integration=%s",
+                    org_id,
+                    int_id,
+                )
+                return {
+                    "status": "failed",
+                    "organisation_id": organisation_id,
+                    "integration_id": integration_id,
+                    "started_at": started_at,
+                    "completed_at": datetime.now(UTC).isoformat(),
+                    "error": "Integration not connected",
+                }
+
+            integration_valid = True
+        # Session is now released
+
+        if not integration_valid:
+            return {
+                "status": "failed",
+                "organisation_id": organisation_id,
+                "integration_id": integration_id,
+                "started_at": started_at,
+                "completed_at": datetime.now(UTC).isoformat(),
+                "error": "Failed to acquire database session",
+            }
+
+        # ─────────────────────────────────────────────────────────────────────
+        # Phase 2: Acquire fresh session and sync via CRMDealSyncService
+        # ─────────────────────────────────────────────────────────────────────
         nango = NangoClient()
         try:
             async for session in acquire_org_async_session(org_id):
-                # Query the specific integration
+                # Reload integration for this session
                 stmt = select(KnowledgeIntegration).where(
-                    KnowledgeIntegration.integration_id == int_id,  # type: ignore
-                    KnowledgeIntegration.is_active,  # type: ignore
+                    KnowledgeIntegration.integration_id == int_id,
                 )
                 result = await session.execute(stmt)
                 integration = result.scalar_one_or_none()
 
                 if not integration:
-                    logger.error(
-                        "Integration not found or inactive: org=%s integration=%s",
-                        org_id,
-                        int_id,
-                    )
-                    return {
-                        "status": "failed",
-                        "organisation_id": organisation_id,
-                        "integration_id": integration_id,
-                        "started_at": started_at,
-                        "completed_at": datetime.now(UTC).isoformat(),
-                        "error": "Integration not found or inactive",
-                    }
+                    raise ValueError(f"Integration {int_id} not found")
 
-                if not integration.connection_id:
-                    logger.error(
-                        "Integration has no connection_id: org=%s integration=%s",
-                        org_id,
-                        int_id,
-                    )
-                    return {
-                        "status": "failed",
-                        "organisation_id": organisation_id,
-                        "integration_id": integration_id,
-                        "started_at": started_at,
-                        "completed_at": datetime.now(UTC).isoformat(),
-                        "error": "Integration not connected",
-                    }
-
-                # Use the service directly
+                # Use the service to sync
                 try:
                     deal_sync_service = CRMDealSyncService(
                         session=session,
@@ -182,18 +226,17 @@ def sync_crm_deals_integration_task(
                         "completed_at": datetime.now(UTC).isoformat(),
                         "error": str(sync_error),
                     }
-
+            # Session is now released
         finally:
             await nango.close()
 
-        # If async for didn't yield any sessions
         return {
             "status": "failed",
             "organisation_id": organisation_id,
             "integration_id": integration_id,
             "started_at": started_at,
             "completed_at": datetime.now(UTC).isoformat(),
-            "error": "Failed to acquire database session",
+            "error": "Failed to acquire database session for sync",
         }
 
     try:

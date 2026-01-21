@@ -2,10 +2,19 @@
 Tier 2: Organization-level CRM companies sync task.
 
 Syncs all CRM company integrations for a specific organization.
+
+Session Management:
+    This task follows the "fresh session" pattern to avoid holding database
+    connections during long-running external API calls:
+    1. Session 1: Query integrations, extract needed data, release session
+    2. For each integration:
+       a. Fetch companies from API (NO session held)
+       b. Session N: Write companies to DB, update integration, run enrichment, release session
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -37,6 +46,21 @@ from ..utils import (
 logger = get_logger(__name__)
 
 
+@dataclass
+class IntegrationFetchData:
+    """Data extracted from integration needed for fetching companies."""
+
+    integration_id: UUID
+    connection_id: str
+    integration_type: IntegrationType
+    integration_type_value: str
+    provider: str
+    provider_config_key: str
+    data_type: str
+    is_initial: bool
+    last_sync_at: datetime | None
+
+
 @app.task(
     name="integrations.sync_crm_companies_org",
     bind=True,
@@ -61,103 +85,151 @@ def sync_crm_companies_org_task(
     org_id = UUID(organisation_id)
 
     async def _sync_org() -> dict[str, Any]:
+        """Sync CRM companies for the organization.
+
+        Uses fresh session pattern:
+        1. Session 1: Query integrations, extract data, release session
+        2. For each integration:
+           a. Fetch companies from API (NO session held)
+           b. Session N: Write companies to DB, update integration, run enrichment
+        """
         logger.info("Starting CRM companies sync for organization (Tier 2): %s", org_id)
 
-        nango = NangoClient()
-        try:
-            async for session in acquire_org_async_session(org_id):
-                stmt = select(KnowledgeIntegration).where(
-                    KnowledgeIntegration.integration_type.in_(CRM_INTEGRATION_TYPES),
-                    KnowledgeIntegration.is_active == True,  # noqa: E712
-                    KnowledgeIntegration.connection_id.isnot(None),
-                )
-                result = await session.execute(stmt)
-                integrations = result.scalars().all()
+        # ─────────────────────────────────────────────────────────────────────
+        # Phase 1: Query integrations and extract data needed for fetching
+        # Session is released after this block
+        # ─────────────────────────────────────────────────────────────────────
+        integration_fetch_list: list[IntegrationFetchData] = []
 
-                if not integrations:
-                    return {
-                        "status": "completed",
-                        "organisation_id": organisation_id,
-                        "started_at": started_at,
-                        "completed_at": datetime.now(UTC).isoformat(),
-                        "summary": {
-                            "total_integrations": 0,
-                            "successful": 0,
-                            "failed": 0,
-                            "total_records_synced": 0,
-                        },
-                        "integration_results": [],
-                    }
+        async for session in acquire_org_async_session(org_id):
+            stmt = select(KnowledgeIntegration).where(
+                KnowledgeIntegration.integration_type.in_(CRM_INTEGRATION_TYPES),
+                KnowledgeIntegration.is_active.is_(True),
+                KnowledgeIntegration.connection_id.isnot(None),
+            )
+            result = await session.execute(stmt)
+            integrations = result.scalars().all()
 
-                integration_results = []
-                successful = 0
-                failed = 0
-                total_records = 0
-
-                for integration in integrations:
-                    try:
-                        sync_result = await _sync_companies_for_integration(
-                            session=session,
-                            nango=nango,
-                            organisation_id=org_id,
-                            integration=integration,
-                            skip_enrichment=skip_enrichment,
-                        )
-                        if sync_result.get("status") == "success":
-                            successful += 1
-                            total_records += sync_result.get("records_synced", 0)
-                        else:
-                            failed += 1
-                        integration_results.append(sync_result)
-                    except Exception as e:
-                        logger.error(
-                            "Failed to sync companies for integration %s: %s",
-                            integration.integration_id,
-                            str(e),
-                            exc_info=True,
-                        )
-                        failed += 1
-                        integration.last_sync_status = SyncStatus.FAILED.value
-                        integration.last_sync_error = str(e)[:500]
-                        session.add(integration)
-                        await session.commit()
-                        integration_results.append(
-                            {
-                                "integration_id": str(integration.integration_id),
-                                "integration_type": integration.integration_type.value
-                                if hasattr(integration.integration_type, "value")
-                                else str(integration.integration_type),
-                                "status": "failed",
-                                "error": str(e),
-                            }
-                        )
-
-                status = (
-                    "completed" if failed == 0 else ("failed" if successful == 0 else "partial")
-                )
-
+            if not integrations:
                 return {
-                    "status": status,
+                    "status": "completed",
                     "organisation_id": organisation_id,
                     "started_at": started_at,
                     "completed_at": datetime.now(UTC).isoformat(),
                     "summary": {
-                        "total_integrations": len(integrations),
-                        "successful": successful,
-                        "failed": failed,
-                        "total_records_synced": total_records,
+                        "total_integrations": 0,
+                        "successful": 0,
+                        "failed": 0,
+                        "total_records_synced": 0,
                     },
-                    "integration_results": integration_results,
+                    "integration_results": [],
                 }
+
+            # Extract data needed for fetching
+            for integration in integrations:
+                int_type = integration.integration_type
+                if isinstance(int_type, str):
+                    int_type = IntegrationType(int_type)
+
+                provider = get_provider_from_integration_type(int_type)
+                provider_config_key = to_nango_provider_key(int_type)
+                data_type = get_sync_data_type("companies", provider)
+                last_sync_at = get_last_sync_timestamp(integration, "companies")
+
+                integration_fetch_list.append(
+                    IntegrationFetchData(
+                        integration_id=integration.integration_id,
+                        connection_id=integration.connection_id,
+                        integration_type=int_type,
+                        integration_type_value=int_type.value,
+                        provider=provider,
+                        provider_config_key=provider_config_key,
+                        data_type=data_type,
+                        is_initial=last_sync_at is None,
+                        last_sync_at=last_sync_at,
+                    )
+                )
+        # Session is now released
+
+        if not integration_fetch_list:
+            return {
+                "status": "failed",
+                "organisation_id": organisation_id,
+                "started_at": started_at,
+                "completed_at": datetime.now(UTC).isoformat(),
+                "error": "Failed to acquire database session",
+            }
+
+        # ─────────────────────────────────────────────────────────────────────
+        # Phase 2 & 3: For each integration, fetch companies then persist
+        # External API calls happen WITHOUT holding a database session
+        # ─────────────────────────────────────────────────────────────────────
+        integration_results = []
+        successful = 0
+        failed = 0
+        total_records = 0
+
+        nango = NangoClient()
+        try:
+            for fetch_data in integration_fetch_list:
+                try:
+                    sync_result = await _sync_companies_for_integration_fresh(
+                        nango=nango,
+                        organisation_id=org_id,
+                        fetch_data=fetch_data,
+                        skip_enrichment=skip_enrichment,
+                    )
+                    if sync_result.get("status") == "success":
+                        successful += 1
+                        total_records += sync_result.get("records_synced", 0)
+                    else:
+                        failed += 1
+                    integration_results.append(sync_result)
+                except Exception as e:
+                    logger.error(
+                        "Failed to sync companies for integration %s: %s",
+                        fetch_data.integration_id,
+                        str(e),
+                        exc_info=True,
+                    )
+                    failed += 1
+                    # Update integration status with fresh session
+                    async for session in acquire_org_async_session(org_id):
+                        stmt = select(KnowledgeIntegration).where(
+                            KnowledgeIntegration.integration_id == fetch_data.integration_id,
+                        )
+                        result = await session.execute(stmt)
+                        integration = result.scalar_one_or_none()
+                        if integration:
+                            integration.last_sync_status = SyncStatus.FAILED.value
+                            integration.last_sync_error = str(e)[:500]
+                            session.add(integration)
+                            await session.commit()
+                    integration_results.append(
+                        {
+                            "integration_id": str(fetch_data.integration_id),
+                            "integration_type": fetch_data.integration_type_value,
+                            "status": "failed",
+                            "error": str(e),
+                        }
+                    )
         finally:
             await nango.close()
 
+        status = "completed" if failed == 0 else ("failed" if successful == 0 else "partial")
+
         return {
-            "status": "failed",
+            "status": status,
             "organisation_id": organisation_id,
             "started_at": started_at,
             "completed_at": datetime.now(UTC).isoformat(),
-            "error": "Failed to acquire database session",
+            "summary": {
+                "total_integrations": len(integration_fetch_list),
+                "successful": successful,
+                "failed": failed,
+                "total_records_synced": total_records,
+            },
+            "integration_results": integration_results,
         }
 
     try:
@@ -178,105 +250,117 @@ def sync_crm_companies_org_task(
         }
 
 
-async def _sync_companies_for_integration(
+async def _sync_companies_for_integration_fresh(
     *,
-    session,
     nango: NangoClient,
     organisation_id: UUID,
-    integration: KnowledgeIntegration,
+    fetch_data: IntegrationFetchData,
     skip_enrichment: bool = False,
 ) -> dict[str, Any]:
-    """Sync companies for a single CRM integration.
+    """Sync companies for a single CRM integration using fresh session pattern.
+
+    Flow:
+    1. Fetch companies from API (NO session held)
+    2. Acquire fresh session, write companies to DB
+    3. Update integration metadata
+    4. Run enrichment if needed
 
     Args:
-        session: Database session
         nango: NangoClient instance
         organisation_id: Organization UUID
-        integration: KnowledgeIntegration instance
+        fetch_data: Pre-extracted integration data
         skip_enrichment: If True, skip enrichment after sync
     """
-    integration_id = integration.integration_id
-    connection_id = integration.connection_id
-    integration_type = integration.integration_type
-
-    if isinstance(integration_type, str):
-        integration_type = IntegrationType(integration_type)
-
-    provider = get_provider_from_integration_type(integration_type)
-    provider_config_key = to_nango_provider_key(integration_type)
-    data_type = get_sync_data_type("companies", provider)
-
-    last_sync_at = get_last_sync_timestamp(integration, "companies")
-    is_initial = last_sync_at is None
-
     logger.info(
         "Syncing companies: org=%s integration=%s provider=%s is_initial=%s",
         organisation_id,
-        integration_id,
-        provider,
-        is_initial,
+        fetch_data.integration_id,
+        fetch_data.provider,
+        fetch_data.is_initial,
     )
 
-    fetcher = get_fetcher("crm", provider, data_type)
+    fetcher = get_fetcher("crm", fetch_data.provider, fetch_data.data_type)
     if not fetcher:
-        raise ValueError(f"No fetcher found for crm/{provider}/{data_type}")
+        raise ValueError(f"No fetcher found for crm/{fetch_data.provider}/{fetch_data.data_type}")
 
+    # ─────────────────────────────────────────────────────────────────────
+    # Phase 2: Fetch companies from API (NO session held)
+    # ─────────────────────────────────────────────────────────────────────
     sync_start = datetime.utcnow()  # Use naive UTC for TIMESTAMP WITHOUT TIME ZONE column
     records = await fetcher(
         nango=nango,
-        connection_id=connection_id,
-        is_initial=is_initial,
-        last_synced_at=last_sync_at,
-        data_type=data_type,
-        provider_config_key=provider_config_key,
+        connection_id=fetch_data.connection_id,
+        is_initial=fetch_data.is_initial,
+        last_synced_at=fetch_data.last_sync_at,
+        data_type=fetch_data.data_type,
+        provider_config_key=fetch_data.provider_config_key,
     )
 
-    logger.info("Fetched %d companies for integration %s", len(records), integration_id)
+    logger.info("Fetched %d companies for integration %s", len(records), fetch_data.integration_id)
 
-    company_service = CompanySyncService(db=session, organisation_id=organisation_id)
+    # ─────────────────────────────────────────────────────────────────────
+    # Phase 3: Write companies to DB and update integration (fresh session)
+    # ─────────────────────────────────────────────────────────────────────
+    metrics: dict[str, Any] = {}
+    enrichment_metrics: dict[str, Any] = {}
 
-    if is_initial:
-        metrics = await company_service.sync(
-            integration=integration, records=records, provider=provider
+    async for session in acquire_org_async_session(organisation_id):
+        # Reload integration for this session
+        stmt = select(KnowledgeIntegration).where(
+            KnowledgeIntegration.integration_id == fetch_data.integration_id,
         )
-    else:
-        metrics = await company_service.sync_incremental(
-            integration=integration, records=records, provider=provider
-        )
+        result = await session.execute(stmt)
+        integration = result.scalar_one_or_none()
 
-    integration.last_synced_at = sync_start
-    integration.last_sync_status = SyncStatus.SUCCESS.value
-    integration.last_sync_error = None
-    update_last_sync_timestamp(integration, "companies", sync_start)
-    attributes.flag_modified(integration, "connection_metadata")
-    session.add(integration)
-    await session.commit()
+        if not integration:
+            raise ValueError(f"Integration {fetch_data.integration_id} not found")
 
-    # Run enrichment after sync (unless skipped for initial sync)
-    enrichment_metrics = {}
-    if not skip_enrichment:
-        orchestrator = CRMEnrichmentOrchestrator(
-            db=session,
-            organisation_id=organisation_id,
-            integration=integration,
-        )
-        enrichment_metrics = await orchestrator.enrich_after_companies_sync()
-        # Commit enrichment changes
+        # Sync companies to DB
+        company_service = CompanySyncService(db=session, organisation_id=organisation_id)
+
+        if fetch_data.is_initial:
+            metrics = await company_service.sync(
+                integration=integration, records=records, provider=fetch_data.provider
+            )
+        else:
+            metrics = await company_service.sync_incremental(
+                integration=integration, records=records, provider=fetch_data.provider
+            )
+
+        # Update integration metadata
+        integration.last_synced_at = sync_start
+        integration.last_sync_status = SyncStatus.SUCCESS.value
+        integration.last_sync_error = None
+        update_last_sync_timestamp(integration, "companies", sync_start)
+        attributes.flag_modified(integration, "connection_metadata")
+        session.add(integration)
         await session.commit()
-        logger.info(
-            "Company enrichment complete: org=%s integration=%s metrics=%s",
-            organisation_id,
-            integration_id,
-            enrichment_metrics,
-        )
+
+        # Run enrichment after sync (unless skipped for initial sync)
+        if not skip_enrichment:
+            orchestrator = CRMEnrichmentOrchestrator(
+                db=session,
+                organisation_id=organisation_id,
+                integration=integration,
+            )
+            enrichment_metrics = await orchestrator.enrich_after_companies_sync()
+            # Commit enrichment changes
+            await session.commit()
+            logger.info(
+                "Company enrichment complete: org=%s integration=%s metrics=%s",
+                organisation_id,
+                fetch_data.integration_id,
+                enrichment_metrics,
+            )
+    # Session is now released
 
     return {
-        "integration_id": str(integration_id),
-        "integration_type": integration_type.value,
+        "integration_id": str(fetch_data.integration_id),
+        "integration_type": fetch_data.integration_type_value,
         "status": "success",
         "records_fetched": len(records),
         "records_synced": metrics.get("companies", len(records)),
-        "is_initial": is_initial,
+        "is_initial": fetch_data.is_initial,
         "metrics": metrics,
         "enrichment_metrics": enrichment_metrics,
     }

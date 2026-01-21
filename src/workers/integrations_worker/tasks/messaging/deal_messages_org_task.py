@@ -13,9 +13,16 @@ Architecture:
         |
     sync_deal_messages_org_task [Tier 2 - this file] (one per org)
         |
-    DealChannelMessagesService.sync_all_deal_channels()
+    DealChannelMessagesService.sync_all_deal_channels_fresh()
         |
     Teams Graph API (via Nango proxy) -> messaging_messages table
+
+Session Management:
+    This task follows the "fresh session" pattern to avoid holding database
+    connections during long-running external API calls:
+    - The service manages its own sessions internally
+    - Sessions are acquired only when DB operations are needed
+    - Sessions are released before external API calls
 """
 
 from __future__ import annotations
@@ -26,7 +33,6 @@ from uuid import UUID
 
 from celery import Task
 
-from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.service.integrations.deal_channel_messages_service import (
@@ -85,55 +91,51 @@ def sync_deal_messages_org_task(
     org_id = UUID(organisation_id)
 
     async def _sync_org() -> dict[str, Any]:
-        """Sync deal-linked channel messages for the organization."""
+        """Sync deal-linked channel messages for the organization.
+
+        Uses fresh session pattern:
+        - Service manages its own sessions internally
+        - No session held during API calls
+        """
         logger.info("Starting deal messages sync for organization (Tier 2): %s", org_id)
 
-        async for org_session in acquire_org_async_session(org_id):
-            # Perform the sync via service layer
-            service = DealChannelMessagesService(org_session, org_id)
-            result = await service.sync_all_deal_channels()
+        # Service manages its own sessions - no external session needed
+        # Pass None for session since we'll use sync_all_deal_channels_fresh
+        service = DealChannelMessagesService(None, org_id)
+        result = await service.sync_all_deal_channels_fresh()
 
-            # Extract errors from failed channel results
-            errors = [
-                {
-                    "channel_id": str(cr.channel_id),
-                    "channel_name": cr.channel_name,
-                    "error": cr.error,
-                }
-                for cr in result.channel_results
-                if cr.status == "failed" and cr.error
-            ]
-
-            completed_at = datetime.now(UTC).isoformat()
-
-            logger.info(
-                "Deal messages sync complete for org %s: channels_synced=%d channels_failed=%d messages=%d",
-                org_id,
-                result.channels_synced,
-                result.channels_failed,
-                result.messages_synced,
-            )
-
-            return {
-                "status": result.status,
-                "organisation_id": organisation_id,
-                "started_at": started_at,
-                "completed_at": completed_at,
-                "summary": {
-                    "channels_synced": result.channels_synced,
-                    "channels_failed": result.channels_failed,
-                    "messages_synced": result.messages_synced,
-                },
-                "errors": errors if errors else None,
+        # Extract errors from failed channel results
+        errors = [
+            {
+                "channel_id": str(cr.channel_id),
+                "channel_name": cr.channel_name,
+                "error": cr.error,
             }
+            for cr in result.channel_results
+            if cr.status == "failed" and cr.error
+        ]
 
-        # If async for didn't yield any sessions
+        completed_at = datetime.now(UTC).isoformat()
+
+        logger.info(
+            "Deal messages sync complete for org %s: channels_synced=%d channels_failed=%d messages=%d",
+            org_id,
+            result.channels_synced,
+            result.channels_failed,
+            result.messages_synced,
+        )
+
         return {
-            "status": "failed",
+            "status": result.status,
             "organisation_id": organisation_id,
             "started_at": started_at,
-            "completed_at": datetime.now(UTC).isoformat(),
-            "error": "Failed to acquire database session",
+            "completed_at": completed_at,
+            "summary": {
+                "channels_synced": result.channels_synced,
+                "channels_failed": result.channels_failed,
+                "messages_synced": result.messages_synced,
+            },
+            "errors": errors if errors else None,
         }
 
     try:
