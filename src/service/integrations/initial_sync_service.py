@@ -135,8 +135,8 @@ class InitialSyncService:
         Dispatches all 6 CRM entity sync tasks sequentially, with enrichment
         running at the end after all syncs complete.
 
-        Uses Celery's signature() to create task signatures from task names,
-        avoiding direct task imports which would pull in worker dependencies.
+        Uses the configured Celery client's signature() to create task signatures,
+        ensuring proper broker connection (Redis with SSL).
 
         Args:
             organisation_id: The organization UUID
@@ -153,7 +153,11 @@ class InitialSyncService:
             integration_type.value,
         )
 
-        from celery import chain, signature
+        from celery import chain
+        from src.workers.integrations_worker.client import get_integrations_celery_client
+
+        # Get the configured Celery client with proper Redis broker
+        celery_app = get_integrations_celery_client()
 
         org_id_str = str(organisation_id)
         int_id_str = str(integration.integration_id)
@@ -172,46 +176,46 @@ class InitialSyncService:
         queue = "integrations"
 
         try:
-            # Create task signatures using task names (avoids importing task modules)
-            # Using signature() with args/kwargs instead of task.s()
+            # Create task signatures using the configured Celery app
+            # Using celery_app.signature() ensures proper broker connection (Redis with SSL)
             # Must specify queue explicitly for API client
             # All signatures use immutable=True so they don't pass results to next task
             sync_chain = chain(
-                signature(
+                celery_app.signature(
                     task_companies,
                     args=[org_id_str],
                     kwargs={"skip_enrichment": True},
                     queue=queue,
                     immutable=True,
                 ),
-                signature(
+                celery_app.signature(
                     task_contacts,
                     args=[org_id_str],
                     kwargs={"skip_enrichment": True},
                     queue=queue,
                     immutable=True,
                 ),
-                signature(
+                celery_app.signature(
                     task_deals,
                     args=[org_id_str],
                     kwargs={"skip_enrichment": True},
                     queue=queue,
                     immutable=True,
                 ),
-                signature(
+                celery_app.signature(
                     task_users,
                     args=[org_id_str],
                     kwargs={"skip_enrichment": True},
                     queue=queue,
                     immutable=True,
                 ),
-                signature(
+                celery_app.signature(
                     task_pipelines,
                     args=[org_id_str],
                     queue=queue,
                     immutable=True,
                 ),
-                signature(
+                celery_app.signature(
                     task_activities,
                     args=[org_id_str],
                     kwargs={"skip_enrichment": True},
@@ -219,7 +223,7 @@ class InitialSyncService:
                     immutable=True,
                 ),
                 # Enrichment task runs after all sync tasks complete
-                signature(
+                celery_app.signature(
                     task_enrichment,
                     args=[org_id_str, int_id_str],
                     queue=queue,
