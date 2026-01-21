@@ -38,8 +38,9 @@ variables:
 
   # Observability Stack (Loki + Promtail + Grafana)
   # Access via: kubectl port-forward svc/copilot-backend-grafana 3001:3000 -n copilotgtm
+  # DISABLED: To free up cluster resources (CPU/Memory) - can be re-enabled when needed
   - name: ENABLE_OBSERVABILITY
-    value: 'true'
+    value: 'false'
 
   # Image repositories
   - name: API_IMAGE_REPOSITORY
