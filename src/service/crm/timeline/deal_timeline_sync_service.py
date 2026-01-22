@@ -45,7 +45,7 @@ from src.domain.models.organisation_tables.sync.timeline_models import (
 )
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
-from src.service.crm.timeline_event_source_resolver import (
+from src.service.crm.timeline.timeline_event_source_resolver import (
     resolve_crm_event_source,
     resolve_email_event_source,
     resolve_meeting_event_source,

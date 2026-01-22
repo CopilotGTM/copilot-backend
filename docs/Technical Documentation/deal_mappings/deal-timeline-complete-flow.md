@@ -341,7 +341,7 @@ stmt = insert(DealTimelineEvent).values(...).on_conflict_do_nothing(
 
 ## API Layer
 
-**Endpoint:** `GET /api/v1/deals/{deal_id}/timeline`
+**Endpoint:** `GET /users/crm/deals/{deal_id}/timeline`
 
 **Service:** `DealTimelineService`
 

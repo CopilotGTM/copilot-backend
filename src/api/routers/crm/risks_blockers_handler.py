@@ -29,7 +29,7 @@ from src.domain.models.organisation_tables.sync.risk_blocker_models import (
     RiskBlockerType,
 )
 from src.infra.utils.logger import get_logger
-from src.service.crm.risk_blocker_service import (
+from src.service.crm.insights.risk_blocker_service import (
     InvalidStatusTransitionError,
     RiskBlockerNotFoundError,
     RiskBlockerService,

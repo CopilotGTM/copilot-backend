@@ -142,3 +142,6 @@ secrets/
 # Migration scripts (if already applied)
 # Uncomment if migrations are pre-applied:
 # migrations/
+
+# Deprecated code (not actively maintained)
+/deprecated/

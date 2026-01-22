@@ -14,6 +14,7 @@ from uuid import UUID
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import col
 from src.api.schemas.risk_blocker_models import (
     RiskBlockerDetail,
     RiskBlockerListItem,
@@ -111,22 +112,22 @@ class RiskBlockerService:
         """List risks/blockers for a deal with pagination and filters."""
 
         base_query = select(DealRiskBlocker).where(
-            DealRiskBlocker.deal_id == deal_id,
-            DealRiskBlocker.organisation_id == self.organisation_id,
+            col(DealRiskBlocker.deal_id) == deal_id,
+            col(DealRiskBlocker.organisation_id) == self.organisation_id,
         )
 
         # Build filtered query
         query = base_query
 
         if item_type:
-            query = query.where(DealRiskBlocker.item_type == item_type)
+            query = query.where(col(DealRiskBlocker.item_type) == item_type)
 
         if statuses:
-            query = query.where(DealRiskBlocker.status.in_(statuses))
+            query = query.where(col(DealRiskBlocker.status).in_(statuses))
         elif not include_resolved:
             # Exclude resolved/dismissed by default
             query = query.where(
-                DealRiskBlocker.status.not_in(
+                col(DealRiskBlocker.status).not_in(
                     [
                         RiskBlockerStatus.RESOLVED,
                         RiskBlockerStatus.DISMISSED,
@@ -137,10 +138,10 @@ class RiskBlockerService:
             )
 
         if severity:
-            query = query.where(DealRiskBlocker.severity == severity)
+            query = query.where(col(DealRiskBlocker.severity) == severity)
 
         if category:
-            query = query.where(DealRiskBlocker.category == category)
+            query = query.where(col(DealRiskBlocker.category) == category)
 
         # Get total count for filtered query
         count_query = select(func.count()).select_from(query.subquery())
@@ -156,17 +157,17 @@ class RiskBlockerService:
                 if sort_order == "desc":
                     query = query.where(
                         or_(
-                            DealRiskBlocker.created_at < cursor_time,
-                            (DealRiskBlocker.created_at == cursor_time)
-                            & (DealRiskBlocker.risk_blocker_id < cursor_id),
+                            col(DealRiskBlocker.created_at) < cursor_time,
+                            (col(DealRiskBlocker.created_at) == cursor_time)
+                            & (col(DealRiskBlocker.risk_blocker_id) < cursor_id),
                         )
                     )
                 else:
                     query = query.where(
                         or_(
-                            DealRiskBlocker.created_at > cursor_time,
-                            (DealRiskBlocker.created_at == cursor_time)
-                            & (DealRiskBlocker.risk_blocker_id > cursor_id),
+                            col(DealRiskBlocker.created_at) > cursor_time,
+                            (col(DealRiskBlocker.created_at) == cursor_time)
+                            & (col(DealRiskBlocker.risk_blocker_id) > cursor_id),
                         )
                     )
             except Exception:
@@ -206,27 +207,33 @@ class RiskBlockerService:
         """Get summary statistics for a deal."""
         query = select(
             func.count().label("total"),
-            func.count().filter(DealRiskBlocker.item_type == RiskBlockerType.RISK).label("risks"),
             func.count()
-            .filter(DealRiskBlocker.item_type == RiskBlockerType.BLOCKER)
+            .filter(col(DealRiskBlocker.item_type) == RiskBlockerType.RISK)
+            .label("risks"),
+            func.count()
+            .filter(col(DealRiskBlocker.item_type) == RiskBlockerType.BLOCKER)
             .label("blockers"),
             func.count()
-            .filter(DealRiskBlocker.status == RiskBlockerStatus.AI_SUGGESTED)
+            .filter(col(DealRiskBlocker.status) == RiskBlockerStatus.AI_SUGGESTED)
             .label("ai_suggested"),
-            func.count().filter(DealRiskBlocker.status == RiskBlockerStatus.OPEN).label("open"),
             func.count()
-            .filter(DealRiskBlocker.status == RiskBlockerStatus.IN_PROGRESS)
+            .filter(col(DealRiskBlocker.status) == RiskBlockerStatus.OPEN)
+            .label("open"),
+            func.count()
+            .filter(col(DealRiskBlocker.status) == RiskBlockerStatus.IN_PROGRESS)
             .label("in_progress"),
             func.count()
-            .filter(DealRiskBlocker.status == RiskBlockerStatus.RESOLVED)
+            .filter(col(DealRiskBlocker.status) == RiskBlockerStatus.RESOLVED)
             .label("resolved"),
             func.count()
-            .filter(DealRiskBlocker.severity == RiskBlockerSeverity.CRITICAL)
+            .filter(col(DealRiskBlocker.severity) == RiskBlockerSeverity.CRITICAL)
             .label("critical"),
-            func.count().filter(DealRiskBlocker.severity == RiskBlockerSeverity.HIGH).label("high"),
+            func.count()
+            .filter(col(DealRiskBlocker.severity) == RiskBlockerSeverity.HIGH)
+            .label("high"),
         ).where(
-            DealRiskBlocker.deal_id == deal_id,
-            DealRiskBlocker.organisation_id == self.organisation_id,
+            col(DealRiskBlocker.deal_id) == deal_id,
+            col(DealRiskBlocker.organisation_id) == self.organisation_id,
         )
 
         result = await self.session.execute(query)
@@ -248,8 +255,8 @@ class RiskBlockerService:
         """Get a single risk/blocker by ID with full details."""
         result = await self.session.execute(
             select(DealRiskBlocker).where(
-                DealRiskBlocker.risk_blocker_id == risk_blocker_id,
-                DealRiskBlocker.organisation_id == self.organisation_id,
+                col(DealRiskBlocker.risk_blocker_id) == risk_blocker_id,
+                col(DealRiskBlocker.organisation_id) == self.organisation_id,
             )
         )
         item = result.scalar_one_or_none()
@@ -329,8 +336,8 @@ class RiskBlockerService:
 
         result = await self.session.execute(
             select(DealRiskBlocker).where(
-                DealRiskBlocker.risk_blocker_id == risk_blocker_id,
-                DealRiskBlocker.organisation_id == self.organisation_id,
+                col(DealRiskBlocker.risk_blocker_id) == risk_blocker_id,
+                col(DealRiskBlocker.organisation_id) == self.organisation_id,
             )
         )
         item = result.scalar_one_or_none()
@@ -386,8 +393,8 @@ class RiskBlockerService:
         """Confirm an AI-suggested item."""
         result = await self.session.execute(
             select(DealRiskBlocker).where(
-                DealRiskBlocker.risk_blocker_id == risk_blocker_id,
-                DealRiskBlocker.organisation_id == self.organisation_id,
+                col(DealRiskBlocker.risk_blocker_id) == risk_blocker_id,
+                col(DealRiskBlocker.organisation_id) == self.organisation_id,
             )
         )
         item = result.scalar_one_or_none()
@@ -418,8 +425,8 @@ class RiskBlockerService:
         """Dismiss a risk/blocker."""
         result = await self.session.execute(
             select(DealRiskBlocker).where(
-                DealRiskBlocker.risk_blocker_id == risk_blocker_id,
-                DealRiskBlocker.organisation_id == self.organisation_id,
+                col(DealRiskBlocker.risk_blocker_id) == risk_blocker_id,
+                col(DealRiskBlocker.organisation_id) == self.organisation_id,
             )
         )
         item = result.scalar_one_or_none()
@@ -450,8 +457,8 @@ class RiskBlockerService:
         """Mark a risk/blocker as resolved."""
         result = await self.session.execute(
             select(DealRiskBlocker).where(
-                DealRiskBlocker.risk_blocker_id == risk_blocker_id,
-                DealRiskBlocker.organisation_id == self.organisation_id,
+                col(DealRiskBlocker.risk_blocker_id) == risk_blocker_id,
+                col(DealRiskBlocker.organisation_id) == self.organisation_id,
             )
         )
         item = result.scalar_one_or_none()
@@ -488,8 +495,8 @@ class RiskBlockerService:
         """Reopen a resolved risk/blocker."""
         result = await self.session.execute(
             select(DealRiskBlocker).where(
-                DealRiskBlocker.risk_blocker_id == risk_blocker_id,
-                DealRiskBlocker.organisation_id == self.organisation_id,
+                col(DealRiskBlocker.risk_blocker_id) == risk_blocker_id,
+                col(DealRiskBlocker.organisation_id) == self.organisation_id,
             )
         )
         item = result.scalar_one_or_none()
@@ -526,8 +533,8 @@ class RiskBlockerService:
         """Delete a risk/blocker."""
         result = await self.session.execute(
             select(DealRiskBlocker).where(
-                DealRiskBlocker.risk_blocker_id == risk_blocker_id,
-                DealRiskBlocker.organisation_id == self.organisation_id,
+                col(DealRiskBlocker.risk_blocker_id) == risk_blocker_id,
+                col(DealRiskBlocker.organisation_id) == self.organisation_id,
             )
         )
         item = result.scalar_one_or_none()

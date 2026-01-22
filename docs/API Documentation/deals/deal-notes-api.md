@@ -51,7 +51,7 @@ All endpoints return the shared `GenericResponse` envelope:
 | Operation | Limit |
 | --- | --- |
 | Read (`GET`) | ~60/min, 1000/hour per user |
-| Write (`POST`) | ~30/min, 500/hour per user |
+| Write (`POST`/`PATCH`/`DELETE`) | ~30/min, 500/hour per user |
 
 On limit breach: `429 Too Many Requests` with `Retry-After` header.
 
@@ -206,6 +206,7 @@ GET /{deal_id}/notes
 | Code | Description |
 |------|-------------|
 | `400` | Invalid cursor format |
+| `422` | Invalid query or path parameter (e.g., `limit`, `sort`, `deal_id`) |
 | `404` | Deal not found or not accessible in this organisation |
 | `429` | Rate limit exceeded |
 | `500` | Internal server error |
@@ -213,8 +214,10 @@ GET /{deal_id}/notes
 ### Usage Example (Get Deal Notes)
 
 ```ts
+const baseUrl = '/users/crm/deals';
+
 // Fetch first page
-const response = await fetch(`/users/crm/deals/${dealId}/notes?limit=20&sort=desc`, {
+const response = await fetch(`${baseUrl}/${dealId}/notes?limit=20&sort=desc`, {
   headers: { Authorization: `Bearer ${token}` }
 });
 const { data } = await response.json();
@@ -222,7 +225,7 @@ const { data } = await response.json();
 // Fetch next page using cursor
 if (data.cursor) {
   const nextPage = await fetch(
-    `/users/crm/deals/${dealId}/notes?limit=20&cursor=${data.cursor}`,
+    `${baseUrl}/${dealId}/notes?limit=20&cursor=${data.cursor}`,
     { headers: { Authorization: `Bearer ${token}` } }
   );
 }
@@ -294,7 +297,7 @@ POST /{deal_id}/notes
 
 | Code | Description |
 |------|-------------|
-| `400` | Validation error (empty content, content too long, etc.) |
+| `422` | Validation error (invalid UUID or body constraints) |
 | `404` | Deal not found or not accessible in this organisation |
 | `429` | Rate limit exceeded |
 | `500` | Internal server error |
@@ -303,16 +306,22 @@ POST /{deal_id}/notes
 
 ```json
 {
-  "status": "ERROR",
-  "message": "Content cannot be empty or whitespace-only",
-  "data": null
+  "detail": [
+    {
+      "type": "value_error",
+      "loc": ["body", "content"],
+      "msg": "Content cannot be empty or whitespace-only",
+      "input": "   "
+    }
+  ]
 }
 ```
 
 ### Usage Example (Create Deal Note)
 
 ```ts
-const response = await fetch(`/users/crm/deals/${dealId}/notes`, {
+const baseUrl = '/users/crm/deals';
+const response = await fetch(`${baseUrl}/${dealId}/notes`, {
   method: 'POST',
   headers: {
     'Authorization': `Bearer ${token}`,
@@ -326,6 +335,136 @@ const response = await fetch(`/users/crm/deals/${dealId}/notes`, {
 
 const { data: createdNote } = await response.json();
 ```
+
+---
+
+## 3. Update Deal Note
+
+Updates a user-created note for a specific deal. External CRM notes are read-only.
+
+### Endpoint (Update Deal Note)
+
+```http
+PATCH /{deal_id}/notes/{note_id}
+```
+
+### Path Parameters (Update Deal Note)
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `deal_id` | UUID | Yes | The unique identifier of the deal |
+| `note_id` | UUID | Yes | The unique identifier of the note |
+
+### Request Body (Update Deal Note)
+
+| Field | Type | Required | Constraints | Description |
+|-------|------|----------|-------------|-------------|
+| `content` | string | No | 1-10000 chars, non-empty | Updated note body |
+| `subject` | string | No | Max 500 chars | Updated title/subject |
+
+### Request Example (Update Deal Note)
+
+```json
+{
+  "content": "Updated with new pricing context from finance."
+}
+```
+
+### Success Response (200) (Update Deal Note)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Note updated successfully",
+  "data": {
+    "note_id": "9c9f7b2c-8f12-4ef7-a52c-2b2b7b6d1b53",
+    "deal_id": "a8a3b1db-4d9a-4f3c-a3f6-2a5c1d8b9e1f",
+    "content": "Updated with new pricing context from finance.",
+    "subject": "Budget Confirmation",
+    "created_at": "2025-12-24T10:40:00Z",
+    "updated_at": "2025-12-24T10:55:00Z",
+    "source": "user",
+    "is_user_created": true,
+    "author": {
+      "id": "b1a7f9c0-1b2c-4f5a-9c1d-8b7c6a5d4e3f",
+      "name": null,
+      "email": null
+    },
+    "metadata": {
+      "external_id": null,
+      "synced_at": null
+    }
+  }
+}
+```
+
+### Error Responses (Update Deal Note)
+
+| Code | Description |
+|------|-------------|
+| `400` | No fields to update or content cannot be null |
+| `422` | Validation error (invalid UUID or body constraints) |
+| `404` | Deal or note not found |
+| `409` | External CRM notes are read-only |
+| `429` | Rate limit exceeded |
+| `500` | Internal server error |
+
+---
+
+## 4. Delete Deal Note
+
+Soft deletes a user-created note for a specific deal. External CRM notes are read-only.
+
+### Endpoint (Delete Deal Note)
+
+```http
+DELETE /{deal_id}/notes/{note_id}
+```
+
+### Path Parameters (Delete Deal Note)
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `deal_id` | UUID | Yes | The unique identifier of the deal |
+| `note_id` | UUID | Yes | The unique identifier of the note |
+
+### Success Response (200) (Delete Deal Note)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Note deleted successfully",
+  "data": {
+    "note_id": "9c9f7b2c-8f12-4ef7-a52c-2b2b7b6d1b53",
+    "deal_id": "a8a3b1db-4d9a-4f3c-a3f6-2a5c1d8b9e1f",
+    "content": "Updated with new pricing context from finance.",
+    "subject": "Budget Confirmation",
+    "created_at": "2025-12-24T10:40:00Z",
+    "updated_at": "2025-12-24T10:55:00Z",
+    "source": "user",
+    "is_user_created": true,
+    "author": {
+      "id": "b1a7f9c0-1b2c-4f5a-9c1d-8b7c6a5d4e3f",
+      "name": null,
+      "email": null
+    },
+    "metadata": {
+      "external_id": null,
+      "synced_at": null
+    }
+  }
+}
+```
+
+### Error Responses (Delete Deal Note)
+
+| Code | Description |
+|------|-------------|
+| `422` | Invalid path parameter (e.g., `deal_id`, `note_id`) |
+| `404` | Deal or note not found |
+| `409` | External CRM notes are read-only |
+| `429` | Rate limit exceeded |
+| `500` | Internal server error |
 
 ---
 
@@ -415,4 +554,4 @@ function AddNoteForm({ dealId, onNoteAdded }) {
 - **Pagination**: Uses cursor-based pagination for stable results during concurrent updates
 - **Sorting**: Timestamp is computed as `coalesce(source_created_at, created_at)` for null-safety
 - **Author attribution**: For user-created notes, `author.id` is the internal user UUID; for CRM notes, it's the CRM owner ID
-- **No edit/delete**: Currently, notes cannot be edited or deleted via API (planned for future release)
+- **Edit/delete**: Only user-created notes (integration_id = null) can be edited or deleted; external CRM notes remain read-only

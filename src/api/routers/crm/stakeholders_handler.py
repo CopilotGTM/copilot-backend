@@ -30,7 +30,7 @@ from src.api.schemas.crm_models import (
 )
 from src.api.utils.http_response import Response
 from src.infra.utils.logger import get_logger
-from src.service.crm.stakeholders_service import (
+from src.service.crm.insights.stakeholders_service import (
     StakeholdersService,
     StakeholdersServiceError,
 )

@@ -20,11 +20,11 @@ from src.domain.models.organisation_tables.sync.crm import (
     CRMPipeline,
 )
 from src.infra.utils.logger import get_logger
-from src.service.crm.deal_timeline_sync_service import (
+from src.service.crm.timeline.deal_timeline_sync_service import (
     build_deal_created_timeline_event,
     build_stage_change_timeline_event,
 )
-from src.service.crm.timeline_event_source_resolver import resolve_crm_event_source
+from src.service.crm.timeline.timeline_event_source_resolver import resolve_crm_event_source
 from src.service.integrations.core import BaseSyncService
 from src.workers.integrations_worker.utils.sync_metadata import (
     SyncAction,

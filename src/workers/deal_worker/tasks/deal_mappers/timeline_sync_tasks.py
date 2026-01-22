@@ -45,8 +45,8 @@ from src.infra.database.sessions import (
 )
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
-from src.service.crm.deal_timeline_service import DealTimelineService
-from src.service.crm.deal_timeline_sync_service import DealTimelineSyncService
+from src.service.crm.timeline.deal_timeline_service import DealTimelineService
+from src.service.crm.timeline.deal_timeline_sync_service import DealTimelineSyncService
 from src.workers.deal_worker.celery_app import app
 
 logger = get_logger(__name__)

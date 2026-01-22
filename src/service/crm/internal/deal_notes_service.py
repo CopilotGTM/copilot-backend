@@ -271,6 +271,62 @@ class DealNotesService:
 
         return note
 
+    async def update_user_note(
+        self,
+        deal_id: UUID,
+        note_id: UUID,
+        payload: dict[str, Any],
+    ) -> CRMActivity:
+        """Update a user-created note for a deal."""
+        if not payload:
+            raise DealNotesServiceError("No fields to update", status_code=400)
+
+        note = await self._load_user_note(deal_id, note_id)
+
+        updated = False
+        if "content" in payload:
+            if payload["content"] is None:
+                raise DealNotesServiceError("Content cannot be null", status_code=400)
+            note.body = payload["content"]
+            updated = True
+        if "subject" in payload:
+            note.subject = payload["subject"]
+            updated = True
+
+        if not updated:
+            raise DealNotesServiceError("No fields to update", status_code=400)
+
+        now = datetime.now(UTC)
+        note.source_modified_at = now
+        note.synced_at = now
+        note.last_seen_at = now
+        properties = note.properties or {}
+        properties["updated_via"] = "api"
+        note.properties = properties
+
+        await self.org_session.flush()
+        await self.org_session.refresh(note)
+
+        return note
+
+    async def delete_user_note(self, deal_id: UUID, note_id: UUID) -> CRMActivity:
+        """Soft delete a user-created note for a deal."""
+        note = await self._load_user_note(deal_id, note_id)
+
+        now = datetime.now(UTC)
+        note.is_deleted = True
+        note.source_modified_at = now
+        note.synced_at = now
+        note.last_seen_at = now
+        properties = note.properties or {}
+        properties["deleted_via"] = "api"
+        note.properties = properties
+
+        await self.org_session.flush()
+        await self.org_session.refresh(note)
+
+        return note
+
     async def trigger_deal_insight_pipeline(
         self,
         deal_id: UUID,
@@ -392,6 +448,20 @@ class DealNotesService:
             )
 
         return deal
+
+    async def _load_user_note(self, deal_id: UUID, note_id: UUID) -> CRMActivity:
+        note = await self.org_session.get(CRMActivity, note_id)
+        if not note or note.organisation_id != self.organisation_id:
+            raise DealNotesServiceError("Note not found", status_code=404)
+        if note.deal_id != deal_id:
+            raise DealNotesServiceError("Note not found", status_code=404)
+        if note.is_deleted:
+            raise DealNotesServiceError("Note not found", status_code=404)
+        if note.activity_type != CRMActivityType.NOTE.value:
+            raise DealNotesServiceError("Note not found", status_code=404)
+        if note.integration_id is not None:
+            raise DealNotesServiceError("External CRM notes are read-only", status_code=409)
+        return note
 
     def determine_note_source(self, note: CRMActivity) -> str:
         """Determine the source of a note (user, hubspot, salesforce).

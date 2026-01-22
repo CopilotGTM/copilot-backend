@@ -25,7 +25,7 @@ from src.domain.models.organisation_tables.sync.timeline_models import (
 )
 from src.infra.config.timeline_event_metadata import get_timeline_event_source_metadata
 from src.infra.utils.logger import get_logger
-from src.service.crm.deal_timeline_service import (
+from src.service.crm.timeline.deal_timeline_service import (
     DealTimelineService,
     DealTimelineServiceError,
 )

@@ -211,7 +211,7 @@ export interface TimelinePage {
 ### Sample Request
 
 ```http
-GET /users/crm/deals/6c3f98d5-2e6b-4a1c-8f8c-2e8f0211b0b9/timeline?limit=20&sort=desc
+GET /6c3f98d5-2e6b-4a1c-8f8c-2e8f0211b0b9/timeline?limit=20&sort=desc
 Authorization: Bearer <token>
 ```
 

@@ -23,6 +23,7 @@ Application deployment and startup scripts
 Routine maintenance and cleanup scripts
 - For scheduled maintenance tasks
 - Used by: Operations teams
+- `ensure_internal_crm_setup.py` - Ensure internal CRM integration + default pipeline exist per org
 
 ### 👑 `/admin/`
 Administrative and super-admin scripts

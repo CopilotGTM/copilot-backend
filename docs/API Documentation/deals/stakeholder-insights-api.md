@@ -299,7 +299,7 @@ Retrieve AI-generated insights for a deal's stakeholders. Returns complete data 
 ### Sample Request
 
 ```http
-GET /users/crm/deals/6c3f98d5-2e6b-4a1c-8f8c-2e8f0211b0b9/stakeholder-insights?limit=20&status=ACTIVE
+GET /6c3f98d5-2e6b-4a1c-8f8c-2e8f0211b0b9/stakeholder-insights?limit=20&status=ACTIVE
 Authorization: Bearer <token>
 ```
 
@@ -382,7 +382,7 @@ Authorization: Bearer <token>
 ### cURL Example
 
 ```bash
-curl -X GET "$BASE_URL/users/crm/deals/6c3f98d5-2e6b-4a1c-8f8c-2e8f0211b0b9/stakeholder-insights?status=ACTIVE&limit=20" \
+curl -X GET "$BASE_URL/6c3f98d5-2e6b-4a1c-8f8c-2e8f0211b0b9/stakeholder-insights?status=ACTIVE&limit=20" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Accept: application/json"
 ```
@@ -420,7 +420,7 @@ Mark an insight as acknowledged (user has seen it). Moves status from `ACTIVE` t
 ### cURL Example
 
 ```bash
-curl -X POST "$BASE_URL/users/crm/deals/6c3f98d5-2e6b-4a1c-8f8c-2e8f0211b0b9/stakeholder-insights/f9a6c1e1-0d56-4e2b-9c2d-4d3fb3d6c9a1/acknowledge" \
+curl -X POST "$BASE_URL/6c3f98d5-2e6b-4a1c-8f8c-2e8f0211b0b9/stakeholder-insights/f9a6c1e1-0d56-4e2b-9c2d-4d3fb3d6c9a1/acknowledge" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -457,7 +457,7 @@ Dismiss an insight as not relevant. Moves status to `DISMISSED`.
 ### cURL Example
 
 ```bash
-curl -X POST "$BASE_URL/users/crm/deals/6c3f98d5-2e6b-4a1c-8f8c-2e8f0211b0b9/stakeholder-insights/f9a6c1e1-0d56-4e2b-9c2d-4d3fb3d6c9a1/dismiss" \
+curl -X POST "$BASE_URL/6c3f98d5-2e6b-4a1c-8f8c-2e8f0211b0b9/stakeholder-insights/f9a6c1e1-0d56-4e2b-9c2d-4d3fb3d6c9a1/dismiss" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -506,7 +506,7 @@ Mark an insight as resolved (action has been taken).
 ### cURL Example
 
 ```bash
-curl -X POST "$BASE_URL/users/crm/deals/6c3f98d5-2e6b-4a1c-8f8c-2e8f0211b0b9/stakeholder-insights/f9a6c1e1-0d56-4e2b-9c2d-4d3fb3d6c9a1/resolve" \
+curl -X POST "$BASE_URL/6c3f98d5-2e6b-4a1c-8f8c-2e8f0211b0b9/stakeholder-insights/f9a6c1e1-0d56-4e2b-9c2d-4d3fb3d6c9a1/resolve" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"resolution_notes": "Scheduled call with Arun for next Tuesday."}'
@@ -600,7 +600,7 @@ class StakeholderInsightsAPI {
 // Usage Example - AI Insights Panel with Collapsed/Expanded Views
 // ============================================================================
 
-const api = new StakeholderInsightsAPI('/api/v1/users/crm', accessToken);
+const api = new StakeholderInsightsAPI('/users/crm', accessToken);
 
 // Fetch active insights for the deal (complete data in one call)
 const { insights, summary } = await api.list(dealId, {

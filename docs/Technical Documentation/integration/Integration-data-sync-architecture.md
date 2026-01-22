@@ -58,7 +58,7 @@ This document provides the **overall architecture** for the webhook-based integr
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │  ┌────────────────────────────────────────────────────────────────────┐    │
-│  │  /api/v1/users/integrations/oauth/webhooks/nango                   │    │
+│  │  /users/integrations/oauth/webhooks/nango                          │    │
 │  │  • Receives Nango webhooks (type: 'auth' or 'sync')                │    │
 │  │  • Verifies X-Nango-Signature                                       │    │
 │  │  • Routes to appropriate handler                                    │    │
@@ -232,7 +232,7 @@ This document provides the **overall architecture** for the webhook-based integr
 
 #### 1.1 Webhook Handler (Enhanced)
 
-**Endpoint:** `POST /api/v1/users/integrations/oauth/webhooks/nango`
+**Endpoint:** `POST /users/integrations/oauth/webhooks/nango`
 
 **Responsibilities:**
 
@@ -1304,7 +1304,7 @@ logger.info(
 ## Security Considerations
 
 1. **Webhook Verification**: Always verify `X-Nango-Signature` header
-2. **Token Management**: Nango handles OAuth token refresh
+2. **Token Management**: Nango handles OAuth token refresh (internal CRM integrations are excluded)
 3. **Data Isolation**: All queries scoped by `organization_id`
 4. **PII Protection**: JSONB data encrypted at rest (PostgreSQL level)
 5. **Rate Limiting**: Respect provider API limits (handled by Nango proxy)

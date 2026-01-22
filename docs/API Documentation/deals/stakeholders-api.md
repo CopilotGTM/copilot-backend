@@ -376,7 +376,7 @@ Use `include_pending=true` (default) to show pending stakeholders for user revie
 ### Example cURL (Get Deal Stakeholders)
 
 ```bash
-curl -X GET "$BASE_URL/users/crm/deals/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders" \
+curl -X GET "$BASE_URL/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Accept: application/json"
 ```
@@ -446,7 +446,7 @@ GET /{deal_id}/stakeholders/available-contacts
 ### Example cURL (List Available Contacts)
 
 ```bash
-curl -X GET "$BASE_URL/users/crm/deals/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders/available-contacts?query=engineering&limit=20" \
+curl -X GET "$BASE_URL/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders/available-contacts?query=engineering&limit=20" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Accept: application/json"
 ```
@@ -547,7 +547,7 @@ POST /{deal_id}/stakeholders/add-from-contacts
 ### Example cURL (Add Contacts as Stakeholders)
 
 ```bash
-curl -X POST "$BASE_URL/users/crm/deals/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders/add-from-contacts" \
+curl -X POST "$BASE_URL/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders/add-from-contacts" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -719,7 +719,7 @@ The following fields are automatically set or have neutral defaults:
 ### Example cURL (Add Stakeholder)
 
 ```bash
-curl -X POST "$BASE_URL/users/crm/deals/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders" \
+curl -X POST "$BASE_URL/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -863,7 +863,7 @@ Frontend can visualize this as:
 ### Example cURL (Get Stakeholder Detail)
 
 ```bash
-curl -X GET "$BASE_URL/users/crm/deals/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders/7fa85f64-5717-4562-b3fc-2c963f66afa8" \
+curl -X GET "$BASE_URL/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders/7fa85f64-5717-4562-b3fc-2c963f66afa8" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Accept: application/json"
 ```
@@ -923,7 +923,7 @@ When stakeholders are discovered from calendar events or emails beyond the first
 ### Example cURL (Approve Stakeholder)
 
 ```bash
-curl -X POST "$BASE_URL/users/crm/deals/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders/7fa85f64-5717-4562-b3fc-2c963f66afa8/approve" \
+curl -X POST "$BASE_URL/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders/7fa85f64-5717-4562-b3fc-2c963f66afa8/approve" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -987,7 +987,7 @@ POST /{deal_id}/stakeholders/{stakeholder_id}/reject
 ### Example cURL (Reject Stakeholder)
 
 ```bash
-curl -X POST "$BASE_URL/users/crm/deals/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders/7fa85f64-5717-4562-b3fc-2c963f66afa8/reject" \
+curl -X POST "$BASE_URL/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders/7fa85f64-5717-4562-b3fc-2c963f66afa8/reject" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -1066,7 +1066,7 @@ Both REJECTED and REMOVED stakeholders are excluded from deal matching. The dist
 ### Example cURL (Remove Stakeholder)
 
 ```bash
-curl -X DELETE "$BASE_URL/users/crm/deals/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders/7fa85f64-5717-4562-b3fc-2c963f66afa8" \
+curl -X DELETE "$BASE_URL/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders/7fa85f64-5717-4562-b3fc-2c963f66afa8" \
   -H "Authorization: Bearer $TOKEN"
 ```
 

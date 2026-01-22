@@ -267,7 +267,7 @@ Retrieve a paginated list of risks and blockers for a deal.
 ### Sample Request
 
 ```http
-GET /users/crm/deals/6c3f98d5-2e6b-4a1c-8f8c-2e8f0211b0b9/risks-blockers?limit=20&status=OPEN,AI_SUGGESTED
+GET /6c3f98d5-2e6b-4a1c-8f8c-2e8f0211b0b9/risks-blockers?limit=20&status=OPEN,AI_SUGGESTED
 Authorization: Bearer <token>
 ```
 
@@ -444,7 +444,7 @@ Manually create a new risk or blocker for a deal.
 | `owner_email` | string | No | Owner email |
 | `assigned_team` | string | No | Assigned team |
 
-### Sample Response
+### Success Response (201)
 
 ```json
 {
@@ -764,7 +764,7 @@ class RisksBlockersAPI {
 // Usage Example
 // ============================================================================
 
-const api = new RisksBlockersAPI('/api/v1/users/crm', accessToken);
+const api = new RisksBlockersAPI('/users/crm', accessToken);
 
 // List open risks and AI suggestions
 const { items, summary } = await api.list(dealId, {

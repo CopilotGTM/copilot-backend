@@ -2,9 +2,39 @@
 
 This API manages calendar meetings associated with CRM deals, including retrieving meeting lists, generating AI content (briefings, summaries, follow-ups), and streaming real-time job updates via SSE.
 
-**Base URL**: `/api/v1/deals`
+**Base URL**: `/users/crm/deals`
 
-> **Note**: The deal `stage` is not included in meeting responses. Use the main Deal API (`GET /api/v1/deals/{deal_id}`) to get deal stage and other deal-level information.
+> **Note**: The deal `stage` is not included in meeting responses. Use the main Deal API (`GET /users/crm/deals/{deal_id}`) to get deal stage and other deal-level information.
+
+---
+
+## Response Envelope
+
+All endpoints return the shared `GenericResponse` envelope:
+
+```json
+{
+  "status": "SUCCESS | ERROR",
+  "message": "Human-readable message",
+  "data": { ... } | null
+}
+```
+
+---
+
+## Authentication
+
+- Bearer token required (`Authorization: Bearer <access_token>`)
+- Organisation/user are inferred from the token; clients never pass these explicitly
+
+---
+
+## Rate Limiting
+
+| Operation | Limit |
+| --- | --- |
+| Read (`GET`) | ~60/min, 1000/hour per user |
+| Write (`POST`/`PATCH`) | ~30/min, 500/hour per user |
 
 ---
 
@@ -46,14 +76,14 @@ Retrieve all meetings associated with a specific deal, including generation stat
 
 ```json
 {
-  "success": true,
+  "status": "SUCCESS",
   "message": "Meetings retrieved successfully",
   "data": [
     {
       "event_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
       "subject": "Discovery Call with Acme Corp",
       "start_at": "2025-11-25T14:00:00Z",
-      "status": "confirmed",
+      "status": "ACTIVE",
       "attendees": [
         {
           "name": "Jane Doe",
@@ -61,8 +91,7 @@ Retrieve all meetings associated with a specific deal, including generation stat
           "status": "accepted"
         }
       ],
-
-"meeting_prep_status": "COMPLETED",
+      "meeting_prep_status": "COMPLETED",
       "meeting_prep_data": {
         "schema_version": "1.0",
         "generated_at": "2025-11-25T13:30:00Z",
@@ -70,19 +99,16 @@ Retrieve all meetings associated with a specific deal, including generation stat
           "briefing_overview": "Ahead of your call with Acme Corp, here are the key points to focus on..."
         }
       },
-
-"meeting_summary_status": "NOT_STARTED",
+      "meeting_summary_status": "NOT_STARTED",
       "meeting_summary_data": null,
-
-"meeting_followup_status": "NOT_STARTED",
+      "meeting_followup_status": "NOT_STARTED",
       "meeting_followup_data": null,
-
-"active_jobs": {
+      "active_jobs": {
         "meeting_briefing": null,
         "meeting_summary": {
           "job_id": "abc123-...",
-          "job_type": "meeting_summary",
-          "status": "in_progress"
+          "job_type": "DealJobType.MEETING_SUMMARY",
+          "status": "JobStatus.IN_PROGRESS"
         },
         "meeting_followup": null
       }
@@ -98,13 +124,13 @@ Retrieve all meetings associated with a specific deal, including generation stat
 | `event_id` | UUID | Unique identifier for the calendar event |
 | `subject` | string \| null | Subject or title of the meeting |
 | `start_at` | datetime | Start time of the meeting (UTC) |
-| `status` | string | Calendar event status: `confirmed`, `tentative`, `cancelled` |
+| `status` | string | Association status: `ACTIVE`, `REMOVED`, `CANCELLED` |
 | `attendees` | list | List of attendees with name, email, and response status |
-| `meeting_prep_status` | enum | Briefing status: `NOT_STARTED`, `IN_PROGRESS`, `COMPLETED`, `FAILED` |
+| `meeting_prep_status` | enum | Briefing status: `NOT_STARTED`, `GENERATING`, `COMPLETED`, `FAILED` |
 | `meeting_prep_data` | object \| null | Generated briefing content wrapped in metadata envelope (when COMPLETED) |
-| `meeting_summary_status` | enum | Summary status: `NOT_STARTED`, `IN_PROGRESS`, `COMPLETED`, `FAILED` |
+| `meeting_summary_status` | enum | Summary status: `NOT_STARTED`, `GENERATING`, `COMPLETED`, `FAILED` |
 | `meeting_summary_data` | object \| null | Generated summary content wrapped in metadata envelope (when COMPLETED) |
-| `meeting_followup_status` | enum | Follow-up status: `NOT_STARTED`, `IN_PROGRESS`, `COMPLETED`, `FAILED` |
+| `meeting_followup_status` | enum | Follow-up status: `NOT_STARTED`, `GENERATING`, `COMPLETED`, `FAILED` |
 | `meeting_followup_data` | object \| null | Generated follow-up content wrapped in metadata envelope (when COMPLETED) |
 | `active_jobs` | object \| null | Currently running jobs (see below) |
 
@@ -121,8 +147,8 @@ Each active job contains:
 | Field | Type | Description |
 | --- | --- | --- |
 | `job_id` | UUID | Job ID for SSE streaming |
-| `job_type` | string | `meeting_briefing`, `meeting_summary`, or `meeting_followup` |
-| `status` | string | `pending` or `in_progress` |
+| `job_type` | string | `DealJobType.MEETING_BRIEFING`, `DealJobType.MEETING_SUMMARY`, `DealJobType.MEETING_FOLLOWUP` |
+| `status` | string | `JobStatus.PENDING` or `JobStatus.IN_PROGRESS` |
 
 ---
 
@@ -148,16 +174,16 @@ Start an AI generation job for a meeting. This is the **recommended endpoint** f
 - Returns immediately with `job_id` for SSE subscription
 - Background worker processes the job asynchronously
 
-**Success Response:**
+**Success Response (202):**
 
 ```json
 {
-  "success": true,
-  "message": "Job created successfully",
+  "status": "SUCCESS",
+  "message": "Briefing generation initiated",
   "data": {
     "job_id": "7a85f64-5717-4562-b3fc-2c963f66afa6",
-    "job_type": "meeting_briefing",
-    "status": "pending"
+    "job_type": "DealJobType.MEETING_BRIEFING",
+    "status": "JobStatus.PENDING"
   }
 }
 ```
@@ -391,7 +417,7 @@ Signals job completion. Clients should close the SSE connection after receiving 
 
 ## 4. Update Meeting Association Status
 
-Update the status of a meeting-deal association (e.g., confirm or reject a suggested match).
+Update the status of a meeting-deal association (e.g., hide a meeting from the timeline or mark it cancelled).
 
 - **Endpoint**: `PATCH /{deal_id}/meetings/{event_id}/status`
 - **Method**: `PATCH`
@@ -408,20 +434,20 @@ Update the status of a meeting-deal association (e.g., confirm or reject a sugge
 
 ```json
 {
-  "status": "CONFIRMED"
+  "status": "REMOVED"
 }
 ```
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `status` | enum | New status: `SUGGESTED`, `CONFIRMED`, `REJECTED` |
+| `status` | enum | New status: `ACTIVE`, `REMOVED`, `CANCELLED` |
 
 **Success Response:**
 
 ```json
 {
-  "success": true,
-  "message": "Meeting status updated to CONFIRMED",
+  "status": "SUCCESS",
+  "message": "Meeting status updated to REMOVED",
   "data": null
 }
 ```
@@ -505,8 +531,10 @@ Generated after the summary to create action items and follow-up communication.
 ## Frontend Integration Example
 
 ```typescript
+const baseUrl = '/users/crm/deals';
+
 // 1. Check for active jobs when loading meetings
-const meetings = await fetch(`/api/v1/deals/${dealId}/meetings`);
+const meetings = await fetch(`${baseUrl}/${dealId}/meetings`);
 const meeting = meetings.data[0];
 
 // 2. Determine UI state
@@ -525,7 +553,7 @@ if (meeting.active_jobs?.meeting_briefing) {
 // 3. Start a new job
 async function startJob(jobType: "briefing" | "summary" | "followup") {
   const response = await fetch(
-    `/api/v1/deals/${dealId}/meetings/${eventId}/jobs/${jobType}`,
+    `${baseUrl}/${dealId}/meetings/${eventId}/jobs/${jobType}`,
     { method: "POST" }
   );
   const { job_id } = response.data;
@@ -535,7 +563,7 @@ async function startJob(jobType: "briefing" | "summary" | "followup") {
 // 4. SSE stream handling with actual frame types
 function connectToSSE(dealId: string, eventId: string, jobId: string) {
   const es = new EventSource(
-    `/api/v1/deals/${dealId}/meetings/${eventId}/jobs/${jobId}/stream`
+    `${baseUrl}/${dealId}/meetings/${eventId}/jobs/${jobId}/stream`
   );
 
 es.onmessage = (event) => {

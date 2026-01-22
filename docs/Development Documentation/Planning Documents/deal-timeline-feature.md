@@ -257,7 +257,7 @@ class DealTimelineEvent(SQLModel, table=True):
 ### Timeline Retrieval Endpoint
 
 ```
-GET /api/v1/deals/{deal_id}/timeline
+GET /users/crm/deals/{deal_id}/timeline
 ```
 
 **Query Parameters:**
@@ -265,8 +265,8 @@ GET /api/v1/deals/{deal_id}/timeline
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `limit` | int | 20 | Number of events per page |
-| `offset` | int | 0 | Pagination offset |
-| `event_types` | list[str] | all | Filter by event type(s) |
+| `cursor` | string | null | Opaque cursor for pagination |
+| `event_types` | string | null | Comma-separated event types (EMAIL,MEETING) |
 | `start_date` | datetime | null | Filter events after this date |
 | `end_date` | datetime | null | Filter events before this date |
 | `sort` | str | "desc" | Sort order (desc = newest first) |
@@ -278,41 +278,39 @@ GET /api/v1/deals/{deal_id}/timeline
 {
     "deal_id": "uuid",
     "total_count": 45,
-    "events": [
+    "cursor": "opaque-cursor",
+    "items": [
         {
-            "timeline_event_id": "uuid",
+            "id": "uuid",
+            "deal_id": "uuid",
             "event_type": "MEETING",
             "event_source": "CALENDAR_GOOGLE",
             "event_timestamp": "2025-10-15T11:00:00Z",
-            "title": "PoC Kickoff Call - Acme Corp",
-            "subtitle": "Duration: 40 mins",
-            "direction": null,
-            "status": "CONFIRMED",
-            "participant_names": ["Mark (CTO, Acme)", "John (AE)", "Priya (SE)"],
-            "participant_count": 3,
-            "source_record_id": "assoc-uuid"
+            "event_data": {
+                "title": "PoC Kickoff Call - Acme Corp",
+                "duration_minutes": 40,
+                "attendee_count": 3
+            },
+            "excluded_at": null,
+            "created_at": "2025-10-15T12:00:00Z",
+            "updated_at": "2025-10-15T12:00:00Z"
         },
         {
-            "timeline_event_id": "uuid",
+            "id": "uuid",
+            "deal_id": "uuid",
             "event_type": "EMAIL",
             "event_source": "EMAIL_GMAIL",
             "event_timestamp": "2025-10-10T10:40:00Z",
-            "title": "Re: Sandbox Credentials Shared",
-            "subtitle": "From: Sarah (Acme)",
-            "direction": "INBOUND",
-            "status": "CONFIRMED",
-            "participant_names": ["Sarah (Acme)", "Priya (SE)"],
-            "participant_count": 2,
-            "metadata": {
-                "thread_count": 3
-            }
+            "event_data": {
+                "subject": "Re: Sandbox Credentials Shared",
+                "snippet": "Hi team - sending access credentials below...",
+                "from_email": "sarah@acme.com"
+            },
+            "excluded_at": null,
+            "created_at": "2025-10-10T10:40:10Z",
+            "updated_at": "2025-10-10T10:40:10Z"
         }
-    ],
-    "pagination": {
-        "limit": 20,
-        "offset": 0,
-        "has_more": true
-    }
+    ]
 }
 ```
 
@@ -321,10 +319,10 @@ GET /api/v1/deals/{deal_id}/timeline
 When user clicks a timeline event, fetch full details from the source table:
 
 ```
-GET /api/v1/timeline/{timeline_event_id}/details
+GET /users/crm/deals/timeline/{timeline_event_id}
 ```
 
-This endpoint reads `event_type`, `event_source`, and `source_record_id` from the timeline event, then fetches and returns the full record from the appropriate storage.
+This endpoint reads `event_type`, `event_source`, and `source_record_id` from the timeline event, then returns the enriched event data from the appropriate source.
 
 ---
 

@@ -78,6 +78,8 @@ class TokenRefreshService:
                 and_(
                     col(KnowledgeIntegration.is_active) == True,  # noqa: E712
                     col(KnowledgeIntegration.connection_id).isnot(None),
+                    col(KnowledgeIntegration.integration_type)
+                    != IntegrationType.INTERNAL_CRM.value,
                     or_(
                         col(KnowledgeIntegration.access_token_expires_at).is_(None),
                         col(KnowledgeIntegration.access_token_expires_at) <= expiry_threshold,
@@ -193,6 +195,19 @@ class TokenRefreshService:
                         "deactivated": False,
                     }
 
+                integration_type = integration.integration_type
+                if isinstance(integration_type, str):
+                    integration_type = IntegrationType(integration_type)
+
+                if integration_type == IntegrationType.INTERNAL_CRM:
+                    return {
+                        "success": True,
+                        "integration_id": str(integration_id),
+                        "skipped": True,
+                        "reason": "internal_crm_no_refresh",
+                        "deactivated": False,
+                    }
+
                 if not integration.connection_id:
                     return {
                         "success": False,
@@ -203,9 +218,6 @@ class TokenRefreshService:
 
                 try:
                     # Get the correct Nango provider key from our mapping
-                    integration_type = integration.integration_type
-                    if isinstance(integration_type, str):
-                        integration_type = IntegrationType(integration_type)
                     provider_key = to_nango_provider_key(integration_type)
 
                     logger.info(

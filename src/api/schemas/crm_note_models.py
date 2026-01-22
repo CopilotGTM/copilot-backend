@@ -96,3 +96,39 @@ class CreateNoteRequest(BaseModel):
             v = v.strip()
             return v if v else None
         return None
+
+
+class UpdateNoteRequest(BaseModel):
+    """Request payload to update an existing note."""
+
+    content: str | None = Field(
+        default=None,
+        max_length=10000,
+        description="Updated note content (optional, max 10000 characters).",
+    )
+    subject: str | None = Field(
+        default=None,
+        max_length=500,
+        description="Updated note subject/title (optional, max 500 characters).",
+    )
+
+    @field_validator("content")
+    @classmethod
+    def content_not_empty(cls, v: str | None) -> str | None:
+        """Validate content is not empty or whitespace-only."""
+        if v is None:
+            return None
+        trimmed = v.strip()
+        if not trimmed:
+            msg = "Content cannot be empty or whitespace-only"
+            raise ValueError(msg)
+        return trimmed
+
+    @field_validator("subject")
+    @classmethod
+    def subject_strip_whitespace(cls, v: str | None) -> str | None:
+        """Strip whitespace from subject if provided."""
+        if v is not None:
+            v = v.strip()
+            return v if v else None
+        return None

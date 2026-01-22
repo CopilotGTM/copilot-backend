@@ -75,6 +75,10 @@ class DealListItem(BaseModel):
         default_factory=list,
         description="List of team members (owners, collaborators, split_owners) associated with the deal.",
     )
+    is_internal: bool = Field(
+        ...,
+        description="True if this is an internal CRM deal (editable), False if from external CRM (read-only).",
+    )
     created_at: datetime
     updated_at: datetime
     synced_at: datetime
@@ -134,6 +138,12 @@ class DealDetail(BaseModel):
     deal_health_reason: str | None = Field(
         None,
         description="Brief explanation for the AI-assessed deal health.",
+    )
+
+    # CRM source indicator
+    is_internal: bool = Field(
+        ...,
+        description="True if this is an internal CRM deal (editable), False if from external CRM (read-only).",
     )
 
     # Time tracked (placeholder for future implementation)

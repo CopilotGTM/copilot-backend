@@ -44,6 +44,7 @@ class IntegrationType(str, Enum):
     INTERCOM = "intercom"
     PIPEDRIVE = "pipedrive"
     ZOHO_CRM = "zoho_crm"
+    INTERNAL_CRM = "internal_crm"
 
     # Sales & Presales Enablement
     SALESFORCE = "salesforce"

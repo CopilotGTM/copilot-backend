@@ -19,7 +19,7 @@ Implemented automatic Teams channel synchronization with both scheduled and on-d
 
 ### 2. **On-Demand Sync (Frontend Refresh Button)**
 
-- **Endpoint**: `POST /api/v1/users/integrations/{integration_id}/teams/sync-channels`
+- **Endpoint**: `POST /users/integrations/{integration_id}/teams/sync-channels`
 - **File**: `src/api/routers/integrations/integration_routes.py`
 - **Behavior**:
   - User clicks "Refresh" button for their Teams integration
@@ -62,7 +62,7 @@ Implemented automatic Teams channel synchronization with both scheduled and on-d
                        └─> Writes to messaging_channels table
 
 2. Manual Sync (Refresh button)
-   └─> POST /integrations/{id}/teams/sync-channels
+   └─> POST /users/integrations/{id}/teams/sync-channels
        └─> sync_teams_channels_task (org_id, integration_id)
            └─> Triggers sync for specific integration only
                └─> Same flow as above
@@ -174,7 +174,7 @@ print(result.id)
 // Refresh button click handler
 async function refreshTeamsChannels(integrationId: string) {
   const response = await fetch(
-    `/api/v1/users/integrations/${integrationId}/teams/sync-channels`,
+    `/users/integrations/${integrationId}/teams/sync-channels`,
     { method: 'POST' }
   );
   const data = await response.json();
