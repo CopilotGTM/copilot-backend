@@ -2,6 +2,7 @@
 Tasks for the deal worker.
 """
 
+from .deal_import_tasks import process_deal_import_job
 from .deal_insight_tasks import (
     analyze_deal_stakeholders_task,
     analyze_org_stakeholders_task,
@@ -45,6 +46,8 @@ __all__ = [
     "process_meeting_summary",
     # Deal summary tasks (deal-level)
     "process_deal_summary_job",
+    # Deal import tasks
+    "process_deal_import_job",
     # Stakeholder analysis tasks
     "analyze_deal_stakeholders_task",
     "analyze_org_stakeholders_task",

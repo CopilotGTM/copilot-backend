@@ -7,18 +7,33 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
 from fastapi import Response as FastAPIResponse
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import col
+from src.api.dependencies.master_dependencies import get_master_async_session
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
     get_current_user,
     get_org_async_session,
 )
-from src.api.dependencies.rate_limit import rate_limit_user_read
+from src.api.dependencies.rate_limit import rate_limit_user_read, rate_limit_user_write
 from src.api.schemas.base_models import GenericResponse
+from src.api.schemas.crm_deal_write_models import (
+    DealAccountUpdateRequest,
+    DealCreateRequest,
+    DealOwnerAssignRequest,
+    DealStageMoveRequest,
+    DealUpdateRequest,
+    DealWriteResponse,
+)
 from src.api.schemas.crm_models import (
     DealDetail,
     DealJobResponse,
+    DealListItem,
     DealOwnerDetail,
+    DealOwnerFilterItem,
+    DealOwnerFilters,
+    DealsListParams,
     DealsPage,
     DealsStats,
     DealSummaryJobsStatus,
@@ -27,16 +42,20 @@ from src.api.schemas.crm_models import (
 from src.api.utils.http_response import Response
 from src.domain.models.organisation_tables.job_models import JobStatus
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDealStatus
+from src.domain.models.organisation_tables.sync.integration_models import (
+    IntegrationType,
+    KnowledgeIntegration,
+)
 from src.infra.utils.logger import get_logger
-from src.service.crm.deal_job_service import DealJobService, DealJobServiceError
-from src.service.crm.deal_job_sse_service import DealJobSSEService
-from src.service.crm.deals_access_service import (
+from src.service.crm.access.deals_access_service import (
     DealsAccessService,
     DealsAccessServiceError,
     extract_deal_health,
     extract_deal_health_reason,
 )
-from src.workers.deal_worker.client import send_deal_task_async
+from src.service.crm.internal.deal_write_service import DealWriteService, DealWriteServiceError
+from src.service.crm.jobs.deal_job_service import DealJobService, DealJobServiceError
+from src.service.crm.jobs.deal_job_sse_service import DealJobSSEService
 from sse_starlette.sse import EventSourceResponse
 
 logger = get_logger("deals_handler")
@@ -45,6 +64,37 @@ logger = get_logger("deals_handler")
 _UNEXPECTED_ERR_MSG = "An unexpected error occurred while processing your request"
 
 deals_router = APIRouter()
+
+
+def get_deals_list_params(
+    limit: int = Query(40, ge=1, le=100, description="Maximum deals per page"),
+    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
+    statuses: list[CRMDealStatus] | None = Query(None, description="Filter by deal statuses"),
+    pipeline_ids: list[UUID] | None = Query(None, description="Filter by pipeline IDs"),
+    owner_ids: list[UUID] | None = Query(None, description="Filter by internal owner IDs"),
+    owner_external_ids: list[str] | None = Query(
+        None, description="Deprecated. Filter by owner external IDs"
+    ),
+    min_amount: float | None = Query(None, description="Minimum deal amount"),
+    max_amount: float | None = Query(None, description="Maximum deal amount"),
+    min_close_date: datetime | None = Query(None, description="Minimum close date"),
+    max_close_date: datetime | None = Query(None, description="Maximum close date"),
+    q: str | None = Query(None, description="Case-insensitive search on deal name"),
+) -> DealsListParams:
+    """Dependency that parses and returns deals list query parameters."""
+    return DealsListParams(
+        limit=limit,
+        page=page,
+        statuses=statuses,
+        pipeline_ids=pipeline_ids,
+        owner_ids=owner_ids,
+        owner_external_ids=owner_external_ids,
+        min_amount=min_amount,
+        max_amount=max_amount,
+        min_close_date=min_close_date,
+        max_close_date=max_close_date,
+        q=q,
+    )
 
 
 async def get_deals_access_service(
@@ -77,6 +127,77 @@ async def get_deal_job_service(
             logger.debug("DealJobService close failed", exc_info=True)
 
 
+async def get_deal_write_service(
+    user_ids: UserIDs = Depends(get_current_user),
+    org_session: AsyncSession = Depends(get_org_async_session),
+    master_session: AsyncSession = Depends(get_master_async_session),
+):
+    """Dependency that yields a DealWriteService instance for the current org.
+
+    Uses both org session (for CRM data) and master session (for public.users).
+    """
+    service = DealWriteService(
+        org_session=org_session,
+        master_session=master_session,
+        organisation_id=user_ids.organisation_id,
+        actor_user_id=user_ids.user_id,
+    )
+    try:
+        yield service
+    finally:
+        try:
+            await service.close()
+        except Exception:
+            logger.debug("DealWriteService close failed", exc_info=True)
+
+
+async def _get_integration_types_map(
+    session: AsyncSession, organisation_id: UUID, integration_ids: set[UUID]
+) -> dict[UUID, bool]:
+    """Batch fetch integration types and return a mapping of integration_id -> is_internal.
+
+    Args:
+        session: Async database session
+        organisation_id: Organisation UUID for filtering
+        integration_ids: Set of integration IDs to fetch
+
+    Returns:
+        Dict mapping integration_id to is_internal boolean
+    """
+    if not integration_ids:
+        return {}
+
+    stmt = select(KnowledgeIntegration).where(
+        col(KnowledgeIntegration.organisation_id) == organisation_id,
+        col(KnowledgeIntegration.integration_id).in_(list(integration_ids)),
+    )
+    result = await session.execute(stmt)
+    integrations = result.scalars().all()
+
+    # Create mapping of integration_id -> is_internal
+    return {
+        integration.integration_id: integration.integration_type == IntegrationType.INTERNAL_CRM
+        for integration in integrations
+    }
+
+
+def _map_deal_write_response(deal) -> DealWriteResponse:
+    return DealWriteResponse(
+        deal_id=deal.deal_id,
+        external_id=deal.external_id,
+        name=deal.name,
+        pipeline_id=deal.pipeline_id,
+        stage_id=deal.stage_id,
+        deal_status=str(deal.deal_status),
+        owner_user_id=deal.owner_id,
+        company_external_id=getattr(deal, "company_external_id", None),
+        company_name=getattr(deal, "company_name", None),
+        company_domain=getattr(deal, "company_domain", None),
+        created_at=deal.created_at,
+        updated_at=deal.updated_at,
+    )
+
+
 @deals_router.get(
     "/deals",
     response_model=GenericResponse[DealsPage],
@@ -85,121 +206,95 @@ async def get_deal_job_service(
     description="""
     Retrieve a list of CRM deals for the current organisation.
 
-    **Pagination Modes:**
-    - Default: Cursor-based pagination (use `limit` and `cursor`)
-    - Fetch All: Set `fetch_all=true` to retrieve all deals in one request (max 500)
+    **Pagination:**
+    - Page-based pagination using `page` and `limit`
 
     **Filters (work with both modes):**
     - Deal status (OPEN, WON, LOST, CLOSED)
     - Pipeline ID
-    - Owner external ID
+    - Owner ID (internal)
     - Deal Amount range (min/max)
     - Close Date range (min/max)
     - Search query on deal name (case-insensitive)
-
-    **Recommendation:** Use `fetch_all=true` for small datasets (<300 deals) to enable
-    instant client-side filtering. Use pagination for larger datasets.
     """,
+)
+@deals_router.get(
+    "/deals/",
+    response_model=GenericResponse[DealsPage],
+    tags=["crm", "deals"],
+    include_in_schema=False,  # Avoid duplicate in OpenAPI docs
 )
 async def list_deals(
     response: FastAPIResponse,
-    limit: int = Query(
-        50, ge=1, le=100, description="Maximum deals per page (ignored if fetch_all=true)"
-    ),
-    cursor: str | None = Query(
-        None, description="Opaque cursor from previous page (ignored if fetch_all=true)"
-    ),
-    fetch_all: bool = Query(
-        False, description="Fetch all deals in one request (max 500, ignores limit/cursor)"
-    ),
-    statuses: list[CRMDealStatus] | None = Query(None, description="Filter by deal statuses"),
-    pipeline_ids: list[UUID] | None = Query(None, description="Filter by pipeline IDs"),
-    owner_external_ids: list[str] | None = Query(None, description="Filter by owner external IDs"),
-    min_amount: float | None = Query(None, description="Minimum deal amount"),
-    max_amount: float | None = Query(None, description="Maximum deal amount"),
-    min_close_date: datetime | None = Query(None, description="Minimum close date"),
-    max_close_date: datetime | None = Query(None, description="Maximum close date"),
-    q: str | None = Query(None, description="Case-insensitive search on deal name"),
+    params: DealsListParams = Depends(get_deals_list_params),
     service: DealsAccessService = Depends(get_deals_access_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[DealsPage]:
     """List CRM deals with optional filters and pagination.
 
-    Args:
-        fetch_all: If True, returns all deals (up to 500) ignoring limit/cursor.
-                   Useful for small datasets where client-side filtering is preferred.
-
     Returns:
-        GenericResponse containing DealsPage with deals list and next cursor
+        GenericResponse containing DealsPage with deals list and pagination metadata
     """
     try:
-        # Fetch all mode: retrieve all deals without pagination (capped at 500)
-        if fetch_all:
-            deals = await service.get_all_deals(
-                max_results=500,
-                statuses=statuses,
-                pipeline_ids=pipeline_ids,
-                owner_external_ids=owner_external_ids,
-                min_amount=min_amount,
-                max_amount=max_amount,
-                min_close_date=min_close_date,
-                max_close_date=max_close_date,
-                q=q,
-            )
-            next_cursor = None  # No pagination when fetching all
-        else:
-            # Standard pagination mode
-            deals, next_cursor = await service.list_deals(
-                limit=limit,
-                cursor=cursor,
-                statuses=statuses,
-                pipeline_ids=pipeline_ids,
-                owner_external_ids=owner_external_ids,
-                min_amount=min_amount,
-                max_amount=max_amount,
-                min_close_date=min_close_date,
-                max_close_date=max_close_date,
-                q=q,
-            )
+        deals, total_count = await service.list_deals(
+            limit=params.limit,
+            page=params.page,
+            statuses=params.statuses,
+            pipeline_ids=params.pipeline_ids,
+            owner_ids=params.owner_ids,
+            owner_external_ids=params.owner_external_ids,
+            min_amount=params.min_amount,
+            max_amount=params.max_amount,
+            min_close_date=params.min_close_date,
+            max_close_date=params.max_close_date,
+            q=params.q,
+        )
 
         # Fetch deal team members (owners, collaborators, split_owners) in one batch query
         deal_ids = [deal.deal_id for deal in deals]
         team_by_deal = await service.get_deal_team_members_batch(deal_ids) if deal_ids else {}
 
+        # Batch fetch integration types to determine is_internal
+        integration_ids = {deal.integration_id for deal in deals if deal.integration_id}
+        integration_types_map = await _get_integration_types_map(
+            service.session, service.organisation_id, integration_ids
+        )
+
         # Convert to response models
-        items = [
-            {
-                "deal_id": deal.deal_id,
-                "external_id": deal.external_id,
-                "name": deal.name,
-                "amount": deal.amount,
-                "currency": deal.currency,
-                "deal_status": deal.deal_status,
-                "probability": deal.probability,
-                "close_date": deal.close_date,
-                "stage_name": deal.stage_name,
-                "stage_label": deal.stage_label,
-                "pipeline_name": deal.pipeline_name,
-                "pipeline_label": deal.pipeline_label,
-                "owner_details": (
+        items: list[DealListItem] = [
+            DealListItem(
+                deal_id=deal.deal_id,
+                external_id=deal.external_id,
+                name=deal.name,
+                amount=deal.amount,
+                currency=deal.currency,
+                deal_status=deal.deal_status,
+                probability=deal.probability,
+                close_date=deal.close_date,
+                stage_name=deal.stage_name,
+                stage_label=deal.stage_label,
+                pipeline_name=deal.pipeline_name,
+                pipeline_label=deal.pipeline_label,
+                owner_details=(
                     [
                         DealOwnerDetail(
                             external_id=str(deal.owner_external_id),
                             name=deal.owner_name,
                             email=deal.owner_email,
+                            owner_id=deal.owner_id,
                         )
                     ]
                     if getattr(deal, "owner_external_id", None)
                     else []
                 ),
-                "company_external_id": deal.company_external_id,
-                "company_name": getattr(deal, "company_name", None),
-                "company_domain": getattr(deal, "company_domain", None),
-                "deal_health": extract_deal_health(getattr(deal, "deal_summary_data", None)),
-                "deal_health_reason": extract_deal_health_reason(
+                company_external_id=deal.company_external_id,
+                company_name=getattr(deal, "company_name", None),
+                company_domain=getattr(deal, "company_domain", None),
+                deal_health=extract_deal_health(getattr(deal, "deal_summary_data", None)),
+                deal_health_reason=extract_deal_health_reason(
                     getattr(deal, "deal_summary_data", None)
                 ),
-                "deal_team": [
+                deal_team=[
                     DealTeamMember(
                         external_id=member["external_id"],
                         name=member.get("name"),
@@ -208,15 +303,23 @@ async def list_deals(
                     )
                     for member in team_by_deal.get(deal.deal_id, [])
                 ],
-                "created_at": deal.created_at,
-                "updated_at": deal.updated_at,
-                "synced_at": deal.synced_at,
-            }
+                is_internal=integration_types_map.get(deal.integration_id, False),
+                created_at=deal.created_at,
+                updated_at=deal.updated_at,
+                synced_at=deal.synced_at,
+            )
             for deal in deals
         ]
 
-        page = DealsPage(items=items, cursor=next_cursor)
-        return Response.success_response(message="Deals retrieved successfully", data=page)
+        total_pages = (total_count + params.limit - 1) // params.limit if params.limit else 0
+        page_response = DealsPage(
+            items=items,
+            page=params.page,
+            limit=params.limit,
+            total_count=total_count,
+            total_pages=total_pages,
+        )
+        return Response.success_response(message="Deals retrieved successfully", data=page_response)
 
     except DealsAccessServiceError as e:
         logger.warning("Deals access error: %s", e.message, exc_info=True)
@@ -227,6 +330,54 @@ async def list_deals(
         )
     except Exception as e:
         logger.error("Unexpected error listing deals: %s", e, exc_info=True)
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG,
+            status_code=500,
+            response=response,
+        )
+
+
+@deals_router.get(
+    "/deals/owners",
+    response_model=GenericResponse[DealOwnerFilters],
+    tags=["crm", "deals"],
+    summary="List distinct deal owners for filters",
+    description="""
+    Retrieve a distinct list of owners across all CRM deals for the current organisation.
+
+    This endpoint is designed for filter dropdowns and is independent of deal pagination.
+    Returns internal owner IDs for filtering.
+    """,
+)
+async def list_deal_owners(
+    response: FastAPIResponse,
+    limit: int = Query(200, ge=1, le=1000, description="Maximum owners to return"),
+    q: str | None = Query(None, description="Search by owner name, email, or external ID"),
+    service: DealsAccessService = Depends(get_deals_access_service),
+    _rl_read: None = Depends(rate_limit_user_read),
+) -> GenericResponse[DealOwnerFilters]:
+    """List distinct deal owners for filter dropdowns."""
+    try:
+        owners = await service.list_deal_owners(q=q, limit=limit)
+        items = [
+            DealOwnerFilterItem(
+                owner_id=owner["owner_id"],
+                name=owner.get("name"),
+                email=owner.get("email"),
+            )
+            for owner in owners
+        ]
+        payload = DealOwnerFilters(items=items)
+        return Response.success_response(message="Deal owners retrieved successfully", data=payload)
+    except DealsAccessServiceError as e:
+        logger.warning("Deal owners access error: %s", e.message, exc_info=True)
+        return Response.error_response(
+            message=e.message,
+            status_code=e.status_code,
+            response=response,
+        )
+    except Exception as e:
+        logger.error("Unexpected error listing deal owners: %s", e, exc_info=True)
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG,
             status_code=500,
@@ -336,6 +487,7 @@ async def get_deal(
                     external_id=str(deal.owner_external_id),
                     name=deal.owner_name,
                     email=deal.owner_email,
+                    owner_id=deal.owner_id,
                 )
             ]
             if getattr(deal, "owner_external_id", None)
@@ -392,6 +544,14 @@ async def get_deal(
         # Get deal summary data (frontend derives status from active_deal_jobs and deal_summary_data)
         deal_summary_data = getattr(deal, "deal_summary_data", None)
 
+        # Determine if deal is from internal CRM
+        is_internal = False
+        if deal.integration_id:
+            integration_types_map = await _get_integration_types_map(
+                service.session, service.organisation_id, {deal.integration_id}
+            )
+            is_internal = integration_types_map.get(deal.integration_id, False)
+
         # Build streamlined response
         detail = DealDetail(
             deal_id=deal.deal_id,
@@ -412,6 +572,7 @@ async def get_deal(
             company_industry=company_industry,
             deal_health=deal_health,
             deal_health_reason=deal_health_reason,
+            is_internal=is_internal,
             time_tracked=None,  # Placeholder for future implementation
             deal_summary_data=deal_summary_data,
             active_deal_jobs=active_deal_jobs,
@@ -436,33 +597,207 @@ async def get_deal(
 
 
 @deals_router.post(
-    "/process-meetings",
-    response_model=GenericResponse[dict],
-    summary="Trigger deal meeting processing",
-    description="Manually trigger the background task to identify meetings associated with deals and create tasks.",
+    "/deals",
+    response_model=GenericResponse[DealWriteResponse],
+    status_code=201,
+    tags=["crm", "deals"],
+    summary="Create an internal CRM deal",
 )
-async def trigger_deal_meeting_processing(
+async def create_deal(
+    request: DealCreateRequest,
     response: FastAPIResponse,
-    user: UserIDs = Depends(get_current_user),
-) -> GenericResponse[dict]:
-    """Trigger the deal meeting processing task."""
+    service: DealWriteService = Depends(get_deal_write_service),
+    _rl_write: None = Depends(rate_limit_user_write),
+) -> GenericResponse[DealWriteResponse]:
+    """Create a new internal CRM deal."""
     try:
-        task_id = await send_deal_task_async(
-            "deal.match_calendar_to_deals_org",
-            kwargs={"organisation_id": str(user.organisation_id)},
-            queue="deal",
-            routing_key="deal",
+        deal = await service.create_deal(request.model_dump())
+        await service.session.commit()
+        await service.session.refresh(deal)
+        payload = _map_deal_write_response(deal)
+        return Response.created_response(
+            message="Deal created successfully", data=payload, response=response
         )
-        return Response.success_response(
-            message="Deal meeting processing triggered successfully",
-            data={"task_id": task_id},
-        )
-    except Exception as e:
-        logger.error(f"Failed to trigger deal meeting processing: {e}", exc_info=True)
+    except DealWriteServiceError as exc:
+        await service.session.rollback()
+        logger.warning("Deal create error: %s", exc.message, exc_info=True)
         return Response.error_response(
-            message="Failed to trigger processing",
-            status_code=500,
-            response=response,
+            message=exc.message, status_code=exc.status_code, response=response
+        )
+    except Exception as exc:
+        await service.session.rollback()
+        logger.error("Unexpected error creating deal: %s", exc, exc_info=True)
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
+
+
+@deals_router.patch(
+    "/deals/{deal_id}",
+    response_model=GenericResponse[DealWriteResponse],
+    tags=["crm", "deals"],
+    summary="Update an internal CRM deal",
+)
+async def update_deal(
+    deal_id: UUID,
+    request: DealUpdateRequest,
+    response: FastAPIResponse,
+    service: DealWriteService = Depends(get_deal_write_service),
+    _rl_write: None = Depends(rate_limit_user_write),
+) -> GenericResponse[DealWriteResponse]:
+    """Update fields for an internal CRM deal."""
+    try:
+        deal = await service.update_deal(deal_id, request.model_dump(exclude_unset=True))
+        await service.session.commit()
+        await service.session.refresh(deal)
+        payload = _map_deal_write_response(deal)
+        return Response.success_response(message="Deal updated successfully", data=payload)
+    except DealWriteServiceError as exc:
+        await service.session.rollback()
+        logger.warning("Deal update error: %s", exc.message, exc_info=True)
+        return Response.error_response(
+            message=exc.message, status_code=exc.status_code, response=response
+        )
+    except Exception as exc:
+        await service.session.rollback()
+        logger.error("Unexpected error updating deal: %s", exc, exc_info=True)
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
+
+
+@deals_router.patch(
+    "/deals/{deal_id}/account",
+    response_model=GenericResponse[DealWriteResponse],
+    tags=["crm", "deals"],
+    summary="Update account details for an internal CRM deal",
+)
+async def update_deal_account(
+    deal_id: UUID,
+    request: DealAccountUpdateRequest,
+    response: FastAPIResponse,
+    service: DealWriteService = Depends(get_deal_write_service),
+    _rl_write: None = Depends(rate_limit_user_write),
+) -> GenericResponse[DealWriteResponse]:
+    """Update account details for an internal CRM deal."""
+    try:
+        deal = await service.update_account(deal_id, request.model_dump(exclude_unset=True))
+        await service.session.commit()
+        await service.session.refresh(deal)
+        payload = _map_deal_write_response(deal)
+        return Response.success_response(message="Deal account updated successfully", data=payload)
+    except DealWriteServiceError as exc:
+        await service.session.rollback()
+        logger.warning("Deal account update error: %s", exc.message, exc_info=True)
+        return Response.error_response(
+            message=exc.message, status_code=exc.status_code, response=response
+        )
+    except Exception as exc:
+        await service.session.rollback()
+        logger.error("Unexpected error updating deal account: %s", exc, exc_info=True)
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
+
+
+@deals_router.delete(
+    "/deals/{deal_id}",
+    response_model=GenericResponse[DealWriteResponse],
+    tags=["crm", "deals"],
+    summary="Delete an internal CRM deal",
+)
+async def delete_deal(
+    deal_id: UUID,
+    response: FastAPIResponse,
+    service: DealWriteService = Depends(get_deal_write_service),
+    _rl_write: None = Depends(rate_limit_user_write),
+) -> GenericResponse[DealWriteResponse]:
+    """Soft delete an internal CRM deal."""
+    try:
+        deal = await service.delete_deal(deal_id)
+        await service.session.commit()
+        await service.session.refresh(deal)
+        payload = _map_deal_write_response(deal)
+        return Response.success_response(message="Deal deleted successfully", data=payload)
+    except DealWriteServiceError as exc:
+        await service.session.rollback()
+        logger.warning("Deal delete error: %s", exc.message, exc_info=True)
+        return Response.error_response(
+            message=exc.message, status_code=exc.status_code, response=response
+        )
+    except Exception as exc:
+        await service.session.rollback()
+        logger.error("Unexpected error deleting deal: %s", exc, exc_info=True)
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
+
+
+@deals_router.post(
+    "/deals/{deal_id}/stage",
+    response_model=GenericResponse[DealWriteResponse],
+    tags=["crm", "deals"],
+    summary="Move an internal CRM deal to a new stage",
+)
+async def move_deal_stage(
+    deal_id: UUID,
+    request: DealStageMoveRequest,
+    response: FastAPIResponse,
+    service: DealWriteService = Depends(get_deal_write_service),
+    _rl_write: None = Depends(rate_limit_user_write),
+) -> GenericResponse[DealWriteResponse]:
+    """Move a deal to a new stage and record stage history."""
+    try:
+        deal = await service.move_stage(deal_id, request.stage_id)
+        await service.session.commit()
+        await service.session.refresh(deal)
+        payload = _map_deal_write_response(deal)
+        return Response.success_response(message="Deal stage updated successfully", data=payload)
+    except DealWriteServiceError as exc:
+        await service.session.rollback()
+        logger.warning("Deal stage move error: %s", exc.message, exc_info=True)
+        return Response.error_response(
+            message=exc.message, status_code=exc.status_code, response=response
+        )
+    except Exception as exc:
+        await service.session.rollback()
+        logger.error("Unexpected error moving deal stage: %s", exc, exc_info=True)
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
+
+
+@deals_router.post(
+    "/deals/{deal_id}/owner",
+    response_model=GenericResponse[DealWriteResponse],
+    tags=["crm", "deals"],
+    summary="Assign an owner to an internal CRM deal",
+)
+async def assign_deal_owner(
+    deal_id: UUID,
+    request: DealOwnerAssignRequest,
+    response: FastAPIResponse,
+    service: DealWriteService = Depends(get_deal_write_service),
+    _rl_write: None = Depends(rate_limit_user_write),
+) -> GenericResponse[DealWriteResponse]:
+    """Assign or clear the owner for an internal CRM deal."""
+    try:
+        deal = await service.assign_owner(deal_id, request.owner_user_id)
+        await service.session.commit()
+        await service.session.refresh(deal)
+        payload = _map_deal_write_response(deal)
+        return Response.success_response(message="Deal owner updated successfully", data=payload)
+    except DealWriteServiceError as exc:
+        await service.session.rollback()
+        logger.warning("Deal owner assign error: %s", exc.message, exc_info=True)
+        return Response.error_response(
+            message=exc.message, status_code=exc.status_code, response=response
+        )
+    except Exception as exc:
+        await service.session.rollback()
+        logger.error("Unexpected error assigning deal owner: %s", exc, exc_info=True)
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
         )
 
 

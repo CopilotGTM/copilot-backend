@@ -30,7 +30,7 @@ from src.infra.config.configs import (
     database_config,
     secret_manager_config,
 )
-from src.infra.database.sessions import acquire_master_session
+from src.infra.database.sessions import acquire_master_session, acquire_org_async_session
 from src.infra.utils.cursor import decode_cursor, encode_cursor
 from src.infra.utils.logger import get_logger
 from src.infra.utils.resource_naming import (
@@ -39,6 +39,7 @@ from src.infra.utils.resource_naming import (
     get_role_name,
     get_schema_name,
 )
+from src.service.crm.internal.internal_crm_setup_service import InternalCRMSetupService
 
 logger = get_logger("organization_management_service")
 
@@ -160,6 +161,9 @@ class OrganizationManagementService:
                 ),
             )
             time_step("migrations", lambda: self._run_organization_migrations(schema_name))
+            crm_start = time.perf_counter()
+            await self._setup_internal_crm(organisation_id, admin_id)
+            provision_metrics["internal_crm_setup"] = round(time.perf_counter() - crm_start, 4)
             time_step(
                 "storage_container",
                 lambda: self._provision_org_storage_container(organisation_id),
@@ -349,6 +353,25 @@ class OrganizationManagementService:
                 exc_info=True,
             )
             raise ProvisioningError(f"An unexpected error occurred during migration: {e}") from e
+
+    async def _setup_internal_crm(self, organisation_id: UUID, admin_id: UUID) -> None:
+        """Ensure internal CRM integration + default pipeline exist for the organisation."""
+        try:
+            async for org_session in acquire_org_async_session(organisation_id):
+                service = InternalCRMSetupService(org_session, organisation_id, admin_id)
+                await service.setup_internal_crm()
+                return
+        except Exception as exc:
+            logger.error(
+                "Internal CRM setup failed for org %s: %s",
+                organisation_id,
+                exc,
+                exc_info=True,
+            )
+            raise ProvisioningError(
+                "Internal CRM setup failed",
+                organisation_id=organisation_id,
+            ) from exc
 
     def _provision_org_storage_container(self, organisation_id: UUID):
         """Ensure the per-organisation container exists in the shared storage account (idempotent)."""

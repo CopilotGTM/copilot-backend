@@ -20,9 +20,6 @@ from src.api.dependencies.organisation_dependencies import (
 )
 from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.crm_models import (
-    AddContactsAsStakeholdersRequest,
-    AddContactsAsStakeholdersResponse,
-    AvailableContactItem,
     CreateStakeholderRequest,
     StakeholderDetail,
     StakeholderFullDetail,
@@ -30,7 +27,7 @@ from src.api.schemas.crm_models import (
 )
 from src.api.utils.http_response import Response
 from src.infra.utils.logger import get_logger
-from src.service.crm.stakeholders_service import (
+from src.service.crm.insights.stakeholders_service import (
     StakeholdersService,
     StakeholdersServiceError,
 )
@@ -105,78 +102,80 @@ async def get_deal_stakeholders(
         )
 
 
-@stakeholders_router.get(
-    "/{deal_id}/stakeholders/available-contacts",
-    response_model=GenericResponse[list[AvailableContactItem]],
-    summary="List available contacts for adding as stakeholders",
-)
-async def list_available_contacts(
-    deal_id: UUID,
-    response: FastAPIResponse,
-    query: str | None = None,
-    limit: int = 50,
-    service: StakeholdersService = Depends(get_stakeholders_service),
-) -> GenericResponse[list[AvailableContactItem]]:
-    """
-    List contacts that can be added as stakeholders to the deal.
+# @stakeholders_router.get(
+#     "/{deal_id}/stakeholders/available-contacts",
+#     response_model=GenericResponse[list[AvailableContactItem]],
+#     summary="List available contacts for adding as stakeholders",
+# )
+# async def list_available_contacts(
+#     deal_id: UUID,
+#     response: FastAPIResponse,
+#     query: str | None = None,
+#     limit: int = 50,
+#     service: StakeholdersService = Depends(get_stakeholders_service),
+# ) -> GenericResponse[list[AvailableContactItem]]:
+#     """
+#     List contacts that can be added as stakeholders to the deal.
 
-    Only returns contacts that have a valid email address, as email is required
-    for stakeholder identification and communication.
+#     Only returns contacts that have a valid email address, as email is required
+#     for stakeholder identification and communication.
 
-    Response includes:
-    - Contact identity (name, email)
-    - Professional context (job title, company name)
-    - CRM metadata for reference
-    """
-    try:
-        contacts = await service.list_available_contacts(deal_id, query, limit)
-        return Response.success_response(message="Available contacts retrieved", data=contacts)
-    except StakeholdersServiceError as e:
-        logger.warning("Available contacts service error: %s", e.message)
-        return Response.error_response(
-            message=e.message, status_code=e.status_code, response=response
-        )
-    except Exception as e:
-        logger.error("Unexpected error listing available contacts: %s", e, exc_info=True)
-        return Response.error_response(
-            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
-        )
+#     Response includes:
+#     - Contact identity (name, email)
+#     - Professional context (job title, company name)
+#     - CRM metadata for reference
+#     """
+#     try:
+#         contacts = await service.list_available_contacts(deal_id, query, limit)
+#         return Response.success_response(message="Available contacts retrieved", data=contacts)
+#     except StakeholdersServiceError as e:
+#         logger.warning("Available contacts service error: %s", e.message)
+#         return Response.error_response(
+#             message=e.message, status_code=e.status_code, response=response
+#         )
+#     except Exception as e:
+#         logger.error("Unexpected error listing available contacts: %s", e, exc_info=True)
+#         return Response.error_response(
+#             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+#         )
 
 
-@stakeholders_router.post(
-    "/{deal_id}/stakeholders/add-from-contacts",
-    response_model=GenericResponse[AddContactsAsStakeholdersResponse],
-    summary="Add selected contacts as stakeholders",
-)
-async def add_contacts_as_stakeholders(
-    deal_id: UUID,
-    request: AddContactsAsStakeholdersRequest,
-    response: FastAPIResponse,
-    service: StakeholdersService = Depends(get_stakeholders_service),
-) -> GenericResponse[AddContactsAsStakeholdersResponse]:
-    """
-    Add selected contacts as stakeholders to a deal.
+# @stakeholders_router.post(
+#     "/{deal_id}/stakeholders/add-from-contacts",
+#     response_model=GenericResponse[AddContactsAsStakeholdersResponse],
+#     summary="Add selected contacts as stakeholders",
+# )
+# async def add_contacts_as_stakeholders(
+#     deal_id: UUID,
+#     request: AddContactsAsStakeholdersRequest,
+#     response: FastAPIResponse,
+#     service: StakeholdersService = Depends(get_stakeholders_service),
+# ) -> GenericResponse[AddContactsAsStakeholdersResponse]:
+#     """
+#     Add selected contacts as stakeholders to a deal.
 
-    Only contacts with valid email addresses will be added. Contacts without
-    email addresses are skipped and reported in the response.
+#     Only contacts with valid email addresses will be added. Contacts without
+#     email addresses are skipped and reported in the response.
 
-    Returns:
-    - List of successfully added stakeholders
-    - List of skipped contact IDs (no email or already exists)
-    """
-    try:
-        result = await service.add_contacts_as_stakeholders(deal_id, request.contact_ids)
-        return Response.success_response(message="Stakeholders added from contacts", data=result)
-    except StakeholdersServiceError as e:
-        logger.warning("Add contacts as stakeholders error: %s", e.message)
-        return Response.error_response(
-            message=e.message, status_code=e.status_code, response=response
-        )
-    except Exception:
-        logger.exception("Failed to add contacts as stakeholders for deal %s", deal_id)
-        return Response.error_response(
-            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
-        )
+#     Returns:
+#     - List of successfully added stakeholders
+#     - List of skipped contact IDs (no email or already exists)
+#     """
+#     try:
+#         result = await service.add_contacts_as_stakeholders(deal_id, request.contact_ids)
+#         if result.total_added > 0:
+#             await _trigger_deal_mapping_if_ready(service, deal_id)
+#         return Response.success_response(message="Stakeholders added from contacts", data=result)
+#     except StakeholdersServiceError as e:
+#         logger.warning("Add contacts as stakeholders error: %s", e.message)
+#         return Response.error_response(
+#             message=e.message, status_code=e.status_code, response=response
+#         )
+#     except Exception:
+#         logger.exception("Failed to add contacts as stakeholders for deal %s", deal_id)
+#         return Response.error_response(
+#             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+#         )
 
 
 @stakeholders_router.post(
@@ -205,6 +204,7 @@ async def create_stakeholder(
     """
     try:
         stakeholder = await service.create_stakeholder(deal_id, request)
+        await service.trigger_deal_mapping_if_ready(deal_id)
         return Response.created_response(
             message="Stakeholder created successfully",
             data=stakeholder,

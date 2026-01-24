@@ -29,7 +29,7 @@ from src.domain.models.organisation_tables.sync.stakeholder_insight_models impor
     StakeholderInsightType,
 )
 from src.infra.utils.logger import get_logger
-from src.service.crm.stakeholder_insight_service import (
+from src.service.crm.insights.stakeholder_insight_service import (
     StakeholderInsightService,
     StakeholderInsightServiceError,
 )

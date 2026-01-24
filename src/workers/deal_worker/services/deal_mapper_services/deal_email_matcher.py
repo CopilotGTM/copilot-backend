@@ -46,8 +46,8 @@ from src.domain.models.organisation_tables.sync.email_models import (
 from src.domain.models.organisation_tables.sync.integration_models import KnowledgeIntegration
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
-from src.service.crm.deal_timeline_sync_service import build_email_timeline_event
-from src.service.crm.timeline_event_source_resolver import resolve_email_event_source
+from src.service.crm.timeline.deal_timeline_sync_service import build_email_timeline_event
+from src.service.crm.timeline.timeline_event_source_resolver import resolve_email_event_source
 
 logger = get_logger(__name__)
 

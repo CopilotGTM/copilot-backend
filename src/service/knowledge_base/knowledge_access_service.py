@@ -31,11 +31,11 @@ DELETE_SOURCE_JOB_TYPE = "delete_source"
 _SOURCE_NOT_FOUND_MSG = "Source not found or access denied"
 
 
-def _get_status_str(status_enum):
+def _get_status_str(status_enum) -> str:
     """Safely get the string value of a status enum."""
     if status_enum is None:
-        return None
-    return getattr(status_enum, "value", str(status_enum))
+        return "unknown"
+    return str(getattr(status_enum, "value", status_enum))
 
 
 class KnowledgeAccessServiceError(Exception):
@@ -190,12 +190,12 @@ class KnowledgeAccessService:
             logger.error("Failed generating read SAS for %s: %s", source_id, e, exc_info=True)
             raise KnowledgeAccessServiceError("Could not generate download URL") from e
 
-    async def build_item_dict(self, src: OrganisationSource, include_urls: bool) -> dict:
+    async def build_item_dict(self, src: OrganisationSource, include_urls: bool) -> dict[str, Any]:
         status_str = _get_status_str(src.status)
 
-        def base_data() -> dict:
+        def base_data() -> dict[str, Any]:
             return {
-                "source_id": str(src.source_id),
+                "source_id": src.source_id,
                 "filename": src.filename,
                 "mimetype": src.mimetype,
                 "size_bytes": src.size_bytes,

@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, NamedTuple
 from uuid import UUID
 
 from pydantic import BaseModel, Field, HttpUrl
+from src.domain.models.organisation_tables.knowledge_models import (
+    OrganisationSourceStatus,
+    SourceType,
+)
 
 # Statuses considered "active" (require SSE monitoring)
 ACTIVE_STATUSES = {"pending_upload", "uploaded", "processing", "extracting", "deleting"}
@@ -46,7 +50,6 @@ class KnowledgeSourcesStats(BaseModel):
     recent_failures_24h: int = 0  # Failed sources in last 24 hours
 
 
-# -------- Delete Models --------
 class KnowledgeBatchDeleteRequest(BaseModel):
     """Request body for deletion of one or more knowledge sources."""
 
@@ -69,3 +72,20 @@ class KnowledgeBatchDeleteResponse(BaseModel):
     batch_id: UUID
     results: list[KnowledgeDeleteResultItem]
     errors: list[dict[str, Any]] = []
+
+
+class KnowledgeSourcesListParams(NamedTuple):
+    """Parsed query parameters for listing knowledge sources.
+
+    Note: This is a NamedTuple (not Pydantic BaseModel) because FastAPI only properly
+    parses list query parameters (like statuses, source_types) when Query() is in a
+    function signature. Use the get_knowledge_sources_list_params() dependency function.
+    """
+
+    limit: int
+    cursor: str | None
+    statuses: list[OrganisationSourceStatus] | None
+    source_types: list[SourceType] | None
+    q: str | None
+    updated_after: datetime | None
+    include_urls: bool

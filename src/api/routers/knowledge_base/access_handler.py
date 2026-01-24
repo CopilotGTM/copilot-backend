@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from datetime import datetime
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Body, Depends, Query, status
 from fastapi import Response as FastAPIResponse
+from pydantic import HttpUrl, TypeAdapter
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
@@ -21,6 +24,7 @@ from src.api.schemas.knowledge_access_models import (
     KnowledgeDeleteResultItem,
     KnowledgeDownloadResponse,
     KnowledgeSourceListItem,
+    KnowledgeSourcesListParams,
     KnowledgeSourcesPage,
     KnowledgeSourcesStats,
 )
@@ -45,11 +49,45 @@ _UNEXPECTED_ERR_MSG = "An unexpected error occurred"
 access_router = APIRouter()
 
 
-def _get_status_str(status_enum):
+def get_knowledge_sources_list_params(
+    limit: int = Query(20, ge=1, le=100),
+    cursor: str | None = Query(
+        None, description="Opaque cursor returned by previous page (omit for first)"
+    ),
+    statuses: list[OrganisationSourceStatus] | None = Query(
+        None,
+        description="Optional list of statuses to filter. Note: 'failed' status is excluded by default unless explicitly requested.",
+    ),
+    source_types: list[SourceType] | None = Query(
+        None, description="Optional list of source types (e.g. file, integration)"
+    ),
+    q: str | None = Query(None, description="Case-insensitive filename search fragment"),
+    updated_after: datetime | None = Query(
+        None,
+        description="Filter sources updated after this timestamp (ISO8601). Useful for fetching recent failures.",
+    ),
+    include_urls: bool = Query(
+        False,
+        description="If true include read + thumbnail SAS URLs (extra storage calls).",
+    ),
+) -> KnowledgeSourcesListParams:
+    """Dependency that parses and returns knowledge sources list query parameters."""
+    return KnowledgeSourcesListParams(
+        limit=limit,
+        cursor=cursor,
+        statuses=statuses,
+        source_types=source_types,
+        q=q,
+        updated_after=updated_after,
+        include_urls=include_urls,
+    )
+
+
+def _get_status_str(status_enum) -> str:
     """Safely get the string value of a status enum."""
     if status_enum is None:
-        return None
-    return getattr(status_enum, "value", str(status_enum))
+        return "unknown"
+    return str(getattr(status_enum, "value", status_enum))
 
 
 async def get_knowledge_access_service(
@@ -78,41 +116,22 @@ async def get_knowledge_access_service(
 )
 async def list_sources(
     response: FastAPIResponse,
-    limit: int = Query(20, ge=1, le=100),
-    cursor: str | None = Query(
-        None, description="Opaque cursor returned by previous page (omit for first)"
-    ),
-    statuses: list[OrganisationSourceStatus] | None = Query(
-        None,
-        description="Optional list of statuses to filter. Note: 'failed' status is excluded by default unless explicitly requested.",
-    ),
-    source_types: list[SourceType] | None = Query(
-        None, description="Optional list of source types (e.g. file, integration)"
-    ),
-    q: str | None = Query(None, description="Case-insensitive filename search fragment"),
-    updated_after: datetime | None = Query(
-        None,
-        description="Filter sources updated after this timestamp (ISO8601). Useful for fetching recent failures.",
-    ),
-    include_urls: bool = Query(
-        False,
-        description="If true include read + thumbnail SAS URLs (extra storage calls).",
-    ),
+    params: KnowledgeSourcesListParams = Depends(get_knowledge_sources_list_params),
     service: KnowledgeAccessService = Depends(get_knowledge_access_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[KnowledgeSourcesPage]:
     try:
         sources, next_cursor = await service.list_sources(
-            limit=limit,
-            cursor=cursor,
-            statuses=statuses,
-            source_types=source_types,
-            q=q,
-            updated_after=updated_after,
+            limit=params.limit,
+            cursor=params.cursor,
+            statuses=params.statuses,
+            source_types=params.source_types,
+            q=params.q,
+            updated_after=params.updated_after,
         )
         # Build item dicts with optional URLs concurrently
         items: list[KnowledgeSourceListItem] = []
-        if include_urls:
+        if params.include_urls:
             # Generate SAS URLs concurrently for better latency across the page
             tasks = [service.build_item_dict(src, include_urls=True) for src in sources]
             results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -120,7 +139,11 @@ async def list_sources(
                 if isinstance(res, Exception):
                     logger.debug("build_item_dict failed during listing", exc_info=True)
                     continue
-                items.append(KnowledgeSourceListItem(**res))
+                if not isinstance(res, Mapping):
+                    logger.debug("build_item_dict returned non-mapping for source list item")
+                    continue
+                data = cast(Mapping[str, Any], res)
+                items.append(KnowledgeSourceListItem(**dict(data)))
         else:
             for src in sources:
                 status_str = _get_status_str(src.status)
@@ -166,9 +189,10 @@ async def download_source(
 ) -> GenericResponse[KnowledgeDownloadResponse]:
     try:
         url = await service.generate_download_url(source_id, minutes=expires_minutes)
+        download_url = TypeAdapter(HttpUrl).validate_python(url)
         resp = KnowledgeDownloadResponse(
             source_id=source_id,
-            download_url=url,
+            download_url=download_url,
             expires_in_seconds=expires_minutes * 60,
         )
         return Response.success_response("Download URL generated", resp)

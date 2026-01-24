@@ -1,0 +1,466 @@
+"""Service for managing internal CRM deal participants."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Any, cast
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
+
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import col
+from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
+from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
+from src.domain.models.organisation_tables.sync.crm.deals import (
+    CRMDeal,
+    CRMDealParticipant,
+    CRMParticipantType,
+)
+from src.infra.utils.logger import get_logger
+from src.service.crm.internal.internal_crm_setup_service import InternalCRMSetupService
+from src.service.crm.internal.internal_crm_user_service import InternalCRMUserService
+
+logger = get_logger(__name__)
+
+
+class DealParticipantServiceError(Exception):
+    """Custom exception for deal participant service errors."""
+
+    def __init__(self, message: str, status_code: int = 500):
+        self.message = message
+        self.status_code = status_code
+        super().__init__(message)
+
+
+@dataclass
+class DealParticipantSkipped:
+    participant_type: str
+    related_id: UUID
+    relationship_role: str | None
+    reason: str
+
+
+class DealParticipantService:
+    """Service for managing deal participants for internal CRM."""
+
+    def __init__(
+        self,
+        session: AsyncSession,
+        organisation_id: UUID,
+        actor_user_id: UUID,
+        master_session: AsyncSession | None = None,
+    ):
+        self.session = session
+        self.organisation_id = organisation_id
+        self.actor_user_id = actor_user_id
+        self.master_session = master_session
+
+    async def close(self) -> None:
+        try:
+            await self.session.close()
+        except Exception:
+            logger.debug("DealParticipantService close exception", exc_info=True)
+
+    async def add_participants(
+        self, deal_id: UUID, payloads: list[dict[str, Any]]
+    ) -> tuple[list[CRMDealParticipant], list[DealParticipantSkipped], bool, UUID]:
+        deal, integration_id = await self._get_internal_deal(deal_id)
+        now = datetime.now(UTC)
+
+        created: list[CRMDealParticipant] = []
+        skipped: list[DealParticipantSkipped] = []
+        contact_participant_changed = False
+        seen_keys: set[tuple[str, str, str]] = set()
+
+        for payload in payloads:
+            participant_type = self._parse_participant_type(payload.get("participant_type"))
+            related_id = payload.get("related_id")
+            relationship_role = self._clean_string(payload.get("relationship_role"))
+
+            if not isinstance(related_id, UUID):
+                raise DealParticipantServiceError("Invalid related_id", status_code=400)
+
+            (
+                related_external_id,
+                related_local_id,
+                related_name,
+                related_email,
+            ) = await self._resolve_participant_entity(participant_type, related_id, integration_id)
+
+            role_key = relationship_role or ""
+            request_key = (participant_type.value, related_external_id, role_key)
+            if request_key in seen_keys:
+                skipped.append(
+                    DealParticipantSkipped(
+                        participant_type=participant_type.value,
+                        related_id=related_id,
+                        relationship_role=relationship_role,
+                        reason="Duplicate participant in request",
+                    )
+                )
+                continue
+            seen_keys.add(request_key)
+            existing = await self._find_existing_participant(
+                deal_id,
+                integration_id,
+                participant_type,
+                related_external_id,
+                role_key,
+            )
+
+            if existing and not existing.is_deleted:
+                skipped.append(
+                    DealParticipantSkipped(
+                        participant_type=participant_type.value,
+                        related_id=related_id,
+                        relationship_role=relationship_role,
+                        reason="Participant already exists",
+                    )
+                )
+                continue
+
+            if existing and existing.is_deleted:
+                participant = existing
+                participant.is_deleted = False
+            else:
+                participant_id = uuid4()
+                participant = CRMDealParticipant(
+                    participant_id=participant_id,
+                    organisation_id=self.organisation_id,
+                    integration_id=integration_id,
+                    external_id=self._build_participant_external_id(
+                        deal_id,
+                        participant_type,
+                        related_external_id,
+                        relationship_role,
+                    ),
+                    deal_id=deal_id,
+                    participant_type=participant_type,
+                    relationship_role=relationship_role,
+                    related_external_id=related_external_id,
+                )
+
+            participant.related_external_id = related_external_id
+            participant.related_local_id = related_local_id
+            participant.related_name = related_name
+            participant.related_email = related_email
+            participant.source_modified_at = now
+            participant.synced_at = now
+            participant.last_seen_at = now
+            participant.data_payload = {
+                "source": "internal_crm",
+                "identity": {
+                    "deal_id": str(deal_id),
+                    "participant_type": str(participant_type),
+                    "related_external_id": related_external_id,
+                    "relationship_role": relationship_role or "",
+                },
+            }
+
+            self.session.add(participant)
+            created.append(participant)
+
+            if participant_type == CRMParticipantType.CONTACT:
+                contact_participant_changed = True
+
+            if participant_type == CRMParticipantType.COMPANY:
+                await self._maybe_apply_company_to_deal(
+                    deal, integration_id, related_external_id, related_local_id, now
+                )
+
+        return created, skipped, contact_participant_changed, integration_id
+
+    async def remove_participant(
+        self, deal_id: UUID, participant_id: UUID
+    ) -> tuple[CRMDealParticipant, bool, UUID]:
+        deal, integration_id = await self._get_internal_deal(deal_id)
+        participant = await self.session.get(CRMDealParticipant, participant_id)
+
+        if not participant or participant.organisation_id != self.organisation_id:
+            raise DealParticipantServiceError("Participant not found", status_code=404)
+        if participant.deal_id != deal_id:
+            raise DealParticipantServiceError("Participant not found", status_code=404)
+        if participant.integration_id != integration_id:
+            raise DealParticipantServiceError("External CRM participants are read-only", 409)
+        if participant.is_deleted:
+            raise DealParticipantServiceError("Participant not found", status_code=404)
+
+        now = datetime.now(UTC)
+        participant.is_deleted = True
+        if participant.participant_type == CRMParticipantType.CONTACT:
+            participant.related_email = None
+        participant.source_modified_at = now
+        participant.synced_at = now
+        participant.last_seen_at = now
+        self.session.add(participant)
+
+        if (
+            participant.participant_type == CRMParticipantType.COMPANY
+            and participant.related_external_id == deal.company_external_id
+        ):
+            await self._refresh_deal_company_after_removal(
+                deal=deal,
+                integration_id=integration_id,
+                removed_participant_id=participant.participant_id,
+                updated_at=now,
+            )
+
+        contact_participant_changed = participant.participant_type == CRMParticipantType.CONTACT
+        return participant, contact_participant_changed, integration_id
+
+    async def update_participant_role(
+        self,
+        deal_id: UUID,
+        participant_id: UUID,
+        relationship_role: str | None,
+    ) -> CRMDealParticipant:
+        _, integration_id = await self._get_internal_deal(deal_id)
+        participant = await self.session.get(CRMDealParticipant, participant_id)
+
+        if not participant or participant.organisation_id != self.organisation_id:
+            raise DealParticipantServiceError("Participant not found", status_code=404)
+        if participant.deal_id != deal_id:
+            raise DealParticipantServiceError("Participant not found", status_code=404)
+        if participant.integration_id != integration_id:
+            raise DealParticipantServiceError("External CRM participants are read-only", 409)
+        if participant.is_deleted:
+            raise DealParticipantServiceError("Participant not found", status_code=404)
+
+        new_role = self._clean_string(relationship_role)
+        role_key = new_role or ""
+
+        participant_type = self._parse_participant_type(participant.participant_type)
+        existing = await self._find_existing_participant(
+            deal_id,
+            integration_id,
+            participant_type,
+            participant.related_external_id,
+            role_key,
+        )
+        if (
+            existing
+            and existing.participant_id != participant.participant_id
+            and not existing.is_deleted
+        ):
+            raise DealParticipantServiceError(
+                "Participant with role already exists", status_code=409
+            )
+
+        participant.participant_type = participant_type
+        participant.relationship_role = new_role
+        participant.external_id = self._build_participant_external_id(
+            deal_id,
+            participant_type,
+            participant.related_external_id,
+            new_role,
+        )
+        now = datetime.now(UTC)
+        participant.source_modified_at = now
+        participant.synced_at = now
+        participant.last_seen_at = now
+        participant.data_payload = {
+            "source": "internal_crm",
+            "identity": {
+                "deal_id": str(deal_id),
+                "participant_type": str(participant_type),
+                "related_external_id": participant.related_external_id,
+                "relationship_role": new_role or "",
+            },
+        }
+        self.session.add(participant)
+        return participant
+
+    async def _get_internal_deal(self, deal_id: UUID) -> tuple[CRMDeal, UUID]:
+        setup_service = InternalCRMSetupService(
+            self.session, self.organisation_id, self.actor_user_id
+        )
+        integration = await setup_service.get_internal_integration()
+        if not integration:
+            raise DealParticipantServiceError("Internal CRM is not configured", status_code=409)
+        integration_id = integration.integration_id
+
+        deal = await self.session.get(CRMDeal, deal_id)
+        if not deal or deal.organisation_id != self.organisation_id:
+            raise DealParticipantServiceError("Deal not found", status_code=404)
+        if deal.integration_id != integration_id:
+            raise DealParticipantServiceError("External CRM deals are read-only", 409)
+        if deal.is_deleted:
+            raise DealParticipantServiceError("Deal is deleted", 404)
+
+        return deal, integration_id
+
+    async def _resolve_participant_entity(
+        self,
+        participant_type: CRMParticipantType,
+        related_id: UUID,
+        integration_id: UUID,
+    ) -> tuple[str, UUID | None, str | None, str | None]:
+        if participant_type == CRMParticipantType.CONTACT:
+            contact = await self.session.get(CRMContact, related_id)
+            if not contact or contact.organisation_id != self.organisation_id:
+                raise DealParticipantServiceError("Contact not found", status_code=404)
+            if contact.integration_id != integration_id:
+                raise DealParticipantServiceError("External CRM contacts are read-only", 409)
+            if contact.is_deleted:
+                raise DealParticipantServiceError("Contact is deleted", 404)
+
+            name = contact.full_name or self._build_name(contact.first_name, contact.last_name)
+            return contact.external_id, contact.contact_id, name, contact.email
+
+        if participant_type == CRMParticipantType.COMPANY:
+            company = await self.session.get(CRMCompany, related_id)
+            if not company or company.organisation_id != self.organisation_id:
+                raise DealParticipantServiceError("Company not found", status_code=404)
+            if company.integration_id != integration_id:
+                raise DealParticipantServiceError("External CRM companies are read-only", 409)
+            if company.is_deleted:
+                raise DealParticipantServiceError("Company is deleted", 404)
+
+            return company.external_id, company.company_id, company.name, None
+
+        if participant_type == CRMParticipantType.USER:
+            if not self.master_session:
+                raise DealParticipantServiceError(
+                    "Master session required for user participants", status_code=500
+                )
+            user_service = InternalCRMUserService(
+                org_session=self.session,
+                master_session=self.master_session,
+                organisation_id=self.organisation_id,
+                actor_user_id=self.actor_user_id,
+            )
+            crm_user = await user_service.ensure_crm_user(related_id)
+
+            return crm_user.external_id, crm_user.user_id, crm_user.full_name, crm_user.email
+
+        raise DealParticipantServiceError("Unsupported participant type", status_code=400)
+
+    async def _find_existing_participant(
+        self,
+        deal_id: UUID,
+        integration_id: UUID,
+        participant_type: CRMParticipantType,
+        related_external_id: str,
+        role_key: str,
+    ) -> CRMDealParticipant | None:
+        c = cast(Any, CRMDealParticipant).__table__.c
+        stmt = select(CRMDealParticipant).where(
+            c.organisation_id == self.organisation_id,
+            c.integration_id == integration_id,
+            c.deal_id == deal_id,
+            c.participant_type == participant_type.value,
+            c.related_external_id == related_external_id,
+            func.coalesce(c.relationship_role, "") == role_key,
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().first()
+
+    @staticmethod
+    def _parse_participant_type(value: Any) -> CRMParticipantType:
+        if isinstance(value, CRMParticipantType):
+            return value
+        if isinstance(value, str):
+            try:
+                return CRMParticipantType(value)
+            except ValueError as exc:
+                raise DealParticipantServiceError(
+                    f"Unsupported participant type: {value}", status_code=400
+                ) from exc
+        raise DealParticipantServiceError("Unsupported participant type", status_code=400)
+
+    async def _maybe_apply_company_to_deal(
+        self,
+        deal: CRMDeal,
+        integration_id: UUID,
+        related_external_id: str,
+        related_local_id: UUID | None,
+        updated_at: datetime,
+    ) -> None:
+        if deal.company_external_id and deal.company_external_id != related_external_id:
+            return
+
+        company = None
+        if related_local_id:
+            company = await self.session.get(CRMCompany, related_local_id)
+        if (
+            company
+            and company.organisation_id == self.organisation_id
+            and company.integration_id == integration_id
+            and not company.is_deleted
+        ):
+            deal.company_external_id = company.external_id
+            deal.company_name = company.name
+            deal.company_domain = company.domain
+            deal.source_modified_at = updated_at
+            deal.synced_at = updated_at
+            deal.last_seen_at = updated_at
+        self.session.add(deal)
+
+    async def _refresh_deal_company_after_removal(
+        self,
+        *,
+        deal: CRMDeal,
+        integration_id: UUID,
+        removed_participant_id: UUID,
+        updated_at: datetime,
+    ) -> None:
+        stmt = select(CRMDealParticipant).where(
+            col(CRMDealParticipant.organisation_id) == self.organisation_id,
+            col(CRMDealParticipant.integration_id) == integration_id,
+            col(CRMDealParticipant.deal_id) == deal.deal_id,
+            col(CRMDealParticipant.participant_type) == CRMParticipantType.COMPANY.value,
+            col(CRMDealParticipant.is_deleted).is_(False),
+            col(CRMDealParticipant.participant_id) != removed_participant_id,
+        )
+        result = await self.session.execute(stmt)
+        replacement = result.scalars().first()
+
+        if replacement and replacement.related_local_id:
+            company = await self.session.get(CRMCompany, replacement.related_local_id)
+            if company and company.integration_id == integration_id and not company.is_deleted:
+                deal.company_external_id = company.external_id
+                deal.company_name = company.name
+                deal.company_domain = company.domain
+            else:
+                deal.company_external_id = None
+                deal.company_name = None
+                deal.company_domain = None
+        else:
+            deal.company_external_id = None
+            deal.company_name = None
+            deal.company_domain = None
+
+        deal.source_modified_at = updated_at
+        deal.synced_at = updated_at
+        deal.last_seen_at = updated_at
+        self.session.add(deal)
+
+    @staticmethod
+    def _build_participant_external_id(
+        deal_id: UUID,
+        participant_type: CRMParticipantType,
+        related_external_id: str,
+        relationship_role: str | None,
+    ) -> str:
+        payload = {
+            "deal_id": str(deal_id),
+            "participant_type": participant_type.value,
+            "related_external_id": related_external_id,
+            "relationship_role": relationship_role or "",
+        }
+        name = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        return str(uuid5(NAMESPACE_URL, name))
+
+    @staticmethod
+    def _clean_string(value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
+
+    @staticmethod
+    def _build_name(first_name: str | None, last_name: str | None) -> str | None:
+        parts = [p for p in [first_name, last_name] if p]
+        return " ".join(parts) if parts else None

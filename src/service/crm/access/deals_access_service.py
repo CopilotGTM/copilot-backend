@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Iterable
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any, TypedDict, cast
 from uuid import UUID
 
 from sqlalchemy import and_, func, or_, select
@@ -19,10 +20,15 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDealStatus,
     CRMParticipantType,
 )
-from src.infra.utils.cursor import decode_cursor, encode_cursor
 from src.infra.utils.logger import get_logger
 
 logger = get_logger("deals_access_service")
+
+
+class DealOwnerFilterRow(TypedDict):
+    owner_id: UUID
+    name: str | None
+    email: str | None
 
 
 class DealsAccessServiceError(Exception):
@@ -36,6 +42,18 @@ class DealsAccessServiceError(Exception):
 
 class DealsAccessService:
     """Service for accessing CRM deals with filtering, pagination, and statistics."""
+
+    @staticmethod
+    def _deal_status_to_db_value(status: CRMDealStatus | str) -> str:
+        """Normalize a status input to the string stored in the DB.
+
+        Pylance cannot narrow a union based on hasattr checks (e.g. "value" on str),
+        so use an explicit isinstance check against the enum type.
+        """
+
+        if isinstance(status, CRMDealStatus):
+            return status.value
+        return status
 
     def __init__(self, org_session: AsyncSession, organisation_id: UUID):
         """Initialize the service with an org-scoped session.
@@ -62,25 +80,27 @@ class DealsAccessService:
 
     async def list_deals(
         self,
-        limit: int = 20,
-        cursor: str | None = None,
+        limit: int = 40,
+        page: int = 1,
         statuses: Iterable[CRMDealStatus | str] | None = None,
         pipeline_ids: Iterable[UUID] | None = None,
+        owner_ids: Iterable[UUID] | None = None,
         owner_external_ids: Iterable[str] | None = None,
         min_amount: float | None = None,
         max_amount: float | None = None,
         min_close_date: datetime | None = None,
         max_close_date: datetime | None = None,
         q: str | None = None,
-    ) -> tuple[list[CRMDeal], str | None]:
+    ) -> tuple[list[CRMDeal], int]:
         """List deals with pagination and filters.
 
         Args:
-            limit: Maximum number of deals to return (default 20, max in router)
-            cursor: Opaque cursor for pagination (encodes created_at + deal_id)
+            limit: Maximum number of deals to return (default 40, max in router)
+            page: Page number (1-indexed)
             statuses: Optional list of deal statuses to filter (OPEN, WON, LOST, CLOSED)
             pipeline_ids: Optional list of pipeline UUIDs to filter
-            owner_external_ids: Optional list of owner external IDs to filter
+            owner_ids: Optional list of internal owner IDs to filter
+            owner_external_ids: Optional list of owner external IDs to filter (deprecated)
             min_amount: Optional minimum deal amount
             max_amount: Optional maximum deal amount
             min_close_date: Optional minimum close date
@@ -88,11 +108,10 @@ class DealsAccessService:
             q: Optional search query for deal name (case-insensitive)
 
         Returns:
-            Tuple of (deals list, next_cursor)
-            - next_cursor is None if no more results
+            Tuple of (deals list, total_count)
 
         Raises:
-            DealsAccessServiceError: If cursor is invalid or database error occurs
+            DealsAccessServiceError: If database error occurs
         """
         # Base query: organisation scope + exclude soft-deleted
         # Use Core column attributes to keep static typing happy with SQLAlchemy operators
@@ -104,13 +123,15 @@ class DealsAccessService:
 
         # Apply filters
         if statuses:
-            status_values = [s.value if hasattr(s, "value") else str(s) for s in statuses]
+            status_values = [self._deal_status_to_db_value(s) for s in statuses]
             stmt = stmt.where(c.deal_status.in_(status_values))
 
         if pipeline_ids:
             stmt = stmt.where(c.pipeline_id.in_(list(pipeline_ids)))
 
-        if owner_external_ids:
+        if owner_ids:
+            stmt = stmt.where(c.owner_id.in_(list(owner_ids)))
+        elif owner_external_ids:
             stmt = stmt.where(c.owner_external_id.in_(list(owner_external_ids)))
 
         if min_amount is not None:
@@ -130,50 +151,69 @@ class DealsAccessService:
             like_expr = f"%{q.lower()}%"
             stmt = stmt.where(c.name.ilike(like_expr))
 
-        # Cursor-based pagination (keyset pagination on created_at, deal_id)
-        if cursor:
-            try:
-                ts, deal_id = decode_cursor(cursor)
-            except Exception as e:
-                raise DealsAccessServiceError("Invalid cursor", status_code=400) from e
+        if page < 1:
+            raise DealsAccessServiceError("Page must be >= 1", status_code=400)
 
-            stmt = stmt.where(
-                or_(
-                    c.created_at < ts,
-                    and_(
-                        c.created_at == ts,
-                        c.deal_id < deal_id,
-                    ),
-                )
-            )
+        offset = (page - 1) * limit
+
+        count_stmt = select(func.count(c.deal_id)).where(
+            c.organisation_id == self.organisation_id,
+            c.is_deleted.is_(False),
+        )
+
+        if statuses:
+            status_values = [self._deal_status_to_db_value(s) for s in statuses]
+            count_stmt = count_stmt.where(c.deal_status.in_(status_values))
+
+        if pipeline_ids:
+            count_stmt = count_stmt.where(c.pipeline_id.in_(list(pipeline_ids)))
+
+        if owner_ids:
+            count_stmt = count_stmt.where(c.owner_id.in_(list(owner_ids)))
+        elif owner_external_ids:
+            count_stmt = count_stmt.where(c.owner_external_id.in_(list(owner_external_ids)))
+
+        if min_amount is not None:
+            count_stmt = count_stmt.where(c.amount >= min_amount)
+
+        if max_amount is not None:
+            count_stmt = count_stmt.where(c.amount <= max_amount)
+
+        if min_close_date:
+            count_stmt = count_stmt.where(c.close_date >= min_close_date)
+
+        if max_close_date:
+            count_stmt = count_stmt.where(c.close_date <= max_close_date)
+
+        if q:
+            like_expr = f"%{q.lower()}%"
+            count_stmt = count_stmt.where(c.name.ilike(like_expr))
+
+        count_res = await self.org_session.execute(count_stmt)
+        total_count = count_res.scalar() or 0
 
         # Order by created_at DESC, deal_id DESC for consistent pagination
-        stmt = stmt.order_by(
-            c.created_at.desc(),
-            c.deal_id.desc(),
-        ).limit(limit + 1)
+        stmt = (
+            stmt.order_by(
+                c.created_at.desc(),
+                c.deal_id.desc(),
+            )
+            .offset(offset)
+            .limit(limit)
+        )
 
         # Execute query
         res = await self.org_session.execute(stmt)
         rows: list[CRMDeal] = list(res.scalars().all())
 
-        # Check if there are more results
-        has_more = len(rows) == limit + 1
-        items = rows[:limit]
-
-        # Generate next cursor if there are more results
-        next_cursor: str | None = None
-        if has_more and items:
-            last = items[-1]
-            next_cursor = encode_cursor(last.created_at, last.deal_id)
-
-        return items, next_cursor
+        return rows, total_count
 
     async def get_all_deals(
         self,
         max_results: int = 500,
         statuses: Iterable[CRMDealStatus | str] | None = None,
         pipeline_ids: Iterable[UUID] | None = None,
+        owner_ids: Iterable[UUID] | None = None,
         owner_external_ids: Iterable[str] | None = None,
         min_amount: float | None = None,
         max_amount: float | None = None,
@@ -190,7 +230,8 @@ class DealsAccessService:
             max_results: Maximum number of deals to return (default 500, safety cap)
             statuses: Optional list of deal statuses to filter (OPEN, WON, LOST, CLOSED)
             pipeline_ids: Optional list of pipeline UUIDs to filter
-            owner_external_ids: Optional list of owner external IDs to filter
+            owner_ids: Optional list of internal owner IDs to filter
+            owner_external_ids: Optional list of owner external IDs to filter (deprecated)
             min_amount: Optional minimum deal amount
             max_amount: Optional maximum deal amount
             min_close_date: Optional minimum close date
@@ -212,13 +253,15 @@ class DealsAccessService:
 
             # Apply filters (same logic as list_deals)
             if statuses:
-                status_values = [s.value if hasattr(s, "value") else str(s) for s in statuses]
+                status_values = [self._deal_status_to_db_value(s) for s in statuses]
                 stmt = stmt.where(c.deal_status.in_(status_values))
 
             if pipeline_ids:
                 stmt = stmt.where(c.pipeline_id.in_(list(pipeline_ids)))
 
-            if owner_external_ids:
+            if owner_ids:
+                stmt = stmt.where(c.owner_id.in_(list(owner_ids)))
+            elif owner_external_ids:
                 stmt = stmt.where(c.owner_external_id.in_(list(owner_external_ids)))
 
             if min_amount is not None:
@@ -561,6 +604,69 @@ class DealsAccessService:
         except Exception as e:
             logger.error("Failed to get deal team members: %s", e, exc_info=True)
             raise DealsAccessServiceError("Failed to retrieve deal team members") from e
+
+    async def list_deal_owners(
+        self,
+        q: str | None = None,
+        limit: int = 200,
+    ) -> list[DealOwnerFilterRow]:
+        """Return distinct deal owners for filter dropdowns.
+
+        Args:
+            q: Optional search term for owner name/email/external ID.
+            limit: Maximum number of owners to return.
+
+        Returns:
+            List of distinct owners with owner_id, name, and email.
+        """
+        try:
+            c = cast(Any, CRMDeal).__table__.c
+            stmt = (
+                select(
+                    c.owner_id.label("owner_id"),
+                    func.max(c.owner_name).label("name"),
+                    func.max(c.owner_email).label("email"),
+                )
+                .where(
+                    c.organisation_id == self.organisation_id,
+                    c.is_deleted.is_(False),
+                    c.owner_id.is_not(None),
+                )
+                .group_by(c.owner_id)
+            )
+
+            if q:
+                like_expr = f"%{q.lower()}%"
+                conditions = [
+                    c.owner_name.ilike(like_expr),
+                    c.owner_email.ilike(like_expr),
+                    c.owner_external_id.ilike(like_expr),
+                ]
+                with contextlib.suppress(TypeError, ValueError):
+                    conditions.append(c.owner_id == UUID(q))
+                stmt = stmt.where(or_(*conditions))
+
+            stmt = stmt.order_by(
+                func.max(c.owner_name).asc().nulls_last(),
+                c.owner_id.asc(),
+            ).limit(limit)
+
+            result = await self.org_session.execute(stmt)
+            rows = result.all()
+
+            owners: list[DealOwnerFilterRow] = []
+            for row in rows:
+                owners.append(
+                    {
+                        "owner_id": cast(UUID, row.owner_id),
+                        "name": cast(str | None, row.name),
+                        "email": cast(str | None, row.email),
+                    }
+                )
+            return owners
+        except Exception as exc:
+            logger.error("Failed to list deal owners: %s", exc, exc_info=True)
+            raise DealsAccessServiceError("Failed to retrieve deal owners") from exc
 
 
 def extract_deal_health(deal_summary_data: dict | None) -> str | None:

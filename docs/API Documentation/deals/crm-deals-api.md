@@ -1,367 +1,181 @@
 # CRM Deals API Documentation
 
-<!-- markdownlint-disable MD033 MD060 -->
-
-## Base URL
-
-```text
-/users/crm
-```
+> Version: 1.0
+> Base URL: `/users/crm`
+> Last Updated: 2026-01-23
 
 ---
 
-## Response Envelope
+## Overview
 
-All endpoints return the shared `GenericResponse` envelope.
+This document defines the API contracts for CRM Deal operations. **Frontend developers should reference this document** to ensure request/response consistency.
+
+### Internal vs External CRM Deals
+
+All deal response objects include an `is_internal` boolean field:
+- **Internal CRM deals** (`is_internal: true`): Created and managed within the platform. These deals are fully editable - users can update, move stages, assign owners, and delete them.
+- **External CRM deals** (`is_internal: false`): Synced from external CRM systems (HubSpot, Salesforce). These deals are read-only and cannot be modified through the API.
+
+**Frontend Implementation**: Use the `is_internal` field to conditionally show edit/delete buttons and actions. Only enable these for internal deals.
+
+---
+
+## 1. Create Deal
+
+### Endpoint
+
+```
+POST /users/crm/deals
+```
+
+### Request Headers
+
+| Header | Required | Value |
+|--------|----------|-------|
+| Authorization | Yes | Bearer {token} |
+| Content-Type | Yes | application/json |
+
+### Request Body
+
+| Field | Type | Required | Validation | Description |
+|-------|------|----------|------------|-------------|
+| `name` | string | **Yes** | 1-500 chars, non-empty | Deal name |
+| `pipeline_id` | UUID | No | Valid pipeline UUID | Defaults to default pipeline |
+| `stage_id` | UUID | No | Must belong to pipeline | Defaults to first stage |
+| `owner_user_id` | UUID | No | Valid user UUID from `/users/crm/users` | Deal owner |
+| `amount` | number | No | >= 0 | Deal value |
+| `currency` | string | No | 3-char ISO code (USD, INR) | Currency code |
+| `close_date` | string | No | ISO 8601 datetime | Target close date |
+| `expected_close_date` | string | No | ISO 8601 datetime | Forecasted close date |
+| `deal_type` | string | No | Max 128 chars | "New Business", "Renewal", "Expansion", "Upsell" |
+| `priority` | string | No | Max 64 chars | "High", "Medium", "Low" |
+| `lead_source` | string | No | Max 128 chars | "Inbound", "Outbound", "Referral", etc. |
+| `description` | string | No | - | Deal notes/description |
+| `account` | object | No | - | Optional account details captured at deal creation |
+| `account.name` | string | No | - | Company/account name (optional if domain provided) |
+| `account.domain` | string | No | - | Company domain (required to create/link company) |
+| `account.website` | string | No | - | Company website URL (optional) |
+| `account.linkedin_url` | string | No | - | Company LinkedIn URL (optional) |
+| `team_members` | array | No | - | Internal team members to attach as participants |
+| `team_members[].user_id` | UUID | Yes | Valid user UUID from `/users/crm/users` | Internal team member |
+| `team_members[].role` | string | No | Max 128 chars | Team role label (e.g., "SE", "CSM") |
+
+### Example Request
 
 ```json
 {
-  "status": "SUCCESS | ERROR",
-
-  "message": "Human-readable message",
-
-  "data": { ... } | null
+  "name": "Acme Corp - Enterprise License",
+  "pipeline_id": "550e8400-e29b-41d4-a716-446655440000",
+  "stage_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+  "owner_user_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+  "amount": 50000,
+  "currency": "USD",
+  "close_date": "2026-03-15T00:00:00Z",
+  "expected_close_date": "2026-03-31T00:00:00Z",
+  "deal_type": "New Business",
+  "priority": "High",
+  "lead_source": "Inbound",
+  "description": "Enterprise deal for 100 seats",
+  "account": {
+    "name": "Acme Corp",
+    "domain": "acme.com",
+    "linkedin_url": "https://www.linkedin.com/company/acme"
+  },
+  "team_members": [
+    {
+      "user_id": "6d20ab77-5ab4-4c53-9c2f-0500c1c052cd",
+      "role": "SE"
+    }
+  ]
 }
 ```
 
----
-
-## Authentication
-
-- Required: Bearer token (`Authorization: Bearer <access_token>`)
-- User identity (organisation, user, role) resolved from the token; clients never pass these explicitly
-
----
-
-## Rate Limiting (defaults)
-
-- Write endpoints (`POST`, `DELETE`): ~15/min, 100/hour per user
-- Read endpoints (`GET`): ~60/min, 1000/hour per user
-
-- On limit breach: `429 Too Many Requests` with `Retry-After`
-
----
-
-## Deal Status Values
-
-| Status   | Meaning                        | UI Guidance                |
-| ---      | ---                            | ---                        |
-| `open`   | Deal is active and in progress | Show as active pipeline item|
-| `won`    | Deal has been closed successfully| Display with success indicator|
-| `lost`   | Deal has been closed unsuccessfully| Show as closed/lost        |
-| `closed` | Deal has been closed (generic) | Mark as completed           |
-
----
-
-## Data Types
-
-### Enums
-
-- `CRMDealStatus`: `"open" | "won" | "lost" | "closed"`
-
-### Request Query Parameters (TypeScript)
-
-```ts
-type UUID = string;
-
-export type CRMDealStatus = "open" | "won" | "lost" | "closed";
-
-
-export interface ListDealsParams {
-  limit?: number;           // 1..100, default 50
-  cursor?: string;          // opaque pagination cursor (ignored if fetch_all=true)
-  fetch_all?: boolean;      // fetch all deals without pagination (max 500)
-
-  statuses?: CRMDealStatus[];  // filter by deal status
-  pipeline_ids?: UUID[];    // filter by pipeline UUIDs
-  owner_external_ids?: string[];  // filter by owner external IDs
-
-  min_amount?: number;      // filter by minimum deal amount
-  max_amount?: number;      // filter by maximum deal amount
-  min_close_date?: string;  // filter by minimum close date (ISO8601)
-  max_close_date?: string;  // filter by maximum close date (ISO8601)
-
-  q?: string;              // case-insensitive search on deal name
-}
-```
-
-### Response Models (TypeScript)
-
-```ts
-export interface DealsStats {
-  total: number;
-  by_status: Record<string, number>;
-  by_pipeline: Record<string, number>;
-  total_amount: number | null;
-  average_amount: number | null;
-}
-
-export type ApiStatus = "SUCCESS" | "ERROR";
-
-// Standard envelope used by all endpoints
-export interface ApiEnvelope<T> {
-  status: ApiStatus;
-  message: string;
-  data: T | null;
-}
-
-export interface DealOwnerDetail {
-  external_id: string;
-  name: string | null;
-  email: string | null;
-}
-
-export interface DealTeamMember {
-  external_id: string;
-  name: string | null;
-  email: string | null;
-  role: string; // "collaborator", "split_owner", etc. (excludes "owner")
-}
-
-export interface DealListItem {
-  deal_id: UUID;
-  external_id: string;
-
-  name: string | null;
-  amount: number | null;
-  currency: string | null;
-  deal_status: CRMDealStatus;
-  probability: number | null;
-
-  close_date: string | null; // ISO8601
-  stage_name: string | null;
-  stage_label: string | null;
-  pipeline_name: string | null;
-  pipeline_label: string | null;
-
-  owner_details: DealOwnerDetail[]; // Typically 0..1 items
-  company_external_id: string | null;
-  company_name: string | null;
-  company_domain: string | null;
-
-  deal_health: string | null;
-  deal_health_reason: string | null;
-
-  deal_team: DealTeamMember[];
-
-  created_at: string; // ISO8601
-  updated_at: string; // ISO8601
-  synced_at: string; // ISO8601
-}
-
-export interface DealsPage {
-  items: DealListItem[];
-  cursor: string | null; // null if no more results
-}
-
-// Job response for active job tracking
-export interface DealJobResponse {
-  job_id: UUID | null;
-  job_type: string;
-  status: string; // PENDING, IN_PROGRESS, COMPLETED, FAILED
-}
-
-// Active deal-level jobs status
-export interface DealSummaryJobsStatus {
-  deal_summary: DealJobResponse | null;
-}
-
-export interface DealDetail {
-  deal_id: UUID;
-  external_id: string;
-  name: string | null;
-
-  amount: number | null;
-  currency: string | null;
-
-  deal_status: CRMDealStatus;
-  stage_name: string | null;
-  stage_label: string | null;
-
-  source_created_at: string | null; // ISO8601
-  close_date: string | null; // ISO8601
-  last_activity_at: string | null; // ISO8601
-  deal_age_days: number | null;
-
-  owner_details: DealOwnerDetail[];
-  deal_team: DealTeamMember[];
-
-  company_name: string | null;
-  company_industry: string | null;
-
-  deal_health: string | null;
-  deal_health_reason: string | null;
-
-  time_tracked: string | null;
-
-  deal_summary_data: Record<string, unknown> | null;
-
-  // Active deal-level jobs for SSE reconnection
-  // Frontend derives status: active_deal_jobs?.deal_summary?.job_id exists → IN_PROGRESS
-  //                         deal_summary_data exists → COMPLETED
-  //                         neither → NOT_STARTED
-  active_deal_jobs: DealSummaryJobsStatus | null;
-}
-
-```
-
----
-
-## Production Conventions
-
-### Authentication Requirements
-
-- Bearer JWT in `Authorization: Bearer <token>`
-- All operations are scoped to the authenticated user's organisation
-
-### Content Type
-
-- Request: `Content-Type: application/json`
-- Response: `Content-Type: application/json`
-
-### Pagination
-
-- Cursor-based keyset pagination for efficient traversal of large datasets
-- Treat `cursor` as opaque and pass back verbatim
-- Cursors encode `(created_at, deal_id)` for consistent ordering
-
-### Enrichment & Optional Fields
-
-- `owner_name`/`owner_email` are denormalized from the users directory when available; otherwise null.
-- `company_name`/`company_domain` are populated via enrichment after deal sync; they may be null on the first read and appear after enrichment completes.
-- Stage IDs (`stage_external_id`) reflect HubSpot's internal slugs (e.g., `qualifiedtobuy`, `appointmentscheduled`). Use `stage_label` for display text.
-
-### Soft Deletes
-
-- The API excludes soft-deleted (archived) deals by default (`is_deleted = false`). Deleted/archived deals are still ingested for internal lineage and history.
-
-### Stage History
-
-- Stage transitions are derived from HubSpot `propertiesWithHistory` and stored internally for analytics. A public endpoint for stage history may be added later; contact us if you need it.
-
-### Time & Timestamps
-
-- ISO 8601 UTC with `Z` suffix
-- Example: `2025-10-25T10:30:00Z`
-
-### Error Model
-
-- Envelope always present with HTTP status aligned to error:
-  - 400: invalid input (bad cursor, invalid filter)
-  - 401: missing/invalid token
-  - 403: forbidden (invalid user context)
-  - 404: resource not found (deal not found)
-  - 429: rate limited
-  - 500: unhandled server error
+### Minimal Request (Only Required Field)
 
 ```json
 {
-  "status": "ERROR",
-  "message": "Human-readable reason",
-  "data": null
+  "name": "Quick Deal Entry"
 }
 ```
 
-### Security & Tenancy
+### Notes on Account + Team Members
 
-- All operations are evaluated against the authenticated `organisation_id`
-- Queries exclude soft-deleted items (`is_deleted = false`)
-- No cross-organisation access is permitted
+- If `account.domain` is provided, the system will create or link an internal CRM company
+  and attach it to the deal.
+- If `account.domain` is missing but `account.name` is provided, the deal will store
+  `company_name` without creating a company record.
+- `team_members` are added as internal CRM participants (`participant_type = user`).
 
-### Retry & Backoff Recommendations
+### Success Response (201)
 
-- Reads (list/get): retry with exponential backoff (200ms → 400ms → 800ms; jitter) up to 3 attempts
-- On `429`: respect `Retry-After` header
-- On `5xx`: retry with backoff, cap at 3 attempts
-
----
-
-## Security & Compliance (SOC 2 Alignment)
-
-### Transport Security
-
-- Enforce TLS 1.2+; recommend HSTS at the edge
-- All API access over HTTPS only
-- CORS: restrict in production to trusted origins
-
-### Authentication & Authorization
-
-- Bearer JWT on every call
-- Endpoints enforce organisation scoping for all reads
-- Future: role-based authorization for admin vs user scopes
-
-### Input Validation & Integrity
-
-- Pydantic validation rejects invalid UUIDs, negative limits, malformed cursors
-- Cursor-based pagination guards against numeric enumeration
-- Query string filters validated for correct enum values
-
-### Logging & Auditability
-
-- Log request outcomes and resource IDs (deal_id, organisation_id)
-- Redact potentially sensitive fields; apply log retention and access controls
-- Track access patterns for security monitoring
-
-### Availability & Resilience
-
-- Per-user rate limiting (read budgets) with `429` + `Retry-After`
-- Graceful degradation on database connection issues
-- Connection pooling and timeouts prevent resource exhaustion
-
-### Privacy & Data Handling
-
-- Deal data is confidential business information
-- Avoid logging deal content or amounts
-- Support future purge/retention policies at the org level
-
-### Change Management & Versioning
-
-- Document non-breaking additions
-- Coordinate breaking changes with clients
-- Maintain backward compatibility for response schemas
-
----
-
-## 1. List Deals
-
-### Endpoint for List Deals
-
-```http
-# Paginated (default)
-GET /users/crm/deals?limit=50&cursor=<opaque>&statuses=open&statuses=won&q=enterprise
-
-# Fetch all deals (recommended for <300 deals)
-GET /users/crm/deals?fetch_all=true&statuses=open
+```json
+{
+  "status": "SUCCESS",
+  "message": "Deal created successfully",
+  "data": {
+    "deal_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
+    "name": "Acme Corp - Enterprise License",
+    "amount": 50000,
+    "currency": "USD",
+    "pipeline_id": "550e8400-e29b-41d4-a716-446655440000",
+    "pipeline_name": "Default Pipeline",
+    "stage_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+    "stage_name": "Qualification",
+    "deal_status": "open",
+    "owner_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+    "owner_name": "John Doe",
+    "owner_email": "john@example.com",
+    "close_date": "2026-03-15T00:00:00Z",
+    "expected_close_date": "2026-03-31T00:00:00Z",
+    "deal_type": "New Business",
+    "priority": "High",
+    "lead_source": "Inbound",
+    "description": "Enterprise deal for 100 seats",
+    "company_external_id": "5f35a0b7-5f5f-4a0b-9e34-3b2b88a0e9a2",
+    "company_name": "Acme Corp",
+    "company_domain": "acme.com",
+    "created_at": "2026-01-22T10:00:00Z"
+  }
+}
 ```
 
-> **Note:** Always call `/users/crm/deals` with no trailing slash. FastAPI normalizes routes and will respond with a `307 Temporary Redirect` when the request includes an extra `/`, so use the canonical path to avoid the extra hop.
+### Error Responses
 
-### Description for List Deals
+| Status | Error | Description |
+|--------|-------|-------------|
+| 400 | Validation error | Missing required field or invalid value |
+| 404 | Pipeline/Stage not found | Invalid pipeline_id or stage_id |
+| 409 | Internal CRM not configured | Org doesn't have internal CRM setup |
+| 422 | Validation error | Field validation failed (details in response) |
+| 500 | Internal server error | Unexpected error |
 
-Returns a list of CRM deals for the current organisation with optional filters. Supports two modes:
+---
 
-- **Pagination Mode (default):** Cursor-based pagination for large datasets
-- **Fetch All Mode:** Set `fetch_all=true` to retrieve all deals in one request (max 500) — ideal for small datasets where client-side filtering is preferred
+## 2. List Deals
 
-Ordered by `created_at DESC, deal_id DESC` for consistent results.
+### Endpoint
 
-### Query Parameters for List Deals
+```
+GET /users/crm/deals
+```
 
-| Parameter           | Type           | Required | Description                                                |
-| ---                | ---            | ---      | ---                                                        |
-| `limit`            | integer        | No       | Items per page (1..100, default 50). Ignored if `fetch_all=true` |
-| `cursor`           | string         | No       | Opaque cursor from previous response. Ignored if `fetch_all=true` |
-| `fetch_all`        | boolean        | No       | Fetch all deals in one request (max 500). Default: `false`        |
-| `statuses`         | array<string>  | No       | Filter by status (`open`, `won`, `lost`, `closed`; repeat param) |
-| `pipeline_ids`     | array<UUID>    | No       | Filter by pipeline UUIDs (repeat parameter)                       |
-| `owner_external_ids`| array<string> | No       | Filter by owner external IDs from CRM (repeat parameter)          |
-| `min_amount`       | number         | No       | Filter by minimum deal amount                                     |
-| `max_amount`       | number         | No       | Filter by maximum deal amount                                     |
-| `min_close_date`   | string         | No       | Filter by minimum close date (ISO8601)                            |
-| `max_close_date`   | string         | No       | Filter by maximum close date (ISO8601)                            |
-| `q`                | string         | No       | Case-insensitive substring match on deal name                     |
+### Query Parameters
 
-### Success Response (200) for List Deals
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `limit` | integer | 40 | Items per page (1-100) |
+| `page` | integer | 1 | Page number (1-indexed) |
+| `statuses` | array[enum] | - | Filter by deal statuses (`open`, `won`, `lost`, `closed`) |
+| `pipeline_ids` | array[uuid] | - | Filter by **pipeline_id** values from `/users/crm/pipelines` |
+| `owner_ids` | array[uuid] | - | Filter by internal owner IDs from `/users/crm/deals/owners` (not page-scoped) |
+| `owner_external_ids` | array[string] | - | Deprecated. Filter by CRM owner external IDs |
+| `min_amount` | number | - | Minimum deal amount |
+| `max_amount` | number | - | Maximum deal amount |
+| `min_close_date` | string | - | Minimum close date (ISO 8601) |
+| `max_close_date` | string | - | Maximum close date (ISO 8601) |
+| `q` | string | - | Case-insensitive search by deal name |
+
+### Success Response (200)
 
 ```json
 {
@@ -370,838 +184,528 @@ Ordered by `created_at DESC, deal_id DESC` for consistent results.
   "data": {
     "items": [
       {
-        "deal_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
-        "external_id": "deal_12345",
-        "name": "Enterprise Software License",
-        "amount": 250000.00,
+        "deal_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
+        "name": "Acme Corp - Enterprise License",
+        "amount": 50000,
         "currency": "USD",
+        "stage_name": "Qualification",
         "deal_status": "open",
-        "probability": 75.0,
-        "close_date": "2025-12-31T23:59:59Z",
-        "stage_name": "Negotiation",
-        "stage_label": "Contract Review",
-        "pipeline_name": "Sales Pipeline",
-        "pipeline_label": "Standard Sales Process",
-        "deal_health": "HEALTHY",
-        "deal_health_reason": null,
         "owner_details": [
           {
-            "external_id": "user_123",
-            "name": "Alex Fin",
-            "email": "alex.fin@example.com"
+            "owner_id": "f2c8a7ce-1c0e-4b0b-8c07-1a9b6b8b0c1d",
+            "external_id": "83275159",
+            "name": "John Doe",
+            "email": "john@example.com"
           }
         ],
-        "company_external_id": "company_789",
-        "deal_team": [
-          {
-            "external_id": "user_123",
-            "name": "Alex Fin",
-            "email": "alex.fin@example.com",
-            "role": "owner"
-          },
-          {
-            "external_id": "user_456",
-            "name": "Sam Chen",
-            "email": "sam.chen@example.com",
-            "role": "collaborator"
-          }
-        ],
-        "created_at": "2025-10-01T08:00:00Z",
-        "updated_at": "2025-10-24T15:30:00Z",
-        "synced_at": "2025-10-25T10:00:00Z"
+        "close_date": "2026-03-15T00:00:00Z",
+        "is_internal": true,
+        "created_at": "2026-01-22T10:00:00Z"
       }
     ],
-    "cursor": "eyJjcmVhdGVkX2F0IjoiMjAyNS0xMC0wMVQwODowMDowMFoiLCJkZWFsX2lkIjoiZjQ3YWMxMGItNThjYy00MzcyLWE1NjctMGUwMmIyYzNkNDc5In0="
+    "page": 1,
+    "limit": 40,
+    "total_count": 120,
+    "total_pages": 3
   }
 }
 ```
 
-### Notes for List Deals
+#### Response Fields
 
-- **Fetch All Mode (`fetch_all=true`):**
-  - Returns all matching deals in a single response (max 500)
-  - `cursor` is always `null` (no pagination)
-  - Recommended for datasets <300 deals for instant client-side filtering
-  - All filters still apply server-side
-
-- **Pagination Mode (default):**
-  - Empty `items` array with `cursor: null` indicates no results
-  - Cursor is `null` when no more pages exist
-  - Pass `cursor` from previous response to fetch next page
-
-- All filters are ANDed together
-- Multiple values for the same filter (e.g., multiple statuses) are ORed
-
-### Error Responses for List Deals
-
-- `400 Bad Request` — invalid cursor or filter values
-
-  ```json
-  {
-    "status": "ERROR",
-    "message": "Invalid cursor",
-    "data": null
-  }
-  ```
-
-- `429 Too Many Requests` — rate limit exceeded
-- `500 Internal Server Error` — unexpected error
-
-  ```json
-  {
-    "status": "ERROR",
-    "message": "An unexpected error occurred while processing your request",
-    "data": null
-  }
-  ```
-
-### Example cURL for List Deals
-
-```bash
-# Paginated request
-curl -X GET "$BASE_URL/users/crm/deals?limit=50&statuses=open&statuses=won&q=enterprise" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Accept: application/json"
-
-# Fetch all deals (for client-side filtering)
-curl -X GET "$BASE_URL/users/crm/deals?fetch_all=true" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Accept: application/json"
-```
-
-### Example TypeScript for List Deals
-
-```typescript
-async function listDeals(params: ListDealsParams): Promise<DealsPage> {
-  const queryParams = new URLSearchParams();
-  
-  // Fetch all mode (recommended for small datasets)
-  if (params.fetch_all) {
-    queryParams.append('fetch_all', 'true');
-  } else {
-    // Pagination mode
-    if (params.limit) queryParams.append('limit', params.limit.toString());
-    if (params.cursor) queryParams.append('cursor', params.cursor);
-  }
-  
-  // Filters (work with both modes)
-  if (params.statuses) params.statuses.forEach(s => queryParams.append('statuses', s));
-  if (params.pipeline_ids) params.pipeline_ids.forEach(id => queryParams.append('pipeline_ids', id));
-  if (params.owner_external_ids) params.owner_external_ids.forEach(id => queryParams.append('owner_external_ids', id));
-  if (params.q) queryParams.append('q', params.q);
-  
-  const response = await fetch(`${BASE_URL}/users/crm/deals?${queryParams}`, {
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Accept': 'application/json'
-    }
-  });
-  
-  const envelope: ApiEnvelope<DealsPage> = await response.json();
-  if (envelope.status === 'ERROR') throw new Error(envelope.message);
-  return envelope.data!;
-}
-
-// Example: Fetch all deals for client-side filtering
-async function getAllDealsForFiltering(): Promise<DealListItem[]> {
-  const page = await listDeals({ fetch_all: true });
-  return page.items; // All deals, filter client-side
-}
-```
+| Field | Type | Description |
+|-------|------|-------------|
+| `is_internal` | boolean | `true` if deal is from internal CRM (editable), `false` if from external CRM like HubSpot/Salesforce (read-only). Frontend should enable edit/delete actions only for internal deals. |
+| `owner_details` | array | Owner list (typically 0..1). Use `owner_id` for filtering and linking. |
 
 ---
 
-## 2. Get Deal Statistics
+## 3. Get Deal Detail
 
-### Endpoint for Get Deal Statistics
+### Endpoint
 
-```http
-GET /users/crm/deals/stats
 ```
-
-### Description for Get Deal Statistics
-
-Returns aggregate statistics for all CRM deals in the organisation. Useful for dashboard widgets and overview cards.
-
-### Authentication for Get Deal Statistics
-
-Required
-
-### Success Response (200) for Get Deal Statistics
-
-```json
-{
-  "status": "SUCCESS",
-  "message": "Statistics retrieved successfully",
-  "data": {
-    "total": 1247,
-    "by_status": {
-      "open": 823,
-      "won": 312,
-      "lost": 98,
-      "closed": 14
-    },
-    "by_pipeline": {
-      "Sales Pipeline": 945,
-      "Partner Pipeline": 234,
-      "Enterprise Pipeline": 68
-    },
-    "total_amount": 45678900.50,
-    "average_amount": 36621.34
-  }
-}
-```
-
-### Response Fields
-
-| Field            | Type           | Description                                     |
-| ---              | ---            | ---                                               |
-| `total`          | integer        | Total count of active deals (excludes soft-deleted)  |
-| `by_status`      | object         | Count grouped by deal status                         |
-| `by_pipeline`    | object         | Count grouped by pipeline name                       |
-| `total_amount`   | number \| null | Sum of all deal amounts (null if no amounts)         |
-| `average_amount` | number \| null | Average deal amount (null if no amounts)             |
-
-### Notes for Get Deal Statistics
-
-- Amounts are calculated from deals with non-null `amount` values
-- Pipelines without names are excluded from `by_pipeline`
-- Statistics exclude soft-deleted deals
-- Currency is not normalized; `total_amount` and `average_amount` mix currencies
-
-### Error Responses for Get Deal Statistics
-
-- `429 Too Many Requests` — rate limit exceeded
-- `500 Internal Server Error` — unexpected error
-
-### Example cURL for Get Deal Statistics
-
-```bash
-curl -X GET "$BASE_URL/users/crm/deals/stats" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Accept: application/json"
-```
-
-### Example TypeScript for Get Deal Statistics
-
-```typescript
-async function getDealsStats(): Promise<DealsStats> {
-  const response = await fetch(`${BASE_URL}/users/crm/deals/stats`, {
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Accept': 'application/json'
-    }
-  });
-  
-  const envelope: ApiEnvelope<DealsStats> = await response.json();
-  if (envelope.status === 'ERROR') throw new Error(envelope.message);
-  return envelope.data!;
-}
-```
-
----
-
-## 3. Get Deal Details
-
-### Endpoint for Get Deal Details
-
-```http
 GET /users/crm/deals/{deal_id}
 ```
 
-### Description for Get Deal Details
+### Path Parameters
 
-Retrieves streamlined details for a specific CRM deal by its internal UUID. Returns the fields needed by the frontend overview (value, stage, key dates, owner/team, company/industry, deal health), plus AI-generated deal summary (if completed) and active deal-level jobs (for SSE reconnection).
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `deal_id` | UUID | Deal UUID |
 
-### Authentication for Get Deal Details
-
-Required
-
-### Path Parameters for Get Deal Details
-
-| Parameter | Type | Required | Description                 |
-| --- | --- | --- | --- |
-| `deal_id` | UUID | Yes      | Internal deal UUID          |
-
-### Success Response (200) for Get Deal
+### Success Response (200)
 
 ```json
 {
   "status": "SUCCESS",
   "message": "Deal retrieved successfully",
   "data": {
-    "deal_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
-    "external_id": "deal_12345",
-    "name": "Enterprise Software License",
-    "amount": 250000.00,
+    "deal_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
+    "name": "Acme Corp - Enterprise License",
+    "amount": 50000,
     "currency": "USD",
+    "pipeline_id": "550e8400-e29b-41d4-a716-446655440000",
+    "pipeline_name": "Default Pipeline",
+    "stage_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+    "stage_name": "Qualification",
+    "stage_probability": 10,
     "deal_status": "open",
-    "stage_name": "POC",
-    "stage_label": "Proof of Concept",
-    "source_created_at": "2025-12-23T10:00:00Z",
-    "close_date": "2025-12-15T23:59:59Z",
-    "last_activity_at": "2025-12-22T15:30:00Z",
-    "deal_age_days": 1,
-    "owner_details": [
-      {
-        "external_id": "user_123",
-        "name": "Saksham Bhutani",
-        "email": "saksham.bhutani@example.com"
-      }
-    ],
-    "deal_team": [
-      {
-        "external_id": "user_123",
-        "name": "Saksham Bhutani",
-        "email": "saksham.bhutani@example.com",
-        "role": "owner"
-      },
-      {
-        "external_id": "user_456",
-        "name": "Sarah Tech",
-        "email": "sarah.tech@example.com",
-        "role": "collaborator"
-      }
-    ],
+    "owner_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+    "owner_name": "John Doe",
+    "owner_email": "john@example.com",
+    "close_date": "2026-03-15T00:00:00Z",
+    "expected_close_date": "2026-03-31T00:00:00Z",
+    "deal_type": "New Business",
+    "priority": "High",
+    "lead_source": "Inbound",
+    "description": "Enterprise deal for 100 seats",
+    "is_internal": true,
+    "created_at": "2026-01-22T10:00:00Z",
+    "updated_at": "2026-01-22T12:00:00Z"
+  }
+}
+```
+
+#### Response Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `is_internal` | boolean | `true` if deal is from internal CRM (editable), `false` if from external CRM like HubSpot/Salesforce (read-only). Frontend should enable edit/delete actions only for internal deals. |
+
+---
+
+## 4. Update Deal
+
+**⚠️ Internal CRM Only**: This endpoint only works for deals where `is_internal: true`. External CRM deals (HubSpot, Salesforce) are read-only.
+
+### Endpoint
+
+```
+PATCH /users/crm/deals/{deal_id}
+```
+
+### Path Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `deal_id` | UUID | Deal UUID |
+
+### Request Headers
+
+| Header | Required | Value |
+|--------|----------|-------|
+| Authorization | Yes | Bearer {token} |
+| Content-Type | Yes | application/json |
+
+### Request Body
+
+**All fields are optional** - only include fields you want to update. Omitted fields remain unchanged.
+
+| Field | Type | Validation | Description |
+|-------|------|------------|-------------|
+| `name` | string | 1-500 chars, non-empty | Deal name |
+| `amount` | number | >= 0 | Deal value (can be null) |
+| `currency` | string | 3-char ISO code (USD, INR) | Currency code |
+| `close_date` | string | ISO 8601 datetime | Target close date |
+| `expected_close_date` | string | ISO 8601 datetime | Forecasted close date |
+| `deal_type` | string | Max 128 chars | "New Business", "Renewal", "Expansion", "Upsell" |
+| `priority` | string | Max 64 chars | "High", "Medium", "Low" |
+| `lead_source` | string | Max 128 chars | "Inbound", "Outbound", "Referral", etc. |
+| `description` | string | - | Deal notes/description |
+
+**Note**: To update `pipeline_id`, `stage_id`, or `owner_user_id`, use the dedicated endpoints below.
+
+### Example Request
+
+Update only amount and close date:
+```json
+{
+  "amount": 75000,
+  "close_date": "2026-04-15T00:00:00Z"
+}
+```
+
+Update all editable fields:
+```json
+{
+  "name": "Acme Corp - Enterprise Plus",
+  "amount": 75000,
+  "currency": "USD",
+  "close_date": "2026-04-15T00:00:00Z",
+  "expected_close_date": "2026-04-30T00:00:00Z",
+  "deal_type": "Expansion",
+  "priority": "High",
+  "lead_source": "Inbound",
+  "description": "Upgraded to enterprise plus tier with 200 seats"
+}
+```
+
+### Success Response (200)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Deal updated successfully",
+  "data": {
+    "deal_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
+    "external_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
+    "name": "Acme Corp - Enterprise Plus",
+    "pipeline_id": "550e8400-e29b-41d4-a716-446655440000",
+    "stage_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+    "deal_status": "open",
+    "owner_user_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+    "created_at": "2026-01-22T10:00:00Z",
+    "updated_at": "2026-01-22T15:30:00Z"
+  }
+}
+```
+
+### Error Responses
+
+| Status | Error | Description |
+|--------|-------|-------------|
+| 400 | No fields to update | Request body is empty or contains no valid fields |
+| 404 | Deal not found | Invalid deal_id or deal doesn't belong to org |
+| 409 | External CRM deals are read-only | Tried to edit a deal synced from HubSpot/Salesforce (`is_internal: false`) |
+| 422 | Validation error | Field validation failed (details in response) |
+| 500 | Internal server error | Unexpected error |
+
+---
+
+## 5. Move Stage
+
+**⚠️ Internal CRM Only**: This endpoint only works for deals where `is_internal: true`.
+
+### Endpoint
+
+```
+POST /users/crm/deals/{deal_id}/stage
+```
+
+### Path Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `deal_id` | UUID | Deal UUID |
+
+### Request Headers
+
+| Header | Required | Value |
+|--------|----------|-------|
+| Authorization | Yes | Bearer {token} |
+| Content-Type | Yes | application/json |
+
+### Request Body
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `stage_id` | UUID | **Yes** | UUID of the target stage (must belong to same pipeline) |
+
+### Example Request
+
+```json
+{
+  "stage_id": "9ba7b810-9dad-11d1-80b4-00c04fd430c9"
+}
+```
+
+### Success Response (200)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Deal stage updated successfully",
+  "data": {
+    "deal_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
+    "external_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
+    "name": "Acme Corp - Enterprise License",
+    "pipeline_id": "550e8400-e29b-41d4-a716-446655440000",
+    "stage_id": "9ba7b810-9dad-11d1-80b4-00c04fd430c9",
+    "deal_status": "open",
+    "owner_user_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+    "created_at": "2026-01-22T10:00:00Z",
+    "updated_at": "2026-01-22T15:45:00Z"
+  }
+}
+```
+
+**Note**: Moving to a new stage automatically creates a stage history record with timestamp.
+
+### Error Responses
+
+| Status | Error | Description |
+|--------|-------|-------------|
+| 400 | Missing stage_id | Request missing required field |
+| 404 | Stage not found | Invalid stage_id or stage doesn't belong to deal's pipeline |
+| 409 | External CRM deals are read-only | Tried to move a deal synced from HubSpot/Salesforce |
+| 500 | Internal server error | Unexpected error |
+
+---
+
+## 6. Assign Owner
+
+**⚠️ Internal CRM Only**: This endpoint only works for deals where `is_internal: true`.
+
+### Endpoint
+
+```
+POST /users/crm/deals/{deal_id}/owner
+```
+
+### Path Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `deal_id` | UUID | Deal UUID |
+
+### Request Headers
+
+| Header | Required | Value |
+|--------|----------|-------|
+| Authorization | Yes | Bearer {token} |
+| Content-Type | Yes | application/json |
+
+### Request Body
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `owner_user_id` | UUID or null | **Yes** | User UUID from `/users/crm/users` list, or `null` to clear owner |
+
+### Example Requests
+
+Assign owner:
+```json
+{
+  "owner_user_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+}
+```
+
+Clear owner (unassign):
+```json
+{
+  "owner_user_id": null
+}
+```
+
+### Success Response (200)
+
+Assigned:
+```json
+{
+  "status": "SUCCESS",
+  "message": "Deal owner assigned successfully",
+  "data": {
+    "deal_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
+    "external_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
+    "name": "Acme Corp - Enterprise License",
+    "pipeline_id": "550e8400-e29b-41d4-a716-446655440000",
+    "stage_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+    "deal_status": "open",
+    "owner_user_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+    "created_at": "2026-01-22T10:00:00Z",
+    "updated_at": "2026-01-22T15:50:00Z"
+  }
+}
+```
+
+Cleared:
+```json
+{
+  "status": "SUCCESS",
+  "message": "Deal owner cleared successfully",
+  "data": {
+    "deal_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
+    "owner_user_id": null,
+    ...
+  }
+}
+```
+
+**Note**: On first owner assignment, if no CRM users exist, the system auto-syncs all org users to CRM (MVP behavior).
+
+### Error Responses
+
+| Status | Error | Description |
+|--------|-------|-------------|
+| 404 | User not found | Invalid owner_user_id or user not available in CRM |
+| 409 | External CRM deals are read-only | Tried to assign owner to a deal synced from HubSpot/Salesforce |
+| 500 | Internal server error | Unexpected error |
+
+---
+
+## 7. Update Deal Account
+
+**⚠️ Internal CRM Only**: This endpoint only works for deals where `is_internal: true`.
+
+### Endpoint
+
+```
+PATCH /users/crm/deals/{deal_id}/account
+```
+
+### Request Body
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | No | Company/account name |
+| `domain` | string | No | Company domain (recommended; used to create/link company) |
+| `website` | string | No | Company website URL |
+| `linkedin_url` | string | No | Company LinkedIn URL |
+
+### Behavior
+
+- If `domain` (or `website`) is provided, the system creates or links a company by domain
+  and attaches it to the deal.
+- If only `name` is provided, the deal stores `company_name` without creating a company record.
+
+### Example Request
+
+```json
+{
+  "name": "Acme Corp",
+  "domain": "acme.com",
+  "linkedin_url": "https://www.linkedin.com/company/acme"
+}
+```
+
+### Success Response (200)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Deal account updated successfully",
+  "data": {
+    "deal_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
+    "external_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
+    "name": "Acme Corp - Enterprise License",
+    "pipeline_id": "550e8400-e29b-41d4-a716-446655440000",
+    "stage_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+    "deal_status": "open",
+    "owner_user_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+    "company_external_id": "5f35a0b7-5f5f-4a0b-9e34-3b2b88a0e9a2",
     "company_name": "Acme Corp",
-    "company_industry": "Cyber Security",
-    "deal_health": "ON_TRACK",
-    "deal_health_reason": "Multiple recent meetings with the buyer group present.",
-    "time_tracked": null,
-    "deal_summary_data": {
-      "schema_version": "1.0",
-      "generated_at": "2025-12-24T10:30:00Z",
-      "data": {
-        "deal_summary": "Enterprise software license deal with Acme Corp. Strong engagement across recent meetings with clear technical fit; security review pending.",
-        "deal_health": "HEALTHY",
-        "deal_health_reason": "Multiple recent meetings with the buyer group present."
-      }
-    },
-    "active_deal_jobs": null
+    "company_domain": "acme.com",
+    "created_at": "2026-01-22T10:00:00Z",
+    "updated_at": "2026-01-23T11:00:00Z"
   }
-}
-```
-
-### Notes for Get Deal Details
-
-- **Deal Summary**: When `deal_summary_data` exists, it contains AI-generated summary data including `deal_summary` and an AI-classified `deal_health`.
-- **Deal Health Reason (capture-only)**: `deal_health_reason` is stored for internal traceability but is **not displayed in the UI** for the current release.
-- **Active Jobs**: The `active_deal_jobs` field contains any currently running deal-level jobs (e.g., deal summary generation). Use this for SSE reconnection - if `active_deal_jobs.deal_summary.job_id` exists, subscribe to the SSE stream for real-time updates.
-- **Job Statuses**: `PENDING` (queued), `IN_PROGRESS` (running), `COMPLETED` (done), `FAILED` (error).
-- **Deriving Summary Status (Frontend)**:
-  - If `active_deal_jobs?.deal_summary?.job_id` exists → Job is IN_PROGRESS (reconnect to SSE)
-  - If `deal_summary_data` exists → Summary is COMPLETED
-  - Neither → NOT_STARTED
-
-### Error Responses for Get Deal Details
-
-- `404 Not Found` — deal does not exist or access denied
-
-  ```json
-  {
-    "status": "ERROR",
-    "message": "Deal not found",
-    "data": null
-  }
-  ```
-
-- `429 Too Many Requests` — rate limit exceeded
-- `500 Internal Server Error` — unexpected error
-
-### Example cURL for Get Deal Details
-
-```bash
-curl -X GET "$BASE_URL/users/crm/deals/f47ac10b-58cc-4372-a567-0e02b2c3d479" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Accept: application/json"
-```
-
-### Example TypeScript for Get Deal Details
-
-```typescript
-async function getDealById(dealId: string): Promise<DealDetail> {
-  const response = await fetch(`${BASE_URL}/users/crm/deals/${dealId}`, {
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Accept': 'application/json'
-    }
-  });
-  
-  if (response.status === 404) {
-    throw new Error('Deal not found');
-  }
-  
-  const envelope: ApiEnvelope<DealDetail> = await response.json();
-  if (envelope.status === 'ERROR') throw new Error(envelope.message);
-  return envelope.data!;
 }
 ```
 
 ---
 
-## Error Codes Summary
+## 8. Delete Deal
 
-| HTTP Code | Reason                                              | Suggested Action                         |
-| --- | --- | --- |
-| 400       | Validation failure (invalid cursor, bad filter)      | Fix request parameters                   |
-| 401       | Missing/invalid token                                | Ensure valid bearer token                |
-| 403       | Access denied (cross-org access)                     | Confirm user permissions                 |
-| 404       | Deal not found                                       | Verify `deal_id` exists                  |
-| 429       | Rate limit exceeded                                  | Respect `Retry-After` header             |
-| 500       | Unexpected server error                              | Retry with backoff; contact support      |
+**⚠️ Internal CRM Only**: This endpoint only works for deals where `is_internal: true`. **This is a soft delete** - the deal is marked as deleted but remains in the database.
 
----
+### Endpoint
 
-## Frontend Integration Notes
-
-### Typical Flow
-
-1. **Dashboard Overview**
-   - Call `GET /users/crm/deals/stats` to populate dashboard cards (total deals, by status, etc.)
-
-2. **List View**
-   - Call `GET /users/crm/deals` with filters to show paginated table
-   - Apply filters from UI (status dropdown, search box, pipeline filter)
-   - Implement infinite scroll or "Load More" button using `cursor`
-
-3. **Detail View**
-   - Call `GET /users/crm/deals/{deal_id}` when user clicks a deal row
-   - Display all fields in a detail panel or modal
-
-4. **Search & Filter**
-   - Debounce search input (q parameter) to avoid excessive API calls
-   - Combine multiple filters (status + pipeline + search)
-   - Reset cursor when filters change
-
-### Pagination Best Practices
-
-- Store `cursor` from last successful response
-- Show loading state while fetching next page
-- Disable "Load More" button when `cursor` is null
-- Handle network errors gracefully (show retry button)
-
-### Performance Optimization
-
-- Cache `stats` response for 30-60 seconds
-- Implement request deduplication for rapid filter changes
-- Consider virtual scrolling for large deal lists
-- Batch status badge rendering in list view
-
-### Error Handling
-
-```typescript
-try {
-  const deals = await listDeals({ limit: 20, statuses: ['open'] });
-  renderDeals(deals);
-} catch (error) {
-  if (error.status === 429) {
-    // Show "Too many requests, please wait" message
-    showRateLimitWarning();
-  } else if (error.status >= 500) {
-    // Show generic error with retry
-    showRetryableError();
-  } else {
-    // Show specific error message
-    showError(error.message);
-  }
-}
+```
+DELETE /users/crm/deals/{deal_id}
 ```
 
-### Real-time Updates
+### Path Parameters
 
-- Deals data is synced from CRM systems periodically (not real-time)
-- Implement manual refresh button for users who need latest data
-- Consider polling `stats` endpoint every 5-10 minutes for dashboard
-- Show `synced_at` timestamp to indicate data freshness
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `deal_id` | UUID | Deal UUID |
 
----
+### Request Headers
 
-## 4. Generate Deal Summary (AI)
+| Header | Required | Value |
+|--------|----------|-------|
+| Authorization | Yes | Bearer {token} |
 
-### Endpoint for Generate Deal Summary
-
-```http
-POST /users/crm/deals/{deal_id}/deal-summary/generate
-```
-
-### Description for Generate Deal Summary
-
-Initiates an AI-powered summary generation for a deal. This analyzes ALL meeting transcripts associated with the deal to produce a comprehensive deal summary including:
-
-- Overall deal narrative and progression
-- Key themes across meetings
-- Relationship timeline
-- Critical decisions made
-- Outstanding items and risks
-- Recommended next steps
-
-The operation is **idempotent** - if a summary job is already running for this deal, the existing job is returned instead of creating a new one.
-
-### Authentication for Generate Deal Summary
-
-Required
-
-### Path Parameters for Generate Deal Summary
-
-| Parameter | Type | Required | Description                 |
-| --- | --- | --- | --- |
-| `deal_id` | UUID | Yes      | Internal deal UUID          |
-
-### Success Response (202 Accepted) for Generate Deal Summary
+### Success Response (200)
 
 ```json
 {
   "status": "SUCCESS",
-  "message": "Deal summary generation initiated",
+  "message": "Deal deleted successfully",
   "data": {
-    "job_id": "a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d",
-    "job_type": "deal_summary",
-    "status": "PENDING"
+    "deal_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
+    "external_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
+    "name": "Acme Corp - Enterprise License",
+    "pipeline_id": "550e8400-e29b-41d4-a716-446655440000",
+    "stage_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+    "deal_status": "closed",
+    "owner_user_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+    "created_at": "2026-01-22T10:00:00Z",
+    "updated_at": "2026-01-22T16:00:00Z"
   }
 }
 ```
 
-### Response When Job Already Running
+**Behavior:**
+- Deal is marked `is_deleted: true` in database
+- Deal status changed to `CLOSED`
+- Deal no longer appears in list/search results
+- Deal can still be accessed by direct ID (for audit purposes)
 
+### Error Responses
+
+| Status | Error | Description |
+|--------|-------|-------------|
+| 404 | Deal not found | Invalid deal_id or deal already deleted |
+| 409 | External CRM deals are read-only | Tried to delete a deal synced from HubSpot/Salesforce (`is_internal: false`) |
+| 500 | Internal server error | Unexpected error |
+
+**Frontend Recommendation**: Show a confirmation modal before calling this endpoint:
+```
+"Are you sure you want to delete this deal? This action cannot be undone."
+[Cancel] [Delete Deal]
+```
+
+---
+
+## Supporting APIs
+
+### Get Currencies
+
+```
+GET /users/crm/settings/currencies
+```
+
+**Response:**
 ```json
 {
   "status": "SUCCESS",
-  "message": "Deal summary generation already in progress",
   "data": {
-    "job_id": "a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d",
-    "job_type": "deal_summary",
-    "status": "IN_PROGRESS"
+    "items": [
+      { "code": "USD", "name": "US Dollar", "symbol": "$" },
+      { "code": "INR", "name": "Indian Rupee", "symbol": "₹" }
+    ],
+    "default_code": "USD"
   }
 }
 ```
 
-### Response Fields for Generate Deal Summary
+### Get All Deal Form Options
 
-| Field      | Type   | Description                                                |
-| --- | --- | --- |
-| `job_id`   | UUID   | Job ID to use for SSE stream subscription                  |
-| `job_type` | string | Type of job (`deal_summary`)                               |
-| `status`   | string | Job status: `PENDING`, `IN_PROGRESS`, `COMPLETED`, `FAILED` |
-
-### Error Responses for Generate Deal Summary
-
-- `404 Not Found` — deal does not exist
-- `429 Too Many Requests` — rate limit exceeded
-- `500 Internal Server Error` — failed to schedule job
-
-### Example cURL for Generate Deal Summary
-
-```bash
-curl -X POST "$BASE_URL/users/crm/deals/f47ac10b-58cc-4372-a567-0e02b2c3d479/deal-summary/generate" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json"
+```
+GET /users/crm/settings/deal-options
 ```
 
-### Example TypeScript for Generate Deal Summary
+Returns currencies, deal types, priorities, lead sources, and forecast categories in a single call.
 
-```typescript
-interface DealJobResponse {
-  job_id: string;
-  job_type: string;
-  status: string;
-}
+### Search Users (for Owner Selection)
 
-async function generateDealSummary(dealId: string): Promise<DealJobResponse> {
-  const response = await fetch(
-    `${BASE_URL}/users/crm/deals/${dealId}/deal-summary/generate`,
-    {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json'
-      }
-    }
-  );
-  
-  const envelope: ApiEnvelope<DealJobResponse> = await response.json();
-  if (envelope.status === 'ERROR') throw new Error(envelope.message);
-  return envelope.data!;
-}
+```
+GET /users/crm/users?q={search}&limit=20
 ```
 
----
-
-## 5. Deal Summary SSE Stream
-
-### Endpoint for Deal Summary SSE Stream
-
-```http
-GET /users/crm/deals/{deal_id}/deal-summary/stream/{job_id}
-```
-
-### Description for Deal Summary SSE Stream
-
-Server-Sent Events (SSE) stream for real-time deal summary job progress and results.
-
-Subscribe to this endpoint with the `job_id` returned from the generate endpoint. The stream emits progress events during generation and the final result when complete.
-
-**Reconnection Support**: If the user disconnects and reconnects, the stream resumes from the current state or delivers the cached result if already completed.
-
-### Authentication for Deal Summary SSE Stream
-
-Required
-
-### Path Parameters for Deal Summary SSE Stream
-
-| Parameter      | Type | Required | Description                                     |
-| ---            | ---  | ---      | ---                                              |
-| `deal_id`      | UUID | Yes      | Internal deal UUID                                    |
-| `job_id`       | UUID | Yes      | Job ID from POST `/deal-summary/generate` response    |
-
-### SSE Event Types
-
-| Event Type  | Description                                              |
-| --- | --- |
-| `ready`     | Initial event when stream connects, contains job_id      |
-| `ping`      | Heartbeat (every ~25s) to keep connection alive          |
-| `frame`     | Progress updates, content chunks, or finalize signal     |
-| `complete`  | Job finished successfully - stream will close            |
-| `error`     | Error occurred - check `reconnect` flag                  |
-| `timeout`   | Stream timeout (5 min default) - reconnect if needed     |
-
-### Frame Types (within `frame` event)
-
-| Frame Type       | Description                                         |
-| --- | --- |
-| `progress.update` | Progress updates with message, stage, and percentage |
-| `answer.replace` | Final result content (full summary data)            |
-| `error`          | Error during processing                             |
-| `finalize`       | Signals job completion, stream will close           |
-
-### SSE Event Format
-
-```text
-event: ready
-data: {"job_id": "a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d"}
-
-event: frame
-data: {"type": "progress.update", "message": "Loading deal context...", "stage": "context", "progress": 0.1, ...}
-
-event: frame
-data: {"type": "progress.update", "message": "Found 5 meetings. Fetching transcripts...", "stage": "transcripts", "progress": 0.25, ...}
-
-event: frame
-data: {"type": "progress.update", "message": "Analyzing 5 meeting transcripts...", "stage": "analysis", "progress": 0.6, ...}
-
-event: frame
-data: {"type": "answer.replace", "content": {...summaryData}, "job_type": "deal_summary", "job_id": "...", ...}
-
-event: frame
-data: {"type": "finalize", "reason": "done", ...}
-
-event: complete
-data: {"job_id": "a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d"}
-```
-
-### Progress Update Frame Structure
-
-```json
-{
-  "type": "progress.update",
-  "message": "Loading deal context...",
-  "stage": "context",
-  "progress": 0.1,
-  "sequence": 0,
-  "timestamp": 1733234567.123,
-  "job_type": "deal_summary",
-  "job_id": "a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d"
-}
-```
-
-### Progress Stages
-
-| Stage            | Progress | Description                    |
-| ---              | ---      | ---                              |
-| `context`        | 0.10     | Loading deal context                |
-| `stakeholders`   | 0.15     | Loading stakeholders                |
-| `meetings`       | 0.20     | Loading meeting history             |
-| `transcripts`    | 0.25     | Starting transcript fetch           |
-| `transcript_fetch` | 0.25-0.60 | Fetching individual transcripts    |
-| `analysis`       | 0.60     | Analyzing transcripts               |
-| `generation`     | 0.70     | Generating AI summary               |
-| `saving`         | 0.90     | Saving results to database          |
-
-### Answer Replace Frame Structure (Final Result)
-
-The `answer.replace` frame contains the full summary data in the `content` field:
-
-```json
-{
-  "type": "answer.replace",
-  "content": {
-    "schema_version": "1.0",
-    "generated_at": "2025-12-03T10:30:00Z",
-    "data": {
-      "deal_summary": "Enterprise software license deal with Acme Corp. Strong engagement across 5 meetings with clear technical fit; security review pending.",
-      "deal_health": "HEALTHY",
-      "deal_health_reason": "Three meetings in the last two weeks with decision-maker present. Pending security questionnaire is the only open item; no negative sentiment detected."
-    }
-  },
-  "sequence": 8,
-  "timestamp": 1733234567.123,
-  "job_type": "deal_summary",
-  "job_id": "a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d"
-}
-```
-
-**Notes:**
-
-- The `content` field contains the same structure as `deal_summary_data` in the Deal Detail response. Frontend should extract this from `frame.content` when `frame.type === "answer.replace"`.
-- `deal_health_reason` is captured but **not displayed in the UI** for the current release.
-- For deals with older summaries (or no summary generated), `deal_health` and `deal_health_reason` will be `null`.
-
-### Example TypeScript for Deal Summary SSE Stream
-
-```typescript
-function subscribeToDealSummaryStream(
-  dealId: string,
-  jobId: string,
-  callbacks: {
-    onProgress?: (progress: number, stage: string) => void;
-    onChunk?: (content: string) => void;
-    onComplete?: (result: DealSummaryResult) => void;
-    onError?: (error: string) => void;
-  }
-): EventSource {
-  const eventSource = new EventSource(
-    `${BASE_URL}/users/crm/deals/${dealId}/deal-summary/stream/${jobId}`,
-    { 
-      // Note: For auth, you may need to use fetch with ReadableStream instead
-      // or pass token via query param if your backend supports it
-    }
-  );
-
-  eventSource.addEventListener('progress', (event) => {
-    const data = JSON.parse(event.data);
-    callbacks.onProgress?.(data.progress, data.stage);
-  });
-
-  eventSource.addEventListener('chunk', (event) => {
-    const data = JSON.parse(event.data);
-    callbacks.onChunk?.(data.content);
-  });
-
-  eventSource.addEventListener('complete', (event) => {
-    const data = JSON.parse(event.data);
-    callbacks.onComplete?.(data.result);
-    eventSource.close();
-  });
-
-  eventSource.addEventListener('error', (event) => {
-    if (event.data) {
-      const data = JSON.parse(event.data);
-      callbacks.onError?.(data.error);
-    }
-    eventSource.close();
-  });
-
-  return eventSource;
-}
-
-// Usage example
-const job = await generateDealSummary(dealId);
-
-const stream = subscribeToDealSummaryStream(dealId, job.job_id, {
-  onProgress: (progress, stage) => {
-    console.log(`${progress}% - ${stage}`);
-    updateProgressBar(progress);
-  },
-  onChunk: (content) => {
-    appendToSummaryPreview(content);
-  },
-  onComplete: (result) => {
-    displayFinalSummary(result);
-  },
-  onError: (error) => {
-    showErrorMessage(error);
-  }
-});
-```
-
-### Reconnection Pattern
-
-If the user navigates away and returns, check `active_deal_jobs` in the deal detail response:
-
-```typescript
-async function checkAndReconnectToSummaryJob(dealId: string) {
-  const deal = await getDealById(dealId);
-
-  // Check if there's an active summary job with a valid job_id
-  const activeJob = deal.active_deal_jobs?.deal_summary;
-  if (activeJob?.job_id) {
-    // Job is running - reconnect to the SSE stream
-    return subscribeToDealSummaryStream(dealId, activeJob.job_id, callbacks);
-  }
-
-  // No active job - check if summary already exists
-  if (deal.deal_summary_data) {
-    displayFinalSummary(deal.deal_summary_data);
-  }
-
-  return null;
-}
-```
-
-### Notes for Deal Summary SSE Stream
-
-- The stream automatically closes after sending the `complete` or `error` event
-- If the job completes before the client connects, the `complete` event is sent immediately
-- Progress percentages are approximate and may not be strictly linear
-- For authenticated SSE, consider using fetch with ReadableStream or EventSource polyfill
-
----
-
-## 6. List Deal Tasks
-
-### Endpoint for List Deal Tasks
-
-```http
-GET /users/crm/deals/{deal_id}/tasks
-```
-
-### Description for List Deal Tasks
-
-Returns a cursor-paginated list of all tasks linked to the specified deal. Use this for the full Tasks tab or when you need filters beyond the right-rail widget (status, priority, type).
-
-### Query Parameters for List Deal Tasks
-
-| Parameter   | Type         | Required | Description                                |
-| ---         | ---           | ---      | ---                                         |
-| `limit`     | integer       | No       | Items per page (1..100, default 50)             |
-| `cursor`    | string        | No       | Opaque cursor from previous response            |
-| `statuses`  | array<string> | No       | Filter by task status (repeat parameter)        |
-| `priorities`| array<string> | No       | Filter by priority (repeat parameter)           |
-| `task_types`| array<string> | No       | Filter by task type/category (repeat parameter) |
-
-### Success Response (200) for List Deal Tasks
-
+**Response:**
 ```json
 {
   "status": "SUCCESS",
-  "message": "Tasks retrieved successfully",
   "data": {
     "items": [
       {
-        "task_id": "83fb2504-1d18-4cf6-a8db-0bb1370df5b0",
-        "external_id": "task_10001",
-        "subject": "Follow up on data migration timeline concerns",
-        "status": "IN_PROGRESS",
-        "task_type": "AI",
-        "priority": "HIGH",
-        "due_date": "2025-05-02T17:00:00Z",
-        "owner_name": "Mrinmoy N",
-        "owner_email": "mrinmoy@example.com",
-        "deal_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
-        "deal_external_id": "deal_12345",
-        "is_overdue": false,
-        "created_at": "2025-04-18T10:00:00Z",
-        "updated_at": "2025-04-19T12:00:00Z",
-        "synced_at": "2025-04-19T12:05:00Z"
+        "user_id": "uuid",
+        "name": "John Doe",
+        "email": "john@example.com",
+        "role": "sales_rep",
+        "job_title": "Account Executive"
       }
     ],
     "cursor": null
@@ -1209,71 +713,152 @@ Returns a cursor-paginated list of all tasks linked to the specified deal. Use t
 }
 ```
 
-### Notes for List Deal Tasks
+### Get Deal Owners (for Filters)
 
-- `is_overdue` is computed server-side to avoid timezone drift on the client.
-- Ordering is `created_at DESC, task_id DESC` for stable pagination.
-
----
-
-## 7. Get Task Detail
-
-### Endpoint for Get Task Detail
-
-```http
-GET /users/crm/tasks/{task_id}
+```
+GET /users/crm/deals/owners?limit=200&q={search}
 ```
 
-### Description for Get Task Detail
-
-Returns the full payload for a single task (body, reminders, metadata). Use when clicking a task card to open the drawer/editor.
-
-### Success Response (200) for Get Task Detail
-
+**Response:**
 ```json
 {
   "status": "SUCCESS",
-  "message": "Task retrieved successfully",
   "data": {
-    "task_id": "83fb2504-1d18-4cf6-a8db-0bb1370df5b0",
-    "external_id": "task_10001",
-    "subject": "Follow up on data migration timeline concerns",
-    "body": "Confirm migration blockers with Kai by EOD.",
-    "status": "IN_PROGRESS",
-    "task_type": "AI",
-    "priority": "HIGH",
-    "owner_name": "Mrinmoy N",
-    "owner_email": "mrinmoy@example.com",
-    "due_date": "2025-05-02T17:00:00Z",
-    "completed_date": null,
-    "reminder_date": "2025-05-02T13:00:00Z",
-    "source_created_at": "2025-04-18T10:00:00Z",
-    "source_modified_at": "2025-04-19T12:00:00Z",
-    "properties": {
-      "playbook": "Discovery call follow-up"
-    },
-    "metrics": null,
-    "integration_id": "c3d4e5f6-a7b8-4c5d-9e0f-1a2b3c4d5e6f",
-    "organisation_id": "d4e5f6a7-b8c9-4d5e-0f1a-2b3c4d5e6f7a",
-    "synced_at": "2025-04-19T12:05:00Z",
-    "created_at": "2025-04-18T10:00:00Z",
-    "updated_at": "2025-04-19T12:00:00Z",
-    "is_overdue": false
+    "items": [
+      {
+        "owner_id": "f2c8a7ce-1c0e-4b0b-8c07-1a9b6b8b0c1d",
+        "name": "Jane Smith",
+        "email": "jane@example.com"
+      }
+    ]
   }
 }
 ```
 
-### Notes for Get Task Detail
+Use `owner_id` values from this endpoint with the `owner_ids` filter in `GET /users/crm/deals`.
 
-- Returns `404` if the task does not belong to the authenticated organisation.
-- `properties` and `metrics` echo any CRM-specific custom payloads for advanced use cases.
+### Get Pipelines (with Stages)
+
+```
+GET /users/crm/pipelines?include_stages=true
+```
+
+**Response:**
+```json
+{
+  "status": "SUCCESS",
+  "data": {
+    "items": [
+      {
+        "pipeline_id": "uuid",
+        "name": "Default Pipeline",
+        "is_default": true,
+        "stages": [
+          {
+            "stage_id": "uuid",
+            "name": "Qualification",
+            "label": "Qualification",
+            "probability": 10,
+            "display_order": 1,
+            "stage_state": "open"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
 
 ---
 
-## Related References
+## Common Error Response Format
 
-- CRM Sync Architecture: `docs/Technical Documentation/integration-architecture-proposal.md`
-- Integration Management: `docs/API Documentation/integrations-api.md`
-- OAuth Flow: `docs/API Documentation/oauth-data-flow.md`
+```json
+{
+  "status": "ERROR",
+  "message": "Error description",
+  "data": null
+}
+```
 
-<!-- markdownlint-enable MD033 MD060 -->
+### Validation Error (422)
+
+```json
+{
+  "status": "ERROR",
+  "message": "Validation failed",
+  "detail": [
+    {
+      "loc": ["body", "name"],
+      "msg": "Field required",
+      "type": "missing"
+    }
+  ]
+}
+```
+
+---
+
+## Frontend Implementation Notes
+
+1. **Always send dates in ISO 8601 format**: `2026-03-15T00:00:00Z`
+2. **UUIDs must be valid**: Use the exact UUID format returned by APIs
+3. **Currency codes**: Only use codes from `/settings/currencies` (currently USD, INR)
+4. **Owner selection**: Use user_id from `/users/crm/users` search
+5. **Stage selection**: Use stage_id from `/pipelines?include_stages=true`
+6. **Optional fields**: Don't send `null` for optional fields - omit them entirely
+7. **Account + Team**: Use `account` + `team_members` to capture company + internal team
+   in one request. Company is created/linked only when `account.domain` is supplied.
+8. **Owner filter options**: Use `/users/crm/deals/owners` and filter by `owner_ids`; do not derive options from the current page.
+
+---
+
+## Related Documents
+
+- `deal-workflow-specification.md` - Complete workflow specification
+- `create-deal-fields-specification.md` - Field-level specification
+- `internal-crm-frontend-stepwise-integration.md` - Integration guide
+
+---
+
+## Deal Import (CSV)
+
+### Download Template
+
+```
+GET /users/crm/deals/import/template?file_type=csv
+```
+
+### Create Upload URL
+
+```
+POST /users/crm/deals/import/upload-url
+```
+
+Body:
+```
+{
+  "filename": "deals_import.csv"
+}
+```
+
+### Process Uploaded CSV
+
+```
+POST /users/crm/deals/import/process
+```
+
+Body:
+```
+{
+  "storage_path": "crm_imports/deals/<user>/<id>/deals_import.csv"
+}
+```
+
+### SSE Stream (Import Job)
+
+```
+GET /users/crm/deals/import/jobs/{job_id}/events
+```
+
+See `docs/API Documentation/deals/crm-deals-import-api.md` for full request/response and SSE payloads.

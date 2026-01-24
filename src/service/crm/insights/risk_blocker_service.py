@@ -6,14 +6,13 @@ All operations maintain a full audit trail in the risk_blocker_data JSONB field.
 
 from __future__ import annotations
 
-import base64
-import json
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import col
 from src.api.schemas.risk_blocker_models import (
     RiskBlockerDetail,
     RiskBlockerListItem,
@@ -58,18 +57,6 @@ class InvalidStatusTransitionError(RiskBlockerServiceError):
         )
 
 
-def _encode_cursor(dt: datetime, uid: UUID) -> str:
-    """Encode pagination cursor."""
-    blob = json.dumps({"ts": dt.isoformat(), "id": str(uid)}).encode()
-    return base64.urlsafe_b64encode(blob).decode()
-
-
-def _decode_cursor(cursor: str) -> tuple[datetime, UUID]:
-    """Decode pagination cursor."""
-    data = json.loads(base64.urlsafe_b64decode(cursor.encode()))
-    return datetime.fromisoformat(data["ts"]), UUID(data["id"])
-
-
 class RiskBlockerService:
     """Service for managing deal risks and blockers."""
 
@@ -100,33 +87,33 @@ class RiskBlockerService:
         self,
         deal_id: UUID,
         limit: int = 20,
-        cursor: str | None = None,
+        page: int = 1,
         item_type: RiskBlockerType | None = None,
         statuses: list[RiskBlockerStatus] | None = None,
         severity: RiskBlockerSeverity | None = None,
         category: RiskBlockerCategory | None = None,
         include_resolved: bool = False,
         sort_order: str = "desc",
-    ) -> tuple[list[RiskBlockerListItem], str | None, int, RiskBlockerSummary]:
+    ) -> tuple[list[RiskBlockerListItem], int, RiskBlockerSummary]:
         """List risks/blockers for a deal with pagination and filters."""
 
         base_query = select(DealRiskBlocker).where(
-            DealRiskBlocker.deal_id == deal_id,
-            DealRiskBlocker.organisation_id == self.organisation_id,
+            col(DealRiskBlocker.deal_id) == deal_id,
+            col(DealRiskBlocker.organisation_id) == self.organisation_id,
         )
 
         # Build filtered query
         query = base_query
 
         if item_type:
-            query = query.where(DealRiskBlocker.item_type == item_type)
+            query = query.where(col(DealRiskBlocker.item_type) == item_type)
 
         if statuses:
-            query = query.where(DealRiskBlocker.status.in_(statuses))
+            query = query.where(col(DealRiskBlocker.status).in_(statuses))
         elif not include_resolved:
             # Exclude resolved/dismissed by default
             query = query.where(
-                DealRiskBlocker.status.not_in(
+                col(DealRiskBlocker.status).not_in(
                     [
                         RiskBlockerStatus.RESOLVED,
                         RiskBlockerStatus.DISMISSED,
@@ -137,10 +124,10 @@ class RiskBlockerService:
             )
 
         if severity:
-            query = query.where(DealRiskBlocker.severity == severity)
+            query = query.where(col(DealRiskBlocker.severity) == severity)
 
         if category:
-            query = query.where(DealRiskBlocker.category == category)
+            query = query.where(col(DealRiskBlocker.category) == category)
 
         # Get total count for filtered query
         count_query = select(func.count()).select_from(query.subquery())
@@ -149,84 +136,62 @@ class RiskBlockerService:
         # Get summary stats (unfiltered for deal overview)
         summary = await self._get_summary(deal_id)
 
-        # Apply cursor pagination
-        if cursor:
-            try:
-                cursor_time, cursor_id = _decode_cursor(cursor)
-                if sort_order == "desc":
-                    query = query.where(
-                        or_(
-                            DealRiskBlocker.created_at < cursor_time,
-                            (DealRiskBlocker.created_at == cursor_time)
-                            & (DealRiskBlocker.risk_blocker_id < cursor_id),
-                        )
-                    )
-                else:
-                    query = query.where(
-                        or_(
-                            DealRiskBlocker.created_at > cursor_time,
-                            (DealRiskBlocker.created_at == cursor_time)
-                            & (DealRiskBlocker.risk_blocker_id > cursor_id),
-                        )
-                    )
-            except Exception:
-                raise RiskBlockerServiceError("Invalid cursor", status_code=400) from None
+        if page < 1:
+            raise RiskBlockerServiceError("Page must be >= 1", status_code=400)
 
         # Apply sort
         if sort_order == "desc":
             query = query.order_by(
-                DealRiskBlocker.created_at.desc(),
-                DealRiskBlocker.risk_blocker_id.desc(),
+                col(DealRiskBlocker.created_at).desc(),
+                col(DealRiskBlocker.risk_blocker_id).desc(),
             )
         else:
             query = query.order_by(
-                DealRiskBlocker.created_at.asc(),
-                DealRiskBlocker.risk_blocker_id.asc(),
+                col(DealRiskBlocker.created_at).asc(),
+                col(DealRiskBlocker.risk_blocker_id).asc(),
             )
 
-        # Apply limit + 1 to check for more
-        query = query.limit(limit + 1)
+        offset = (page - 1) * limit
+        query = query.offset(offset).limit(limit)
 
         result = await self.session.execute(query)
         items = list(result.scalars().all())
 
-        # Build next cursor
-        next_cursor = None
-        if len(items) > limit:
-            items = items[:limit]
-            last_item = items[-1]
-            next_cursor = _encode_cursor(last_item.created_at, last_item.risk_blocker_id)
-
-        # Convert to response models
         response_items = [self._to_list_item(item) for item in items]
 
-        return response_items, next_cursor, total_count, summary
+        return response_items, total_count, summary
 
     async def _get_summary(self, deal_id: UUID) -> RiskBlockerSummary:
         """Get summary statistics for a deal."""
         query = select(
             func.count().label("total"),
-            func.count().filter(DealRiskBlocker.item_type == RiskBlockerType.RISK).label("risks"),
             func.count()
-            .filter(DealRiskBlocker.item_type == RiskBlockerType.BLOCKER)
+            .filter(col(DealRiskBlocker.item_type) == RiskBlockerType.RISK)
+            .label("risks"),
+            func.count()
+            .filter(col(DealRiskBlocker.item_type) == RiskBlockerType.BLOCKER)
             .label("blockers"),
             func.count()
-            .filter(DealRiskBlocker.status == RiskBlockerStatus.AI_SUGGESTED)
+            .filter(col(DealRiskBlocker.status) == RiskBlockerStatus.AI_SUGGESTED)
             .label("ai_suggested"),
-            func.count().filter(DealRiskBlocker.status == RiskBlockerStatus.OPEN).label("open"),
             func.count()
-            .filter(DealRiskBlocker.status == RiskBlockerStatus.IN_PROGRESS)
+            .filter(col(DealRiskBlocker.status) == RiskBlockerStatus.OPEN)
+            .label("open"),
+            func.count()
+            .filter(col(DealRiskBlocker.status) == RiskBlockerStatus.IN_PROGRESS)
             .label("in_progress"),
             func.count()
-            .filter(DealRiskBlocker.status == RiskBlockerStatus.RESOLVED)
+            .filter(col(DealRiskBlocker.status) == RiskBlockerStatus.RESOLVED)
             .label("resolved"),
             func.count()
-            .filter(DealRiskBlocker.severity == RiskBlockerSeverity.CRITICAL)
+            .filter(col(DealRiskBlocker.severity) == RiskBlockerSeverity.CRITICAL)
             .label("critical"),
-            func.count().filter(DealRiskBlocker.severity == RiskBlockerSeverity.HIGH).label("high"),
+            func.count()
+            .filter(col(DealRiskBlocker.severity) == RiskBlockerSeverity.HIGH)
+            .label("high"),
         ).where(
-            DealRiskBlocker.deal_id == deal_id,
-            DealRiskBlocker.organisation_id == self.organisation_id,
+            col(DealRiskBlocker.deal_id) == deal_id,
+            col(DealRiskBlocker.organisation_id) == self.organisation_id,
         )
 
         result = await self.session.execute(query)
@@ -248,8 +213,8 @@ class RiskBlockerService:
         """Get a single risk/blocker by ID with full details."""
         result = await self.session.execute(
             select(DealRiskBlocker).where(
-                DealRiskBlocker.risk_blocker_id == risk_blocker_id,
-                DealRiskBlocker.organisation_id == self.organisation_id,
+                col(DealRiskBlocker.risk_blocker_id) == risk_blocker_id,
+                col(DealRiskBlocker.organisation_id) == self.organisation_id,
             )
         )
         item = result.scalar_one_or_none()
@@ -329,8 +294,8 @@ class RiskBlockerService:
 
         result = await self.session.execute(
             select(DealRiskBlocker).where(
-                DealRiskBlocker.risk_blocker_id == risk_blocker_id,
-                DealRiskBlocker.organisation_id == self.organisation_id,
+                col(DealRiskBlocker.risk_blocker_id) == risk_blocker_id,
+                col(DealRiskBlocker.organisation_id) == self.organisation_id,
             )
         )
         item = result.scalar_one_or_none()
@@ -386,8 +351,8 @@ class RiskBlockerService:
         """Confirm an AI-suggested item."""
         result = await self.session.execute(
             select(DealRiskBlocker).where(
-                DealRiskBlocker.risk_blocker_id == risk_blocker_id,
-                DealRiskBlocker.organisation_id == self.organisation_id,
+                col(DealRiskBlocker.risk_blocker_id) == risk_blocker_id,
+                col(DealRiskBlocker.organisation_id) == self.organisation_id,
             )
         )
         item = result.scalar_one_or_none()
@@ -418,8 +383,8 @@ class RiskBlockerService:
         """Dismiss a risk/blocker."""
         result = await self.session.execute(
             select(DealRiskBlocker).where(
-                DealRiskBlocker.risk_blocker_id == risk_blocker_id,
-                DealRiskBlocker.organisation_id == self.organisation_id,
+                col(DealRiskBlocker.risk_blocker_id) == risk_blocker_id,
+                col(DealRiskBlocker.organisation_id) == self.organisation_id,
             )
         )
         item = result.scalar_one_or_none()
@@ -450,8 +415,8 @@ class RiskBlockerService:
         """Mark a risk/blocker as resolved."""
         result = await self.session.execute(
             select(DealRiskBlocker).where(
-                DealRiskBlocker.risk_blocker_id == risk_blocker_id,
-                DealRiskBlocker.organisation_id == self.organisation_id,
+                col(DealRiskBlocker.risk_blocker_id) == risk_blocker_id,
+                col(DealRiskBlocker.organisation_id) == self.organisation_id,
             )
         )
         item = result.scalar_one_or_none()
@@ -488,8 +453,8 @@ class RiskBlockerService:
         """Reopen a resolved risk/blocker."""
         result = await self.session.execute(
             select(DealRiskBlocker).where(
-                DealRiskBlocker.risk_blocker_id == risk_blocker_id,
-                DealRiskBlocker.organisation_id == self.organisation_id,
+                col(DealRiskBlocker.risk_blocker_id) == risk_blocker_id,
+                col(DealRiskBlocker.organisation_id) == self.organisation_id,
             )
         )
         item = result.scalar_one_or_none()
@@ -526,8 +491,8 @@ class RiskBlockerService:
         """Delete a risk/blocker."""
         result = await self.session.execute(
             select(DealRiskBlocker).where(
-                DealRiskBlocker.risk_blocker_id == risk_blocker_id,
-                DealRiskBlocker.organisation_id == self.organisation_id,
+                col(DealRiskBlocker.risk_blocker_id) == risk_blocker_id,
+                col(DealRiskBlocker.organisation_id) == self.organisation_id,
             )
         )
         item = result.scalar_one_or_none()
@@ -572,37 +537,17 @@ class RiskBlockerService:
 
     def _to_list_item(self, item: DealRiskBlocker) -> RiskBlockerListItem:
         """Convert model to list item response."""
-        audit_trail = (
-            item.risk_blocker_data.get("audit_trail", []) if item.risk_blocker_data else []
-        )
-        modification_count = len([e for e in audit_trail if e.get("action") != "created"])
-
         return RiskBlockerListItem(
             risk_blocker_id=item.risk_blocker_id,
-            deal_id=item.deal_id,
             item_type=item.item_type,
-            category=item.category,
             severity=item.severity,
             status=item.status,
             title=item.title,
-            description=item.description,
             quote=item.quote,
             source_type=item.source_type,
             source_context=item.source_context,
             is_ai_generated=item.is_ai_generated,
-            ai_confidence=item.ai_confidence,
             owner_name=item.owner_name,
-            owner_email=item.owner_email,
-            assigned_team=item.assigned_team,
-            resolved_at=item.resolved_at,
-            resolved_by=item.resolved_by,
-            modification_count=modification_count,
-            created_by_user_name=item.created_by_user_name,
-            last_modified_by_user_name=item.last_modified_by_user_name,
-            user_confirmed_at=item.user_confirmed_at,
-            identified_at=item.identified_at,
-            created_at=item.created_at,
-            updated_at=item.updated_at,
         )
 
     def _to_detail(self, item: DealRiskBlocker) -> RiskBlockerDetail:

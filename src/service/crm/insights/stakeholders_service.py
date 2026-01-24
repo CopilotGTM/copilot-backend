@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.api.schemas.crm_models import (
@@ -16,7 +16,7 @@ from src.api.schemas.crm_models import (
     StakeholderListResponse,
 )
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
-from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
+from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal, CRMDealParticipant
 from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     ApprovalStatus,
     DealStakeholder,
@@ -485,6 +485,78 @@ class StakeholdersService:
             total_added=len(added),
             total_skipped=len(skipped),
         )
+
+    async def has_deal_owner_or_participants(self, deal_id: UUID) -> bool:
+        """Return True if a deal has an owner or any active participants."""
+        deal_stmt = select(col(CRMDeal.owner_id), col(CRMDeal.owner_external_id)).where(
+            col(CRMDeal.deal_id) == deal_id,
+            col(CRMDeal.organisation_id) == self.organisation_id,
+        )
+        deal_result = await self.session.execute(deal_stmt)
+        deal_row = deal_result.first()
+        if not deal_row:
+            return False
+
+        owner_id, owner_external_id = deal_row
+        if owner_id or owner_external_id:
+            return True
+
+        participants_stmt = (
+            select(func.count())
+            .select_from(CRMDealParticipant)
+            .where(
+                col(CRMDealParticipant.deal_id) == deal_id,
+                col(CRMDealParticipant.organisation_id) == self.organisation_id,
+                col(CRMDealParticipant.is_deleted).is_(False),
+            )
+        )
+        participants_result = await self.session.execute(participants_stmt)
+        participant_count = participants_result.scalar() or 0
+        return participant_count > 0
+
+    async def trigger_deal_mapping_if_ready(self, deal_id: UUID) -> None:
+        """Trigger calendar/email deal matching after stakeholder changes, if allowed."""
+        try:
+            should_trigger = await self.has_deal_owner_or_participants(deal_id)
+            if not should_trigger:
+                return
+
+            from celery import chord, group
+            from src.workers.deal_worker.services.deal_change_detector import (
+                StakeholderChangeType,
+            )
+            from src.workers.deal_worker.tasks.deal_mappers import (
+                match_calendar_to_deals_task,
+                match_email_to_deals_task,
+            )
+            from src.workers.deal_worker.tasks.deal_mappers.stakeholder_tasks import (
+                sync_deal_stakeholders_task,
+            )
+
+            org_id = str(self.organisation_id)
+            deal_id_str = str(deal_id)
+
+            mapping_group = group(
+                match_calendar_to_deals_task.s(org_id, deal_id_str),
+                match_email_to_deals_task.s(org_id, deal_id_str),
+            )
+
+            follow_up = sync_deal_stakeholders_task.s(
+                org_id,
+                deal_id_str,
+                StakeholderChangeType.MANUAL_REFRESH.value,
+                None,
+                None,
+                False,
+            )
+
+            chord(mapping_group)(follow_up)
+        except Exception:
+            logger.warning(
+                "Failed to trigger deal mapping after stakeholder update for deal %s",
+                deal_id,
+                exc_info=True,
+            )
 
     async def close(self):
         """Dispose the underlying session when the service is released."""

@@ -18,13 +18,14 @@ from src.api.schemas.crm_models import (
 )
 from src.api.utils.http_response import Response
 from src.domain.models.organisation_tables.job_models import DealJobType, JobStatus
+from src.domain.models.organisation_tables.sync.calendar import AssociationStatus
 from src.infra.utils.logger import get_logger
-from src.service.crm.deal_job_sse_service import DealJobSSEService
-from src.service.crm.deal_meeting_job_service import (
+from src.service.crm.jobs.deal_job_sse_service import DealJobSSEService
+from src.service.crm.jobs.deal_meeting_job_service import (
     DealMeetingJobService,
     DealMeetingJobServiceError,
 )
-from src.service.crm.meetings_service import (
+from src.service.crm.meetings.meetings_service import (
     MeetingsService,
     MeetingsServiceError,
 )
@@ -218,8 +219,17 @@ async def update_meeting_status(
     Update the status of a meeting association (e.g., CONFIRM or REJECT).
     """
     try:
-        await service.update_meeting_status(deal_id, event_id, request.status)
-        return Response.success_response(f"Meeting status updated to {request.status.value}")
+        try:
+            parsed_status = AssociationStatus(request.status)
+        except ValueError:
+            return Response.error_response(
+                message=f"Invalid status: {request.status}",
+                status_code=400,
+                response=response,
+            )
+
+        await service.update_meeting_status(deal_id, event_id, parsed_status)
+        return Response.success_response(f"Meeting status updated to {parsed_status.value}")
     except MeetingsServiceError as e:
         logger.warning("Meeting status update error: %s", e.message)
         return Response.error_response(

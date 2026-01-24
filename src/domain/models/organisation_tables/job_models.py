@@ -148,6 +148,7 @@ class DealJobType(str, Enum):
     # Content generation jobs
     PROPOSAL_DRAFT = "proposal_draft"  # Draft proposal content
     EMAIL_DRAFT = "email_draft"  # Draft follow-up email
+    DEAL_IMPORT = "deal_import"  # Bulk import deals from CSV
 
 
 class DealJobs(TimestampMixin, table=True):
@@ -184,10 +185,11 @@ class DealJobs(TimestampMixin, table=True):
     )
 
     # Associations (nullable - depends on job type)
-    deal_id: UUID = Field(
+    deal_id: UUID | None = Field(
+        default=None,
         foreign_key="crm_deals.deal_id",
         index=True,
-        description="The deal this job is associated with",
+        description="The deal this job is associated with (nullable for org-level jobs)",
     )
     event_id: UUID | None = Field(
         default=None,

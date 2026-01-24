@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, NamedTuple
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+from src.domain.models.organisation_tables.sync.crm.deals import CRMDealStatus
 from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     ApprovalStatus,
     DecisionPower,
@@ -37,8 +38,25 @@ class DealOwnerDetail(BaseModel):
     external_id: str = Field(description="CRM external ID of the owner")
     name: str | None = Field(None, description="Display name of the owner")
     email: str | None = Field(None, description="Email address of the owner")
+    owner_id: UUID | None = Field(None, description="Internal owner ID for filtering and linking")
 
     model_config = {"from_attributes": True}
+
+
+class DealOwnerFilterItem(BaseModel):
+    """Owner option for deal filter dropdowns."""
+
+    owner_id: UUID = Field(description="Internal owner ID for filtering")
+    name: str | None = Field(None, description="Display name of the owner")
+    email: str | None = Field(None, description="Email address of the owner")
+
+    model_config = {"from_attributes": True}
+
+
+class DealOwnerFilters(BaseModel):
+    """List of distinct owners available for deal filtering."""
+
+    items: list[DealOwnerFilterItem]
 
 
 class DealListItem(BaseModel):
@@ -75,6 +93,10 @@ class DealListItem(BaseModel):
         default_factory=list,
         description="List of team members (owners, collaborators, split_owners) associated with the deal.",
     )
+    is_internal: bool = Field(
+        ...,
+        description="True if this is an internal CRM deal (editable), False if from external CRM (read-only).",
+    )
     created_at: datetime
     updated_at: datetime
     synced_at: datetime
@@ -86,7 +108,10 @@ class DealsPage(BaseModel):
     """Paginated list of deals."""
 
     items: list[DealListItem]
-    cursor: str | None = Field(None, description="Cursor for next page; null if no more results")
+    page: int = Field(..., description="Current page number (1-indexed)")
+    limit: int = Field(..., description="Maximum number of items per page")
+    total_count: int = Field(..., description="Total number of deals matching filters")
+    total_pages: int = Field(..., description="Total number of pages")
 
 
 class DealDetail(BaseModel):
@@ -134,6 +159,12 @@ class DealDetail(BaseModel):
     deal_health_reason: str | None = Field(
         None,
         description="Brief explanation for the AI-assessed deal health.",
+    )
+
+    # CRM source indicator
+    is_internal: bool = Field(
+        ...,
+        description="True if this is an internal CRM deal (editable), False if from external CRM (read-only).",
     )
 
     # Time tracked (placeholder for future implementation)
@@ -599,3 +630,24 @@ class ContactListItem(BaseModel):
     company_name: str | None = None
 
     model_config = {"from_attributes": True}
+
+
+class DealsListParams(NamedTuple):
+    """Parsed query parameters for listing deals.
+
+    Note: This is a NamedTuple (not Pydantic BaseModel) because FastAPI only properly
+    parses list query parameters (like owner_ids) when Query() is in a function signature.
+    Use the get_deals_list_params() dependency function to parse query params into this type.
+    """
+
+    limit: int
+    page: int
+    statuses: list[CRMDealStatus] | None
+    pipeline_ids: list[UUID] | None
+    owner_ids: list[UUID] | None
+    owner_external_ids: list[str] | None
+    min_amount: float | None
+    max_amount: float | None
+    min_close_date: datetime | None
+    max_close_date: datetime | None
+    q: str | None

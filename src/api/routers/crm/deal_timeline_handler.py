@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends
 from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.organisation_dependencies import (
@@ -16,6 +15,7 @@ from src.api.dependencies.organisation_dependencies import (
 from src.api.dependencies.rate_limit import rate_limit_user_read
 from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.deal_timeline_models import (
+    DealTimelineQueryParams,
     TimelineEvent,
     TimelinePage,
 )
@@ -25,7 +25,7 @@ from src.domain.models.organisation_tables.sync.timeline_models import (
 )
 from src.infra.config.timeline_event_metadata import get_timeline_event_source_metadata
 from src.infra.utils.logger import get_logger
-from src.service.crm.deal_timeline_service import (
+from src.service.crm.timeline.deal_timeline_service import (
     DealTimelineService,
     DealTimelineServiceError,
 )
@@ -63,16 +63,7 @@ async def get_deal_timeline(
     deal_id: UUID,
     response: FastAPIResponse,
     service: DealTimelineService = Depends(get_deal_timeline_service),
-    limit: int = Query(20, ge=1, le=100, description="Number of events per page"),
-    cursor: str | None = Query(None, description="Pagination cursor"),
-    event_types: str | None = Query(
-        None,
-        description="Comma-separated event types to filter (EMAIL,MEETING)",
-    ),
-    start_date: datetime | None = Query(None, description="Filter events after this date"),
-    end_date: datetime | None = Query(None, description="Filter events before this date"),
-    include_excluded: bool = Query(False, description="Include excluded/hidden events"),
-    sort: str = Query("desc", pattern="^(asc|desc)$", description="Sort order"),
+    query: DealTimelineQueryParams = Depends(),
 ) -> GenericResponse[TimelinePage]:
     """
     Get timeline events for a deal.
@@ -92,8 +83,8 @@ async def get_deal_timeline(
     try:
         # Parse event types filter
         parsed_event_types = None
-        if event_types:
-            type_strs = [t.strip().upper() for t in event_types.split(",")]
+        if query.event_types:
+            type_strs = [t.strip().upper() for t in query.event_types.split(",")]
             parsed_event_types = []
             for t in type_strs:
                 try:
@@ -103,13 +94,13 @@ async def get_deal_timeline(
 
         events, next_cursor, total_count = await service.get_timeline_events(
             deal_id=deal_id,
-            limit=limit,
-            cursor=cursor,
+            limit=query.limit,
+            cursor=query.cursor,
             event_types=parsed_event_types,
-            start_date=start_date,
-            end_date=end_date,
-            include_excluded=include_excluded,
-            sort_order=sort,
+            start_date=query.start_date,
+            end_date=query.end_date,
+            include_excluded=query.include_excluded,
+            sort_order=query.sort,
         )
 
         # Build unified TimelineEvent items with preview event_data

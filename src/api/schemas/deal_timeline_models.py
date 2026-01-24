@@ -6,11 +6,22 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
+from fastapi import Query
 from pydantic import BaseModel, Field
 
-# -----------------------------------------------------------------------------
-# Email Event Models
-# -----------------------------------------------------------------------------
+
+class DealTimelineQueryParams(BaseModel):
+    """Query parameters for deal timeline listing."""
+
+    limit: int = Query(20, ge=1, le=100, description="Number of events per page")
+    cursor: str | None = Query(None, description="Pagination cursor")
+    event_types: str | None = Query(
+        None, description="Comma-separated event types to filter (EMAIL,MEETING)"
+    )
+    start_date: datetime | None = Query(None, description="Filter events after this date")
+    end_date: datetime | None = Query(None, description="Filter events before this date")
+    include_excluded: bool = Query(False, description="Include excluded/hidden events")
+    sort: str = Query("desc", pattern="^(asc|desc)$", description="Sort order")
 
 
 class EmailEventData(BaseModel):
@@ -51,11 +62,6 @@ class EmailEventData(BaseModel):
     direction: str | None = None  # INBOUND/OUTBOUND
 
 
-# -----------------------------------------------------------------------------
-# Meeting Event Models
-# -----------------------------------------------------------------------------
-
-
 class MeetingSummary(BaseModel):
     """Meeting summary block with status and data."""
 
@@ -84,11 +90,6 @@ class MeetingEventData(BaseModel):
     meeting_summary: MeetingSummary | None = None
 
 
-# -----------------------------------------------------------------------------
-# Stage Change Event Models
-# -----------------------------------------------------------------------------
-
-
 class StageChangeEventData(BaseModel):
     """Stage change event data for timeline events."""
 
@@ -115,11 +116,6 @@ class StageChangeEventData(BaseModel):
     pipeline_name: str | None = None
 
 
-# -----------------------------------------------------------------------------
-# Deal Created Event Models
-# -----------------------------------------------------------------------------
-
-
 class DealCreatedEventData(BaseModel):
     """Deal created event data for timeline events."""
 
@@ -143,11 +139,6 @@ class DealCreatedEventData(BaseModel):
     # Primary contact
     primary_contact_name: str | None = None
     primary_contact_email: str | None = None
-
-
-# -----------------------------------------------------------------------------
-# Timeline Event Models
-# -----------------------------------------------------------------------------
 
 
 class TimelineEvent(BaseModel):

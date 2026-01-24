@@ -12,7 +12,7 @@ from src.api.dependencies.organisation_dependencies import (
     get_current_user,
     get_org_async_session,
 )
-from src.api.dependencies.rate_limit import rate_limit_user_read
+from src.api.dependencies.rate_limit import rate_limit_user_read, rate_limit_user_write
 from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.crm_note_models import (
     CreateNoteRequest,
@@ -21,11 +21,12 @@ from src.api.schemas.crm_note_models import (
     DealParticipant,
     NoteAuthor,
     NoteMetadata,
+    UpdateNoteRequest,
 )
 from src.api.utils.http_response import Response
 from src.domain.models.organisation_tables.sync.crm import CRMActivity
 from src.infra.utils.logger import get_logger
-from src.service.crm.deal_notes_service import (
+from src.service.crm.internal.deal_notes_service import (
     DealNotesService,
     DealNotesServiceError,
 )
@@ -172,6 +173,7 @@ async def create_deal_note(
     response: FastAPIResponse,
     user_ids: UserIDs = Depends(get_current_user),
     service: DealNotesService = Depends(get_deal_notes_service),
+    _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[DealNoteItem]:
     """Create a new user-generated note for a deal.
 
@@ -223,6 +225,89 @@ async def create_deal_note(
             exc_info=True,
         )
         await service.session.rollback()
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
+
+
+@deal_notes_router.patch(
+    "/{deal_id}/notes/{note_id}",
+    response_model=GenericResponse[DealNoteItem],
+    summary="Update deal note",
+    description="Update a user-created note for a deal",
+)
+async def update_deal_note(
+    deal_id: UUID,
+    note_id: UUID,
+    request: UpdateNoteRequest,
+    response: FastAPIResponse,
+    service: DealNotesService = Depends(get_deal_notes_service),
+    _rl_write: None = Depends(rate_limit_user_write),
+) -> GenericResponse[DealNoteItem]:
+    """Update a user-created note for a deal."""
+    try:
+        note = await service.update_user_note(
+            deal_id=deal_id,
+            note_id=note_id,
+            payload=request.model_dump(exclude_unset=True),
+        )
+        await service.session.commit()
+        note_schema = _map_note_to_schema(note, service.determine_note_source(note))
+        return Response.success_response(message="Note updated successfully", data=note_schema)
+    except DealNotesServiceError as exc:
+        await service.session.rollback()
+        logger.warning("Failed to update note: %s", exc.message, exc_info=True)
+        return Response.error_response(
+            message=exc.message, status_code=exc.status_code, response=response
+        )
+    except Exception as exc:
+        await service.session.rollback()
+        logger.error(
+            "Unexpected error updating note %s for deal %s: %s",
+            note_id,
+            deal_id,
+            exc,
+            exc_info=True,
+        )
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
+
+
+@deal_notes_router.delete(
+    "/{deal_id}/notes/{note_id}",
+    response_model=GenericResponse[DealNoteItem],
+    summary="Delete deal note",
+    description="Soft delete a user-created note for a deal",
+)
+async def delete_deal_note(
+    deal_id: UUID,
+    note_id: UUID,
+    response: FastAPIResponse,
+    service: DealNotesService = Depends(get_deal_notes_service),
+    _rl_write: None = Depends(rate_limit_user_write),
+) -> GenericResponse[DealNoteItem]:
+    """Soft delete a user-created note for a deal."""
+    try:
+        note = await service.delete_user_note(deal_id=deal_id, note_id=note_id)
+        await service.session.commit()
+        note_schema = _map_note_to_schema(note, service.determine_note_source(note))
+        return Response.success_response(message="Note deleted successfully", data=note_schema)
+    except DealNotesServiceError as exc:
+        await service.session.rollback()
+        logger.warning("Failed to delete note: %s", exc.message, exc_info=True)
+        return Response.error_response(
+            message=exc.message, status_code=exc.status_code, response=response
+        )
+    except Exception as exc:
+        await service.session.rollback()
+        logger.error(
+            "Unexpected error deleting note %s for deal %s: %s",
+            note_id,
+            deal_id,
+            exc,
+            exc_info=True,
+        )
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
         )
