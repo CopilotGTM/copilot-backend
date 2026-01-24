@@ -262,16 +262,37 @@ class IntegrationError(BaseModel):
 # ==================== Channel Schemas ====================
 
 
+class ChannelMember(BaseModel):
+    """Schema for a channel member."""
+
+    name: str | None = Field(default=None, description="Member display name")
+    email: str | None = Field(default=None, description="Member email address")
+    role: str | None = Field(default=None, description="Role in channel (owner, admin, member)")
+
+
 class ChannelItem(BaseModel):
-    """Schema for a messaging channel/team."""
+    """Schema for a messaging channel/team with detailed information for selection."""
 
     id: str = Field(..., description="Channel ID or Team ID")
     name: str = Field(..., description="Channel name or Team name")
-    type: str = Field(..., description="Type of channel (public, private, group, team, etc.)")
+    type: str = Field(..., description="Type of channel (public, private, group, meeting, etc.)")
+    type_label: str = Field(
+        ...,
+        description="Human-readable channel type label (e.g., 'Public Channel', 'Meeting Chat')",
+    )
     parent_id: str | None = Field(
         default=None, description="Parent ID (e.g., Team ID for a channel)"
     )
     parent_name: str | None = Field(default=None, description="Parent name (e.g., Team name)")
+    description: str | None = Field(default=None, description="Channel description or topic")
+    member_count: int = Field(default=0, description="Number of members in the channel")
+    members: list[ChannelMember] = Field(
+        default_factory=list,
+        description="List of channel members (limited to first 10 for display)",
+    )
+    last_activity_at: datetime | None = Field(
+        default=None, description="Timestamp of the most recent message"
+    )
 
 
 class ChannelListResponse(BaseModel):
