@@ -18,6 +18,8 @@ from src.domain.models.organisation_tables.sync import (
     MessagingChannel,
     MessagingDealLink,
 )
+from src.domain.models.organisation_tables.sync.messaging_models import MessagingChannelMember
+from src.domain.models.organisation_tables.sync.participant_models import IntegrationParticipant
 from src.infra.auth.user_context import UserIDs
 from src.infra.config.nango_provider_mapping import (
     to_nango_connect_integration_key,
@@ -26,6 +28,21 @@ from src.infra.config.nango_provider_mapping import (
 from .nango_client import NangoClient, NangoConnectionError
 
 logger = logging.getLogger(__name__)
+
+# Human-readable labels for channel types
+CHANNEL_TYPE_LABELS = {
+    "public": "Public Channel",
+    "private": "Private Channel",
+    "direct_message": "Direct Message",
+    "group_message": "Group Chat",
+    "thread": "Thread",
+    "meeting": "Meeting Chat",
+}
+
+
+def get_channel_type_label(channel_type: str) -> str:
+    """Get human-readable label for channel type."""
+    return CHANNEL_TYPE_LABELS.get(channel_type, channel_type.replace("_", " ").title())
 
 
 class IntegrationService:
@@ -205,6 +222,49 @@ class IntegrationService:
         result = await self.db.execute(stmt)
         db_channels = result.scalars().all()
 
+        # Collect channel IDs to batch-fetch members
+        channel_ids = [ch.channel_id for ch in db_channels]
+
+        # Fetch members for all channels in one query (limit to active members)
+        channel_members_map: dict[str, list[dict]] = {}
+        if channel_ids:
+            members_stmt = (
+                select(
+                    MessagingChannelMember.channel_id,  # type: ignore
+                    IntegrationParticipant.display_name,  # type: ignore
+                    IntegrationParticipant.canonical_email,  # type: ignore
+                    MessagingChannelMember.member_role,  # type: ignore
+                )
+                .join(
+                    IntegrationParticipant,
+                    IntegrationParticipant.participant_id == MessagingChannelMember.participant_id,
+                )
+                .where(
+                    MessagingChannelMember.channel_id.in_(channel_ids),  # type: ignore
+                    MessagingChannelMember.left_at.is_(None),  # Only active members # type: ignore
+                )
+                .order_by(
+                    MessagingChannelMember.channel_id,  # type: ignore
+                    MessagingChannelMember.member_role,  # type: ignore  # Owners/admins first
+                )
+            )
+            members_result = await self.db.execute(members_stmt)
+            members_rows = members_result.all()
+
+            # Group members by channel_id (limit to 10 per channel for display)
+            for row in members_rows:
+                channel_id_str = str(row.channel_id)
+                if channel_id_str not in channel_members_map:
+                    channel_members_map[channel_id_str] = []
+                if len(channel_members_map[channel_id_str]) < 10:
+                    channel_members_map[channel_id_str].append(
+                        {
+                            "name": row.display_name,
+                            "email": row.canonical_email,
+                            "role": row.member_role,
+                        }
+                    )
+
         channels = []
         for ch in db_channels:
             # Extract parent info from metadata
@@ -219,15 +279,26 @@ class IntegrationService:
                     "team_name"
                 )
 
+            # Determine channel type value
+            channel_type = (
+                ch.channel_type.value if hasattr(ch.channel_type, "value") else ch.channel_type
+            )
+
+            # Get members for this channel
+            members = channel_members_map.get(str(ch.channel_id), [])
+
             channels.append(
                 {
                     "id": ch.external_channel_id,
                     "name": ch.channel_name,
-                    "type": ch.channel_type.value
-                    if hasattr(ch.channel_type, "value")
-                    else ch.channel_type,
+                    "type": channel_type,
+                    "type_label": get_channel_type_label(channel_type),
                     "parent_id": parent_id,
                     "parent_name": parent_name,
+                    "description": ch.channel_description,
+                    "member_count": ch.participant_count or 0,
+                    "members": members,
+                    "last_activity_at": ch.last_activity_at,
                 }
             )
 
