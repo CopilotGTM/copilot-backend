@@ -1,5 +1,6 @@
 from datetime import datetime
 from enum import Enum
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 from sqlalchemy import CheckConstraint, Column, DateTime, Index, String, UniqueConstraint, text
@@ -7,6 +8,9 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, Relationship, SQLModel
 from src.domain.models.organisation_tables.base_mixins import utcnow
 from src.domain.models.organisation_tables.sync.base import FlexibleSyncedRecordMixin
+
+if TYPE_CHECKING:
+    from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
 
 
 class AssociationStatus(str, Enum):
@@ -186,3 +190,4 @@ class CalendarEventDealAssociation(SQLModel, table=True):
     )
 
     event: "CalendarEvent" = Relationship(back_populates="deal_associations")
+    deal: "CRMDeal" = Relationship()
