@@ -17,7 +17,6 @@ from uuid import UUID
 
 from dotenv import load_dotenv
 from sqlalchemy import select, text
-from sqlmodel import col
 from src.domain.models.master_tables import (
     Organisation,
     OrganisationStatus,
@@ -82,11 +81,11 @@ def load_target_orgs(org_id: UUID | None, run_all: bool) -> list[TargetOrg]:
     session = next(session_gen)
     try:
         if run_all:
-            stmt = select(Organisation).where(col(Organisation.status != OrganisationStatus.FAILED))
+            stmt = select(Organisation).where(Organisation.status != OrganisationStatus.FAILED)
         else:
             if not org_id:
                 return []
-            stmt = select(Organisation).where(col(Organisation.organisation_id == org_id))
+            stmt = select(Organisation).where(Organisation.organisation_id == org_id)
 
         orgs = list(session.execute(stmt).scalars().all())
         targets: list[TargetOrg] = []
