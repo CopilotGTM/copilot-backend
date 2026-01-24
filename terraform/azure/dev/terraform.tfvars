@@ -119,17 +119,17 @@ devops_environment_name = "development"
 # Repository Names (Required - external resources in Azure DevOps)
 # -----------------------------------------------------------------
 backend_repo_name = "copilot-backend"
-backend_yml_path  = ".azure-pipelines/azure-pipelines.yml"
+backend_yml_path  = ".azure-pipelines/azure-pipelines-dev.yml"
 # backend_pipeline_name = "backend-pipeline"  # Default
 # backend_branch        = "dev"               # Default
 
 frontend_repo_name = "copilot-app-frontend"
-frontend_yml_path  = "pipelines/.azure-pipelines/azure-pipelines.yml"
+frontend_yml_path  = "pipelines/.azure-pipelines/azure-pipelines-dev.yml"
 # frontend_pipeline_name = "frontend-pipeline"  # Default
 # frontend_branch        = "dev"                # Default
 
 frontend_admin_repo_name = "copilot-admin-frontend"
-frontend_admin_yml_path  = "pipelines/.azure-pipelines/azure-pipelines.yml"
+frontend_admin_yml_path  = "pipelines/.azure-pipelines/azure-pipelines-dev.yml"
 # frontend_admin_pipeline_name = "frontend-admin-pipeline"  # Default
 # frontend_admin_branch        = "dev"                      # Default
 

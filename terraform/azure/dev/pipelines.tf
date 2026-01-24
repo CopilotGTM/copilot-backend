@@ -88,7 +88,7 @@ data "azuredevops_git_repository" "repo" {
 module "pipeline" {
   source             = "../modules/pipeline"
   devops_project_id  = data.azuredevops_project.project.id
-  pipeline_name      = var.backend_pipeline_name
+  pipeline_name      = "${var.backend_pipeline_name}-${var.env}"
   repo_id            = data.azuredevops_git_repository.repo.id
   branch_name        = var.backend_branch
   yml_path           = var.backend_yml_path
@@ -164,7 +164,7 @@ data "azuredevops_git_repository" "frontend_repo" {
 module "frontend_pipeline" {
   source             = "../modules/pipeline"
   devops_project_id  = data.azuredevops_project.project.id
-  pipeline_name      = var.frontend_pipeline_name
+  pipeline_name      = "${var.frontend_pipeline_name}-${var.env}"
   repo_id            = data.azuredevops_git_repository.frontend_repo.id
   branch_name        = var.frontend_branch
   yml_path           = var.frontend_yml_path
@@ -223,7 +223,7 @@ data "azuredevops_git_repository" "frontend_admin_repo" {
 module "frontend_admin_pipeline" {
   source             = "../modules/pipeline"
   devops_project_id  = data.azuredevops_project.project.id
-  pipeline_name      = var.frontend_admin_pipeline_name
+  pipeline_name      = "${var.frontend_admin_pipeline_name}-${var.env}"
   repo_id            = data.azuredevops_git_repository.frontend_admin_repo.id
   branch_name        = var.frontend_admin_branch
   yml_path           = var.frontend_admin_yml_path
