@@ -44,7 +44,8 @@ This script is typically run automatically during deployment.
 **What it does:**
 
 1.  **Runs Master Migrations:** Executes `run_master_migrations.py` to apply the latest migrations to the master database.
-2.  **Initializes Super Admin (Conditional):** If the `SUPER_ADMIN_EMAIL` environment variable is set, it runs `admin/deploy_with_super_admin.py` to create or update the super admin user.
+2.  **Publishes Deal Import Template:** Uploads the deal import CSV template to app storage if missing.
+3.  **Initializes Super Admin (Conditional):** If the `SUPER_ADMIN_EMAIL` environment variable is set, it runs `admin/deploy_with_super_admin.py` to create or update the super admin user.
 
 ---
 

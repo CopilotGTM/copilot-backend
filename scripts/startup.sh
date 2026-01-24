@@ -28,6 +28,12 @@ python -m scripts.maintenance.ensure_internal_crm_setup --all || {
     exit 1
 }
 
+echo "[startup] Publishing deal import CSV template to app storage..."
+python -m scripts.maintenance.publish_deal_import_template || {
+    echo "[startup][ERROR] Deal import template publish failed" >&2
+    exit 1
+}
+
 # Conditionally run super admin deployment only if SUPER_ADMIN_EMAIL present.
 if [ -n "${SUPER_ADMIN_EMAIL:-}" ]; then
     echo "[startup] SUPER_ADMIN_EMAIL detected; running super admin initialization..."

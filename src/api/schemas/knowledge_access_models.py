@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, NamedTuple
 from uuid import UUID
 
-from fastapi import Query
 from pydantic import BaseModel, Field, HttpUrl
 from src.domain.models.organisation_tables.knowledge_models import (
     OrganisationSourceStatus,
@@ -75,26 +74,18 @@ class KnowledgeBatchDeleteResponse(BaseModel):
     errors: list[dict[str, Any]] = []
 
 
-class KnowledgeSourcesListQueryParams(BaseModel):
-    """Query parameters for listing knowledge sources."""
+class KnowledgeSourcesListParams(NamedTuple):
+    """Parsed query parameters for listing knowledge sources.
 
-    limit: int = Query(20, ge=1, le=100)
-    cursor: str | None = Query(
-        None, description="Opaque cursor returned by previous page (omit for first)"
-    )
-    statuses: list[OrganisationSourceStatus] | None = Query(
-        None,
-        description="Optional list of statuses to filter. Note: 'failed' status is excluded by default unless explicitly requested.",
-    )
-    source_types: list[SourceType] | None = Query(
-        None, description="Optional list of source types (e.g. file, integration)"
-    )
-    q: str | None = Query(None, description="Case-insensitive filename search fragment")
-    updated_after: datetime | None = Query(
-        None,
-        description="Filter sources updated after this timestamp (ISO8601). Useful for fetching recent failures.",
-    )
-    include_urls: bool = Query(
-        False,
-        description="If true include read + thumbnail SAS URLs (extra storage calls).",
-    )
+    Note: This is a NamedTuple (not Pydantic BaseModel) because FastAPI only properly
+    parses list query parameters (like statuses, source_types) when Query() is in a
+    function signature. Use the get_knowledge_sources_list_params() dependency function.
+    """
+
+    limit: int
+    cursor: str | None
+    statuses: list[OrganisationSourceStatus] | None
+    source_types: list[SourceType] | None
+    q: str | None
+    updated_after: datetime | None
+    include_urls: bool

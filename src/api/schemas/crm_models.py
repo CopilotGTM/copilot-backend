@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, NamedTuple
 from uuid import UUID
 
-from fastapi import Query
 from pydantic import BaseModel, Field
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDealStatus
 from src.domain.models.organisation_tables.sync.crm.stakeholders import (
@@ -39,8 +38,25 @@ class DealOwnerDetail(BaseModel):
     external_id: str = Field(description="CRM external ID of the owner")
     name: str | None = Field(None, description="Display name of the owner")
     email: str | None = Field(None, description="Email address of the owner")
+    owner_id: UUID | None = Field(None, description="Internal owner ID for filtering and linking")
 
     model_config = {"from_attributes": True}
+
+
+class DealOwnerFilterItem(BaseModel):
+    """Owner option for deal filter dropdowns."""
+
+    owner_id: UUID = Field(description="Internal owner ID for filtering")
+    name: str | None = Field(None, description="Display name of the owner")
+    email: str | None = Field(None, description="Email address of the owner")
+
+    model_config = {"from_attributes": True}
+
+
+class DealOwnerFilters(BaseModel):
+    """List of distinct owners available for deal filtering."""
+
+    items: list[DealOwnerFilterItem]
 
 
 class DealListItem(BaseModel):
@@ -616,16 +632,22 @@ class ContactListItem(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class DealsListQueryParams(BaseModel):
-    """Query parameters for listing deals."""
+class DealsListParams(NamedTuple):
+    """Parsed query parameters for listing deals.
 
-    limit: int = Query(40, ge=1, le=100, description="Maximum deals per page")
-    page: int = Query(1, ge=1, description="Page number (1-indexed)")
-    statuses: list[CRMDealStatus] | None = Query(None, description="Filter by deal statuses")
-    pipeline_ids: list[UUID] | None = Query(None, description="Filter by pipeline IDs")
-    owner_external_ids: list[str] | None = Query(None, description="Filter by owner external IDs")
-    min_amount: float | None = Query(None, description="Minimum deal amount")
-    max_amount: float | None = Query(None, description="Maximum deal amount")
-    min_close_date: datetime | None = Query(None, description="Minimum close date")
-    max_close_date: datetime | None = Query(None, description="Maximum close date")
-    q: str | None = Query(None, description="Case-insensitive search on deal name")
+    Note: This is a NamedTuple (not Pydantic BaseModel) because FastAPI only properly
+    parses list query parameters (like owner_ids) when Query() is in a function signature.
+    Use the get_deals_list_params() dependency function to parse query params into this type.
+    """
+
+    limit: int
+    page: int
+    statuses: list[CRMDealStatus] | None
+    pipeline_ids: list[UUID] | None
+    owner_ids: list[UUID] | None
+    owner_external_ids: list[str] | None
+    min_amount: float | None
+    max_amount: float | None
+    min_close_date: datetime | None
+    max_close_date: datetime | None
+    q: str | None

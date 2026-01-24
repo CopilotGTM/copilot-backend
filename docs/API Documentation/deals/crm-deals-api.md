@@ -167,7 +167,8 @@ GET /users/crm/deals
 | `page` | integer | 1 | Page number (1-indexed) |
 | `statuses` | array[enum] | - | Filter by deal statuses (`open`, `won`, `lost`, `closed`) |
 | `pipeline_ids` | array[uuid] | - | Filter by **pipeline_id** values from `/users/crm/pipelines` |
-| `owner_external_ids` | array[string] | - | Filter by CRM owner external IDs (not internal user_id) |
+| `owner_ids` | array[uuid] | - | Filter by internal owner IDs from `/users/crm/deals/owners` (not page-scoped) |
+| `owner_external_ids` | array[string] | - | Deprecated. Filter by CRM owner external IDs |
 | `min_amount` | number | - | Minimum deal amount |
 | `max_amount` | number | - | Maximum deal amount |
 | `min_close_date` | string | - | Minimum close date (ISO 8601) |
@@ -189,7 +190,14 @@ GET /users/crm/deals
         "currency": "USD",
         "stage_name": "Qualification",
         "deal_status": "open",
-        "owner_name": "John Doe",
+        "owner_details": [
+          {
+            "owner_id": "f2c8a7ce-1c0e-4b0b-8c07-1a9b6b8b0c1d",
+            "external_id": "83275159",
+            "name": "John Doe",
+            "email": "john@example.com"
+          }
+        ],
         "close_date": "2026-03-15T00:00:00Z",
         "is_internal": true,
         "created_at": "2026-01-22T10:00:00Z"
@@ -208,6 +216,7 @@ GET /users/crm/deals
 | Field | Type | Description |
 |-------|------|-------------|
 | `is_internal` | boolean | `true` if deal is from internal CRM (editable), `false` if from external CRM like HubSpot/Salesforce (read-only). Frontend should enable edit/delete actions only for internal deals. |
+| `owner_details` | array | Owner list (typically 0..1). Use `owner_id` for filtering and linking. |
 
 ---
 
@@ -704,6 +713,30 @@ GET /users/crm/users?q={search}&limit=20
 }
 ```
 
+### Get Deal Owners (for Filters)
+
+```
+GET /users/crm/deals/owners?limit=200&q={search}
+```
+
+**Response:**
+```json
+{
+  "status": "SUCCESS",
+  "data": {
+    "items": [
+      {
+        "owner_id": "f2c8a7ce-1c0e-4b0b-8c07-1a9b6b8b0c1d",
+        "name": "Jane Smith",
+        "email": "jane@example.com"
+      }
+    ]
+  }
+}
+```
+
+Use `owner_id` values from this endpoint with the `owner_ids` filter in `GET /users/crm/deals`.
+
 ### Get Pipelines (with Stages)
 
 ```
@@ -776,6 +809,7 @@ GET /users/crm/pipelines?include_stages=true
 6. **Optional fields**: Don't send `null` for optional fields - omit them entirely
 7. **Account + Team**: Use `account` + `team_members` to capture company + internal team
    in one request. Company is created/linked only when `account.domain` is supplied.
+8. **Owner filter options**: Use `/users/crm/deals/owners` and filter by `owner_ids`; do not derive options from the current page.
 
 ---
 

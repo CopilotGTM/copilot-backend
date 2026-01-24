@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from fastapi import Response as FastAPIResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,7 +31,9 @@ from src.api.schemas.crm_models import (
     DealJobResponse,
     DealListItem,
     DealOwnerDetail,
-    DealsListQueryParams,
+    DealOwnerFilterItem,
+    DealOwnerFilters,
+    DealsListParams,
     DealsPage,
     DealsStats,
     DealSummaryJobsStatus,
@@ -39,6 +41,7 @@ from src.api.schemas.crm_models import (
 )
 from src.api.utils.http_response import Response
 from src.domain.models.organisation_tables.job_models import JobStatus
+from src.domain.models.organisation_tables.sync.crm.deals import CRMDealStatus
 from src.domain.models.organisation_tables.sync.integration_models import (
     IntegrationType,
     KnowledgeIntegration,
@@ -61,6 +64,37 @@ logger = get_logger("deals_handler")
 _UNEXPECTED_ERR_MSG = "An unexpected error occurred while processing your request"
 
 deals_router = APIRouter()
+
+
+def get_deals_list_params(
+    limit: int = Query(40, ge=1, le=100, description="Maximum deals per page"),
+    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
+    statuses: list[CRMDealStatus] | None = Query(None, description="Filter by deal statuses"),
+    pipeline_ids: list[UUID] | None = Query(None, description="Filter by pipeline IDs"),
+    owner_ids: list[UUID] | None = Query(None, description="Filter by internal owner IDs"),
+    owner_external_ids: list[str] | None = Query(
+        None, description="Deprecated. Filter by owner external IDs"
+    ),
+    min_amount: float | None = Query(None, description="Minimum deal amount"),
+    max_amount: float | None = Query(None, description="Maximum deal amount"),
+    min_close_date: datetime | None = Query(None, description="Minimum close date"),
+    max_close_date: datetime | None = Query(None, description="Maximum close date"),
+    q: str | None = Query(None, description="Case-insensitive search on deal name"),
+) -> DealsListParams:
+    """Dependency that parses and returns deals list query parameters."""
+    return DealsListParams(
+        limit=limit,
+        page=page,
+        statuses=statuses,
+        pipeline_ids=pipeline_ids,
+        owner_ids=owner_ids,
+        owner_external_ids=owner_external_ids,
+        min_amount=min_amount,
+        max_amount=max_amount,
+        min_close_date=min_close_date,
+        max_close_date=max_close_date,
+        q=q,
+    )
 
 
 async def get_deals_access_service(
@@ -178,15 +212,21 @@ def _map_deal_write_response(deal) -> DealWriteResponse:
     **Filters (work with both modes):**
     - Deal status (OPEN, WON, LOST, CLOSED)
     - Pipeline ID
-    - Owner external ID
+    - Owner ID (internal)
     - Deal Amount range (min/max)
     - Close Date range (min/max)
     - Search query on deal name (case-insensitive)
     """,
 )
+@deals_router.get(
+    "/deals/",
+    response_model=GenericResponse[DealsPage],
+    tags=["crm", "deals"],
+    include_in_schema=False,  # Avoid duplicate in OpenAPI docs
+)
 async def list_deals(
     response: FastAPIResponse,
-    query: DealsListQueryParams = Depends(),
+    params: DealsListParams = Depends(get_deals_list_params),
     service: DealsAccessService = Depends(get_deals_access_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[DealsPage]:
@@ -197,16 +237,17 @@ async def list_deals(
     """
     try:
         deals, total_count = await service.list_deals(
-            limit=query.limit,
-            page=query.page,
-            statuses=query.statuses,
-            pipeline_ids=query.pipeline_ids,
-            owner_external_ids=query.owner_external_ids,
-            min_amount=query.min_amount,
-            max_amount=query.max_amount,
-            min_close_date=query.min_close_date,
-            max_close_date=query.max_close_date,
-            q=query.q,
+            limit=params.limit,
+            page=params.page,
+            statuses=params.statuses,
+            pipeline_ids=params.pipeline_ids,
+            owner_ids=params.owner_ids,
+            owner_external_ids=params.owner_external_ids,
+            min_amount=params.min_amount,
+            max_amount=params.max_amount,
+            min_close_date=params.min_close_date,
+            max_close_date=params.max_close_date,
+            q=params.q,
         )
 
         # Fetch deal team members (owners, collaborators, split_owners) in one batch query
@@ -240,6 +281,7 @@ async def list_deals(
                             external_id=str(deal.owner_external_id),
                             name=deal.owner_name,
                             email=deal.owner_email,
+                            owner_id=deal.owner_id,
                         )
                     ]
                     if getattr(deal, "owner_external_id", None)
@@ -269,15 +311,15 @@ async def list_deals(
             for deal in deals
         ]
 
-        total_pages = (total_count + query.limit - 1) // query.limit if query.limit else 0
-        page = DealsPage(
+        total_pages = (total_count + params.limit - 1) // params.limit if params.limit else 0
+        page_response = DealsPage(
             items=items,
-            page=query.page,
-            limit=query.limit,
+            page=params.page,
+            limit=params.limit,
             total_count=total_count,
             total_pages=total_pages,
         )
-        return Response.success_response(message="Deals retrieved successfully", data=page)
+        return Response.success_response(message="Deals retrieved successfully", data=page_response)
 
     except DealsAccessServiceError as e:
         logger.warning("Deals access error: %s", e.message, exc_info=True)
@@ -288,6 +330,54 @@ async def list_deals(
         )
     except Exception as e:
         logger.error("Unexpected error listing deals: %s", e, exc_info=True)
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG,
+            status_code=500,
+            response=response,
+        )
+
+
+@deals_router.get(
+    "/deals/owners",
+    response_model=GenericResponse[DealOwnerFilters],
+    tags=["crm", "deals"],
+    summary="List distinct deal owners for filters",
+    description="""
+    Retrieve a distinct list of owners across all CRM deals for the current organisation.
+
+    This endpoint is designed for filter dropdowns and is independent of deal pagination.
+    Returns internal owner IDs for filtering.
+    """,
+)
+async def list_deal_owners(
+    response: FastAPIResponse,
+    limit: int = Query(200, ge=1, le=1000, description="Maximum owners to return"),
+    q: str | None = Query(None, description="Search by owner name, email, or external ID"),
+    service: DealsAccessService = Depends(get_deals_access_service),
+    _rl_read: None = Depends(rate_limit_user_read),
+) -> GenericResponse[DealOwnerFilters]:
+    """List distinct deal owners for filter dropdowns."""
+    try:
+        owners = await service.list_deal_owners(q=q, limit=limit)
+        items = [
+            DealOwnerFilterItem(
+                owner_id=owner["owner_id"],
+                name=owner.get("name"),
+                email=owner.get("email"),
+            )
+            for owner in owners
+        ]
+        payload = DealOwnerFilters(items=items)
+        return Response.success_response(message="Deal owners retrieved successfully", data=payload)
+    except DealsAccessServiceError as e:
+        logger.warning("Deal owners access error: %s", e.message, exc_info=True)
+        return Response.error_response(
+            message=e.message,
+            status_code=e.status_code,
+            response=response,
+        )
+    except Exception as e:
+        logger.error("Unexpected error listing deal owners: %s", e, exc_info=True)
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG,
             status_code=500,
@@ -397,6 +487,7 @@ async def get_deal(
                     external_id=str(deal.owner_external_id),
                     name=deal.owner_name,
                     email=deal.owner_email,
+                    owner_id=deal.owner_id,
                 )
             ]
             if getattr(deal, "owner_external_id", None)

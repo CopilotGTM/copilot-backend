@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Iterable
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any, TypedDict, cast
 from uuid import UUID
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
@@ -22,6 +23,12 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
 from src.infra.utils.logger import get_logger
 
 logger = get_logger("deals_access_service")
+
+
+class DealOwnerFilterRow(TypedDict):
+    owner_id: UUID
+    name: str | None
+    email: str | None
 
 
 class DealsAccessServiceError(Exception):
@@ -77,6 +84,7 @@ class DealsAccessService:
         page: int = 1,
         statuses: Iterable[CRMDealStatus | str] | None = None,
         pipeline_ids: Iterable[UUID] | None = None,
+        owner_ids: Iterable[UUID] | None = None,
         owner_external_ids: Iterable[str] | None = None,
         min_amount: float | None = None,
         max_amount: float | None = None,
@@ -91,7 +99,8 @@ class DealsAccessService:
             page: Page number (1-indexed)
             statuses: Optional list of deal statuses to filter (OPEN, WON, LOST, CLOSED)
             pipeline_ids: Optional list of pipeline UUIDs to filter
-            owner_external_ids: Optional list of owner external IDs to filter
+            owner_ids: Optional list of internal owner IDs to filter
+            owner_external_ids: Optional list of owner external IDs to filter (deprecated)
             min_amount: Optional minimum deal amount
             max_amount: Optional maximum deal amount
             min_close_date: Optional minimum close date
@@ -120,7 +129,9 @@ class DealsAccessService:
         if pipeline_ids:
             stmt = stmt.where(c.pipeline_id.in_(list(pipeline_ids)))
 
-        if owner_external_ids:
+        if owner_ids:
+            stmt = stmt.where(c.owner_id.in_(list(owner_ids)))
+        elif owner_external_ids:
             stmt = stmt.where(c.owner_external_id.in_(list(owner_external_ids)))
 
         if min_amount is not None:
@@ -157,7 +168,9 @@ class DealsAccessService:
         if pipeline_ids:
             count_stmt = count_stmt.where(c.pipeline_id.in_(list(pipeline_ids)))
 
-        if owner_external_ids:
+        if owner_ids:
+            count_stmt = count_stmt.where(c.owner_id.in_(list(owner_ids)))
+        elif owner_external_ids:
             count_stmt = count_stmt.where(c.owner_external_id.in_(list(owner_external_ids)))
 
         if min_amount is not None:
@@ -200,6 +213,7 @@ class DealsAccessService:
         max_results: int = 500,
         statuses: Iterable[CRMDealStatus | str] | None = None,
         pipeline_ids: Iterable[UUID] | None = None,
+        owner_ids: Iterable[UUID] | None = None,
         owner_external_ids: Iterable[str] | None = None,
         min_amount: float | None = None,
         max_amount: float | None = None,
@@ -216,7 +230,8 @@ class DealsAccessService:
             max_results: Maximum number of deals to return (default 500, safety cap)
             statuses: Optional list of deal statuses to filter (OPEN, WON, LOST, CLOSED)
             pipeline_ids: Optional list of pipeline UUIDs to filter
-            owner_external_ids: Optional list of owner external IDs to filter
+            owner_ids: Optional list of internal owner IDs to filter
+            owner_external_ids: Optional list of owner external IDs to filter (deprecated)
             min_amount: Optional minimum deal amount
             max_amount: Optional maximum deal amount
             min_close_date: Optional minimum close date
@@ -244,7 +259,9 @@ class DealsAccessService:
             if pipeline_ids:
                 stmt = stmt.where(c.pipeline_id.in_(list(pipeline_ids)))
 
-            if owner_external_ids:
+            if owner_ids:
+                stmt = stmt.where(c.owner_id.in_(list(owner_ids)))
+            elif owner_external_ids:
                 stmt = stmt.where(c.owner_external_id.in_(list(owner_external_ids)))
 
             if min_amount is not None:
@@ -587,6 +604,69 @@ class DealsAccessService:
         except Exception as e:
             logger.error("Failed to get deal team members: %s", e, exc_info=True)
             raise DealsAccessServiceError("Failed to retrieve deal team members") from e
+
+    async def list_deal_owners(
+        self,
+        q: str | None = None,
+        limit: int = 200,
+    ) -> list[DealOwnerFilterRow]:
+        """Return distinct deal owners for filter dropdowns.
+
+        Args:
+            q: Optional search term for owner name/email/external ID.
+            limit: Maximum number of owners to return.
+
+        Returns:
+            List of distinct owners with owner_id, name, and email.
+        """
+        try:
+            c = cast(Any, CRMDeal).__table__.c
+            stmt = (
+                select(
+                    c.owner_id.label("owner_id"),
+                    func.max(c.owner_name).label("name"),
+                    func.max(c.owner_email).label("email"),
+                )
+                .where(
+                    c.organisation_id == self.organisation_id,
+                    c.is_deleted.is_(False),
+                    c.owner_id.is_not(None),
+                )
+                .group_by(c.owner_id)
+            )
+
+            if q:
+                like_expr = f"%{q.lower()}%"
+                conditions = [
+                    c.owner_name.ilike(like_expr),
+                    c.owner_email.ilike(like_expr),
+                    c.owner_external_id.ilike(like_expr),
+                ]
+                with contextlib.suppress(TypeError, ValueError):
+                    conditions.append(c.owner_id == UUID(q))
+                stmt = stmt.where(or_(*conditions))
+
+            stmt = stmt.order_by(
+                func.max(c.owner_name).asc().nulls_last(),
+                c.owner_id.asc(),
+            ).limit(limit)
+
+            result = await self.org_session.execute(stmt)
+            rows = result.all()
+
+            owners: list[DealOwnerFilterRow] = []
+            for row in rows:
+                owners.append(
+                    {
+                        "owner_id": cast(UUID, row.owner_id),
+                        "name": cast(str | None, row.name),
+                        "email": cast(str | None, row.email),
+                    }
+                )
+            return owners
+        except Exception as exc:
+            logger.error("Failed to list deal owners: %s", exc, exc_info=True)
+            raise DealsAccessServiceError("Failed to retrieve deal owners") from exc
 
 
 def extract_deal_health(deal_summary_data: dict | None) -> str | None:
