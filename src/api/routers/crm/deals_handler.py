@@ -172,9 +172,8 @@ def _map_deal_write_response(deal) -> DealWriteResponse:
     description="""
     Retrieve a list of CRM deals for the current organisation.
 
-    **Pagination Modes:**
-    - Default: Cursor-based pagination (use `limit` and `cursor`)
-    - Fetch All: Set `fetch_all=true` to retrieve all deals in one request (max 500)
+    **Pagination:**
+    - Page-based pagination using `page` and `limit`
 
     **Filters (work with both modes):**
     - Deal status (OPEN, WON, LOST, CLOSED)
@@ -183,9 +182,6 @@ def _map_deal_write_response(deal) -> DealWriteResponse:
     - Deal Amount range (min/max)
     - Close Date range (min/max)
     - Search query on deal name (case-insensitive)
-
-    **Recommendation:** Use `fetch_all=true` for small datasets (<300 deals) to enable
-    instant client-side filtering. Use pagination for larger datasets.
     """,
 )
 async def list_deals(
@@ -196,42 +192,22 @@ async def list_deals(
 ) -> GenericResponse[DealsPage]:
     """List CRM deals with optional filters and pagination.
 
-    Args:
-        fetch_all: If True, returns all deals (up to 500) ignoring limit/cursor.
-                   Useful for small datasets where client-side filtering is preferred.
-
     Returns:
-        GenericResponse containing DealsPage with deals list and next cursor
+        GenericResponse containing DealsPage with deals list and pagination metadata
     """
     try:
-        # Fetch all mode: retrieve all deals without pagination (capped at 500)
-        if query.fetch_all:
-            deals = await service.get_all_deals(
-                max_results=500,
-                statuses=query.statuses,
-                pipeline_ids=query.pipeline_ids,
-                owner_external_ids=query.owner_external_ids,
-                min_amount=query.min_amount,
-                max_amount=query.max_amount,
-                min_close_date=query.min_close_date,
-                max_close_date=query.max_close_date,
-                q=query.q,
-            )
-            next_cursor = None  # No pagination when fetching all
-        else:
-            # Standard pagination mode
-            deals, next_cursor = await service.list_deals(
-                limit=query.limit,
-                cursor=query.cursor,
-                statuses=query.statuses,
-                pipeline_ids=query.pipeline_ids,
-                owner_external_ids=query.owner_external_ids,
-                min_amount=query.min_amount,
-                max_amount=query.max_amount,
-                min_close_date=query.min_close_date,
-                max_close_date=query.max_close_date,
-                q=query.q,
-            )
+        deals, total_count = await service.list_deals(
+            limit=query.limit,
+            page=query.page,
+            statuses=query.statuses,
+            pipeline_ids=query.pipeline_ids,
+            owner_external_ids=query.owner_external_ids,
+            min_amount=query.min_amount,
+            max_amount=query.max_amount,
+            min_close_date=query.min_close_date,
+            max_close_date=query.max_close_date,
+            q=query.q,
+        )
 
         # Fetch deal team members (owners, collaborators, split_owners) in one batch query
         deal_ids = [deal.deal_id for deal in deals]
@@ -293,7 +269,14 @@ async def list_deals(
             for deal in deals
         ]
 
-        page = DealsPage(items=items, cursor=next_cursor)
+        total_pages = (total_count + query.limit - 1) // query.limit if query.limit else 0
+        page = DealsPage(
+            items=items,
+            page=query.page,
+            limit=query.limit,
+            total_count=total_count,
+            total_pages=total_pages,
+        )
         return Response.success_response(message="Deals retrieved successfully", data=page)
 
     except DealsAccessServiceError as e:

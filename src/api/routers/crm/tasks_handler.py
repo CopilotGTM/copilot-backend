@@ -94,7 +94,7 @@ async def list_deal_tasks(
     deal_id: UUID,
     response: FastAPIResponse,
     limit: int = Query(50, ge=1, le=100, description="Maximum tasks per page"),
-    cursor: str | None = Query(None, description="Pagination cursor from a previous response"),
+    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
     statuses: list[str] | None = Query(None, description="Filter by task statuses"),
     priorities: list[str] | None = Query(None, description="Filter by task priorities"),
     task_types: list[str] | None = Query(
@@ -107,10 +107,10 @@ async def list_deal_tasks(
     """List tasks for a specific deal."""
 
     try:
-        tasks, next_cursor = await service.list_tasks_by_deal(
+        tasks, total_count = await service.list_tasks_by_deal(
             deal_id=deal_id,
             limit=limit,
-            cursor=cursor,
+            page=page,
             statuses=statuses,
             priorities=priorities,
             task_types=task_types,
@@ -124,8 +124,15 @@ async def list_deal_tasks(
             )
             items.append(item)
 
-        page = TasksPage(items=items, cursor=next_cursor)
-        return Response.success_response(message="Tasks retrieved successfully", data=page)
+        total_pages = (total_count + limit - 1) // limit if limit else 0
+        payload = TasksPage(
+            items=items,
+            page=page,
+            limit=limit,
+            total_count=total_count,
+            total_pages=total_pages,
+        )
+        return Response.success_response(message="Tasks retrieved successfully", data=payload)
 
     except TasksAccessServiceError as exc:
         logger.warning("Tasks access error: %s", exc.message, exc_info=True)

@@ -120,8 +120,10 @@ class RiskBlockerListResponse(BaseModel):
 
     deal_id: UUID
     items: list[RiskBlockerListItem]
+    page: int
+    limit: int
     total_count: int
-    cursor: str | None = None
+    total_pages: int
     summary: RiskBlockerSummary
 
 
@@ -171,7 +173,7 @@ class RiskBlockerListQueryParams(BaseModel):
     """Query parameters for listing risks and blockers."""
 
     limit: int = Query(20, ge=1, le=100, description="Number of items per page")
-    cursor: str | None = Query(None, description="Pagination cursor")
+    page: int = Query(1, ge=1, description="Page number (1-indexed)")
     item_type: RiskBlockerType | None = Query(None, description="Filter by RISK or BLOCKER")
     status: str | None = Query(
         None,

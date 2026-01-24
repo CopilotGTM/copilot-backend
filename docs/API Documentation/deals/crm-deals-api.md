@@ -163,15 +163,16 @@ GET /users/crm/deals
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `limit` | integer | 20 | Items per page (1-100) |
-| `cursor` | string | - | Pagination cursor |
-| `status` | string | - | Filter by status (open, won, lost) |
-| `pipeline_id` | UUID | - | Filter by pipeline |
-| `stage_id` | UUID | - | Filter by stage |
-| `owner_id` | UUID | - | Filter by owner |
-| `q` | string | - | Search by name |
-| `sort_by` | string | created_at | Sort field |
-| `sort_order` | string | desc | Sort direction (asc, desc) |
+| `limit` | integer | 40 | Items per page (1-100) |
+| `page` | integer | 1 | Page number (1-indexed) |
+| `statuses` | array[enum] | - | Filter by deal statuses (`open`, `won`, `lost`, `closed`) |
+| `pipeline_ids` | array[uuid] | - | Filter by **pipeline_id** values from `/users/crm/pipelines` |
+| `owner_external_ids` | array[string] | - | Filter by CRM owner external IDs (not internal user_id) |
+| `min_amount` | number | - | Minimum deal amount |
+| `max_amount` | number | - | Maximum deal amount |
+| `min_close_date` | string | - | Minimum close date (ISO 8601) |
+| `max_close_date` | string | - | Maximum close date (ISO 8601) |
+| `q` | string | - | Case-insensitive search by deal name |
 
 ### Success Response (200)
 
@@ -194,8 +195,10 @@ GET /users/crm/deals
         "created_at": "2026-01-22T10:00:00Z"
       }
     ],
-    "cursor": "next_page_cursor",
-    "total_count": 42
+    "page": 1,
+    "limit": 40,
+    "total_count": 120,
+    "total_pages": 3
   }
 }
 ```

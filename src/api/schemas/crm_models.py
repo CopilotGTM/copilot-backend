@@ -92,7 +92,10 @@ class DealsPage(BaseModel):
     """Paginated list of deals."""
 
     items: list[DealListItem]
-    cursor: str | None = Field(None, description="Cursor for next page; null if no more results")
+    page: int = Field(..., description="Current page number (1-indexed)")
+    limit: int = Field(..., description="Maximum number of items per page")
+    total_count: int = Field(..., description="Total number of deals matching filters")
+    total_pages: int = Field(..., description="Total number of pages")
 
 
 class DealDetail(BaseModel):
@@ -616,15 +619,8 @@ class ContactListItem(BaseModel):
 class DealsListQueryParams(BaseModel):
     """Query parameters for listing deals."""
 
-    limit: int = Query(
-        50, ge=1, le=100, description="Maximum deals per page (ignored if fetch_all=true)"
-    )
-    cursor: str | None = Query(
-        None, description="Opaque cursor from previous page (ignored if fetch_all=true)"
-    )
-    fetch_all: bool = Query(
-        False, description="Fetch all deals in one request (max 500, ignores limit/cursor)"
-    )
+    limit: int = Query(40, ge=1, le=100, description="Maximum deals per page")
+    page: int = Query(1, ge=1, description="Page number (1-indexed)")
     statuses: list[CRMDealStatus] | None = Query(None, description="Filter by deal statuses")
     pipeline_ids: list[UUID] | None = Query(None, description="Filter by pipeline IDs")
     owner_external_ids: list[str] | None = Query(None, description="Filter by owner external IDs")

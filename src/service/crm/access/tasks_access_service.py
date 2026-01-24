@@ -6,10 +6,9 @@ from collections.abc import Iterable
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.domain.models.organisation_tables.sync.crm import CRMActivity
-from src.infra.utils.cursor import decode_cursor, encode_cursor
 from src.infra.utils.logger import get_logger
 
 logger = get_logger("tasks_access_service")
@@ -48,11 +47,11 @@ class TasksAccessService:
         self,
         deal_id: UUID,
         limit: int = 50,
-        cursor: str | None = None,
+        page: int = 1,
         statuses: Iterable[str] | None = None,
         priorities: Iterable[str] | None = None,
         task_types: Iterable[str] | None = None,
-    ) -> tuple[list[CRMActivity], str | None]:
+    ) -> tuple[list[CRMActivity], int]:
         """Return paginated activities for a specific deal."""
 
         c = cast(Any, CRMActivity).__table__.c
@@ -69,7 +68,7 @@ class TasksAccessService:
             # If client provided only non-task types, return an empty page rather than
             # accidentally returning non-task activities.
             if not allowed:
-                return [], None
+                return [], 0
             stmt = stmt.where(c.activity_type.in_(list(allowed)))
         else:
             stmt = stmt.where(c.activity_type.in_(list(_TASK_ACTIVITY_TYPES)))
@@ -80,33 +79,19 @@ class TasksAccessService:
         if priorities:
             stmt = stmt.where(c.priority.in_(list(priorities)))
 
-        if cursor:
-            try:
-                ts, activity_id = decode_cursor(cursor)
-            except Exception as exc:
-                raise TasksAccessServiceError("Invalid cursor", status_code=400) from exc
+        if page < 1:
+            raise TasksAccessServiceError("Page must be >= 1", status_code=400)
 
-            stmt = stmt.where(
-                or_(
-                    c.created_at < ts,
-                    and_(c.created_at == ts, c.activity_id < activity_id),
-                )
-            )
+        count_stmt = select(func.count()).select_from(stmt.subquery())
+        total_count = await self.org_session.scalar(count_stmt) or 0
 
-        stmt = stmt.order_by(c.created_at.desc(), c.activity_id.desc()).limit(limit + 1)
+        offset = (page - 1) * limit
+        stmt = stmt.order_by(c.created_at.desc(), c.activity_id.desc()).offset(offset).limit(limit)
 
         res = await self.org_session.execute(stmt)
         rows: list[CRMActivity] = list(res.scalars().all())
 
-        has_more = len(rows) == limit + 1
-        items = rows[:limit]
-
-        next_cursor: str | None = None
-        if has_more and items:
-            last = items[-1]
-            next_cursor = encode_cursor(last.created_at, last.activity_id)
-
-        return items, next_cursor
+        return rows, total_count
 
     async def get_task_by_id(self, task_id: UUID) -> CRMActivity | None:
         """Fetch a single activity by ID (backwards compatible with task_id param name)."""

@@ -85,7 +85,7 @@ async def list_risks_blockers(
 
     Query parameters:
     - limit: Number of items per page (1-100, default 20)
-    - cursor: Opaque cursor for pagination
+    - page: Page number (1-indexed)
     - item_type: Filter by RISK or BLOCKER
     - status: Comma-separated status filter (OPEN,IN_PROGRESS,AI_SUGGESTED,etc.)
     - severity: Filter by severity level (CRITICAL,HIGH,MEDIUM,LOW)
@@ -105,10 +105,10 @@ async def list_risks_blockers(
                 except ValueError:
                     logger.warning(f"Invalid status filter: {s}")
 
-        items, next_cursor, total_count, summary = await service.list_for_deal(
+        items, total_count, summary = await service.list_for_deal(
             deal_id=deal_id,
             limit=query.limit,
-            cursor=query.cursor,
+            page=query.page,
             item_type=query.item_type,
             statuses=parsed_statuses,
             severity=query.severity,
@@ -117,13 +117,17 @@ async def list_risks_blockers(
             sort_order=query.sort,
         )
 
+        total_pages = (total_count + query.limit - 1) // query.limit if query.limit else 0
+
         return Response.success_response(
             message="Risks and blockers retrieved successfully",
             data=RiskBlockerListResponse(
                 deal_id=deal_id,
                 items=items,
+                page=query.page,
+                limit=query.limit,
                 total_count=total_count,
-                cursor=next_cursor,
+                total_pages=total_pages,
                 summary=summary,
             ),
         )

@@ -99,7 +99,7 @@ GET /deals/{deal_id}/tasks
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `limit` | number | No | 1-100 (default 50) |
-| `cursor` | string | No | Pagination cursor |
+| `page` | number | No | Page number (1-indexed, default 1) |
 | `statuses` | string[] | No | Filter by status |
 | `priorities` | string[] | No | Filter by priority |
 | `task_types` | string[] | No | Filter by TASK/TODO |
@@ -112,7 +112,10 @@ GET /deals/{deal_id}/tasks
   "message": "Tasks retrieved successfully",
   "data": {
     "items": [],
-    "cursor": null
+    "page": 1,
+    "limit": 50,
+    "total_count": 0,
+    "total_pages": 0
   }
 }
 ```

@@ -236,8 +236,10 @@ export interface RiskBlockerSummary {
 export interface RiskBlockerListResponse {
   deal_id: UUID;
   items: RiskBlockerListItem[];
+  page: number;
+  limit: number;
   total_count: number;
-  cursor: string | null;
+  total_pages: number;
   summary: RiskBlockerSummary;
 }
 ```
@@ -256,7 +258,7 @@ Retrieve a paginated list of risks and blockers for a deal.
 | Name | Type | Default | Description |
 | ---- | ---- | ------- | ----------- |
 | `limit` | int (1-100) | 20 | Page size |
-| `cursor` | string | null | Opaque pagination cursor |
+| `page` | int | 1 | Page number (1-indexed) |
 | `item_type` | enum | null | Filter: `RISK` or `BLOCKER` |
 | `status` | string | null | Comma-separated statuses: `OPEN,IN_PROGRESS,AI_SUGGESTED` |
 | `severity` | enum | null | Filter: `CRITICAL`, `HIGH`, `MEDIUM`, `LOW` |
@@ -267,7 +269,7 @@ Retrieve a paginated list of risks and blockers for a deal.
 ### Sample Request
 
 ```http
-GET /6c3f98d5-2e6b-4a1c-8f8c-2e8f0211b0b9/risks-blockers?limit=20&status=OPEN,AI_SUGGESTED
+GET /6c3f98d5-2e6b-4a1c-8f8c-2e8f0211b0b9/risks-blockers?limit=20&page=1&status=OPEN,AI_SUGGESTED
 Authorization: Bearer <token>
 ```
 
@@ -305,8 +307,10 @@ Authorization: Bearer <token>
         "is_ai_generated": false
       }
     ],
+    "page": 1,
+    "limit": 20,
     "total_count": 5,
-    "cursor": "eyJvZmZzZXQiOjIw...",
+    "total_pages": 1,
     "summary": {
       "total_count": 5,
       "risks_count": 3,
@@ -689,7 +693,7 @@ class RisksBlockersAPI {
   // List with filters
   async list(dealId: string, params?: {
     limit?: number;
-    cursor?: string;
+    page?: number;
     item_type?: 'RISK' | 'BLOCKER';
     status?: string;
     severity?: string;
@@ -823,6 +827,6 @@ Frontend should map `source_type` to appropriate icons:
 
 - **AI Extraction**: Runs automatically in the background when new meetings/emails are synced. No manual trigger endpoint.
 - **Audit Trail**: All changes are tracked with user attribution, timestamps, and old/new values.
-- **Pagination**: Use `cursor` from response to fetch next page. When `null`, no more pages exist.
+- **Pagination**: Use `page` + `limit` with `total_count`/`total_pages` for page navigation.
 - **Default Sort**: Newest first (`desc`). Use `sort=asc` for oldest first.
 - **Resolved Items**: Hidden by default. Use `include_resolved=true` to see all items.
