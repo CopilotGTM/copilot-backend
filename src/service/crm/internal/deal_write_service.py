@@ -2,25 +2,32 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
+from src.domain.models.organisation_tables.sync.crm.companies import CRMCompany
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDeal,
+    CRMDealParticipant,
     CRMDealStage,
     CRMDealStageHistory,
     CRMDealStatus,
+    CRMParticipantType,
     CRMPipeline,
 )
 from src.infra.utils.logger import get_logger
+from src.service.crm.internal.deal_participant_service import DealParticipantServiceError
 from src.service.crm.internal.internal_crm_setup_service import InternalCRMSetupService
 from src.service.crm.internal.internal_crm_user_service import InternalCRMUserService
 
 logger = get_logger(__name__)
+
+_DOMAIN_CLEAN_RE = re.compile(r"^https?://", re.IGNORECASE)
 
 
 class DealWriteServiceError(Exception):
@@ -180,6 +187,18 @@ class DealWriteService:
         )
         self.session.add(history)
         await self.session.flush()
+
+        # Optional: account + team members supplied during deal creation
+        account_payload = payload.get("account")
+        team_members = payload.get("team_members")
+        if account_payload or team_members:
+            await self._apply_account_and_team(
+                deal=deal,
+                integration_id=integration_id,
+                account_payload=account_payload,
+                team_members=team_members,
+                now=now,
+            )
 
         logger.info("Created internal CRM deal %s: %s", deal.deal_id, deal.name)
         return deal
@@ -372,6 +391,262 @@ class DealWriteService:
             deal.deal_id,
         )
         return deal
+
+    async def update_account(self, deal_id: UUID, account_payload: dict[str, Any]) -> CRMDeal:
+        """Update account details for an internal CRM deal."""
+        if not account_payload or not any(account_payload.values()):
+            raise DealWriteServiceError("No account fields to update", status_code=400)
+
+        deal = await self._load_internal_deal(deal_id)
+        now = datetime.now(UTC)
+
+        try:
+            company, fallback_name = await self._upsert_company_from_account(
+                account_payload, deal.integration_id, now
+            )
+            if company:
+                await self._replace_company_participant(deal, company, now)
+            elif fallback_name:
+                await self._apply_fallback_company_name(deal, fallback_name, now)
+            else:
+                raise DealWriteServiceError(
+                    "Account payload missing domain or name", status_code=400
+                )
+        except DealParticipantServiceError as exc:
+            raise DealWriteServiceError(exc.message, status_code=exc.status_code) from exc
+
+        logger.info("Updated account for internal CRM deal %s", deal.deal_id)
+        return deal
+
+    async def _apply_account_and_team(
+        self,
+        *,
+        deal: CRMDeal,
+        integration_id: UUID,
+        account_payload: dict[str, Any] | None,
+        team_members: list[dict[str, Any]] | None,
+        now: datetime,
+    ) -> None:
+        try:
+            company = None
+            fallback_name = None
+
+            if account_payload:
+                company, fallback_name = await self._upsert_company_from_account(
+                    account_payload, integration_id, now
+                )
+
+            if company:
+                await self._add_company_participant(deal, company, now)
+            elif fallback_name:
+                deal.company_name = fallback_name
+                deal.source_modified_at = now
+                deal.synced_at = now
+                deal.last_seen_at = now
+                self.session.add(deal)
+
+            if team_members:
+                await self._add_team_participants(deal, team_members)
+        except DealParticipantServiceError as exc:
+            raise DealWriteServiceError(exc.message, status_code=exc.status_code) from exc
+
+    async def _upsert_company_from_account(
+        self,
+        account_payload: dict[str, Any],
+        integration_id: UUID,
+        now: datetime,
+    ) -> tuple[CRMCompany | None, str | None]:
+        name = self._clean_string(account_payload.get("name"))
+        domain = self._normalize_domain(
+            account_payload.get("domain") or account_payload.get("website")
+        )
+        website = self._clean_string(account_payload.get("website"))
+        linkedin_url = self._clean_string(account_payload.get("linkedin_url"))
+
+        if not domain:
+            return None, name
+
+        stmt = select(CRMCompany).where(
+            col(CRMCompany.organisation_id) == self.organisation_id,
+            col(CRMCompany.integration_id) == integration_id,
+            col(CRMCompany.is_deleted).is_(False),
+            func.lower(CRMCompany.domain) == domain.lower(),
+        )
+        result = await self.session.execute(stmt)
+        company = result.scalars().first()
+
+        if company:
+            updated = False
+            if name and not company.name:
+                company.name = name
+                updated = True
+            if website and not company.website:
+                company.website = website
+                updated = True
+            if linkedin_url and not company.linkedin_url:
+                company.linkedin_url = linkedin_url
+                updated = True
+
+            if updated:
+                company.source_modified_at = now
+                company.synced_at = now
+                company.last_seen_at = now
+                self.session.add(company)
+            return company, None
+
+        company_id = uuid4()
+        company = CRMCompany(
+            company_id=company_id,
+            organisation_id=self.organisation_id,
+            integration_id=integration_id,
+            external_id=str(company_id),
+            name=name or domain,
+            domain=domain,
+            website=website,
+            linkedin_url=linkedin_url,
+            source_created_at=now,
+            source_modified_at=now,
+            synced_at=now,
+            last_seen_at=now,
+            properties={"source": "internal_crm", "created_via": "deal_create"},
+        )
+        self.session.add(company)
+        await self.session.flush()
+        return company, None
+
+    async def _add_company_participant(
+        self,
+        deal: CRMDeal,
+        company: CRMCompany,
+        now: datetime,
+    ) -> None:
+        from src.service.crm.internal.deal_participant_service import DealParticipantService
+
+        participant_service = DealParticipantService(
+            self.session, self.organisation_id, self.actor_user_id, self.master_session
+        )
+        payloads = [
+            {
+                "participant_type": "company",
+                "related_id": company.company_id,
+                "relationship_role": None,
+            }
+        ]
+        await participant_service.add_participants(deal.deal_id, payloads)
+
+        deal.company_external_id = company.external_id
+        deal.company_name = company.name
+        deal.company_domain = company.domain
+        deal.source_modified_at = now
+        deal.synced_at = now
+        deal.last_seen_at = now
+        self.session.add(deal)
+
+    async def _replace_company_participant(
+        self,
+        deal: CRMDeal,
+        company: CRMCompany,
+        now: datetime,
+    ) -> None:
+        await self._add_company_participant(deal, company, now)
+
+        stmt = select(CRMDealParticipant).where(
+            col(CRMDealParticipant.organisation_id) == self.organisation_id,
+            col(CRMDealParticipant.integration_id) == deal.integration_id,
+            col(CRMDealParticipant.deal_id) == deal.deal_id,
+            col(CRMDealParticipant.participant_type) == CRMParticipantType.COMPANY.value,
+            col(CRMDealParticipant.is_deleted).is_(False),
+            col(CRMDealParticipant.related_external_id) != company.external_id,
+        )
+        result = await self.session.execute(stmt)
+        for participant in result.scalars().all():
+            participant.is_deleted = True
+            participant.source_modified_at = now
+            participant.synced_at = now
+            participant.last_seen_at = now
+            self.session.add(participant)
+
+    async def _apply_fallback_company_name(
+        self,
+        deal: CRMDeal,
+        fallback_name: str,
+        now: datetime,
+    ) -> None:
+        company = None
+        if deal.company_external_id:
+            stmt = select(CRMCompany).where(
+                col(CRMCompany.organisation_id) == self.organisation_id,
+                col(CRMCompany.integration_id) == deal.integration_id,
+                col(CRMCompany.external_id) == deal.company_external_id,
+                col(CRMCompany.is_deleted).is_(False),
+            )
+            result = await self.session.execute(stmt)
+            company = result.scalars().first()
+
+        if company:
+            if company.name != fallback_name:
+                company.name = fallback_name
+                company.source_modified_at = now
+                company.synced_at = now
+                company.last_seen_at = now
+                self.session.add(company)
+            deal.company_name = fallback_name
+        else:
+            deal.company_name = fallback_name
+
+        deal.source_modified_at = now
+        deal.synced_at = now
+        deal.last_seen_at = now
+        self.session.add(deal)
+
+    async def _add_team_participants(
+        self,
+        deal: CRMDeal,
+        team_members: list[dict[str, Any]],
+    ) -> None:
+        from src.service.crm.internal.deal_participant_service import DealParticipantService
+
+        if not team_members:
+            return
+
+        payloads: list[dict[str, Any]] = []
+        for member in team_members:
+            user_id = member.get("user_id")
+            if not isinstance(user_id, UUID):
+                raise DealWriteServiceError("Invalid team member user_id", status_code=400)
+            payloads.append(
+                {
+                    "participant_type": "user",
+                    "related_id": user_id,
+                    "relationship_role": self._clean_string(member.get("role")),
+                }
+            )
+
+        participant_service = DealParticipantService(
+            self.session, self.organisation_id, self.actor_user_id, self.master_session
+        )
+        await participant_service.add_participants(deal.deal_id, payloads)
+
+    @staticmethod
+    def _clean_string(value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
+
+    @staticmethod
+    def _normalize_domain(value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        cleaned = _DOMAIN_CLEAN_RE.sub("", cleaned)
+        cleaned = cleaned.split("/")[0]
+        cleaned = cleaned.lower()
+        if cleaned.startswith("www."):
+            cleaned = cleaned[4:]
+        return cleaned or None
 
     async def _load_internal_deal(self, deal_id: UUID) -> CRMDeal:
         """Load and verify a deal belongs to this org and is internal CRM."""

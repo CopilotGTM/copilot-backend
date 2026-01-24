@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from src.domain.models.organisation_tables.sync.crm.deals import CRMParticipantType
 
 
@@ -20,6 +20,20 @@ class DealParticipantsCreateRequest(BaseModel):
     """Request payload to add participants to a deal."""
 
     participants: list[DealParticipantCreateItem] = Field(default_factory=list)
+
+
+class DealParticipantUpdateRequest(BaseModel):
+    """Request payload to update a participant role."""
+
+    relationship_role: str | None = None
+
+    @field_validator("relationship_role")
+    @classmethod
+    def normalize_role(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        value = v.strip()
+        return value or None
 
 
 class DealParticipantItem(BaseModel):

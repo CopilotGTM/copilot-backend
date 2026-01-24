@@ -144,6 +144,46 @@ Notes:
 
 ---
 
+## 3) Update Participant Role
+
+```http
+PATCH /deals/{deal_id}/participants/{participant_id}
+```
+
+Request body:
+
+```json
+{
+  "relationship_role": "se"
+}
+```
+
+Success response (200):
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Participant updated successfully",
+  "data": {
+    "participant_id": "6e8c5d2a-8a2f-40f1-9e3e-2f67a945f0e7",
+    "deal_id": "3f5bfc3a-3b3b-4e89-8f0c-7a4d3b55f011",
+    "participant_type": "user",
+    "related_external_id": "6d20ab77-5ab4-4c53-9c2f-0500c1c052cd",
+    "related_local_id": "6d20ab77-5ab4-4c53-9c2f-0500c1c052cd",
+    "related_name": "Saksham Bhutani",
+    "related_email": "saksham@example.com",
+    "relationship_role": "se",
+    "is_deleted": false
+  }
+}
+```
+
+Notes:
+- Only internal CRM deal participants are writable.
+- Changing role updates the participant identity for de-duplication.
+
+---
+
 ## Error Model
 
 ```json

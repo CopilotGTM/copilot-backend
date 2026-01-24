@@ -6,12 +6,27 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
+from fastapi import Query
 from pydantic import BaseModel, Field, field_validator, model_validator
 from src.domain.models.organisation_tables.sync.crm import (
     CRMActivityPriority,
     CRMActivityStatus,
     CRMActivityType,
 )
+
+
+class DealTimelineQueryParams(BaseModel):
+    """Query parameters for deal timeline listing."""
+
+    limit: int = Query(20, ge=1, le=100, description="Number of events per page")
+    cursor: str | None = Query(None, description="Pagination cursor")
+    event_types: str | None = Query(
+        None, description="Comma-separated event types to filter (EMAIL,MEETING)"
+    )
+    start_date: datetime | None = Query(None, description="Filter events after this date")
+    end_date: datetime | None = Query(None, description="Filter events before this date")
+    include_excluded: bool = Query(False, description="Include excluded/hidden events")
+    sort: str = Query("desc", pattern="^(asc|desc)$", description="Sort order")
 
 
 class TaskListItem(BaseModel):

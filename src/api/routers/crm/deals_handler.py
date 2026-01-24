@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends
 from fastapi import Response as FastAPIResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +19,7 @@ from src.api.dependencies.organisation_dependencies import (
 from src.api.dependencies.rate_limit import rate_limit_user_read, rate_limit_user_write
 from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.crm_deal_write_models import (
+    DealAccountUpdateRequest,
     DealCreateRequest,
     DealOwnerAssignRequest,
     DealStageMoveRequest,
@@ -30,6 +31,7 @@ from src.api.schemas.crm_models import (
     DealJobResponse,
     DealListItem,
     DealOwnerDetail,
+    DealsListQueryParams,
     DealsPage,
     DealsStats,
     DealSummaryJobsStatus,
@@ -37,7 +39,6 @@ from src.api.schemas.crm_models import (
 )
 from src.api.utils.http_response import Response
 from src.domain.models.organisation_tables.job_models import JobStatus
-from src.domain.models.organisation_tables.sync.crm.deals import CRMDealStatus
 from src.domain.models.organisation_tables.sync.integration_models import (
     IntegrationType,
     KnowledgeIntegration,
@@ -52,7 +53,6 @@ from src.service.crm.access.deals_access_service import (
 from src.service.crm.internal.deal_write_service import DealWriteService, DealWriteServiceError
 from src.service.crm.jobs.deal_job_service import DealJobService, DealJobServiceError
 from src.service.crm.jobs.deal_job_sse_service import DealJobSSEService
-from src.workers.deal_worker.client import send_deal_task_async
 from sse_starlette.sse import EventSourceResponse
 
 logger = get_logger("deals_handler")
@@ -156,6 +156,9 @@ def _map_deal_write_response(deal) -> DealWriteResponse:
         stage_id=deal.stage_id,
         deal_status=str(deal.deal_status),
         owner_user_id=deal.owner_id,
+        company_external_id=getattr(deal, "company_external_id", None),
+        company_name=getattr(deal, "company_name", None),
+        company_domain=getattr(deal, "company_domain", None),
         created_at=deal.created_at,
         updated_at=deal.updated_at,
     )
@@ -187,23 +190,7 @@ def _map_deal_write_response(deal) -> DealWriteResponse:
 )
 async def list_deals(
     response: FastAPIResponse,
-    limit: int = Query(
-        50, ge=1, le=100, description="Maximum deals per page (ignored if fetch_all=true)"
-    ),
-    cursor: str | None = Query(
-        None, description="Opaque cursor from previous page (ignored if fetch_all=true)"
-    ),
-    fetch_all: bool = Query(
-        False, description="Fetch all deals in one request (max 500, ignores limit/cursor)"
-    ),
-    statuses: list[CRMDealStatus] | None = Query(None, description="Filter by deal statuses"),
-    pipeline_ids: list[UUID] | None = Query(None, description="Filter by pipeline IDs"),
-    owner_external_ids: list[str] | None = Query(None, description="Filter by owner external IDs"),
-    min_amount: float | None = Query(None, description="Minimum deal amount"),
-    max_amount: float | None = Query(None, description="Maximum deal amount"),
-    min_close_date: datetime | None = Query(None, description="Minimum close date"),
-    max_close_date: datetime | None = Query(None, description="Maximum close date"),
-    q: str | None = Query(None, description="Case-insensitive search on deal name"),
+    query: DealsListQueryParams = Depends(),
     service: DealsAccessService = Depends(get_deals_access_service),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[DealsPage]:
@@ -218,32 +205,32 @@ async def list_deals(
     """
     try:
         # Fetch all mode: retrieve all deals without pagination (capped at 500)
-        if fetch_all:
+        if query.fetch_all:
             deals = await service.get_all_deals(
                 max_results=500,
-                statuses=statuses,
-                pipeline_ids=pipeline_ids,
-                owner_external_ids=owner_external_ids,
-                min_amount=min_amount,
-                max_amount=max_amount,
-                min_close_date=min_close_date,
-                max_close_date=max_close_date,
-                q=q,
+                statuses=query.statuses,
+                pipeline_ids=query.pipeline_ids,
+                owner_external_ids=query.owner_external_ids,
+                min_amount=query.min_amount,
+                max_amount=query.max_amount,
+                min_close_date=query.min_close_date,
+                max_close_date=query.max_close_date,
+                q=query.q,
             )
             next_cursor = None  # No pagination when fetching all
         else:
             # Standard pagination mode
             deals, next_cursor = await service.list_deals(
-                limit=limit,
-                cursor=cursor,
-                statuses=statuses,
-                pipeline_ids=pipeline_ids,
-                owner_external_ids=owner_external_ids,
-                min_amount=min_amount,
-                max_amount=max_amount,
-                min_close_date=min_close_date,
-                max_close_date=max_close_date,
-                q=q,
+                limit=query.limit,
+                cursor=query.cursor,
+                statuses=query.statuses,
+                pipeline_ids=query.pipeline_ids,
+                owner_external_ids=query.owner_external_ids,
+                min_amount=query.min_amount,
+                max_amount=query.max_amount,
+                min_close_date=query.min_close_date,
+                max_close_date=query.max_close_date,
+                q=query.q,
             )
 
         # Fetch deal team members (owners, collaborators, split_owners) in one batch query
@@ -605,6 +592,40 @@ async def update_deal(
         )
 
 
+@deals_router.patch(
+    "/deals/{deal_id}/account",
+    response_model=GenericResponse[DealWriteResponse],
+    tags=["crm", "deals"],
+    summary="Update account details for an internal CRM deal",
+)
+async def update_deal_account(
+    deal_id: UUID,
+    request: DealAccountUpdateRequest,
+    response: FastAPIResponse,
+    service: DealWriteService = Depends(get_deal_write_service),
+    _rl_write: None = Depends(rate_limit_user_write),
+) -> GenericResponse[DealWriteResponse]:
+    """Update account details for an internal CRM deal."""
+    try:
+        deal = await service.update_account(deal_id, request.model_dump(exclude_unset=True))
+        await service.session.commit()
+        await service.session.refresh(deal)
+        payload = _map_deal_write_response(deal)
+        return Response.success_response(message="Deal account updated successfully", data=payload)
+    except DealWriteServiceError as exc:
+        await service.session.rollback()
+        logger.warning("Deal account update error: %s", exc.message, exc_info=True)
+        return Response.error_response(
+            message=exc.message, status_code=exc.status_code, response=response
+        )
+    except Exception as exc:
+        await service.session.rollback()
+        logger.error("Unexpected error updating deal account: %s", exc, exc_info=True)
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
+
+
 @deals_router.delete(
     "/deals/{deal_id}",
     response_model=GenericResponse[DealWriteResponse],
@@ -703,37 +724,6 @@ async def assign_deal_owner(
         logger.error("Unexpected error assigning deal owner: %s", exc, exc_info=True)
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
-        )
-
-
-@deals_router.post(
-    "/process-meetings",
-    response_model=GenericResponse[dict],
-    summary="Trigger deal meeting processing",
-    description="Manually trigger the background task to identify meetings associated with deals and create tasks.",
-)
-async def trigger_deal_meeting_processing(
-    response: FastAPIResponse,
-    user: UserIDs = Depends(get_current_user),
-) -> GenericResponse[dict]:
-    """Trigger the deal meeting processing task."""
-    try:
-        task_id = await send_deal_task_async(
-            "deal.match_calendar_to_deals_org",
-            kwargs={"organisation_id": str(user.organisation_id)},
-            queue="deal",
-            routing_key="deal",
-        )
-        return Response.success_response(
-            message="Deal meeting processing triggered successfully",
-            data={"task_id": task_id},
-        )
-    except Exception as e:
-        logger.error(f"Failed to trigger deal meeting processing: {e}", exc_info=True)
-        return Response.error_response(
-            message="Failed to trigger processing",
-            status_code=500,
-            response=response,
         )
 
 

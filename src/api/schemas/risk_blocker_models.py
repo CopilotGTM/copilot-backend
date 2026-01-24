@@ -1,8 +1,11 @@
 """Pydantic schemas for Risk & Blocker API endpoints."""
 
+from __future__ import annotations
+
 from datetime import datetime
 from uuid import UUID
 
+from fastapi import Query
 from pydantic import BaseModel, Field
 from src.domain.models.organisation_tables.sync.risk_blocker_models import (
     RiskBlockerCategory,
@@ -11,10 +14,6 @@ from src.domain.models.organisation_tables.sync.risk_blocker_models import (
     RiskBlockerStatus,
     RiskBlockerType,
 )
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Response Models
-# ─────────────────────────────────────────────────────────────────────────────
 
 
 class RiskBlockerListItem(BaseModel):
@@ -126,11 +125,6 @@ class RiskBlockerListResponse(BaseModel):
     summary: RiskBlockerSummary
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Request Models
-# ─────────────────────────────────────────────────────────────────────────────
-
-
 class RiskBlockerCreateRequest(BaseModel):
     """Request model for creating a risk/blocker manually."""
 
@@ -171,3 +165,19 @@ class RiskBlockerResolveRequest(BaseModel):
         min_length=10,
         description="Notes on how the issue was resolved",
     )
+
+
+class RiskBlockerListQueryParams(BaseModel):
+    """Query parameters for listing risks and blockers."""
+
+    limit: int = Query(20, ge=1, le=100, description="Number of items per page")
+    cursor: str | None = Query(None, description="Pagination cursor")
+    item_type: RiskBlockerType | None = Query(None, description="Filter by RISK or BLOCKER")
+    status: str | None = Query(
+        None,
+        description="Comma-separated statuses to filter (OPEN,IN_PROGRESS,RESOLVED)",
+    )
+    severity: RiskBlockerSeverity | None = Query(None, description="Filter by severity")
+    category: RiskBlockerCategory | None = Query(None, description="Filter by category")
+    include_resolved: bool = Query(False, description="Include resolved/dismissed items")
+    sort: str = Query("desc", pattern="^(asc|desc)$", description="Sort order")

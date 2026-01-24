@@ -6,7 +6,9 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
+from fastapi import Query
 from pydantic import BaseModel, Field
+from src.domain.models.organisation_tables.sync.crm.deals import CRMDealStatus
 from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     ApprovalStatus,
     DecisionPower,
@@ -609,3 +611,25 @@ class ContactListItem(BaseModel):
     company_name: str | None = None
 
     model_config = {"from_attributes": True}
+
+
+class DealsListQueryParams(BaseModel):
+    """Query parameters for listing deals."""
+
+    limit: int = Query(
+        50, ge=1, le=100, description="Maximum deals per page (ignored if fetch_all=true)"
+    )
+    cursor: str | None = Query(
+        None, description="Opaque cursor from previous page (ignored if fetch_all=true)"
+    )
+    fetch_all: bool = Query(
+        False, description="Fetch all deals in one request (max 500, ignores limit/cursor)"
+    )
+    statuses: list[CRMDealStatus] | None = Query(None, description="Filter by deal statuses")
+    pipeline_ids: list[UUID] | None = Query(None, description="Filter by pipeline IDs")
+    owner_external_ids: list[str] | None = Query(None, description="Filter by owner external IDs")
+    min_amount: float | None = Query(None, description="Minimum deal amount")
+    max_amount: float | None = Query(None, description="Maximum deal amount")
+    min_close_date: datetime | None = Query(None, description="Minimum close date")
+    max_close_date: datetime | None = Query(None, description="Maximum close date")
+    q: str | None = Query(None, description="Case-insensitive search on deal name")

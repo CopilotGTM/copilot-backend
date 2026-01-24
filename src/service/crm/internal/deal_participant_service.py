@@ -45,10 +45,17 @@ class DealParticipantSkipped:
 class DealParticipantService:
     """Service for managing deal participants for internal CRM."""
 
-    def __init__(self, session: AsyncSession, organisation_id: UUID, actor_user_id: UUID):
+    def __init__(
+        self,
+        session: AsyncSession,
+        organisation_id: UUID,
+        actor_user_id: UUID,
+        master_session: AsyncSession | None = None,
+    ):
         self.session = session
         self.organisation_id = organisation_id
         self.actor_user_id = actor_user_id
+        self.master_session = master_session
 
     async def close(self) -> None:
         try:
@@ -132,6 +139,7 @@ class DealParticipantService:
                     deal_id=deal_id,
                     participant_type=participant_type,
                     relationship_role=relationship_role,
+                    related_external_id=related_external_id,
                 )
 
             participant.related_external_id = related_external_id
@@ -202,6 +210,68 @@ class DealParticipantService:
         contact_participant_changed = participant.participant_type == CRMParticipantType.CONTACT
         return participant, contact_participant_changed, integration_id
 
+    async def update_participant_role(
+        self,
+        deal_id: UUID,
+        participant_id: UUID,
+        relationship_role: str | None,
+    ) -> CRMDealParticipant:
+        _, integration_id = await self._get_internal_deal(deal_id)
+        participant = await self.session.get(CRMDealParticipant, participant_id)
+
+        if not participant or participant.organisation_id != self.organisation_id:
+            raise DealParticipantServiceError("Participant not found", status_code=404)
+        if participant.deal_id != deal_id:
+            raise DealParticipantServiceError("Participant not found", status_code=404)
+        if participant.integration_id != integration_id:
+            raise DealParticipantServiceError("External CRM participants are read-only", 409)
+        if participant.is_deleted:
+            raise DealParticipantServiceError("Participant not found", status_code=404)
+
+        new_role = self._clean_string(relationship_role)
+        role_key = new_role or ""
+
+        participant_type = self._parse_participant_type(participant.participant_type)
+        existing = await self._find_existing_participant(
+            deal_id,
+            integration_id,
+            participant_type,
+            participant.related_external_id,
+            role_key,
+        )
+        if (
+            existing
+            and existing.participant_id != participant.participant_id
+            and not existing.is_deleted
+        ):
+            raise DealParticipantServiceError(
+                "Participant with role already exists", status_code=409
+            )
+
+        participant.participant_type = participant_type
+        participant.relationship_role = new_role
+        participant.external_id = self._build_participant_external_id(
+            deal_id,
+            participant_type,
+            participant.related_external_id,
+            new_role,
+        )
+        now = datetime.now(UTC)
+        participant.source_modified_at = now
+        participant.synced_at = now
+        participant.last_seen_at = now
+        participant.data_payload = {
+            "source": "internal_crm",
+            "identity": {
+                "deal_id": str(deal_id),
+                "participant_type": str(participant_type),
+                "related_external_id": participant.related_external_id,
+                "relationship_role": new_role or "",
+            },
+        }
+        self.session.add(participant)
+        return participant
+
     async def _get_internal_deal(self, deal_id: UUID) -> tuple[CRMDeal, UUID]:
         setup_service = InternalCRMSetupService(
             self.session, self.organisation_id, self.actor_user_id
@@ -251,8 +321,15 @@ class DealParticipantService:
             return company.external_id, company.company_id, company.name, None
 
         if participant_type == CRMParticipantType.USER:
+            if not self.master_session:
+                raise DealParticipantServiceError(
+                    "Master session required for user participants", status_code=500
+                )
             user_service = InternalCRMUserService(
-                self.session, self.organisation_id, self.actor_user_id
+                org_session=self.session,
+                master_session=self.master_session,
+                organisation_id=self.organisation_id,
+                actor_user_id=self.actor_user_id,
             )
             crm_user = await user_service.ensure_crm_user(related_id)
 

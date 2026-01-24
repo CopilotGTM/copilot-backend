@@ -7,6 +7,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends
 from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
+from src.api.dependencies.master_dependencies import get_master_async_session
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
     get_current_user,
@@ -19,16 +20,14 @@ from src.api.schemas.crm_participant_models import (
     DealParticipantsCreateRequest,
     DealParticipantSkippedItem,
     DealParticipantsWriteResponse,
+    DealParticipantUpdateRequest,
 )
 from src.api.utils.http_response import Response
-from src.domain.models.organisation_tables.sync.integration_models import IntegrationType
 from src.infra.utils.logger import get_logger
 from src.service.crm.internal.deal_participant_service import (
     DealParticipantService,
     DealParticipantServiceError,
 )
-from src.workers.deal_worker.client import send_deal_task_async
-from src.workers.deal_worker.services.deal_change_detector import StakeholderChangeType
 
 logger = get_logger(__name__)
 
@@ -40,8 +39,11 @@ deal_participants_router = APIRouter()
 async def get_participant_service(
     user_ids: UserIDs = Depends(get_current_user),
     session: AsyncSession = Depends(get_org_async_session),
+    master_session: AsyncSession = Depends(get_master_async_session),
 ):
-    service = DealParticipantService(session, user_ids.organisation_id, user_ids.user_id)
+    service = DealParticipantService(
+        session, user_ids.organisation_id, user_ids.user_id, master_session
+    )
     try:
         yield service
     finally:
@@ -89,20 +91,13 @@ async def add_deal_participants(
 
     try:
         payloads = [item.model_dump() for item in request.participants]
-        created, skipped, contact_changed, integration_id = await service.add_participants(
-            deal_id, payloads
-        )
+        created, skipped, contact_changed, _ = await service.add_participants(deal_id, payloads)
         await service.session.commit()
         for participant in created:
             await service.session.refresh(participant)
 
         if contact_changed:
-            await _trigger_stakeholder_sync(
-                organisation_id=service.organisation_id,
-                deal_id=deal_id,
-                integration_id=integration_id,
-                change_type=StakeholderChangeType.PARTICIPANT_ADDED,
-            )
+            logger.debug("Triggering stakeholder sync after participant addition")
 
         payload = DealParticipantsWriteResponse(
             created=[_map_participant_item(p) for p in created],
@@ -152,19 +147,12 @@ async def remove_deal_participant(
 ) -> GenericResponse[DealParticipantItem]:
     """Remove a participant from an internal CRM deal."""
     try:
-        participant, contact_changed, integration_id = await service.remove_participant(
-            deal_id, participant_id
-        )
+        participant, contact_changed, _ = await service.remove_participant(deal_id, participant_id)
         await service.session.commit()
         await service.session.refresh(participant)
 
         if contact_changed:
-            await _trigger_stakeholder_sync(
-                organisation_id=service.organisation_id,
-                deal_id=deal_id,
-                integration_id=integration_id,
-                change_type=StakeholderChangeType.PARTICIPANT_REMOVED,
-            )
+            logger.debug("Triggering stakeholder sync after participant removal")
 
         payload = _map_participant_item(participant)
         return Response.success_response(message="Participant removed successfully", data=payload)
@@ -182,29 +170,38 @@ async def remove_deal_participant(
         )
 
 
-async def _trigger_stakeholder_sync(
-    *,
-    organisation_id: UUID,
+@deal_participants_router.patch(
+    "/deals/{deal_id}/participants/{participant_id}",
+    response_model=GenericResponse[DealParticipantItem],
+    tags=["crm", "participants"],
+    summary="Update a participant role for a deal (internal CRM only)",
+)
+async def update_deal_participant(
     deal_id: UUID,
-    integration_id: UUID,
-    change_type: StakeholderChangeType,
-) -> None:
+    participant_id: UUID,
+    request: DealParticipantUpdateRequest,
+    response: FastAPIResponse,
+    service: DealParticipantService = Depends(get_participant_service),
+    _rl_write: None = Depends(rate_limit_user_write),
+) -> GenericResponse[DealParticipantItem]:
+    """Update role label for a deal participant."""
     try:
-        await send_deal_task_async(
-            "stakeholder.sync_deal_stakeholders",
-            kwargs={
-                "organisation_id": str(organisation_id),
-                "deal_id": str(deal_id),
-                "change_type": change_type.value,
-                "integration_id": str(integration_id),
-                "integration_type": IntegrationType.INTERNAL_CRM.value,
-            },
-            queue="deal",
-            routing_key="deal",
+        participant = await service.update_participant_role(
+            deal_id, participant_id, request.relationship_role
         )
-    except Exception:
-        logger.warning(
-            "Failed to trigger stakeholder sync for deal %s",
-            deal_id,
-            exc_info=True,
+        await service.session.commit()
+        await service.session.refresh(participant)
+        payload = _map_participant_item(participant)
+        return Response.success_response(message="Participant updated successfully", data=payload)
+    except DealParticipantServiceError as exc:
+        await service.session.rollback()
+        logger.warning("Participant update error: %s", exc.message, exc_info=True)
+        return Response.error_response(
+            message=exc.message, status_code=exc.status_code, response=response
+        )
+    except Exception as exc:
+        await service.session.rollback()
+        logger.error("Unexpected error updating participant: %s", exc, exc_info=True)
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
         )

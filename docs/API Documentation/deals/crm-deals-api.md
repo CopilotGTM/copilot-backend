@@ -2,7 +2,7 @@
 
 > Version: 1.0
 > Base URL: `/users/crm`
-> Last Updated: 2026-01-22
+> Last Updated: 2026-01-23
 
 ---
 
@@ -51,6 +51,14 @@ POST /users/crm/deals
 | `priority` | string | No | Max 64 chars | "High", "Medium", "Low" |
 | `lead_source` | string | No | Max 128 chars | "Inbound", "Outbound", "Referral", etc. |
 | `description` | string | No | - | Deal notes/description |
+| `account` | object | No | - | Optional account details captured at deal creation |
+| `account.name` | string | No | - | Company/account name (optional if domain provided) |
+| `account.domain` | string | No | - | Company domain (required to create/link company) |
+| `account.website` | string | No | - | Company website URL (optional) |
+| `account.linkedin_url` | string | No | - | Company LinkedIn URL (optional) |
+| `team_members` | array | No | - | Internal team members to attach as participants |
+| `team_members[].user_id` | UUID | Yes | Valid user UUID from `/users/crm/users` | Internal team member |
+| `team_members[].role` | string | No | Max 128 chars | Team role label (e.g., "SE", "CSM") |
 
 ### Example Request
 
@@ -67,7 +75,18 @@ POST /users/crm/deals
   "deal_type": "New Business",
   "priority": "High",
   "lead_source": "Inbound",
-  "description": "Enterprise deal for 100 seats"
+  "description": "Enterprise deal for 100 seats",
+  "account": {
+    "name": "Acme Corp",
+    "domain": "acme.com",
+    "linkedin_url": "https://www.linkedin.com/company/acme"
+  },
+  "team_members": [
+    {
+      "user_id": "6d20ab77-5ab4-4c53-9c2f-0500c1c052cd",
+      "role": "SE"
+    }
+  ]
 }
 ```
 
@@ -78,6 +97,14 @@ POST /users/crm/deals
   "name": "Quick Deal Entry"
 }
 ```
+
+### Notes on Account + Team Members
+
+- If `account.domain` is provided, the system will create or link an internal CRM company
+  and attach it to the deal.
+- If `account.domain` is missing but `account.name` is provided, the deal will store
+  `company_name` without creating a company record.
+- `team_members` are added as internal CRM participants (`participant_type = user`).
 
 ### Success Response (201)
 
@@ -104,6 +131,9 @@ POST /users/crm/deals
     "priority": "High",
     "lead_source": "Inbound",
     "description": "Enterprise deal for 100 seats",
+    "company_external_id": "5f35a0b7-5f5f-4a0b-9e34-3b2b88a0e9a2",
+    "company_name": "Acme Corp",
+    "company_domain": "acme.com",
     "created_at": "2026-01-22T10:00:00Z"
   }
 }
@@ -492,7 +522,67 @@ Cleared:
 
 ---
 
-## 7. Delete Deal
+## 7. Update Deal Account
+
+**⚠️ Internal CRM Only**: This endpoint only works for deals where `is_internal: true`.
+
+### Endpoint
+
+```
+PATCH /users/crm/deals/{deal_id}/account
+```
+
+### Request Body
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | No | Company/account name |
+| `domain` | string | No | Company domain (recommended; used to create/link company) |
+| `website` | string | No | Company website URL |
+| `linkedin_url` | string | No | Company LinkedIn URL |
+
+### Behavior
+
+- If `domain` (or `website`) is provided, the system creates or links a company by domain
+  and attaches it to the deal.
+- If only `name` is provided, the deal stores `company_name` without creating a company record.
+
+### Example Request
+
+```json
+{
+  "name": "Acme Corp",
+  "domain": "acme.com",
+  "linkedin_url": "https://www.linkedin.com/company/acme"
+}
+```
+
+### Success Response (200)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Deal account updated successfully",
+  "data": {
+    "deal_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
+    "external_id": "98a0c9d2-b680-4aa0-8c87-dc451fccbad5",
+    "name": "Acme Corp - Enterprise License",
+    "pipeline_id": "550e8400-e29b-41d4-a716-446655440000",
+    "stage_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+    "deal_status": "open",
+    "owner_user_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+    "company_external_id": "5f35a0b7-5f5f-4a0b-9e34-3b2b88a0e9a2",
+    "company_name": "Acme Corp",
+    "company_domain": "acme.com",
+    "created_at": "2026-01-22T10:00:00Z",
+    "updated_at": "2026-01-23T11:00:00Z"
+  }
+}
+```
+
+---
+
+## 8. Delete Deal
 
 **⚠️ Internal CRM Only**: This endpoint only works for deals where `is_internal: true`. **This is a soft delete** - the deal is marked as deleted but remains in the database.
 
@@ -681,6 +771,8 @@ GET /users/crm/pipelines?include_stages=true
 4. **Owner selection**: Use user_id from `/users/crm/users` search
 5. **Stage selection**: Use stage_id from `/pipelines?include_stages=true`
 6. **Optional fields**: Don't send `null` for optional fields - omit them entirely
+7. **Account + Team**: Use `account` + `team_members` to capture company + internal team
+   in one request. Company is created/linked only when `account.domain` is supplied.
 
 ---
 
@@ -689,3 +781,47 @@ GET /users/crm/pipelines?include_stages=true
 - `deal-workflow-specification.md` - Complete workflow specification
 - `create-deal-fields-specification.md` - Field-level specification
 - `internal-crm-frontend-stepwise-integration.md` - Integration guide
+
+---
+
+## Deal Import (CSV)
+
+### Download Template
+
+```
+GET /users/crm/deals/import/template?file_type=csv
+```
+
+### Create Upload URL
+
+```
+POST /users/crm/deals/import/upload-url
+```
+
+Body:
+```
+{
+  "filename": "deals_import.csv"
+}
+```
+
+### Process Uploaded CSV
+
+```
+POST /users/crm/deals/import/process
+```
+
+Body:
+```
+{
+  "storage_path": "crm_imports/deals/<user>/<id>/deals_import.csv"
+}
+```
+
+### SSE Stream (Import Job)
+
+```
+GET /users/crm/deals/import/jobs/{job_id}/events
+```
+
+See `docs/API Documentation/deals/crm-deals-import-api.md` for full request/response and SSE payloads.

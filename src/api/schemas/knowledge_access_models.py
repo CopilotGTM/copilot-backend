@@ -4,7 +4,12 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
+from fastapi import Query
 from pydantic import BaseModel, Field, HttpUrl
+from src.domain.models.organisation_tables.knowledge_models import (
+    OrganisationSourceStatus,
+    SourceType,
+)
 
 # Statuses considered "active" (require SSE monitoring)
 ACTIVE_STATUSES = {"pending_upload", "uploaded", "processing", "extracting", "deleting"}
@@ -46,7 +51,6 @@ class KnowledgeSourcesStats(BaseModel):
     recent_failures_24h: int = 0  # Failed sources in last 24 hours
 
 
-# -------- Delete Models --------
 class KnowledgeBatchDeleteRequest(BaseModel):
     """Request body for deletion of one or more knowledge sources."""
 
@@ -69,3 +73,28 @@ class KnowledgeBatchDeleteResponse(BaseModel):
     batch_id: UUID
     results: list[KnowledgeDeleteResultItem]
     errors: list[dict[str, Any]] = []
+
+
+class KnowledgeSourcesListQueryParams(BaseModel):
+    """Query parameters for listing knowledge sources."""
+
+    limit: int = Query(20, ge=1, le=100)
+    cursor: str | None = Query(
+        None, description="Opaque cursor returned by previous page (omit for first)"
+    )
+    statuses: list[OrganisationSourceStatus] | None = Query(
+        None,
+        description="Optional list of statuses to filter. Note: 'failed' status is excluded by default unless explicitly requested.",
+    )
+    source_types: list[SourceType] | None = Query(
+        None, description="Optional list of source types (e.g. file, integration)"
+    )
+    q: str | None = Query(None, description="Case-insensitive filename search fragment")
+    updated_after: datetime | None = Query(
+        None,
+        description="Filter sources updated after this timestamp (ISO8601). Useful for fetching recent failures.",
+    )
+    include_urls: bool = Query(
+        False,
+        description="If true include read + thumbnail SAS URLs (extra storage calls).",
+    )

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends
 from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.organisation_dependencies import (
@@ -17,16 +17,14 @@ from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.risk_blocker_models import (
     RiskBlockerCreateRequest,
     RiskBlockerDetail,
+    RiskBlockerListQueryParams,
     RiskBlockerListResponse,
     RiskBlockerResolveRequest,
     RiskBlockerUpdateRequest,
 )
 from src.api.utils.http_response import Response
 from src.domain.models.organisation_tables.sync.risk_blocker_models import (
-    RiskBlockerCategory,
-    RiskBlockerSeverity,
     RiskBlockerStatus,
-    RiskBlockerType,
 )
 from src.infra.utils.logger import get_logger
 from src.service.crm.insights.risk_blocker_service import (
@@ -74,17 +72,7 @@ async def list_risks_blockers(
     deal_id: UUID,
     response: FastAPIResponse,
     service: RiskBlockerService = Depends(get_risk_blocker_service),
-    limit: int = Query(20, ge=1, le=100, description="Number of items per page"),
-    cursor: str | None = Query(None, description="Pagination cursor"),
-    item_type: RiskBlockerType | None = Query(None, description="Filter by RISK or BLOCKER"),
-    status: str | None = Query(
-        None,
-        description="Comma-separated statuses to filter (OPEN,IN_PROGRESS,RESOLVED)",
-    ),
-    severity: RiskBlockerSeverity | None = Query(None, description="Filter by severity"),
-    category: RiskBlockerCategory | None = Query(None, description="Filter by category"),
-    include_resolved: bool = Query(False, description="Include resolved/dismissed items"),
-    sort: str = Query("desc", pattern="^(asc|desc)$", description="Sort order"),
+    query: RiskBlockerListQueryParams = Depends(),
 ) -> GenericResponse[RiskBlockerListResponse]:
     """
     Get risks and blockers for a deal.
@@ -108,8 +96,8 @@ async def list_risks_blockers(
     try:
         # Parse status filter
         parsed_statuses = None
-        if status:
-            status_strs = [s.strip().upper() for s in status.split(",")]
+        if query.status:
+            status_strs = [s.strip().upper() for s in query.status.split(",")]
             parsed_statuses = []
             for s in status_strs:
                 try:
@@ -119,14 +107,14 @@ async def list_risks_blockers(
 
         items, next_cursor, total_count, summary = await service.list_for_deal(
             deal_id=deal_id,
-            limit=limit,
-            cursor=cursor,
-            item_type=item_type,
+            limit=query.limit,
+            cursor=query.cursor,
+            item_type=query.item_type,
             statuses=parsed_statuses,
-            severity=severity,
-            category=category,
-            include_resolved=include_resolved,
-            sort_order=sort,
+            severity=query.severity,
+            category=query.category,
+            include_resolved=query.include_resolved,
+            sort_order=query.sort,
         )
 
         return Response.success_response(
@@ -200,11 +188,6 @@ async def get_risk_blocker(
         )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Create Endpoint
-# ─────────────────────────────────────────────────────────────────────────────
-
-
 @risks_blockers_router.post(
     "/{deal_id}/risks-blockers",
     response_model=GenericResponse[RiskBlockerDetail],
@@ -255,11 +238,6 @@ async def create_risk_blocker(
         )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Update Endpoints
-# ─────────────────────────────────────────────────────────────────────────────
-
-
 @risks_blockers_router.patch(
     "/risks-blockers/{risk_blocker_id}",
     response_model=GenericResponse[RiskBlockerDetail],
@@ -302,11 +280,6 @@ async def update_risk_blocker(
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
         )
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Status Transition Endpoints
-# ─────────────────────────────────────────────────────────────────────────────
 
 
 @risks_blockers_router.post(
@@ -481,11 +454,6 @@ async def reopen_risk_blocker(
         )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Delete Endpoint
-# ─────────────────────────────────────────────────────────────────────────────
-
-
 @risks_blockers_router.delete(
     "/risks-blockers/{risk_blocker_id}",
     response_model=GenericResponse[None],
@@ -526,10 +494,3 @@ async def delete_risk_blocker(
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
         )
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# NOTE: Extraction is backend-triggered only (event-driven)
-# No frontend trigger endpoint - AI extraction runs automatically after
-# new meetings/emails are synced. Users can still add risks/blockers manually.
-# ─────────────────────────────────────────────────────────────────────────────

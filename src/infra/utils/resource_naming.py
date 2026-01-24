@@ -36,3 +36,9 @@ def get_org_container_name(organisation_id: uuid.UUID) -> str:
     h = hashlib.sha1(str(organisation_id).encode("utf-8"), usedforsecurity=False).hexdigest()
     base = f"{RESOURCE_PREFIX}-org-{h}"
     return base.lower()
+
+
+def get_application_container_name() -> str:
+    # Deterministic container name for application-level assets.
+    base = f"{RESOURCE_PREFIX}-app"
+    return base.lower()
