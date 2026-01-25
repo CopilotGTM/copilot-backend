@@ -34,4 +34,9 @@ else
     echo "[startup] SUPER_ADMIN_EMAIL not set; skipping super admin initialization."
 fi
 
+echo "[startup] Publishing deal import template to blob storage..."
+python -m scripts.maintenance.publish_deal_import_template || {
+    echo "[startup][WARNING] Deal import template publishing failed (non-critical)" >&2
+}
+
 echo "[startup] Completed successfully."

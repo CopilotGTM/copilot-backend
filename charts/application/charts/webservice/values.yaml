@@ -21,6 +21,14 @@ containerName: copilot-backend
 environment: development
 replicaCount: 2  # Minimum 2 for high availability during restarts
 
+# Rolling update strategy - prevents resource deadlock during deploys
+# With maxUnavailable: 1, Kubernetes can terminate old pods before new ones are fully ready
+# This avoids needing 3x resources during rollout (2 old + 1 new)
+strategy:
+  type: RollingUpdate
+  maxSurge: 1         # Allow 1 extra pod during rollout
+  maxUnavailable: 1   # Allow 1 pod to be unavailable during rollout
+
 image:
   repository: "copilotgtmacrdev.azurecr.io/copilot-backend"
   tag: "latest"
