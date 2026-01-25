@@ -7,6 +7,15 @@ metadata:
     {{- include "webservice.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
+  {{- if .Values.strategy }}
+  strategy:
+    type: {{ .Values.strategy.type | default "RollingUpdate" }}
+    {{- if eq (default "RollingUpdate" .Values.strategy.type) "RollingUpdate" }}
+    rollingUpdate:
+      maxSurge: {{ .Values.strategy.maxSurge | default 1 }}
+      maxUnavailable: {{ .Values.strategy.maxUnavailable | default 1 }}
+    {{- end }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "webservice.selectorLabels" . | nindent 6 }}

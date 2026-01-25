@@ -28,6 +28,12 @@ api:
   replicaCount: 2  # Minimum 2 for high availability during restarts
   environment: development
 
+  # Rolling update strategy - allows temporary reduction during deploys to avoid resource deadlock
+  strategy:
+    type: RollingUpdate
+    maxSurge: 1         # Allow 1 extra pod during rollout
+    maxUnavailable: 1   # Allow 1 pod to be unavailable during rollout
+
   image:
     repository: "copilotgtmacrdev.azurecr.io/copilot-backend"
     tag: "latest"
