@@ -19,6 +19,9 @@ spec:
       name: {{ include "webservice.fullname" $ }}-{{ $jobName }}
       labels:
         {{- include "webservice.selectorLabels" $ | nindent 8 }}
+        {{- if $.Values.workloadIdentity.clientId }}
+        azure.workload.identity/use: "true"
+        {{- end }}
     spec:
       restartPolicy: Never
       serviceAccountName: {{ $.Values.serviceAccount.name | default (include "webservice.fullname" $) }}
@@ -30,6 +33,17 @@ spec:
             {{- toYaml $jobConfig.command | nindent 12 }}
           args:
             {{- toYaml $jobConfig.args | nindent 12 }}
+          {{- if $.Values.workloadIdentity.clientId }}
+          env:
+            - name: AZURE_CLIENT_ID
+              value: {{ $.Values.workloadIdentity.clientId | quote }}
+            {{- if $.Values.workloadIdentity.tenantId }}
+            - name: AZURE_TENANT_ID
+              value: {{ $.Values.workloadIdentity.tenantId | quote }}
+            {{- end }}
+            - name: AZURE_ADDITIONALLY_ALLOWED_TENANTS
+              value: "*"
+          {{- end }}
           envFrom:
             - secretRef:
                 name: {{ include "webservice.fullname" $ }}-secret
