@@ -84,12 +84,13 @@ class ToolName(str, Enum):
     SEARCH_CONTACTS = "search_contacts"  # Search contacts by name/email/company
 
     # -------------------------------------------------------------------------
-    # COMMUNICATION TOOLS - For emails and notes
+    # COMMUNICATION TOOLS - For emails, messaging channels, and notes
     # Used by: Chat Agent, Deal Agent, Briefing Agent, Risk/Blocker Agent
     # -------------------------------------------------------------------------
     LIST_DEAL_EMAILS = "list_deal_emails"
     GET_EMAIL_DETAILS = "get_email_details"
     LIST_DEAL_NOTES = "list_deal_notes"
+    LIST_DEAL_CHANNEL_MESSAGES = "list_deal_channel_messages"
 
     # -------------------------------------------------------------------------
     # RESEARCH TOOLS - External research (free, no API keys required)
@@ -157,6 +158,7 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.LIST_DEAL_EMAILS,
         ToolName.GET_EMAIL_DETAILS,
         ToolName.LIST_DEAL_NOTES,
+        ToolName.LIST_DEAL_CHANNEL_MESSAGES,
         # Research tools (free, no API keys)
         ToolName.SEARCH_WIKIPEDIA,
         ToolName.GET_STOCK_INFO,
@@ -184,6 +186,7 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         # Communication tools
         ToolName.LIST_DEAL_EMAILS,
         ToolName.GET_EMAIL_DETAILS,
+        ToolName.LIST_DEAL_CHANNEL_MESSAGES,
     },
     # -------------------------------------------------------------------------
     # SummaryAgent - Meeting Summary Agent
@@ -215,6 +218,7 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         # Communication tools
         ToolName.LIST_DEAL_EMAILS,
         ToolName.GET_EMAIL_DETAILS,
+        ToolName.LIST_DEAL_CHANNEL_MESSAGES,
     },
     # -------------------------------------------------------------------------
     # RiskBlockerExtractionAgent - Risk/Blocker Extraction Agent
@@ -231,6 +235,7 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         # Communication tools
         ToolName.LIST_DEAL_EMAILS,
         ToolName.GET_EMAIL_DETAILS,
+        ToolName.LIST_DEAL_CHANNEL_MESSAGES,
     },
 }
 
@@ -268,6 +273,7 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     # Communication
     ToolName.LIST_DEAL_EMAILS: ToolCategory.COMMUNICATION,
     ToolName.GET_EMAIL_DETAILS: ToolCategory.COMMUNICATION,
+    ToolName.LIST_DEAL_CHANNEL_MESSAGES: ToolCategory.COMMUNICATION,
     # Research (free, no API keys)
     ToolName.SEARCH_WIKIPEDIA: ToolCategory.SEARCH,
     ToolName.GET_STOCK_INFO: ToolCategory.SEARCH,
@@ -306,6 +312,7 @@ class ToolRegistry:
         # Import here to avoid circular imports
         from src.agents.tools.communication import (
             create_get_email_details,
+            create_list_deal_channel_messages,
             create_list_deal_emails,
         )
         from src.agents.tools.crm import (
@@ -411,6 +418,9 @@ class ToolRegistry:
         )
         self._tool_factories[ToolName.GET_EMAIL_DETAILS] = lambda: create_get_email_details(
             self.context, self.capabilities_getter
+        )
+        self._tool_factories[ToolName.LIST_DEAL_CHANNEL_MESSAGES] = (
+            lambda: create_list_deal_channel_messages(self.context, self.capabilities_getter)
         )
 
         # Research tools (free, no API keys - stateless, no context needed)
