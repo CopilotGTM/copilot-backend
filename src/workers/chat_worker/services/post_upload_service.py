@@ -12,7 +12,6 @@ No sessions are passed between methods or held during long-running operations.
 
 from __future__ import annotations
 
-import contextlib
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -61,7 +60,8 @@ class PostUploadService:
     - Generating thumbnails
     - Updating status
 
-    Sessions are acquired only when needed and released immediately.
+    Sessions are acquired using `for session in acquire_org_session()` which
+    automatically releases the session when the block exits.
     """
 
     def __init__(self, organisation_id: str):
@@ -114,12 +114,9 @@ class PostUploadService:
     def _load_attachment_data(self, attachment_id: str) -> AttachmentData | None:
         """Load attachment data from database.
 
-        Acquires session, loads data, releases session immediately.
+        Session is automatically released when the block exits.
         """
-        session_gen = acquire_org_session(self.org_uuid)
-        session = next(session_gen)
-
-        try:
+        for session in acquire_org_session(self.org_uuid):
             attachment = session.get(Attachment, attachment_id)
             if not attachment:
                 logger.warning("Attachment %s not found for processing", attachment_id)
@@ -143,8 +140,8 @@ class PostUploadService:
                 mimetype=attachment.mimetype or "",
                 checksum=attachment.checksum,
             )
-        finally:
-            self._cleanup_session(session, session_gen)
+
+        return None
 
     def _process_attachment(self, data: AttachmentData) -> ProcessingResult:
         """Process attachment: compute checksum and generate thumbnails.
@@ -167,13 +164,25 @@ class PostUploadService:
         # Generate thumbnails if supported
         try:
             mt = (data.mimetype or "").lower()
-            if thumbnail_config.is_supported(mt):
+            is_supported = thumbnail_config.is_supported(mt)
+            logger.info(
+                "Thumbnail check: attachment=%s, mimetype=%s, is_supported=%s",
+                data.attachment_id,
+                mt,
+                is_supported,
+            )
+            if is_supported:
                 created = run_async(
                     generate_thumbnails(
                         storage=self.storage,
                         original_blob_path=data.storage_path,
                         mimetype=data.mimetype,
                     )
+                )
+                logger.info(
+                    "Thumbnail generation result: attachment=%s, created=%s",
+                    data.attachment_id,
+                    created,
                 )
                 if created:
                     thumbnail_small_path = created.get("thumb_small")
@@ -193,12 +202,12 @@ class PostUploadService:
     def _finalize(self, attachment_id: str, result: ProcessingResult) -> None:
         """Finalize processing: update database and publish status.
 
-        Acquires session, updates data, releases session immediately.
+        Session is automatically released when the block exits.
         """
-        session_gen = acquire_org_session(self.org_uuid)
-        session = next(session_gen)
+        thumb_path: str | None = None
+        attachment_data_for_publish: dict | None = None
 
-        try:
+        for session in acquire_org_session(self.org_uuid):
             attachment = session.get(Attachment, attachment_id)
             if not attachment:
                 logger.warning("Attachment %s not found for finalization", attachment_id)
@@ -216,54 +225,75 @@ class PostUploadService:
             session.merge(attachment)
             session.commit()
 
-            # Generate SAS URL for thumbnail (outside of session)
-            thumbnail_small_url = self._generate_thumbnail_url(attachment.thumbnail_small_path)
+            # Store path for SAS URL generation (after session release)
+            thumb_path = attachment.thumbnail_small_path
 
-            # Publish status event
-            self._publish_status(attachment, thumbnail_small_url)
+            # Store attachment data for status publish
+            attachment_data_for_publish = {
+                "attachment_id": str(attachment.attachment_id),
+                "status": attachment.status,
+                "updated_at": attachment.updated_at.isoformat() if attachment.updated_at else None,
+                "processing_error": attachment.processing_error,
+            }
+
+            logger.info("Attachment post-upload completed attachment=%s", attachment_id)
+
+        # Generate SAS URL for thumbnail (outside of session)
+        if attachment_data_for_publish:
+            thumbnail_small_url = self._generate_thumbnail_url(thumb_path)
 
             logger.info(
-                "Attachment post-upload completed attachment=%s",
-                attachment_id,
+                "Publishing attachment status: attachment_id=%s, thumb_path=%s, thumb_url=%s",
+                attachment_data_for_publish["attachment_id"],
+                thumb_path,
+                thumbnail_small_url[:50] if thumbnail_small_url else None,
             )
-        finally:
-            self._cleanup_session(session, session_gen)
+
+            # Publish status event - ensure status is string value for JSON serialization
+            status_value = attachment_data_for_publish["status"]
+            if hasattr(status_value, "value"):
+                status_value = status_value.value
+
+            event = AttachmentEventUpdate(
+                attachment_id=attachment_data_for_publish["attachment_id"],
+                status=status_value,
+                updated_at=attachment_data_for_publish["updated_at"],
+                error_message=attachment_data_for_publish["processing_error"],
+                thumbnail_small_url=thumbnail_small_url,
+            )
+            publish_attachment_status(self.organisation_id, event)
 
     def _mark_failed(self, attachment_id: str, error_message: str) -> None:
         """Mark attachment as failed.
 
-        Acquires session, updates status, releases session immediately.
+        Session is automatically released when the block exits.
         """
-        session_gen = acquire_org_session(self.org_uuid)
-        session = next(session_gen)
-
         try:
-            attachment = session.get(Attachment, attachment_id)
-            if not attachment:
-                return
+            for session in acquire_org_session(self.org_uuid):
+                attachment = session.get(Attachment, attachment_id)
+                if not attachment:
+                    return
 
-            attachment.status = AttachmentStatus.FAILED
-            attachment.processing_error = f"post_upload_failed: {error_message}"[:500]
-            session.merge(attachment)
-            session.commit()
+                attachment.status = AttachmentStatus.FAILED
+                attachment.processing_error = f"post_upload_failed: {error_message}"[:500]
+                session.merge(attachment)
+                session.commit()
 
-            # Publish failure status
-            event = AttachmentEventUpdate(
-                attachment_id=str(attachment.attachment_id),
-                status=AttachmentStatus.FAILED,
-                updated_at=attachment.updated_at.isoformat() if attachment.updated_at else None,
-                error_message=attachment.processing_error,
-                thumbnail_small_url=None,
-            )
-            publish_attachment_status(self.organisation_id, event)
+                # Publish failure status
+                event = AttachmentEventUpdate(
+                    attachment_id=str(attachment.attachment_id),
+                    status=AttachmentStatus.FAILED,
+                    updated_at=attachment.updated_at.isoformat() if attachment.updated_at else None,
+                    error_message=attachment.processing_error,
+                    thumbnail_small_url=None,
+                )
+                publish_attachment_status(self.organisation_id, event)
         except Exception:
             logger.debug(
                 "Failed to persist FAILED state for attachment %s",
                 attachment_id,
                 exc_info=True,
             )
-        finally:
-            self._cleanup_session(session, session_gen)
 
     def _generate_thumbnail_url(self, path: str | None) -> str | None:
         """Generate SAS URL for thumbnail."""
@@ -274,24 +304,6 @@ class PostUploadService:
         except Exception:
             logger.debug("Thumbnail SAS generation failed for path=%s", path, exc_info=True)
             return None
-
-    def _publish_status(self, attachment: Attachment, thumbnail_small_url: str | None) -> None:
-        """Publish attachment status event."""
-        event = AttachmentEventUpdate(
-            attachment_id=str(attachment.attachment_id),
-            status=attachment.status,
-            updated_at=attachment.updated_at.isoformat() if attachment.updated_at else None,
-            error_message=attachment.processing_error,
-            thumbnail_small_url=thumbnail_small_url,
-        )
-        publish_attachment_status(self.organisation_id, event)
-
-    def _cleanup_session(self, session, session_gen) -> None:
-        """Clean up database session."""
-        with contextlib.suppress(Exception):
-            session.close()
-        with contextlib.suppress(Exception):
-            session_gen.close()  # type: ignore[union-attr]
 
     def _close_storage(self) -> None:
         """Close storage client."""

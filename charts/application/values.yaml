@@ -197,6 +197,40 @@ knowledge-upload-worker:
     scaleDownDelay: 180
     scaleUpDelay: 4
 
+# Knowledge Beat Scheduler (Celery Beat for scheduled knowledge tasks)
+# Runs periodic tasks defined in KnowledgeWorkerConfig.beat_schedule:
+# - knowledge.cleanup_stale_jobs_all_orgs: Every hour at :00
+#   - Marks PENDING jobs older than 2 hours as FAILED
+#   - Marks IN_PROGRESS jobs older than 24 hours as FAILED
+knowledge-beat:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: "copilotgtmacrdev.azurecr.io/copilot-backend"
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  config:
+    queueName: "knowledge_upload"
+    # Beat mode - runs scheduler instead of worker
+    beatMode: true
+  # Use shared ServiceAccount (created by knowledge-extract-worker)
+  serviceAccount:
+    create: false
+    name: "copilot-workers"
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "128Mi"
+    limits:
+      cpu: "150m"
+      memory: "256Mi"
+  # Beat scheduler doesn't need autoscaling - single instance only
+  autoscaling:
+    enabled: false
+  # Beat scheduler doesn't need PDB
+  pdb:
+    enabled: false
+
 # Organization Worker
 organization-worker:
   enabled: true

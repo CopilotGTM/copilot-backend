@@ -7,6 +7,7 @@ from uuid import UUID
 
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import col
 from src.domain.models.organisation_tables.chat_session_models import (
     ChatSession,
     ChatType,
@@ -70,10 +71,10 @@ class ChatSessionService:
         Raises ValueError if not found or already deleted.
         """
         stmt = select(ChatSession).where(
-            ChatSession.session_id == session_id,
-            ChatSession.user_id == self.user_id,
-            ChatSession.organisation_id == self.organisation_id,
-            ChatSession.is_deleted.is_(False),
+            col(ChatSession.session_id) == session_id,
+            col(ChatSession.user_id) == self.user_id,
+            col(ChatSession.organisation_id) == self.organisation_id,
+            col(ChatSession.is_deleted).is_(False),
         )
         res = await self._execute_with_retry(stmt)
         chat = res.scalars().one_or_none()
@@ -99,10 +100,10 @@ class ChatSessionService:
             raise ValueError("Title cannot exceed 100 characters")
 
         stmt = select(ChatSession).where(
-            ChatSession.session_id == session_id,
-            ChatSession.user_id == self.user_id,
-            ChatSession.organisation_id == self.organisation_id,
-            ChatSession.is_deleted.is_(False),
+            col(ChatSession.session_id) == session_id,
+            col(ChatSession.user_id) == self.user_id,
+            col(ChatSession.organisation_id) == self.organisation_id,
+            col(ChatSession.is_deleted).is_(False),
         )
         res = await self._execute_with_retry(stmt)
         chat = res.scalars().one_or_none()
@@ -122,19 +123,19 @@ class ChatSessionService:
         cursor: str | None = None,
     ) -> tuple[list[ChatSession], str | None]:
         filters = [
-            ChatSession.user_id == self.user_id,
-            ChatSession.organisation_id == self.organisation_id,
-            ChatSession.is_deleted.is_(False),
+            col(ChatSession.user_id) == self.user_id,
+            col(ChatSession.organisation_id) == self.organisation_id,
+            col(ChatSession.is_deleted).is_(False),
         ]
 
         if cursor:
             ts, sid = decode_cursor(cursor)
             filters.append(
                 or_(
-                    ChatSession.created_at < ts,
+                    col(ChatSession.created_at) < ts,
                     and_(
-                        ChatSession.created_at == ts,
-                        ChatSession.session_id < sid,
+                        col(ChatSession.created_at) == ts,
+                        col(ChatSession.session_id) < sid,
                     ),
                 )
             )
@@ -142,13 +143,13 @@ class ChatSessionService:
         stmt = (
             select(ChatSession)
             .where(*filters)
-            .order_by(ChatSession.created_at.desc(), ChatSession.session_id.desc())
+            .order_by(col(ChatSession.created_at).desc(), col(ChatSession.session_id).desc())
             .limit(limit + 1)
         )
         res = await self._execute_with_retry(stmt)
         rows = res.scalars().all()
         has_more = len(rows) == limit + 1
-        items = rows[:limit]
+        items = list(rows[:limit])
         next_cursor = (
             encode_cursor(items[-1].created_at, items[-1].session_id) if has_more else None
         )
@@ -175,17 +176,17 @@ class ChatSessionService:
         stmt = (
             select(ChatSession)
             .where(
-                ChatSession.user_id == self.user_id,
-                ChatSession.organisation_id == self.organisation_id,
-                ChatSession.is_deleted.is_(False),
-                ChatSession.title.ilike(f"%{query}%"),
+                col(ChatSession.user_id) == self.user_id,
+                col(ChatSession.organisation_id) == self.organisation_id,
+                col(ChatSession.is_deleted).is_(False),
+                col(ChatSession.title).ilike(f"%{query}%"),
             )
-            .order_by(ChatSession.updated_at.desc(), ChatSession.created_at.desc())
+            .order_by(col(ChatSession.updated_at).desc(), col(ChatSession.created_at).desc())
             .limit(limit)
         )
         res = await self._execute_with_retry(stmt)
         rows = res.scalars().all()
-        return rows
+        return list(rows)
 
     async def set_favorite(
         self,
@@ -198,10 +199,10 @@ class ChatSessionService:
         Avoids schema migration; can be replaced with a dedicated column later.
         """
         stmt = select(ChatSession).where(
-            ChatSession.session_id == session_id,
-            ChatSession.user_id == self.user_id,
-            ChatSession.organisation_id == self.organisation_id,
-            ChatSession.is_deleted.is_(False),
+            col(ChatSession.session_id) == session_id,
+            col(ChatSession.user_id) == self.user_id,
+            col(ChatSession.organisation_id) == self.organisation_id,
+            col(ChatSession.is_deleted).is_(False),
         )
         res = await self._execute_with_retry(stmt)
         chat = res.scalars().one_or_none()

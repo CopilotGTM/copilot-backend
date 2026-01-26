@@ -14,7 +14,6 @@ No sessions are passed between methods or held during long-running operations.
 
 from __future__ import annotations
 
-import contextlib
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -75,7 +74,8 @@ class PostUploadService:
     - Updating status
     - Triggering document extraction
 
-    Sessions are acquired only when needed and released immediately.
+    Sessions are acquired using `for session in acquire_org_session()` which
+    automatically releases the session when the block exits.
     """
 
     def __init__(self, organisation_id: str | UUID):
@@ -141,12 +141,9 @@ class PostUploadService:
     def _load_source_data(self, source_id_str: str) -> SourceData | None:
         """Load source data from database.
 
-        Acquires session, loads data, marks job in progress, releases session.
+        Session is automatically released when the block exits.
         """
-        session_gen = acquire_org_session(self.org_uuid)
-        session = next(session_gen)
-
-        try:
+        for session in acquire_org_session(self.org_uuid):
             # Load source record
             source: OrganisationSource | None = session.get(OrganisationSource, source_id_str)
             if not source:
@@ -181,8 +178,8 @@ class PostUploadService:
                 mimetype=source.mimetype or "",
                 checksum=source.checksum,
             )
-        finally:
-            self._cleanup_session(session, session_gen)
+
+        return None
 
     def _process_source(self, data: SourceData) -> ProcessingResult:
         """Process source: compute checksum and generate thumbnails.
@@ -228,7 +225,7 @@ class PostUploadService:
     def _check_duplicate(self, source_id_str: str, checksum: str | None) -> bool:
         """Check for duplicate source by checksum.
 
-        Acquires session, checks for duplicates, releases session.
+        Session is automatically released when the block exits.
 
         Returns:
             True if duplicate found and handled (caller should stop).
@@ -236,10 +233,7 @@ class PostUploadService:
         if not checksum:
             return False
 
-        session_gen = acquire_org_session(self.org_uuid)
-        session = next(session_gen)
-
-        try:
+        for session in acquire_org_session(self.org_uuid):
             # Exclude soft-deleted and FAILED sources from duplicate consideration
             duplicate = (
                 session.query(OrganisationSource)
@@ -288,21 +282,17 @@ class PostUploadService:
             )
             return True
 
-        except Exception:
-            logger.exception("Error during duplicate detection for source %s", source_id_str)
-            return False
-        finally:
-            self._cleanup_session(session, session_gen)
+        return False
 
     def _finalize(self, source_id_str: str, result: ProcessingResult) -> None:
         """Finalize processing: update database, publish status, trigger extraction.
 
-        Acquires session, updates data, releases session.
+        Session is automatically released when the block exits.
         """
-        session_gen = acquire_org_session(self.org_uuid)
-        session = next(session_gen)
+        thumb_small_path = None
+        thumb_medium_path = None
 
-        try:
+        for session in acquire_org_session(self.org_uuid):
             source = session.get(OrganisationSource, source_id_str)
             job = (
                 session.query(KnowledgeProcessingJob)
@@ -340,9 +330,6 @@ class PostUploadService:
             thumb_small_path = source.thumbnail_small_path
             thumb_medium_path = source.thumbnail_medium_path
 
-        finally:
-            self._cleanup_session(session, session_gen)
-
         # Generate SAS URLs (outside of session)
         thumbnail_small_url, thumbnail_medium_url = self._generate_thumbnail_urls(
             thumb_small_path, thumb_medium_path
@@ -369,29 +356,25 @@ class PostUploadService:
     def _mark_failed(self, source_id_str: str) -> None:
         """Mark job as failed.
 
-        Acquires session, updates status, releases session.
+        Session is automatically released when the block exits.
         """
-        session_gen = acquire_org_session(self.org_uuid)
-        session = next(session_gen)
-
         try:
-            job = (
-                session.query(KnowledgeProcessingJob)
-                .filter_by(source_id=source_id_str, job_type="post_upload_process")
-                .first()
-            )
-            if job:
-                job.status = JobStatus.FAILED
-                session.add(job)
-                session.commit()
+            for session in acquire_org_session(self.org_uuid):
+                job = (
+                    session.query(KnowledgeProcessingJob)
+                    .filter_by(source_id=source_id_str, job_type="post_upload_process")
+                    .first()
+                )
+                if job:
+                    job.status = JobStatus.FAILED
+                    session.add(job)
+                    session.commit()
         except Exception:
             logger.debug(
                 "Failed to persist FAILED state for source %s",
                 source_id_str,
                 exc_info=True,
             )
-        finally:
-            self._cleanup_session(session, session_gen)
 
     def _generate_thumbnail_urls(
         self, small_path: str | None, medium_path: str | None
@@ -412,13 +395,6 @@ class PostUploadService:
         except Exception:
             logger.debug("SAS URL generation failed", exc_info=True)
             return None, None
-
-    def _cleanup_session(self, session, session_gen) -> None:
-        """Clean up database session."""
-        with contextlib.suppress(Exception):
-            session.close()
-        with contextlib.suppress(Exception):
-            session_gen.close()  # type: ignore[union-attr]
 
     def _close_storage(self) -> None:
         """Close storage client."""

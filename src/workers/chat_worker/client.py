@@ -186,14 +186,7 @@ async def send_chat_task_async(
     # Run the blocking send_task in the thread pool
     task_id = await loop.run_in_executor(
         _executor,
-        ctx.run,
-        send_chat_task,
-        task_name,
-        args,
-        kwargs,
-        queue,
-        routing_key,
-        headers,
+        lambda: ctx.run(send_chat_task, task_name, args, kwargs, queue, routing_key, headers),
     )
 
     return task_id

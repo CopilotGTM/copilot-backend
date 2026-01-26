@@ -7,6 +7,7 @@ from uuid import UUID
 
 from sqlalchemy import not_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import col
 from src.api.schemas.upload_models import AttachmentEventUpdate
 from src.domain.models.organisation_tables.chat_message_models import (
     Attachment,
@@ -83,21 +84,21 @@ class AttachmentSSEService:
 
         # Get initial attachment states
         stmt = select(Attachment).where(
-            Attachment.organisation_id == self.organisation_id,
-            Attachment.user_id == self.user_id,
+            col(Attachment.organisation_id) == self.organisation_id,
+            col(Attachment.user_id) == self.user_id,
         )
 
         # Apply explicit ID filter if provided
         if explicit_ids:
-            stmt = stmt.where(Attachment.attachment_id.in_(explicit_ids))
+            stmt = stmt.where(col(Attachment.attachment_id).in_(explicit_ids))
             res = await self.org_session.execute(stmt)
-            return res.scalars().all()
+            return list(res.scalars().all())
 
         # Non-terminal only
         # status stored as string; TERMINAL_STATUSES is a set of string values
-        stmt = stmt.where(not_(Attachment.status.in_(list(self.TERMINAL_STATUSES))))
+        stmt = stmt.where(not_(col(Attachment.status).in_(list(self.TERMINAL_STATUSES))))
         res = await self.org_session.execute(stmt)
-        return res.scalars().all()
+        return list(res.scalars().all())
 
     async def serialize_attachment(self, attachment: Attachment) -> dict:
         """
@@ -108,16 +109,17 @@ class AttachmentSSEService:
 
         SAS generation failures are swallowed (fields omitted) to avoid breaking stream.
         """
+        status_str = _get_status_str(attachment.status) or ""
         model = AttachmentEventUpdate(
             attachment_id=str(attachment.attachment_id),
-            status=_get_status_str(attachment.status),
+            status=status_str,
             updated_at=(attachment.updated_at.isoformat() if attachment.updated_at else None),
             error_message=attachment.processing_error,
             thumbnail_small_url=None,
         )
         data = model.model_dump()
 
-        if model.status == AttachmentStatus.COMPLETED.value:
+        if model.status == AttachmentStatus.COMPLETED.value and attachment.thumbnail_small_path:
             try:
                 data["thumbnail_small_url"] = await self.storage.generate_read_sas(
                     attachment.thumbnail_small_path, minutes=120
@@ -184,7 +186,7 @@ class AttachmentSSEService:
                 continue
             if explicit_id_strs is not None and att_id not in explicit_id_strs:
                 continue
-            watched_status[att_id] = message.get("status")
+            watched_status[att_id] = message.get("status") or ""
             yield self._send_event("status", [message])
             if self._all_terminal(watched_status):
                 yield self._send_event("complete", {"message": "all_attachments_terminal"})

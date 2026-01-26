@@ -122,6 +122,8 @@ class ChatMessageSSEService:
         resume_from_id: str | None,
     ) -> AsyncGenerator[dict, None]:
         """Stream events using consumer groups for one-time delivery."""
+        assert self._streams is not None, "_initialize_stream() must be called first"
+        streams = self._streams
         loop = asyncio.get_event_loop()
         start_time = loop.time()
         last_heartbeat = start_time
@@ -133,7 +135,7 @@ class ChatMessageSSEService:
             )
 
         # Use consumer group for one-time message delivery
-        async for entry_id, frame in self._streams.read_forever_consumer_group(
+        async for entry_id, frame in streams.read_forever_consumer_group(
             self.stream_key,
             self.consumer_group,
             self.consumer_name,
@@ -169,6 +171,8 @@ class ChatMessageSSEService:
         resume_from_id: str | None,
     ) -> AsyncGenerator[dict, None]:
         """Stream events in legacy mode with replay support."""
+        assert self._streams is not None, "_initialize_stream() must be called first"
+        streams = self._streams
         loop = asyncio.get_event_loop()
         start_time = loop.time()
         last_heartbeat = start_time
@@ -191,9 +195,7 @@ class ChatMessageSSEService:
 
             # Read from stream
             block_ms = int((heartbeat_interval / 2) * 1000)
-            entries = await self._streams.xread(
-                self.stream_key, next_id, block_ms=block_ms, count=50
-            )
+            entries = await streams.xread(self.stream_key, next_id, block_ms=block_ms, count=50)
             if not entries:
                 continue
 
