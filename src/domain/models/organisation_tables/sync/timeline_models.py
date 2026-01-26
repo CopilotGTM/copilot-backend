@@ -32,10 +32,15 @@ class TimelineEventType(str, Enum):
     NOTE = "NOTE"
     CALL = "CALL"
 
-    # System Events
+    # System Events - Risk/Blocker
     BLOCKER_ADDED = "BLOCKER_ADDED"
     BLOCKER_RESOLVED = "BLOCKER_RESOLVED"
+    BLOCKER_DISMISSED = "BLOCKER_DISMISSED"
     RISK_FLAGGED = "RISK_FLAGGED"
+
+    # System Events - Stakeholder
+    STAKEHOLDER_ADDED = "STAKEHOLDER_ADDED"
+    STAKEHOLDER_REMOVED = "STAKEHOLDER_REMOVED"
 
 
 class TimelineEventSource(str, Enum):

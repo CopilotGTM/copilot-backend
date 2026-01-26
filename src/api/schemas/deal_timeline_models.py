@@ -16,7 +16,13 @@ class DealTimelineQueryParams(BaseModel):
     limit: int = Query(20, ge=1, le=100, description="Number of events per page")
     cursor: str | None = Query(None, description="Pagination cursor")
     event_types: str | None = Query(
-        None, description="Comma-separated event types to filter (EMAIL,MEETING)"
+        None,
+        description=(
+            "Comma-separated event types to filter. Supported types: "
+            "EMAIL, MEETING, STAGE_CHANGE, DEAL_CREATED, "
+            "BLOCKER_ADDED, BLOCKER_RESOLVED, BLOCKER_DISMISSED, RISK_FLAGGED, "
+            "STAKEHOLDER_ADDED, STAKEHOLDER_REMOVED"
+        ),
     )
     start_date: datetime | None = Query(None, description="Filter events after this date")
     end_date: datetime | None = Query(None, description="Filter events before this date")
@@ -141,21 +147,128 @@ class DealCreatedEventData(BaseModel):
     primary_contact_email: str | None = None
 
 
+class BlockerAddedEventData(BaseModel):
+    """Blocker added event data for timeline events."""
+
+    # Provider UI metadata
+    provider_logo_url: str | None = None
+
+    # Blocker identification
+    risk_blocker_id: str | None = Field(None, description="UUID of the risk/blocker record")
+    item_type: str | None = Field(None, description="BLOCKER")
+    severity: str | None = Field(None, description="LOW, MEDIUM, HIGH, CRITICAL")
+    category: str | None = Field(None, description="Category: TECHNICAL, BUDGET, TIMELINE, etc.")
+    is_ai_generated: bool | None = Field(None, description="Whether AI-extracted or manual")
+
+
+class BlockerResolvedEventData(BaseModel):
+    """Blocker resolved event data for timeline events."""
+
+    # Provider UI metadata
+    provider_logo_url: str | None = None
+
+    # Blocker identification
+    risk_blocker_id: str | None = Field(None, description="UUID of the risk/blocker record")
+    item_type: str | None = Field(None, description="BLOCKER")
+    severity: str | None = Field(None, description="LOW, MEDIUM, HIGH, CRITICAL")
+    resolution_notes: str | None = Field(None, description="Notes on how it was resolved")
+
+
+class BlockerDismissedEventData(BaseModel):
+    """Blocker dismissed event data for timeline events."""
+
+    # Provider UI metadata
+    provider_logo_url: str | None = None
+
+    # Blocker identification
+    risk_blocker_id: str | None = Field(None, description="UUID of the risk/blocker record")
+    item_type: str | None = Field(None, description="BLOCKER")
+    severity: str | None = Field(None, description="LOW, MEDIUM, HIGH, CRITICAL")
+
+
+class RiskFlaggedEventData(BaseModel):
+    """Risk flagged event data for timeline events."""
+
+    # Provider UI metadata
+    provider_logo_url: str | None = None
+
+    # Risk identification
+    risk_blocker_id: str | None = Field(None, description="UUID of the risk/blocker record")
+    severity: str | None = Field(None, description="LOW, MEDIUM, HIGH, CRITICAL")
+    category: str | None = Field(None, description="Category: TECHNICAL, BUDGET, TIMELINE, etc.")
+    is_ai_generated: bool | None = Field(None, description="Whether AI-extracted or manual")
+
+
+class StakeholderAddedEventData(BaseModel):
+    """Stakeholder added event data for timeline events."""
+
+    # Provider UI metadata
+    provider_logo_url: str | None = None
+
+    # Stakeholder identification
+    stakeholder_id: str | None = Field(None, description="UUID of the stakeholder record")
+    email: str | None = Field(None, description="Stakeholder email address")
+    name: str | None = Field(None, description="Stakeholder display name")
+    job_title: str | None = Field(None, description="Job title if available")
+    source: str | None = Field(
+        None, description="Source: CRM, CALENDAR_DISCOVERY, EMAIL_DISCOVERY, MANUAL"
+    )
+    stance: str | None = Field(
+        None, description="Stance: CHAMPION, SUPPORTER, NEUTRAL, DETRACTOR, BLOCKER, UNKNOWN"
+    )
+
+
+class StakeholderRemovedEventData(BaseModel):
+    """Stakeholder removed event data for timeline events."""
+
+    # Provider UI metadata
+    provider_logo_url: str | None = None
+
+    # Stakeholder identification
+    stakeholder_id: str | None = Field(None, description="UUID of the stakeholder record")
+    email: str | None = Field(None, description="Stakeholder email address")
+    name: str | None = Field(None, description="Stakeholder display name")
+
+
 class TimelineEvent(BaseModel):
     """Unified timeline event model for both list and detail views.
 
     List API returns preview data in event_data.
     Detail API returns same structure with enriched event_data.
+
+    Supported event_type values:
+    - EMAIL: Email communication (see EmailEventData)
+    - MEETING: Calendar meeting (see MeetingEventData)
+    - STAGE_CHANGE: Deal stage transition (see StageChangeEventData)
+    - DEAL_CREATED: Deal creation (see DealCreatedEventData)
+    - BLOCKER_ADDED: Blocker created (see BlockerAddedEventData)
+    - BLOCKER_RESOLVED: Blocker resolved (see BlockerResolvedEventData)
+    - BLOCKER_DISMISSED: Blocker dismissed (see BlockerDismissedEventData)
+    - RISK_FLAGGED: Risk identified (see RiskFlaggedEventData)
+    - STAKEHOLDER_ADDED: Stakeholder added (see StakeholderAddedEventData)
+    - STAKEHOLDER_REMOVED: Stakeholder removed (see StakeholderRemovedEventData)
     """
 
     id: UUID = Field(..., description="Timeline event ID")
     deal_id: UUID
-    event_type: str = Field(..., description="EMAIL or MEETING")
-    event_source: str = Field(..., description="EMAIL_GMAIL, CALENDAR_GOOGLE, etc.")
+    event_type: str = Field(
+        ...,
+        description=(
+            "Event type: EMAIL, MEETING, STAGE_CHANGE, DEAL_CREATED, "
+            "BLOCKER_ADDED, BLOCKER_RESOLVED, BLOCKER_DISMISSED, RISK_FLAGGED, "
+            "STAKEHOLDER_ADDED, STAKEHOLDER_REMOVED"
+        ),
+    )
+    event_source: str = Field(
+        ..., description="Source system: EMAIL_GMAIL, CALENDAR_GOOGLE, SYSTEM, etc."
+    )
     event_timestamp: datetime
     event_data: dict[str, Any] = Field(
         ...,
-        description="Type-specific data; shape varies by event_type (EmailEventData or MeetingEventData)",
+        description=(
+            "Type-specific data; shape varies by event_type. "
+            "See *EventData models for schema per type."
+        ),
     )
     excluded_at: datetime | None = None
     created_at: datetime | None = None

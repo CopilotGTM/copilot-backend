@@ -1,6 +1,6 @@
 # Deal Timeline API
 
-This API returns the unified, denormalized timeline for a deal (emails and meetings). Both list and detail endpoints return the same `TimelineEvent` shape—the detail endpoint simply returns enriched `event_data`.
+This API returns the unified, denormalized timeline for a deal. The timeline includes communications (emails, meetings), CRM lifecycle events (deal created, stage changes), and insights events (risks, blockers, stakeholders). Both list and detail endpoints return the same `TimelineEvent` shape—the detail endpoint simply returns enriched `event_data`.
 
 **Base URL**: `/users/crm/deals`
 
@@ -39,7 +39,21 @@ All endpoints return the shared `GenericResponse` envelope used across CRM APIs.
 ```ts
 export type UUID = string;
 
-type TimelineEventType = "EMAIL" | "MEETING" | "STAGE_CHANGE" | "DEAL_CREATED";
+type TimelineEventType =
+  // Communications
+  | "EMAIL"
+  | "MEETING"
+  // CRM Lifecycle
+  | "STAGE_CHANGE"
+  | "DEAL_CREATED"
+  // Risk/Blocker Events
+  | "BLOCKER_ADDED"
+  | "BLOCKER_RESOLVED"
+  | "BLOCKER_DISMISSED"
+  | "RISK_FLAGGED"
+  // Stakeholder Events
+  | "STAKEHOLDER_ADDED"
+  | "STAKEHOLDER_REMOVED";
 
 type TimelineEventSource =
   | "EMAIL_GMAIL"
@@ -47,7 +61,8 @@ type TimelineEventSource =
   | "CALENDAR_GOOGLE"
   | "CALENDAR_OUTLOOK"
   | "CRM_HUBSPOT"
-  | "CRM_SALESFORCE";
+  | "CRM_SALESFORCE"
+  | "SYSTEM";  // For system-generated events (risks, blockers, stakeholders)
 
 // ============================================================================
 // Unified Timeline Event (same shape for list and detail)
@@ -59,7 +74,17 @@ export interface TimelineEvent {
   event_type: TimelineEventType;
   event_source: TimelineEventSource;
   event_timestamp: string;             // ISO8601
-  event_data: EmailEventData | MeetingEventData | StageChangeEventData | DealCreatedEventData;
+  event_data:
+    | EmailEventData
+    | MeetingEventData
+    | StageChangeEventData
+    | DealCreatedEventData
+    | BlockerAddedEventData
+    | BlockerResolvedEventData
+    | BlockerDismissedEventData
+    | RiskFlaggedEventData
+    | StakeholderAddedEventData
+    | StakeholderRemovedEventData;
   excluded_at: string | null;
   created_at: string | null;
   updated_at: string | null;
@@ -177,6 +202,151 @@ export interface DealCreatedEventData {
 }
 
 // ============================================================================
+// Risk/Blocker Event Data Types
+//
+// These match the RiskBlockerListItem fields shown in the Risks & Blockers panel.
+// For full details (audit trail, provenance), use: GET /deals/risks-blockers/{risk_blocker_id}
+// ============================================================================
+
+type RiskBlockerSeverity = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+type RiskBlockerStatus = "AI_SUGGESTED" | "OPEN" | "IN_PROGRESS" | "RESOLVED" | "DISMISSED";
+type RiskBlockerCategory =
+  | "TECHNICAL"
+  | "INTEGRATION"
+  | "SECURITY"
+  | "PERFORMANCE"
+  | "BUDGET"
+  | "TIMELINE"
+  | "CONTRACT"
+  | "CHAMPION_RISK"
+  | "STAKEHOLDER"
+  | "COMPETITION"
+  | "INTERNAL_PROCESS"
+  | "RESOURCE"
+  | "OTHER";
+type RiskBlockerSource =
+  | "EMAIL_GMAIL" | "EMAIL_OUTLOOK"
+  | "MEETING_GOOGLE" | "MEETING_OUTLOOK" | "TEAMS_MEETING" | "ZOOM_MEETING"
+  | "SLACK" | "TEAMS_CHAT"
+  | "CRM_HUBSPOT" | "CRM_SALESFORCE"
+  | "MANUAL" | "SYSTEM";
+
+// BLOCKER_ADDED / RISK_FLAGGED detail event_data (smart data from record)
+export interface RiskBlockerDetailEventData {
+  // ID for navigation to full detail view
+  risk_blocker_id: string;
+
+  // Classification (aligned with RiskBlockerListItem)
+  item_type: "RISK" | "BLOCKER";
+  severity: RiskBlockerSeverity;
+  category: RiskBlockerCategory;
+  status: RiskBlockerStatus;
+
+  // Content (title + quote for preview, description for context)
+  title: string;
+  description: string | null;
+  quote: string | null;              // Direct quote from source (for AI-extracted)
+
+  // Source (for icon display)
+  source_type: RiskBlockerSource;
+  source_context: string | null;     // e.g., "Discovery Call - Dec 15"
+
+  // AI indicator (for badge)
+  is_ai_generated: boolean;
+
+  // Owner (for assignment display)
+  owner_name: string | null;
+
+  // Resolution summary (only for resolved items)
+  resolution_notes: string | null;
+}
+
+// List view (preview) event_data - minimal fields
+export interface BlockerAddedEventData {
+  provider_logo_url?: string | null;
+  risk_blocker_id: string | null;
+  item_type: "BLOCKER";
+  severity: RiskBlockerSeverity | null;
+  category: RiskBlockerCategory | null;
+  is_ai_generated: boolean | null;
+}
+
+export interface BlockerResolvedEventData {
+  provider_logo_url?: string | null;
+  risk_blocker_id: string | null;
+  item_type: "BLOCKER";
+  severity: RiskBlockerSeverity | null;
+  resolution_notes: string | null;
+}
+
+export interface BlockerDismissedEventData {
+  provider_logo_url?: string | null;
+  risk_blocker_id: string | null;
+  item_type: "BLOCKER";
+  severity: RiskBlockerSeverity | null;
+}
+
+export interface RiskFlaggedEventData {
+  provider_logo_url?: string | null;
+  risk_blocker_id: string | null;
+  severity: RiskBlockerSeverity | null;
+  category: RiskBlockerCategory | null;
+  is_ai_generated: boolean | null;
+}
+
+// ============================================================================
+// Stakeholder Event Data Types
+//
+// These match the StakeholderDetail fields shown in the Stakeholders panel.
+// For full details (engagement history), use: GET /deals/{deal_id}/stakeholders/{stakeholder_id}
+// ============================================================================
+
+type StakeholderSource = "CRM" | "CALENDAR_DISCOVERY" | "EMAIL_DISCOVERY" | "MANUAL";
+type StakeholderStance = "UNKNOWN" | "CHAMPION" | "SUPPORTER" | "NEUTRAL" | "DETRACTOR" | "BLOCKER";
+type DecisionPower = "UNKNOWN" | "DECISION_MAKER" | "INFLUENCER" | "EVALUATOR" | "GATEKEEPER" | "END_USER";
+type StakeholderTemperature = "UNKNOWN" | "HOT" | "WARM" | "COLD";
+
+// STAKEHOLDER_ADDED detail event_data (smart data from record)
+export interface StakeholderDetailEventData {
+  // ID for navigation to full detail view
+  stakeholder_id: string;
+
+  // Identity (core fields)
+  email: string;
+  name: string | null;
+  job_title: string | null;
+
+  // Key insights (aligned with StakeholderDetail)
+  source: StakeholderSource;
+  stance: StakeholderStance;
+  decision_power: DecisionPower;
+  champion_potential: number;        // 0-100 scale
+
+  // Engagement indicators
+  temperature: StakeholderTemperature;
+  engagement_score: number;          // 0-100 scale
+  last_contact_at: string | null;    // ISO8601
+}
+
+// List view (preview) event_data - minimal fields
+export interface StakeholderAddedEventData {
+  provider_logo_url?: string | null;
+  stakeholder_id: string | null;
+  email: string | null;
+  name: string | null;
+  job_title: string | null;
+  source: StakeholderSource | null;
+  stance: StakeholderStance | null;
+}
+
+export interface StakeholderRemovedEventData {
+  provider_logo_url?: string | null;
+  stakeholder_id: string | null;
+  email: string | null;
+  name: string | null;
+}
+
+// ============================================================================
 // Pagination
 // ============================================================================
 
@@ -202,11 +372,21 @@ export interface TimelinePage {
 | ---- | ---- | ----------- |
 | `limit` | int (1-100, default 20) | Page size |
 | `cursor` | string | Opaque pagination cursor from previous page |
-| `event_types` | string | Comma-separated filter, e.g. `EMAIL,MEETING` |
+| `event_types` | string | Comma-separated filter (see supported types below) |
 | `start_date` | datetime | Include events after this timestamp |
 | `end_date` | datetime | Include events before this timestamp |
 | `include_excluded` | boolean (default false) | When true, include soft-hidden events |
 | `sort` | `asc` \| `desc` (default `desc`) | Sort order |
+
+### Supported Event Types for Filtering
+
+```
+EMAIL, MEETING, STAGE_CHANGE, DEAL_CREATED,
+BLOCKER_ADDED, BLOCKER_RESOLVED, BLOCKER_DISMISSED, RISK_FLAGGED,
+STAKEHOLDER_ADDED, STAKEHOLDER_REMOVED
+```
+
+Example: `event_types=EMAIL,MEETING,BLOCKER_ADDED,RISK_FLAGGED`
 
 ### Sample Request
 
@@ -423,6 +603,180 @@ Authorization: Bearer <token>
 }
 ```
 
+### Sample Response (Blocker Added - Detail View)
+
+**Note:** Detail view returns enriched "smart data" matching the Risks & Blockers panel.
+For full details (audit trail, provenance), use: `GET /deals/risks-blockers/{risk_blocker_id}`
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Timeline event retrieved successfully",
+  "data": {
+    "id": "d4e5f6a7-8901-cdef-0123-456789012cde",
+    "deal_id": "6c3f98d5-2e6b-4a1c-8f8c-2e8f0211b0b9",
+    "event_type": "BLOCKER_ADDED",
+    "event_source": "SYSTEM",
+    "event_timestamp": "2025-01-14T11:30:00Z",
+    "event_data": {
+      "risk_blocker_id": "a1b2c3d4-5678-9abc-def0-111111111111",
+      "item_type": "BLOCKER",
+      "severity": "HIGH",
+      "category": "BUDGET",
+      "status": "OPEN",
+      "title": "Budget not approved for Q1",
+      "description": "Customer's finance team has not approved the budget allocation for this project. They are waiting for Q1 planning to finalize.",
+      "quote": "We're still waiting on budget approval from finance before we can proceed",
+      "source_type": "MEETING_GOOGLE",
+      "source_context": "Discovery Call - Jan 14",
+      "is_ai_generated": true,
+      "owner_name": "John Smith",
+      "resolution_notes": null
+    },
+    "excluded_at": null,
+    "created_at": "2025-01-14T11:30:00Z",
+    "updated_at": "2025-01-14T11:30:00Z"
+  }
+}
+```
+
+### Sample Response (Blocker Resolved)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Timeline event retrieved successfully",
+  "data": {
+    "id": "e5f6a7b8-9012-def0-1234-567890123def",
+    "deal_id": "6c3f98d5-2e6b-4a1c-8f8c-2e8f0211b0b9",
+    "event_type": "BLOCKER_RESOLVED",
+    "event_source": "SYSTEM",
+    "event_timestamp": "2025-01-16T14:00:00Z",
+    "event_data": {
+      "provider_logo_url": null,
+      "risk_blocker_id": "a1b2c3d4-5678-9abc-def0-111111111111",
+      "item_type": "BLOCKER",
+      "severity": "HIGH",
+      "resolution_notes": "Budget approved by CFO after presenting ROI analysis"
+    },
+    "excluded_at": null,
+    "created_at": "2025-01-16T14:00:00Z",
+    "updated_at": "2025-01-16T14:00:00Z"
+  }
+}
+```
+
+### Sample Response (Blocker Dismissed)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Timeline event retrieved successfully",
+  "data": {
+    "id": "f6a7b8c9-0123-ef01-2345-678901234ef0",
+    "deal_id": "6c3f98d5-2e6b-4a1c-8f8c-2e8f0211b0b9",
+    "event_type": "BLOCKER_DISMISSED",
+    "event_source": "SYSTEM",
+    "event_timestamp": "2025-01-15T09:00:00Z",
+    "event_data": {
+      "provider_logo_url": null,
+      "risk_blocker_id": "b2c3d4e5-6789-abcd-ef01-222222222222",
+      "item_type": "BLOCKER",
+      "severity": "LOW"
+    },
+    "excluded_at": null,
+    "created_at": "2025-01-15T09:00:00Z",
+    "updated_at": "2025-01-15T09:00:00Z"
+  }
+}
+```
+
+### Sample Response (Risk Flagged)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Timeline event retrieved successfully",
+  "data": {
+    "id": "a7b8c9d0-1234-f012-3456-789012345f01",
+    "deal_id": "6c3f98d5-2e6b-4a1c-8f8c-2e8f0211b0b9",
+    "event_type": "RISK_FLAGGED",
+    "event_source": "SYSTEM",
+    "event_timestamp": "2025-01-14T11:30:00Z",
+    "event_data": {
+      "provider_logo_url": null,
+      "risk_blocker_id": "c3d4e5f6-7890-bcde-f012-333333333333",
+      "severity": "MEDIUM",
+      "category": "CHAMPION_RISK",
+      "is_ai_generated": true
+    },
+    "excluded_at": null,
+    "created_at": "2025-01-14T11:30:00Z",
+    "updated_at": "2025-01-14T11:30:00Z"
+  }
+}
+```
+
+### Sample Response (Stakeholder Added - Detail View)
+
+**Note:** Detail view returns enriched "smart data" matching the Stakeholders panel.
+For full details (engagement history), use: `GET /deals/{deal_id}/stakeholders/{stakeholder_id}`
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Timeline event retrieved successfully",
+  "data": {
+    "id": "b8c9d0e1-2345-0123-4567-890123456012",
+    "deal_id": "6c3f98d5-2e6b-4a1c-8f8c-2e8f0211b0b9",
+    "event_type": "STAKEHOLDER_ADDED",
+    "event_source": "SYSTEM",
+    "event_timestamp": "2025-01-12T10:00:00Z",
+    "event_data": {
+      "stakeholder_id": "d4e5f6a7-8901-cdef-0123-444444444444",
+      "email": "cfo@acme.com",
+      "name": "Robert Johnson",
+      "job_title": "Chief Financial Officer",
+      "source": "CALENDAR_DISCOVERY",
+      "stance": "NEUTRAL",
+      "decision_power": "DECISION_MAKER",
+      "champion_potential": 45.0,
+      "temperature": "WARM",
+      "engagement_score": 62.5,
+      "last_contact_at": "2025-01-15T10:00:00Z"
+    },
+    "excluded_at": null,
+    "created_at": "2025-01-12T10:00:00Z",
+    "updated_at": "2025-01-12T10:00:00Z"
+  }
+}
+```
+
+### Sample Response (Stakeholder Removed)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Timeline event retrieved successfully",
+  "data": {
+    "id": "c9d0e1f2-3456-1234-5678-901234567123",
+    "deal_id": "6c3f98d5-2e6b-4a1c-8f8c-2e8f0211b0b9",
+    "event_type": "STAKEHOLDER_REMOVED",
+    "event_source": "SYSTEM",
+    "event_timestamp": "2025-01-18T16:30:00Z",
+    "event_data": {
+      "provider_logo_url": null,
+      "stakeholder_id": "e5f6a7b8-9012-def0-1234-555555555555",
+      "email": "former.employee@acme.com",
+      "name": "Alice Williams"
+    },
+    "excluded_at": null,
+    "created_at": "2025-01-18T16:30:00Z",
+    "updated_at": "2025-01-18T16:30:00Z"
+  }
+}
+```
+
 ---
 
 ## Error Codes (common)
@@ -447,68 +801,111 @@ Both list and detail endpoints return the same `TimelineEvent` interface. The di
 - **List**: `event_data` contains preview fields only
   - Email: `subject`, `snippet`, `from_email`
   - Meeting: `title`, `duration_minutes`, `attendee_count`
-  - Stage Change: `old_stage`, `new_stage`, `old_stage_label`, `new_stage_label`, plus deal context
-  - Deal Created: All fields (no enrichment needed)
-- **Detail**: Same preview fields **plus** enriched fields
+  - Stage Change: All fields (static from metadata)
+  - Deal Created: All fields (static from metadata)
+  - Risk/Blocker events: Basic fields (`severity`, `category`, `is_ai_generated`)
+  - Stakeholder events: Basic fields (`email`, `name`, `job_title`, `source`, `stance`)
+
+- **Detail**: Same preview fields **plus** enriched fields fetched from source records
   - Email: adds `from_name`, `to_emails`, `cc_emails`, `thread_id`, `body_text`, `body_html`, `body_truncated`, `body_length`, `has_attachments`, `attachments`, `received_at`, `sent_at`, `direction`
   - Meeting: adds `attendees[]`, `meeting_summary`
-  - Stage Change: Same as list (all data included)
-  - Deal Created: Same as list (all data included)
+  - **Risk/Blocker events**: Fetches from `deal_risks_blockers` table - adds `status`, `title`, `description`, `quote`, `source_type`, `source_context`, `owner_name`, `resolution_notes`
+  - **Stakeholder events**: Fetches from `deal_stakeholders` table - adds `decision_power`, `champion_potential`, `temperature`, `engagement_score`, `last_contact_at`
+  - Stage Change / Deal Created: Same as list (all data already in metadata)
 
-### Stage Change & Deal Created Events
+### Event Categories
 
-These CRM lifecycle events include **deal and company context directly** in the response. This eliminates the need for separate API calls to fetch deal/company details.
+Events fall into three categories for UI grouping:
 
-**Stage Change** includes:
-- Stage transition: `old_stage` → `new_stage` with optional display labels
-- Deal context: `deal_name`, `company_name`, `amount`, `currency`, `pipeline_name`
+1. **Communications**: `EMAIL`, `MEETING`
+   - Have provider logos (Gmail, Google Calendar, Outlook, etc.)
+   - Show communication details
 
-**Deal Created** includes:
-- Deal info: `deal_name`, `initial_stage`, `pipeline_name`, `amount`, `currency`
-- Company info: `company_name`, `company_domain`
-- Owner info: `owner_name`
-- Primary contact: `primary_contact_name`, `primary_contact_email`
+2. **CRM Lifecycle**: `STAGE_CHANGE`, `DEAL_CREATED`
+   - Have CRM provider logos (HubSpot, Salesforce)
+   - Show deal progression
 
-**Note**: These events don't require detail enrichment—all data is returned in both list and detail views.
+3. **Insights**: `BLOCKER_ADDED`, `BLOCKER_RESOLVED`, `BLOCKER_DISMISSED`, `RISK_FLAGGED`, `STAKEHOLDER_ADDED`, `STAKEHOLDER_REMOVED`
+   - Have `event_source: "SYSTEM"` and `provider_logo_url: null`
+   - Use custom icons based on `event_type` (e.g., warning icon for risks, person icon for stakeholders)
 
-### Email Body Content
+### Reusing Existing Detail Views
 
-The detail endpoint returns full email body content:
+The timeline detail API returns **smart data** that matches the existing detail panels:
 
-- **`body_text`**: Plain text version of the email body
-- **`body_html`**: HTML version of the email body (if available)
-- **`body_truncated`**: `true` if the body exceeded 50,000 characters and was truncated
-- **`body_length`**: Original length of the body in characters (useful for UI indicators)
+| Event Type | Fields Match | Existing Panel | Full Detail API |
+|------------|--------------|----------------|-----------------|
+| `BLOCKER_*` / `RISK_FLAGGED` | `RiskBlockerListItem` | Risks & Blockers panel | `GET /deals/risks-blockers/{risk_blocker_id}` |
+| `STAKEHOLDER_*` | `StakeholderDetail` | Stakeholders panel | `GET /deals/{deal_id}/stakeholders/{stakeholder_id}` |
 
-**Rendering recommendation**: Prefer `body_html` for rich display, fall back to `body_text` for plain display or when HTML is unavailable. Always sanitize HTML before rendering.
+**Recommended Frontend Pattern:**
 
-### Email Attachments
-
-When `has_attachments` is `true`, the `attachments` array contains metadata:
+1. **Timeline click → Show inline preview** using the enriched `event_data` from timeline detail API
+2. **"View Full Details" link** → Navigate to existing Risk/Blocker or Stakeholder detail view using the ID
+3. **Reuse existing components** - The timeline detail data uses the same field names as the existing panels
 
 ```typescript
-interface EmailAttachment {
-  name: string | null;      // Filename
-  size: number | null;      // Size in bytes
-  mime_type: string | null; // MIME type (e.g., "application/pdf")
+// Example: Clicking a risk/blocker timeline event
+function handleTimelineEventClick(event: TimelineEvent) {
+  if (isRiskBlockerEvent(event)) {
+    // Option 1: Show inline preview (uses timeline detail data)
+    showInlinePreview(event.event_data);
+
+    // Option 2: Navigate to existing detail view
+    const { risk_blocker_id } = event.event_data;
+    router.push(`/deals/${event.deal_id}/risks-blockers/${risk_blocker_id}`);
+  }
+
+  if (isStakeholderEvent(event)) {
+    const { stakeholder_id } = event.event_data;
+    router.push(`/deals/${event.deal_id}/stakeholders/${stakeholder_id}`);
+  }
 }
 ```
 
-**Note**: Attachment download is not currently supported via this API. The metadata is provided for display purposes.
+### Risk/Blocker Events
 
-### Email Direction
+These events track the lifecycle of deal risks and blockers:
 
-The `direction` field indicates email flow relative to the deal:
+| Event Type | When Created | Key Fields |
+|------------|--------------|------------|
+| `BLOCKER_ADDED` | Blocker created (manual or AI-extracted) | `severity`, `category`, `is_ai_generated` |
+| `BLOCKER_RESOLVED` | Blocker marked as resolved | `severity`, `resolution_notes` |
+| `BLOCKER_DISMISSED` | Blocker dismissed as not relevant | `severity` |
+| `RISK_FLAGGED` | Risk identified (manual or AI-extracted) | `severity`, `category`, `is_ai_generated` |
 
-- `"INBOUND"`: Email received from external contacts
-- `"OUTBOUND"`: Email sent to external contacts
+**AI-Generated Indicator**: When `is_ai_generated: true`, the risk/blocker was automatically extracted by AI from meeting transcripts or emails. Display an AI badge or indicator.
+
+**Linking to Risk/Blocker Details**: Use `risk_blocker_id` to link to the full risk/blocker detail view or API.
+
+### Stakeholder Events
+
+These events track stakeholder changes on the deal:
+
+| Event Type | When Created | Key Fields |
+|------------|--------------|------------|
+| `STAKEHOLDER_ADDED` | Stakeholder added to deal | `email`, `name`, `job_title`, `source`, `stance` |
+| `STAKEHOLDER_REMOVED` | Stakeholder removed from deal | `email`, `name` |
+
+**Source Indicator**: The `source` field shows how the stakeholder was discovered:
+- `CRM`: Synced from HubSpot/Salesforce contacts
+- `CALENDAR_DISCOVERY`: Found in meeting attendees
+- `EMAIL_DISCOVERY`: Found in email recipients
+- `MANUAL`: Manually added by user
+
+**Linking to Stakeholder Details**: Use `stakeholder_id` to link to the full stakeholder profile.
 
 ### Provider Icons
 
 Backend includes `event_data.provider_logo_url` so clients can render provider icons/logos without hardcoding mappings.
 
-- `provider_logo_url` is derived from `event_source` (provider), so each event returns at most one provider logo.
-- If a provider is unknown/unmapped, `provider_logo_url` is `null` (clients can render a generic fallback).
+- For communication and CRM events: `provider_logo_url` contains the URL
+- For system events (risks, blockers, stakeholders): `provider_logo_url` is `null`
+
+When `provider_logo_url` is `null`, render a custom icon based on `event_type`:
+- `BLOCKER_ADDED` / `BLOCKER_RESOLVED` / `BLOCKER_DISMISSED`: Block or barrier icon
+- `RISK_FLAGGED`: Warning or alert icon
+- `STAKEHOLDER_ADDED` / `STAKEHOLDER_REMOVED`: Person or users icon
 
 ### Type Guards
 
@@ -528,6 +925,45 @@ function isStageChangeEvent(event: TimelineEvent): event is TimelineEvent & { ev
 function isDealCreatedEvent(event: TimelineEvent): event is TimelineEvent & { event_data: DealCreatedEventData } {
   return event.event_type === "DEAL_CREATED";
 }
+
+function isBlockerAddedEvent(event: TimelineEvent): event is TimelineEvent & { event_data: BlockerAddedEventData } {
+  return event.event_type === "BLOCKER_ADDED";
+}
+
+function isBlockerResolvedEvent(event: TimelineEvent): event is TimelineEvent & { event_data: BlockerResolvedEventData } {
+  return event.event_type === "BLOCKER_RESOLVED";
+}
+
+function isBlockerDismissedEvent(event: TimelineEvent): event is TimelineEvent & { event_data: BlockerDismissedEventData } {
+  return event.event_type === "BLOCKER_DISMISSED";
+}
+
+function isRiskFlaggedEvent(event: TimelineEvent): event is TimelineEvent & { event_data: RiskFlaggedEventData } {
+  return event.event_type === "RISK_FLAGGED";
+}
+
+function isStakeholderAddedEvent(event: TimelineEvent): event is TimelineEvent & { event_data: StakeholderAddedEventData } {
+  return event.event_type === "STAKEHOLDER_ADDED";
+}
+
+function isStakeholderRemovedEvent(event: TimelineEvent): event is TimelineEvent & { event_data: StakeholderRemovedEventData } {
+  return event.event_type === "STAKEHOLDER_REMOVED";
+}
+
+// Helper for risk/blocker events
+function isRiskBlockerEvent(event: TimelineEvent): boolean {
+  return ["BLOCKER_ADDED", "BLOCKER_RESOLVED", "BLOCKER_DISMISSED", "RISK_FLAGGED"].includes(event.event_type);
+}
+
+// Helper for stakeholder events
+function isStakeholderEvent(event: TimelineEvent): boolean {
+  return ["STAKEHOLDER_ADDED", "STAKEHOLDER_REMOVED"].includes(event.event_type);
+}
+
+// Helper for system events (no provider logo)
+function isSystemEvent(event: TimelineEvent): boolean {
+  return event.event_source === "SYSTEM";
+}
 ```
 
 ### Source IDs for Subsequent API Calls
@@ -538,18 +974,10 @@ Timeline events include source IDs that must be used when calling other APIs:
 |------------|-----------------|----------|
 | EMAIL | `event_data.email_id` | Fetching full email details |
 | MEETING | `event_data.calendar_event_id` | Meeting summary, prep, followup job APIs |
+| BLOCKER_* / RISK_FLAGGED | `event_data.risk_blocker_id` | Risk/blocker detail API |
+| STAKEHOLDER_* | `event_data.stakeholder_id` | Stakeholder profile API |
 
-**Important**: Do NOT use `TimelineEvent.id` (which is `timeline_event_id`) when calling meeting job APIs. You must use `event_data.calendar_event_id`.
-
-```typescript
-// WRONG - will cause ForeignKeyViolationError
-initiateMeetingJob(dealId, event.id, "summary");
-
-// CORRECT - use calendar_event_id from event_data
-if (isMeetingEvent(event) && event.event_data.calendar_event_id) {
-  initiateMeetingJob(dealId, event.event_data.calendar_event_id, "summary");
-}
-```
+**Important**: Do NOT use `TimelineEvent.id` (which is `timeline_event_id`) when calling other APIs. Always use the appropriate source ID from `event_data`.
 
 ### Caching Strategy
 
@@ -558,140 +986,342 @@ Since list and detail share the same shape, frontend can:
 1. Cache list items
 2. On click, fetch detail and merge enriched `event_data` into cached item
 3. No separate data structures needed
-4. **For STAGE_CHANGE and DEAL_CREATED**: No detail fetch needed—all data is in the list response
+
+**Events requiring detail fetch for full data:**
+- `EMAIL`: Fetch detail for body content, attachments, full recipient list
+- `MEETING`: Fetch detail for attendee list, meeting summary
+- `BLOCKER_*` / `RISK_FLAGGED`: Fetch detail for title, description, quote, owner, status
+- `STAKEHOLDER_*`: Fetch detail for engagement metrics, decision power, temperature
+
+**Events with all data in list response (no detail fetch needed):**
+- `STAGE_CHANGE`: All data in metadata
+- `DEAL_CREATED`: All data in metadata
 
 ### Rendering Example
 
 ```typescript
+// Severity badge colors
+const severityColors: Record<string, string> = {
+  LOW: "bg-gray-100 text-gray-800",
+  MEDIUM: "bg-yellow-100 text-yellow-800",
+  HIGH: "bg-orange-100 text-orange-800",
+  CRITICAL: "bg-red-100 text-red-800",
+};
+
+// Stance badge colors
+const stanceColors: Record<string, string> = {
+  CHAMPION: "bg-green-100 text-green-800",
+  SUPPORTER: "bg-blue-100 text-blue-800",
+  NEUTRAL: "bg-gray-100 text-gray-800",
+  DETRACTOR: "bg-orange-100 text-orange-800",
+  BLOCKER: "bg-red-100 text-red-800",
+  UNKNOWN: "bg-gray-50 text-gray-500",
+};
+
 // List view
 function TimelineListItem({ event }: { event: TimelineEvent }) {
+  // Communication events
   if (isMeetingEvent(event)) {
-    const { title, duration_minutes, attendee_count } = event.event_data;
-    return <div>{title} • {duration_minutes} min • {attendee_count} attendees</div>;
-  }
-  if (isEmailEvent(event)) {
-    const { subject, snippet, from_email } = event.event_data;
-    return <div>{subject} • {from_email} • {snippet}</div>;
-  }
-  if (isStageChangeEvent(event)) {
-    const { old_stage_label, new_stage_label, company_name } = event.event_data;
+    const { title, duration_minutes, attendee_count, provider_logo_url } = event.event_data;
     return (
-      <div>
-        <span className="stage-badge">{old_stage_label} → {new_stage_label}</span>
-        {company_name && <span className="company">{company_name}</span>}
+      <div className="flex items-center gap-2">
+        {provider_logo_url && <img src={provider_logo_url} className="w-5 h-5" />}
+        <span>{title} • {duration_minutes} min • {attendee_count} attendees</span>
       </div>
     );
   }
-  if (isDealCreatedEvent(event)) {
-    const { deal_name, company_name, amount, currency } = event.event_data;
+
+  if (isEmailEvent(event)) {
+    const { subject, snippet, from_email, provider_logo_url } = event.event_data;
     return (
-      <div>
+      <div className="flex items-center gap-2">
+        {provider_logo_url && <img src={provider_logo_url} className="w-5 h-5" />}
+        <span>{subject} • {from_email}</span>
+        <span className="text-gray-500 truncate">{snippet}</span>
+      </div>
+    );
+  }
+
+  // CRM lifecycle events
+  if (isStageChangeEvent(event)) {
+    const { old_stage_label, new_stage_label, provider_logo_url } = event.event_data;
+    return (
+      <div className="flex items-center gap-2">
+        {provider_logo_url && <img src={provider_logo_url} className="w-5 h-5" />}
+        <span className="stage-badge">{old_stage_label} → {new_stage_label}</span>
+      </div>
+    );
+  }
+
+  if (isDealCreatedEvent(event)) {
+    const { deal_name, company_name, amount, currency, provider_logo_url } = event.event_data;
+    return (
+      <div className="flex items-center gap-2">
+        {provider_logo_url && <img src={provider_logo_url} className="w-5 h-5" />}
         <strong>Deal Created:</strong> {deal_name}
         {company_name && <span> • {company_name}</span>}
         {amount && <span> • {formatCurrency(amount, currency)}</span>}
       </div>
     );
   }
+
+  // Risk/Blocker events
+  if (isBlockerAddedEvent(event)) {
+    const { severity, category, is_ai_generated } = event.event_data;
+    return (
+      <div className="flex items-center gap-2">
+        <BlockIcon className="w-5 h-5 text-red-500" />
+        <span>Blocker Added</span>
+        <span className={`badge ${severityColors[severity || "MEDIUM"]}`}>{severity}</span>
+        {category && <span className="text-gray-500">{category}</span>}
+        {is_ai_generated && <AiBadge />}
+      </div>
+    );
+  }
+
+  if (isBlockerResolvedEvent(event)) {
+    const { severity } = event.event_data;
+    return (
+      <div className="flex items-center gap-2">
+        <CheckCircleIcon className="w-5 h-5 text-green-500" />
+        <span>Blocker Resolved</span>
+        <span className={`badge ${severityColors[severity || "MEDIUM"]}`}>{severity}</span>
+      </div>
+    );
+  }
+
+  if (isBlockerDismissedEvent(event)) {
+    const { severity } = event.event_data;
+    return (
+      <div className="flex items-center gap-2">
+        <XCircleIcon className="w-5 h-5 text-gray-400" />
+        <span>Blocker Dismissed</span>
+        <span className={`badge ${severityColors[severity || "MEDIUM"]}`}>{severity}</span>
+      </div>
+    );
+  }
+
+  if (isRiskFlaggedEvent(event)) {
+    const { severity, category, is_ai_generated } = event.event_data;
+    return (
+      <div className="flex items-center gap-2">
+        <AlertTriangleIcon className="w-5 h-5 text-yellow-500" />
+        <span>Risk Flagged</span>
+        <span className={`badge ${severityColors[severity || "MEDIUM"]}`}>{severity}</span>
+        {category && <span className="text-gray-500">{category}</span>}
+        {is_ai_generated && <AiBadge />}
+      </div>
+    );
+  }
+
+  // Stakeholder events
+  if (isStakeholderAddedEvent(event)) {
+    const { name, email, job_title, source, stance } = event.event_data;
+    return (
+      <div className="flex items-center gap-2">
+        <UserPlusIcon className="w-5 h-5 text-blue-500" />
+        <span>Stakeholder Added: {name || email}</span>
+        {job_title && <span className="text-gray-500">{job_title}</span>}
+        {stance && stance !== "UNKNOWN" && (
+          <span className={`badge ${stanceColors[stance]}`}>{stance}</span>
+        )}
+        <span className="text-xs text-gray-400">{source}</span>
+      </div>
+    );
+  }
+
+  if (isStakeholderRemovedEvent(event)) {
+    const { name, email } = event.event_data;
+    return (
+      <div className="flex items-center gap-2">
+        <UserMinusIcon className="w-5 h-5 text-gray-400" />
+        <span>Stakeholder Removed: {name || email}</span>
+      </div>
+    );
+  }
+
+  return <div>Unknown event type: {event.event_type}</div>;
+}
+```
+
+### Grouping Insights Events (Recommended)
+
+When multiple risk/blocker or stakeholder events occur on the same day, the timeline can become cluttered. We recommend grouping these "insights events" into collapsible sections.
+
+**Grouping Strategy:**
+
+1. **Risk/Blocker Events** - Group all risk/blocker event types together:
+   - `BLOCKER_ADDED`, `BLOCKER_RESOLVED`, `BLOCKER_DISMISSED`, `RISK_FLAGGED`
+   - Show as: "3 Risk/Blocker Events" (collapsed)
+   - On expand: Show all individual events with their details
+
+2. **Stakeholder Events** - Group all stakeholder event types together:
+   - `STAKEHOLDER_ADDED`, `STAKEHOLDER_REMOVED`
+   - Show as: "4 Stakeholder Events" (collapsed)
+   - On expand: Show all individual events with their details
+
+3. **Communication & CRM Events** - Show individually (not grouped):
+   - `EMAIL`, `MEETING`, `STAGE_CHANGE`, `DEAL_CREATED`
+
+```typescript
+// Group events by date and category
+interface GroupedTimelineDay {
+  date: string;
+  communications: TimelineEvent[];      // EMAIL, MEETING
+  crmLifecycle: TimelineEvent[];        // STAGE_CHANGE, DEAL_CREATED
+  riskBlockerEvents: TimelineEvent[];   // All BLOCKER_* and RISK_FLAGGED
+  stakeholderEvents: TimelineEvent[];   // All STAKEHOLDER_*
 }
 
-// Detail view
-function TimelineDetail({ event }: { event: TimelineEvent }) {
-  if (isMeetingEvent(event)) {
-    const { attendees, meeting_summary } = event.event_data;
-    return (
-      <div>
-        <h2>{event.event_data.title}</h2>
-        <p>Attendees: {attendees?.join(", ")}</p>
-        {meeting_summary?.data && <MeetingSummaryPanel data={meeting_summary.data} />}
-      </div>
-    );
+function groupEventsByDay(events: TimelineEvent[]): GroupedTimelineDay[] {
+  const dayMap = new Map<string, GroupedTimelineDay>();
+
+  for (const event of events) {
+    const date = event.event_timestamp.split("T")[0];
+
+    if (!dayMap.has(date)) {
+      dayMap.set(date, {
+        date,
+        communications: [],
+        crmLifecycle: [],
+        riskBlockerEvents: [],
+        stakeholderEvents: [],
+      });
+    }
+
+    const day = dayMap.get(date)!;
+
+    if (isRiskBlockerEvent(event)) {
+      day.riskBlockerEvents.push(event);
+    } else if (isStakeholderEvent(event)) {
+      day.stakeholderEvents.push(event);
+    } else if (event.event_type === "EMAIL" || event.event_type === "MEETING") {
+      day.communications.push(event);
+    } else {
+      day.crmLifecycle.push(event);
+    }
   }
-  if (isEmailEvent(event)) {
-    const {
-      subject, from_email, from_name, to_emails,
-      body_html, body_text, body_truncated,
-      attachments, direction
-    } = event.event_data;
-    return (
-      <div>
-        <span className={direction === "INBOUND" ? "badge-inbound" : "badge-outbound"}>
-          {direction}
+
+  return Array.from(dayMap.values()).sort(
+    (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+  );
+}
+
+// Collapsible group component
+function InsightsEventGroup({
+  events,
+  label,
+  icon,
+}: {
+  events: TimelineEvent[];
+  label: string;
+  icon: React.ReactNode;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  if (events.length === 0) return null;
+
+  // Single event: show directly without collapse
+  if (events.length === 1) {
+    return <TimelineListItem event={events[0]} />;
+  }
+
+  // Multiple events: show collapsible group
+  return (
+    <div className="border rounded-lg">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center gap-2 p-3 hover:bg-gray-50"
+      >
+        {icon}
+        <span className="font-medium">
+          {events.length} {label}
         </span>
-        <h2>{subject}</h2>
-        <p>From: {from_name || from_email}</p>
-        <p>To: {to_emails?.join(", ")}</p>
-        {body_html ? (
-          <div dangerouslySetInnerHTML={{ __html: sanitizeHtml(body_html) }} />
-        ) : (
-          <pre>{body_text}</pre>
-        )}
-        {body_truncated && <p className="warning">Email body truncated...</p>}
-        {attachments?.map(att => (
-          <div key={att.name}>{att.name} ({formatBytes(att.size)})</div>
-        ))}
-      </div>
-    );
-  }
-  if (isStageChangeEvent(event)) {
-    const {
-      old_stage_label, new_stage_label,
-      deal_name, company_name, amount, currency, pipeline_name
-    } = event.event_data;
-    return (
-      <div className="stage-change-detail">
-        <h2>Stage Change</h2>
-        <div className="stage-transition">
-          <span className="old-stage">{old_stage_label}</span>
-          <span className="arrow">→</span>
-          <span className="new-stage">{new_stage_label}</span>
+        <ChevronIcon className={expanded ? "rotate-180" : ""} />
+      </button>
+
+      {expanded && (
+        <div className="border-t divide-y">
+          {events.map((event) => (
+            <div key={event.id} className="p-3">
+              <TimelineListItem event={event} />
+            </div>
+          ))}
         </div>
-        <div className="deal-context">
-          <p><strong>Deal:</strong> {deal_name}</p>
-          {company_name && <p><strong>Company:</strong> {company_name}</p>}
-          {amount && <p><strong>Value:</strong> {formatCurrency(amount, currency)}</p>}
-          {pipeline_name && <p><strong>Pipeline:</strong> {pipeline_name}</p>}
-        </div>
-      </div>
-    );
-  }
-  if (isDealCreatedEvent(event)) {
-    const {
-      deal_name, initial_stage, pipeline_name, amount, currency,
-      company_name, company_domain, owner_name,
-      primary_contact_name, primary_contact_email
-    } = event.event_data;
-    return (
-      <div className="deal-created-detail">
-        <h2>Deal Created</h2>
-        <div className="deal-info">
-          <p><strong>Deal:</strong> {deal_name}</p>
-          {amount && <p><strong>Value:</strong> {formatCurrency(amount, currency)}</p>}
-          {initial_stage && <p><strong>Initial Stage:</strong> {initial_stage}</p>}
-          {pipeline_name && <p><strong>Pipeline:</strong> {pipeline_name}</p>}
-        </div>
-        {(company_name || company_domain) && (
-          <div className="company-info">
-            <h3>Company</h3>
-            {company_name && <p>{company_name}</p>}
-            {company_domain && <p className="domain">{company_domain}</p>}
-          </div>
-        )}
-        {owner_name && (
-          <div className="owner-info">
-            <h3>Owner</h3>
-            <p>{owner_name}</p>
-          </div>
-        )}
-        {(primary_contact_name || primary_contact_email) && (
-          <div className="contact-info">
-            <h3>Primary Contact</h3>
-            {primary_contact_name && <p>{primary_contact_name}</p>}
-            {primary_contact_email && <p className="email">{primary_contact_email}</p>}
-          </div>
-        )}
-      </div>
-    );
-  }
+      )}
+    </div>
+  );
+}
+
+// Timeline day component with grouped insights
+function TimelineDaySection({ day }: { day: GroupedTimelineDay }) {
+  return (
+    <div className="mb-6">
+      <h3 className="text-sm font-semibold text-gray-500 mb-3">
+        {formatDate(day.date)}
+      </h3>
+
+      {/* Communications - show individually */}
+      {day.communications.map((event) => (
+        <TimelineListItem key={event.id} event={event} />
+      ))}
+
+      {/* CRM Lifecycle - show individually */}
+      {day.crmLifecycle.map((event) => (
+        <TimelineListItem key={event.id} event={event} />
+      ))}
+
+      {/* Risk/Blocker events - grouped & collapsible */}
+      <InsightsEventGroup
+        events={day.riskBlockerEvents}
+        label="Risk/Blocker Events"
+        icon={<AlertTriangleIcon className="w-5 h-5 text-yellow-500" />}
+      />
+
+      {/* Stakeholder events - grouped & collapsible */}
+      <InsightsEventGroup
+        events={day.stakeholderEvents}
+        label="Stakeholder Events"
+        icon={<UsersIcon className="w-5 h-5 text-blue-500" />}
+      />
+    </div>
+  );
+}
+```
+
+**Summary Badge (Optional):**
+
+For collapsed groups, you can show a quick summary:
+
+```typescript
+// Risk/Blocker group summary
+function RiskBlockerGroupSummary({ events }: { events: TimelineEvent[] }) {
+  const added = events.filter((e) =>
+    ["BLOCKER_ADDED", "RISK_FLAGGED"].includes(e.event_type)
+  ).length;
+  const resolved = events.filter((e) => e.event_type === "BLOCKER_RESOLVED").length;
+  const dismissed = events.filter((e) => e.event_type === "BLOCKER_DISMISSED").length;
+
+  return (
+    <span className="text-sm text-gray-500">
+      {added > 0 && <span className="text-red-600">+{added} new</span>}
+      {resolved > 0 && <span className="text-green-600 ml-2">✓{resolved} resolved</span>}
+      {dismissed > 0 && <span className="text-gray-400 ml-2">×{dismissed} dismissed</span>}
+    </span>
+  );
+}
+
+// Stakeholder group summary
+function StakeholderGroupSummary({ events }: { events: TimelineEvent[] }) {
+  const added = events.filter((e) => e.event_type === "STAKEHOLDER_ADDED").length;
+  const removed = events.filter((e) => e.event_type === "STAKEHOLDER_REMOVED").length;
+
+  return (
+    <span className="text-sm text-gray-500">
+      {added > 0 && <span className="text-blue-600">+{added} added</span>}
+      {removed > 0 && <span className="text-gray-400 ml-2">-{removed} removed</span>}
+    </span>
+  );
 }
 ```
 
@@ -702,3 +1332,5 @@ function TimelineDetail({ event }: { event: TimelineEvent }) {
 - `excluded_at != null` means the event is soft-hidden; show only if user opts to view excluded events.
 - `cursor` is opaque; pass it unchanged to fetch the next page. When `null`, no more pages exist.
 - Default sort is `desc` (newest first).
+- System events (risks, blockers, stakeholders) have `event_source: "SYSTEM"` and `provider_logo_url: null`.
+- AI-generated risks/blockers are marked with `is_ai_generated: true` in the event data.

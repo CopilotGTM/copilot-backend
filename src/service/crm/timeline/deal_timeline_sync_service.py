@@ -33,11 +33,20 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDealStage,
     CRMDealStageHistory,
 )
+from src.domain.models.organisation_tables.sync.crm.stakeholders import (
+    ApprovalStatus,
+    DealStakeholder,
+)
 from src.domain.models.organisation_tables.sync.email_models import (
     DealEmailAssociation,
     Email,
 )
 from src.domain.models.organisation_tables.sync.integration_models import KnowledgeIntegration
+from src.domain.models.organisation_tables.sync.risk_blocker_models import (
+    DealRiskBlocker,
+    RiskBlockerStatus,
+    RiskBlockerType,
+)
 from src.domain.models.organisation_tables.sync.timeline_models import (
     DealTimelineEvent,
     TimelineEventSource,
@@ -231,6 +240,8 @@ class DealTimelineSyncService:
             "meetings_synced": 0,
             "stage_changes_synced": 0,
             "deal_created_synced": 0,
+            "risks_blockers_synced": 0,
+            "stakeholders_synced": 0,
             "total_created": 0,
             "total_skipped": 0,
         }
@@ -268,6 +279,38 @@ class DealTimelineSyncService:
             results["total_created"] += created_stats["created"]
             results["total_skipped"] += created_stats["skipped"]
 
+        # Sync risk/blocker events
+        if not event_types or any(
+            t in event_types
+            for t in [
+                TimelineEventType.BLOCKER_ADDED,
+                TimelineEventType.BLOCKER_RESOLVED,
+                TimelineEventType.BLOCKER_DISMISSED,
+                TimelineEventType.RISK_FLAGGED,
+            ]
+        ):
+            rb_stats = await self._sync_risk_blocker_timeline_events(
+                session, deal_id, existing_keys
+            )
+            results["risks_blockers_synced"] = rb_stats["synced"]
+            results["total_created"] += rb_stats["created"]
+            results["total_skipped"] += rb_stats["skipped"]
+
+        # Sync stakeholder events
+        if not event_types or any(
+            t in event_types
+            for t in [
+                TimelineEventType.STAKEHOLDER_ADDED,
+                TimelineEventType.STAKEHOLDER_REMOVED,
+            ]
+        ):
+            stakeholder_stats = await self._sync_stakeholder_timeline_events(
+                session, deal_id, existing_keys
+            )
+            results["stakeholders_synced"] = stakeholder_stats["synced"]
+            results["total_created"] += stakeholder_stats["created"]
+            results["total_skipped"] += stakeholder_stats["skipped"]
+
         return results
 
     async def sync_organisation_timeline(
@@ -298,6 +341,8 @@ class DealTimelineSyncService:
             "meetings_synced": 0,
             "stage_changes_synced": 0,
             "deal_created_synced": 0,
+            "risks_blockers_synced": 0,
+            "stakeholders_synced": 0,
             "total_created": 0,
             "total_skipped": 0,
         }
@@ -341,6 +386,8 @@ class DealTimelineSyncService:
                     results["meetings_synced"] += deal_stats["meetings_synced"]
                     results["stage_changes_synced"] += deal_stats["stage_changes_synced"]
                     results["deal_created_synced"] += deal_stats["deal_created_synced"]
+                    results["risks_blockers_synced"] += deal_stats.get("risks_blockers_synced", 0)
+                    results["stakeholders_synced"] += deal_stats.get("stakeholders_synced", 0)
                     results["total_created"] += deal_stats["total_created"]
                     results["total_skipped"] += deal_stats["total_skipped"]
 
@@ -751,6 +798,171 @@ class DealTimelineSyncService:
 
         return stats
 
+    async def _sync_risk_blocker_timeline_events(
+        self,
+        session: AsyncSession,
+        deal_id: UUID,
+        existing_keys: set[tuple[str, str]],
+    ) -> dict[str, int]:
+        """Batch sync risk/blocker records → timeline events.
+
+        Args:
+            session: Database session to use
+            deal_id: Deal UUID
+            existing_keys: Set of existing (event_type, source_record_id) pairs
+        """
+        stats = {"synced": 0, "created": 0, "skipped": 0}
+
+        risk_blocker_table: Table = _table(DealRiskBlocker)
+
+        # Fetch all confirmed risk/blockers for this deal
+        # Skip AI_SUGGESTED (not yet confirmed) and AI_DISMISSED
+        stmt = select(DealRiskBlocker).where(
+            risk_blocker_table.c.organisation_id == self.organisation_id,
+            risk_blocker_table.c.deal_id == deal_id,
+            risk_blocker_table.c.status.in_(
+                [
+                    RiskBlockerStatus.OPEN.value,
+                    RiskBlockerStatus.IN_PROGRESS.value,
+                    RiskBlockerStatus.RESOLVED.value,
+                    RiskBlockerStatus.DISMISSED.value,
+                    RiskBlockerStatus.WONT_FIX.value,
+                ]
+            ),
+        )
+        result = await session.execute(stmt)
+
+        for risk_blocker in result.scalars().all():
+            stats["synced"] += 1
+
+            # Determine event type based on item_type and status
+            item_type_val = (
+                risk_blocker.item_type.value
+                if hasattr(risk_blocker.item_type, "value")
+                else str(risk_blocker.item_type)
+            )
+            status_val = (
+                risk_blocker.status.value
+                if hasattr(risk_blocker.status, "value")
+                else str(risk_blocker.status)
+            )
+
+            # Create the initial ADDED/FLAGGED event
+            if item_type_val == RiskBlockerType.RISK.value:
+                initial_event_type = TimelineEventType.RISK_FLAGGED
+            else:
+                initial_event_type = TimelineEventType.BLOCKER_ADDED
+
+            key = (initial_event_type.value, str(risk_blocker.risk_blocker_id))
+
+            if key not in existing_keys:
+                timeline_event = build_risk_blocker_timeline_event(
+                    organisation_id=self.organisation_id,
+                    deal_id=deal_id,
+                    risk_blocker=risk_blocker,
+                    event_type=initial_event_type,
+                )
+                created = await self._insert_timeline_event_ignore_conflict(session, timeline_event)
+                if created:
+                    stats["created"] += 1
+                    existing_keys.add(key)
+                else:
+                    stats["skipped"] += 1
+                    existing_keys.add(key)
+            else:
+                stats["skipped"] += 1
+
+            # If resolved, also create a RESOLVED event
+            if status_val == RiskBlockerStatus.RESOLVED.value and risk_blocker.resolved_at:
+                resolved_key = (
+                    TimelineEventType.BLOCKER_RESOLVED.value,
+                    str(risk_blocker.risk_blocker_id),
+                )
+                if resolved_key not in existing_keys:
+                    resolved_event = build_risk_blocker_timeline_event(
+                        organisation_id=self.organisation_id,
+                        deal_id=deal_id,
+                        risk_blocker=risk_blocker,
+                        event_type=TimelineEventType.BLOCKER_RESOLVED,
+                    )
+                    created = await self._insert_timeline_event_ignore_conflict(
+                        session, resolved_event
+                    )
+                    if created:
+                        stats["created"] += 1
+                        existing_keys.add(resolved_key)
+
+            # If dismissed, also create a DISMISSED event
+            if status_val == RiskBlockerStatus.DISMISSED.value:
+                dismissed_key = (
+                    TimelineEventType.BLOCKER_DISMISSED.value,
+                    str(risk_blocker.risk_blocker_id),
+                )
+                if dismissed_key not in existing_keys:
+                    dismissed_event = build_risk_blocker_timeline_event(
+                        organisation_id=self.organisation_id,
+                        deal_id=deal_id,
+                        risk_blocker=risk_blocker,
+                        event_type=TimelineEventType.BLOCKER_DISMISSED,
+                    )
+                    created = await self._insert_timeline_event_ignore_conflict(
+                        session, dismissed_event
+                    )
+                    if created:
+                        stats["created"] += 1
+                        existing_keys.add(dismissed_key)
+
+        return stats
+
+    async def _sync_stakeholder_timeline_events(
+        self,
+        session: AsyncSession,
+        deal_id: UUID,
+        existing_keys: set[tuple[str, str]],
+    ) -> dict[str, int]:
+        """Batch sync stakeholder records → timeline events.
+
+        Args:
+            session: Database session to use
+            deal_id: Deal UUID
+            existing_keys: Set of existing (event_type, source_record_id) pairs
+        """
+        stats = {"synced": 0, "created": 0, "skipped": 0}
+
+        stakeholder_table: Table = _table(DealStakeholder)
+
+        # Fetch all approved stakeholders for this deal
+        stmt = select(DealStakeholder).where(
+            stakeholder_table.c.organisation_id == self.organisation_id,
+            stakeholder_table.c.deal_id == deal_id,
+            stakeholder_table.c.approval_status == ApprovalStatus.APPROVED.value,
+        )
+        result = await session.execute(stmt)
+
+        for stakeholder in result.scalars().all():
+            stats["synced"] += 1
+            key = (TimelineEventType.STAKEHOLDER_ADDED.value, str(stakeholder.stakeholder_id))
+
+            if key in existing_keys:
+                stats["skipped"] += 1
+                continue
+
+            timeline_event = build_stakeholder_timeline_event(
+                organisation_id=self.organisation_id,
+                deal_id=deal_id,
+                stakeholder=stakeholder,
+                event_type=TimelineEventType.STAKEHOLDER_ADDED,
+            )
+            created = await self._insert_timeline_event_ignore_conflict(session, timeline_event)
+            if created:
+                stats["created"] += 1
+                existing_keys.add(key)
+            else:
+                stats["skipped"] += 1
+                existing_keys.add(key)
+
+        return stats
+
 
 # =============================================================================
 # Standalone Builder Functions (used by matchers for inline creation)
@@ -1103,5 +1315,170 @@ def build_deal_created_timeline_event(
         status=None,
         participant_names=[],
         participant_count=0,
+        event_metadata=metadata,
+    )
+
+
+def build_risk_blocker_timeline_event(
+    organisation_id: UUID,
+    deal_id: UUID,
+    risk_blocker: DealRiskBlocker,
+    event_type: TimelineEventType,
+    event_source: TimelineEventSource = TimelineEventSource.SYSTEM,
+) -> DealTimelineEvent:
+    """
+    Build a timeline event for a risk/blocker lifecycle change.
+
+    This is a pure function that creates a DealTimelineEvent object.
+    Called by RiskBlockerService for inline creation and by sync service for batch.
+
+    Args:
+        organisation_id: Org UUID
+        deal_id: Deal UUID
+        risk_blocker: The DealRiskBlocker record
+        event_type: One of BLOCKER_ADDED, BLOCKER_RESOLVED, BLOCKER_DISMISSED, RISK_FLAGGED
+        event_source: Source system (defaults to SYSTEM)
+
+    Returns:
+        DealTimelineEvent (not yet added to session)
+    """
+    # Determine title based on event type
+    item_type_str = (
+        risk_blocker.item_type.value
+        if hasattr(risk_blocker.item_type, "value")
+        else str(risk_blocker.item_type)
+    )
+
+    if event_type == TimelineEventType.BLOCKER_ADDED:
+        title = f"Blocker Added: {risk_blocker.title}"
+    elif event_type == TimelineEventType.RISK_FLAGGED:
+        title = f"Risk Flagged: {risk_blocker.title}"
+    elif event_type == TimelineEventType.BLOCKER_RESOLVED:
+        title = f"Blocker Resolved: {risk_blocker.title}"
+    elif event_type == TimelineEventType.BLOCKER_DISMISSED:
+        title = f"Blocker Dismissed: {risk_blocker.title}"
+    else:
+        title = f"{item_type_str}: {risk_blocker.title}"
+
+    # Build subtitle
+    severity_str = (
+        risk_blocker.severity.value
+        if hasattr(risk_blocker.severity, "value")
+        else str(risk_blocker.severity)
+    )
+    subtitle = f"{item_type_str} - {severity_str}"
+
+    # Determine event timestamp
+    if event_type == TimelineEventType.BLOCKER_RESOLVED and risk_blocker.resolved_at:
+        event_timestamp = risk_blocker.resolved_at
+    elif event_type == TimelineEventType.BLOCKER_DISMISSED and risk_blocker.updated_at:
+        event_timestamp = risk_blocker.updated_at
+    else:
+        event_timestamp = risk_blocker.identified_at or risk_blocker.created_at
+
+    # Build metadata
+    metadata: dict[str, Any] = {
+        "risk_blocker_id": str(risk_blocker.risk_blocker_id),
+        "item_type": item_type_str,
+        "severity": severity_str,
+        "category": _enum_value(risk_blocker.category),
+        "status": _enum_value(risk_blocker.status),
+        "source_type": _enum_value(risk_blocker.source_type),
+        "is_ai_generated": risk_blocker.is_ai_generated,
+    }
+
+    # Add resolution notes for resolved events
+    if event_type == TimelineEventType.BLOCKER_RESOLVED and risk_blocker.resolution_notes:
+        metadata["resolution_notes"] = risk_blocker.resolution_notes
+
+    return DealTimelineEvent(
+        organisation_id=organisation_id,
+        deal_id=deal_id,
+        event_type=event_type,
+        event_source=event_source,
+        event_timestamp=event_timestamp,
+        source_record_id=str(risk_blocker.risk_blocker_id),
+        title=title[:500],
+        subtitle=subtitle[:500] if subtitle else None,
+        direction=None,
+        status=_enum_value(risk_blocker.status),
+        participant_names=[],
+        participant_count=0,
+        event_metadata=metadata,
+    )
+
+
+def build_stakeholder_timeline_event(
+    organisation_id: UUID,
+    deal_id: UUID,
+    stakeholder: DealStakeholder,
+    event_type: TimelineEventType = TimelineEventType.STAKEHOLDER_ADDED,
+    event_source: TimelineEventSource = TimelineEventSource.SYSTEM,
+) -> DealTimelineEvent:
+    """
+    Build a timeline event for a stakeholder lifecycle change.
+
+    This is a pure function that creates a DealTimelineEvent object.
+    Called by StakeholdersService for inline creation and by sync service for batch.
+
+    Args:
+        organisation_id: Org UUID
+        deal_id: Deal UUID
+        stakeholder: The DealStakeholder record
+        event_type: One of STAKEHOLDER_ADDED, STAKEHOLDER_REMOVED
+        event_source: Source system (defaults to SYSTEM)
+
+    Returns:
+        DealTimelineEvent (not yet added to session)
+    """
+    # Build display name
+    display_name = stakeholder.name or stakeholder.email
+
+    # Determine title based on event type
+    if event_type == TimelineEventType.STAKEHOLDER_ADDED:
+        title = f"Stakeholder Added: {display_name}"
+    elif event_type == TimelineEventType.STAKEHOLDER_REMOVED:
+        title = f"Stakeholder Removed: {display_name}"
+    else:
+        title = f"Stakeholder: {display_name}"
+
+    # Build subtitle
+    source_str = (
+        stakeholder.source.value
+        if hasattr(stakeholder.source, "value")
+        else str(stakeholder.source)
+    )
+    subtitle = stakeholder.job_title or f"{source_str} discovery"
+
+    # Determine event timestamp
+    if event_type == TimelineEventType.STAKEHOLDER_REMOVED and stakeholder.updated_at:
+        event_timestamp = stakeholder.updated_at
+    else:
+        event_timestamp = stakeholder.created_at
+
+    # Build metadata
+    metadata: dict[str, Any] = {
+        "stakeholder_id": str(stakeholder.stakeholder_id),
+        "email": stakeholder.email,
+        "name": stakeholder.name,
+        "job_title": stakeholder.job_title,
+        "source": source_str,
+        "stance": _enum_value(stakeholder.stance),
+        "decision_power": _enum_value(stakeholder.decision_power),
+    }
+
+    return DealTimelineEvent(
+        organisation_id=organisation_id,
+        deal_id=deal_id,
+        event_type=event_type,
+        event_source=event_source,
+        event_timestamp=event_timestamp,
+        source_record_id=str(stakeholder.stakeholder_id),
+        title=title[:500],
+        subtitle=subtitle[:500] if subtitle else None,
+        direction=None,
+        status=_enum_value(stakeholder.approval_status),
+        participant_names=[stakeholder.name] if stakeholder.name else [],
+        participant_count=1,
         event_metadata=metadata,
     )
