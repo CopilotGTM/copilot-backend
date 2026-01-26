@@ -9,11 +9,16 @@ Performs idempotent cleanup of:
 Enhanced with:
 - Job tracking via KnowledgeProcessingJob
 - SSE status updates (0% start, 100% complete)
+
+IMPORTANT: This task follows the fresh session pattern to avoid holding
+database connections during Azure blob operations. Sessions are acquired
+only when needed for DB operations and released before any slow external calls.
 """
 
 from __future__ import annotations
 
 import contextlib
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from src.domain.models.organisation_tables.job_models import (
@@ -34,6 +39,15 @@ logger = get_logger("knowledge_delete_task")
 
 # Job type constant for deletion tracking
 DELETE_SOURCE_JOB_TYPE = "delete_source"
+
+
+@dataclass
+class SourceBlobData:
+    """Data extracted from source record for blob deletion without holding session."""
+
+    storage_path: str | None
+    thumbnail_small_path: str | None
+    thumbnail_medium_path: str | None
 
 
 def _publish_deletion_status(
@@ -57,45 +71,193 @@ def _publish_deletion_status(
         logger.warning("Failed to publish deletion status for %s: %s", source_id, e)
 
 
-def _get_or_create_delete_job(
-    session, source_id: str, job_id: str | None
-) -> KnowledgeProcessingJob | None:
-    """Get existing delete job or create one if not provided."""
-    if job_id:
-        job = session.get(KnowledgeProcessingJob, job_id)
-        if job:
-            return job
+def _load_source_and_mark_in_progress(
+    organisation_id: str,
+    source_id: str,
+    job_id: str | None,
+) -> tuple[SourceBlobData | None, str | None]:
+    """
+    Load source data and mark job in-progress.
 
-    # Try to find existing delete job for this source
-    existing = (
-        session.query(KnowledgeProcessingJob)
-        .filter(
-            KnowledgeProcessingJob.source_id == source_id,
-            KnowledgeProcessingJob.job_type == DELETE_SOURCE_JOB_TYPE,
-        )
-        .first()
-    )
-    return existing
+    Uses fresh session pattern: acquires session, extracts needed data, releases session.
 
+    Returns:
+        Tuple of (SourceBlobData or None if not found, job_id string or None)
+    """
+    session_gen = acquire_org_session(organisation_id)
+    session = next(session_gen)
 
-def _update_job_status(
-    session,
-    job: KnowledgeProcessingJob | None,
-    status: JobStatus,
-    error_message: str | None = None,
-) -> None:
-    """Update job status with commit."""
-    if not job:
-        return
     try:
-        job.status = status
-        if error_message:
-            job.error_message = error_message
-        session.add(job)
+        # Find or get the delete job
+        job: KnowledgeProcessingJob | None = None
+        if job_id:
+            job = session.get(KnowledgeProcessingJob, job_id)
+
+        if not job:
+            # Try to find existing delete job for this source
+            job = (
+                session.query(KnowledgeProcessingJob)
+                .filter(
+                    KnowledgeProcessingJob.source_id == source_id,
+                    KnowledgeProcessingJob.job_type == DELETE_SOURCE_JOB_TYPE,
+                )
+                .first()
+            )
+
+        # Mark job as in-progress
+        if job:
+            job.status = JobStatus.IN_PROGRESS
+            session.add(job)
+            session.commit()
+
+        # Fetch source (may be missing if already deleted)
+        src = session.get(OrganisationSource, source_id)
+
+        if not src:
+            return None, str(job.job_id) if job else None
+
+        # Extract blob paths before releasing session
+        blob_data = SourceBlobData(
+            storage_path=src.storage_path,
+            thumbnail_small_path=getattr(src, "thumbnail_small_path", None),
+            thumbnail_medium_path=getattr(src, "thumbnail_medium_path", None),
+        )
+
+        return blob_data, str(job.job_id) if job else None
+
+    finally:
+        with contextlib.suppress(Exception):
+            session.close()
+        with contextlib.suppress(Exception):
+            session_gen.close()
+
+
+def _delete_processing_jobs(organisation_id: str, source_id: str) -> int:
+    """
+    Delete processing jobs for the source (except delete job).
+
+    Uses fresh session pattern.
+
+    Returns:
+        Number of jobs deleted
+    """
+    session_gen = acquire_org_session(organisation_id)
+    session = next(session_gen)
+
+    try:
+        delete_query = session.query(KnowledgeProcessingJob).filter(
+            KnowledgeProcessingJob.source_id == source_id,
+            KnowledgeProcessingJob.job_type != DELETE_SOURCE_JOB_TYPE,
+        )
+        deleted_jobs = delete_query.delete()
         session.commit()
+        return deleted_jobs
     except Exception as e:
         session.rollback()
-        logger.warning("Failed to update job status: %s", e)
+        logger.warning("Failed deleting jobs for %s: %s", source_id, e)
+        return 0
+    finally:
+        with contextlib.suppress(Exception):
+            session.close()
+        with contextlib.suppress(Exception):
+            session_gen.close()
+
+
+def _delete_blobs(
+    storage: AzureOrganisationBlobStorage,
+    blob_data: SourceBlobData,
+    source_id: str,
+) -> None:
+    """
+    Delete blobs from Azure storage.
+
+    This is a pure Azure operation - no database session needed.
+    """
+    try:
+        if blob_data.storage_path:
+            run_async(storage.delete_blob(blob_data.storage_path))
+
+        if blob_data.thumbnail_small_path:
+            run_async(storage.delete_blob(blob_data.thumbnail_small_path))
+
+        if blob_data.thumbnail_medium_path:
+            run_async(storage.delete_blob(blob_data.thumbnail_medium_path))
+
+    except Exception as e:
+        logger.warning("Failed deleting blobs for %s: %s", source_id, e)
+
+
+def _delete_source_and_job(
+    organisation_id: str,
+    source_id: str,
+    job_id: str | None,
+) -> bool:
+    """
+    Delete the source record and delete job.
+
+    Uses fresh session pattern.
+
+    Returns:
+        True if successful, False otherwise
+    """
+    session_gen = acquire_org_session(organisation_id)
+    session = next(session_gen)
+
+    try:
+        # Delete the delete job first
+        if job_id:
+            job = session.get(KnowledgeProcessingJob, job_id)
+            if job:
+                session.delete(job)
+
+        # Then delete the source
+        src = session.get(OrganisationSource, source_id)
+        if src:
+            session.delete(src)
+
+        session.commit()
+        logger.info("Deleted OrganisationSource %s", source_id)
+        return True
+
+    except Exception as e:
+        session.rollback()
+        logger.warning("Failed deleting OrganisationSource %s: %s", source_id, e)
+        return False
+
+    finally:
+        with contextlib.suppress(Exception):
+            session.close()
+        with contextlib.suppress(Exception):
+            session_gen.close()
+
+
+def _mark_job_failed(
+    organisation_id: str,
+    job_id: str | None,
+    error_message: str,
+) -> None:
+    """Mark the delete job as failed with fresh session."""
+    if not job_id:
+        return
+
+    session_gen = acquire_org_session(organisation_id)
+    session = next(session_gen)
+
+    try:
+        job = session.get(KnowledgeProcessingJob, job_id)
+        if job:
+            job.status = JobStatus.FAILED
+            job.error_message = error_message
+            session.add(job)
+            session.commit()
+    except Exception as e:
+        session.rollback()
+        logger.warning("Failed to mark job as failed: %s", e)
+    finally:
+        with contextlib.suppress(Exception):
+            session.close()
+        with contextlib.suppress(Exception):
+            session_gen.close()
 
 
 @app.task(
@@ -108,6 +270,13 @@ def delete_source_task(
     self, organisation_id: str, source_id: str, job_id: str | None = None
 ):  # pragma: no cover
     """Delete a knowledge source and all related resources with job tracking.
+
+    This task follows the fresh session pattern:
+    1. Load source data and mark job in-progress (fresh session, released after)
+    2. Delete derived documents (DocumentStore manages its own session)
+    3. Delete processing jobs (fresh session, released after)
+    4. Delete blobs (NO session - Azure operations only)
+    5. Delete source record and job (fresh session, released after)
 
     Args:
         organisation_id: The organisation UUID
@@ -126,25 +295,19 @@ def delete_source_task(
         job_id,
     )
 
-    # DB session & storage (async storage via run_async)
-    session_gen = acquire_org_session(organisation_id)
-    session = next(session_gen)
     storage = AzureOrganisationBlobStorage(organisation_id=organisation_id)
-
-    # Track job for status updates
-    job = _get_or_create_delete_job(session, source_id, job_id)
+    tracked_job_id: str | None = None
 
     try:
-        # Mark job as in-progress
-        _update_job_status(session, job, JobStatus.IN_PROGRESS)
+        # Phase 1: Load source data and mark job in-progress (fresh session)
+        blob_data, tracked_job_id = _load_source_and_mark_in_progress(
+            organisation_id, source_id, job_id
+        )
 
         # Publish initial SSE: deletion started
         _publish_deletion_status(organisation_id, source_id, "deleting", progress=0)
 
-        # Fetch source (may be missing if already deleted)
-        src = session.get(OrganisationSource, source_id)
-
-        # Step 1: Delete derived documents
+        # Phase 2: Delete derived documents (DocumentStore manages its own session)
         try:
             ds = DocumentStore(organisation_id)
             deleted_docs = ds.delete_documents_by_source(source_id)
@@ -152,64 +315,33 @@ def delete_source_task(
         except Exception as e:
             logger.warning("Failed deleting documents for %s: %s", source_id, e)
 
-        # Step 2: Delete processing jobs except the delete job itself
-        try:
-            delete_query = session.query(KnowledgeProcessingJob).filter(
-                KnowledgeProcessingJob.source_id == source_id,
-                KnowledgeProcessingJob.job_type != DELETE_SOURCE_JOB_TYPE,
-            )
-            deleted_jobs = delete_query.delete()
-            session.commit()
-            logger.info("Deleted %s processing jobs for source %s", deleted_jobs, source_id)
-        except Exception as e:
-            session.rollback()
-            logger.warning("Failed deleting jobs for %s: %s", source_id, e)
+        # Phase 3: Delete processing jobs (fresh session)
+        deleted_jobs = _delete_processing_jobs(organisation_id, source_id)
+        logger.info("Deleted %s processing jobs for source %s", deleted_jobs, source_id)
 
-        # Step 3: Delete blobs (original + thumbnails)
-        try:
-            if src and src.storage_path:
-                # original
-                run_async(storage.delete_blob(src.storage_path))
+        # Phase 4: Delete blobs (NO session - Azure operations only)
+        if blob_data:
+            _delete_blobs(storage, blob_data, source_id)
 
-                # thumbnails
-                if getattr(src, "thumbnail_small_path", None):
-                    run_async(storage.delete_blob(src.thumbnail_small_path))
-                if getattr(src, "thumbnail_medium_path", None):
-                    run_async(storage.delete_blob(src.thumbnail_medium_path))
-        except Exception as e:
-            logger.warning("Failed deleting blobs for %s: %s", source_id, e)
+        # Phase 5: Delete source record and job (fresh session)
+        success = _delete_source_and_job(organisation_id, source_id, tracked_job_id)
 
-        # Step 4: Delete the source record and the delete job
-        try:
-            # Delete the delete job first
-            if job:
-                session.delete(job)
-
-            # Then delete the source
-            if src:
-                session.delete(src)
-
-            session.commit()
-            logger.info("Deleted OrganisationSource %s", source_id)
-
+        if success:
             # Publish final SSE: deletion completed
             _publish_deletion_status(organisation_id, source_id, "deleted", progress=100)
-
-        except Exception as e:
-            session.rollback()
-            logger.warning("Failed deleting OrganisationSource %s: %s", source_id, e)
-            # Still mark as failed but don't re-raise - partial cleanup is ok
+        else:
+            # Partial failure - source record deletion failed
             _publish_deletion_status(
                 organisation_id,
                 source_id,
                 "failed",
-                error_message=f"Failed to delete source record: {e}",
+                error_message="Failed to delete source record",
             )
 
     except Exception as e:
         # Unexpected error - mark job as failed and publish error
         logger.error("Deletion task failed for source %s: %s", source_id, e, exc_info=True)
-        _update_job_status(session, job, JobStatus.FAILED, str(e))
+        _mark_job_failed(organisation_id, tracked_job_id, str(e))
         _publish_deletion_status(
             organisation_id,
             source_id,
@@ -219,10 +351,6 @@ def delete_source_task(
         raise self.retry(exc=e, countdown=60) from e  # Retry after 1 minute
 
     finally:
-        with contextlib.suppress(Exception):
-            session.close()
-        with contextlib.suppress(Exception):
-            session_gen.close()
         # Close async Azure clients using persistent thread-local event loop
         with contextlib.suppress(Exception):
             run_async(storage.close())
