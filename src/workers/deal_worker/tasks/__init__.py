@@ -25,6 +25,10 @@ from .deal_mappers import (
     trigger_timeline_sync_all_orgs_task,
 )
 from .meeting_insight_tasks import process_meeting_prep, process_meeting_summary
+from .stale_job_cleanup_tasks import (
+    cleanup_stale_deal_jobs_all_orgs_task,
+    cleanup_stale_deal_jobs_org_task,
+)
 from .transcript_fetch_tasks import (
     fetch_meeting_transcripts_org_task,
     trigger_transcript_fetch_all_orgs_task,
@@ -63,4 +67,7 @@ __all__ = [
     # Transcript fetch tasks
     "fetch_meeting_transcripts_org_task",
     "trigger_transcript_fetch_all_orgs_task",
+    # Stale job cleanup tasks
+    "cleanup_stale_deal_jobs_all_orgs_task",
+    "cleanup_stale_deal_jobs_org_task",
 ]

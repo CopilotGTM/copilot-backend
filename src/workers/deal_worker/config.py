@@ -69,6 +69,9 @@ class DealWorkerConfig(BaseWorkerConfig):
             # Transcript fetch tasks
             "deal.trigger_transcript_fetch_all_orgs",
             "deal.fetch_meeting_transcripts_org",
+            # Stale job cleanup tasks
+            "deal.cleanup_stale_jobs_all_orgs",
+            "deal.cleanup_stale_jobs_org",
         )
 
         deal_jobs_queue_tasks = (
@@ -119,6 +122,14 @@ class DealWorkerConfig(BaseWorkerConfig):
             "half-hourly-transcript-fetch-pipeline": {
                 "task": "deal.trigger_transcript_fetch_all_orgs",
                 "schedule": crontab(minute="5,35"),  # Every 30 minutes
+                "options": {"queue": "deal", "routing_key": "deal"},
+            },
+            # HOURLY: Stale deal job cleanup
+            # Runs at :45 to avoid overlap with other scheduled tasks
+            # Marks stuck PENDING/IN_PROGRESS deal jobs as FAILED
+            "hourly-stale-deal-job-cleanup": {
+                "task": "deal.cleanup_stale_jobs_all_orgs",
+                "schedule": crontab(minute=45),  # Every hour at :45
                 "options": {"queue": "deal", "routing_key": "deal"},
             },
         }

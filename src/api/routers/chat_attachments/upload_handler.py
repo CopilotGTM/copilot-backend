@@ -384,3 +384,36 @@ async def get_attachment_status(
     except Exception:
         logger.error("Unexpected error retrieving attachment %s", attachment_id, exc_info=True)
         return Response.internal_server_error_response(UNEXPECTED_ERROR_MSG, response=response)
+
+
+@upload_router.delete(
+    "/attachment/{attachment_id}",
+    response_model=GenericResponse,
+    tags=["file_upload"],
+    summary="Delete an attachment before it is sent in a message",
+)
+async def delete_attachment(
+    attachment_id: UUID,
+    response: FastAPIResponse,
+    service: UploadService = Depends(get_upload_service),
+    _rl: None = Depends(rate_limit_user_write),
+):
+    """
+    Delete an attachment that has not yet been sent in a message.
+
+    This endpoint allows users to remove an uploaded attachment before sending it.
+    Once an attachment is linked to a chat message, it cannot be deleted.
+
+    The deletion is a soft delete - the database record is marked as deleted
+    and the associated blob files (including thumbnails) are removed from storage.
+    """
+    try:
+        await service.delete_attachment(attachment_id)
+        return Response.success_response(message="Attachment deleted successfully")
+    except UploadServiceError as e:
+        return Response.error_response(
+            status_code=e.status_code, message=e.message, response=response
+        )
+    except Exception:
+        logger.error("Unexpected error deleting attachment %s", attachment_id, exc_info=True)
+        return Response.internal_server_error_response(UNEXPECTED_ERROR_MSG, response=response)

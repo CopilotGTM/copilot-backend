@@ -1,8 +1,13 @@
+"""Tool factories for the General Agent.
+
+This module provides factory functions that create tool functions bound to
+the agent's context and capabilities. Tools are created per-agent instance
+to ensure proper scoping of organisation_id and other context.
+"""
+
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Callable
-from contextvars import ContextVar
 
 from src.agents.common.tool_wrappers import use_tool_with_capabilities
 from src.agents.context import AgentContext
@@ -11,19 +16,6 @@ from src.agents.tools.transparent_tools import AgentCapabilities
 from src.infra.utils.logger import get_logger
 
 logger = get_logger()
-
-# Context variable to store per-context lock
-# This ensures each async context (event loop) gets its own lock
-_db_lock_var: ContextVar[asyncio.Lock | None] = ContextVar("general_db_session_lock", default=None)
-
-
-def _get_db_session_lock():
-    """Get or create a database session lock for the current async context."""
-    lock = _db_lock_var.get()
-    if lock is None:
-        lock = asyncio.Lock()
-        _db_lock_var.set(lock)
-    return lock
 
 
 def create_search_internal_knowledge(
@@ -49,31 +41,28 @@ def create_search_internal_knowledge(
             - url: Internal reference link (kb://org/{org_id}/doc/{doc_id})
             - snippet: Relevant text excerpt from the document
         """
-        logger.info(f"[TOOL CALLED] search_internal_knowledge - query='{query}', limit={limit}")
+        logger.info("[TOOL CALLED] search_internal_knowledge - query='%s', limit=%d", query, limit)
 
-        if not context.session or not context.organisation_id:
-            logger.warning("InternalKnowledgeBase unavailable: missing session or organisation_id")
+        if not context.organisation_id:
+            logger.warning("InternalKnowledgeBase unavailable: missing organisation_id")
             return []
 
-        # Use lock to prevent concurrent session access
-        # Agno may call multiple tools in parallel, but AsyncSession doesn't support that
-        async with _get_db_session_lock():
-            result = await use_tool_with_capabilities(
-                capabilities_getter(),
-                tool_name="InternalKnowledgeBase",
-                tool_func=internal_knowledge_base,
-                parameters={
-                    "session": context.session,
-                    "organisation_id": context.organisation_id,
-                    "query": query,
-                    "limit": limit,
-                    "user_id": context.user_id,
-                },
-                description=f"Searching internal documents for: {query}",
-                fallback_value=[],
-            )
+        # Use fresh session pattern - internal_knowledge_base will acquire session via context
+        result = await use_tool_with_capabilities(
+            capabilities_getter(),
+            tool_name="InternalKnowledgeBase",
+            tool_func=internal_knowledge_base,
+            parameters={
+                "context": context,  # Pass context instead of session
+                "query": query,
+                "limit": limit,
+            },
+            description=f"Searching internal documents for: {query}",
+            fallback_value=[],
+        )
         logger.info(
-            f"[TOOL RESULT] search_internal_knowledge returned {len(result) if result else 0} results"
+            "[TOOL RESULT] search_internal_knowledge returned %d results",
+            len(result) if result else 0,
         )
         return list(result) if result else []
 
@@ -101,7 +90,9 @@ def create_search_internet(
             - url: Full URL to the web page
             - snippet: Text excerpt from the page
         """
-        logger.info(f"[TOOL CALLED] search_internet - query='{query}', max_results={max_results}")
+        logger.info(
+            "[TOOL CALLED] search_internet - query='%s', max_results=%d", query, max_results
+        )
 
         result = await use_tool_with_capabilities(
             capabilities_getter(),
@@ -112,7 +103,8 @@ def create_search_internet(
             fallback_value=[],
         )
         logger.info(
-            f"[TOOL RESULT] search_internet returned {len(result) if result else 0} results"
+            "[TOOL RESULT] search_internet returned %d results",
+            len(result) if result else 0,
         )
         return list(result) if result else []
 

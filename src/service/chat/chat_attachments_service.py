@@ -3,7 +3,9 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import col
 from src.api.schemas.upload_models import (
     AttachmentBatchFinalizeRequest,
     AttachmentBatchPresignRequest,
@@ -13,6 +15,7 @@ from src.api.schemas.upload_models import (
 from src.domain.models.organisation_tables.chat_message_models import (
     Attachment,
     AttachmentStatus,
+    ChatMessageAttachmentLink,
 )
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
 from src.infra.utils.logger import get_logger
@@ -270,6 +273,95 @@ class UploadService:
                     }
                 )
         return results, errors
+
+    async def delete_attachment(self, attachment_id: UUID) -> bool:
+        """Delete an attachment that hasn't been sent in a message yet.
+
+        This performs a soft delete on the attachment record and removes
+        the blob (and thumbnails) from Azure storage.
+
+        Args:
+            attachment_id: The UUID of the attachment to delete
+
+        Returns:
+            True if deletion was successful
+
+        Raises:
+            UploadServiceError: If attachment not found, access denied, or already sent
+        """
+        attachment: Attachment | None = await self.org_session.get(Attachment, attachment_id)
+
+        # Check ownership
+        if (
+            not attachment
+            or attachment.organisation_id != self.organisation_id
+            or attachment.user_id != self.user_id
+        ):
+            raise UploadServiceError(ATTACHMENT_ACCESS_DENIED_MSG, status_code=404)
+
+        # Check if already deleted
+        if attachment.is_deleted:
+            raise UploadServiceError("Attachment has already been deleted", status_code=400)
+
+        # Check if attachment is linked to any message (can't delete if sent)
+        # Use explicit query to avoid lazy-load issues in async context
+        link_count_stmt = select(func.count()).where(
+            col(ChatMessageAttachmentLink.attachment_id) == attachment_id
+        )
+        link_count_result = await self.org_session.execute(link_count_stmt)
+        link_count = link_count_result.scalar() or 0
+
+        if link_count > 0:
+            raise UploadServiceError(
+                "Cannot delete attachment that has been sent in a message", status_code=400
+            )
+
+        try:
+            # Delete blobs from Azure storage (main file + thumbnails)
+            blobs_to_delete = [attachment.storage_path]
+            if attachment.thumbnail_small_path:
+                blobs_to_delete.append(attachment.thumbnail_small_path)
+            if attachment.thumbnail_medium_path:
+                blobs_to_delete.append(attachment.thumbnail_medium_path)
+
+            for blob_path in blobs_to_delete:
+                try:
+                    await self.storage.delete_blob(blob_path)
+                except Exception as e:
+                    # Log but don't fail - blob may already be deleted
+                    logger.warning(
+                        "Failed to delete blob %s for attachment %s: %s",
+                        blob_path,
+                        attachment_id,
+                        e,
+                    )
+
+            # Soft delete the attachment record
+            attachment.is_deleted = True
+            # Use naive datetime for TIMESTAMP WITHOUT TIME ZONE column
+            attachment.deleted_at = datetime.now(UTC).replace(tzinfo=None)
+
+            self.org_session.add(attachment)
+            await self.org_session.commit()
+
+            logger.info(
+                "Deleted attachment %s for user %s",
+                attachment_id,
+                self.user_id,
+            )
+            return True
+
+        except UploadServiceError:
+            raise
+        except Exception as e:
+            await self.org_session.rollback()
+            logger.error(
+                "Failed to delete attachment %s: %s",
+                attachment_id,
+                e,
+                exc_info=True,
+            )
+            raise UploadServiceError("Failed to delete attachment") from e
 
     async def close(self):  # pragma: no cover - simple resource cleanup
         """Release any async resources held by the service (e.g. Azure clients)."""

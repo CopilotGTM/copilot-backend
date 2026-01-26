@@ -639,6 +639,8 @@ stages:
                       --set knowledge-upload-worker.image.repository="$ACR_LOGIN_SERVER/$(KNOWLEDGE_IMAGE_REPOSITORY)" \
                       --set knowledge-upload-worker.image.tag="$BUILD_BUILDID" \
                       --set knowledge-upload-worker.autoscaling.enabled=true \
+                      --set knowledge-beat.image.repository="$ACR_LOGIN_SERVER/$(KNOWLEDGE_IMAGE_REPOSITORY)" \
+                      --set knowledge-beat.image.tag="$BUILD_BUILDID" \
                       --set integrations-worker.autoscaling.enabled=true \
                       --set chat-worker.image.repository="$ACR_LOGIN_SERVER/$(LIGHT_IMAGE_REPOSITORY)" \
                       --set chat-worker.image.tag="$BUILD_BUILDID" \
@@ -691,6 +693,7 @@ stages:
                       --set api.secrets.NANGO_BASE_URL="https://api.nango.dev" \
                       --set knowledge-extract-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
                       --set knowledge-upload-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
+                      --set knowledge-beat.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
                       --set organization-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
                       --set chat-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
                       --set integrations-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
@@ -699,6 +702,7 @@ stages:
                       --set integrations-beat.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
                       --set knowledge-extract-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
                       --set knowledge-upload-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
+                      --set knowledge-beat.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
                       --set organization-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
                       --set chat-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
                       --set integrations-worker.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_WORKERS_TENANT_ID)" \
@@ -760,6 +764,7 @@ stages:
                     echo "Restarting worker deployments to ensure latest values are applied..."
                     kubectl rollout restart deployment copilot-backend-knowledge-extract-worker -n copilotgtm
                     kubectl rollout restart deployment copilot-backend-knowledge-upload-worker -n copilotgtm
+                    kubectl rollout restart deployment copilot-backend-knowledge-beat -n copilotgtm
                     kubectl rollout restart deployment copilot-backend-chat-worker -n copilotgtm
                     kubectl rollout restart deployment copilot-backend-organization-worker -n copilotgtm
                     kubectl rollout restart deployment copilot-backend-integrations-worker -n copilotgtm
@@ -769,6 +774,7 @@ stages:
                     echo "Waiting for rollouts to complete..."
                     kubectl rollout status deployment copilot-backend-knowledge-extract-worker -n copilotgtm --timeout=300s
                     kubectl rollout status deployment copilot-backend-knowledge-upload-worker -n copilotgtm --timeout=300s
+                    kubectl rollout status deployment copilot-backend-knowledge-beat -n copilotgtm --timeout=300s
                     kubectl rollout status deployment copilot-backend-chat-worker -n copilotgtm --timeout=300s
                     kubectl rollout status deployment copilot-backend-organization-worker -n copilotgtm --timeout=300s
                     kubectl rollout status deployment copilot-backend-integrations-worker -n copilotgtm --timeout=300s
