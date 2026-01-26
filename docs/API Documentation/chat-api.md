@@ -1129,7 +1129,46 @@ Polls the current status of an attachment.
 
 ---
 
-## 15) Generate Download URL (SAS)
+## 15) Delete Attachment
+
+### Endpoint
+
+```http
+DELETE /users/chats/upload/attachment/{attachment_id}
+```
+
+### Description
+
+Deletes an attachment that has not yet been sent in a message. This allows users to remove uploaded files before they are included in a chat message. Once an attachment is linked to a message, it cannot be deleted.
+
+The deletion is a soft delete — the database record is marked as deleted and the associated blob files (including thumbnails) are removed from storage.
+
+### Success Response (200)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Attachment deleted successfully",
+  "data": null
+}
+```
+
+### Error Responses
+
+- 400 Bad Request — "Attachment has already been deleted" or "Cannot delete attachment that has been sent in a message"
+- 404 Not Found — "Attachment not found or access denied"
+- 500 Internal Server Error — "Failed to delete attachment"
+
+### Example cURL
+
+```bash
+curl -X DELETE "$BASE_URL/users/chats/upload/attachment/2b5a4d8e-..." \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+## 16) Generate Download URL (SAS)
 
 ### Endpoint
 
@@ -1163,7 +1202,7 @@ Returns a short-lived read SAS URL for the original attachment. Only available w
 
 ---
 
-## 16) Stream Attachment Status (SSE)
+## 17) Stream Attachment Status (SSE)
 
 ### Endpoint
 
@@ -1198,7 +1237,7 @@ es.addEventListener('complete', () => es.close());
 
 ---
 
-## 17) Presign Batch
+## 18) Presign Batch
 
 ### Endpoint
 
@@ -1255,7 +1294,7 @@ POST /users/chats/upload/presign/batch
 
 ---
 
-## 18) Finalize Batch
+## 19) Finalize Batch
 
 ### Endpoint
 
