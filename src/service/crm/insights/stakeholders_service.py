@@ -22,7 +22,11 @@ from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     DealStakeholder,
     StakeholderSource,
 )
+from src.domain.models.organisation_tables.sync.timeline_models import TimelineEventType
 from src.infra.utils.logger import get_logger
+from src.service.crm.timeline.deal_timeline_sync_service import (
+    build_stakeholder_timeline_event,
+)
 
 logger = get_logger("stakeholders_service")
 
@@ -244,6 +248,16 @@ class StakeholdersService:
             )
 
         stakeholder.approval_status = ApprovalStatus.REMOVED
+
+        # Create timeline event for the stakeholder removal
+        timeline_event = build_stakeholder_timeline_event(
+            organisation_id=self.organisation_id,
+            deal_id=deal_id,
+            stakeholder=stakeholder,
+            event_type=TimelineEventType.STAKEHOLDER_REMOVED,
+        )
+        self.session.add(timeline_event)
+
         await self.session.commit()
         await self.session.refresh(stakeholder)
         return stakeholder
@@ -313,6 +327,16 @@ class StakeholdersService:
             approval_status=ApprovalStatus.APPROVED,  # Manual adds are trusted
         )
         self.session.add(new_stakeholder)
+
+        # Create timeline event for the new stakeholder
+        timeline_event = build_stakeholder_timeline_event(
+            organisation_id=self.organisation_id,
+            deal_id=deal_id,
+            stakeholder=new_stakeholder,
+            event_type=TimelineEventType.STAKEHOLDER_ADDED,
+        )
+        self.session.add(timeline_event)
+
         await self.session.commit()
         await self.session.refresh(new_stakeholder)
 
@@ -456,6 +480,15 @@ class StakeholdersService:
                 source=StakeholderSource.CRM,
             )
             self.session.add(new_stakeholder)
+
+            # Create timeline event for the new stakeholder
+            timeline_event = build_stakeholder_timeline_event(
+                organisation_id=self.organisation_id,
+                deal_id=deal_id,
+                stakeholder=new_stakeholder,
+                event_type=TimelineEventType.STAKEHOLDER_ADDED,
+            )
+            self.session.add(timeline_event)
 
             # Track for response - add email to existing set
             existing_emails.add(contact.email.lower())

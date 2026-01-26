@@ -16,11 +16,13 @@ from src.domain.models.organisation_tables.sync.calendar import (
     CalendarEventDealAssociation,
     CalendarEventUserState,
 )
+from src.domain.models.organisation_tables.sync.crm.stakeholders import DealStakeholder
 from src.domain.models.organisation_tables.sync.email_models import (
     DealEmailAssociation,
     Email,
 )
 from src.domain.models.organisation_tables.sync.integration_models import KnowledgeIntegration
+from src.domain.models.organisation_tables.sync.risk_blocker_models import DealRiskBlocker
 from src.domain.models.organisation_tables.sync.timeline_models import (
     DealTimelineEvent,
     TimelineEventSource,
@@ -321,6 +323,57 @@ class DealTimelineService:
                 "primary_contact_email": metadata.get("primary_contact_email"),
             }
 
+        # Risk/Blocker Events
+        if event_type == TimelineEventType.BLOCKER_ADDED.value:
+            return {
+                "risk_blocker_id": metadata.get("risk_blocker_id"),
+                "item_type": metadata.get("item_type"),
+                "severity": metadata.get("severity"),
+                "category": metadata.get("category"),
+                "is_ai_generated": metadata.get("is_ai_generated"),
+            }
+
+        if event_type == TimelineEventType.BLOCKER_RESOLVED.value:
+            return {
+                "risk_blocker_id": metadata.get("risk_blocker_id"),
+                "item_type": metadata.get("item_type"),
+                "severity": metadata.get("severity"),
+                "resolution_notes": metadata.get("resolution_notes"),
+            }
+
+        if event_type == TimelineEventType.BLOCKER_DISMISSED.value:
+            return {
+                "risk_blocker_id": metadata.get("risk_blocker_id"),
+                "item_type": metadata.get("item_type"),
+                "severity": metadata.get("severity"),
+            }
+
+        if event_type == TimelineEventType.RISK_FLAGGED.value:
+            return {
+                "risk_blocker_id": metadata.get("risk_blocker_id"),
+                "severity": metadata.get("severity"),
+                "category": metadata.get("category"),
+                "is_ai_generated": metadata.get("is_ai_generated"),
+            }
+
+        # Stakeholder Events
+        if event_type == TimelineEventType.STAKEHOLDER_ADDED.value:
+            return {
+                "stakeholder_id": metadata.get("stakeholder_id"),
+                "email": metadata.get("email"),
+                "name": metadata.get("name"),
+                "job_title": metadata.get("job_title"),
+                "source": metadata.get("source"),
+                "stance": metadata.get("stance"),
+            }
+
+        if event_type == TimelineEventType.STAKEHOLDER_REMOVED.value:
+            return {
+                "stakeholder_id": metadata.get("stakeholder_id"),
+                "email": metadata.get("email"),
+                "name": metadata.get("name"),
+            }
+
         # Fallback for unknown types
         return {"preview": event.title}
 
@@ -342,6 +395,22 @@ class DealTimelineService:
             TimelineEventType.DEAL_CREATED.value,
         ):
             return self._build_preview_event_data(event)
+
+        # Risk/Blocker events - fetch full record for enriched details
+        if event_type in (
+            TimelineEventType.BLOCKER_ADDED.value,
+            TimelineEventType.BLOCKER_RESOLVED.value,
+            TimelineEventType.BLOCKER_DISMISSED.value,
+            TimelineEventType.RISK_FLAGGED.value,
+        ):
+            return await self._fetch_risk_blocker_event_data(event)
+
+        # Stakeholder events - fetch full record for enriched details
+        if event_type in (
+            TimelineEventType.STAKEHOLDER_ADDED.value,
+            TimelineEventType.STAKEHOLDER_REMOVED.value,
+        ):
+            return await self._fetch_stakeholder_event_data(event)
 
         # Fallback
         return {"preview": event.title}
@@ -529,6 +598,121 @@ class DealTimelineService:
             # Detail enrichment
             "attendees": attendees if attendees else None,
             "meeting_summary": meeting_summary,
+        }
+
+    async def _fetch_risk_blocker_event_data(self, event: DealTimelineEvent) -> dict[str, Any]:
+        """Fetch enriched risk/blocker data for detail view.
+
+        Returns "smart data" matching the RiskBlockerListItem fields used in the
+        existing Risks & Blockers panel, plus key details for context.
+
+        For full details (audit trail, provenance, etc.), frontend should use:
+        GET /deals/risks-blockers/{risk_blocker_id}
+        """
+        # Start with preview data
+        preview = self._build_preview_event_data(event)
+        metadata = event.event_metadata or {}
+
+        # Try to fetch the source risk/blocker record
+        risk_blocker_id_str = metadata.get("risk_blocker_id")
+        if not risk_blocker_id_str:
+            return preview
+
+        try:
+            risk_blocker_id = UUID(risk_blocker_id_str)
+        except Exception:
+            logger.warning("Invalid risk_blocker_id: %s", risk_blocker_id_str)
+            return preview
+
+        rb_table: Table = _table(DealRiskBlocker)
+        stmt = select(DealRiskBlocker).where(
+            rb_table.c.organisation_id == self.organisation_id,
+            rb_table.c.risk_blocker_id == risk_blocker_id,
+        )
+        result = await self.session.execute(stmt)
+        risk_blocker = result.scalar_one_or_none()
+
+        if not risk_blocker:
+            return preview
+
+        # Build smart response (aligned with RiskBlockerListItem + key context)
+        return {
+            # ID for navigation to full detail view
+            "risk_blocker_id": str(risk_blocker.risk_blocker_id),
+            # Classification (core fields from list view)
+            "item_type": _enum_value(risk_blocker.item_type),
+            "severity": _enum_value(risk_blocker.severity),
+            "category": _enum_value(risk_blocker.category),
+            "status": _enum_value(risk_blocker.status),
+            # Content (title + quote for preview, description for context)
+            "title": risk_blocker.title,
+            "description": risk_blocker.description,
+            "quote": risk_blocker.quote,
+            # Source (for icon display)
+            "source_type": _enum_value(risk_blocker.source_type),
+            "source_context": risk_blocker.source_context,
+            # AI indicator (for badge)
+            "is_ai_generated": risk_blocker.is_ai_generated,
+            # Owner (for assignment display)
+            "owner_name": risk_blocker.owner_name,
+            # Resolution summary (only for resolved items)
+            "resolution_notes": risk_blocker.resolution_notes,
+        }
+
+    async def _fetch_stakeholder_event_data(self, event: DealTimelineEvent) -> dict[str, Any]:
+        """Fetch enriched stakeholder data for detail view.
+
+        Returns "smart data" matching the StakeholderDetail fields used in the
+        existing Stakeholders panel.
+
+        For full details (engagement history, etc.), frontend should use:
+        GET /deals/{deal_id}/stakeholders/{stakeholder_id}
+        """
+        # Start with preview data
+        preview = self._build_preview_event_data(event)
+        metadata = event.event_metadata or {}
+
+        # Try to fetch the source stakeholder record
+        stakeholder_id_str = metadata.get("stakeholder_id")
+        if not stakeholder_id_str:
+            return preview
+
+        try:
+            stakeholder_id = UUID(stakeholder_id_str)
+        except Exception:
+            logger.warning("Invalid stakeholder_id: %s", stakeholder_id_str)
+            return preview
+
+        sh_table: Table = _table(DealStakeholder)
+        stmt = select(DealStakeholder).where(
+            sh_table.c.organisation_id == self.organisation_id,
+            sh_table.c.stakeholder_id == stakeholder_id,
+        )
+        result = await self.session.execute(stmt)
+        stakeholder = result.scalar_one_or_none()
+
+        if not stakeholder:
+            return preview
+
+        # Build smart response (aligned with StakeholderDetail)
+        return {
+            # ID for navigation to full detail view
+            "stakeholder_id": str(stakeholder.stakeholder_id),
+            # Identity (core fields)
+            "email": stakeholder.email,
+            "name": stakeholder.name,
+            "job_title": stakeholder.job_title,
+            # Key insights (what matters for quick understanding)
+            "source": _enum_value(stakeholder.source),
+            "stance": _enum_value(stakeholder.stance),
+            "decision_power": _enum_value(stakeholder.decision_power),
+            "champion_potential": stakeholder.champion_potential,
+            # Engagement indicators
+            "temperature": _enum_value(stakeholder.temperature),
+            "engagement_score": stakeholder.engagement_score,
+            "last_contact_at": (
+                stakeholder.last_contact_at.isoformat() if stakeholder.last_contact_at else None
+            ),
         }
 
     # -------------------------------------------------------------------------

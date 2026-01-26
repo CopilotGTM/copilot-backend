@@ -21,10 +21,17 @@ Supported Event Types:
 - MEETING: Calendar event associations
 - STAGE_CHANGE: Deal stage transitions (from CRMDealStageHistory)
 - DEAL_CREATED: Deal creation events
+- BLOCKER_ADDED: When a blocker is created (manual or AI-extracted)
+- BLOCKER_RESOLVED: When a blocker is resolved
+- BLOCKER_DISMISSED: When a blocker is dismissed
+- RISK_FLAGGED: When a risk is identified (manual or AI-extracted)
+- STAKEHOLDER_ADDED: When a stakeholder is added to a deal
+- STAKEHOLDER_REMOVED: When a stakeholder is removed from a deal
 
 NOTE: Real-time timeline creation happens INLINE in sync services
-(DealSyncService, DealEmailMatcher, DealMeetingMatcher) - NOT via these tasks.
-These tasks are for backfilling existing data.
+(DealSyncService, DealEmailMatcher, DealMeetingMatcher, RiskBlockerService,
+StakeholdersService) - NOT via these tasks. These tasks are for backfilling
+existing data.
 """
 
 from __future__ import annotations
@@ -179,7 +186,10 @@ def sync_org_timeline_task(
     Args:
         organisation_id: Organisation UUID
         deal_ids: Optional list of specific deal IDs to sync
-        event_types: Optional filter - ["EMAIL", "MEETING", "STAGE_CHANGE", "DEAL_CREATED"]
+        event_types: Optional filter - one or more of:
+            ["EMAIL", "MEETING", "STAGE_CHANGE", "DEAL_CREATED", "BLOCKER_ADDED",
+             "BLOCKER_RESOLVED", "BLOCKER_DISMISSED", "RISK_FLAGGED",
+             "STAKEHOLDER_ADDED", "STAKEHOLDER_REMOVED"]
         batch_size: Number of deals per batch (default 50)
 
     Returns:
@@ -275,7 +285,10 @@ def sync_deal_timeline_task(
     Args:
         organisation_id: Organisation UUID
         deal_id: Deal UUID
-        event_types: Optional filter - ["EMAIL", "MEETING", "STAGE_CHANGE", "DEAL_CREATED"]
+        event_types: Optional filter - one or more of:
+            ["EMAIL", "MEETING", "STAGE_CHANGE", "DEAL_CREATED", "BLOCKER_ADDED",
+             "BLOCKER_RESOLVED", "BLOCKER_DISMISSED", "RISK_FLAGGED",
+             "STAKEHOLDER_ADDED", "STAKEHOLDER_REMOVED"]
 
     Returns:
         Dictionary with sync results:

@@ -26,7 +26,11 @@ from src.domain.models.organisation_tables.sync.risk_blocker_models import (
     RiskBlockerStatus,
     RiskBlockerType,
 )
+from src.domain.models.organisation_tables.sync.timeline_models import TimelineEventType
 from src.infra.utils.logger import get_logger
+from src.service.crm.timeline.deal_timeline_sync_service import (
+    build_risk_blocker_timeline_event,
+)
 
 logger = get_logger("risk_blocker_service")
 
@@ -275,6 +279,21 @@ class RiskBlockerService:
         }
 
         self.session.add(item)
+
+        # Create timeline event for the new risk/blocker
+        timeline_event_type = (
+            TimelineEventType.RISK_FLAGGED
+            if item_type == RiskBlockerType.RISK
+            else TimelineEventType.BLOCKER_ADDED
+        )
+        timeline_event = build_risk_blocker_timeline_event(
+            organisation_id=self.organisation_id,
+            deal_id=deal_id,
+            risk_blocker=item,
+            event_type=timeline_event_type,
+        )
+        self.session.add(timeline_event)
+
         await self.session.commit()
         await self.session.refresh(item)
 
@@ -401,6 +420,15 @@ class RiskBlockerService:
 
         self._add_audit_entry(item, "dismissed", {"previous_status": previous_status})
 
+        # Create timeline event for the dismissal
+        timeline_event = build_risk_blocker_timeline_event(
+            organisation_id=self.organisation_id,
+            deal_id=item.deal_id,
+            risk_blocker=item,
+            event_type=TimelineEventType.BLOCKER_DISMISSED,
+        )
+        self.session.add(timeline_event)
+
         await self.session.commit()
         await self.session.refresh(item)
 
@@ -442,6 +470,15 @@ class RiskBlockerService:
                 "resolution_notes": resolution_notes,
             },
         )
+
+        # Create timeline event for the resolution
+        timeline_event = build_risk_blocker_timeline_event(
+            organisation_id=self.organisation_id,
+            deal_id=item.deal_id,
+            risk_blocker=item,
+            event_type=TimelineEventType.BLOCKER_RESOLVED,
+        )
+        self.session.add(timeline_event)
 
         await self.session.commit()
         await self.session.refresh(item)

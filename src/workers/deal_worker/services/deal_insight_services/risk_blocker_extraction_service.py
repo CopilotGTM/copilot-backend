@@ -32,9 +32,14 @@ from src.domain.models.organisation_tables.sync.risk_blocker_models import (
     DealRiskBlocker,
     RiskBlockerSource,
     RiskBlockerStatus,
+    RiskBlockerType,
 )
+from src.domain.models.organisation_tables.sync.timeline_models import TimelineEventType
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
+from src.service.crm.timeline.deal_timeline_sync_service import (
+    build_risk_blocker_timeline_event,
+)
 from src.workers.deal_worker.services.deal_job_publisher import DealJobRedisPublisher
 from src.workers.deal_worker.utils.deal_job_utils import (
     count_deal_emails,
@@ -177,6 +182,22 @@ class RiskBlockerExtractionService:
         )
 
         session.add(item)
+
+        # Create timeline event for the AI-extracted risk/blocker
+        # Note: AI-generated items create timeline events immediately, not on user confirmation
+        timeline_event_type = (
+            TimelineEventType.RISK_FLAGGED
+            if extracted.item_type == RiskBlockerType.RISK
+            else TimelineEventType.BLOCKER_ADDED
+        )
+        timeline_event = build_risk_blocker_timeline_event(
+            organisation_id=self.organisation_id,
+            deal_id=deal_id,
+            risk_blocker=item,
+            event_type=timeline_event_type,
+        )
+        session.add(timeline_event)
+
         return item
 
     async def run_extraction(
