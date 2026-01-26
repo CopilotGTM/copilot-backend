@@ -1,18 +1,22 @@
-"""Agent execution context encapsulating session and metadata.
+"""Agent execution context encapsulating organisation metadata.
 
 This module provides AgentContext, a unified container for runtime dependencies
-(database session, organisation/user IDs, etc.) passed to agents and tools.
+(organisation/user IDs, etc.) passed to agents and tools.
 Using a context object instead of individual parameters improves:
 - Type safety and validation
 - API ergonomics (single parameter vs many)
 - Extensibility (add tracing, caching without signature changes)
 - Fresh session pattern (sessions acquired on-demand, released promptly)
 
-SECURITY BOUNDARIES (immutable, baked into context):
+SECURITY BOUNDARIES (immutable, baked into context at initialization):
 - organisation_id: Tools use context.organisation_id, cannot accept as parameter.
-  This prevents cross-org data access attacks.
+  This prevents cross-org data access attacks. Agents CANNOT modify this value.
 - deal_id: For deal-scoped agents, tools use context.deal_id, cannot accept as parameter.
   This prevents agents from querying data from other deals.
+
+IMPORTANT: organisation_id and deal_id are set at context creation and CANNOT be
+modified by agents or tools. This is a critical security feature that prevents
+agents from accessing data from other organisations or deals.
 
 TOOL CATEGORIES:
 1. Deal-scoped tools (stakeholders, meetings, etc.) - use both organisation_id AND deal_id from context
@@ -36,9 +40,10 @@ class AgentContext:
     """Runtime context for agent execution.
 
     Encapsulates tenant metadata required by agents and tools.
-    Session is acquired on-demand via acquire_session() method.
+    Sessions are acquired on-demand via acquire_session() method - this prevents
+    holding database connections during long-running LLM calls.
 
-    SECURITY BOUNDARIES (immutable once set):
+    SECURITY BOUNDARIES (immutable once set - CANNOT be modified by agents):
     - organisation_id: Required. Tools use context.organisation_id and cannot
       accept it as a parameter. Prevents cross-org data access.
     - deal_id: Optional. For deal-scoped agents, tools use context.deal_id and
@@ -51,7 +56,6 @@ class AgentContext:
         user_id: Current user UUID (optional, for user-scoped queries)
         message_id: Current message correlation ID (optional, for tracing)
         metadata: Extensible dict for additional context (caching, rate limiting, etc.)
-        session: Legacy session field (deprecated - use acquire_session() instead)
     """
 
     organisation_id: UUID
@@ -60,9 +64,6 @@ class AgentContext:
     user_id: UUID | None = None
     message_id: str | None = None
     metadata: dict = field(default_factory=dict)
-    # Legacy session field for backward compatibility with existing agents
-    # New agents/tools should use acquire_session() instead
-    session: AsyncSession | None = None
 
     def __post_init__(self):
         """Validate required fields."""
@@ -89,7 +90,10 @@ class AgentContext:
             yield session
 
     def with_message_id(self, message_id: str) -> AgentContext:
-        """Create a copy with updated message_id (immutable-style update)."""
+        """Create a copy with updated message_id (immutable-style update).
+
+        Note: organisation_id and deal_id are preserved (security boundaries).
+        """
         return AgentContext(
             organisation_id=self.organisation_id,
             deal_id=self.deal_id,
@@ -97,11 +101,13 @@ class AgentContext:
             user_id=self.user_id,
             message_id=message_id,
             metadata=self.metadata.copy(),
-            session=self.session,  # Preserve legacy session if set
         )
 
     def with_metadata(self, **kwargs) -> AgentContext:
-        """Create a copy with merged metadata."""
+        """Create a copy with merged metadata.
+
+        Note: organisation_id and deal_id are preserved (security boundaries).
+        """
         new_metadata = {**self.metadata, **kwargs}
         return AgentContext(
             organisation_id=self.organisation_id,
@@ -110,13 +116,7 @@ class AgentContext:
             user_id=self.user_id,
             message_id=self.message_id,
             metadata=new_metadata,
-            session=self.session,  # Preserve legacy session if set
         )
-
-    @property
-    def has_legacy_session(self) -> bool:
-        """Check if a legacy session is attached (for backward compatibility)."""
-        return self.session is not None
 
 
 __all__ = ["AgentContext"]

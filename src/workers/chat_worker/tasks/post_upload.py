@@ -1,207 +1,40 @@
+"""Post-upload processing task for chat attachments.
+
+This task delegates all business logic to PostUploadService.
+The task file contains only the Celery task definition.
+"""
+
 from __future__ import annotations
 
-import contextlib
-
-from src.domain.models.organisation_tables.chat_message_models import (
-    Attachment,
-    AttachmentStatus,
-)
-from src.infra.config.configs import thumbnail_config
-from src.infra.database.sessions import acquire_org_session
-from src.infra.media.thumbnail_generator import generate_thumbnails
-from src.infra.messaging.attachment_status_publish import publish_attachment_status
-from src.infra.messaging.event_models import AttachmentEventUpdate
-from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
-from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.workers.chat_worker.celery_app import app
+from src.workers.chat_worker.services import PostUploadService
 
 logger = get_logger("attachments_post_upload_task")
 
 
-def _assign_generated_thumbnails(attachment: Attachment, created: dict[str, str]):
-    if not created:
-        return
-    if "thumb_small" in created:
-        attachment.thumbnail_small_path = created["thumb_small"]
-    if "thumb_medium" in created:
-        attachment.thumbnail_medium_path = created["thumb_medium"]
-
-
-def _attachment_already_processed(attachment: Attachment | None) -> bool:
-    """Return True if the attachment is already fully processed.
-
-    Consider an attachment processed if status is COMPLETED/FAILED and a checksum exists.
-    """
-    if not attachment:
-        return False
-    return attachment.status in {
-        AttachmentStatus.COMPLETED,
-        AttachmentStatus.FAILED,
-    } and bool(attachment.checksum)
-
-
-def _compute_and_persist_checksum(
-    storage: AzureOrganisationBlobStorage,
-    attachment: Attachment,
-    session,
-) -> None:
-    """Compute checksum if missing and persist it; swallow and log errors.
-
-    Uses a persistent thread-local event loop via run_async() to prevent
-    memory leaks from creating new event loops per task.
-    """
-    try:
-        if attachment.storage_path and not attachment.checksum:
-            checksum = run_async(storage.compute_checksum(attachment.storage_path))
-            attachment.checksum = checksum
-            session.merge(attachment)
-            session.commit()
-    except Exception:
-        logger.exception("Checksum computation failed for attachment %s", attachment.attachment_id)
-
-
-def _update_status_and_commit(
-    session,
-    attachment: Attachment,
-    status: AttachmentStatus,
-    error_message: str | None = None,
-) -> None:
-    """Update status and optional error message, then commit."""
-    attachment.status = status
-    if error_message:
-        attachment.processing_error = error_message[:500]
-    session.merge(attachment)
-    session.commit()
-
-
-def _generate_thumbnail_sas_url(
-    storage: AzureOrganisationBlobStorage,
-    path: str | None,
-    minutes: int = 120,
-) -> str | None:
-    """Generate a read SAS URL for a thumbnail path; return None on failure or missing path.
-
-    Uses a persistent thread-local event loop via run_async() to prevent
-    memory leaks from creating new event loops per task.
-    """
-    if not path:
-        return None
-    try:
-        return run_async(storage.generate_read_sas(path, minutes=minutes))
-    except Exception:
-        logger.debug("Thumbnail SAS generation failed for path=%s", path, exc_info=True)
-        return None
-
-
-def _publish_status_event(
-    organisation_id: str,
-    attachment: Attachment,
-    status: AttachmentStatus,
-    thumbnail_small_url: str | None,
-) -> None:
-    """Publish attachment status update event."""
-    event_to_publish = AttachmentEventUpdate(
-        attachment_id=str(attachment.attachment_id),
-        status=status,
-        updated_at=attachment.updated_at.isoformat() if attachment.updated_at else None,
-        error_message=attachment.processing_error,
-        thumbnail_small_url=thumbnail_small_url,
-    )
-    publish_attachment_status(organisation_id, event_to_publish)
-
-
 @app.task(name="attachments.post_upload", bind=True, acks_late=True, max_retries=3)
-def post_upload(self, organisation_id: str, attachment_id: str):
+def post_upload(self, organisation_id: str, attachment_id: str):  # noqa: ARG001
     """Post-upload processing: checksum and thumbnail generation.
 
-    Uses a persistent thread-local event loop via run_async() to prevent
-    memory leaks from creating new event loops per task.
+    Delegates to PostUploadService which handles:
+    - Loading attachment data
+    - Computing checksums (Azure blob operation)
+    - Generating thumbnails (Azure blob operation)
+    - Updating status
+
+    The service follows the fresh session pattern internally.
     """
     logger.info(
         "Attachment post-upload task started org=%s attachment=%s",
         organisation_id,
         attachment_id,
     )
-    session_gen = acquire_org_session(organisation_id)
-    session = next(session_gen)
-    storage = AzureOrganisationBlobStorage(organisation_id=organisation_id)  # type: ignore[arg-type]
 
-    attachment: Attachment | None = None
-    try:
-        attachment = session.get(Attachment, attachment_id)
-        if not attachment:
-            logger.warning("Attachment %s not found for processing", attachment_id)
-            return
+    service = PostUploadService(organisation_id)
+    success = service.process(attachment_id)
 
-        if _attachment_already_processed(attachment):
-            logger.info("Attachment %s already processed", attachment_id)
-            return
-
-        # Compute checksum if missing
-        _compute_and_persist_checksum(storage, attachment, session)
-
-        # Thumbnails via shared service (guard using config to avoid unnecessary work)
-        try:
-            mt = (attachment.mimetype or "").lower()
-            if thumbnail_config.is_supported(mt):
-                created = run_async(
-                    generate_thumbnails(
-                        storage=storage,
-                        original_blob_path=attachment.storage_path,
-                        mimetype=attachment.mimetype,
-                    )
-                )
-                _assign_generated_thumbnails(attachment, created)
-        except Exception as e:
-            logger.exception(
-                "Thumbnail generation failed for attachment %s",
-                attachment.attachment_id,
-            )
-            attachment.status = AttachmentStatus.FAILED
-            attachment.processing_error = f"thumbnail_failed: {e}"[:500]
-        finally:
-            session.merge(attachment)
-            session.commit()
-
-        # Finalize status and persist
-        _update_status_and_commit(session, attachment, AttachmentStatus.COMPLETED)
-
-        # Publish completion event with optional SAS
-        thumbnail_small_url = _generate_thumbnail_sas_url(
-            storage, attachment.thumbnail_small_path, minutes=120
-        )
-        _publish_status_event(
-            organisation_id, attachment, AttachmentStatus.COMPLETED, thumbnail_small_url
-        )
+    if success:
         logger.info("Attachment post-upload task completed attachment=%s", attachment_id)
-    except Exception as e:
-        logger.error(
-            "Attachment post-upload failed org=%s attachment=%s error=%s",
-            organisation_id,
-            attachment_id,
-            e,
-        )
-        try:
-            if attachment is not None:
-                _update_status_and_commit(
-                    session,
-                    attachment,
-                    AttachmentStatus.FAILED,
-                    error_message=f"post_upload_failed: {e}",
-                )
-                _publish_status_event(organisation_id, attachment, AttachmentStatus.FAILED, None)
-        except Exception:
-            logger.debug(
-                "Failed to persist/publish FAILED state for attachment %s",
-                attachment_id,
-                exc_info=True,
-            )
-    finally:
-        with contextlib.suppress(Exception):
-            session.close()
-        with contextlib.suppress(Exception):
-            session_gen.close()
-        # Close async Azure clients using persistent thread-local event loop
-        with contextlib.suppress(Exception):
-            run_async(storage.close())
+    else:
+        logger.warning("Attachment post-upload task failed attachment=%s", attachment_id)

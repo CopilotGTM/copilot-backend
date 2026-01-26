@@ -48,13 +48,14 @@ def get_db_session_lock() -> asyncio.Lock:
 db_session_lock = get_db_session_lock
 
 
-def validate_org_context(context: AgentContext | None, require_session: bool = False) -> bool:
+def validate_org_context(context: AgentContext | None) -> bool:
     """Validate that context has required org-scoped metadata.
+
+    SECURITY: organisation_id is an immutable security boundary set at context creation.
+    It cannot be modified by agents or tools, preventing cross-org data access.
 
     Args:
         context: AgentContext to validate
-        require_session: If True, also require legacy session to be present.
-                        Set to False for tools that use context.acquire_session().
 
     Returns:
         True if context is valid for org-scoped operations
@@ -64,10 +65,6 @@ def validate_org_context(context: AgentContext | None, require_session: bool = F
         return False
     if not context.organisation_id:
         logger.warning("Tool called without organisation_id")
-        return False
-    # Only check session if explicitly required (legacy tools)
-    if require_session and not context.session:
-        logger.warning("Tool called without database session (legacy mode)")
         return False
     return True
 

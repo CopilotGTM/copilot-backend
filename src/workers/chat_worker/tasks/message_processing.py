@@ -265,8 +265,14 @@ async def _consume_agent_stream(
 ) -> dict:
     """Run the async agent (async generator), stream frames, and return a summary.
 
+    Uses fresh session pattern: AgentContext is created without a session.
+    Agents and tools acquire sessions on-demand via context.acquire_session().
+    This prevents holding database connections during long-running LLM calls.
+
     Returns a dict with keys: answer, confidence, suggestions, sources, agent_switch_request, user_questions.
     """
+    from src.agents.context import AgentContext
+
     result_summary = {
         "answer_parts": [],
         "final_answer": None,
@@ -288,71 +294,65 @@ async def _consume_agent_stream(
 
     sequence_counter = 0
 
-    # Acquire async session for agent tools
-    from src.agents.context import AgentContext
-    from src.infra.database.sessions import acquire_org_async_session
+    # Build context WITHOUT a session - agents/tools acquire sessions on-demand
+    # via context.acquire_session(). This prevents holding DB connections during LLM calls.
+    context = AgentContext(
+        organisation_id=organisation_id,
+        org_name="CopilotGTM",
+        user_id=user_id,
+        message_id=str(assistant_message_id),
+    )
 
-    async for session in acquire_org_async_session(organisation_id):
-        # Build context once for the entire agent execution
-        # TODO: Fetch org_name from organisation database in future
-        context = AgentContext(
-            session=session,
-            organisation_id=organisation_id,
-            org_name="CopilotGTM",
-            user_id=user_id,
-            message_id=str(assistant_message_id),
-        )
+    async for frame in run_agent_for_chat(
+        chat_type=chat_type,
+        messages=history,  # type: ignore[arg-type]
+        context=context,
+    ):
+        try:
+            data = frame.model_dump()
+        except Exception:
+            # Create a closure to capture current frame value
+            def get_dict(current_frame=frame):
+                return getattr(current_frame, "dict", lambda: dict(current_frame))()
 
-        async for frame in run_agent_for_chat(
-            chat_type=chat_type,
-            messages=history,  # type: ignore[arg-type]
-            context=context,
-        ):
-            try:
-                data = frame.model_dump()
-            except Exception:
-                # Create a closure to capture current frame value
-                def get_dict(current_frame=frame):
-                    return getattr(current_frame, "dict", lambda: dict(current_frame))()
+            data = get_dict()
 
-                data = get_dict()
-
-            # Transform to production-level frame structure with job_id and assistant_message_id
-            production_frame = {
-                **data,  # Copy all frame data
-                "job_id": str(job.job_id),
-                "assistant_message_id": str(assistant_message_id),
-                "version": "1.0",
-                "timestamp": time.time(),
-                "sequence": sequence_counter,
-            }
-
-            sequence_counter += 1
-
-            # Publish frame to Redis Stream
-            publisher.publish(production_frame)
-
-            # Process frame data for summary (using original data structure)
-            _process_frame_data(data, result_summary)
-
-        return {
-            "answer": (
-                "".join(result_summary["answer_parts"])
-                if result_summary["answer_parts"]
-                else result_summary["final_answer"]
-            ),
-            "confidence": result_summary["confidence"],
-            "suggestions": result_summary["suggestions"],
-            "sources": result_summary["sources"],
-            "agent_switch_request": result_summary["agent_switch_request"],
-            "user_questions": result_summary["user_questions"],
-            "progress_updates": result_summary["progress_updates"],
-            "tool_usage": result_summary["tool_usage"],
-            "thinking_updates": result_summary["thinking_updates"],
-            "visualizations": result_summary["visualizations"],
-            "structured_data": result_summary["structured_data"],
-            "task_list": result_summary["task_list"],
+        # Transform to production-level frame structure with job_id and assistant_message_id
+        production_frame = {
+            **data,  # Copy all frame data
+            "job_id": str(job.job_id),
+            "assistant_message_id": str(assistant_message_id),
+            "version": "1.0",
+            "timestamp": time.time(),
+            "sequence": sequence_counter,
         }
+
+        sequence_counter += 1
+
+        # Publish frame to Redis Stream
+        publisher.publish(production_frame)
+
+        # Process frame data for summary (using original data structure)
+        _process_frame_data(data, result_summary)
+
+    return {
+        "answer": (
+            "".join(result_summary["answer_parts"])
+            if result_summary["answer_parts"]
+            else result_summary["final_answer"]
+        ),
+        "confidence": result_summary["confidence"],
+        "suggestions": result_summary["suggestions"],
+        "sources": result_summary["sources"],
+        "agent_switch_request": result_summary["agent_switch_request"],
+        "user_questions": result_summary["user_questions"],
+        "progress_updates": result_summary["progress_updates"],
+        "tool_usage": result_summary["tool_usage"],
+        "thinking_updates": result_summary["thinking_updates"],
+        "visualizations": result_summary["visualizations"],
+        "structured_data": result_summary["structured_data"],
+        "task_list": result_summary["task_list"],
+    }
 
 
 @app.task(name="chat.process_message", acks_late=True, bind=True, max_retries=5)

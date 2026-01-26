@@ -16,6 +16,7 @@ from __future__ import annotations
 from src.workers.knowledge_worker.services.chunk_processor import ChunkProcessor
 from src.workers.knowledge_worker.services.extraction_service import ExtractionService
 from src.workers.knowledge_worker.services.image_processor import ImageProcessor
+from src.workers.knowledge_worker.services.post_upload_service import PostUploadService
 from src.workers.knowledge_worker.services.table_processor import TableProcessor
 from src.workers.knowledge_worker.services.task_helpers import TaskHelperService
 
@@ -23,6 +24,7 @@ __all__ = [
     "ChunkProcessor",
     "ExtractionService",
     "ImageProcessor",
+    "PostUploadService",
     "TableProcessor",
     "TaskHelperService",
 ]
