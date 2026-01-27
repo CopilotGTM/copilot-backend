@@ -184,7 +184,15 @@ class ChunkProcessor:
         # 5. Generate embedding
         embedding = self.embedding_service.get_embedding(enhanced_content)
 
-        # 6. Build metadata
+        # 6. Handle standalone images (from ImageParser)
+        # Standalone images pass their image info via raw_metadata["standalone_image"]
+        standalone_image = (
+            chunk.raw_metadata.get("standalone_image") if chunk.raw_metadata else None
+        )
+        if standalone_image:
+            picture_images.append(standalone_image)
+
+        # 7. Build metadata
         meta_data = {
             "source_metadata": {
                 "document_url": context.original_filename,
@@ -203,14 +211,17 @@ class ChunkProcessor:
         if chunk.raw_metadata:
             meta_data["parser_metadata"] = chunk.raw_metadata
 
-        # 7. Build filters
+        # 8. Build filters
+        # For standalone images, has_images should be True even if chunk.pictures is empty
+        is_standalone_image = bool(standalone_image)
         filters = {
             "has_tables": chunk.has_tables,
-            "has_images": chunk.has_images,
+            "has_images": chunk.has_images or is_standalone_image,
             "is_pdf": context.mimetype == "application/pdf" if context.mimetype else False,
+            "is_image": (context.mimetype.startswith("image/") if context.mimetype else False),
         }
 
-        # 8. Create OrganisationDocument
+        # 9. Create OrganisationDocument
         return OrganisationDocument(
             source_id=UUID(context.source_id),
             uploader_user_id=UUID(context.user_id),

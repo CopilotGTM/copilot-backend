@@ -84,7 +84,12 @@ class DoclingParser(IDocumentParser):
 
     @classmethod
     def supported_mimetypes(cls) -> list[str]:
-        """Return MIME types this parser supports."""
+        """Return MIME types this parser supports.
+
+        Note: Image MIME types (image/png, image/jpeg, etc.) are handled by
+        ImageParser which uses vision AI directly instead of OCR/text extraction.
+        This is more reliable and produces better results for standalone images.
+        """
         return [
             "application/pdf",
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -92,11 +97,6 @@ class DoclingParser(IDocumentParser):
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             "text/html",
             "text/markdown",
-            "image/png",
-            "image/jpeg",
-            "image/tiff",
-            "image/bmp",
-            "image/gif",
         ]
 
     @property

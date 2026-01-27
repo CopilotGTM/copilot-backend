@@ -147,6 +147,14 @@ class ParserRegistry:
         except ImportError as e:
             logger.warning(f"Failed to import light parsers: {e}")
 
+        # Import image parser - lightweight, uses vision AI directly
+        try:
+            from . import image_parser  # noqa: F401 - Standalone image parser
+
+            logger.info("ImageParser loaded for standalone image support")
+        except ImportError as e:
+            logger.warning(f"Failed to import image_parser: {e}")
+
         # Import heavy parsers (docling) - this loads ML libraries
         # Only imported when registry is accessed, not at worker startup
         try:
