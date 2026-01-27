@@ -26,14 +26,12 @@ class AgentModelConfig:
         model: Azure OpenAI deployment/model ID (e.g., "gpt-5", "gpt-5-mini")
         api_version: Azure OpenAI API version
         debug_mode: Whether to enable debug logging for agent
-        show_tool_calls: Whether to show tool calls in output
         timeout_seconds: Maximum time to wait for agent response
     """
 
     model: str
     api_version: str
     debug_mode: bool
-    show_tool_calls: bool
     timeout_seconds: int
 
 
@@ -60,17 +58,11 @@ class AgentConfig:
     # Summary Agent - generates meeting summaries from transcripts
     SUMMARY_MODEL: str = os.getenv("AGENT_SUMMARY_MODEL", "gpt-5-mini")
     SUMMARY_DEBUG: bool = os.getenv("AGENT_SUMMARY_DEBUG", "false").lower() == "true"
-    SUMMARY_SHOW_TOOL_CALLS: bool = (
-        os.getenv("AGENT_SUMMARY_SHOW_TOOL_CALLS", "true").lower() == "true"
-    )
     SUMMARY_TIMEOUT: int = int(os.getenv("AGENT_SUMMARY_TIMEOUT", "120"))
 
     # Briefing Agent - generates meeting preparation briefings
     BRIEFING_MODEL: str = os.getenv("AGENT_BRIEFING_MODEL", "gpt-5")
     BRIEFING_DEBUG: bool = os.getenv("AGENT_BRIEFING_DEBUG", "false").lower() == "true"
-    BRIEFING_SHOW_TOOL_CALLS: bool = (
-        os.getenv("AGENT_BRIEFING_SHOW_TOOL_CALLS", "true").lower() == "true"
-    )
     BRIEFING_TIMEOUT: int = int(os.getenv("AGENT_BRIEFING_TIMEOUT", "180"))
 
     # ==========================================================================
@@ -80,25 +72,16 @@ class AgentConfig:
     # Deal Summary Agent - generates comprehensive deal summaries
     DEAL_SUMMARY_MODEL: str = os.getenv("AGENT_DEAL_SUMMARY_MODEL", "gpt-5")
     DEAL_SUMMARY_DEBUG: bool = os.getenv("AGENT_DEAL_SUMMARY_DEBUG", "false").lower() == "true"
-    DEAL_SUMMARY_SHOW_TOOL_CALLS: bool = (
-        os.getenv("AGENT_DEAL_SUMMARY_SHOW_TOOL_CALLS", "true").lower() == "true"
-    )
     DEAL_SUMMARY_TIMEOUT: int = int(os.getenv("AGENT_DEAL_SUMMARY_TIMEOUT", "300"))
 
     # Risk Blocker Extraction Agent - extracts risks and blockers from deal communications
     RISK_BLOCKER_MODEL: str = os.getenv("AGENT_RISK_BLOCKER_MODEL", "gpt-5")
     RISK_BLOCKER_DEBUG: bool = os.getenv("AGENT_RISK_BLOCKER_DEBUG", "false").lower() == "true"
-    RISK_BLOCKER_SHOW_TOOL_CALLS: bool = (
-        os.getenv("AGENT_RISK_BLOCKER_SHOW_TOOL_CALLS", "true").lower() == "true"
-    )
     RISK_BLOCKER_TIMEOUT: int = int(os.getenv("AGENT_RISK_BLOCKER_TIMEOUT", "300"))
 
     # Stakeholder Analysis Agent - analyzes stakeholder insights from transcripts
     STAKEHOLDER_MODEL: str = os.getenv("AGENT_STAKEHOLDER_MODEL", "gpt-5-mini")
     STAKEHOLDER_DEBUG: bool = os.getenv("AGENT_STAKEHOLDER_DEBUG", "false").lower() == "true"
-    STAKEHOLDER_SHOW_TOOL_CALLS: bool = (
-        os.getenv("AGENT_STAKEHOLDER_SHOW_TOOL_CALLS", "false").lower() == "true"
-    )
     STAKEHOLDER_TIMEOUT: int = int(os.getenv("AGENT_STAKEHOLDER_TIMEOUT", "180"))
 
     # ==========================================================================
@@ -108,67 +91,34 @@ class AgentConfig:
     # General Agent - handles user queries with search and deal context tools
     GENERAL_MODEL: str = os.getenv("AGENT_GENERAL_MODEL", "gpt-5")
     GENERAL_DEBUG: bool = os.getenv("AGENT_GENERAL_DEBUG", "false").lower() == "true"
-    GENERAL_SHOW_TOOL_CALLS: bool = (
-        os.getenv("AGENT_GENERAL_SHOW_TOOL_CALLS", "false").lower() == "true"
-    )
     GENERAL_TIMEOUT: int = int(os.getenv("AGENT_GENERAL_TIMEOUT", "60"))
 
     # Router Agent - routes queries to appropriate agents
     ROUTER_MODEL: str = os.getenv("AGENT_ROUTER_MODEL", "gpt-5-mini")
     ROUTER_DEBUG: bool = os.getenv("AGENT_ROUTER_DEBUG", "false").lower() == "true"
-    ROUTER_SHOW_TOOL_CALLS: bool = (
-        os.getenv("AGENT_ROUTER_SHOW_TOOL_CALLS", "false").lower() == "true"
-    )
     ROUTER_TIMEOUT: int = int(os.getenv("AGENT_ROUTER_TIMEOUT", "30"))
 
     # ==========================================================================
     # HELPER METHODS
     # ==========================================================================
 
-    _CONFIG_MAP: dict[str, tuple[str, str, str, str]] = {
-        # agent_name: (model_attr, debug_attr, show_tool_calls_attr, timeout_attr)
-        "summary_agent": (
-            "SUMMARY_MODEL",
-            "SUMMARY_DEBUG",
-            "SUMMARY_SHOW_TOOL_CALLS",
-            "SUMMARY_TIMEOUT",
-        ),
-        "briefing_agent": (
-            "BRIEFING_MODEL",
-            "BRIEFING_DEBUG",
-            "BRIEFING_SHOW_TOOL_CALLS",
-            "BRIEFING_TIMEOUT",
-        ),
-        "deal_summary_agent": (
-            "DEAL_SUMMARY_MODEL",
-            "DEAL_SUMMARY_DEBUG",
-            "DEAL_SUMMARY_SHOW_TOOL_CALLS",
-            "DEAL_SUMMARY_TIMEOUT",
-        ),
+    _CONFIG_MAP: dict[str, tuple[str, str, str]] = {
+        # agent_name: (model_attr, debug_attr, timeout_attr)
+        "summary_agent": ("SUMMARY_MODEL", "SUMMARY_DEBUG", "SUMMARY_TIMEOUT"),
+        "briefing_agent": ("BRIEFING_MODEL", "BRIEFING_DEBUG", "BRIEFING_TIMEOUT"),
+        "deal_summary_agent": ("DEAL_SUMMARY_MODEL", "DEAL_SUMMARY_DEBUG", "DEAL_SUMMARY_TIMEOUT"),
         "risk_blocker_extraction_agent": (
             "RISK_BLOCKER_MODEL",
             "RISK_BLOCKER_DEBUG",
-            "RISK_BLOCKER_SHOW_TOOL_CALLS",
             "RISK_BLOCKER_TIMEOUT",
         ),
         "stakeholder_analysis_agent": (
             "STAKEHOLDER_MODEL",
             "STAKEHOLDER_DEBUG",
-            "STAKEHOLDER_SHOW_TOOL_CALLS",
             "STAKEHOLDER_TIMEOUT",
         ),
-        "general_agent": (
-            "GENERAL_MODEL",
-            "GENERAL_DEBUG",
-            "GENERAL_SHOW_TOOL_CALLS",
-            "GENERAL_TIMEOUT",
-        ),
-        "router_agent": (
-            "ROUTER_MODEL",
-            "ROUTER_DEBUG",
-            "ROUTER_SHOW_TOOL_CALLS",
-            "ROUTER_TIMEOUT",
-        ),
+        "general_agent": ("GENERAL_MODEL", "GENERAL_DEBUG", "GENERAL_TIMEOUT"),
+        "router_agent": ("ROUTER_MODEL", "ROUTER_DEBUG", "ROUTER_TIMEOUT"),
     }
 
     @classmethod
@@ -210,13 +160,12 @@ class AgentConfig:
                 f"Unknown agent: {agent_name}. Available: {list(cls._CONFIG_MAP.keys())}"
             )
 
-        model_attr, debug_attr, tool_calls_attr, timeout_attr = cls._CONFIG_MAP[agent_name]
+        model_attr, debug_attr, timeout_attr = cls._CONFIG_MAP[agent_name]
 
         return AgentModelConfig(
             model=getattr(cls, model_attr),
             api_version=cls.DEFAULT_API_VERSION,
             debug_mode=getattr(cls, debug_attr),
-            show_tool_calls=getattr(cls, tool_calls_attr),
             timeout_seconds=getattr(cls, timeout_attr),
         )
 
@@ -233,7 +182,7 @@ class AgentConfig:
         if agent_name not in cls._CONFIG_MAP:
             return 120
 
-        timeout_attr = cls._CONFIG_MAP[agent_name][3]
+        timeout_attr = cls._CONFIG_MAP[agent_name][2]
         return getattr(cls, timeout_attr)
 
     @classmethod

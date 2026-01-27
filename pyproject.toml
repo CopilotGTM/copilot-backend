@@ -97,8 +97,8 @@ knowledge = [
     # AI/ML for embeddings and summaries
     "transformers~=4.55.4",
     "huggingface-hub[hf_xet]==0.35.3",
-    "openai==1.101.0",
-    "agno~=1.8.1",
+    "openai~=2.15.0",
+    "agno==2.4.3",
     
     # Document Processing
     "pypdf==5.9.0",
@@ -122,8 +122,8 @@ knowledge = [
 # Organization worker needs supabase + azure-storage-blob
 workers-light = [
     # AI/ML for agents (GeneralAgent, DealSummaryAgent, etc.)
-    "openai==1.101.0",
-    "agno~=1.8.1",
+    "openai~=2.15.0",
+    "agno==2.4.3",
 
     # Search tools used by GeneralAgent
     "duckduckgo-search~=8.1.1",
@@ -187,8 +187,8 @@ full = [
     "torchaudio==2.5.1",
     "transformers~=4.55.4",
     "huggingface-hub[hf_xet]==0.35.3",
-    "openai==1.101.0",
-    "agno~=1.8.1",
+    "openai~=2.15.0",
+    "agno==2.4.3",
     "pypdf==5.9.0",
     "PyPDF2==3.0.1",
     "PyMuPDF==1.26.3",
