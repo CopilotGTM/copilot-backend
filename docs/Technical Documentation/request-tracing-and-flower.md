@@ -56,7 +56,6 @@ When the API enqueues tasks, it can now attach headers automatically:
   - `src/workers/deal_worker/client.py:1`
   - `src/workers/integrations_worker/client.py:1`
   - `src/workers/organization_worker/client.py:1`
-  - `src/workers/content_worker/client.py:1`
 
 These wrappers now:
 

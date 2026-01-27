@@ -60,8 +60,6 @@ spec:
             - "src.workers.chat_worker.celery_app:app"
             {{- else if contains "chat" .Values.config.queueName }}
             - "src.workers.chat_worker.celery_app:app"
-            {{- else if contains "content" .Values.config.queueName }}
-            - "src.workers.content_worker.celery_app:app"
             {{- else }}
             - "src.workers.knowledge_worker.celery_app:app"
             {{- end }}
@@ -128,7 +126,6 @@ spec:
                     {{- else if contains "deal" .Values.config.queueName }} src.workers.deal_worker.celery_app:app \
                     {{- else if contains "attachments" .Values.config.queueName }} src.workers.chat_worker.celery_app:app \
                     {{- else if contains "chat" .Values.config.queueName }} src.workers.chat_worker.celery_app:app \
-                    {{- else if contains "content" .Values.config.queueName }} src.workers.content_worker.celery_app:app \
                     {{- else }} src.workers.knowledge_worker.celery_app:app \
                     {{- end }} control cancel_consumer {{ .Values.config.queueName }} || true;
                     {{- if .Values.shutdown.remoteShutdown }} echo "[preStop] Optional remote shutdown after drain"; celery -A \
@@ -138,7 +135,6 @@ spec:
                     {{- else if contains "deal" .Values.config.queueName }} src.workers.deal_worker.celery_app:app \
                     {{- else if contains "attachments" .Values.config.queueName }} src.workers.chat_worker.celery_app:app \
                     {{- else if contains "chat" .Values.config.queueName }} src.workers.chat_worker.celery_app:app \
-                    {{- else if contains "content" .Values.config.queueName }} src.workers.content_worker.celery_app:app \
                     {{- else }} src.workers.knowledge_worker.celery_app:app \
                     {{- end }} control shutdown || true; {{- end }}
           {{- end }}

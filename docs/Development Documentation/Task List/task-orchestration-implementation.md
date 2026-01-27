@@ -16,7 +16,6 @@ The application has the following Celery workers:
 | `deal_worker` | Deal processing and AI tasks | `deal`, `deal_jobs` |
 | `knowledge_worker` | Document extraction and processing | `knowledge`, `knowledge_heavy` |
 | `chat_worker` | Chat message processing | `chat`, `chat_priority` |
-| `content_worker` | Content generation (slides, decks) | `content` |
 
 ---
 

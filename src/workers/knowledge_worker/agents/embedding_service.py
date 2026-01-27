@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from agno.embedder.azure_openai import AzureOpenAIEmbedder
+from agno.knowledge.embedder.azure_openai import AzureOpenAIEmbedder
 from src.infra.utils.logger import get_logger
 
 logger = get_logger("embedding_service")

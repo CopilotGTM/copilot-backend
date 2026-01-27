@@ -671,6 +671,7 @@ integrations = [
 ]
 knowledge = [
     { name = "agno" },
+    { name = "aiohttp" },
     { name = "azure-storage-blob" },
     { name = "defusedxml" },
     { name = "docling" },
@@ -701,6 +702,7 @@ test = [
 ]
 workers-light = [
     { name = "agno" },
+    { name = "aiohttp" },
     { name = "arxiv" },
     { name = "azure-storage-blob" },
     { name = "crawl4ai" },
@@ -746,9 +748,11 @@ requires-dist = [
     { name = "agno", marker = "extra == 'full'", specifier = "==2.4.3" },
     { name = "agno", marker = "extra == 'knowledge'", specifier = "==2.4.3" },
     { name = "agno", marker = "extra == 'workers-light'", specifier = "==2.4.3" },
-    { name = "aiohttp", marker = "extra == 'api'", specifier = ">=3.9.0" },
+    { name = "aiohttp", marker = "extra == 'api'", specifier = ">=3.9.1" },
     { name = "aiohttp", marker = "extra == 'full'", specifier = "==3.9.1" },
     { name = "aiohttp", marker = "extra == 'integrations'", specifier = "==3.9.1" },
+    { name = "aiohttp", marker = "extra == 'knowledge'", specifier = ">=3.9.1" },
+    { name = "aiohttp", marker = "extra == 'workers-light'", specifier = ">=3.9.1" },
     { name = "alembic", specifier = "==1.16.4" },
     { name = "arxiv", marker = "extra == 'full'", specifier = "~=2.1.0" },
     { name = "arxiv", marker = "extra == 'workers-light'", specifier = "~=2.1.0" },

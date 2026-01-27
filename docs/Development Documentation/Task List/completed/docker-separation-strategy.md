@@ -36,7 +36,6 @@ Dockerfile (130 lines)
 │   ├── deal_worker (minimal - redis, celery, pandas)
 │   ├── integrations_worker (httpx, aiohttp, CRM adapters)
 │   ├── organization_worker (minimal - redis, celery)
-│   └── content_worker (minimal - redis, celery)
 └── Image Size: ~3-4GB (estimated with torch, transformers, docling)
 ```
 
@@ -49,7 +48,6 @@ Dockerfile (130 lines)
 | `deal_worker` | redis, celery, pandas, SQLAlchemy | ~300MB |
 | `integrations_worker` | httpx, aiohttp, redis, celery | ~250MB |
 | `organization_worker` | redis, celery, supabase | ~200MB |
-| `content_worker` | redis, celery | ~150MB |
 | `API (FastAPI)` | fastapi, uvicorn, all shared infra | ~400MB |
 
 ### Current Secrets Distribution
