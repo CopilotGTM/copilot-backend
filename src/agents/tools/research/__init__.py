@@ -1,14 +1,22 @@
 """Research tools package for agent capabilities.
 
-Provides free research tools that don't require API keys:
+Provides research tools for agent workflows:
 - Wikipedia search for background research
 - YFinance for stock and financial data
 - Web crawler for page content extraction
 - Arxiv for academic paper research
 - News article extraction for company/industry news
+- LinkedIn enrichment for stakeholder research (requires API key)
 """
 
 from .arxiv_search import arxiv_search, create_search_arxiv
+from .linkedin_enrichment import (
+    create_enrich_linkedin_profile,
+    enrich_linkedin_profile,
+    get_linkedin_contact_info,
+    get_linkedin_profile,
+    scrape_linkedin_profile,
+)
 from .news_article import create_extract_news_article, extract_news_article
 from .web_crawler import crawl_webpage, create_crawl_webpage
 from .wikipedia_search import create_search_wikipedia, wikipedia_search
@@ -37,4 +45,10 @@ __all__ = [
     # News Article
     "extract_news_article",
     "create_extract_news_article",
+    # LinkedIn Enrichment
+    "enrich_linkedin_profile",
+    "get_linkedin_profile",
+    "scrape_linkedin_profile",
+    "get_linkedin_contact_info",
+    "create_enrich_linkedin_profile",
 ]

@@ -96,8 +96,8 @@ class ToolName(str, Enum):
     LIST_DEAL_CHANNEL_MESSAGES = "list_deal_channel_messages"
 
     # -------------------------------------------------------------------------
-    # RESEARCH TOOLS - External research (free, no API keys required)
-    # Used by: Chat Agent
+    # RESEARCH TOOLS - External research
+    # Used by: Chat Agent, Briefing Agent, Deal Summary Agent
     # -------------------------------------------------------------------------
     SEARCH_WIKIPEDIA = "search_wikipedia"
     GET_STOCK_INFO = "get_stock_info"
@@ -105,6 +105,7 @@ class ToolName(str, Enum):
     CRAWL_WEBPAGE = "crawl_webpage"
     SEARCH_ARXIV = "search_arxiv"
     EXTRACT_NEWS_ARTICLE = "extract_news_article"
+    ENRICH_LINKEDIN_PROFILE = "enrich_linkedin_profile"  # LinkedIn enrichment (requires API key)
 
     # -------------------------------------------------------------------------
     # CALENDAR TOOLS - For upcoming meetings and events
@@ -164,13 +165,14 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.GET_EMAIL_DETAILS,
         ToolName.LIST_DEAL_NOTES,
         ToolName.LIST_DEAL_CHANNEL_MESSAGES,
-        # Research tools (free, no API keys)
+        # Research tools
         ToolName.SEARCH_WIKIPEDIA,
         ToolName.GET_STOCK_INFO,
         ToolName.GET_COMPANY_FINANCIALS,
         ToolName.CRAWL_WEBPAGE,
         ToolName.SEARCH_ARXIV,
         ToolName.EXTRACT_NEWS_ARTICLE,
+        ToolName.ENRICH_LINKEDIN_PROFILE,  # LinkedIn stakeholder research
     },
     # -------------------------------------------------------------------------
     # BriefingAgent - Meeting Briefing Agent
@@ -200,6 +202,8 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.GET_EMAIL_DETAILS,
         ToolName.LIST_DEAL_CHANNEL_MESSAGES,
         ToolName.LIST_DEAL_NOTES,  # Internal notes contain prep context
+        # Research tools
+        ToolName.ENRICH_LINKEDIN_PROFILE,  # Enrich stakeholder profiles from LinkedIn
     },
     # -------------------------------------------------------------------------
     # SummaryAgent - Meeting Summary Agent
@@ -245,6 +249,8 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.LIST_DEAL_EMAILS,
         ToolName.GET_EMAIL_DETAILS,
         ToolName.LIST_DEAL_CHANNEL_MESSAGES,
+        # Research tools
+        ToolName.ENRICH_LINKEDIN_PROFILE,  # Enrich stakeholder profiles from LinkedIn
     },
     # -------------------------------------------------------------------------
     # RiskBlockerExtractionAgent - Risk/Blocker Extraction Agent
@@ -311,13 +317,14 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     ToolName.LIST_DEAL_EMAILS: ToolCategory.COMMUNICATION,
     ToolName.GET_EMAIL_DETAILS: ToolCategory.COMMUNICATION,
     ToolName.LIST_DEAL_CHANNEL_MESSAGES: ToolCategory.COMMUNICATION,
-    # Research (free, no API keys)
+    # Research tools
     ToolName.SEARCH_WIKIPEDIA: ToolCategory.SEARCH,
     ToolName.GET_STOCK_INFO: ToolCategory.SEARCH,
     ToolName.GET_COMPANY_FINANCIALS: ToolCategory.SEARCH,
     ToolName.CRAWL_WEBPAGE: ToolCategory.SEARCH,
     ToolName.SEARCH_ARXIV: ToolCategory.SEARCH,
     ToolName.EXTRACT_NEWS_ARTICLE: ToolCategory.SEARCH,
+    ToolName.ENRICH_LINKEDIN_PROFILE: ToolCategory.SEARCH,
 }
 
 
@@ -377,6 +384,7 @@ class ToolRegistry:
         )
         from src.agents.tools.research import (
             create_crawl_webpage,
+            create_enrich_linkedin_profile,
             create_extract_news_article,
             create_get_company_financials,
             create_get_stock_info,
@@ -490,6 +498,9 @@ class ToolRegistry:
         )
         self._tool_factories[ToolName.EXTRACT_NEWS_ARTICLE] = lambda: create_extract_news_article(
             self.capabilities_getter
+        )
+        self._tool_factories[ToolName.ENRICH_LINKEDIN_PROFILE] = (
+            lambda: create_enrich_linkedin_profile(self.capabilities_getter)
         )
 
         # Legacy/placeholder tools - will be registered when implemented
