@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -13,7 +14,10 @@ from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorag
 from src.infra.utils.logger import get_logger
 from src.workers.knowledge_worker.models import ExtractionResult, ProcessingContext
 from src.workers.knowledge_worker.parsers.registry import ParserRegistry
-from src.workers.knowledge_worker.services.chunk_processor import ChunkProcessor
+from src.workers.knowledge_worker.services.chunk_processor import (
+    DEFAULT_MAX_PARALLEL_CHUNKS,
+    ChunkProcessor,
+)
 from src.workers.knowledge_worker.services.image_processor import ImageProcessor
 from src.workers.knowledge_worker.services.table_processor import TableProcessor
 from src.workers.knowledge_worker.utils import DocumentStore
@@ -22,6 +26,10 @@ if TYPE_CHECKING:
     from uuid import UUID
 
 logger = get_logger("extraction_service")
+
+# Environment variable to configure parallel chunk processing
+# Set to 1 to disable parallel processing
+ENV_MAX_PARALLEL_CHUNKS = "KNOWLEDGE_EXTRACTION_MAX_PARALLEL_CHUNKS"
 
 
 class ExtractionService:
@@ -62,6 +70,7 @@ class ExtractionService:
         organisation_id: str | UUID,
         storage_backend: Any | None = None,
         chunk_processor: ChunkProcessor | None = None,
+        max_parallel_chunks: int | None = None,
     ):
         """
         Initialize the extraction service.
@@ -73,9 +82,28 @@ class ExtractionService:
             organisation_id: The organisation ID for storage paths
             storage_backend: Azure blob storage backend (for legacy parsers)
             chunk_processor: Optional pre-configured ChunkProcessor (for testing)
+            max_parallel_chunks: Maximum chunks to process in parallel.
+                                 Defaults to KNOWLEDGE_EXTRACTION_MAX_PARALLEL_CHUNKS env var,
+                                 or DEFAULT_MAX_PARALLEL_CHUNKS (10) if not set.
+                                 Set to 1 to disable parallel processing.
         """
         self.organisation_id = str(organisation_id)
         self.storage_backend = storage_backend
+
+        # Determine max parallel chunks from parameter, env var, or default
+        if max_parallel_chunks is None:
+            env_value = os.environ.get(ENV_MAX_PARALLEL_CHUNKS)
+            if env_value:
+                try:
+                    max_parallel_chunks = int(env_value)
+                except ValueError:
+                    logger.warning(
+                        f"Invalid {ENV_MAX_PARALLEL_CHUNKS} value '{env_value}', "
+                        f"using default {DEFAULT_MAX_PARALLEL_CHUNKS}"
+                    )
+                    max_parallel_chunks = DEFAULT_MAX_PARALLEL_CHUNKS
+            else:
+                max_parallel_chunks = DEFAULT_MAX_PARALLEL_CHUNKS
 
         # Initialize services
         if chunk_processor:
@@ -86,6 +114,7 @@ class ExtractionService:
             self.chunk_processor = ChunkProcessor(
                 table_processor=TableProcessor(storage),
                 image_processor=ImageProcessor(storage),
+                max_parallel_chunks=max_parallel_chunks,
             )
 
     def extract(

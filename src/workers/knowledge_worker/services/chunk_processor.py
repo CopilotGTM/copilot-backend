@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
@@ -19,6 +21,10 @@ if TYPE_CHECKING:
     from src.workers.knowledge_worker.services.table_processor import TableProcessor
 
 logger = get_logger("chunk_processor")
+
+# Default number of chunks to process in parallel
+# Can be overridden via environment variable or constructor parameter
+DEFAULT_MAX_PARALLEL_CHUNKS = 10
 
 
 class ChunkProcessor:
@@ -56,6 +62,7 @@ class ChunkProcessor:
         table_processor: TableProcessor | None = None,
         image_processor: ImageProcessor | None = None,
         embedding_service: Any | None = None,
+        max_parallel_chunks: int = DEFAULT_MAX_PARALLEL_CHUNKS,
     ):
         """
         Initialize the chunk processor.
@@ -64,10 +71,12 @@ class ChunkProcessor:
             table_processor: Service for processing tables (optional)
             image_processor: Service for processing images (optional)
             embedding_service: Service for generating embeddings (defaults to global instance)
+            max_parallel_chunks: Maximum number of chunks to process in parallel (default: 10)
         """
         self.table_processor = table_processor
         self.image_processor = image_processor
         self.embedding_service = embedding_service or get_embedding_service()
+        self.max_parallel_chunks = max(1, max_parallel_chunks)
 
     def process_all(
         self,
@@ -80,7 +89,11 @@ class ChunkProcessor:
         publisher: Any | None = None,
     ) -> list[OrganisationDocument]:
         """
-        Process all chunks and return OrganisationDocument objects.
+        Process all chunks in parallel and return OrganisationDocument objects.
+
+        Uses ThreadPoolExecutor to process up to `max_parallel_chunks` chunks
+        concurrently. Progress is tracked thread-safely and published after
+        each chunk completes.
 
         Args:
             chunks: List of ChunkData from parser
@@ -93,6 +106,31 @@ class ChunkProcessor:
         Returns:
             List of OrganisationDocument objects ready for storage
         """
+        total = len(chunks)
+        if total == 0:
+            return []
+
+        # For single chunk or max_parallel=1, use sequential processing
+        if total == 1 or self.max_parallel_chunks == 1:
+            return self._process_sequential(
+                chunks, context, dl_doc, supports_tables, supports_images, publisher
+            )
+
+        # Parallel processing with thread-safe progress tracking
+        return self._process_parallel(
+            chunks, context, dl_doc, supports_tables, supports_images, publisher
+        )
+
+    def _process_sequential(
+        self,
+        chunks: list[ChunkData],
+        context: ProcessingContext,
+        dl_doc: Any,
+        supports_tables: bool,
+        supports_images: bool,
+        publisher: Any | None,
+    ) -> list[OrganisationDocument]:
+        """Process chunks sequentially (original behavior)."""
         documents = []
         total = len(chunks)
 
@@ -122,6 +160,95 @@ class ChunkProcessor:
                 continue
 
         logger.info(f"Processed {len(documents)}/{total} chunks successfully")
+        return documents
+
+    def _process_parallel(
+        self,
+        chunks: list[ChunkData],
+        context: ProcessingContext,
+        dl_doc: Any,
+        supports_tables: bool,
+        supports_images: bool,
+        publisher: Any | None,
+    ) -> list[OrganisationDocument]:
+        """
+        Process chunks in parallel using ThreadPoolExecutor.
+
+        Uses thread-safe progress tracking to update progress after each
+        chunk completes, regardless of completion order.
+        """
+        total = len(chunks)
+        documents: list[OrganisationDocument] = []
+        documents_lock = threading.Lock()
+
+        # Thread-safe progress counter
+        completed_count = 0
+        progress_lock = threading.Lock()
+
+        def process_chunk_wrapper(chunk: ChunkData) -> OrganisationDocument | None:
+            """Wrapper that processes a chunk and updates progress."""
+            nonlocal completed_count
+
+            try:
+                doc = self.process_chunk(
+                    chunk,
+                    context,
+                    dl_doc=dl_doc,
+                    supports_tables=supports_tables,
+                    supports_images=supports_images,
+                )
+
+                # Update progress counter and publish (thread-safe)
+                with progress_lock:
+                    completed_count += 1
+                    current_completed = completed_count
+
+                if publisher and total > 0:
+                    progress = 20 + int(current_completed / total * 60)
+                    publisher.publish(
+                        status=OrganisationSourceStatus.EXTRACTING.value,
+                        progress=progress,
+                    )
+
+                logger.debug(f"Processed chunk {chunk.index + 1}/{total}")
+                return doc
+
+            except Exception as e:
+                # Still increment progress even on failure
+                with progress_lock:
+                    completed_count += 1
+                    current_completed = completed_count
+
+                if publisher and total > 0:
+                    progress = 20 + int(current_completed / total * 60)
+                    publisher.publish(
+                        status=OrganisationSourceStatus.EXTRACTING.value,
+                        progress=progress,
+                    )
+
+                logger.error(f"Failed to process chunk {chunk.index}: {e}")
+                return None
+
+        # Process chunks in parallel with limited concurrency
+        logger.info(
+            f"Processing {total} chunks in parallel (max {self.max_parallel_chunks} concurrent)"
+        )
+
+        with ThreadPoolExecutor(
+            max_workers=self.max_parallel_chunks,
+            thread_name_prefix="chunk_processor",
+        ) as executor:
+            # Submit all chunks and collect futures
+            futures = {executor.submit(process_chunk_wrapper, chunk): chunk for chunk in chunks}
+
+            # Collect results as they complete (preserves order of completion for progress)
+            for future in as_completed(futures):
+                result = future.result()
+                if result is not None:
+                    with documents_lock:
+                        documents.append(result)
+
+        logger.info(f"Processed {len(documents)}/{total} chunks successfully (parallel)")
         return documents
 
     def process_chunk(
