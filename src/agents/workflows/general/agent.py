@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 from agno.agent import Agent as AgnoAgent
-from agno.models.azure import AzureOpenAI
+from agno.models.azure.openai_chat import AzureOpenAI
 from dotenv import load_dotenv
 from src.agents.base import Agent as BaseAgent
 from src.agents.common.agent_tasks_extractor import AgentTasksExtractor
@@ -56,7 +56,6 @@ class GeneralAgent(BaseAgent):
             description=system_prompt,
             structured_outputs=False,
             debug_mode=config.debug_mode,
-            show_tool_calls=config.show_tool_calls,
             markdown=True,
             tools=self._tools,  # type: ignore[arg-type]
         )
@@ -74,9 +73,8 @@ class GeneralAgent(BaseAgent):
             self.capabilities = self._setup_capabilities(message_id, frame_queue)
 
             try:
-                chat_response = await self.general_agent.arun(
-                    messages=processed_messages, stream=True
-                )
+                # Agno V2: arun(stream=True) returns async generator directly (no await)
+                chat_response = self.general_agent.arun(input=processed_messages, stream=True)
 
                 buffer = StreamingAnswerBuffer(self.separators, logger=logger)
                 async for frame in self._process_streaming_response(

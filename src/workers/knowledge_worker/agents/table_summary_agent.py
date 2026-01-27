@@ -1,5 +1,5 @@
 from agno.agent import Agent
-from agno.models.azure import AzureOpenAI
+from agno.models.azure.openai_chat import AzureOpenAI
 
 # Provides high-signal structured metadata describing tabular content for downstream RAG consumers.
 table_summary_agent: Agent = Agent(

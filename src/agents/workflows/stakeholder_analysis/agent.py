@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import cast
 
 from agno.agent import Agent
-from agno.models.azure import AzureOpenAI
+from agno.models.azure.openai_chat import AzureOpenAI
 
 from src.agents.workflows.stakeholder_analysis.models import DealStakeholdersAnalysisData
 from src.agents.workflows.stakeholder_analysis.prompts import (
@@ -35,7 +35,7 @@ class StakeholderAnalysisAgent:
 
         self.agent = Agent(
             model=AzureOpenAI(id=config.model, api_version=config.api_version),
-            response_model=DealStakeholdersAnalysisData,
+            output_schema=DealStakeholdersAnalysisData,
             description=STAKEHOLDER_BATCH_ANALYSIS_SYSTEM_PROMPT,
             instructions=[
                 "Analyze all stakeholders listed in the context from the meeting transcripts.",

@@ -291,7 +291,7 @@ class MessageProcessingService:
             )
 
         except Exception as e:
-            logger.error("Error in agent workflow for job %s: %s", data.job_id, e)
+            logger.exception("Error in agent workflow for job %s: %s", data.job_id, e)
             return self._create_error_result()
 
     async def _consume_agent_stream(self, data: ConversationData) -> dict:

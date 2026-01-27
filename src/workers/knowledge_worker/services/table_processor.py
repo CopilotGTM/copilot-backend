@@ -127,7 +127,8 @@ class TableProcessor:
                 logger.debug(f"Table {idx} has no markdown content")
                 return None
 
-            resp = table_summary_agent.run(message=md_content)
+            # Agno V2: use positional argument instead of message=
+            resp = table_summary_agent.run(md_content)
             return resp.content
 
         except Exception as e:

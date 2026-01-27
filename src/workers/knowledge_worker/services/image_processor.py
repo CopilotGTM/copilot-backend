@@ -262,8 +262,9 @@ class ImageProcessor:
         """
         try:
             ag_img = AgnoImage(content=img_bytes)
+            # Agno V2: use positional argument instead of message=
             resp = image_summary_agent.run(
-                message="Analyze and summarize this image for RAG purposes",
+                "Analyze and summarize this image for RAG purposes",
                 images=[ag_img],
             )
             content = getattr(resp, "content", None) or str(resp)

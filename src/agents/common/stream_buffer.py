@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from typing import Any
 
 from src.infra.utils.logger import get_logger
 
@@ -14,6 +15,16 @@ TOOL_COMPLETION_EVENTS = frozenset(
         "ToolCallPaused",
     }
 )
+
+
+def _get_chunk_attr(chunk: Any, attr: str, default: Any = None) -> Any:
+    """Get attribute from chunk, handling both dict and object formats.
+
+    Agno V2 may return chunks as dicts or objects depending on the context.
+    """
+    if isinstance(chunk, dict):
+        return chunk.get(attr, default)
+    return getattr(chunk, attr, default)
 
 
 class StreamingAnswerBuffer:
@@ -38,13 +49,14 @@ class StreamingAnswerBuffer:
                 yield ("tick", "", False)
                 continue
 
-            state["log_buffer"] += chunk.content
+            content = _get_chunk_attr(chunk, "content", "")
+            state["log_buffer"] += content
 
             if state["json_part_started"]:
-                state["buffer"] += chunk.content
+                state["buffer"] += content
                 continue
 
-            for result in self._process_chunk_for_separator(chunk.content, state):
+            for result in self._process_chunk_for_separator(content, state):
                 yield result
 
         buffer_content = str(state["buffer"])
@@ -57,15 +69,18 @@ class StreamingAnswerBuffer:
         Filters out:
         - Chunks without content
         - Tool completion events (contain noise like "func(query=...) completed in 12.1234s.")
+
+        Handles both dict and object formats (Agno V2 compatibility).
         """
-        if not hasattr(chunk, "content") or not chunk.content:
+        content = _get_chunk_attr(chunk, "content")
+        if not content:
             return False
 
         # Filter out Agno tool completion events - they inject tool execution text into content
         # These events have content like "search_internal_knowledge(query=...) completed in 12.1234s."
-        chunk_event = getattr(chunk, "event", None)
+        chunk_event = _get_chunk_attr(chunk, "event")
         if chunk_event and chunk_event in TOOL_COMPLETION_EVENTS:
-            self.logger.debug(f"Filtering tool event: {chunk_event} - {chunk.content[:50]}...")
+            self.logger.debug(f"Filtering tool event: {chunk_event} - {content[:50]}...")
             return False
 
         return True

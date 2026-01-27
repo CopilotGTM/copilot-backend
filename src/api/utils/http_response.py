@@ -1,13 +1,15 @@
-from typing import Any
+from typing import Any, TypeVar, cast
 
 import fastapi
 from pydantic import TypeAdapter
 from src.api.schemas.base_models import GenericResponse
 
+T = TypeVar("T")
+
 
 class Response:
     @classmethod
-    def _validate_data(cls, data: Any, data_model: type | None) -> Any:
+    def _validate_data(cls, data: T | None, data_model: type[T] | None) -> T | None:
         """Validate data against a Pydantic model type if provided.
 
         Args:
@@ -21,7 +23,7 @@ class Response:
             return data
 
         adapter = TypeAdapter(data_model)
-        return adapter.validate_python(data)
+        return cast(T, adapter.validate_python(data))
 
     @classmethod
     def _set_status_code(cls, response: fastapi.Response | None, status_code: int) -> None:
@@ -32,12 +34,12 @@ class Response:
     def success_response(
         cls,
         message: Any,
-        data: Any = None,
+        data: T | None = None,
         *,
         response: fastapi.Response | None = None,
         status_code: int = fastapi.status.HTTP_200_OK,
-        data_model: type | None = None,
-    ):
+        data_model: type[T] | None = None,
+    ) -> GenericResponse[T]:
         """Create a success response with optional data validation.
 
         Args:
@@ -57,11 +59,11 @@ class Response:
     def created_response(
         cls,
         message: Any,
-        data: Any = None,
+        data: T | None = None,
         *,
         response: fastapi.Response | None = None,
-        data_model: type | None = None,
-    ):
+        data_model: type[T] | None = None,
+    ) -> GenericResponse[T]:
         return cls.success_response(
             message=message,
             data=data,
@@ -74,11 +76,11 @@ class Response:
     def accepted_response(
         cls,
         message: Any,
-        data: Any = None,
+        data: T | None = None,
         *,
         response: fastapi.Response | None = None,
-        data_model: type | None = None,
-    ):
+        data_model: type[T] | None = None,
+    ) -> GenericResponse[T]:
         cls._set_status_code(response, fastapi.status.HTTP_202_ACCEPTED)
         validated_data = cls._validate_data(data, data_model)
         return GenericResponse(status="SUCCESS", message=message, data=validated_data)
@@ -91,10 +93,10 @@ class Response:
     def internal_server_error_response(
         cls,
         message: Any,
-        data: Any = None,
+        data: T | None = None,
         *,
         response: fastapi.Response | None = None,
-    ):
+    ) -> GenericResponse[T]:
         return cls.error_response(
             status_code=fastapi.status.HTTP_500_INTERNAL_SERVER_ERROR,
             message=message,
@@ -106,10 +108,10 @@ class Response:
     def bad_request_error_response(
         cls,
         message: Any,
-        data: Any = None,
+        data: T | None = None,
         *,
         response: fastapi.Response | None = None,
-    ):
+    ) -> GenericResponse[T]:
         return cls.error_response(
             status_code=fastapi.status.HTTP_400_BAD_REQUEST,
             message=message,
@@ -121,10 +123,10 @@ class Response:
     def unauthorized_error_response(
         cls,
         message: Any,
-        data: Any = None,
+        data: T | None = None,
         *,
         response: fastapi.Response | None = None,
-    ):
+    ) -> GenericResponse[T]:
         return cls.error_response(
             status_code=fastapi.status.HTTP_401_UNAUTHORIZED,
             message=message,
@@ -136,10 +138,10 @@ class Response:
     def forbidden_error_response(
         cls,
         message: Any,
-        data: Any = None,
+        data: T | None = None,
         *,
         response: fastapi.Response | None = None,
-    ):
+    ) -> GenericResponse[T]:
         return cls.error_response(
             status_code=fastapi.status.HTTP_403_FORBIDDEN,
             message=message,
@@ -151,10 +153,10 @@ class Response:
     def not_found_error_response(
         cls,
         message: Any,
-        data: Any = None,
+        data: T | None = None,
         *,
         response: fastapi.Response | None = None,
-    ):
+    ) -> GenericResponse[T]:
         return cls.error_response(
             status_code=fastapi.status.HTTP_404_NOT_FOUND,
             message=message,
@@ -166,10 +168,10 @@ class Response:
     def conflict_error_response(
         cls,
         message: Any,
-        data: Any = None,
+        data: T | None = None,
         *,
         response: fastapi.Response | None = None,
-    ):
+    ) -> GenericResponse[T]:
         return cls.error_response(
             status_code=fastapi.status.HTTP_409_CONFLICT,
             message=message,
@@ -181,10 +183,10 @@ class Response:
     def request_entity_too_large_error_response(
         cls,
         message: Any,
-        data: Any = None,
+        data: T | None = None,
         *,
         response: fastapi.Response | None = None,
-    ):
+    ) -> GenericResponse[T]:
         return cls.error_response(
             status_code=fastapi.status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             message=message,
@@ -196,10 +198,10 @@ class Response:
     def unsupported_media_type_error_response(
         cls,
         message: Any,
-        data: Any = None,
+        data: T | None = None,
         *,
         response: fastapi.Response | None = None,
-    ):
+    ) -> GenericResponse[T]:
         return cls.error_response(
             status_code=fastapi.status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
             message=message,
@@ -211,10 +213,10 @@ class Response:
     def unprocessable_entity_error_response(
         cls,
         message: Any,
-        data: Any = None,
+        data: T | None = None,
         *,
         response: fastapi.Response | None = None,
-    ):
+    ) -> GenericResponse[T]:
         return cls.error_response(
             status_code=fastapi.status.HTTP_422_UNPROCESSABLE_ENTITY,
             message=message,
@@ -226,10 +228,10 @@ class Response:
     def too_many_requests_error_response(
         cls,
         message: Any,
-        data: Any = None,
+        data: T | None = None,
         *,
         response: fastapi.Response | None = None,
-    ):
+    ) -> GenericResponse[T]:
         return cls.error_response(
             status_code=fastapi.status.HTTP_429_TOO_MANY_REQUESTS,
             message=message,
@@ -244,9 +246,9 @@ class Response:
         cls,
         status_code: int,
         message: Any,
-        data: Any = None,
+        data: T | None = None,
         *,
         response: fastapi.Response | None = None,
-    ):
+    ) -> GenericResponse[T]:
         cls._set_status_code(response, status_code)
         return GenericResponse(status="ERROR", message=message, data=data)

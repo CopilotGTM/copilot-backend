@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, cast
 from uuid import UUID
 
 from agno.agent import Agent
-from agno.models.azure import AzureOpenAI
+from agno.models.azure.openai_chat import AzureOpenAI
 
 from src.agents.context import AgentContext
 from src.agents.tools.registry import get_tools_for_agent
@@ -93,10 +93,9 @@ class BriefingAgent:
         # Create agent with tools
         self.agent = Agent(
             model=AzureOpenAI(id=config.model, api_version=config.api_version),
-            response_model=BriefingData,
+            output_schema=BriefingData,
             description=get_briefing_system_prompt(self.context.org_name),
             tools=tools,
-            show_tool_calls=config.show_tool_calls,
             markdown=True,
             debug_mode=config.debug_mode,
         )

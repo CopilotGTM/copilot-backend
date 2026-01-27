@@ -29,12 +29,13 @@ wheels = [
 
 [[package]]
 name = "agno"
-version = "1.8.4"
+version = "2.4.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "docstring-parser" },
     { name = "gitpython" },
-    { name = "httpx" },
+    { name = "h11" },
+    { name = "httpx", extra = ["http2"] },
     { name = "packaging" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
@@ -42,13 +43,12 @@ dependencies = [
     { name = "python-multipart" },
     { name = "pyyaml" },
     { name = "rich" },
-    { name = "tomli" },
     { name = "typer" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/69/73/f3a7e5204c926d9683a78ae70858798c83c96e3c354bd529a2ca85e4d55c/agno-1.8.4.tar.gz", hash = "sha256:9b0af08c6de5e259a637c73d60c58464c55d102bab1b6e6f9b6dd3770a22501b", size = 754007, upload-time = "2025-09-25T18:39:52.804Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/61/21/a50b0cd8e42e99766c8e29bba8e85b4e19f4458ee84e9624ac95b28f1099/agno-2.4.3.tar.gz", hash = "sha256:24cb5ada8261f0c54d9f74e7feb4db8a7e0c8969400df9b61e6853e65f16c761", size = 1518390, upload-time = "2026-01-23T15:40:41.303Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e1/24/49f7ddba0b0bad299fd632b8d6d67894ed522cf732c902b7c64c1352d2f9/agno-1.8.4-py3-none-any.whl", hash = "sha256:fbdf1c8b760f566def51e5f2bbac7bf2a7ad12b8758cbf7d5f3ee6ee23079575", size = 995048, upload-time = "2025-09-25T18:39:50.417Z" },
+    { url = "https://files.pythonhosted.org/packages/db/fe/403f18c91ef10213715542542f0762acaf41523aecb93711bc1540868880/agno-2.4.3-py3-none-any.whl", hash = "sha256:0c3c09ee14f5aa822e1265720711fb758ca733e9c75867ea981925b4a6ca45b1", size = 1819618, upload-time = "2026-01-23T15:40:38.455Z" },
 ]
 
 [[package]]
@@ -743,9 +743,9 @@ quality = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agno", marker = "extra == 'full'", specifier = "~=1.8.1" },
-    { name = "agno", marker = "extra == 'knowledge'", specifier = "~=1.8.1" },
-    { name = "agno", marker = "extra == 'workers-light'", specifier = "~=1.8.1" },
+    { name = "agno", marker = "extra == 'full'", specifier = "==2.4.3" },
+    { name = "agno", marker = "extra == 'knowledge'", specifier = "==2.4.3" },
+    { name = "agno", marker = "extra == 'workers-light'", specifier = "==2.4.3" },
     { name = "aiohttp", marker = "extra == 'api'", specifier = ">=3.9.0" },
     { name = "aiohttp", marker = "extra == 'full'", specifier = "==3.9.1" },
     { name = "aiohttp", marker = "extra == 'integrations'", specifier = "==3.9.1" },
@@ -794,9 +794,9 @@ requires-dist = [
     { name = "mkdocs-material", marker = "extra == 'docs'", specifier = ">=9.5.0" },
     { name = "newspaper4k", marker = "extra == 'full'", specifier = "~=0.9.0" },
     { name = "newspaper4k", marker = "extra == 'workers-light'", specifier = "~=0.9.0" },
-    { name = "openai", marker = "extra == 'full'", specifier = "==1.101.0" },
-    { name = "openai", marker = "extra == 'knowledge'", specifier = "==1.101.0" },
-    { name = "openai", marker = "extra == 'workers-light'", specifier = "==1.101.0" },
+    { name = "openai", marker = "extra == 'full'", specifier = "~=2.15.0" },
+    { name = "openai", marker = "extra == 'knowledge'", specifier = "~=2.15.0" },
+    { name = "openai", marker = "extra == 'workers-light'", specifier = "~=2.15.0" },
     { name = "packaging", specifier = "==25.0" },
     { name = "pgvector", specifier = "==0.4.2" },
     { name = "pillow", marker = "extra == 'full'", specifier = "==10.4.0" },
@@ -2408,7 +2408,7 @@ wheels = [
 
 [[package]]
 name = "openai"
-version = "1.101.0"
+version = "2.15.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -2420,9 +2420,9 @@ dependencies = [
     { name = "tqdm" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/00/7c/eaf06b62281f5ca4f774c4cff066e6ddfd6a027e0ac791be16acec3a95e3/openai-1.101.0.tar.gz", hash = "sha256:29f56df2236069686e64aca0e13c24a4ec310545afb25ef7da2ab1a18523f22d", size = 518415, upload-time = "2025-08-21T21:11:01.645Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/94/f4/4690ecb5d70023ce6bfcfeabfe717020f654bde59a775058ec6ac4692463/openai-2.15.0.tar.gz", hash = "sha256:42eb8cbb407d84770633f31bf727d4ffb4138711c670565a41663d9439174fba", size = 627383, upload-time = "2026-01-09T22:10:08.603Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c8/a6/0e39baa335bbd1c66c7e0a41dbbec10c5a15ab95c1344e7f7beb28eee65a/openai-1.101.0-py3-none-any.whl", hash = "sha256:6539a446cce154f8d9fb42757acdfd3ed9357ab0d34fcac11096c461da87133b", size = 810772, upload-time = "2025-08-21T21:10:59.215Z" },
+    { url = "https://files.pythonhosted.org/packages/b5/df/c306f7375d42bafb379934c2df4c2fa3964656c8c782bac75ee10c102818/openai-2.15.0-py3-none-any.whl", hash = "sha256:6ae23b932cd7230f7244e52954daa6602716d6b9bf235401a107af731baea6c3", size = 1067879, upload-time = "2026-01-09T22:10:06.446Z" },
 ]
 
 [[package]]
