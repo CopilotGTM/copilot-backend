@@ -56,6 +56,8 @@ class ToolName(str, Enum):
     LIST_DEALS = "list_deals"  # List with filters (status, amount, etc.)
     GET_DEAL_DETAILS = "get_deal_details"  # Full deal info with stakeholders/risks
     GET_DEAL_SUMMARY = "get_deal_summary"  # AI-generated deal summary
+    GET_DEAL_CHANGE_HISTORY = "get_deal_change_history"  # Stage transition history
+    GET_PIPELINE_DETAILS = "get_pipeline_details"  # Pipeline and stage information
 
     # -------------------------------------------------------------------------
     # STAKEHOLDER TOOLS - For stakeholder info and insights
@@ -143,6 +145,8 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.LIST_DEALS,
         ToolName.GET_DEAL_DETAILS,
         ToolName.GET_DEAL_SUMMARY,
+        ToolName.GET_DEAL_CHANGE_HISTORY,
+        ToolName.GET_PIPELINE_DETAILS,
         # Stakeholder tools
         ToolName.LIST_DEAL_STAKEHOLDERS,
         ToolName.GET_STAKEHOLDER_DETAILS,
@@ -176,17 +180,24 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         # Search tools
         ToolName.SEARCH_INTERNAL_KNOWLEDGE,
         ToolName.SEARCH_INTERNET,
+        # Deal tools (for understanding deal context)
+        ToolName.GET_DEAL_CHANGE_HISTORY,
+        ToolName.GET_PIPELINE_DETAILS,
+        ToolName.GET_EXISTING_RISKS_BLOCKERS,  # Know active risks/blockers before meeting
         # Meeting tools
         ToolName.GET_MEETING_DETAILS,
         ToolName.LIST_DEAL_MEETINGS,
         ToolName.GET_MEETING_TRANSCRIPT,
+        ToolName.GET_MEETING_SUMMARY,  # Past meeting summaries for quick context
         # Stakeholder tools
         ToolName.LIST_DEAL_STAKEHOLDERS,
         ToolName.GET_STAKEHOLDER_DETAILS,
+        ToolName.LIST_DEAL_STAKEHOLDER_INSIGHTS,  # Understand attendee dynamics
         # Communication tools
         ToolName.LIST_DEAL_EMAILS,
         ToolName.GET_EMAIL_DETAILS,
         ToolName.LIST_DEAL_CHANNEL_MESSAGES,
+        ToolName.LIST_DEAL_NOTES,  # Internal notes contain prep context
     },
     # -------------------------------------------------------------------------
     # SummaryAgent - Meeting Summary Agent
@@ -198,9 +209,13 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.GET_MEETING_TRANSCRIPT,
         ToolName.GET_MEETING_DETAILS,
         ToolName.GET_MEETING_DEAL_CONTEXT,
+        ToolName.LIST_DEAL_MEETINGS,  # Reference prior meetings for context
         # Stakeholder tools
         ToolName.LIST_DEAL_STAKEHOLDERS,
         ToolName.GET_STAKEHOLDER_DETAILS,
+        ToolName.LIST_DEAL_STAKEHOLDER_INSIGHTS,  # Understand stakeholder roles/concerns
+        # Risk context
+        ToolName.GET_EXISTING_RISKS_BLOCKERS,  # Identify if discussed items are known risks
     },
     # -------------------------------------------------------------------------
     # DealSummaryAgent - Deal Summary Agent
@@ -208,13 +223,20 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
     # Purpose: Generates comprehensive deal summaries from all deal data.
     # -------------------------------------------------------------------------
     "DealSummaryAgent": {
+        # Deal tools
+        ToolName.GET_DEAL_CHANGE_HISTORY,
+        ToolName.GET_PIPELINE_DETAILS,
+        ToolName.LIST_DEAL_NOTES,
+        ToolName.GET_EXISTING_RISKS_BLOCKERS,  # Deal health requires risks/blockers
         # Stakeholder tools
         ToolName.LIST_DEAL_STAKEHOLDERS,
         ToolName.GET_STAKEHOLDER_DETAILS,
+        ToolName.LIST_DEAL_STAKEHOLDER_INSIGHTS,  # Crucial for deal analysis
         # Meeting tools
         ToolName.LIST_DEAL_MEETINGS,
         ToolName.GET_MEETING_DETAILS,
         ToolName.GET_MEETING_TRANSCRIPT,
+        ToolName.GET_MEETING_SUMMARY,  # Quick context from past meetings
         # Communication tools
         ToolName.LIST_DEAL_EMAILS,
         ToolName.GET_EMAIL_DETAILS,
@@ -228,6 +250,12 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
     "RiskBlockerExtractionAgent": {
         # Risk/blocker tools
         ToolName.GET_EXISTING_RISKS_BLOCKERS,
+        # Deal tools (for understanding deal progression context)
+        ToolName.GET_DEAL_CHANGE_HISTORY,
+        ToolName.GET_PIPELINE_DETAILS,
+        # Stakeholder tools (for risk attribution)
+        ToolName.LIST_DEAL_STAKEHOLDERS,  # Stakeholders can be source of blockers
+        ToolName.GET_STAKEHOLDER_DETAILS,  # Context for risk attribution
         # Meeting tools
         ToolName.LIST_DEAL_MEETINGS,
         ToolName.GET_MEETING_DETAILS,
@@ -236,6 +264,7 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.LIST_DEAL_EMAILS,
         ToolName.GET_EMAIL_DETAILS,
         ToolName.LIST_DEAL_CHANNEL_MESSAGES,
+        ToolName.LIST_DEAL_NOTES,  # Notes contain risk/blocker information
     },
 }
 
@@ -249,6 +278,8 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     ToolName.LIST_DEALS: ToolCategory.CRM,
     ToolName.GET_DEAL_DETAILS: ToolCategory.CRM,
     ToolName.GET_DEAL_SUMMARY: ToolCategory.CRM,
+    ToolName.GET_DEAL_CHANGE_HISTORY: ToolCategory.CRM,
+    ToolName.GET_PIPELINE_DETAILS: ToolCategory.CRM,
     # CRM/Stakeholder
     ToolName.LIST_DEAL_STAKEHOLDERS: ToolCategory.CRM,
     ToolName.GET_STAKEHOLDER_DETAILS: ToolCategory.CRM,
@@ -316,9 +347,11 @@ class ToolRegistry:
             create_list_deal_emails,
         )
         from src.agents.tools.crm import (
+            create_get_deal_change_history,
             create_get_deal_details,
             create_get_deal_summary,
             create_get_existing_risks_blockers,
+            create_get_pipeline_details,
             create_get_stakeholder_details,
             create_list_deal_notes,
             create_list_deal_stakeholder_insights,
@@ -367,6 +400,12 @@ class ToolRegistry:
             self.context, self.capabilities_getter
         )
         self._tool_factories[ToolName.GET_DEAL_SUMMARY] = lambda: create_get_deal_summary(
+            self.context, self.capabilities_getter
+        )
+        self._tool_factories[ToolName.GET_DEAL_CHANGE_HISTORY] = (
+            lambda: create_get_deal_change_history(self.context, self.capabilities_getter)
+        )
+        self._tool_factories[ToolName.GET_PIPELINE_DETAILS] = lambda: create_get_pipeline_details(
             self.context, self.capabilities_getter
         )
 
