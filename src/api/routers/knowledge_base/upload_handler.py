@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+from typing import cast
 from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, Query, status
 from fastapi import Response as FastAPIResponse
+from pydantic import HttpUrl
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import col
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
-    acquire_org_async_session,
     get_current_user,
     get_org_async_session,
 )
@@ -39,6 +41,7 @@ from sse_starlette.sse import EventSourceResponse
 
 logger = get_logger("knowledge_upload_handler")
 upload_router = APIRouter()
+_ZERO_UUID = UUID("00000000-0000-0000-0000-000000000000")
 
 
 def _get_status_str(status_enum):
@@ -48,13 +51,25 @@ def _get_status_str(status_enum):
     return getattr(status_enum, "value", str(status_enum))
 
 
-async def _ensure_processing_jobs(session: AsyncSession, source_id):
+def _safe_uuid(value: str | UUID | None, default: UUID = _ZERO_UUID) -> UUID:
+    """Safely coerce a value to UUID with fallback."""
+    if isinstance(value, UUID):
+        return value
+    if value is None:
+        return default
+    try:
+        return UUID(str(value))
+    except Exception:
+        return default
+
+
+async def _ensure_processing_jobs(session: AsyncSession, source_id: UUID) -> None:
     """Idempotently ensure required processing jobs exist for a source (async)."""
     from sqlalchemy import select
 
     result = await session.execute(
-        select(KnowledgeProcessingJob.job_type).where(
-            KnowledgeProcessingJob.source_id == str(source_id)
+        select(col(KnowledgeProcessingJob.job_type)).where(
+            col(KnowledgeProcessingJob.source_id) == source_id
         )
     )
     existing = {row[0] for row in result.all()}
@@ -63,7 +78,7 @@ async def _ensure_processing_jobs(session: AsyncSession, source_id):
         if job_type not in existing:
             to_create.append(
                 KnowledgeProcessingJob(
-                    source_id=str(source_id),
+                    source_id=source_id,
                     job_type=job_type,
                     status=JobStatus.PENDING,
                 )
@@ -117,12 +132,12 @@ async def presign_batch(
         success_files = [
             KnowledgePresignFileResponse(
                 source_id=src.source_id,
-                filename=src.filename,
-                mimetype=src.mimetype,
-                size_bytes=src.size_bytes,
-                upload_url=upload_url,
+                filename=src.filename or "",
+                mimetype=src.mimetype or "",
+                size_bytes=src.size_bytes or 0,
+                upload_url=cast(HttpUrl, upload_url),
                 expires_in_seconds=expiry_time * 60,
-                status=_get_status_str(src.status),
+                status=_get_status_str(src.status) or "",
                 success=True,
             )
             for src, upload_url in created
@@ -132,7 +147,7 @@ async def presign_batch(
         failed_files = []
         for error in errors:
             # Provide placeholder UUID if generation failed very early
-            source_id = error.get("source_id", "00000000-0000-0000-0000-000000000000")
+            source_id = _safe_uuid(error.get("source_id"))
             failed_files.append(
                 KnowledgePresignFileResponse(
                     source_id=source_id,
@@ -275,13 +290,13 @@ async def get_source(
             filename=source.filename,
             mimetype=source.mimetype,
             size_bytes=source.size_bytes,
-            status=_get_status_str(source.status),
+            status=_get_status_str(source.status) or "",
             created_at=source.created_at,
             updated_at=source.updated_at,
             error_message=source.error_message,
             storage_path=source.storage_path,
-            read_url=read_url,
-            filters=source.filters or {},
+            read_url=cast(HttpUrl, read_url) if read_url else None,
+            filters=getattr(source, "filters", None) or {},
             checksum=getattr(source, "checksum", None),
             thumbnail_small_path=getattr(source, "thumbnail_small_path", None),
             thumbnail_medium_path=getattr(source, "thumbnail_medium_path", None),
@@ -311,10 +326,8 @@ async def stream_sources(
 ):
     """Real-time SSE stream for knowledge source status using Redis pub/sub.
 
-    Important: We manually manage the organisation session so its search_path
-    remains set for the duration of the SSE stream (FastAPI would otherwise
-    finalize dependency scopes after returning EventSourceResponse, resetting
-    search_path to public and causing missing tenant table errors).
+    Note: DB access happens inside the SSE service using short-lived sessions
+    to avoid holding connections during the long-lived stream.
     """
     logger.info(
         "Starting SSE stream for user %s with source_ids=%s",
@@ -325,10 +338,7 @@ async def stream_sources(
     explicit_ids: set[UUID] | None = set(source_ids) if source_ids else None
 
     async def event_generator():
-        # Long-lived stream: use imperative acquisition to control lifetime
-        sess_gen = acquire_org_async_session(user_ids.organisation_id)
-        session = await anext(sess_gen)
-        service = KnowledgeSourceSSEService(session, user_ids.organisation_id, user_ids.user_id)
+        service = KnowledgeSourceSSEService(user_ids.organisation_id, user_ids.user_id)
         try:
             async for evt in service.stream_events(
                 explicit_ids=explicit_ids,
@@ -341,9 +351,5 @@ async def stream_sources(
                 await service.close()
             except Exception:
                 logger.debug("SSE service close failed", exc_info=True)
-            try:
-                await sess_gen.aclose()
-            except Exception:
-                logger.debug("SSE session generator finalization failed", exc_info=True)
 
     return EventSourceResponse(event_generator())

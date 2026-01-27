@@ -6,13 +6,13 @@ from collections.abc import AsyncGenerator
 from uuid import UUID
 
 from sqlalchemy import not_, select
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.api.schemas.upload_models import AttachmentEventUpdate
 from src.domain.models.organisation_tables.chat_message_models import (
     Attachment,
     AttachmentStatus,
 )
+from src.infra.database.sessions import org_async_session_scope
 from src.infra.messaging.redis_pubsub import AsyncRedisPubSub
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
 from src.infra.utils.logger import get_logger
@@ -47,16 +47,11 @@ class AttachmentSSEService:
         AttachmentStatus.FAILED.value,
     }
 
-    def __init__(self, org_session: AsyncSession, organisation_id: UUID, user_id: UUID):
-        self.org_session = org_session
+    def __init__(self, organisation_id: UUID, user_id: UUID):
         self.organisation_id = organisation_id
         self.user_id = user_id
         self.redis_pubsub = AsyncRedisPubSub()
         self.storage = AzureOrganisationBlobStorage(self.organisation_id)
-
-    @property
-    def session(self):  # pragma: no cover
-        return self.org_session
 
     async def close(self):  # pragma: no cover - resource cleanup
         try:
@@ -91,14 +86,16 @@ class AttachmentSSEService:
         # Apply explicit ID filter if provided
         if explicit_ids:
             stmt = stmt.where(col(Attachment.attachment_id).in_(explicit_ids))
-            res = await self.org_session.execute(stmt)
-            return list(res.scalars().all())
+            async with org_async_session_scope(self.organisation_id) as session:
+                res = await session.execute(stmt)
+                return list(res.scalars().all())
 
         # Non-terminal only
         # status stored as string; TERMINAL_STATUSES is a set of string values
         stmt = stmt.where(not_(col(Attachment.status).in_(list(self.TERMINAL_STATUSES))))
-        res = await self.org_session.execute(stmt)
-        return list(res.scalars().all())
+        async with org_async_session_scope(self.organisation_id) as session:
+            res = await session.execute(stmt)
+            return list(res.scalars().all())
 
     async def serialize_attachment(self, attachment: Attachment) -> dict:
         """
@@ -212,18 +209,8 @@ class AttachmentSSEService:
             async for evt in self._handle_initial(explicit_ids, watched_status):
                 yield evt
                 if evt["event"] == "complete":
-                    # Nothing more to stream; release DB session early
-                    try:
-                        await self.org_session.close()
-                    except Exception:
-                        logger.debug("Attachment SSE org_session early-close failed (complete)")
+                    # Nothing more to stream
                     return
-
-            # Release DB session before long-lived Redis loop to avoid holding pool connections
-            try:
-                await self.org_session.close()
-            except Exception:
-                logger.debug("Attachment SSE org_session early-close failed (post-initial)")
 
             # Stream updates from Redis only (no DB required)
             async for evt in self._stream_updates(

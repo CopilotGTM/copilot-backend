@@ -12,12 +12,13 @@ from typing import cast
 from uuid import UUID
 
 from sqlalchemy import not_, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import col
 from src.api.schemas.knowledge_upload_models import KnowledgeSourceEventUpdate
 from src.domain.models.organisation_tables.knowledge_models import (
     OrganisationSource,
     OrganisationSourceStatus,
 )
+from src.infra.database.sessions import org_async_session_scope
 from src.infra.messaging.redis_channels import channel_for_knowledge_update_status
 from src.infra.messaging.redis_pubsub import AsyncRedisPubSub
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
@@ -46,7 +47,7 @@ class KnowledgeSourceSSEService:
     """Service for streaming knowledge source status via SSE with Redis pub/sub.
 
     Notes:
-        * Must receive an organisation-scoped session (search_path already set).
+        * Acquires short-lived organisation-scoped sessions internally as needed.
         * Historically terminal status set stored *string* values; switched to enum
           objects for type‑safety, while still comparing via their `.value` against
           DB values which are persisted as enum values (strings).
@@ -63,16 +64,14 @@ class KnowledgeSourceSSEService:
     # Additional statuses that indicate complete removal (source no longer exists)
     DELETION_COMPLETE_STATUSES = {"deleted"}
 
-    def __init__(self, org_session: AsyncSession, organisation_id: UUID, user_id: UUID):
+    def __init__(self, organisation_id: UUID, user_id: UUID):
         """Initialize SSE service.
 
         Args:
-            org_session: Organisation-scoped SQLModel Session (search_path set)
             organisation_id: Current organisation UUID
             user_id: Current user UUID (used to scope sources)
         """
         # Store context
-        self.org_session = org_session
         self.organisation_id = organisation_id
         self.user_id = user_id
 
@@ -81,11 +80,6 @@ class KnowledgeSourceSSEService:
 
         # Azure blob storage client used for generating read SAS URLs (download + thumbnails)
         self.storage = AzureOrganisationBlobStorage(self.organisation_id)
-
-    # Backwards compatibility with older code paths that expected `.session`
-    @property
-    def session(self):  # pragma: no cover - trivial delegation
-        return self.org_session
 
     async def close(self):  # parity with upload service dependency cleanup
         try:
@@ -103,22 +97,24 @@ class KnowledgeSourceSSEService:
     ) -> list[OrganisationSource]:
         """Fetch initial source snapshot based on filter criteria (async)."""
         base_filters = [
-            OrganisationSource.organisation_id == self.organisation_id,  # type: ignore[arg-type]
-            OrganisationSource.user_id == self.user_id,  # type: ignore[arg-type]
-            OrganisationSource.is_deleted == False,  # type: ignore[arg-type]  # noqa: E712
+            col(OrganisationSource.organisation_id) == self.organisation_id,
+            col(OrganisationSource.user_id) == self.user_id,
+            col(OrganisationSource.is_deleted).is_(False),
         ]
 
         stmt = select(OrganisationSource).where(*base_filters)
 
         if explicit_ids:
-            stmt = stmt.where(OrganisationSource.source_id.in_(explicit_ids))  # type: ignore[attr-defined]
-            res = await self.org_session.execute(stmt)
-            return cast(list[OrganisationSource], list(res.scalars().all()))
+            stmt = stmt.where(col(OrganisationSource.source_id).in_(explicit_ids))
+            async with org_async_session_scope(self.organisation_id) as session:
+                res = await session.execute(stmt)
+                return cast(list[OrganisationSource], list(res.scalars().all()))
 
         logger.info("Fetching initial sources for User non-terminal IDs")
-        stmt = stmt.where(not_(OrganisationSource.status.in_(self.TERMINAL_STATUS_VALUES)))  # type: ignore[attr-defined]
-        res = await self.org_session.execute(stmt)
-        sources = cast(list[OrganisationSource], list(res.scalars().all()))
+        stmt = stmt.where(not_(col(OrganisationSource.status).in_(self.TERMINAL_STATUS_VALUES)))
+        async with org_async_session_scope(self.organisation_id) as session:
+            res = await session.execute(stmt)
+            sources = cast(list[OrganisationSource], list(res.scalars().all()))
         logger.debug("Initial non-terminal sources count=%d", len(sources))
         return sources
 
@@ -136,7 +132,7 @@ class KnowledgeSourceSSEService:
         # receive a predictable, typed payload.
         model = KnowledgeSourceEventUpdate(
             source_id=str(source.source_id),
-            status=_get_status_str(source.status),
+            status=_get_status_str(source.status) or "",
             updated_at=source.updated_at.isoformat() if source.updated_at else None,
             error_message=source.error_message,
             progress=None,
@@ -241,29 +237,13 @@ class KnowledgeSourceSSEService:
             # Handle initial sources
             initial_sources = await self.get_initial_sources(explicit_ids)
             if not initial_sources:
-                # No initial sources: release DB session before returning
-                try:
-                    await self.org_session.close()
-                except Exception:
-                    logger.debug("SSE org_session early-close failed (no sources)")
                 yield self._send_event("complete", {"message": "no_sources_to_watch"})
                 return
 
             async for event in self._handle_initial_sources(initial_sources, watched_status):
                 yield event
                 if event["event"] == "complete":
-                    # All sources already terminal: release DB session before returning
-                    try:
-                        await self.org_session.close()
-                    except Exception:
-                        logger.debug("SSE org_session early-close failed (complete)")
                     return
-
-            # Release DB session before long-lived Redis loop to avoid holding pool connections
-            try:
-                await self.org_session.close()
-            except Exception:
-                logger.debug("SSE org_session early-close failed (post-initial)")
 
             # Stream updates from Redis
             async for event in self._stream_redis_updates(

@@ -13,12 +13,12 @@ import json
 from collections.abc import AsyncGenerator
 from uuid import UUID
 
-from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.schemas.admin_job_models import OrganisationJobEventUpdate
 from src.domain.models.master_tables.organisation_job_models import (
     OrganisationJob,
     OrganisationJobStatus,
 )
+from src.infra.database.sessions import master_async_session_scope
 from src.infra.messaging.redis_channels import channel_for_org_job
 from src.infra.messaging.redis_pubsub import AsyncRedisPubSub
 from src.infra.utils.logger import get_logger
@@ -31,7 +31,7 @@ class OrganisationJobSSEService:
     """Service for streaming organisation job status via SSE with Redis pub/sub.
 
     Notes:
-        * Requires master database session (public schema).
+        * Acquires a short-lived master database session internally (public schema).
         * Validates job ownership by admin_id before streaming.
     """
 
@@ -41,14 +41,12 @@ class OrganisationJobSSEService:
         OrganisationJobStatus.CANCELLED,
     }
 
-    def __init__(self, session: AsyncSession, admin_id: UUID):
+    def __init__(self, admin_id: UUID):
         """Initialize SSE service.
 
         Args:
-            session: Master database async session
             admin_id: Admin user ID for job ownership validation
         """
-        self.session = session
         self.admin_id = admin_id
         self.redis_pubsub = AsyncRedisPubSub()
 
@@ -112,9 +110,10 @@ class OrganisationJobSSEService:
 
         try:
             # Fetch initial job state and validate ownership
-            job = await organisation_job_service.get_job_by_admin(
-                self.session, job_id, self.admin_id
-            )
+            async with master_async_session_scope() as session:
+                job = await organisation_job_service.get_job_by_admin(
+                    session, job_id, self.admin_id
+                )
 
             if not job:
                 yield self._send_event(
@@ -130,12 +129,6 @@ class OrganisationJobSSEService:
             if self._is_terminal(job.status):
                 yield self._send_event("complete", {"message": "job_already_terminal"})
                 return
-
-            # Release DB session before long-lived Redis loop
-            try:
-                await self.session.close()
-            except Exception:
-                logger.debug("SSE session early-close failed (post-initial)")
 
             # Stream updates from Redis
             async for event in self._stream_redis_updates(

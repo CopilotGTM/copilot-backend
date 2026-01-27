@@ -7,7 +7,6 @@ from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
-    acquire_org_async_session,
     get_current_user,
     get_org_async_session,
 )
@@ -222,10 +221,7 @@ async def stream_attachments(
     logger.info("Attachment SSE explicit IDs: %s", explicit_ids)
 
     async def event_generator():
-        # Manual control of session lifetime (mirror knowledge base SSE pattern)
-        sess_gen = acquire_org_async_session(user_ids.organisation_id)
-        session = await anext(sess_gen)
-        service = AttachmentSSEService(session, user_ids.organisation_id, user_ids.user_id)
+        service = AttachmentSSEService(user_ids.organisation_id, user_ids.user_id)
         try:
             async for evt in service.stream_events(
                 explicit_ids=explicit_ids,
@@ -238,10 +234,6 @@ async def stream_attachments(
                 await service.close()
             except Exception:
                 logger.debug("SSE service close failed", exc_info=True)
-            try:
-                await sess_gen.aclose()
-            except Exception:
-                logger.debug("SSE session generator finalization failed", exc_info=True)
 
     return EventSourceResponse(event_generator())
 
