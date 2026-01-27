@@ -113,6 +113,22 @@ class SuperAdminConfig:
     SUPER_ADMIN_EMAIL: str | None = os.getenv("SUPER_ADMIN_EMAIL")
 
 
+class LinkedInEnrichmentConfig:
+    """Configuration for LinkedIn data enrichment via Clado API.
+
+    Clado API provides LinkedIn profile enrichment, contact discovery,
+    and profile scraping capabilities.
+    API Docs: https://docs.clado.ai/api-reference/introduction
+    """
+
+    LINKEDIN_CLADO_API_KEY: str | None = os.getenv("LINKEDIN_CLADO_API_KEY")
+    CLADO_BASE_URL: str = os.getenv("CLADO_BASE_URL", "https://search.clado.ai")
+
+    # Rate limit tracking (credits per operation)
+    # Get profile: 1 credit, Scrape profile: 2 credits
+    # Email enrichment: 4 credits (if found), Phone: 10 credits (if found)
+
+
 class NangoIntegrationConfig:
     """Configuration for Nango OAuth integration management
 
@@ -378,6 +394,7 @@ knowledge_file_upload_config = KnowledgeFileUploadConfig()
 pool_monitor_config = PoolMonitorConfig()
 rate_limit_config = RateLimitConfig()
 nango_integration_config = NangoIntegrationConfig()
+linkedin_enrichment_config = LinkedInEnrichmentConfig()
 
 
 class Config:

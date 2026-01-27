@@ -67,6 +67,7 @@ class ToolName(str, Enum):
     GET_STAKEHOLDER_DETAILS = "get_stakeholder_details"
     LIST_DEAL_STAKEHOLDER_INSIGHTS = "list_deal_stakeholder_insights"
     CREATE_STAKEHOLDER = "create_stakeholder"  # Create new stakeholders during analysis
+    ENRICH_STAKEHOLDER = "enrich_stakeholder"  # Enrich stakeholder with LinkedIn data
     GET_EXISTING_RISKS_BLOCKERS = "get_existing_risks_blockers"
 
     # -------------------------------------------------------------------------
@@ -96,8 +97,8 @@ class ToolName(str, Enum):
     LIST_DEAL_CHANNEL_MESSAGES = "list_deal_channel_messages"
 
     # -------------------------------------------------------------------------
-    # RESEARCH TOOLS - External research (free, no API keys required)
-    # Used by: Chat Agent
+    # RESEARCH TOOLS - External research
+    # Used by: Chat Agent, Briefing Agent, Deal Summary Agent
     # -------------------------------------------------------------------------
     SEARCH_WIKIPEDIA = "search_wikipedia"
     GET_STOCK_INFO = "get_stock_info"
@@ -105,6 +106,10 @@ class ToolName(str, Enum):
     CRAWL_WEBPAGE = "crawl_webpage"
     SEARCH_ARXIV = "search_arxiv"
     EXTRACT_NEWS_ARTICLE = "extract_news_article"
+    ENRICH_LINKEDIN_PROFILE = (
+        "enrich_linkedin_profile"  # LinkedIn enrichment for stakeholder workflows
+    )
+    RESEARCH_LINKEDIN_PROFILE = "research_linkedin_profile"  # LinkedIn research for general chat
 
     # -------------------------------------------------------------------------
     # CALENDAR TOOLS - For upcoming meetings and events
@@ -164,13 +169,14 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.GET_EMAIL_DETAILS,
         ToolName.LIST_DEAL_NOTES,
         ToolName.LIST_DEAL_CHANNEL_MESSAGES,
-        # Research tools (free, no API keys)
+        # Research tools
         ToolName.SEARCH_WIKIPEDIA,
         ToolName.GET_STOCK_INFO,
         ToolName.GET_COMPANY_FINANCIALS,
         ToolName.CRAWL_WEBPAGE,
         ToolName.SEARCH_ARXIV,
         ToolName.EXTRACT_NEWS_ARTICLE,
+        ToolName.RESEARCH_LINKEDIN_PROFILE,  # LinkedIn research for general queries
     },
     # -------------------------------------------------------------------------
     # BriefingAgent - Meeting Briefing Agent
@@ -271,6 +277,21 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.LIST_DEAL_CHANNEL_MESSAGES,
         ToolName.LIST_DEAL_NOTES,  # Notes contain risk/blocker information
     },
+    # -------------------------------------------------------------------------
+    # StakeholderAnalysisAgent - Stakeholder Analysis Agent
+    # Location: src/agents/workflows/stakeholder_analysis/agent.py
+    # Purpose: Analyzes stakeholders and enriches their profiles with LinkedIn data.
+    # -------------------------------------------------------------------------
+    "StakeholderAnalysisAgent": {
+        # Stakeholder tools
+        ToolName.LIST_DEAL_STAKEHOLDERS,
+        ToolName.GET_STAKEHOLDER_DETAILS,
+        ToolName.CREATE_STAKEHOLDER,
+        ToolName.ENRICH_STAKEHOLDER,  # LinkedIn enrichment for stakeholders
+        # Meeting tools (for context)
+        ToolName.LIST_DEAL_MEETINGS,
+        ToolName.GET_MEETING_TRANSCRIPT,
+    },
 }
 
 # Tool category mapping for documentation/grouping
@@ -289,6 +310,7 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     ToolName.LIST_DEAL_STAKEHOLDERS: ToolCategory.CRM,
     ToolName.GET_STAKEHOLDER_DETAILS: ToolCategory.CRM,
     ToolName.CREATE_STAKEHOLDER: ToolCategory.CRM,
+    ToolName.ENRICH_STAKEHOLDER: ToolCategory.CRM,
     ToolName.GET_EXISTING_RISKS_BLOCKERS: ToolCategory.CRM,
     ToolName.LIST_DEAL_NOTES: ToolCategory.CRM,
     ToolName.LIST_DEAL_STAKEHOLDER_INSIGHTS: ToolCategory.CRM,
@@ -311,13 +333,15 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     ToolName.LIST_DEAL_EMAILS: ToolCategory.COMMUNICATION,
     ToolName.GET_EMAIL_DETAILS: ToolCategory.COMMUNICATION,
     ToolName.LIST_DEAL_CHANNEL_MESSAGES: ToolCategory.COMMUNICATION,
-    # Research (free, no API keys)
+    # Research tools
     ToolName.SEARCH_WIKIPEDIA: ToolCategory.SEARCH,
     ToolName.GET_STOCK_INFO: ToolCategory.SEARCH,
     ToolName.GET_COMPANY_FINANCIALS: ToolCategory.SEARCH,
     ToolName.CRAWL_WEBPAGE: ToolCategory.SEARCH,
     ToolName.SEARCH_ARXIV: ToolCategory.SEARCH,
     ToolName.EXTRACT_NEWS_ARTICLE: ToolCategory.SEARCH,
+    ToolName.ENRICH_LINKEDIN_PROFILE: ToolCategory.SEARCH,
+    ToolName.RESEARCH_LINKEDIN_PROFILE: ToolCategory.SEARCH,
 }
 
 
@@ -354,6 +378,7 @@ class ToolRegistry:
         )
         from src.agents.tools.crm import (
             create_create_stakeholder,
+            create_enrich_stakeholder,
             create_get_deal_change_history,
             create_get_deal_details,
             create_get_deal_summary,
@@ -377,9 +402,11 @@ class ToolRegistry:
         )
         from src.agents.tools.research import (
             create_crawl_webpage,
+            create_enrich_linkedin_profile,
             create_extract_news_article,
             create_get_company_financials,
             create_get_stock_info,
+            create_research_linkedin_profile,
             create_search_arxiv,
             create_search_wikipedia,
         )
@@ -433,6 +460,9 @@ class ToolRegistry:
             lambda: create_list_deal_stakeholder_insights(self.context, self.capabilities_getter)
         )
         self._tool_factories[ToolName.CREATE_STAKEHOLDER] = lambda: create_create_stakeholder(
+            self.context, self.capabilities_getter
+        )
+        self._tool_factories[ToolName.ENRICH_STAKEHOLDER] = lambda: create_enrich_stakeholder(
             self.context, self.capabilities_getter
         )
 
@@ -490,6 +520,12 @@ class ToolRegistry:
         )
         self._tool_factories[ToolName.EXTRACT_NEWS_ARTICLE] = lambda: create_extract_news_article(
             self.capabilities_getter
+        )
+        self._tool_factories[ToolName.ENRICH_LINKEDIN_PROFILE] = (
+            lambda: create_enrich_linkedin_profile(self.capabilities_getter)
+        )
+        self._tool_factories[ToolName.RESEARCH_LINKEDIN_PROFILE] = (
+            lambda: create_research_linkedin_profile(self.capabilities_getter)
         )
 
         # Legacy/placeholder tools - will be registered when implemented
