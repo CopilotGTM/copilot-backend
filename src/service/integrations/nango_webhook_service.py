@@ -160,19 +160,41 @@ class NangoWebhookService:
         end_user_id = end_user.get("endUserId") if isinstance(end_user, dict) else None
         user_id = UUID(end_user_id) if end_user_id else None
         tags: dict[str, Any] = end_user.get("tags", {}) if isinstance(end_user, dict) else {}
-        org_id_str = tags.get("organizationId") if isinstance(tags, dict) else None
-        organization_id = UUID(org_id_str) if org_id_str else None
+        tag_org_id = tags.get("organizationId") if isinstance(tags, dict) else None
 
-        if not user_id or not organization_id:
+        if not user_id:
             logger.error("Missing user identifiers in webhook: %s", payload)
             return Response.bad_request_error_response(
                 message="Missing user identifiers in endUser"
             )
 
+        user = await self._fetch_user_from_master(user_id)
+        if not user:
+            logger.error("User %s not found in master database", user_id)
+            return Response.bad_request_error_response(message="User not found")
+
+        organisation_id = user.organisation_id
+        if tag_org_id:
+            try:
+                tag_org_uuid = UUID(tag_org_id)
+                if tag_org_uuid != organisation_id:
+                    logger.warning(
+                        "Webhook org tag mismatch for user %s: tag=%s, master=%s",
+                        user_id,
+                        tag_org_uuid,
+                        organisation_id,
+                    )
+            except ValueError:
+                logger.warning(
+                    "Webhook org tag is not a valid UUID for user %s: %s",
+                    user_id,
+                    tag_org_id,
+                )
+
         # Determine integration type for reactivation lookup
         integration_type = self._determine_integration_type(connection_id, provider_config_key)
 
-        async for org_session in acquire_org_async_session(organization_id):
+        async for org_session in acquire_org_async_session(organisation_id):
             # Step 1: Check if this exact connection_id already exists (idempotency)
             stmt = select(KnowledgeIntegration).where(
                 KnowledgeIntegration.connection_id == connection_id
@@ -218,7 +240,7 @@ class NangoWebhookService:
             connection_id,
             provider_config_key,
             user_id,
-            organization_id,
+            organisation_id,
         )
 
     async def _reactivate_integration(
@@ -291,7 +313,7 @@ class NangoWebhookService:
         connection_id: str,
         provider_config_key: str,
         user_id: UUID,
-        organization_id: UUID,
+        organisation_id: UUID,
     ) -> JSONResponse:
         """Handle authorization webhook for new integration creation."""
         try:
@@ -313,7 +335,7 @@ class NangoWebhookService:
             )
 
             integration = await self._create_integration_record(
-                user.organisation_id,
+                organisation_id,
                 integration_type,
                 connection_id,
                 user_id,
@@ -326,7 +348,7 @@ class NangoWebhookService:
                 logger.error(
                     "Failed to create integration for connection %s (org=%s)",
                     connection_id,
-                    organization_id,
+                    organisation_id,
                 )
                 return Response.success_response(
                     message="Webhook received but processing failed",
@@ -340,7 +362,7 @@ class NangoWebhookService:
                 self._enum_value(user.user_role),
                 created_by_admin,
                 self._enum_value(integration_scope),
-                organization_id,
+                organisation_id,
             )
 
             await self._save_connection_mapping(connection_id, integration, provider_config_key)

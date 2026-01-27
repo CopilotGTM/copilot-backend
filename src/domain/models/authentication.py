@@ -3,7 +3,6 @@ from typing import Any
 from urllib.parse import unquote
 
 from fastapi import Cookie, Depends, HTTPException, status
-from socketio.exceptions import ConnectionRefusedError
 from sqlmodel import Session
 from src.api.dependencies.master_dependencies import get_master_session
 from src.infra.auth.supabase_admin_client import supabase_admin_client
@@ -83,33 +82,3 @@ class Authentication:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Authentication error",
             ) from e
-
-    def decode_for_ws(self, token: str) -> dict[str, Any]:
-        """
-        Decode and validate token for WebSocket, raising ConnectionRefusedError on error.
-        """
-        logger.debug("Decoding token (WebSocket)...")
-        try:
-            # Verify the token with Supabase
-            payload = supabase_admin_client.verify_token(token)
-
-            # Extract user information
-            supabase_user_id = payload.get("user", {}).get("id")
-            if not supabase_user_id:
-                logger.warning("No user ID found in WebSocket token")
-                raise ConnectionRefusedError("Invalid token payload")
-
-            # For WebSocket, we'll return the basic user info
-            # You might want to add a database session here to get full user details
-            return {
-                "supabase_user_id": supabase_user_id,
-                "user_id": payload.get("user_id"),  # If you store this in token
-                "organisation_id": payload.get("organisation_id"),  # If you store this in token
-            }
-
-        except HTTPException as e:
-            logger.error("WebSocket auth failed: %s", str(e))
-            raise ConnectionRefusedError("Unauthorized") from e
-        except Exception as e:
-            logger.error("WebSocket auth token decode failed: %s", str(e))
-            raise ConnectionRefusedError("Unauthorized") from e

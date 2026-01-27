@@ -69,7 +69,7 @@ src/
 
 ### Celery Workers
 
-Six workers: `knowledge_worker`, `chat_worker`, `deal_worker`, `integrations_worker`, `organization_worker`, `content_worker`. Each has: `celery_app.py`, `config.py`, `client.py`, and `tasks/` directory.
+Five workers: `knowledge_worker`, `chat_worker`, `deal_worker`, `integrations_worker`, `organization_worker`. Each has: `celery_app.py`, `config.py`, `client.py`, and `tasks/` directory.
 
 ### Automated Pipeline User ID
 

@@ -124,7 +124,6 @@ Workers (Celery)
   - Chat: `src/workers/chat_worker/config.py:1`.
   - Knowledge: `src/workers/knowledge_worker/config.py:1`.
   - Organization: `src/workers/organization_worker/config.py:1`.
-  - Content: `src/workers/content_worker/config.py:1`.
 - Enqueue from API using `send_task(name, args, queue, routing_key)` against the appropriate worker app.
 
 Celery Enqueue Example
@@ -319,7 +318,6 @@ Workers & Tasks (Celery)
 - **Knowledge Worker** (`src/workers/knowledge_worker/`): Exchange `knowledge`, queues `knowledge_upload`, `knowledge_extract`.
   - `knowledge.post_upload_process`, `knowledge.delete_source` → queue `knowledge_upload`
   - `knowledge.document_extraction` → queue `knowledge_extract`
-- **Content Worker** (`src/workers/content_worker/`): Queues `content_generation`, `deck_generation`, `slides`.
 - **Organization Worker** (`src/workers/organization_worker/`): Exchange `organization`, queue `organization`.
   - `organization.create` → queue `organization`
 - **Deal Worker** (`src/workers/deal_worker/`): Exchange `deal`, queues `deal`, `deal_jobs`, `deal_mappers`.
@@ -382,7 +380,6 @@ Schemas (Primary Models)
 - Chat streaming: `src/api/schemas/chat_stream_models.py:1`, `src/api/schemas/chat_socket_models.py:1`.
 - Uploads (attachments): `src/api/schemas/upload_models.py:1` — `PresignRequest/Response`, `FinalizeRequest`, batch models, `AttachmentEventUpdate`.
 - Knowledge upload/access: `src/api/schemas/knowledge_upload_models.py:1`, `src/api/schemas/knowledge_access_models.py:1` — presign/finalize/status/list/stats, `KnowledgeSourceEventUpdate`.
-- Technical content: `src/api/schemas/technical_deck_models.py:1`.
 - CRM: `src/api/schemas/crm_models.py:1` — `DealListItem`, `DealDetail`, `DealsPage`, `DealsStats`, `StakeholderDetail`, `StakeholderFullDetail` (with engagement history), `StakeholderEngagementSnapshot`, `StakeholderInsightDetail`, `DealMeetingResponse`, `TimelineEvent`, `TimelinePage`, `RiskBlockerDetail`, `RiskBlockerListItem`.
 
 Event Contracts (Streams/PubSub)

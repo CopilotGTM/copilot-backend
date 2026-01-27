@@ -121,8 +121,7 @@ copilot-backend/
 │   │   ├── knowledge_worker/    # Heavy ML processing
 │   │   ├── chat_worker/         # Chat message handling
 │   │   ├── deal_worker/         # Deal analysis jobs
-│   │   ├── integrations_worker/ # CRM/calendar sync
-│   │   └── content_worker/      # Content generation
+│   │   └── integrations_worker/ # CRM/calendar sync
 │   └── infra/               # Infrastructure layer
 │       ├── database/        # Connection providers (sync/async)
 │       ├── auth/            # Authentication handlers
