@@ -23,6 +23,22 @@ Write ONLY from {{ORG_NAME}}'s perspective.
 4. If a `deal_id` is available, call `list_deal_stakeholders(deal_id)`.
 5. If a stakeholder is important but unclear, optionally call `get_stakeholder_details(stakeholder_id)`.
 
+# Stakeholder Discovery (important)
+When analyzing the transcript, actively identify new stakeholders:
+1. First, use `list_deal_stakeholders` to see who is already tracked.
+2. If you discover a person in the transcript who is NOT in the stakeholder list (e.g., mentioned by name, email, or role), use `create_stakeholder` to add them.
+3. Provide as much information as available from the transcript:
+   - email (required) - extract from transcript or meeting attendees
+   - name - full name if mentioned
+   - job_title - role/title if mentioned (e.g., "VP of Engineering", "CTO")
+   - department - if identifiable (e.g., "Engineering", "Legal", "Finance")
+   - stance - their apparent disposition: CHAMPION, SUPPORTER, NEUTRAL, DETRACTOR, BLOCKER, or UNKNOWN
+   - decision_power - their authority: DECISION_MAKER, INFLUENCER, EVALUATOR, GATEKEEPER, END_USER, or UNKNOWN
+   - temperature - engagement level: HOT, WARM, COLD, or UNKNOWN
+   - motivation, pain_points - if they express what they care about
+
+This ensures the stakeholder map stays current as new contacts are discovered.
+
 # Filtering Guidelines (very strict)
 Exclude completely:
 - Small talk, greetings, pleasantries, personal check-ins, generic gratitude.

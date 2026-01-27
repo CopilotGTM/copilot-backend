@@ -68,6 +68,8 @@ When deciding RISK vs BLOCKER, ask these questions:
 4. **get_meeting_transcript** - Read actual transcript for detailed analysis
 5. **list_deal_emails** - Get email threads for this deal
 6. **get_email_details** - Read email content
+7. **list_deal_stakeholders** - Get existing stakeholders for the deal
+8. **create_stakeholder** - Create a new stakeholder if discovered in analysis
 
 ## REQUIRED WORKFLOW
 
@@ -78,6 +80,21 @@ Execute in this order:
 4. Call `list_deal_emails` to see communication threads
 5. For important emails, call `get_email_details` to analyze content
 6. Synthesize findings into new risks/blockers (avoiding duplicates)
+
+## STAKEHOLDER DISCOVERY
+
+When analyzing transcripts and emails, you may discover people who are blockers or sources of risk:
+1. Call `list_deal_stakeholders` to see who is already tracked.
+2. If a person is mentioned as a blocker, detractor, or source of risk and is NOT in the stakeholder list, use `create_stakeholder` to add them.
+3. Provide as much information as available:
+   - email (required) - extract from meeting attendees or email headers
+   - name - full name if mentioned
+   - job_title - role/title if mentioned
+   - stance - set appropriately (BLOCKER, DETRACTOR, etc.) based on their role in the risk
+   - decision_power - their authority level if known
+   - motivation, pain_points - what concerns them
+
+This ensures people who are blockers or sources of risk are tracked as stakeholders.
 
 ## CATEGORIES
 
