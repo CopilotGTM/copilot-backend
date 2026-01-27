@@ -67,6 +67,7 @@ class ToolName(str, Enum):
     GET_STAKEHOLDER_DETAILS = "get_stakeholder_details"
     LIST_DEAL_STAKEHOLDER_INSIGHTS = "list_deal_stakeholder_insights"
     CREATE_STAKEHOLDER = "create_stakeholder"  # Create new stakeholders during analysis
+    ENRICH_STAKEHOLDER = "enrich_stakeholder"  # Enrich stakeholder with LinkedIn data
     GET_EXISTING_RISKS_BLOCKERS = "get_existing_risks_blockers"
 
     # -------------------------------------------------------------------------
@@ -197,6 +198,7 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.GET_STAKEHOLDER_DETAILS,
         ToolName.LIST_DEAL_STAKEHOLDER_INSIGHTS,  # Understand attendee dynamics
         ToolName.CREATE_STAKEHOLDER,  # Create new stakeholders discovered in analysis
+        ToolName.ENRICH_STAKEHOLDER,  # Enrich stakeholder with LinkedIn data
         # Communication tools
         ToolName.LIST_DEAL_EMAILS,
         ToolName.GET_EMAIL_DETAILS,
@@ -240,6 +242,7 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.GET_STAKEHOLDER_DETAILS,
         ToolName.LIST_DEAL_STAKEHOLDER_INSIGHTS,  # Crucial for deal analysis
         ToolName.CREATE_STAKEHOLDER,  # Create new stakeholders discovered in analysis
+        ToolName.ENRICH_STAKEHOLDER,  # Enrich stakeholder with LinkedIn data
         # Meeting tools
         ToolName.LIST_DEAL_MEETINGS,
         ToolName.GET_MEETING_DETAILS,
@@ -295,6 +298,7 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     ToolName.LIST_DEAL_STAKEHOLDERS: ToolCategory.CRM,
     ToolName.GET_STAKEHOLDER_DETAILS: ToolCategory.CRM,
     ToolName.CREATE_STAKEHOLDER: ToolCategory.CRM,
+    ToolName.ENRICH_STAKEHOLDER: ToolCategory.CRM,
     ToolName.GET_EXISTING_RISKS_BLOCKERS: ToolCategory.CRM,
     ToolName.LIST_DEAL_NOTES: ToolCategory.CRM,
     ToolName.LIST_DEAL_STAKEHOLDER_INSIGHTS: ToolCategory.CRM,
@@ -361,6 +365,7 @@ class ToolRegistry:
         )
         from src.agents.tools.crm import (
             create_create_stakeholder,
+            create_enrich_stakeholder,
             create_get_deal_change_history,
             create_get_deal_details,
             create_get_deal_summary,
@@ -441,6 +446,9 @@ class ToolRegistry:
             lambda: create_list_deal_stakeholder_insights(self.context, self.capabilities_getter)
         )
         self._tool_factories[ToolName.CREATE_STAKEHOLDER] = lambda: create_create_stakeholder(
+            self.context, self.capabilities_getter
+        )
+        self._tool_factories[ToolName.ENRICH_STAKEHOLDER] = lambda: create_enrich_stakeholder(
             self.context, self.capabilities_getter
         )
 
