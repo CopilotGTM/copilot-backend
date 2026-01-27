@@ -2,7 +2,7 @@
 
 This service handles cleanup of deal jobs that have been stuck in non-terminal states:
 - PENDING for more than 2 hours → mark as FAILED
-- IN_PROGRESS for more than 24 hours → mark as FAILED
+- IN_PROGRESS for more than 35 minutes → mark as FAILED
 
 Different job types may have different threshold requirements, so we handle
 cleanup per job type to allow for flexibility.
@@ -32,29 +32,28 @@ logger = get_logger("deal_stale_job_cleanup_service")
 
 # Default threshold configurations for different job states
 DEFAULT_PENDING_THRESHOLD_HOURS = 2  # Jobs pending for more than 2 hours
-DEFAULT_IN_PROGRESS_THRESHOLD_HOURS = 24  # Jobs in progress for more than 24 hours
+DEFAULT_IN_PROGRESS_THRESHOLD_HOURS = 0.58  # Jobs in progress for more than 35 minutes
 
 # Job type specific thresholds (override defaults if needed)
-# LLM-heavy jobs may take longer, so we give them more time
-# Values are in hours (supports fractional hours, e.g., 0.5 = 30 minutes)
+# Values are in hours (supports fractional hours, e.g., 0.58 = 35 minutes)
 JOB_TYPE_THRESHOLDS: dict[DealJobType, dict[str, float]] = {
-    # Meeting jobs - these involve LLM calls, allow more time
-    DealJobType.MEETING_BRIEFING: {"pending": 1, "in_progress": 1},
-    DealJobType.MEETING_SUMMARY: {"pending": 1, "in_progress": 1},
-    DealJobType.MEETING_FOLLOWUP: {"pending": 1, "in_progress": 1},
+    # Meeting jobs
+    DealJobType.MEETING_BRIEFING: {"pending": 1, "in_progress": 0.58},
+    DealJobType.MEETING_SUMMARY: {"pending": 1, "in_progress": 0.58},
+    DealJobType.MEETING_FOLLOWUP: {"pending": 1, "in_progress": 0.58},
     # Stakeholder jobs
-    DealJobType.STAKEHOLDER_ANALYSIS: {"pending": 2, "in_progress": 1},
-    DealJobType.STAKEHOLDER_ENRICHMENT: {"pending": 2, "in_progress": 1},
+    DealJobType.STAKEHOLDER_ANALYSIS: {"pending": 2, "in_progress": 0.58},
+    DealJobType.STAKEHOLDER_ENRICHMENT: {"pending": 2, "in_progress": 0.58},
     # Deal-level jobs
-    DealJobType.DEAL_SUMMARY: {"pending": 2, "in_progress": 4},
-    DealJobType.DEAL_RISK_ANALYSIS: {"pending": 2, "in_progress": 4},
-    DealJobType.DEAL_NEXT_STEPS: {"pending": 2, "in_progress": 4},
+    DealJobType.DEAL_SUMMARY: {"pending": 2, "in_progress": 0.58},
+    DealJobType.DEAL_RISK_ANALYSIS: {"pending": 2, "in_progress": 0.58},
+    DealJobType.DEAL_NEXT_STEPS: {"pending": 2, "in_progress": 0.58},
     # Risk/Blocker extraction
-    DealJobType.RISK_BLOCKER_EXTRACTION: {"pending": 2, "in_progress": 6},
+    DealJobType.RISK_BLOCKER_EXTRACTION: {"pending": 2, "in_progress": 0.58},
     # Content generation
-    DealJobType.PROPOSAL_DRAFT: {"pending": 2, "in_progress": 6},
-    DealJobType.EMAIL_DRAFT: {"pending": 2, "in_progress": 4},
-    # Deal import - can take longer for large imports (3 hours pending, 35 mins in_progress)
+    DealJobType.PROPOSAL_DRAFT: {"pending": 2, "in_progress": 0.58},
+    DealJobType.EMAIL_DRAFT: {"pending": 2, "in_progress": 0.58},
+    # Deal import
     DealJobType.DEAL_IMPORT: {"pending": 3, "in_progress": 0.58},
 }
 

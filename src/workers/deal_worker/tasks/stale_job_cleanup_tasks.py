@@ -6,10 +6,10 @@ Three-tier architecture:
 
 Runs hourly via Celery Beat to mark stale deal jobs as FAILED:
 - PENDING jobs: stuck for more than configured threshold (default 2 hours)
-- IN_PROGRESS jobs: stuck for more than configured threshold (default 24 hours)
+- IN_PROGRESS jobs: stuck for more than configured threshold (default 35 minutes)
 
 Different job types may have different thresholds to account for varying
-expected completion times (e.g., LLM-heavy jobs take longer).
+expected completion times.
 """
 
 from __future__ import annotations
