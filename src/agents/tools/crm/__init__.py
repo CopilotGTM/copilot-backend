@@ -3,6 +3,7 @@
 Tools for accessing deal, stakeholder, contact, and risk/blocker information.
 """
 
+from src.agents.tools.crm.create_stakeholder import create_create_stakeholder
 from src.agents.tools.crm.get_deal_change_history import create_get_deal_change_history
 from src.agents.tools.crm.get_deal_details import create_get_deal_details
 from src.agents.tools.crm.get_deal_summary import create_get_deal_summary
@@ -27,6 +28,7 @@ __all__ = [
     # Stakeholder tools
     "create_list_deal_stakeholders",
     "create_get_stakeholder_details",
+    "create_create_stakeholder",
     # Contact tools
     "create_search_contacts",
     # Risk/blocker tools

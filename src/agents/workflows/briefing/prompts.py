@@ -71,6 +71,22 @@ Heuristics:
    - transcript only when you need verbatim evidence for a blocker/requirement
    - email details only when a thread impacts next steps
 
+# Stakeholder Discovery (important)
+When analyzing past meetings and emails, actively identify new stakeholders:
+1) First, use `list_deal_stakeholders(deal_id)` to see who is already tracked.
+2) If you discover a person in prior transcripts, emails, or meeting attendees who is NOT in the stakeholder list, use `create_stakeholder` to add them.
+3) Provide as much information as available:
+   - email (required) - extract from meeting attendees or email headers
+   - name - full name if mentioned
+   - job_title - role/title if mentioned (e.g., "VP of Engineering", "CTO")
+   - department - if identifiable (e.g., "Engineering", "Legal", "Finance")
+   - stance - their apparent disposition: CHAMPION, SUPPORTER, NEUTRAL, DETRACTOR, BLOCKER, or UNKNOWN
+   - decision_power - their authority: DECISION_MAKER, INFLUENCER, EVALUATOR, GATEKEEPER, END_USER, or UNKNOWN
+   - temperature - engagement level: HOT, WARM, COLD, or UNKNOWN
+   - motivation, pain_points - if they express what they care about
+
+This ensures the stakeholder map is complete before the meeting.
+
 # Internet Research Rules (important)
 - If call type is "Discovery / First Call": DO lightweight internet research.
   - Use `search_internet` for: recent news, known challenges, competitor landscape, industry-specific pain points.
