@@ -16,6 +16,7 @@ Functions:
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator, AsyncIterator, Generator, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -47,6 +48,18 @@ def acquire_master_session() -> Generator[Session, None, None]:
     return _sync_master_session_gen()
 
 
+@contextmanager
+def master_session_scope() -> Iterator[Session]:
+    """Context manager for a synchronous master database session.
+
+    Preferred for non-FastAPI code to avoid generator misuse and ensure
+    sessions are always released.
+    """
+    provider = get_sync_provider()
+    with provider.master_session() as session:
+        yield session
+
+
 async def _async_master_session_gen() -> AsyncGenerator[AsyncSession, None]:
     """Generator function that yields an asynchronous master database session."""
     provider = get_async_provider()
@@ -65,6 +78,18 @@ def acquire_master_async_session() -> AsyncGenerator[AsyncSession, None]:
             users = result.scalars().all()
     """
     return _async_master_session_gen()
+
+
+@asynccontextmanager
+async def master_async_session_scope() -> AsyncGenerator[AsyncSession, None]:
+    """Async context manager for a master database session.
+
+    Preferred for non-FastAPI async code to avoid generator misuse and ensure
+    sessions are always released.
+    """
+    provider = get_async_provider()
+    async with provider.master_session() as session:
+        yield session
 
 
 # ============================================================================
@@ -95,6 +120,17 @@ def acquire_org_session(organisation_id: UUID) -> Iterator[Session]:
     return _sync_org_session_gen(organisation_id)
 
 
+@contextmanager
+def org_session_scope(organisation_id: UUID | str) -> Iterator[Session]:
+    """Context manager for a synchronous organisation (tenant) session.
+
+    Accepts UUID or string for convenience to match existing call sites.
+    """
+    provider = get_sync_provider()
+    with provider.tenant_session(str(organisation_id)) as session:  # type: ignore
+        yield session
+
+
 async def _async_org_session_gen(organisation_id: UUID) -> AsyncIterator[AsyncSession]:
     """Generator function that yields an asynchronous organisation database session."""
     provider = get_async_provider()
@@ -121,9 +157,26 @@ async def acquire_org_async_session(
         yield s
 
 
+@asynccontextmanager
+async def org_async_session_scope(
+    organisation_id: UUID | str,
+) -> AsyncGenerator[AsyncSession, None]:
+    """Async context manager for an organisation (tenant) session.
+
+    Accepts UUID or string for convenience to match existing call sites.
+    """
+    provider = get_async_provider()
+    async with provider.tenant_session(str(organisation_id)) as session:  # type: ignore
+        yield session
+
+
 __all__ = [
     "acquire_master_session",
     "acquire_master_async_session",
     "acquire_org_session",
     "acquire_org_async_session",
+    "master_session_scope",
+    "master_async_session_scope",
+    "org_session_scope",
+    "org_async_session_scope",
 ]

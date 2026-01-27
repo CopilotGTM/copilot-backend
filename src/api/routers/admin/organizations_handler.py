@@ -5,7 +5,6 @@ from fastapi import APIRouter, Depends, Query
 from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.master_dependencies import (
-    acquire_master_async_session,
     get_master_async_session,
 )
 from src.api.dependencies.rate_limit import rate_limit_admin_read
@@ -165,7 +164,7 @@ async def create_organization(
         )
         return Response.accepted_response(
             message="Organisation creation job accepted",
-            data=response_data.model_dump(mode="json"),
+            data=response_data,
             response=response,
         )
 
@@ -175,7 +174,7 @@ async def create_organization(
             exc_info=True,
         )
         return Response.internal_server_error_response(
-            message=f"Failed to create organization - {e}", data={}, response=response
+            message=f"Failed to create organization - {e}", response=response
         )
 
 
@@ -234,7 +233,7 @@ async def create_organization_sync(
     except Exception as e:
         logger.error(f"Error creating organization: {e}", exc_info=True)
         return Response.internal_server_error_response(
-            message=f"Failed to create organization - {e}", data={}, response=response
+            message=f"Failed to create organization - {e}", response=response
         )
 
 
@@ -284,7 +283,7 @@ async def list_organizations(
             exc_info=True,
         )
         return Response.internal_server_error_response(
-            message=f"Failed to list organizations - {e}", data={}, response=response
+            message=f"Failed to list organizations - {e}", response=response
         )
 
 
@@ -371,7 +370,7 @@ async def get_organization(
             exc_info=True,
         )
         return Response.internal_server_error_response(
-            message=f"Failed to retrieve organization - {e}", data={}, response=response
+            message=f"Failed to retrieve organization - {e}", response=response
         )
 
 
@@ -441,7 +440,7 @@ async def update_organization(
             exc_info=True,
         )
         return Response.internal_server_error_response(
-            message="Failed to update organization", data={}, response=response
+            message="Failed to update organization", response=response
         )
 
 
@@ -501,7 +500,7 @@ async def update_organisation_status(
             exc_info=True,
         )
         return Response.internal_server_error_response(
-            message="Failed to update organization status", data={}, response=response
+            message="Failed to update organization status", response=response
         )
 
 
@@ -596,10 +595,7 @@ async def stream_job_status(
         )
 
     async def event_generator():
-        # Long-lived stream: use imperative acquisition to control lifetime
-        sess_gen = acquire_master_async_session()
-        session = await anext(sess_gen)
-        service = OrganisationJobSSEService(session, current_admin.admin_id)
+        service = OrganisationJobSSEService(current_admin.admin_id)
         try:
             async for evt in service.stream_job_events(
                 job_id=job_id,
@@ -612,10 +608,6 @@ async def stream_job_status(
                 await service.close()
             except Exception:
                 logger.debug("SSE service close failed", exc_info=True)
-            try:
-                await sess_gen.aclose()
-            except Exception:
-                logger.debug("SSE session generator finalization failed", exc_info=True)
 
     return EventSourceResponse(
         event_generator(),

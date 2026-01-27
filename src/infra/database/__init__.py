@@ -14,6 +14,10 @@ from src.infra.database.sessions import (
     acquire_master_session,
     acquire_org_async_session,
     acquire_org_session,
+    master_async_session_scope,
+    master_session_scope,
+    org_async_session_scope,
+    org_session_scope,
 )
 
 __all__ = [
@@ -21,4 +25,8 @@ __all__ = [
     "acquire_master_async_session",
     "acquire_org_session",
     "acquire_org_async_session",
+    "master_session_scope",
+    "master_async_session_scope",
+    "org_session_scope",
+    "org_async_session_scope",
 ]

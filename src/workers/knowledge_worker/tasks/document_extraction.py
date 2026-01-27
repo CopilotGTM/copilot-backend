@@ -26,7 +26,7 @@ from billiard.exceptions import TimeLimitExceeded
 from celery.exceptions import MaxRetriesExceededError, SoftTimeLimitExceeded
 
 from src.domain.models.organisation_tables.knowledge_models import OrganisationSourceStatus
-from src.infra.database.sessions import acquire_org_session
+from src.infra.database.sessions import org_session_scope
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
@@ -71,10 +71,7 @@ def _load_and_validate_source(
     Returns:
         SourceData if valid, None if source/job not found or validation failed.
     """
-    session_gen = acquire_org_session(org_uuid)
-    session = next(session_gen)
-
-    try:
+    with org_session_scope(org_uuid) as session:
         helper = TaskHelperService(session, publisher)
 
         # Load source and job
@@ -98,12 +95,6 @@ def _load_and_validate_source(
             filename=source.filename or "",
             mimetype=source.mimetype or "",
         )
-    finally:
-        # Release session before long-running operations
-        with contextlib.suppress(Exception):
-            session.close()
-        with contextlib.suppress(Exception):
-            session_gen.close()  # type: ignore[union-attr]
 
 
 def _finalize_extraction(
@@ -120,10 +111,7 @@ def _finalize_extraction(
 
     Acquires a new session to update source/job status after extraction completes.
     """
-    session_gen = acquire_org_session(org_uuid)
-    session = next(session_gen)
-
-    try:
+    with org_session_scope(org_uuid) as session:
         helper = TaskHelperService(session, publisher)
 
         if success:
@@ -146,11 +134,6 @@ def _finalize_extraction(
                 source_id_str,
                 error_message or "Failed to extract content",
             )
-    finally:
-        with contextlib.suppress(Exception):
-            session.close()
-        with contextlib.suppress(Exception):
-            session_gen.close()  # type: ignore[union-attr]
 
 
 @app.task(

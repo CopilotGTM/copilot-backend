@@ -1,4 +1,3 @@
-import contextlib
 import os
 import secrets
 import time
@@ -30,7 +29,7 @@ from src.infra.config.configs import (
     database_config,
     secret_manager_config,
 )
-from src.infra.database.sessions import acquire_master_session, acquire_org_async_session
+from src.infra.database.sessions import acquire_org_async_session, master_session_scope
 from src.infra.utils.cursor import decode_cursor, encode_cursor
 from src.infra.utils.logger import get_logger
 from src.infra.utils.resource_naming import (
@@ -237,89 +236,78 @@ class OrganizationManagementService:
                 self._ensure_vector_extension_available()
                 self._vector_extension_checked = True
 
-            session_gen = acquire_master_session()
-            session = next(session_gen)
-            try:
-                with session.begin():
-                    # Check if role exists
-                    role_exists = session.execute(
-                        text("SELECT 1 FROM pg_roles WHERE rolname = :role_name"),
-                        {"role_name": role_name},
-                    ).scalar_one_or_none()
+            with master_session_scope() as session, session.begin():
+                # Check if role exists
+                role_exists = session.execute(
+                    text("SELECT 1 FROM pg_roles WHERE rolname = :role_name"),
+                    {"role_name": role_name},
+                ).scalar_one_or_none()
 
-                    if role_exists:
-                        logger.warning(f"Role '{role_name}' already exists. Updating password.")
-                        session.execute(
-                            text(f"ALTER ROLE {role_name} WITH PASSWORD :pwd"),
-                            {"pwd": password},
-                        )
-                    else:
-                        logger.info(f"Role '{role_name}' not found. Creating new role.")
-                        session.execute(
-                            text(f"CREATE ROLE {role_name} LOGIN PASSWORD :pwd NOINHERIT"),
-                            {"pwd": password},
-                        )
-
-                    # Create schema if it doesn't exist and set authorization
+                if role_exists:
+                    logger.warning(f"Role '{role_name}' already exists. Updating password.")
                     session.execute(
-                        text(f"CREATE SCHEMA IF NOT EXISTS {schema_name} AUTHORIZATION {role_name}")
+                        text(f"ALTER ROLE {role_name} WITH PASSWORD :pwd"),
+                        {"pwd": password},
+                    )
+                else:
+                    logger.info(f"Role '{role_name}' not found. Creating new role.")
+                    session.execute(
+                        text(f"CREATE ROLE {role_name} LOGIN PASSWORD :pwd NOINHERIT"),
+                        {"pwd": password},
                     )
 
-                    # Grant necessary permissions
-                    session.execute(
-                        text(f"GRANT USAGE, CREATE ON SCHEMA {schema_name} TO {role_name}")
-                    )
-                    session.execute(
-                        text(f"GRANT ALL PRIVILEGES ON SCHEMA {schema_name} TO {role_name}")
-                    )
+                # Create schema if it doesn't exist and set authorization
+                session.execute(
+                    text(f"CREATE SCHEMA IF NOT EXISTS {schema_name} AUTHORIZATION {role_name}")
+                )
 
-                    # Set default privileges for future objects created by the role
-                    session.execute(
-                        text(
-                            f"ALTER DEFAULT PRIVILEGES IN SCHEMA {schema_name} GRANT ALL ON TABLES TO {role_name}"
-                        )
-                    )
-                    session.execute(
-                        text(
-                            f"ALTER DEFAULT PRIVILEGES IN SCHEMA {schema_name} GRANT ALL ON SEQUENCES TO {role_name}"
-                        )
-                    )
-                    session.execute(
-                        text(
-                            f"ALTER DEFAULT PRIVILEGES IN SCHEMA {schema_name} GRANT ALL ON FUNCTIONS TO {role_name}"
-                        )
-                    )
+                # Grant necessary permissions
+                session.execute(text(f"GRANT USAGE, CREATE ON SCHEMA {schema_name} TO {role_name}"))
+                session.execute(
+                    text(f"GRANT ALL PRIVILEGES ON SCHEMA {schema_name} TO {role_name}")
+                )
 
-                    # Ensure the role gets the correct schema by default for new connections in this DB
-                    db_name = database_config.DATABASE_NAME
-                    session.execute(
-                        text(
-                            f'ALTER ROLE {role_name} IN DATABASE "{db_name}" SET search_path = "{schema_name}", public'
-                        )
+                # Set default privileges for future objects created by the role
+                session.execute(
+                    text(
+                        f"ALTER DEFAULT PRIVILEGES IN SCHEMA {schema_name} GRANT ALL ON TABLES TO {role_name}"
                     )
+                )
+                session.execute(
+                    text(
+                        f"ALTER DEFAULT PRIVILEGES IN SCHEMA {schema_name} GRANT ALL ON SEQUENCES TO {role_name}"
+                    )
+                )
+                session.execute(
+                    text(
+                        f"ALTER DEFAULT PRIVILEGES IN SCHEMA {schema_name} GRANT ALL ON FUNCTIONS TO {role_name}"
+                    )
+                )
 
-                    # Grant role to admin user for maintenance
-                    admin_user = database_config.DATABASE_USER
-                    if admin_user:
-                        session.execute(text(f'GRANT {role_name} TO "{admin_user}"'))
+                # Ensure the role gets the correct schema by default for new connections in this DB
+                db_name = database_config.DATABASE_NAME
+                session.execute(
+                    text(
+                        f'ALTER ROLE {role_name} IN DATABASE "{db_name}" SET search_path = "{schema_name}", public'
+                    )
+                )
 
-                    # Attempt to create vector extension within the schema, failing gracefully
-                    try:
-                        session.execute(
-                            text(f"CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA {schema_name}")
-                        )
-                        logger.info(f"Enabled 'vector' extension in schema '{schema_name}'.")
-                    except SQLAlchemyError as vector_error:
-                        logger.warning(
-                            f"Could not create vector extension in schema '{schema_name}': {vector_error}. "
-                            "Vector operations may be affected."
-                        )
-            finally:
-                with contextlib.suppress(Exception):
-                    session.close()
-                with contextlib.suppress(Exception):
-                    cast(Any, session_gen).close()
+                # Grant role to admin user for maintenance
+                admin_user = database_config.DATABASE_USER
+                if admin_user:
+                    session.execute(text(f'GRANT {role_name} TO "{admin_user}"'))
 
+                # Attempt to create vector extension within the schema, failing gracefully
+                try:
+                    session.execute(
+                        text(f"CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA {schema_name}")
+                    )
+                    logger.info(f"Enabled 'vector' extension in schema '{schema_name}'.")
+                except SQLAlchemyError as vector_error:
+                    logger.warning(
+                        f"Could not create vector extension in schema '{schema_name}': {vector_error}. "
+                        "Vector operations may be affected."
+                    )
             logger.info(
                 f"Successfully created and configured role '{role_name}' and schema '{schema_name}'."
             )
@@ -462,31 +450,21 @@ class OrganizationManagementService:
     def _ensure_vector_extension_available(self):
         """Ensures the vector extension is available in the database."""
         try:
-            session_gen = acquire_master_session()
-            session = next(session_gen)
-            try:
-                with session.begin():
-                    # Check if vector extension is available
-                    result = session.execute(
-                        text("SELECT 1 FROM pg_available_extensions WHERE name = 'vector'")
-                    ).fetchone()
+            with master_session_scope() as session, session.begin():
+                # Check if vector extension is available
+                result = session.execute(
+                    text("SELECT 1 FROM pg_available_extensions WHERE name = 'vector'")
+                ).fetchone()
 
-                    if result:
-                        # Extension is available, try to create it if not exists
-                        session.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-                        logger.info("Vector extension is available and enabled")
-                    else:
-                        logger.warning(
-                            "Vector extension is not available in this PostgreSQL instance"
-                        )
-                        logger.warning(
-                            "Vector operations may not work. Consider using pgvector/pgvector Docker image"
-                        )
-            finally:
-                with contextlib.suppress(Exception):
-                    session.close()
-                with contextlib.suppress(Exception):
-                    cast(Any, session_gen).close()
+                if result:
+                    # Extension is available, try to create it if not exists
+                    session.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+                    logger.info("Vector extension is available and enabled")
+                else:
+                    logger.warning("Vector extension is not available in this PostgreSQL instance")
+                    logger.warning(
+                        "Vector operations may not work. Consider using pgvector/pgvector Docker image"
+                    )
         except SQLAlchemyError as e:
             logger.warning(f"Could not check/create vector extension: {e}")
             logger.warning("Continuing without vector extension verification")
@@ -753,21 +731,13 @@ class OrganizationManagementService:
 
         # Use the master connection to drop schema and role
         try:
-            session_gen = acquire_master_session()
-            master_sess = next(session_gen)
-            try:
-                with master_sess.begin():
-                    logger.info(f"Dropping schema '{schema_name}' and role '{role_name}'.")
-                    master_sess.execute(text(f"DROP SCHEMA IF EXISTS {schema_name} CASCADE"))
-                    master_sess.execute(text(f"DROP ROLE IF EXISTS {role_name}"))
-                    logger.info(
-                        f"Successfully dropped schema and role for organization {organisation_id}."
-                    )
-            finally:
-                with contextlib.suppress(Exception):
-                    master_sess.close()
-                with contextlib.suppress(Exception):
-                    cast(Any, session_gen).close()
+            with master_session_scope() as master_sess, master_sess.begin():
+                logger.info(f"Dropping schema '{schema_name}' and role '{role_name}'.")
+                master_sess.execute(text(f"DROP SCHEMA IF EXISTS {schema_name} CASCADE"))
+                master_sess.execute(text(f"DROP ROLE IF EXISTS {role_name}"))
+                logger.info(
+                    f"Successfully dropped schema and role for organization {organisation_id}."
+                )
         except SQLAlchemyError as e:
             logger.error(
                 f"Failed to drop schema/role for organization {organisation_id}: {e}",
@@ -843,19 +813,11 @@ class OrganizationManagementService:
         new_password = secrets.token_urlsafe(16)
         self._validate_identifier(role_name, "role_name")
         try:
-            session_gen = acquire_master_session()
-            master_sess = next(session_gen)
-            try:
-                with master_sess.begin():
-                    master_sess.execute(
-                        text(f"ALTER ROLE {role_name} WITH PASSWORD :pwd"),
-                        {"pwd": new_password},
-                    )
-            finally:
-                with contextlib.suppress(Exception):
-                    master_sess.close()
-                with contextlib.suppress(Exception):
-                    cast(Any, session_gen).close()
+            with master_session_scope() as master_sess, master_sess.begin():
+                master_sess.execute(
+                    text(f"ALTER ROLE {role_name} WITH PASSWORD :pwd"),
+                    {"pwd": new_password},
+                )
             self._store_password_in_key_vault(organisation_id, new_password)
             session.add(
                 OrganisationActionHistory(

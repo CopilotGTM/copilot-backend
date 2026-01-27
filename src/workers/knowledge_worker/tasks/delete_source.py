@@ -20,13 +20,16 @@ from __future__ import annotations
 import contextlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from uuid import UUID
+
+from sqlmodel import col
 
 from src.domain.models.organisation_tables.job_models import (
     JobStatus,
     KnowledgeProcessingJob,
 )
 from src.domain.models.organisation_tables.knowledge_models import OrganisationSource
-from src.infra.database.sessions import acquire_org_session
+from src.infra.database.sessions import org_session_scope
 from src.infra.messaging.event_models import KnowledgeSourceEventUpdate
 from src.infra.messaging.knowledge_source_status_publish import publish_source_status
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
@@ -71,10 +74,15 @@ def _publish_deletion_status(
         logger.warning("Failed to publish deletion status for %s: %s", source_id, e)
 
 
+def _as_uuid(value: str | UUID) -> UUID:
+    """Normalize UUID inputs (string or UUID) to UUID type."""
+    return value if isinstance(value, UUID) else UUID(value)
+
+
 def _load_source_and_mark_in_progress(
-    organisation_id: str,
-    source_id: str,
-    job_id: str | None,
+    organisation_id: str | UUID,
+    source_id: str | UUID,
+    job_id: str | UUID | None,
 ) -> tuple[SourceBlobData | None, str | None]:
     """
     Load source data and mark job in-progress.
@@ -84,22 +92,23 @@ def _load_source_and_mark_in_progress(
     Returns:
         Tuple of (SourceBlobData or None if not found, job_id string or None)
     """
-    session_gen = acquire_org_session(organisation_id)
-    session = next(session_gen)
+    org_uuid = _as_uuid(organisation_id)
+    source_uuid = _as_uuid(source_id)
+    job_uuid = _as_uuid(job_id) if job_id else None
 
-    try:
+    with org_session_scope(org_uuid) as session:
         # Find or get the delete job
         job: KnowledgeProcessingJob | None = None
-        if job_id:
-            job = session.get(KnowledgeProcessingJob, job_id)
+        if job_uuid:
+            job = session.get(KnowledgeProcessingJob, job_uuid)
 
         if not job:
             # Try to find existing delete job for this source
             job = (
                 session.query(KnowledgeProcessingJob)
                 .filter(
-                    KnowledgeProcessingJob.source_id == source_id,
-                    KnowledgeProcessingJob.job_type == DELETE_SOURCE_JOB_TYPE,
+                    col(KnowledgeProcessingJob.source_id) == source_uuid,
+                    col(KnowledgeProcessingJob.job_type) == DELETE_SOURCE_JOB_TYPE,
                 )
                 .first()
             )
@@ -111,7 +120,7 @@ def _load_source_and_mark_in_progress(
             session.commit()
 
         # Fetch source (may be missing if already deleted)
-        src = session.get(OrganisationSource, source_id)
+        src = session.get(OrganisationSource, source_uuid)
 
         if not src:
             return None, str(job.job_id) if job else None
@@ -125,14 +134,8 @@ def _load_source_and_mark_in_progress(
 
         return blob_data, str(job.job_id) if job else None
 
-    finally:
-        with contextlib.suppress(Exception):
-            session.close()
-        with contextlib.suppress(Exception):
-            session_gen.close()
 
-
-def _delete_processing_jobs(organisation_id: str, source_id: str) -> int:
+def _delete_processing_jobs(organisation_id: str | UUID, source_id: str | UUID) -> int:
     """
     Delete processing jobs for the source (except delete job).
 
@@ -141,26 +144,22 @@ def _delete_processing_jobs(organisation_id: str, source_id: str) -> int:
     Returns:
         Number of jobs deleted
     """
-    session_gen = acquire_org_session(organisation_id)
-    session = next(session_gen)
+    org_uuid = _as_uuid(organisation_id)
+    source_uuid = _as_uuid(source_id)
 
-    try:
-        delete_query = session.query(KnowledgeProcessingJob).filter(
-            KnowledgeProcessingJob.source_id == source_id,
-            KnowledgeProcessingJob.job_type != DELETE_SOURCE_JOB_TYPE,
-        )
-        deleted_jobs = delete_query.delete()
-        session.commit()
-        return deleted_jobs
-    except Exception as e:
-        session.rollback()
-        logger.warning("Failed deleting jobs for %s: %s", source_id, e)
-        return 0
-    finally:
-        with contextlib.suppress(Exception):
-            session.close()
-        with contextlib.suppress(Exception):
-            session_gen.close()
+    with org_session_scope(org_uuid) as session:
+        try:
+            delete_query = session.query(KnowledgeProcessingJob).filter(
+                col(KnowledgeProcessingJob.source_id) == source_uuid,
+                col(KnowledgeProcessingJob.job_type) != DELETE_SOURCE_JOB_TYPE,
+            )
+            deleted_jobs = delete_query.delete()
+            session.commit()
+            return deleted_jobs
+        except Exception as e:
+            session.rollback()
+            logger.warning("Failed deleting jobs for %s: %s", source_id, e)
+            return 0
 
 
 def _delete_blobs(
@@ -188,9 +187,9 @@ def _delete_blobs(
 
 
 def _delete_source_and_job(
-    organisation_id: str,
-    source_id: str,
-    job_id: str | None,
+    organisation_id: str | UUID,
+    source_id: str | UUID,
+    job_id: str | UUID | None,
 ) -> bool:
     """
     Delete the source record and delete job.
@@ -200,64 +199,56 @@ def _delete_source_and_job(
     Returns:
         True if successful, False otherwise
     """
-    session_gen = acquire_org_session(organisation_id)
-    session = next(session_gen)
+    org_uuid = _as_uuid(organisation_id)
+    source_uuid = _as_uuid(source_id)
+    job_uuid = _as_uuid(job_id) if job_id else None
 
-    try:
-        # Delete the delete job first
-        if job_id:
-            job = session.get(KnowledgeProcessingJob, job_id)
-            if job:
-                session.delete(job)
+    with org_session_scope(org_uuid) as session:
+        try:
+            # Delete the delete job first
+            if job_uuid:
+                job = session.get(KnowledgeProcessingJob, job_uuid)
+                if job:
+                    session.delete(job)
 
-        # Then delete the source
-        src = session.get(OrganisationSource, source_id)
-        if src:
-            session.delete(src)
+            # Then delete the source
+            src = session.get(OrganisationSource, source_uuid)
+            if src:
+                session.delete(src)
 
-        session.commit()
-        logger.info("Deleted OrganisationSource %s", source_id)
-        return True
+            session.commit()
+            logger.info("Deleted OrganisationSource %s", source_id)
+            return True
 
-    except Exception as e:
-        session.rollback()
-        logger.warning("Failed deleting OrganisationSource %s: %s", source_id, e)
-        return False
-
-    finally:
-        with contextlib.suppress(Exception):
-            session.close()
-        with contextlib.suppress(Exception):
-            session_gen.close()
+        except Exception as e:
+            session.rollback()
+            logger.warning("Failed deleting OrganisationSource %s: %s", source_id, e)
+            return False
 
 
 def _mark_job_failed(
-    organisation_id: str,
-    job_id: str | None,
+    organisation_id: str | UUID,
+    job_id: str | UUID | None,
     error_message: str,
 ) -> None:
     """Mark the delete job as failed with fresh session."""
     if not job_id:
         return
 
-    session_gen = acquire_org_session(organisation_id)
-    session = next(session_gen)
+    org_uuid = _as_uuid(organisation_id)
+    job_uuid = _as_uuid(job_id)
 
-    try:
-        job = session.get(KnowledgeProcessingJob, job_id)
-        if job:
-            job.status = JobStatus.FAILED
-            job.error_message = error_message
-            session.add(job)
-            session.commit()
-    except Exception as e:
-        session.rollback()
-        logger.warning("Failed to mark job as failed: %s", e)
-    finally:
-        with contextlib.suppress(Exception):
-            session.close()
-        with contextlib.suppress(Exception):
-            session_gen.close()
+    with org_session_scope(org_uuid) as session:
+        try:
+            job = session.get(KnowledgeProcessingJob, job_uuid)
+            if job:
+                job.status = JobStatus.FAILED
+                job.error_message = error_message
+                session.add(job)
+                session.commit()
+        except Exception as e:
+            session.rollback()
+            logger.warning("Failed to mark job as failed: %s", e)
 
 
 @app.task(
@@ -295,7 +286,8 @@ def delete_source_task(
         job_id,
     )
 
-    storage = AzureOrganisationBlobStorage(organisation_id=organisation_id)
+    org_uuid = _as_uuid(organisation_id)
+    storage = AzureOrganisationBlobStorage(organisation_id=org_uuid)
     tracked_job_id: str | None = None
 
     try:
