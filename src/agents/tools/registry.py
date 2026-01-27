@@ -106,7 +106,10 @@ class ToolName(str, Enum):
     CRAWL_WEBPAGE = "crawl_webpage"
     SEARCH_ARXIV = "search_arxiv"
     EXTRACT_NEWS_ARTICLE = "extract_news_article"
-    ENRICH_LINKEDIN_PROFILE = "enrich_linkedin_profile"  # LinkedIn enrichment (requires API key)
+    ENRICH_LINKEDIN_PROFILE = (
+        "enrich_linkedin_profile"  # LinkedIn enrichment for stakeholder workflows
+    )
+    RESEARCH_LINKEDIN_PROFILE = "research_linkedin_profile"  # LinkedIn research for general chat
 
     # -------------------------------------------------------------------------
     # CALENDAR TOOLS - For upcoming meetings and events
@@ -173,7 +176,7 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.CRAWL_WEBPAGE,
         ToolName.SEARCH_ARXIV,
         ToolName.EXTRACT_NEWS_ARTICLE,
-        ToolName.ENRICH_LINKEDIN_PROFILE,  # LinkedIn stakeholder research
+        ToolName.RESEARCH_LINKEDIN_PROFILE,  # LinkedIn research for general queries
     },
     # -------------------------------------------------------------------------
     # BriefingAgent - Meeting Briefing Agent
@@ -198,14 +201,11 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.GET_STAKEHOLDER_DETAILS,
         ToolName.LIST_DEAL_STAKEHOLDER_INSIGHTS,  # Understand attendee dynamics
         ToolName.CREATE_STAKEHOLDER,  # Create new stakeholders discovered in analysis
-        ToolName.ENRICH_STAKEHOLDER,  # Enrich stakeholder with LinkedIn data
         # Communication tools
         ToolName.LIST_DEAL_EMAILS,
         ToolName.GET_EMAIL_DETAILS,
         ToolName.LIST_DEAL_CHANNEL_MESSAGES,
         ToolName.LIST_DEAL_NOTES,  # Internal notes contain prep context
-        # Research tools
-        ToolName.ENRICH_LINKEDIN_PROFILE,  # Enrich stakeholder profiles from LinkedIn
     },
     # -------------------------------------------------------------------------
     # SummaryAgent - Meeting Summary Agent
@@ -242,7 +242,6 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.GET_STAKEHOLDER_DETAILS,
         ToolName.LIST_DEAL_STAKEHOLDER_INSIGHTS,  # Crucial for deal analysis
         ToolName.CREATE_STAKEHOLDER,  # Create new stakeholders discovered in analysis
-        ToolName.ENRICH_STAKEHOLDER,  # Enrich stakeholder with LinkedIn data
         # Meeting tools
         ToolName.LIST_DEAL_MEETINGS,
         ToolName.GET_MEETING_DETAILS,
@@ -252,8 +251,6 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.LIST_DEAL_EMAILS,
         ToolName.GET_EMAIL_DETAILS,
         ToolName.LIST_DEAL_CHANNEL_MESSAGES,
-        # Research tools
-        ToolName.ENRICH_LINKEDIN_PROFILE,  # Enrich stakeholder profiles from LinkedIn
     },
     # -------------------------------------------------------------------------
     # RiskBlockerExtractionAgent - Risk/Blocker Extraction Agent
@@ -279,6 +276,21 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.GET_EMAIL_DETAILS,
         ToolName.LIST_DEAL_CHANNEL_MESSAGES,
         ToolName.LIST_DEAL_NOTES,  # Notes contain risk/blocker information
+    },
+    # -------------------------------------------------------------------------
+    # StakeholderAnalysisAgent - Stakeholder Analysis Agent
+    # Location: src/agents/workflows/stakeholder_analysis/agent.py
+    # Purpose: Analyzes stakeholders and enriches their profiles with LinkedIn data.
+    # -------------------------------------------------------------------------
+    "StakeholderAnalysisAgent": {
+        # Stakeholder tools
+        ToolName.LIST_DEAL_STAKEHOLDERS,
+        ToolName.GET_STAKEHOLDER_DETAILS,
+        ToolName.CREATE_STAKEHOLDER,
+        ToolName.ENRICH_STAKEHOLDER,  # LinkedIn enrichment for stakeholders
+        # Meeting tools (for context)
+        ToolName.LIST_DEAL_MEETINGS,
+        ToolName.GET_MEETING_TRANSCRIPT,
     },
 }
 
@@ -329,6 +341,7 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     ToolName.SEARCH_ARXIV: ToolCategory.SEARCH,
     ToolName.EXTRACT_NEWS_ARTICLE: ToolCategory.SEARCH,
     ToolName.ENRICH_LINKEDIN_PROFILE: ToolCategory.SEARCH,
+    ToolName.RESEARCH_LINKEDIN_PROFILE: ToolCategory.SEARCH,
 }
 
 
@@ -393,6 +406,7 @@ class ToolRegistry:
             create_extract_news_article,
             create_get_company_financials,
             create_get_stock_info,
+            create_research_linkedin_profile,
             create_search_arxiv,
             create_search_wikipedia,
         )
@@ -509,6 +523,9 @@ class ToolRegistry:
         )
         self._tool_factories[ToolName.ENRICH_LINKEDIN_PROFILE] = (
             lambda: create_enrich_linkedin_profile(self.capabilities_getter)
+        )
+        self._tool_factories[ToolName.RESEARCH_LINKEDIN_PROFILE] = (
+            lambda: create_research_linkedin_profile(self.capabilities_getter)
         )
 
         # Legacy/placeholder tools - will be registered when implemented

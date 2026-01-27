@@ -63,7 +63,8 @@ async def _clado_search_person(
         company: Company name
 
     Returns:
-        Search result with LinkedIn URL or None if not found
+        Search result with LinkedIn URL or None if not found.
+        Returns normalized structure with 'linkedin_url' at top level.
     """
     # Build search query
     query_parts = []
@@ -92,8 +93,21 @@ async def _clado_search_person(
             response.raise_for_status()
             data: dict[str, Any] = response.json()
 
-            # Find best match based on email if provided
+            # Handle response format - Clado returns data nested under 'profile'
+            # or as a list of 'results'
             results = data.get("results", [])
+
+            # If no results array, check if it's a single profile response
+            if not results and "profile" in data:
+                profile = data.get("profile", {})
+                return {
+                    "linkedin_url": profile.get("linkedin_url"),
+                    "name": profile.get("name"),
+                    "title": profile.get("headline"),
+                    "location": profile.get("location"),
+                    "raw_profile": profile,
+                }
+
             if not results:
                 return None
 
@@ -101,18 +115,51 @@ async def _clado_search_person(
             if email:
                 email_lower = email.lower()
                 for res in results:
+                    # Check both top-level and nested profile structure
                     result_emails = res.get("emails", [])
+                    profile = res.get("profile", {})
+                    if not result_emails and profile:
+                        result_emails = profile.get("emails", [])
                     if any(e.lower() == email_lower for e in result_emails):
-                        matched: dict[str, Any] = res
-                        return matched
+                        return _normalize_search_result(res)
 
             # Return first result if no email match
-            first_result: dict[str, Any] | None = results[0] if results else None
-            return first_result
+            if results:
+                return _normalize_search_result(results[0])
+
+            return None
 
     except Exception as e:
         logger.warning("Clado search failed: %s", e)
         return None
+
+
+def _normalize_search_result(result: dict[str, Any]) -> dict[str, Any]:
+    """Normalize Clado search result to consistent format.
+
+    Clado API may return data at top level or nested under 'profile'.
+    This normalizes to a consistent structure with linkedin_url at top level.
+    """
+    # Check if data is nested under 'profile'
+    profile = result.get("profile", {})
+    if profile:
+        return {
+            "linkedin_url": profile.get("linkedin_url"),
+            "name": profile.get("name"),
+            "title": profile.get("headline"),
+            "location": profile.get("location"),
+            "skills": profile.get("skills", []),
+            "raw_profile": profile,
+        }
+    # Data is at top level
+    return {
+        "linkedin_url": result.get("linkedin_url") or result.get("linkedin_profile_url"),
+        "name": result.get("name"),
+        "title": result.get("title") or result.get("headline"),
+        "location": result.get("location"),
+        "skills": result.get("skills", []),
+        "raw_profile": result,
+    }
 
 
 async def _clado_get_profile(
@@ -126,7 +173,8 @@ async def _clado_get_profile(
         linkedin_url: LinkedIn profile URL
 
     Returns:
-        Profile data or None if failed
+        Normalized profile data or None if failed.
+        Returns structure with name, title, skills etc. at top level.
     """
     try:
         async with httpx.AsyncClient(timeout=API_TIMEOUT_SECONDS) as client:
@@ -137,6 +185,27 @@ async def _clado_get_profile(
             )
             response.raise_for_status()
             result: dict[str, Any] = response.json()
+
+            # Normalize response - Clado nests data under 'profile'
+            profile = result.get("profile", {})
+            experience = result.get("experience", [])
+
+            if profile:
+                return {
+                    "name": profile.get("name"),
+                    "title": profile.get("headline"),
+                    "headline": profile.get("headline"),
+                    "location": profile.get("location"),
+                    "description": profile.get("description"),
+                    "linkedin_url": profile.get("linkedin_url"),
+                    "skills": profile.get("skills", []),
+                    "experience": experience,
+                    "education": result.get("education", []),
+                    "is_decision_maker": profile.get("is_decision_maker", False),
+                    "raw_profile": profile,
+                }
+
+            # Fallback if not nested
             return result
 
     except Exception as e:
@@ -361,30 +430,37 @@ async def enrich_stakeholder(
 
             # Step 1: Find LinkedIn URL if not already known
             if not linkedin_url:
-                # Try contact lookup by email first (most accurate)
-                contact_result = await _clado_get_contact_by_email(api_key, search_email)
-                if contact_result:
-                    credits_used += 4  # Contact lookup cost
-                    # Extract LinkedIn URL from social links
-                    social_links = contact_result.get("socialLinks", [])
-                    for link in social_links:
-                        if "linkedin.com" in link.get("url", ""):
-                            linkedin_url = link.get("url")
-                            break
+                # NOTE: Contact lookup commented out - requires additional Clado credits (402)
+                # To re-enable, uncomment the following block:
+                # ----
+                # # Try contact lookup by email first (most accurate)
+                # contact_result = await _clado_get_contact_by_email(api_key, search_email)
+                # if contact_result:
+                #     credits_used += 4  # Contact lookup cost
+                #     # Extract LinkedIn URL from social links
+                #     social_links = contact_result.get("socialLinks", [])
+                #     for link in social_links:
+                #         if "linkedin.com" in link.get("url", ""):
+                #             linkedin_url = link.get("url")
+                #             break
+                # ----
 
-                # If still no URL, try search
-                if not linkedin_url:
-                    search_result = await _clado_search_person(
-                        api_key,
-                        email=search_email,
-                        name=search_name,
-                        company=search_company,
+                # Search by name + company
+                search_result = await _clado_search_person(
+                    api_key,
+                    email=search_email,
+                    name=search_name,
+                    company=search_company,
+                )
+                if search_result:
+                    credits_used += 1  # Search cost per result
+                    linkedin_url = search_result.get("linkedin_url") or search_result.get(
+                        "linkedin_profile_url"
                     )
-                    if search_result:
-                        credits_used += 1  # Search cost per result
-                        linkedin_url = search_result.get("linkedin_url") or search_result.get(
-                            "linkedin_profile_url"
-                        )
+                    logger.info(
+                        "enrich_stakeholder: found LinkedIn URL via search: %s",
+                        linkedin_url,
+                    )
 
             # Step 2: Get profile data if we have LinkedIn URL
             if linkedin_url:
