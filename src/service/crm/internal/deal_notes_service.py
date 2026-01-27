@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID, uuid4
 
-from celery import chain, signature
+from celery import chain
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
@@ -384,22 +384,28 @@ class DealNotesService:
                 await self.org_session.commit()
 
             # Build chain: risk_blocker → stakeholder → deal_summary (with job)
-            risk_blocker_sig = signature(
+            # Use the configured Celery client for proper broker connection
+            from src.workers.deal_worker.client import get_deal_celery_client
+
+            celery_app = get_deal_celery_client()
+            queue = "deal_jobs"
+
+            risk_blocker_sig = celery_app.signature(
                 "risk_blocker.extract_deal_risks_blockers_task",
                 args=[org_id_str, deal_id_str],
-                queue="deal_jobs",
+                queue=queue,
                 immutable=True,
             )
-            stakeholder_sig = signature(
+            stakeholder_sig = celery_app.signature(
                 "stakeholder.analyze_deal_stakeholders_task",
                 args=[org_id_str, deal_id_str],
-                queue="deal_jobs",
+                queue=queue,
                 immutable=True,
             )
-            deal_summary_sig = signature(
+            deal_summary_sig = celery_app.signature(
                 "deal_summary_task.process",
                 args=[org_id_str, str(deal_summary_job_id)],
-                queue="deal_jobs",
+                queue=queue,
                 immutable=True,
             )
             task_chain = chain(risk_blocker_sig, stakeholder_sig, deal_summary_sig)

@@ -15,7 +15,6 @@ The task delegates to DealSummaryService for business logic:
 
 Error Handling:
     - DealNotFoundError: Deal doesn't exist (non-retryable)
-    - NoMeetingsError: No meetings for deal (non-retryable)
     - NoTranscriptsError: No transcripts available (non-retryable)
     - Other errors: Retried with exponential backoff
 

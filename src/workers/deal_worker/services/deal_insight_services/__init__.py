@@ -15,7 +15,6 @@ from src.workers.deal_worker.services.deal_insight_services.deal_summary_service
     DealNotFoundError,
     DealSummaryError,
     DealSummaryService,
-    NoMeetingsError,
 )
 from src.workers.deal_worker.services.deal_insight_services.risk_blocker_extraction_service import (
     NoContentError,
@@ -31,7 +30,6 @@ __all__ = [
     "DealNotFoundError",
     "DealSummaryError",
     "DealSummaryService",
-    "NoMeetingsError",
     # Stakeholder analysis
     "StakeholderAnalysisService",
     # Risk/blocker extraction

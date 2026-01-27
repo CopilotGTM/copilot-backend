@@ -58,17 +58,6 @@ class DealNotFoundError(DealSummaryError):
         )
 
 
-class NoMeetingsError(DealSummaryError):
-    """Raised when no meetings are found for the deal."""
-
-    def __init__(self, deal_id: UUID):
-        super().__init__(
-            f"No meetings found for deal {deal_id}. Schedule meetings before generating a summary.",
-            error_code="no_meetings",
-            retryable=False,
-        )
-
-
 def wrap_generated_content(content: dict) -> dict:
     """Wrap generated content with metadata envelope.
 
@@ -142,7 +131,6 @@ class DealSummaryService:
 
         Raises:
             DealNotFoundError: If deal doesn't exist
-            NoMeetingsError: If no meetings are associated with the deal
         """
         # Import here to avoid circular imports
         from src.agents.workflows.deal_summary import DealSummaryAgent, DealSummaryInput
@@ -174,9 +162,6 @@ class DealSummaryService:
 
             # 2. Get counts for agent planning
             meeting_count = await count_deal_meetings(session, self.organisation_id, deal_id)
-            if meeting_count == 0:
-                raise NoMeetingsError(deal_id)
-
             stakeholder_count = await count_deal_stakeholders(
                 session, self.organisation_id, deal_id
             )
