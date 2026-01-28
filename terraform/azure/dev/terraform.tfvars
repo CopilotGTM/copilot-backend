@@ -168,6 +168,14 @@ supabase_url      = "https://mdpbmdnwwdkjcxefbbbk.supabase.co"
 resend_email      = "noreply@team.copilotgtm.com" # Override from default
 
 # -----------------------------------------------------------------
+# Microsoft Teams Bot
+# -----------------------------------------------------------------
+# Messaging endpoint where Azure Bot Service sends messages to your backend
+# For local dev: use ngrok URL (changes frequently)
+# For deployed: use actual API endpoint
+teams_bot_messaging_endpoint = "https://caitlyn-nonarmigerous-uninstructively.ngrok-free.dev/api/teams/messages"
+
+# -----------------------------------------------------------------
 # Secrets (provided via TF_VAR_* environment variables)
 # -----------------------------------------------------------------
 # TF_VAR_azuredevops_pat           - Azure DevOps Personal Access Token
