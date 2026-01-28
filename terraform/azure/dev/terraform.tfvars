@@ -173,7 +173,7 @@ resend_email      = "noreply@team.copilotgtm.com" # Override from default
 # Messaging endpoint where Azure Bot Service sends messages to your backend
 # For local dev: use ngrok URL (changes frequently)
 # For deployed: use actual API endpoint
-teams_bot_messaging_endpoint = "https://caitlyn-nonarmigerous-uninstructively.ngrok-free.dev/api/teams/messages"
+teams_bot_messaging_endpoint = "https://caitlyn-nonarmigerous-uninstructively.ngrok-free.dev/users/bot/teams/messages"
 
 # -----------------------------------------------------------------
 # Secrets (provided via TF_VAR_* environment variables)
