@@ -774,6 +774,6 @@ variable "teams_bot_messaging_endpoint" {
     This can be updated later via Azure Portal or by re-running Terraform.
   DESC
   type        = string
-  default     = "https://placeholder.ngrok-free.app/api/teams/messages"
+  default     = "https://caitlyn-nonarmigerous-uninstructively.ngrok-free.dev/api/teams/messages"
 }
 
