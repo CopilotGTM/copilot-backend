@@ -11,7 +11,6 @@ trigger:
     include:
       - main
       - feature/*
-      - hotfix/*
   paths:
     include:
       - terraform/azure/dev/**
@@ -49,6 +48,8 @@ stages:
       tfVersion: ${{ variables.TF_VERSION }}
       dependsOn: []
       stageCondition: succeeded()
-      applyCondition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'), ne(variables['Build.Reason'], 'PullRequest'))
+      # Allow terraform apply from any branch (not just main) for dev testing
+      # Still prevents apply on Pull Requests - only actual branch pushes
+      applyCondition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
       approvalEnvironment: terraform-dev
       artifactName: tfplan-dev

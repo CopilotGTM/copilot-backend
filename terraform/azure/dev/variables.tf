@@ -760,3 +760,20 @@ variable "waf_name" {
   default     = "copilot-gtm-waf"
 }
 
+# -----------------------------------------------------------------
+# Microsoft Teams Bot
+# -----------------------------------------------------------------
+
+variable "teams_bot_messaging_endpoint" {
+  description = <<-DESC
+    The HTTPS endpoint where the bot receives messages from Teams.
+
+    For local development: Use ngrok URL (e.g., https://xxx.ngrok-free.app/api/teams/messages)
+    For production: Use your actual API endpoint (e.g., https://api.copilotgtm.com/api/teams/messages)
+
+    This can be updated later via Azure Portal or by re-running Terraform.
+  DESC
+  type        = string
+  default     = "https://caitlyn-nonarmigerous-uninstructively.ngrok-free.dev/api/teams/messages"
+}
+
