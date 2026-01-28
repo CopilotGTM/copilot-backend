@@ -67,8 +67,9 @@ resource "azurerm_bot_service_azure_bot" "teams_bot" {
   resource_group_name = var.resource_group_name
   location            = "global" # Azure Bot Service is a global resource
 
-  microsoft_app_id   = azuread_application.teams_bot.client_id
-  microsoft_app_type = "MultiTenant" # Allows users from ANY organization to use the bot
+  microsoft_app_id        = azuread_application.teams_bot.client_id
+  microsoft_app_type      = "SingleTenant"
+  microsoft_app_tenant_id = data.azuread_client_config.current.tenant_id
 
   sku      = var.sku
   endpoint = var.messaging_endpoint
