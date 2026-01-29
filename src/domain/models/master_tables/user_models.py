@@ -20,6 +20,7 @@ from .base_mixins import CreatedAtMixin, TimestampMixin
 from .super_admin_models import AdminUserStatus
 
 if TYPE_CHECKING:
+    from .external_identity_models import ExternalIdentityMapping
     from .organisation_models import Organisation
     from .super_admin_models import SuperAdmin
 
@@ -138,6 +139,9 @@ class User(TimestampMixin, table=True):
     # Relationships
     organisation: "Organisation" = Relationship(back_populates="users")
     action_history: list["UserActionHistory"] = Relationship(back_populates="user")
+    external_identities: list["ExternalIdentityMapping"] = Relationship(
+        back_populates="user", cascade_delete=True
+    )
 
 
 class UserActionHistory(CreatedAtMixin, table=True):
