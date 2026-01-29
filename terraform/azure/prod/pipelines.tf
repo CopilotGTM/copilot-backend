@@ -107,7 +107,7 @@ module "pipeline" {
 module "secure_file" {
   source              = "../modules/secure_file"
   devops_project_id   = data.azuredevops_project.project.id
-  secure_file_name    = "kubeconfig.yaml"
+  secure_file_name    = "kubeconfig-prod.yaml"
   secure_file_content = module.aks.kube_config
   apiserver_url       = module.aks.host
   cluster_context     = module.aks.aks_name
