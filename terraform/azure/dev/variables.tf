@@ -760,6 +760,16 @@ variable "waf_name" {
   default     = "copilot-gtm-waf"
 }
 
+variable "appgw_sku" {
+  description = "Application Gateway SKU. 'Standard_v2' for dev (~$180/mo, no WAF rules) or 'WAF_v2' for prod (~$400/mo, OWASP rules)."
+  type        = string
+  default     = "WAF_v2"
+  validation {
+    condition     = contains(["Standard_v2", "WAF_v2"], var.appgw_sku)
+    error_message = "appgw_sku must be 'Standard_v2' or 'WAF_v2'."
+  }
+}
+
 # -----------------------------------------------------------------
 # Microsoft Teams Bot
 # -----------------------------------------------------------------

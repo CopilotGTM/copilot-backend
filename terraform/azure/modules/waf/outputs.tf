@@ -20,10 +20,10 @@ output "public_ip_id" {
 
 output "log_analytics_workspace_id" {
   description = "The ID of the Log Analytics Workspace for WAF logs"
-  value       = var.enable_diagnostics ? azurerm_log_analytics_workspace.waf_logs[0].id : null
+  value       = var.enable_diagnostics && var.appgw_sku == "WAF_v2" ? azurerm_log_analytics_workspace.waf_logs[0].id : null
 }
 
 output "log_analytics_workspace_name" {
   description = "The name of the Log Analytics Workspace for WAF logs"
-  value       = var.enable_diagnostics ? azurerm_log_analytics_workspace.waf_logs[0].name : null
+  value       = var.enable_diagnostics && var.appgw_sku == "WAF_v2" ? azurerm_log_analytics_workspace.waf_logs[0].name : null
 }
