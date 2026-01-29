@@ -54,10 +54,11 @@ This directory contains the Terraform configuration for deploying a simplified, 
 ### 5. Azure OpenAI
 
 - **Account**: `openai-${project_name}-${env}`
-- **Region**: `eastus`
+- **Region**: `eastus2`
 - **Deployments**:
    - `gpt-5` (model `gpt-5`, version `2025-08-07`, SKU `GlobalStandard`)
    - `gpt-5-mini` (model `gpt-5-mini`, version `2025-08-07`, SKU `GlobalStandard`)
+   - `gpt-5.2` (model `gpt-5.2`, version `2025-12-11`, SKU `GlobalStandard`)
    - `text-embedding-3-large` (model `text-embedding-3-large`, version `1`, SKU `Standard`)
 
 ## Token-per-minute (TPM) limits
