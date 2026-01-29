@@ -66,8 +66,11 @@ resource "azapi_resource" "model_deployment" {
   depends_on = [azapi_resource.openai]
 
   lifecycle {
-    # Ignore identity to avoid azapi "Missing Resource Identity" bug on update
-    ignore_changes = [identity]
+    # azapi provider bug: "Missing Resource Identity After Update" on in-place updates.
+    # Azure applies the change successfully but the provider fails to parse the response.
+    # Ignore body changes so Terraform won't attempt in-place updates on deployments.
+    # To change capacity: update via Azure CLI, then update the Terraform code to match.
+    ignore_changes = [body]
   }
 }
 
