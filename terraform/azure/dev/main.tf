@@ -475,7 +475,7 @@ module "azure_openai" {
       deployment_name = "text-embedding-3-large"
       model_name      = "text-embedding-3-large"
       sku             = "Standard"
-      capacity        = 300
+      capacity        = 100 # Rebalanced: 100 dev + 249 prod = 349 total (subscription quota limit ~350 TPM)
       version         = "1"
       publisher       = "OpenAI"
     }

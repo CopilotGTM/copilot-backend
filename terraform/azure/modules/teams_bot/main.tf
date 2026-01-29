@@ -31,7 +31,7 @@ resource "azuread_application" "teams_bot" {
     }
 
     resource_access {
-      id   = "1c1b4c8e-3cc7-4c58-8470-9b92c9d5848b" # Chat.Read.WhereInstalled (application)
+      id   = "6b7d71aa-70aa-4810-a8d9-5d9fb2830017" # Chat.Read.All (application)
       type = "Role"
     }
   }
@@ -50,7 +50,7 @@ resource "azuread_service_principal" "teams_bot" {
 }
 
 # -----------------------------------------------------------------------------
-# Admin Consent: Chat.Read.WhereInstalled
+# Admin Consent: Chat.Read.All
 # The app registration declares this permission (see required_resource_access above).
 # Admin consent must be granted MANUALLY in Azure Portal → App Registrations →
 # CopilotGTM-Bot → API Permissions → "Grant admin consent for [tenant]".
