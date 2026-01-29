@@ -36,9 +36,8 @@ config:
 # Ingress configuration (disabled by default - use port-forward)
 ingress:
   enabled: false
-  className: "azure-application-gateway"
-  annotations:
-    appgw.ingress.kubernetes.io/backend-protocol: "http"
+  className: "nginx"
+  annotations: {}
   hosts: []
   tls: []
 

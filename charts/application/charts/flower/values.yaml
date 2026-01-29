@@ -12,9 +12,8 @@ service:
 
 ingress:
   enabled: false
-  className: "azure-application-gateway"
-  annotations:
-    appgw.ingress.kubernetes.io/backend-protocol: "http"
+  className: "nginx"
+  annotations: {}
   hosts: []
   tls: []
 
