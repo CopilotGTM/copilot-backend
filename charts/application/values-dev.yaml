@@ -1,0 +1,72 @@
+# =============================================================================
+# DEV ENVIRONMENT OVERRIDES
+# =============================================================================
+# Reduced resource requests based on actual kubectl top pod metrics.
+# This enables AKS cluster autoscaler to scale down to 1 node when idle.
+#
+# Usage: helm upgrade --install ... -f values.yaml -f values-dev.yaml
+# =============================================================================
+
+api:
+  replicaCount: 1
+  autoscaling:
+    minReplicas: 1
+  # Actual usage: 6m CPU, 427Mi memory
+  resources:
+    limits:
+      cpu: 500m
+      memory: 1536Mi
+    requests:
+      cpu: 50m
+      memory: 512Mi
+
+knowledge-upload-worker:
+  # Actual usage: 3m CPU, 985Mi memory
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "1Gi"
+
+knowledge-beat:
+  # Actual usage: 1m CPU, 225Mi memory
+  resources:
+    requests:
+      cpu: "10m"
+      memory: "256Mi"
+    limits:
+      cpu: "150m"
+      memory: "512Mi"
+
+chat-worker:
+  # Actual usage: 3m CPU, 763Mi memory
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "1Gi"
+
+integrations-worker:
+  # Actual usage: 3m CPU, 1081Mi memory
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "1536Mi"
+
+deal-worker:
+  # Actual usage: 3m CPU, 744Mi memory
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "1Gi"
+
+deal-beat:
+  # Actual usage: 0m CPU, 141Mi memory
+  resources:
+    requests:
+      cpu: "10m"
+      memory: "192Mi"
+
+integrations-beat:
+  # Actual usage: 0m CPU, 104Mi memory
+  resources:
+    requests:
+      cpu: "10m"
