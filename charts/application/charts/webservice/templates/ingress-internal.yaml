@@ -1,6 +1,7 @@
 {{- if .Values.internalIngress.enabled -}}
-# Internal ingress for health/monitoring endpoints.
-# Access via Kubernetes Services is preferred for internal communication.
+# Note: For Azure Application Gateway, internal endpoints should be accessed
+# via Kubernetes Services directly. This ingress is optional and can be
+# used with a private Application Gateway for internal-only access.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -8,10 +9,10 @@ metadata:
   labels:
     {{- include "webservice.labels" . | nindent 4 }}
     app.kubernetes.io/component: internal-health
-  {{- with .Values.internalIngress.annotations }}
   annotations:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
+    # For private/internal Application Gateway only
+    appgw.ingress.kubernetes.io/backend-protocol: "http"
+    {{- toYaml .Values.internalIngress.annotations | nindent 4 }}
 spec:
   ingressClassName: {{ .Values.internalIngress.className }}
   rules:
