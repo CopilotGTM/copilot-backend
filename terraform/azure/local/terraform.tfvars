@@ -27,3 +27,8 @@ public_ip_range_start = "0.0.0.0"
 public_ip_range_end   = "255.255.255.255"
 allowed_public_ips    = []
 
+# -----------------------------------------------------------------------------
+# Teams Bot
+# -----------------------------------------------------------------------------
+teams_bot_messaging_endpoint = "https://caitlyn-nonarmigerous-uninstructively.ngrok-free.dev/users/bots/teams/messages"
+
