@@ -248,6 +248,9 @@ module "aks" {
   vnet_subnet_ids        = module.vnet.private_subnet_ids
   agent_count            = var.aks_node_count
   vm_size                = var.aks_vm_size
+  enable_auto_scaling    = var.aks_enable_auto_scaling
+  min_count              = var.aks_min_node_count
+  max_count              = var.aks_max_node_count
   os_disk_size_gb        = var.aks_os_disk_size_gb
   service_cidr           = var.aks_service_cidr
   dns_service_ip         = var.aks_dns_service_ip

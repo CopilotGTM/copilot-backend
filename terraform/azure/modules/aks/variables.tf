@@ -24,9 +24,27 @@ variable "vnet_subnet_ids" {
 }
 
 variable "agent_count" {
-  description = "Number of nodes in the default AKS node pool."
+  description = "Number of nodes in the default AKS node pool (used when autoscaling is disabled)."
   type        = number
   default     = 2
+}
+
+variable "enable_auto_scaling" {
+  description = "Enable autoscaling on the default node pool."
+  type        = bool
+  default     = false
+}
+
+variable "min_count" {
+  description = "Minimum number of nodes when autoscaling is enabled."
+  type        = number
+  default     = 1
+}
+
+variable "max_count" {
+  description = "Maximum number of nodes when autoscaling is enabled."
+  type        = number
+  default     = 3
 }
 
 variable "vm_size" {

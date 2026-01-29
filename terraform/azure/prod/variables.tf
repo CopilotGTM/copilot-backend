@@ -101,9 +101,27 @@ variable "aks_dns_prefix" {
 }
 
 variable "aks_node_count" {
-  description = "Node count in the default AKS agent pool."
+  description = "Node count in the default AKS agent pool (used when autoscaling is disabled)."
   type        = number
   default     = 2
+}
+
+variable "aks_enable_auto_scaling" {
+  description = "Enable autoscaling on the default AKS node pool."
+  type        = bool
+  default     = false
+}
+
+variable "aks_min_node_count" {
+  description = "Minimum number of nodes when autoscaling is enabled."
+  type        = number
+  default     = 1
+}
+
+variable "aks_max_node_count" {
+  description = "Maximum number of nodes when autoscaling is enabled."
+  type        = number
+  default     = 3
 }
 
 variable "aks_vm_size" {

@@ -61,7 +61,7 @@ aks_main_app_service_account = "copilot-backend" # Override: custom service acco
 # ACR & Redis
 # -----------------------------------------------------------------
 # acr_name     = "copilotgtmacr"       # Default
-acr_type = "Premium" # Override: Premium for geo-replication
+acr_type = "Standard"
 # redis_name   = "copilot-gtm-redis"   # Default
 redis_sku_name = "Basic" # Override: Basic for dev (cheaper)
 # redis_family   = "C"                 # Default

@@ -6,11 +6,14 @@ resource "azurerm_kubernetes_cluster" "this" {
 
   default_node_pool {
     name                        = "agentpool"
-    node_count                  = var.agent_count
+    node_count                  = var.enable_auto_scaling ? null : var.agent_count
     vm_size                     = var.vm_size
     vnet_subnet_id              = var.vnet_subnet_ids[0]
     os_disk_size_gb             = var.os_disk_size_gb
     temporary_name_for_rotation = "tempnp"
+    auto_scaling_enabled        = var.enable_auto_scaling
+    min_count                   = var.enable_auto_scaling ? var.min_count : null
+    max_count                   = var.enable_auto_scaling ? var.max_count : null
 
     upgrade_settings {
       drain_timeout_in_minutes      = 0

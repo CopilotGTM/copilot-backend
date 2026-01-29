@@ -47,8 +47,11 @@ enable_storage_private_endpoints   = false
 # -----------------------------------------------------------------
 # aks_name           = "copilot-gtm-aks"     # Default
 # aks_dns_prefix     = "aks"                 # Default
-# aks_node_count     = 2                     # Default
-aks_vm_size = "Standard_D4s_v3" # Override: larger than default Standard_DS2_v2
+# aks_node_count     = 2                     # Default (ignored when autoscaling enabled)
+aks_vm_size = "Standard_D4s_v3"
+aks_enable_auto_scaling = true
+aks_min_node_count      = 1
+aks_max_node_count      = 3
 # aks_os_disk_size_gb = 128                  # Default
 # aks_service_cidr   = "10.1.0.0/16"         # Default
 # aks_dns_service_ip = "10.1.0.10"           # Default
@@ -59,7 +62,7 @@ aks_main_app_service_account = "copilot-backend" # Override: custom service acco
 # ACR & Redis
 # -----------------------------------------------------------------
 # acr_name     = "copilotgtmacr"       # Default
-acr_type = "Premium" # Override: Premium for geo-replication
+acr_type = "Basic"
 # redis_name   = "copilot-gtm-redis"   # Default
 redis_sku_name = "Basic" # Override: Basic for dev (cheaper)
 # redis_family   = "C"                 # Default
