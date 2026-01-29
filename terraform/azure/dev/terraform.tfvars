@@ -92,6 +92,7 @@ storage_account_name = "masterstorage" # Override: existing storage account name
 # WAF / Application Gateway
 # -----------------------------------------------------------------
 # waf_name = "copilot-gtm-waf"  # Default
+appgw_sku = "Standard_v2" # Dev: Standard_v2 (~$180/mo). Set to "WAF_v2" (~$400/mo) to enable OWASP WAF rules.
 
 # -----------------------------------------------------------------
 # DNS (Required)

@@ -16,8 +16,8 @@ resource "azurerm_application_gateway" "waf" {
   zones               = var.zones
 
   sku {
-    name = "WAF_v2"
-    tier = "WAF_v2"
+    name = var.appgw_sku
+    tier = var.appgw_sku
   }
 
   autoscale_configuration {
@@ -68,11 +68,15 @@ resource "azurerm_application_gateway" "waf" {
     priority                   = 100
   }
 
-  waf_configuration {
-    enabled          = true
-    firewall_mode    = var.waf_mode
-    rule_set_type    = "OWASP"
-    rule_set_version = "3.2"
+  # WAF configuration - only enabled when SKU is WAF_v2
+  dynamic "waf_configuration" {
+    for_each = var.appgw_sku == "WAF_v2" ? [1] : []
+    content {
+      enabled          = true
+      firewall_mode    = var.waf_mode
+      rule_set_type    = "OWASP"
+      rule_set_version = "3.2"
+    }
   }
 
   tags = var.tags
@@ -95,9 +99,10 @@ resource "azurerm_application_gateway" "waf" {
 
 # -----------------------------------------------------------------
 # Log Analytics Workspace for WAF diagnostics
+# Only created when WAF_v2 SKU is used (Standard_v2 has no firewall logs)
 # -----------------------------------------------------------------
 resource "azurerm_log_analytics_workspace" "waf_logs" {
-  count               = var.enable_diagnostics ? 1 : 0
+  count               = var.enable_diagnostics && var.appgw_sku == "WAF_v2" ? 1 : 0
   name                = "${var.waf_name}-logs"
   location            = var.location
   resource_group_name = var.resource_group_name
@@ -109,9 +114,10 @@ resource "azurerm_log_analytics_workspace" "waf_logs" {
 
 # -----------------------------------------------------------------
 # WAF Diagnostic Settings - enables firewall and access logs
+# Only created when WAF_v2 SKU is used
 # -----------------------------------------------------------------
 resource "azurerm_monitor_diagnostic_setting" "waf_diagnostics" {
-  count                      = var.enable_diagnostics ? 1 : 0
+  count                      = var.enable_diagnostics && var.appgw_sku == "WAF_v2" ? 1 : 0
   name                       = "${var.waf_name}-diagnostics"
   target_resource_id         = azurerm_application_gateway.waf.id
   log_analytics_workspace_id = azurerm_log_analytics_workspace.waf_logs[0].id
