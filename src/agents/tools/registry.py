@@ -95,6 +95,7 @@ class ToolName(str, Enum):
     GET_EMAIL_DETAILS = "get_email_details"
     LIST_DEAL_NOTES = "list_deal_notes"
     LIST_DEAL_CHANNEL_MESSAGES = "list_deal_channel_messages"
+    FETCH_TEAMS_CHAT_MESSAGES = "fetch_teams_chat_messages"
 
     # -------------------------------------------------------------------------
     # RESEARCH TOOLS - External research
@@ -177,6 +178,8 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.SEARCH_ARXIV,
         ToolName.EXTRACT_NEWS_ARTICLE,
         ToolName.RESEARCH_LINKEDIN_PROFILE,  # LinkedIn research for general queries
+        # Teams tools
+        ToolName.FETCH_TEAMS_CHAT_MESSAGES,  # Fetch group chat history when @mentioned
     },
     # -------------------------------------------------------------------------
     # BriefingAgent - Meeting Briefing Agent
@@ -333,6 +336,7 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     ToolName.LIST_DEAL_EMAILS: ToolCategory.COMMUNICATION,
     ToolName.GET_EMAIL_DETAILS: ToolCategory.COMMUNICATION,
     ToolName.LIST_DEAL_CHANNEL_MESSAGES: ToolCategory.COMMUNICATION,
+    ToolName.FETCH_TEAMS_CHAT_MESSAGES: ToolCategory.COMMUNICATION,
     # Research tools
     ToolName.SEARCH_WIKIPEDIA: ToolCategory.SEARCH,
     ToolName.GET_STOCK_INFO: ToolCategory.SEARCH,
@@ -372,6 +376,7 @@ class ToolRegistry:
         """Register all available tool factories."""
         # Import here to avoid circular imports
         from src.agents.tools.communication import (
+            create_fetch_teams_chat_messages,
             create_get_email_details,
             create_list_deal_channel_messages,
             create_list_deal_emails,
@@ -500,6 +505,9 @@ class ToolRegistry:
         )
         self._tool_factories[ToolName.LIST_DEAL_CHANNEL_MESSAGES] = (
             lambda: create_list_deal_channel_messages(self.context, self.capabilities_getter)
+        )
+        self._tool_factories[ToolName.FETCH_TEAMS_CHAT_MESSAGES] = (
+            lambda: create_fetch_teams_chat_messages(self.context, self.capabilities_getter)
         )
 
         # Research tools (free, no API keys - stateless, no context needed)

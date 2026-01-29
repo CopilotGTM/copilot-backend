@@ -64,6 +64,7 @@ async def handle_teams_message(
     # Parse the incoming activity
     try:
         body = await request.json()
+        logger.info("Received Teams webhook body: %s", body)
     except Exception as e:
         logger.error("Failed to parse Teams webhook body: %s", e)
         raise HTTPException(

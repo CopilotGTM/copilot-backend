@@ -59,6 +59,7 @@ class BotMessageProcessingService:
         provider: str,
         reply_context: dict,
         chat_history: list[dict] | None = None,
+        bot_context: dict | None = None,
     ) -> bool:
         """Process a bot message and send reply.
 
@@ -68,6 +69,7 @@ class BotMessageProcessingService:
             provider: Bot platform identifier (e.g. "teams")
             reply_context: Platform-specific context for sending the reply
             chat_history: Optional previous conversation messages
+            bot_context: Optional context for bot-specific features (e.g. group chat metadata)
 
         Returns:
             True if processing and reply succeeded, False otherwise
@@ -75,7 +77,9 @@ class BotMessageProcessingService:
         try:
             # Run agent and accumulate response
             result = asyncio.run(
-                self._run_agent_and_accumulate(user_id, message_text, chat_history)
+                self._run_agent_and_accumulate(
+                    user_id, message_text, chat_history, bot_context=bot_context
+                )
             )
 
             # Format the reply
@@ -125,6 +129,7 @@ class BotMessageProcessingService:
         user_id: UUID,
         message_text: str,
         chat_history: list[dict] | None = None,
+        bot_context: dict | None = None,
     ) -> BotAgentResult:
         """Run agent and accumulate frames into a single response.
 
@@ -137,13 +142,20 @@ class BotMessageProcessingService:
         result = BotAgentResult()
 
         # Build message list for the agent
-        messages = self._build_messages(message_text, chat_history)
+        messages = self._build_messages(message_text, chat_history, bot_context=bot_context)
+
+        # Build metadata from bot_context (e.g. group chat conversation ID)
+        metadata: dict = {}
+        if bot_context and bot_context.get("conversation_type") == "groupChat":
+            metadata["conversation_type"] = "groupChat"
+            metadata["teams_conversation_id"] = bot_context.get("teams_conversation_id", "")
 
         # Create agent context (no DB session held)
         context = AgentContext(
             organisation_id=self.organisation_id,
             org_name="CopilotGTM",
             user_id=user_id,
+            metadata=metadata,
         )
 
         try:
@@ -169,13 +181,33 @@ class BotMessageProcessingService:
         self,
         message_text: str,
         chat_history: list[dict] | None = None,
+        bot_context: dict | None = None,
     ) -> list[dict]:
         """Build message list for the agent.
 
         Constructs a list of message dicts compatible with run_agent_for_chat.
         Includes optional chat history followed by the current user message.
+
+        For group chat contexts, prepends a system message instructing the agent
+        to use the fetch_teams_chat_messages tool to read conversation history.
         """
         messages: list[dict] = []
+
+        # For group chat, prepend a system hint so the agent knows to fetch chat history
+        if bot_context and bot_context.get("conversation_type") == "groupChat":
+            messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "You are responding to an @mention in a Microsoft Teams group chat. "
+                        "You do NOT have the chat history in your conversation context. "
+                        "To understand what the group has been discussing, you MUST call the "
+                        "fetch_teams_chat_messages tool FIRST before answering. "
+                        "This tool fetches recent messages from the group chat so you can "
+                        "provide a relevant and informed response."
+                    ),
+                }
+            )
 
         if chat_history:
             messages.extend(chat_history)

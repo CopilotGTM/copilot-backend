@@ -27,6 +27,7 @@ from src.infra.auth.supabase_user_client import SupabaseAuthError, supabase_user
 from src.infra.utils.logger import get_logger
 from src.service.bots.auth_state_service import get_bot_auth_state_service
 from src.service.bots.identity_service import ExternalIdentityService
+from src.service.bots.teams_bot_service import TeamsBotService
 
 logger = get_logger(__name__)
 
@@ -225,11 +226,12 @@ async def bot_auth_callback(
             detail="Your account is not active. Please contact your administrator.",
         )
 
-    # Step 4: Create identity mapping
+    # Step 4: Create or reactivate identity mapping
     provider_type = PROVIDER_TYPE_MAP.get(provider, ExternalIdentityProviderType.CHAT_BOT)
+    user_email = user.email
 
     try:
-        await identity_service.create_identity_mapping(
+        mapping, created = await identity_service.create_or_reactivate_identity_mapping(
             session=session,
             user_id=user.user_id,
             organisation_id=user.organisation_id,
@@ -237,38 +239,48 @@ async def bot_auth_callback(
             provider_type=provider_type,
             external_user_id=auth_state.external_user_id,
             external_tenant_id=auth_state.external_tenant_id,
-            external_user_email=user.email,  # Use CopilotGTM email
+            external_user_email=user_email,
             external_user_name=auth_state.external_user_name,
-            conversation_context=auth_state.context,  # Provider-specific context
+            conversation_context=auth_state.context,
         )
     except Exception as e:
-        # Check if it's a duplicate mapping (user already linked)
-        if "unique constraint" in str(e).lower() or "duplicate" in str(e).lower():
-            logger.info("%s identity already linked for user %s", provider.value, user.email)
-            # This is fine - the user is already linked
-            return BotAuthCallbackResponse(
-                success=True,
-                message="Account already linked",
-                user_email=user.email,
-                provider=provider.value,
-            )
-        logger.error("Failed to create identity mapping: %s", e, exc_info=True)
+        logger.error("Failed to create/reactivate identity mapping: %s", e, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to link account. Please try again.",
         ) from e
 
+    message = "Account linked successfully" if created else "Account re-linked successfully"
     logger.info(
-        "Successfully linked %s identity: external_user=%s -> copilot_user=%s",
+        "Successfully linked %s identity: external_user=%s -> copilot_user=%s (created=%s)",
         provider.value,
         auth_state.external_user_id[:20],
-        user.email,
+        user_email,
+        created,
     )
+
+    # Send a welcome message to the Teams conversation
+    context = auth_state.context or {}
+    service_url = context.get("service_url")
+    conversation_id = context.get("conversation_id")
+
+    if provider == ExternalIdentityProvider.TEAMS and service_url and conversation_id:
+        welcome_text = (
+            f"You're now signed in as **{user_email}**.\n\n"
+            "You can now ask me questions and I'll help you find answers "
+            "from your organization's knowledge base!\n\n"
+            "Type **help** to see available commands."
+        )
+        try:
+            bot_service = TeamsBotService()
+            await bot_service.send_proactive_message(service_url, conversation_id, welcome_text)
+        except Exception:
+            logger.warning("Failed to send Teams welcome message", exc_info=True)
 
     return BotAuthCallbackResponse(
         success=True,
-        message="Account linked successfully",
-        user_email=user.email,
+        message=message,
+        user_email=user_email,
         provider=provider.value,
     )
 

@@ -143,10 +143,11 @@ class TeamsBotService:
 
     async def _handle_message(self, activity: dict[str, Any]) -> None:
         """Handle incoming message from user with identity-aware routing."""
-        text = (activity.get("text") or "").strip()
+        text = self._strip_bot_mention(activity)
         from_user = activity.get("from", {})
         service_url = activity.get("serviceUrl", "")
-        conversation_id = activity.get("conversation", {}).get("id", "")
+        conversation = activity.get("conversation", {})
+        conversation_id = conversation.get("id", "")
 
         teams_user_id = from_user.get("id", "")
         teams_user_name = from_user.get("name", "")
@@ -155,10 +156,15 @@ class TeamsBotService:
         channel_data = activity.get("channelData", {})
         teams_tenant_id = channel_data.get("tenant", {}).get("id", "")
 
+        # Detect conversation type (personal vs groupChat)
+        conversation_type = conversation.get("conversationType", "personal")
+        is_group = self._is_group_mention(activity)
+
         logger.info(
-            "Teams message from %s (user_id=%s): %s",
+            "Teams message from %s (user_id=%s, type=%s): %s",
             teams_user_name,
             teams_user_id[:20] if teams_user_id else "unknown",
+            conversation_type,
             text[:50] if text else "(empty)",
         )
 
@@ -175,6 +181,8 @@ class TeamsBotService:
             teams_user_name,
             service_url,
             conversation_id,
+            conversation_type=conversation_type if is_group else "personal",
+            teams_conversation_id=conversation_id if is_group else None,
         )
 
         # Send response back to Teams
@@ -190,6 +198,8 @@ class TeamsBotService:
         teams_user_name: str,
         service_url: str,
         conversation_id: str,
+        conversation_type: str = "personal",
+        teams_conversation_id: str | None = None,
     ) -> str:
         """Route a message to the appropriate handler based on command or auth state."""
         text_lower = text.lower()
@@ -216,7 +226,12 @@ class TeamsBotService:
         if user and mapping:
             await self._update_conversation_context(mapping, service_url, conversation_id)
             return await self._handle_authenticated_message(
-                text, user, service_url, conversation_id
+                text,
+                user,
+                service_url,
+                conversation_id,
+                conversation_type=conversation_type,
+                teams_conversation_id=teams_conversation_id,
             )
 
         return self._get_login_message_with_state(
@@ -285,6 +300,8 @@ class TeamsBotService:
         user: User,
         service_url: str,
         conversation_id: str,
+        conversation_type: str = "personal",
+        teams_conversation_id: str | None = None,
     ) -> str:
         """Handle a message from an authenticated user.
 
@@ -296,10 +313,19 @@ class TeamsBotService:
         from src.workers.chat_worker.client import send_chat_task_async
 
         logger.info(
-            "Authenticated message from %s: %s",
+            "Authenticated message from %s (type=%s): %s",
             user.email,
+            conversation_type,
             text[:50] if text else "(empty)",
         )
+
+        # Build bot_context for group chat scenarios
+        bot_context: dict[str, Any] | None = None
+        if conversation_type == "groupChat" and teams_conversation_id:
+            bot_context = {
+                "conversation_type": "groupChat",
+                "teams_conversation_id": teams_conversation_id,
+            }
 
         try:
             task_id = await send_chat_task_async(
@@ -311,13 +337,15 @@ class TeamsBotService:
                     "teams",
                     {"service_url": service_url, "conversation_id": conversation_id},
                 ],
+                kwargs={"bot_context": bot_context} if bot_context else None,
                 queue="chat_messages",
             )
             logger.info(
-                "Enqueued bot message task=%s for user=%s org=%s",
+                "Enqueued bot message task=%s for user=%s org=%s type=%s",
                 task_id,
                 user.email,
                 user.organisation_id,
+                conversation_type,
             )
         except Exception as e:
             logger.error("Failed to enqueue bot message task: %s", e, exc_info=True)
@@ -327,6 +355,58 @@ class TeamsBotService:
             )
 
         return "Let me look into that for you..."
+
+    @staticmethod
+    def _strip_bot_mention(activity: dict[str, Any]) -> str:
+        """Strip the bot @mention tag from the message text.
+
+        In group chats, Teams wraps the bot name in <at>BotName</at> tags.
+        This method removes the mention tag directed at the bot (matched via
+        recipient.id) and returns the cleaned text.
+
+        Args:
+            activity: The Bot Framework activity payload.
+
+        Returns:
+            Cleaned message text with bot mention removed.
+        """
+        import re
+
+        text = (activity.get("text") or "").strip()
+        if not text:
+            return ""
+
+        bot_id = activity.get("recipient", {}).get("id", "")
+        entities = activity.get("entities", [])
+
+        for entity in entities:
+            if entity.get("type") != "mention":
+                continue
+            mentioned_id = entity.get("mentioned", {}).get("id", "")
+            if mentioned_id == bot_id:
+                # Remove the <at>...</at> text from the message
+                mention_text = entity.get("text", "")
+                if mention_text:
+                    text = text.replace(mention_text, "")
+                    # Also remove any XML-style <at> tags that might remain
+                    text = re.sub(r"<at[^>]*>.*?</at>", "", text)
+                break
+
+        return text.strip()
+
+    @staticmethod
+    def _is_group_mention(activity: dict[str, Any]) -> bool:
+        """Check if this activity is from a group chat (i.e. an @mention).
+
+        Args:
+            activity: The Bot Framework activity payload.
+
+        Returns:
+            True if the message is from a group chat.
+        """
+        conversation = activity.get("conversation", {})
+        conv_type = conversation.get("conversationType", "")
+        return conv_type == "groupChat"
 
     async def _handle_conversation_update(self, activity: dict[str, Any]) -> None:
         """Handle conversation update (user added/removed, bot installed)."""

@@ -104,7 +104,7 @@ class ExternalIdentityService:
 
         return user, mapping
 
-    async def create_identity_mapping(
+    async def create_or_reactivate_identity_mapping(
         self,
         session: AsyncSession,
         user_id: UUID,
@@ -116,8 +116,12 @@ class ExternalIdentityService:
         external_user_email: str | None = None,
         external_user_name: str | None = None,
         conversation_context: dict[str, Any] | None = None,
-    ) -> ExternalIdentityMapping:
-        """Create a new external identity mapping.
+    ) -> tuple[ExternalIdentityMapping, bool]:
+        """Create a new identity mapping, or reactivate an existing one.
+
+        Handles the re-login-after-logout case: if a mapping already exists
+        (active or inactive), it is reactivated and updated rather than
+        attempting a duplicate INSERT.
 
         Args:
             session: Database session
@@ -132,10 +136,49 @@ class ExternalIdentityService:
             conversation_context: Bot context for proactive messaging (optional)
 
         Returns:
-            The created ExternalIdentityMapping
+            Tuple of (ExternalIdentityMapping, created) where created is True
+            if a new mapping was created, False if an existing one was reactivated.
         """
         now = datetime.now(UTC)
 
+        # Check for existing mapping (active or inactive)
+        conditions = [
+            ExternalIdentityMapping.provider == provider,
+            ExternalIdentityMapping.external_user_id == external_user_id,
+        ]
+        if external_tenant_id:
+            conditions.append(ExternalIdentityMapping.external_tenant_id == external_tenant_id)
+
+        stmt = select(ExternalIdentityMapping).where(and_(*conditions))
+        result = await session.execute(stmt)
+        existing = result.scalar_one_or_none()
+
+        if existing:
+            # Reactivate and update existing mapping
+            existing.is_active = True
+            existing.user_id = user_id
+            existing.organisation_id = organisation_id
+            existing.provider_type = provider_type
+            existing.external_user_email = external_user_email
+            existing.external_user_name = external_user_name
+            existing.conversation_context = conversation_context
+            existing.last_used_at = now
+            if not existing.linked_at:
+                existing.linked_at = now
+
+            session.add(existing)
+            await session.commit()
+            await session.refresh(existing)
+
+            logger.info(
+                "Reactivated %s identity mapping: external_user=%s -> user_id=%s",
+                provider.value,
+                external_user_id[:20],
+                user_id,
+            )
+            return existing, False
+
+        # Create new mapping
         mapping = ExternalIdentityMapping(
             user_id=user_id,
             organisation_id=organisation_id,
@@ -162,7 +205,7 @@ class ExternalIdentityService:
             user_id,
         )
 
-        return mapping
+        return mapping, True
 
     async def update_conversation_context(
         self,
