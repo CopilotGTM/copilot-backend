@@ -171,10 +171,9 @@ resend_email      = "noreply@team.copilotgtm.com" # Override from default
 # -----------------------------------------------------------------
 # Microsoft Teams Bot
 # -----------------------------------------------------------------
-# Messaging endpoint where Azure Bot Service sends messages to your backend
-# For local dev: use ngrok URL (changes frequently)
-# For deployed: use actual API endpoint
-teams_bot_messaging_endpoint = "https://caitlyn-nonarmigerous-uninstructively.ngrok-free.dev/users/bot/teams/messages"
+# Messaging endpoint is managed via Azure DevOps Variable Group (copilot-infra-secrets-dev)
+# Change TF_VAR_teams_bot_messaging_endpoint in the Variable Group to switch URLs
+# (e.g., ngrok for local dev, or deployed API endpoint)
 
 # -----------------------------------------------------------------
 # Secrets (provided via TF_VAR_* environment variables)
