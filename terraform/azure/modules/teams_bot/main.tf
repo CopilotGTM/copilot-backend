@@ -21,21 +21,16 @@ resource "azuread_application" "teams_bot" {
     ]
   }
 
-  # Microsoft Graph API permissions
+  # Microsoft Graph API permissions (User.Read for basic profile info)
+  # NOTE: Chat message access is handled via RSC (Resource-Specific Consent)
+  # in the Teams app manifest, NOT via Azure AD application permissions.
+  # RSC consent is granted when the app is installed in a chat by the chat owner.
   required_resource_access {
     resource_app_id = "00000003-0000-0000-c000-000000000000" # Microsoft Graph API ID
 
-    # Delegated: User.Read - basic profile info for signed-in user
     resource_access {
       id   = "e1fe6dd8-ba31-4d61-89e7-88639da4683d" # User.Read
       type = "Scope"
-    }
-
-    # Application: Chat.Read.WhereInstalled - read chat messages only in chats
-    # where the Teams app is installed (NOT tenant-wide). Requires admin consent.
-    resource_access {
-      id   = "1c1b4c8e-3cc7-4c58-8470-9b92c9d5848b" # Chat.Read.WhereInstalled
-      type = "Role"
     }
   }
 
@@ -50,21 +45,6 @@ resource "azuread_service_principal" "teams_bot" {
   client_id                    = azuread_application.teams_bot.client_id
   app_role_assignment_required = false
   owners                       = [data.azuread_client_config.current.object_id]
-}
-
-# -----------------------------------------------------------------------------
-# Grant Admin Consent for Application Permissions (Graph API)
-# Uses azuread_app_role_assignment (declarative) instead of az CLI.
-# This grants Chat.Read.WhereInstalled to the bot's service principal.
-# -----------------------------------------------------------------------------
-data "azuread_service_principal" "microsoft_graph" {
-  client_id = "00000003-0000-0000-c000-000000000000" # Microsoft Graph
-}
-
-resource "azuread_app_role_assignment" "chat_read_where_installed" {
-  app_role_id         = "1c1b4c8e-3cc7-4c58-8470-9b92c9d5848b" # Chat.Read.WhereInstalled
-  principal_object_id = azuread_service_principal.teams_bot.object_id
-  resource_object_id  = data.azuread_service_principal.microsoft_graph.object_id
 }
 
 # -----------------------------------------------------------------------------
