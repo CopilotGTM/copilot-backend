@@ -71,5 +71,19 @@
     "www.copilotgtm.com",
     "*.copilotgtm.com",
     "*.ngrok-free.dev"
-  ]
+  ],
+  "webApplicationInfo": {
+    "id": "a726a205-7f3c-4116-8dcb-2e69ab2ffa8a",
+    "resource": "https://RscBasedStoreApp"
+  },
+  "authorization": {
+    "permissions": {
+      "resourceSpecific": [
+        {
+          "name": "ChatMessage.Read.Chat",
+          "type": "Application"
+        }
+      ]
+    }
+  }
 }

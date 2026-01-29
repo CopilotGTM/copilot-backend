@@ -22,6 +22,9 @@ resource "azuread_application" "teams_bot" {
   }
 
   # Microsoft Graph API permissions (User.Read for basic profile info)
+  # NOTE: Chat message access is handled via RSC (Resource-Specific Consent)
+  # in the Teams app manifest, NOT via Azure AD application permissions.
+  # RSC consent is granted when the app is installed in a chat by the chat owner.
   required_resource_access {
     resource_app_id = "00000003-0000-0000-c000-000000000000" # Microsoft Graph API ID
 
