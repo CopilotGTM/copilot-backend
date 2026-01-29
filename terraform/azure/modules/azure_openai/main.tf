@@ -66,8 +66,8 @@ resource "azapi_resource" "model_deployment" {
   depends_on = [azapi_resource.openai]
 
   lifecycle {
-    # Ignore version changes if not specified (Azure may auto-update)
-    ignore_changes = []
+    # Ignore identity to avoid azapi "Missing Resource Identity" bug on update
+    ignore_changes = [identity]
   }
 }
 

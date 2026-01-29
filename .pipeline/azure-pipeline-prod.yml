@@ -35,7 +35,7 @@ variables:
 
 stages:
   # -------------------------------------------------------------------------
-  # PROD: Triggered on release/* branch, requires approval via environment gate
+  # PROD: Triggered on release/* branch push (plan + apply)
   # -------------------------------------------------------------------------
   - template: templates/terraform-env-stage.yml
     parameters:
@@ -48,6 +48,8 @@ stages:
       tfVersion: ${{ variables.TF_VERSION }}
       dependsOn: []
       stageCondition: succeeded()
+      # Allow terraform apply from release/* branches only
+      # Still prevents apply on Pull Requests - only actual branch pushes
       applyCondition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
       approvalEnvironment: terraform-prod
       artifactName: tfplan-prod
