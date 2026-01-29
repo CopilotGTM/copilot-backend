@@ -21,16 +21,18 @@ resource "azuread_application" "teams_bot" {
     ]
   }
 
-  # Microsoft Graph API permissions (User.Read for basic profile info)
-  # NOTE: Chat message access is handled via RSC (Resource-Specific Consent)
-  # in the Teams app manifest, NOT via Azure AD application permissions.
-  # RSC consent is granted when the app is installed in a chat by the chat owner.
+  # Microsoft Graph API permissions
   required_resource_access {
     resource_app_id = "00000003-0000-0000-c000-000000000000" # Microsoft Graph API ID
 
     resource_access {
-      id   = "e1fe6dd8-ba31-4d61-89e7-88639da4683d" # User.Read
+      id   = "e1fe6dd8-ba31-4d61-89e7-88639da4683d" # User.Read (delegated)
       type = "Scope"
+    }
+
+    resource_access {
+      id   = "1c1b4c8e-3cc7-4c58-8470-9b92c9d5848b" # Chat.Read.WhereInstalled (application)
+      type = "Role"
     }
   }
 
@@ -46,6 +48,14 @@ resource "azuread_service_principal" "teams_bot" {
   app_role_assignment_required = false
   owners                       = [data.azuread_client_config.current.object_id]
 }
+
+# -----------------------------------------------------------------------------
+# Admin Consent: Chat.Read.WhereInstalled
+# The app registration declares this permission (see required_resource_access above).
+# Admin consent must be granted MANUALLY in Azure Portal → App Registrations →
+# CopilotGTM-Bot → API Permissions → "Grant admin consent for [tenant]".
+# Terraform's service principal lacks Global Admin privileges for this operation.
+# -----------------------------------------------------------------------------
 
 # -----------------------------------------------------------------------------
 # Client Secret (Password) for the Bot

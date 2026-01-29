@@ -37,6 +37,9 @@ module "waf" {
   resource_group_name = module.resource_group.resource_group_name
   location            = var.location
   subnet_id           = module.vnet.waf_subnet_id
+  appgw_sku           = var.appgw_sku
+  min_capacity        = 1
+  max_capacity        = 2
   enable_diagnostics  = true
   log_retention_days  = 30
 
@@ -794,6 +797,29 @@ resource "azuredevops_variable_group" "secrets" {
     secret_value = var.nango_secret
     is_secret    = true
   }
+
+  # Teams Bot Configuration (added after teams_bot module is applied)
+  # Note: These will be empty on first run, update after teams_bot module creates resources
+  variable {
+    name  = "TEAMS_BOT_APP_ID"
+    value = try(module.teams_bot.bot_app_id, "")
+  }
+
+  variable {
+    name         = "TEAMS_BOT_APP_SECRET"
+    secret_value = try(module.teams_bot.bot_app_secret, "placeholder")
+    is_secret    = true
+  }
+
+  variable {
+    name  = "TEAMS_BOT_TENANT_ID"
+    value = try(module.teams_bot.bot_tenant_id, "")
+  }
+
+  variable {
+    name  = "TEAMS_BOT_NAME"
+    value = try(module.teams_bot.bot_name, "")
+  }
 }
 
 # -----------------------------------------------------------------
@@ -960,7 +986,7 @@ module "devops_agent" {
   # Azure DevOps configuration
   azuredevops_url = var.org_service_url
   azuredevops_pat = var.azuredevops_pat
-  agent_pool      = "${var.agent_pool}-${var.env}"
+  agent_pool      = var.agent_pool
   agent_name      = var.agent_name
 
   # Pre-install tools for CI/CD pipelines
@@ -984,4 +1010,48 @@ module "devops_agent" {
     module.resource_group,
     azuredevops_agent_pool.pool
   ]
+}
+
+# -----------------------------------------------------------------
+# Microsoft Teams Bot
+# Creates Entra ID App Registration + Azure Bot + Teams Channel
+# -----------------------------------------------------------------
+module "teams_bot" {
+  source = "../modules/teams_bot"
+
+  env                 = var.env
+  bot_display_name    = "CopilotGTM"
+  resource_group_name = module.resource_group.resource_group_name
+  key_vault_id        = module.master_key_vault.key_vault_id
+
+  # Messaging endpoint - update this after deploying backend
+  # For dev: use ngrok URL during local development
+  # For prod: use actual API endpoint
+  messaging_endpoint = var.teams_bot_messaging_endpoint
+
+  # F0 = Free tier (10K messages/month), S1 = Standard ($0.50/1K messages)
+  sku = var.env == "prod" ? "S1" : "F0"
+
+  tags = {
+    environment = var.env
+    project     = var.project_name
+  }
+
+  depends_on = [
+    module.resource_group,
+    module.master_key_vault
+  ]
+}
+
+# -----------------------------------------------------------------
+# Teams Bot Outputs
+# -----------------------------------------------------------------
+output "teams_bot_app_id" {
+  description = "Teams Bot Application (Client) ID - use this in manifest.json"
+  value       = module.teams_bot.bot_app_id
+}
+
+output "teams_bot_name" {
+  description = "Azure Bot resource name"
+  value       = module.teams_bot.bot_name
 }
