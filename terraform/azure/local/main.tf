@@ -280,8 +280,8 @@ resource "azurerm_postgresql_flexible_server_firewall_rule" "allow_all" {
 # -----------------------------------------------------------------
 resource "azurerm_cognitive_account" "openai" {
   name = "openai-${var.project_name}-${var.env}"
-  # Keep in eastus. Note: gpt-5.1 deployments require regions like eastus2/swedencentral.
-  location                      = "eastus"
+  # Using eastus2 – required by gpt-5.2 (GlobalStandard). Also supports gpt-5 and gpt-5-mini.
+  location                      = "eastus2"
   network_acls {
     default_action = "Allow"
     ip_rules       = []
@@ -315,7 +315,7 @@ resource "azurerm_cognitive_deployment" "gpt_5" {
 
   sku {
     name     = "GlobalStandard"
-    capacity = 500
+    capacity = 100 # Reduced: dev(300) + prod(300) + local(100) = 700 of 1000 quota
   }
 }
 
@@ -331,7 +331,23 @@ resource "azurerm_cognitive_deployment" "gpt_5_mini" {
 
   sku {
     name     = "GlobalStandard"
-    capacity = 500
+    capacity = 100 # Reduced: dev(300) + prod(300) + local(100) = 700 of 1000 quota
+  }
+}
+
+resource "azurerm_cognitive_deployment" "gpt_5_2" {
+  name                 = "gpt-5.2"
+  cognitive_account_id = azurerm_cognitive_account.openai.id
+
+  model {
+    format  = "OpenAI"
+    name    = "gpt-5.2"
+    version = "2025-12-11"
+  }
+
+  sku {
+    name     = "GlobalStandard"
+    capacity = 100 # Reduced for local env
   }
 }
 
@@ -374,6 +390,6 @@ resource "azurerm_cognitive_deployment" "text_embedding_3_large" {
 
   sku {
     name     = "Standard"
-    capacity = 300
+    capacity = 1 # Reduced: dev(100) + prod(249) = 349 of 350 quota, only 1 available
   }
 }

@@ -471,11 +471,18 @@ module "azure_openai" {
       capacity        = 300
       version         = "2025-08-07"
     }
+    gpt5_2 = {
+      deployment_name = "gpt-5.2"
+      model_name      = "gpt-5.2"
+      sku             = "GlobalStandard"
+      capacity        = 100
+      version         = "2025-12-11"
+    }
     embedder = {
       deployment_name = "text-embedding-3-large"
       model_name      = "text-embedding-3-large"
       sku             = "Standard"
-      capacity        = 100 # Rebalanced: 100 dev + 249 prod = 349 total (subscription quota limit ~350 TPM)
+      capacity        = 50 # Rebalanced: 100 dev + 249 prod = 349 total (subscription quota limit ~350 TPM)
       version         = "1"
       publisher       = "OpenAI"
     }
