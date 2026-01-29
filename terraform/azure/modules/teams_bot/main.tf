@@ -53,24 +53,18 @@ resource "azuread_service_principal" "teams_bot" {
 }
 
 # -----------------------------------------------------------------------------
-# Auto-grant Admin Consent for Graph API Application Permissions
-# Required for Chat.Read.WhereInstalled to take effect.
-# Uses az CLI - safe to fail (can be granted manually in Azure Portal).
+# Grant Admin Consent for Application Permissions (Graph API)
+# Uses azuread_app_role_assignment (declarative) instead of az CLI.
+# This grants Chat.Read.WhereInstalled to the bot's service principal.
 # -----------------------------------------------------------------------------
-resource "null_resource" "grant_admin_consent" {
-  depends_on = [
-    azuread_application.teams_bot,
-    azuread_service_principal.teams_bot
-  ]
+data "azuread_service_principal" "microsoft_graph" {
+  client_id = "00000003-0000-0000-c000-000000000000" # Microsoft Graph
+}
 
-  provisioner "local-exec" {
-    command     = "powershell -Command \"Start-Sleep -Seconds 10; az ad app permission admin-consent --id ${azuread_application.teams_bot.client_id} 2>$null; exit 0\""
-    interpreter = ["cmd", "/C"]
-  }
-
-  triggers = {
-    app_id = azuread_application.teams_bot.client_id
-  }
+resource "azuread_app_role_assignment" "chat_read_where_installed" {
+  app_role_id         = "1c1b4c8e-3cc7-4c58-8470-9b92c9d5848b" # Chat.Read.WhereInstalled
+  principal_object_id = azuread_service_principal.teams_bot.object_id
+  resource_object_id  = data.azuread_service_principal.microsoft_graph.object_id
 }
 
 # -----------------------------------------------------------------------------
