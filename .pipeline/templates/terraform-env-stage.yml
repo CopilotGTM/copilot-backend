@@ -17,6 +17,7 @@
 #   - TF_VAR_supabase_jwt_secret
 #   - TF_VAR_resend_api_key
 #   - TF_VAR_nango_secret
+#   - TF_VAR_teams_bot_messaging_endpoint  (non-secret, change to swap ngrok/deployed URL)
 #
 # NOTE: Azure OpenAI API key is now automatically retrieved from the
 #       Azure OpenAI resource via the azure_openai module.
@@ -177,6 +178,8 @@ stages:
               TF_VAR_supabase_jwt_secret: $(TF_VAR_supabase_jwt_secret)
               TF_VAR_resend_api_key: $(TF_VAR_resend_api_key)
               TF_VAR_nango_secret: $(TF_VAR_nango_secret)
+              # Teams Bot messaging endpoint - change in Variable Group to switch between ngrok/deployed URL
+              TF_VAR_teams_bot_messaging_endpoint: $(TF_VAR_teams_bot_messaging_endpoint)
 
           - publish: $(TF_WORKING_DIR)/tfplan
             artifact: ${{ parameters.artifactName }}
@@ -277,3 +280,5 @@ stages:
                     TF_VAR_supabase_jwt_secret: $(TF_VAR_supabase_jwt_secret)
                     TF_VAR_resend_api_key: $(TF_VAR_resend_api_key)
                     TF_VAR_nango_secret: $(TF_VAR_nango_secret)
+                    # Teams Bot messaging endpoint - change in Variable Group to switch between ngrok/deployed URL
+                    TF_VAR_teams_bot_messaging_endpoint: $(TF_VAR_teams_bot_messaging_endpoint)

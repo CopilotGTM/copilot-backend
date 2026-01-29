@@ -55,3 +55,6 @@ tfplan
 charts
 tools/
 scripts/
+
+# Teams app manifest - generated zip packages
+teams-app-manifest/output/*.zip
