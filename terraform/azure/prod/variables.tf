@@ -380,7 +380,7 @@ variable "backend_repo_name" {
 variable "backend_pipeline_name" {
   description = "Name of the Azure DevOps pipeline resource. Cannot contain '/' or special characters."
   type        = string
-  default     = "backend-pipeline"
+  default     = "copilot-backend-pipeline"
 }
 
 variable "backend_yml_path" {
@@ -407,7 +407,7 @@ variable "terraform_repo_name" {
 variable "terraform_pipeline_name" {
   description = "Name of the Azure DevOps pipeline for Terraform."
   type        = string
-  default     = "infra-pipeline"
+  default     = "copilot-infra-pipeline"
 }
 
 variable "infra_variable_group_name" {
@@ -440,7 +440,7 @@ variable "frontend_repo_name" {
 variable "frontend_pipeline_name" {
   description = "Name of the Azure DevOps pipeline resource for the frontend. Cannot contain '/' or special characters."
   type        = string
-  default     = "frontend-pipeline"
+  default     = "copilot-frontend-pipeline"
 }
 
 variable "frontend_yml_path" {
@@ -776,5 +776,28 @@ variable "waf_name" {
   description = "Name of the Application Gateway"
   type        = string
   default     = "copilot-gtm-waf"
+}
+
+variable "appgw_sku" {
+  description = "Application Gateway SKU. Use 'Standard_v2' for cost savings (~$180/mo) or 'WAF_v2' for OWASP rules (~$400/mo)."
+  type        = string
+  default     = "WAF_v2"
+}
+
+# -----------------------------------------------------------------
+# Microsoft Teams Bot
+# -----------------------------------------------------------------
+
+variable "teams_bot_messaging_endpoint" {
+  description = <<-DESC
+    The HTTPS endpoint where the bot receives messages from Teams.
+
+    For local development: Use ngrok URL (e.g., https://xxx.ngrok-free.app/api/teams/messages)
+    For production: Use your actual API endpoint (e.g., https://api.copilotgtm.com/api/teams/messages)
+
+    This can be updated later via Azure Portal or by re-running Terraform.
+  DESC
+  type        = string
+  default     = "https://api.copilotgtm.com/api/teams/messages"
 }
 

@@ -49,8 +49,11 @@ enable_storage_private_endpoints   = false
 # -----------------------------------------------------------------
 # aks_name           = "copilot-gtm-aks"     # Default
 # aks_dns_prefix     = "aks"                 # Default
-# aks_node_count     = 2                     # Default
-aks_vm_size = "Standard_D4s_v3" # Override: larger than default Standard_DS2_v2
+# aks_node_count     = 2                     # Default (ignored when autoscaling enabled)
+aks_vm_size = "Standard_D2as_v6" # Cost optimization: 2 vCores, 8GB RAM (down from D4s_v3 4 vCores)
+aks_enable_auto_scaling = true
+aks_min_node_count      = 3
+aks_max_node_count      = 6
 # aks_os_disk_size_gb = 128                  # Default
 # aks_service_cidr   = "10.1.0.0/16"         # Default
 # aks_dns_service_ip = "10.1.0.10"           # Default
@@ -94,6 +97,7 @@ storage_account_name = "masterstorage" # Override: existing storage account name
 # WAF / Application Gateway
 # -----------------------------------------------------------------
 # waf_name = "copilot-gtm-waf"  # Default
+appgw_sku = "Standard_v2" # Cost optimization: Standard_v2 (~$180/mo). Set to "WAF_v2" (~$400/mo) to enable OWASP WAF rules.
 
 # -----------------------------------------------------------------
 # DNS (Required)
@@ -113,7 +117,7 @@ devops_environment_name = "production"
 # Service Principal & Agent
 # sp_name                     = "copilot-gtm-devops-sp"  # Default
 # azuredevops_sp_display_name = "TerraformSP"            # Default
-# agent_pool                  = "StaticAgentPool"        # Default
+agent_pool = "StaticAgentPool-prod" # Override: unique pool name to avoid collision with dev in shared Azure DevOps org
 # agent_name                  = "gtm-devops-agent-01"    # Default
 # admin_username              = "azureuser"              # Default
 
@@ -168,6 +172,13 @@ gpu_vm_size            = "Standard_D8s_v3" # Override: high-performance compute
 super_admin_email = "tech@copilotgtm.com"
 supabase_url      = "https://zgdizeaxfsvqfwmdwtrp.supabase.co"
 resend_email      = "noreply@team.copilotgtm.com" # Override from default
+
+# -----------------------------------------------------------------
+# Microsoft Teams Bot
+# -----------------------------------------------------------------
+# Messaging endpoint is managed via Azure DevOps Variable Group (copilot-infra-secrets-prod)
+# Change TF_VAR_teams_bot_messaging_endpoint in the Variable Group to switch URLs
+# (e.g., ngrok for local dev, or deployed API endpoint)
 
 # -----------------------------------------------------------------
 # Secrets (provided via TF_VAR_* environment variables)

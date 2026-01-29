@@ -4,11 +4,6 @@
 data "azurerm_client_config" "current" {}
 data "azuread_client_config" "current" {}
 
-# Microsoft Graph service principal (needed for admin consent grants)
-data "azuread_service_principal" "microsoft_graph" {
-  client_id = "00000003-0000-0000-c000-000000000000"
-}
-
 # -----------------------------------------------------------------------------
 # Microsoft Entra ID App Registration
 # This creates the identity for the Teams bot
@@ -55,14 +50,12 @@ resource "azuread_service_principal" "teams_bot" {
 }
 
 # -----------------------------------------------------------------------------
-# Admin Consent: Grant Chat.Read.WhereInstalled to the bot service principal
-# This allows the bot to read chat messages in chats where it is installed
+# Admin Consent: Chat.Read.WhereInstalled
+# The app registration declares this permission (see required_resource_access above).
+# Admin consent must be granted MANUALLY in Azure Portal → App Registrations →
+# CopilotGTM-Bot → API Permissions → "Grant admin consent for [tenant]".
+# Terraform's service principal lacks Global Admin privileges for this operation.
 # -----------------------------------------------------------------------------
-resource "azuread_app_role_assignment" "graph_chat_read_where_installed" {
-  app_role_id         = "1c1b4c8e-3cc7-4c58-8470-9b92c9d5848b" # Chat.Read.WhereInstalled
-  principal_object_id = azuread_service_principal.teams_bot.object_id
-  resource_object_id  = data.azuread_service_principal.microsoft_graph.object_id
-}
 
 # -----------------------------------------------------------------------------
 # Client Secret (Password) for the Bot
