@@ -40,3 +40,12 @@ output "openai_key" {
   value     = nonsensitive(azurerm_cognitive_account.openai.primary_access_key)
   sensitive = false
 }
+
+# Teams Bot outputs
+output "teams_bot_app_id" {
+  value = module.teams_bot.bot_app_id
+}
+
+output "teams_bot_name" {
+  value = module.teams_bot.bot_name
+}

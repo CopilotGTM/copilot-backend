@@ -62,3 +62,15 @@ variable "allowed_public_ips" {
   default     = []
 }
 
+# -----------------------------------------------------------------------------
+# Teams Bot
+# -----------------------------------------------------------------------------
+variable "teams_bot_messaging_endpoint" {
+  description = <<-DESC
+    The HTTPS endpoint where the bot receives messages from Teams.
+
+    For local development: Use ngrok URL (e.g., https://xxx.ngrok-free.app/users/bots/teams/messages)
+  DESC
+  type        = string
+}
+

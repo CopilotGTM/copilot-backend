@@ -335,6 +335,33 @@ resource "azurerm_cognitive_deployment" "gpt_5_mini" {
   }
 }
 
+# -----------------------------------------------------------------
+# Teams Bot (Free tier – F0)
+# -----------------------------------------------------------------
+module "teams_bot" {
+  source = "../modules/teams_bot"
+
+  env                 = var.env
+  bot_display_name    = "CopilotGTM"
+  resource_group_name = module.resource_group.resource_group_name
+  key_vault_id        = azurerm_key_vault.master_key_vault.id
+
+  messaging_endpoint = var.teams_bot_messaging_endpoint
+
+  # F0 = Free tier (10K messages/month)
+  sku = "F0"
+
+  tags = {
+    environment = var.env
+    project     = var.project_name
+  }
+
+  depends_on = [
+    module.resource_group,
+    azurerm_key_vault.master_key_vault
+  ]
+}
+
 resource "azurerm_cognitive_deployment" "text_embedding_3_large" {
   name                 = "text-embedding-3-large"
   cognitive_account_id = azurerm_cognitive_account.openai.id
