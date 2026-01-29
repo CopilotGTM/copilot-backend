@@ -381,6 +381,7 @@ function Deploy-WithHelm {
 
     $helmArgs = @(
         "upgrade", "--install", $HELM_RELEASE_NAME, $CHART_PATH,
+        "-f", "$CHART_PATH/values-dev.yaml",
         "--namespace", $NAMESPACE,
         "--create-namespace",
         "--set", "api.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_BACKEND_CLIENT_ID)",

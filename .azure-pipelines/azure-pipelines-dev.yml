@@ -617,6 +617,7 @@ stages:
                     fi
 
                     helm upgrade --install "$HELM_RELEASE_NAME" "$CHART_PATH" \
+                      -f "$CHART_PATH/values-dev.yaml" \
                       --namespace copilotgtm \
                       --set api.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_BACKEND_CLIENT_ID)" \
                       --set api.workloadIdentity.tenantId="$(WORKLOAD_IDENTITY_API_TENANT_ID)" \
