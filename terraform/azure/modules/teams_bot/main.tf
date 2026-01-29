@@ -4,6 +4,11 @@
 data "azurerm_client_config" "current" {}
 data "azuread_client_config" "current" {}
 
+# Microsoft Graph service principal (needed for admin consent grants)
+data "azuread_service_principal" "microsoft_graph" {
+  client_id = "00000003-0000-0000-c000-000000000000"
+}
+
 # -----------------------------------------------------------------------------
 # Microsoft Entra ID App Registration
 # This creates the identity for the Teams bot
@@ -21,16 +26,18 @@ resource "azuread_application" "teams_bot" {
     ]
   }
 
-  # Microsoft Graph API permissions (User.Read for basic profile info)
-  # NOTE: Chat message access is handled via RSC (Resource-Specific Consent)
-  # in the Teams app manifest, NOT via Azure AD application permissions.
-  # RSC consent is granted when the app is installed in a chat by the chat owner.
+  # Microsoft Graph API permissions
   required_resource_access {
     resource_app_id = "00000003-0000-0000-c000-000000000000" # Microsoft Graph API ID
 
     resource_access {
-      id   = "e1fe6dd8-ba31-4d61-89e7-88639da4683d" # User.Read
+      id   = "e1fe6dd8-ba31-4d61-89e7-88639da4683d" # User.Read (delegated)
       type = "Scope"
+    }
+
+    resource_access {
+      id   = "1c1b4c8e-3cc7-4c58-8470-9b92c9d5848b" # Chat.Read.WhereInstalled (application)
+      type = "Role"
     }
   }
 
@@ -45,6 +52,16 @@ resource "azuread_service_principal" "teams_bot" {
   client_id                    = azuread_application.teams_bot.client_id
   app_role_assignment_required = false
   owners                       = [data.azuread_client_config.current.object_id]
+}
+
+# -----------------------------------------------------------------------------
+# Admin Consent: Grant Chat.Read.WhereInstalled to the bot service principal
+# This allows the bot to read chat messages in chats where it is installed
+# -----------------------------------------------------------------------------
+resource "azuread_app_role_assignment" "graph_chat_read_where_installed" {
+  app_role_id         = "1c1b4c8e-3cc7-4c58-8470-9b92c9d5848b" # Chat.Read.WhereInstalled
+  principal_object_id = azuread_service_principal.teams_bot.object_id
+  resource_object_id  = data.azuread_service_principal.microsoft_graph.object_id
 }
 
 # -----------------------------------------------------------------------------
