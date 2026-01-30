@@ -44,4 +44,8 @@ class ChatWorkerConfig(BaseWorkerConfig):
                 "queue": "chat_messages",
                 "routing_key": "chat_messages",
             },
+            "chat.process_bot_message": {
+                "queue": "chat_messages",
+                "routing_key": "chat_messages",
+            },
         }

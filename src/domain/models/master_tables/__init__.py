@@ -18,6 +18,11 @@ with type checking handled via `if TYPE_CHECKING:` blocks to prevent circular im
 """
 
 from .base_mixins import CreatedAtMixin, TimestampMixin
+from .external_identity_models import (
+    ExternalIdentityMapping,
+    ExternalIdentityProvider,
+    ExternalIdentityProviderType,
+)
 from .organisation_integration_models import OrganisationIntegrationDetails
 from .organisation_job_models import (
     OrganisationJob,
@@ -69,4 +74,8 @@ __all__ = [
     "SuperAdmin",
     "AdminRole",
     "SupabaseAdminStatus",
+    # External Identity Models
+    "ExternalIdentityMapping",
+    "ExternalIdentityProvider",
+    "ExternalIdentityProviderType",
 ]

@@ -1,0 +1,326 @@
+"""Bot Authentication API endpoints.
+
+Generic endpoints for linking external identities (Teams, Slack, Zoom, etc.)
+to CopilotGTM users.
+
+Flow:
+1. User sends message to bot
+2. Bot creates state token, sends login URL
+3. User completes Supabase login on web frontend
+4. Frontend calls POST /bots/auth/callback with access_token + state
+5. Backend validates state, verifies token, creates identity mapping
+"""
+
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from src.api.dependencies.master_dependencies import get_master_async_session
+from src.domain.models.master_tables import AdminUserStatus, SupabaseUserStatus, User
+from src.domain.models.master_tables.external_identity_models import (
+    ExternalIdentityProvider,
+    ExternalIdentityProviderType,
+)
+from src.infra.auth.supabase_user_client import SupabaseAuthError, supabase_user_client
+from src.infra.utils.logger import get_logger
+from src.service.bots.auth_state_service import get_bot_auth_state_service
+from src.service.bots.identity_service import ExternalIdentityService
+from src.service.bots.teams_bot_service import TeamsBotService
+
+logger = get_logger(__name__)
+
+router = APIRouter(tags=["bot-auth"])
+
+
+# Request/Response schemas
+class BotAuthCallbackRequest(BaseModel):
+    """Request body for bot auth callback."""
+
+    access_token: str = Field(..., description="Supabase access token from frontend login")
+    state: str = Field(..., description="State token from login URL")
+
+
+class BotAuthCallbackResponse(BaseModel):
+    """Response for successful bot auth callback."""
+
+    success: bool = True
+    message: str = "Account linked successfully"
+    user_email: str | None = None
+    provider: str | None = None
+
+
+class BotAuthStatusResponse(BaseModel):
+    """Response for bot auth status check."""
+
+    is_linked: bool
+    user_email: str | None = None
+    linked_at: str | None = None
+    provider: str | None = None
+
+
+class BotAuthValidateStateResponse(BaseModel):
+    """Response for state token validation check."""
+
+    valid: bool
+    provider: str | None = None
+    expires_in_seconds: int = 0
+
+
+class BotAuthErrorResponse(BaseModel):
+    """Error response for bot auth endpoints."""
+
+    success: bool = False
+    error: str
+    error_code: str | None = None
+
+
+# Dependencies
+def get_identity_service() -> ExternalIdentityService:
+    """Dependency for ExternalIdentityService."""
+    return ExternalIdentityService()
+
+
+# Provider type mapping
+PROVIDER_TYPE_MAP = {
+    ExternalIdentityProvider.TEAMS: ExternalIdentityProviderType.CHAT_BOT,
+    ExternalIdentityProvider.SLACK: ExternalIdentityProviderType.CHAT_BOT,
+    # Future providers:
+    # ExternalIdentityProvider.AZURE_AD: ExternalIdentityProviderType.SSO,
+    # ExternalIdentityProvider.GOOGLE: ExternalIdentityProviderType.SSO,
+    # ExternalIdentityProvider.OKTA: ExternalIdentityProviderType.SSO,
+}
+
+
+@router.get(
+    "/validate-state",
+    response_model=BotAuthValidateStateResponse,
+)
+async def validate_state(
+    state: str = Query(..., description="State token from login URL"),
+) -> BotAuthValidateStateResponse:
+    """Check if a state token is still valid (read-only, does not consume).
+
+    Used by the frontend to verify the token before showing the login form,
+    so users don't log in only to find the link has expired.
+
+    Args:
+        state: State token from the login URL query parameter
+
+    Returns:
+        Validation result with provider and remaining TTL
+    """
+    state_service = get_bot_auth_state_service()
+    auth_state = state_service.peek_state(state)
+
+    if not auth_state:
+        return BotAuthValidateStateResponse(
+            valid=False,
+            provider=None,
+            expires_in_seconds=0,
+        )
+
+    ttl = state_service.get_state_ttl(state)
+
+    return BotAuthValidateStateResponse(
+        valid=True,
+        provider=auth_state.provider.value,
+        expires_in_seconds=ttl,
+    )
+
+
+@router.post(
+    "/callback",
+    response_model=BotAuthCallbackResponse,
+    responses={
+        400: {"model": BotAuthErrorResponse, "description": "Invalid request"},
+        401: {"model": BotAuthErrorResponse, "description": "Authentication failed"},
+        404: {"model": BotAuthErrorResponse, "description": "User not found"},
+    },
+)
+async def bot_auth_callback(
+    request: BotAuthCallbackRequest,
+    session: AsyncSession = Depends(get_master_async_session),
+    identity_service: ExternalIdentityService = Depends(get_identity_service),
+) -> BotAuthCallbackResponse:
+    """Complete identity linking after Supabase login.
+
+    This endpoint is called by the frontend after the user completes Supabase login.
+    It works for any provider (Teams, Slack, Zoom, etc.) - the provider is encoded
+    in the state token.
+
+    Steps:
+    1. Validates and consumes the state token (single-use)
+    2. Verifies the Supabase access token
+    3. Looks up the user by supabase_user_id
+    4. Creates an external_identity_mappings record
+
+    Args:
+        request: Contains access_token and state
+
+    Returns:
+        Success response with user email and provider
+
+    Raises:
+        HTTPException 400: Invalid or expired state token
+        HTTPException 401: Invalid access token
+        HTTPException 404: User not found in CopilotGTM
+    """
+    # Step 1: Validate and consume state token
+    state_service = get_bot_auth_state_service()
+    auth_state = state_service.validate_and_consume_state(request.state)
+
+    if not auth_state:
+        logger.warning("Invalid or expired state token")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired state token. Please try logging in again from the bot.",
+        )
+
+    provider = auth_state.provider
+    logger.info(
+        "Processing %s auth callback for external_user=%s",
+        provider.value,
+        auth_state.external_user_id[:20],
+    )
+
+    # Step 2: Verify Supabase access token
+    try:
+        user_data = supabase_user_client.verify_token(request.access_token)
+    except SupabaseAuthError as e:
+        logger.warning("Supabase token verification failed: %s", e.message)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid access token. Please try logging in again.",
+        ) from e
+
+    supabase_user_id = user_data.get("user", {}).get("id")
+    if not supabase_user_id:
+        logger.error("No user ID in Supabase token response")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid access token structure.",
+        )
+
+    # Step 3: Look up user in CopilotGTM by supabase_user_id
+    stmt = select(User).where(User.supabase_user_id == supabase_user_id)
+    result = await session.execute(stmt)
+    user = result.scalar_one_or_none()
+
+    if not user:
+        logger.warning(
+            "User not found in CopilotGTM for supabase_user_id=%s",
+            supabase_user_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found. Please ensure you have a CopilotGTM account.",
+        )
+
+    # Check user is active
+    if user.status != SupabaseUserStatus.ACTIVE or user.admin_status != AdminUserStatus.APPROVED:
+        logger.warning("User account is not active: user_id=%s", user.user_id)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your account is not active. Please contact your administrator.",
+        )
+
+    # Step 4: Create or reactivate identity mapping
+    provider_type = PROVIDER_TYPE_MAP.get(provider, ExternalIdentityProviderType.CHAT_BOT)
+    user_email = user.email
+
+    try:
+        mapping, created = await identity_service.create_or_reactivate_identity_mapping(
+            session=session,
+            user_id=user.user_id,
+            organisation_id=user.organisation_id,
+            provider=provider,
+            provider_type=provider_type,
+            external_user_id=auth_state.external_user_id,
+            external_tenant_id=auth_state.external_tenant_id,
+            external_user_email=user_email,
+            external_user_name=auth_state.external_user_name,
+            conversation_context=auth_state.context,
+        )
+    except Exception as e:
+        logger.error("Failed to create/reactivate identity mapping: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to link account. Please try again.",
+        ) from e
+
+    message = "Account linked successfully" if created else "Account re-linked successfully"
+    logger.info(
+        "Successfully linked %s identity: external_user=%s -> copilot_user=%s (created=%s)",
+        provider.value,
+        auth_state.external_user_id[:20],
+        user_email,
+        created,
+    )
+
+    # Send a welcome message to the Teams conversation
+    context = auth_state.context or {}
+    service_url = context.get("service_url")
+    conversation_id = context.get("conversation_id")
+
+    if provider == ExternalIdentityProvider.TEAMS and service_url and conversation_id:
+        welcome_text = (
+            f"You're now signed in as **{user_email}**.\n\n"
+            "You can now ask me questions and I'll help you find answers "
+            "from your organization's knowledge base!\n\n"
+            "Type **help** to see available commands."
+        )
+        try:
+            bot_service = TeamsBotService()
+            await bot_service.send_proactive_message(service_url, conversation_id, welcome_text)
+        except Exception:
+            logger.warning("Failed to send Teams welcome message", exc_info=True)
+
+    return BotAuthCallbackResponse(
+        success=True,
+        message=message,
+        user_email=user_email,
+        provider=provider.value,
+    )
+
+
+@router.get(
+    "/status",
+    response_model=BotAuthStatusResponse,
+)
+async def bot_auth_status(
+    provider: str = Query(..., description="Provider name (teams, slack, etc.)"),
+    external_user_id: str = Query(..., description="User ID from external provider"),
+    external_tenant_id: str | None = Query(None, description="Tenant/workspace ID (optional)"),
+    session: AsyncSession = Depends(get_master_async_session),
+    identity_service: ExternalIdentityService = Depends(get_identity_service),
+) -> dict[str, Any]:
+    """Check if an external identity is linked to a CopilotGTM account.
+
+    This endpoint is used by bots to check if a user has already linked
+    their identity.
+
+    Args:
+        provider: Provider name (teams, slack, etc.)
+        external_user_id: User ID from external provider
+        external_tenant_id: Tenant/workspace ID (optional)
+
+    Returns:
+        Status dict with is_linked, user_email, linked_at, provider
+    """
+    # Validate provider
+    try:
+        provider_enum = ExternalIdentityProvider(provider.lower())
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid provider: {provider}. Supported: teams, slack, azure_ad, google, okta",
+        ) from e
+
+    return await identity_service.get_mapping_status(
+        session=session,
+        provider=provider_enum,
+        external_user_id=external_user_id,
+        external_tenant_id=external_tenant_id,
+    )

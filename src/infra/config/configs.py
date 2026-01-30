@@ -113,20 +113,59 @@ class SuperAdminConfig:
     SUPER_ADMIN_EMAIL: str | None = os.getenv("SUPER_ADMIN_EMAIL")
 
 
-class LinkedInEnrichmentConfig:
-    """Configuration for LinkedIn data enrichment via Clado API.
+class ApolloConfig:
+    """Configuration for Apollo.io B2B data enrichment.
 
-    Clado API provides LinkedIn profile enrichment, contact discovery,
-    and profile scraping capabilities.
-    API Docs: https://docs.clado.ai/api-reference/introduction
+    Apollo.io provides people and company enrichment, search,
+    and sales intelligence capabilities.
+    API Docs: https://docs.apollo.io/reference/introduction
     """
 
-    LINKEDIN_CLADO_API_KEY: str | None = os.getenv("LINKEDIN_CLADO_API_KEY")
-    CLADO_BASE_URL: str = os.getenv("CLADO_BASE_URL", "https://search.clado.ai")
+    APOLLO_API_KEY: str | None = os.getenv("APOLLO_API_KEY")
+    APOLLO_BASE_URL: str = os.getenv("APOLLO_BASE_URL", "https://api.apollo.io/api/v1")
 
     # Rate limit tracking (credits per operation)
     # Get profile: 1 credit, Scrape profile: 2 credits
     # Email enrichment: 4 credits (if found), Phone: 10 credits (if found)
+
+
+class LinkedInEnrichmentConfig:
+    """Configuration for LinkedIn profile enrichment via Clado API."""
+
+    LINKEDIN_CLADO_API_KEY: str | None = os.getenv("LINKEDIN_CLADO_API_KEY")
+    CLADO_BASE_URL: str = os.getenv("CLADO_BASE_URL", "https://api.clado.ai")
+
+
+class TeamsConfig:
+    """Configuration for Microsoft Teams Bot integration.
+
+    Bot credentials are stored in Azure Key Vault (master vault) and fetched at runtime.
+    Key Vault secret names:
+    - teams-bot-app-id: Azure Bot App ID
+    - teams-bot-app-secret: Azure Bot App Secret (client secret)
+    - teams-bot-tenant-id: Azure AD Tenant ID (for single-tenant bot)
+
+    Environment variables:
+    - TEAMS_ENABLED: Enable/disable Teams bot functionality
+    - TEAMS_AUTH_LOGIN_URL: URL to your login page for Teams auth flow
+    - TEAMS_AUTH_CALLBACK_URL: Callback URL after login
+    """
+
+    # Feature flag - can be overridden via env var
+    TEAMS_ENABLED: bool = os.getenv("TEAMS_ENABLED", "true").lower() == "true"
+
+    # Key Vault secret names (these are the names stored in master Key Vault)
+    SECRET_NAME_BOT_APP_ID: str = "teams-bot-app-id"
+    SECRET_NAME_BOT_APP_SECRET: str = "teams-bot-app-secret"
+    SECRET_NAME_BOT_TENANT_ID: str = "teams-bot-tenant-id"
+
+    # Auth URLs for the login flow
+    # Derives from APP_URL if TEAMS_AUTH_LOGIN_URL is not explicitly set
+    TEAMS_AUTH_LOGIN_URL: str = os.getenv(
+        "TEAMS_AUTH_LOGIN_URL",
+        f"{os.getenv('APP_URL', '').rstrip('/')}/bots/auth" if os.getenv("APP_URL") else "",
+    )
+    TEAMS_AUTH_CALLBACK_URL: str = os.getenv("TEAMS_AUTH_CALLBACK_URL", "")
 
 
 class NangoIntegrationConfig:
@@ -153,7 +192,15 @@ class NangoIntegrationConfig:
 class SecretManagerConfig:
     """Configuration for Cloud Secret Manager"""
 
+    # Primary Key Vault for org-specific secrets (DB passwords per tenant)
     AZURE_KEY_VAULT_URL: str | None = os.getenv("AZURE_KEY_VAULT_URL")
+
+    # Master Key Vault for global/shared secrets (Teams bot, API keys, etc.)
+    # Falls back to AZURE_KEY_VAULT_URL if not set
+    AZURE_MASTER_KEY_VAULT_URL: str | None = os.getenv(
+        "AZURE_MASTER_KEY_VAULT_URL", os.getenv("AZURE_KEY_VAULT_URL")
+    )
+
     # New: bound individual secret fetch duration to avoid event-loop stalls
     SECRET_GET_TIMEOUT_SEC: int = int(os.getenv("SECRET_GET_TIMEOUT_SEC", "8"))
 
@@ -394,7 +441,9 @@ knowledge_file_upload_config = KnowledgeFileUploadConfig()
 pool_monitor_config = PoolMonitorConfig()
 rate_limit_config = RateLimitConfig()
 nango_integration_config = NangoIntegrationConfig()
+apollo_config = ApolloConfig()
 linkedin_enrichment_config = LinkedInEnrichmentConfig()
+teams_config = TeamsConfig()
 
 
 class Config:

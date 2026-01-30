@@ -21,6 +21,7 @@ from sqlmodel import Field, Relationship
 from .base_mixins import CreatedAtMixin, TimestampMixin
 
 if TYPE_CHECKING:
+    from .external_identity_models import ExternalIdentityMapping
     from .super_admin_models import SuperAdmin
     from .user_models import User
 
@@ -148,6 +149,9 @@ class Organisation(TimestampMixin, table=True):
     # Relationships
     users: list["User"] = Relationship(back_populates="organisation", cascade_delete=True)
     action_history: list["OrganisationActionHistory"] = Relationship(back_populates="organisation")
+    external_identity_mappings: list["ExternalIdentityMapping"] = Relationship(
+        back_populates="organisation", cascade_delete=True
+    )
 
 
 class OrganisationActionHistory(CreatedAtMixin, table=True):
