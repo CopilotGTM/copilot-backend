@@ -54,7 +54,7 @@ variables:
 
   # Kubeconfig for dev
   - name: DEV_KUBECONFIG
-    value: 'kubeconfig.yaml'
+    value: 'kubeconfig-dev.yaml'
 
 stages:
   # ==========================================================================
@@ -581,7 +581,7 @@ stages:
     condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'), ne(dependencies.CheckChanges.outputs['DetectChanges.CheckDocs.SKIP_PIPELINE'], 'true'))
     variables:
       - name: KUBECONFIG_FILE
-        value: '$(Pipeline.Workspace)/kubeconfig.yaml'
+        value: '$(Pipeline.Workspace)/kubeconfig-dev.yaml'
     jobs:
       - deployment: HelmDeploy
         displayName: Deploy to Dev AKS
