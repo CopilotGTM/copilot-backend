@@ -34,7 +34,10 @@ from celery import Task
 from sqlalchemy import select
 
 from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
-from src.domain.models.organisation_tables.sync.integration_models import SyncStatus
+from src.domain.models.organisation_tables.sync.integration_models import (
+    IntegrationSyncHistory,
+    SyncStatus,
+)
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
@@ -317,19 +320,63 @@ async def _sync_deals_for_integration_fresh(
         if not integration:
             raise ValueError(f"Integration {fetch_data.integration_id} not found")
 
-        # Use the service to sync
-        deal_sync_service = CRMDealSyncService(
-            session=session,
-            organisation_id=organisation_id,
+        # Create sync history record
+        sync_start = datetime.utcnow()
+        sync_history = IntegrationSyncHistory(
+            integration_id=fetch_data.integration_id,
+            started_at=sync_start,
+            status=SyncStatus.IN_PROGRESS,
         )
+        session.add(sync_history)
+        await session.commit()
+        await session.refresh(sync_history)
 
-        sync_result = await deal_sync_service.sync_integration(
-            integration=integration,
-            nango=nango,
-            skip_enrichment=skip_enrichment,
-        )
+        records_processed = 0
+        records_failed = 0
 
-        return sync_result
+        try:
+            # Use the service to sync
+            deal_sync_service = CRMDealSyncService(
+                session=session,
+                organisation_id=organisation_id,
+            )
+
+            sync_result = await deal_sync_service.sync_integration(
+                integration=integration,
+                nango=nango,
+                skip_enrichment=skip_enrichment,
+            )
+
+            records_processed = sync_result.get("records_synced", 0)
+            records_failed = sync_result.get("metrics", {}).get("failed", 0)
+
+            # Complete sync history - success
+            sync_history.completed_at = datetime.utcnow()
+            sync_history.status = SyncStatus.SUCCESS
+            sync_history.records_processed = records_processed
+            sync_history.records_failed = records_failed
+            sync_history.sync_metadata = {
+                "entity": "deals",
+                "provider": sync_result.get("integration_type", ""),
+                "is_initial": sync_result.get("is_initial", False),
+                "records_fetched": sync_result.get("records_fetched", 0),
+            }
+            session.add(sync_history)
+            await session.commit()
+
+            return sync_result
+
+        except Exception as e:
+            # Complete sync history - failed
+            sync_history.completed_at = datetime.utcnow()
+            sync_history.status = SyncStatus.FAILED
+            sync_history.records_processed = records_processed
+            sync_history.records_failed = records_failed
+            sync_history.error_details = {"error": str(e)[:500]}
+            sync_history.sync_metadata = {"entity": "deals"}
+            session.add(sync_history)
+            await session.commit()
+            raise
     # Session is now released
 
     raise ValueError("Failed to acquire database session")

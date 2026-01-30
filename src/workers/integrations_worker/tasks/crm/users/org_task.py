@@ -24,7 +24,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import attributes
 
 from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
-from src.domain.models.organisation_tables.sync.integration_models import SyncStatus
+from src.domain.models.organisation_tables.sync.integration_models import (
+    IntegrationSyncHistory,
+    SyncStatus,
+)
 from src.infra.config.nango_provider_mapping import to_nango_provider_key
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.async_runner import run_async
@@ -306,20 +309,69 @@ async def _sync_users_for_integration_fresh(
         if not integration:
             raise ValueError(f"Integration {fetch_data.integration_id} not found")
 
-        # Sync users to DB
-        user_service = UserSyncService(db=session, organisation_id=organisation_id)
-        metrics = await user_service.sync(
-            integration=integration, records=records, provider=fetch_data.provider
+        # Create sync history record
+        sync_history = IntegrationSyncHistory(
+            integration_id=fetch_data.integration_id,
+            started_at=sync_start,
+            status=SyncStatus.IN_PROGRESS,
         )
-
-        # Update integration metadata
-        integration.last_synced_at = sync_start
-        integration.last_sync_status = SyncStatus.SUCCESS.value
-        integration.last_sync_error = None
-        update_last_sync_timestamp(integration, "users", sync_start)
-        attributes.flag_modified(integration, "connection_metadata")
-        session.add(integration)
+        session.add(sync_history)
         await session.commit()
+        await session.refresh(sync_history)
+
+        records_processed = 0
+        records_failed = 0
+
+        try:
+            # Sync users to DB
+            user_service = UserSyncService(db=session, organisation_id=organisation_id)
+            metrics = await user_service.sync(
+                integration=integration,
+                records=records,
+                provider=fetch_data.provider,
+            )
+
+            records_processed = metrics.get("users", len(records))
+            records_failed = metrics.get("failed", 0)
+
+            # Update integration metadata
+            integration.last_synced_at = sync_start
+            integration.last_sync_status = SyncStatus.SUCCESS.value
+            integration.last_sync_error = None
+            update_last_sync_timestamp(integration, "users", sync_start)
+            attributes.flag_modified(integration, "connection_metadata")
+            session.add(integration)
+
+            # Complete sync history - success
+            sync_history.completed_at = datetime.utcnow()
+            sync_history.status = SyncStatus.SUCCESS
+            sync_history.records_processed = records_processed
+            sync_history.records_failed = records_failed
+            sync_history.sync_metadata = {
+                "entity": "users",
+                "provider": fetch_data.provider,
+                "is_initial": True,
+                "records_fetched": len(records),
+            }
+            session.add(sync_history)
+            await session.commit()
+
+        except Exception as e:
+            # Complete sync history - failed
+            sync_history.completed_at = datetime.utcnow()
+            sync_history.status = SyncStatus.FAILED
+            sync_history.records_processed = records_processed
+            sync_history.records_failed = records_failed
+            sync_history.error_details = {"error": str(e)[:500]}
+            sync_history.sync_metadata = {
+                "entity": "users",
+                "provider": fetch_data.provider,
+                "is_initial": True,
+                "records_fetched": len(records),
+            }
+            session.add(sync_history)
+            await session.commit()
+            raise
 
         # Run enrichment after sync (unless skipped for initial sync)
         if not skip_enrichment:

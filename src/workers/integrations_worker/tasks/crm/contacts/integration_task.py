@@ -34,8 +34,9 @@ from src.workers.integrations_worker.celery_app import app
 from src.workers.integrations_worker.providers.registry import get_fetcher
 
 from ..utils import (
-    get_last_sync_timestamp,
+    SyncStrategy,
     get_provider_from_integration_type,
+    get_sync_strategy,
     update_last_sync_timestamp,
 )
 
@@ -134,9 +135,15 @@ def sync_crm_contacts_integration_task(
 
             provider = get_provider_from_integration_type(int_type)
             provider_config_key = to_nango_provider_key(int_type)
-            last_sync_at = (
-                None if force_full_sync else get_last_sync_timestamp(integration, "contacts")
-            )
+
+            if force_full_sync:
+                sync_strategy = SyncStrategy(is_initial=True, last_sync_at=None)
+            else:
+                sync_strategy = await get_sync_strategy(
+                    session=session,
+                    integration_id=integration.integration_id,
+                    entity_type="contacts",
+                )
 
             fetch_data = IntegrationFetchData(
                 integration_id=integration.integration_id,
@@ -145,8 +152,8 @@ def sync_crm_contacts_integration_task(
                 integration_type_value=int_type.value,
                 provider=provider,
                 provider_config_key=provider_config_key,
-                is_initial=last_sync_at is None,
-                last_sync_at=last_sync_at,
+                is_initial=sync_strategy.is_initial,
+                last_sync_at=sync_strategy.last_sync_at,
             )
         # Session is now released
 

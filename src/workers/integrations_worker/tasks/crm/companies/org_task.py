@@ -24,7 +24,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import attributes
 
 from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
-from src.domain.models.organisation_tables.sync.integration_models import SyncStatus
+from src.domain.models.organisation_tables.sync.integration_models import (
+    IntegrationSyncHistory,
+    SyncStatus,
+)
 from src.infra.config.nango_provider_mapping import to_nango_provider_key
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.async_runner import run_async
@@ -37,9 +40,9 @@ from src.workers.integrations_worker.providers.registry import get_fetcher
 
 from ..utils import (
     CRM_INTEGRATION_TYPES,
-    get_last_sync_timestamp,
     get_provider_from_integration_type,
     get_sync_data_type,
+    get_sync_strategy,
     update_last_sync_timestamp,
 )
 
@@ -134,7 +137,12 @@ def sync_crm_companies_org_task(
                 provider = get_provider_from_integration_type(int_type)
                 provider_config_key = to_nango_provider_key(int_type)
                 data_type = get_sync_data_type("companies", provider)
-                last_sync_at = get_last_sync_timestamp(integration, "companies")
+
+                sync_strategy = await get_sync_strategy(
+                    session=session,
+                    integration_id=integration.integration_id,
+                    entity_type="companies",
+                )
 
                 integration_fetch_list.append(
                     IntegrationFetchData(
@@ -145,8 +153,8 @@ def sync_crm_companies_org_task(
                         provider=provider,
                         provider_config_key=provider_config_key,
                         data_type=data_type,
-                        is_initial=last_sync_at is None,
-                        last_sync_at=last_sync_at,
+                        is_initial=sync_strategy.is_initial,
+                        last_sync_at=sync_strategy.last_sync_at,
                     )
                 )
         # Session is now released
@@ -315,26 +323,77 @@ async def _sync_companies_for_integration_fresh(
         if not integration:
             raise ValueError(f"Integration {fetch_data.integration_id} not found")
 
-        # Sync companies to DB
-        company_service = CompanySyncService(db=session, organisation_id=organisation_id)
-
-        if fetch_data.is_initial:
-            metrics = await company_service.sync(
-                integration=integration, records=records, provider=fetch_data.provider
-            )
-        else:
-            metrics = await company_service.sync_incremental(
-                integration=integration, records=records, provider=fetch_data.provider
-            )
-
-        # Update integration metadata
-        integration.last_synced_at = sync_start
-        integration.last_sync_status = SyncStatus.SUCCESS.value
-        integration.last_sync_error = None
-        update_last_sync_timestamp(integration, "companies", sync_start)
-        attributes.flag_modified(integration, "connection_metadata")
-        session.add(integration)
+        # Create sync history record
+        sync_history = IntegrationSyncHistory(
+            integration_id=fetch_data.integration_id,
+            started_at=sync_start,
+            status=SyncStatus.IN_PROGRESS,
+        )
+        session.add(sync_history)
         await session.commit()
+        await session.refresh(sync_history)
+
+        records_processed = 0
+        records_failed = 0
+
+        try:
+            # Sync companies to DB
+            company_service = CompanySyncService(db=session, organisation_id=organisation_id)
+
+            if fetch_data.is_initial:
+                metrics = await company_service.sync(
+                    integration=integration,
+                    records=records,
+                    provider=fetch_data.provider,
+                )
+            else:
+                metrics = await company_service.sync_incremental(
+                    integration=integration,
+                    records=records,
+                    provider=fetch_data.provider,
+                )
+
+            records_processed = metrics.get("companies", len(records))
+            records_failed = metrics.get("failed", 0)
+
+            # Update integration metadata
+            integration.last_synced_at = sync_start
+            integration.last_sync_status = SyncStatus.SUCCESS.value
+            integration.last_sync_error = None
+            update_last_sync_timestamp(integration, "companies", sync_start)
+            attributes.flag_modified(integration, "connection_metadata")
+            session.add(integration)
+
+            # Complete sync history - success
+            sync_history.completed_at = datetime.utcnow()
+            sync_history.status = SyncStatus.SUCCESS
+            sync_history.records_processed = records_processed
+            sync_history.records_failed = records_failed
+            sync_history.sync_metadata = {
+                "entity": "companies",
+                "provider": fetch_data.provider,
+                "is_initial": fetch_data.is_initial,
+                "records_fetched": len(records),
+            }
+            session.add(sync_history)
+            await session.commit()
+
+        except Exception as e:
+            # Complete sync history - failed
+            sync_history.completed_at = datetime.utcnow()
+            sync_history.status = SyncStatus.FAILED
+            sync_history.records_processed = records_processed
+            sync_history.records_failed = records_failed
+            sync_history.error_details = {"error": str(e)[:500]}
+            sync_history.sync_metadata = {
+                "entity": "companies",
+                "provider": fetch_data.provider,
+                "is_initial": fetch_data.is_initial,
+                "records_fetched": len(records),
+            }
+            session.add(sync_history)
+            await session.commit()
+            raise
 
         # Run enrichment after sync (unless skipped for initial sync)
         if not skip_enrichment:

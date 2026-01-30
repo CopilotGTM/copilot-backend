@@ -2,13 +2,25 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
+from uuid import UUID
+
+from sqlalchemy import desc, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.domain.models.organisation_tables.sync import IntegrationType
+from src.domain.models.organisation_tables.sync.integration_models import (
+    IntegrationSyncHistory,
+    SyncStatus,
+)
+from src.infra.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from src.domain.models.organisation_tables.sync import KnowledgeIntegration
+
+logger = get_logger(__name__)
 
 # CRM integration types to sync
 CRM_INTEGRATION_TYPES = (
@@ -39,6 +51,88 @@ def get_last_sync_timestamp(
         except (ValueError, TypeError):
             return None
     return None
+
+
+@dataclass
+class SyncStrategy:
+    """Result of sync strategy determination."""
+
+    is_initial: bool
+    last_sync_at: datetime | None  # The cursor to use for incremental sync (with buffer applied)
+
+
+async def get_sync_strategy(
+    session: AsyncSession,
+    integration_id: UUID,
+    entity_type: str,  # "contacts" or "companies"
+) -> SyncStrategy:
+    """Determine full vs incremental sync using IntegrationSyncHistory as source of truth.
+
+    Instead of reading connection_metadata (which can be polluted by other entity types),
+    this queries IntegrationSyncHistory for the last SUCCESS record for this specific
+    integration + entity_type combination.
+
+    A 3x time buffer is applied to the cursor to ensure no records are missed due to
+    clock skew or processing delays.
+
+    Args:
+        session: The async database session
+        integration_id: The integration UUID
+        entity_type: The entity type ("contacts" or "companies")
+
+    Returns:
+        SyncStrategy with is_initial flag and buffered cursor
+    """
+    stmt = (
+        select(IntegrationSyncHistory)
+        .where(
+            IntegrationSyncHistory.integration_id == integration_id,
+            IntegrationSyncHistory.status == SyncStatus.SUCCESS,
+            IntegrationSyncHistory.sync_metadata["entity"].as_string() == entity_type,
+        )
+        .order_by(desc(IntegrationSyncHistory.started_at))
+        .limit(1)
+    )
+    result = await session.execute(stmt)
+    last_success = result.scalar_one_or_none()
+
+    if last_success is None:
+        logger.info(
+            "get_sync_strategy: No SUCCESS history for integration=%s entity=%s → full sync",
+            integration_id,
+            entity_type,
+        )
+        return SyncStrategy(is_initial=True, last_sync_at=None)
+
+    now = datetime.now(UTC)
+    last_started = last_success.started_at
+    # Ensure last_started is timezone-aware
+    if last_started.tzinfo is None:
+        last_started = last_started.replace(tzinfo=UTC)
+
+    gap = now - last_started
+    # 3x buffer: go back 2*gap from last_started (total window = 3*gap)
+    buffered_cursor = last_started - 2 * gap
+
+    # Cap: never go back more than 7 days from last_started
+    min_cursor = last_started - timedelta(days=7)
+    if buffered_cursor < min_cursor:
+        buffered_cursor = min_cursor
+
+    # Cap: never go forward past last_started
+    if buffered_cursor > last_started:
+        buffered_cursor = last_started
+
+    logger.info(
+        "get_sync_strategy: integration=%s entity=%s → incremental sync, "
+        "last_success_started_at=%s gap=%s buffered_cursor=%s",
+        integration_id,
+        entity_type,
+        last_started.isoformat(),
+        gap,
+        buffered_cursor.isoformat(),
+    )
+    return SyncStrategy(is_initial=False, last_sync_at=buffered_cursor)
 
 
 def update_last_sync_timestamp(

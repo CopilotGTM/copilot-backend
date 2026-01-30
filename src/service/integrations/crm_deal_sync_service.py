@@ -37,9 +37,10 @@ from src.service.integrations.crm.entities import DealSyncService
 from src.workers.deal_worker.services.deal_change_detector import StakeholderChangeType
 from src.workers.integrations_worker.providers.registry import get_fetcher
 from src.workers.integrations_worker.tasks.crm.utils import (
-    get_last_sync_timestamp,
+    SyncStrategy,
     get_provider_from_integration_type,
     get_sync_data_type,
+    get_sync_strategy,
     update_last_sync_timestamp,
 )
 
@@ -93,8 +94,16 @@ class CRMDealSyncService:
         provider = get_provider_from_integration_type(integration_type)
         provider_config_key = to_nango_provider_key(integration_type)
         data_type = get_sync_data_type("deals", provider)
-        last_sync_at = None if force_full_sync else get_last_sync_timestamp(integration, "deals")
-        is_initial = last_sync_at is None
+        if force_full_sync:
+            sync_strategy = SyncStrategy(is_initial=True, last_sync_at=None)
+        else:
+            sync_strategy = await get_sync_strategy(
+                session=self.session,
+                integration_id=integration_id,
+                entity_type="deals",
+            )
+        last_sync_at = sync_strategy.last_sync_at
+        is_initial = sync_strategy.is_initial
 
         logger.info(
             "CRM deal sync: org=%s integration=%s provider=%s is_initial=%s",

@@ -36,8 +36,8 @@ from src.workers.integrations_worker.providers.registry import get_fetcher
 
 from ..utils import (
     CRM_INTEGRATION_TYPES,
-    get_last_sync_timestamp,
     get_provider_from_integration_type,
+    get_sync_strategy,
     update_last_sync_timestamp,
 )
 
@@ -128,7 +128,12 @@ def sync_crm_pipelines_org_task(
 
                 provider = get_provider_from_integration_type(int_type)
                 provider_config_key = to_nango_provider_key(int_type)
-                last_sync_at = get_last_sync_timestamp(integration, "pipelines")
+
+                sync_strategy = await get_sync_strategy(
+                    session=session,
+                    integration_id=integration.integration_id,
+                    entity_type="pipelines",
+                )
 
                 integration_fetch_list.append(
                     IntegrationFetchData(
@@ -138,7 +143,7 @@ def sync_crm_pipelines_org_task(
                         integration_type_value=int_type.value,
                         provider=provider,
                         provider_config_key=provider_config_key,
-                        is_initial=last_sync_at is None,
+                        is_initial=sync_strategy.is_initial,
                     )
                 )
         # Session is now released

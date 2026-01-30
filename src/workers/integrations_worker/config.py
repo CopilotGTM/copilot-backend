@@ -196,35 +196,42 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
         #   3. Communication/messaging workloads (US business-hour focus)
 
         crm_schedule = {
-            # Reference data, low churn
+            # Reference data — once daily
             "sync-crm-users-all-orgs": {
                 "task": "integrations.sync_crm_users_all_orgs",
                 "schedule": crontab(minute=0, hour=0),
                 "kwargs": {},
                 "options": {"queue": "integrations", "routing_key": "integrations"},
             },
-            "sync-crm-companies-all-orgs": {
-                "task": "integrations.sync_crm_companies_all_orgs",
+            "sync-crm-pipelines-all-orgs": {
+                "task": "integrations.sync_crm_pipelines_all_orgs",
                 "schedule": crontab(minute=30, hour=0),
                 "kwargs": {},
                 "options": {"queue": "integrations", "routing_key": "integrations"},
             },
-            # Higher churn datasets
-            "sync-crm-contacts-all-orgs": {
-                "task": "integrations.sync_crm_contacts_all_orgs",
-                "schedule": crontab(minute=0, hour=1),
-                "kwargs": {},
-                "options": {"queue": "integrations", "routing_key": "integrations"},
-            },
-            "sync-crm-deals-all-orgs": {
-                "task": "integrations.sync_crm_deals_all_orgs",
-                "schedule": crontab(minute="*/55"),
+            # Medium churn — every hour
+            "sync-crm-companies-all-orgs": {
+                "task": "integrations.sync_crm_companies_all_orgs",
+                "schedule": crontab(minute=25, hour="*"),
                 "kwargs": {},
                 "options": {"queue": "integrations", "routing_key": "integrations"},
             },
             "sync-crm-activities-all-orgs": {
                 "task": "integrations.sync_crm_activities_all_orgs",
-                "schedule": crontab(minute=45, hour="3,6,9,12,15,18"),
+                "schedule": crontab(minute=30, hour="*"),
+                "kwargs": {},
+                "options": {"queue": "integrations", "routing_key": "integrations"},
+            },
+            # High churn — every 15 minutes
+            "sync-crm-contacts-all-orgs": {
+                "task": "integrations.sync_crm_contacts_all_orgs",
+                "schedule": crontab(minute="1,16,31,46"),
+                "kwargs": {},
+                "options": {"queue": "integrations", "routing_key": "integrations"},
+            },
+            "sync-crm-deals-all-orgs": {
+                "task": "integrations.sync_crm_deals_all_orgs",
+                "schedule": crontab(minute="8,23,38,53"),
                 "kwargs": {},
                 "options": {"queue": "integrations", "routing_key": "integrations"},
             },
