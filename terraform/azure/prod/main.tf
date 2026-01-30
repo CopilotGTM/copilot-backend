@@ -598,6 +598,11 @@ resource "azuredevops_variable_group" "secrets" {
   }
 
   variable {
+    name  = "AZURE_MASTER_KEY_VAULT_URL"
+    value = module.master_key_vault.key_vault_uri
+  }
+
+  variable {
     name  = "AZURE_SUBSCRIPTION_ID"
     value = var.subscription_id
   }
