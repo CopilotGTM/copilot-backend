@@ -94,42 +94,32 @@ class DealWorkerConfig(BaseWorkerConfig):
 
         # Celery Beat schedule for periodic tasks
         self.beat_schedule = {
-            # HOURLY: Stakeholder sync → triggers calendar + email matching
-            # This runs the full discovery cycle every hour
-            "hourly-deal-mapping": {
+            # Every 15 min: Stakeholder sync → triggers calendar + email matching
+            "deal-mapping": {
                 "task": "stakeholder.sync_all_deals_stakeholders_all_orgs",
-                "schedule": crontab(minute=0),  # Every hour at :00
+                "schedule": crontab(minute="3,18,33,48"),
                 "options": {"queue": "deal", "routing_key": "deal"},
             },
-            # # HOURLY: Timeline sync - safety net to fill gaps from missed inline creation
-            # # Runs at :30 to avoid overlap with deal-mapping at :00
+            # Every 15 min: Timeline sync - fill gaps from missed inline creation
             "timeline-sync": {
                 "task": "deal.trigger_timeline_sync_all_orgs",
-                "schedule": crontab(minute=30),  # Every 30 minutes
+                "schedule": crontab(minute="10,25,40,55"),
                 "options": {"queue": "deal", "routing_key": "deal"},
             },
-            # # NIGHTLY: Heavy LLM tasks (2 AM UTC)
-            "nightly-stakeholder-analysis": {
-                "task": "stakeholder.trigger_analysis_all_orgs",
-                "schedule": crontab(hour=2, minute=0),
-                "options": {"queue": "deal", "routing_key": "deal"},
-            },
-            # HALF-HOURLY: Transcript fetch and meeting summary pipeline
-            # Runs at :15 and :45 to avoid overlap with other scheduled tasks
+            # Every 30 min: Transcript fetch and meeting summary pipeline
             # After fetching transcripts, automatically triggers:
             # - Meeting summaries (sequential, oldest first)
             # - Deal summaries (after all meeting summaries complete)
-            "half-hourly-transcript-fetch-pipeline": {
+            "transcript-fetch-pipeline": {
                 "task": "deal.trigger_transcript_fetch_all_orgs",
-                "schedule": crontab(minute="5,35"),  # Every 30 minutes
+                "schedule": crontab(minute="5,35"),
                 "options": {"queue": "deal", "routing_key": "deal"},
             },
-            # HOURLY: Stale deal job cleanup
-            # Runs at :45 to avoid overlap with other scheduled tasks
+            # Hourly: Stale deal job cleanup
             # Marks stuck PENDING/IN_PROGRESS deal jobs as FAILED
-            "hourly-stale-deal-job-cleanup": {
+            "stale-deal-job-cleanup": {
                 "task": "deal.cleanup_stale_jobs_all_orgs",
-                "schedule": crontab(minute=45),  # Every hour at :45
+                "schedule": crontab(minute=45),
                 "options": {"queue": "deal", "routing_key": "deal"},
             },
         }
