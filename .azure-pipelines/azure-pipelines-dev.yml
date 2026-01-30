@@ -678,6 +678,7 @@ stages:
                       --set api.secrets.DATABASE_SSL_MODE="$(DATABASE_SSL_MODE)" \
                       --set api.secrets.ENV="$(ENV)" \
                       --set api.secrets.AZURE_KEY_VAULT_URL="$(AZURE_KEY_VAULT_URL)" \
+                      --set api.secrets.AZURE_MASTER_KEY_VAULT_URL="$(AZURE_MASTER_KEY_VAULT_URL)" \
                       --set api.secrets.SUPER_ADMIN_EMAIL="$(SUPER_ADMIN_EMAIL)" \
                       --set api.secrets.SUPABASE_URL="$(SUPABASE_URL)" \
                       --set api.secrets.SUPABASE_ANON_KEY="$(SUPABASE_ANON_KEY)" \
@@ -738,6 +739,7 @@ stages:
                     DATABASE_SSL_MODE: $(DATABASE_SSL_MODE)
                     ENV: $(ENV)
                     AZURE_KEY_VAULT_URL: $(AZURE_KEY_VAULT_URL)
+                    AZURE_MASTER_KEY_VAULT_URL: $(AZURE_MASTER_KEY_VAULT_URL)
                     SUPER_ADMIN_EMAIL: $(SUPER_ADMIN_EMAIL)
                     SUPABASE_URL: $(SUPABASE_URL)
                     SUPABASE_ANON_KEY: $(SUPABASE_ANON_KEY)
