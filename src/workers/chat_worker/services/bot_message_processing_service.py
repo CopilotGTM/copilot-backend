@@ -7,6 +7,7 @@ Unlike MessageProcessingService, this service:
 - Does NOT persist chat messages to the database
 - Does NOT publish frames to Redis Streams (no SSE)
 - Sends the final reply directly to the bot platform via proactive messaging
+- Uses channel adapters for channel-specific rendering (Adaptive Cards, Block Kit, etc.)
 
 Follows the fresh session pattern: no DB sessions are held during LLM calls.
 """
@@ -17,25 +18,20 @@ import asyncio
 from dataclasses import dataclass, field
 from uuid import UUID
 
+from src.adapters import AgentResponse, ChannelPayload, get_adapter
+from src.infra.messaging.chat_stream_models import Frame
 from src.infra.utils.logger import get_logger
 
 logger = get_logger("bot_message_processing_service")
 
-# Frame type constants (subset relevant to bot reply accumulation)
-FRAME_TYPE_ANSWER_DELTA = "answer.delta"
-FRAME_TYPE_ANSWER_REPLACE = "answer.replace"
-FRAME_TYPE_SOURCES_REPLACE = "sources.replace"
-FRAME_TYPE_ERROR = "error"
 FRAME_TYPE_FINALIZE = "finalize"
 
 
 @dataclass
 class BotAgentResult:
-    """Accumulated result from agent execution for bot reply."""
+    """Accumulated frames from agent execution for bot reply."""
 
-    answer_parts: list[str] = field(default_factory=list)
-    final_answer: str | None = None
-    sources: list[dict] | None = None
+    frames: list[Frame] = field(default_factory=list)
     error_message: str | None = None
 
 
@@ -45,8 +41,9 @@ class BotMessageProcessingService:
     Flow:
     1. Build message history from task args
     2. Run GeneralAgent via run_agent_for_chat() (no DB session held)
-    3. Accumulate streaming frames into a single response
-    4. Format and send reply via the bot platform's proactive messaging API
+    3. Accumulate streaming frames
+    4. Use channel adapter to render frames into channel-specific payload
+    5. Send reply via the bot platform's proactive messaging API
     """
 
     def __init__(self, organisation_id: UUID):
@@ -75,18 +72,20 @@ class BotMessageProcessingService:
             True if processing and reply succeeded, False otherwise
         """
         try:
-            # Run agent and accumulate response
             result = asyncio.run(
                 self._run_agent_and_accumulate(
                     user_id, message_text, chat_history, bot_context=bot_context
                 )
             )
 
-            # Format the reply
-            reply_text = self._format_bot_reply(result)
+            adapter = get_adapter(provider)
+            if result.error_message:
+                payload = adapter.render_error(result.error_message)
+            else:
+                response = AgentResponse.from_frames(result.frames)
+                payload = adapter.render(response)
 
-            # Send reply to bot platform
-            success = asyncio.run(self._send_reply(provider, reply_context, reply_text))
+            success = asyncio.run(self._send_payload(provider, reply_context, payload))
 
             if success:
                 logger.info(
@@ -112,13 +111,13 @@ class BotMessageProcessingService:
                 user_id,
                 e,
             )
-            # Attempt to send error message back to user
             try:
-                error_reply = (
+                adapter = get_adapter(provider)
+                payload = adapter.render_error(
                     "I'm sorry, something went wrong while processing your request. "
                     "Please try again or use the CopilotGTM web app."
                 )
-                asyncio.run(self._send_reply(provider, reply_context, error_reply))
+                asyncio.run(self._send_payload(provider, reply_context, payload))
             except Exception:
                 logger.warning("Failed to send error reply to bot platform")
 
@@ -131,26 +130,23 @@ class BotMessageProcessingService:
         chat_history: list[dict] | None = None,
         bot_context: dict | None = None,
     ) -> BotAgentResult:
-        """Run agent and accumulate frames into a single response.
+        """Run agent and accumulate frames.
 
         Creates an AgentContext with org_id + user_id (fresh session pattern),
-        iterates over streamed frames, and accumulates them into BotAgentResult.
+        iterates over streamed frames, and accumulates them.
         """
         from src.agents.context import AgentContext
         from src.agents.orchestrator import run_agent_for_chat
 
         result = BotAgentResult()
 
-        # Build message list for the agent
         messages = self._build_messages(message_text, chat_history, bot_context=bot_context)
 
-        # Build metadata from bot_context (e.g. group chat conversation ID)
         metadata: dict = {}
         if bot_context and bot_context.get("conversation_type") == "groupChat":
             metadata["conversation_type"] = "groupChat"
             metadata["teams_conversation_id"] = bot_context.get("teams_conversation_id", "")
 
-        # Create agent context (no DB session held)
         context = AgentContext(
             organisation_id=self.organisation_id,
             org_name="CopilotGTM",
@@ -164,12 +160,7 @@ class BotMessageProcessingService:
                 messages=messages,
                 context=context,
             ):
-                try:
-                    frame_data = frame.model_dump()
-                except Exception:
-                    frame_data = getattr(frame, "dict", lambda f=frame: dict(f))()
-
-                self._accumulate_frame(frame_data, result)
+                result.frames.append(frame)
 
         except Exception as e:
             logger.exception("Agent execution failed: %s", e)
@@ -183,17 +174,9 @@ class BotMessageProcessingService:
         chat_history: list[dict] | None = None,
         bot_context: dict | None = None,
     ) -> list[dict]:
-        """Build message list for the agent.
-
-        Constructs a list of message dicts compatible with run_agent_for_chat.
-        Includes optional chat history followed by the current user message.
-
-        For group chat contexts, prepends a system message instructing the agent
-        to use the fetch_teams_chat_messages tool to read conversation history.
-        """
+        """Build message list for the agent."""
         messages: list[dict] = []
 
-        # For group chat, prepend a system hint so the agent knows to fetch chat history
         if bot_context and bot_context.get("conversation_type") == "groupChat":
             messages.append(
                 {
@@ -212,7 +195,6 @@ class BotMessageProcessingService:
         if chat_history:
             messages.extend(chat_history)
 
-        # Add the current user message
         messages.append(
             {
                 "role": "user",
@@ -222,62 +204,18 @@ class BotMessageProcessingService:
 
         return messages
 
-    def _accumulate_frame(self, frame_data: dict, result: BotAgentResult) -> None:
-        """Accumulate a single frame into the result."""
-        ftype = frame_data.get("type")
-
-        if ftype == FRAME_TYPE_ANSWER_DELTA:
-            result.answer_parts.append(frame_data.get("content") or "")
-        elif ftype == FRAME_TYPE_ANSWER_REPLACE:
-            result.final_answer = frame_data.get("content") or ""
-        elif ftype == FRAME_TYPE_SOURCES_REPLACE:
-            result.sources = frame_data.get("sources")
-        elif ftype == FRAME_TYPE_ERROR:
-            result.error_message = frame_data.get("message", "Unknown error")
-        # All other frame types (tool.usage, thinking.update, progress.update,
-        # visualization, structured_data, task_list, suggestions.replace) are
-        # skipped - not relevant for a single-message bot reply.
-
-    def _format_bot_reply(self, result: BotAgentResult) -> str:
-        """Format accumulated agent result into bot-friendly markdown."""
-        if result.error_message and not result.answer_parts and not result.final_answer:
-            return (
-                "I'm sorry, I encountered an issue while processing your request. "
-                "Please try again or use the CopilotGTM web app."
-            )
-
-        # Use final_answer (from answer.replace) if available, otherwise join deltas
-        answer = result.final_answer or "".join(result.answer_parts)
-
-        if not answer.strip():
-            return "I wasn't able to generate a response. Please try rephrasing your question."
-
-        # Append sources as numbered references if available
-        if result.sources:
-            source_lines = []
-            for i, source in enumerate(result.sources, 1):
-                label = source.get("label") or source.get("title") or f"Source {i}"
-                url = source.get("url")
-                if url:
-                    source_lines.append(f"{i}. [{label}]({url})")
-                else:
-                    source_lines.append(f"{i}. {label}")
-
-            if source_lines:
-                answer += "\n\n---\n**Sources:**\n" + "\n".join(source_lines)
-
-        return answer
-
-    async def _send_reply(self, provider: str, reply_context: dict, message: str) -> bool:
-        """Dispatch reply to the correct bot platform service."""
+    async def _send_payload(
+        self, provider: str, reply_context: dict, payload: ChannelPayload
+    ) -> bool:
+        """Dispatch rendered payload to the correct bot platform service."""
         if provider == "teams":
-            return await self._send_teams_reply(reply_context, message)
+            return await self._send_teams_payload(reply_context, payload)
         else:
             logger.error("Unsupported bot provider: %s", provider)
             return False
 
-    async def _send_teams_reply(self, reply_context: dict, message: str) -> bool:
-        """Send reply to Teams via proactive messaging."""
+    async def _send_teams_payload(self, reply_context: dict, payload: ChannelPayload) -> bool:
+        """Send rendered payload to Teams via proactive messaging."""
         from src.service.bots.teams_bot_service import TeamsBotService
 
         service_url = reply_context.get("service_url", "")
@@ -292,8 +230,9 @@ class BotMessageProcessingService:
             return False
 
         bot_service = TeamsBotService()
-        return await bot_service.send_proactive_message(
+        return await bot_service.send_proactive_payload(
             service_url=service_url,
             conversation_id=conversation_id,
-            message=message,
+            payload=payload.content,
+            text_fallback=payload.text_fallback,
         )

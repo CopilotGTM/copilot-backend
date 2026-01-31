@@ -3,6 +3,7 @@
 This package contains API endpoints for various chat bot integrations:
 - /bots/auth/* - Shared authentication endpoints (callback, status)
 - /bots/teams/* - Teams-specific endpoints (webhook, health)
+- /bots/meeting/* - Meeting bot callback endpoints (transcript, status)
 - /bots/slack/* - Slack-specific endpoints (future)
 """
 

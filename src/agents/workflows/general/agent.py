@@ -1,7 +1,7 @@
 """General agent for handling user queries with search and deal context tools."""
 
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from typing import Any
 
 from agno.agent import Agent as AgnoAgent
@@ -60,7 +60,9 @@ class GeneralAgent(BaseAgent):
             tools=self._tools,  # type: ignore[arg-type]
         )
 
-    def run_stream(self, message_list: list[ChatMessage]) -> AsyncIterator[Frame]:
+    def run_stream(
+        self, message_list: Sequence[ChatMessage | dict[str, Any]]
+    ) -> AsyncIterator[Frame]:
         """Run with enhanced JSON streaming and transparency support."""
 
         async def _run():
