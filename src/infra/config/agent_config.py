@@ -61,7 +61,7 @@ class AgentConfig:
     SUMMARY_TIMEOUT: int = int(os.getenv("AGENT_SUMMARY_TIMEOUT", "120"))
 
     # Briefing Agent - generates meeting preparation briefings
-    BRIEFING_MODEL: str = os.getenv("AGENT_BRIEFING_MODEL", "gpt-5")
+    BRIEFING_MODEL: str = os.getenv("AGENT_BRIEFING_MODEL", "gpt-5.2")
     BRIEFING_DEBUG: bool = os.getenv("AGENT_BRIEFING_DEBUG", "false").lower() == "true"
     BRIEFING_TIMEOUT: int = int(os.getenv("AGENT_BRIEFING_TIMEOUT", "180"))
 
@@ -70,17 +70,17 @@ class AgentConfig:
     # ==========================================================================
 
     # Deal Summary Agent - generates comprehensive deal summaries
-    DEAL_SUMMARY_MODEL: str = os.getenv("AGENT_DEAL_SUMMARY_MODEL", "gpt-5")
+    DEAL_SUMMARY_MODEL: str = os.getenv("AGENT_DEAL_SUMMARY_MODEL", "gpt-5.2")
     DEAL_SUMMARY_DEBUG: bool = os.getenv("AGENT_DEAL_SUMMARY_DEBUG", "false").lower() == "true"
     DEAL_SUMMARY_TIMEOUT: int = int(os.getenv("AGENT_DEAL_SUMMARY_TIMEOUT", "300"))
 
     # Risk Blocker Extraction Agent - extracts risks and blockers from deal communications
-    RISK_BLOCKER_MODEL: str = os.getenv("AGENT_RISK_BLOCKER_MODEL", "gpt-5")
+    RISK_BLOCKER_MODEL: str = os.getenv("AGENT_RISK_BLOCKER_MODEL", "gpt-5.2")
     RISK_BLOCKER_DEBUG: bool = os.getenv("AGENT_RISK_BLOCKER_DEBUG", "false").lower() == "true"
     RISK_BLOCKER_TIMEOUT: int = int(os.getenv("AGENT_RISK_BLOCKER_TIMEOUT", "300"))
 
     # Stakeholder Analysis Agent - analyzes stakeholder insights from transcripts
-    STAKEHOLDER_MODEL: str = os.getenv("AGENT_STAKEHOLDER_MODEL", "gpt-5-mini")
+    STAKEHOLDER_MODEL: str = os.getenv("AGENT_STAKEHOLDER_MODEL", "gpt-5.2")
     STAKEHOLDER_DEBUG: bool = os.getenv("AGENT_STAKEHOLDER_DEBUG", "false").lower() == "true"
     STAKEHOLDER_TIMEOUT: int = int(os.getenv("AGENT_STAKEHOLDER_TIMEOUT", "180"))
 
@@ -94,7 +94,7 @@ class AgentConfig:
     GENERAL_TIMEOUT: int = int(os.getenv("AGENT_GENERAL_TIMEOUT", "60"))
 
     # Router Agent - routes queries to appropriate agents
-    ROUTER_MODEL: str = os.getenv("AGENT_ROUTER_MODEL", "gpt-5-mini")
+    ROUTER_MODEL: str = os.getenv("AGENT_ROUTER_MODEL", "gpt-5.2")
     ROUTER_DEBUG: bool = os.getenv("AGENT_ROUTER_DEBUG", "false").lower() == "true"
     ROUTER_TIMEOUT: int = int(os.getenv("AGENT_ROUTER_TIMEOUT", "30"))
 
