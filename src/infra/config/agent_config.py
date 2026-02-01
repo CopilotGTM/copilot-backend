@@ -56,7 +56,7 @@ class AgentConfig:
     # ==========================================================================
 
     # Summary Agent - generates meeting summaries from transcripts
-    SUMMARY_MODEL: str = os.getenv("AGENT_SUMMARY_MODEL", "gpt-5-mini")
+    SUMMARY_MODEL: str = os.getenv("AGENT_SUMMARY_MODEL", "gpt-5.2")
     SUMMARY_DEBUG: bool = os.getenv("AGENT_SUMMARY_DEBUG", "false").lower() == "true"
     SUMMARY_TIMEOUT: int = int(os.getenv("AGENT_SUMMARY_TIMEOUT", "120"))
 
@@ -89,7 +89,7 @@ class AgentConfig:
     # ==========================================================================
 
     # General Agent - handles user queries with search and deal context tools
-    GENERAL_MODEL: str = os.getenv("AGENT_GENERAL_MODEL", "gpt-5")
+    GENERAL_MODEL: str = os.getenv("AGENT_GENERAL_MODEL", "gpt-5.2")
     GENERAL_DEBUG: bool = os.getenv("AGENT_GENERAL_DEBUG", "false").lower() == "true"
     GENERAL_TIMEOUT: int = int(os.getenv("AGENT_GENERAL_TIMEOUT", "60"))
 

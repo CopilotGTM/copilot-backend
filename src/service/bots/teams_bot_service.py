@@ -20,7 +20,6 @@ from src.domain.models.master_tables.external_identity_models import (
 )
 from src.infra.config.configs import teams_config
 from src.infra.database.sessions import acquire_master_async_session
-from src.infra.secrets.manager import master_secrets_manager
 from src.infra.utils.logger import get_logger
 from src.service.bots.auth_state_service import BotAuthStateService, get_bot_auth_state_service
 from src.service.bots.auth_validators import AuthValidationResult, TeamsAuthValidator
@@ -60,22 +59,17 @@ class TeamsBotService:
         return self._auth_state_service
 
     async def _ensure_credentials(self) -> bool:
-        """Load bot credentials from Master Key Vault if not already loaded."""
+        """Load bot credentials from TeamsConfig (TTL-cached Key Vault)."""
         if self._credentials_loaded:
             return bool(self._app_id and self._app_secret)
 
-        logger.info("Loading Teams bot credentials from Master Key Vault")
-        self._app_id = await master_secrets_manager.get(teams_config.SECRET_NAME_BOT_APP_ID)
-        self._app_secret = await master_secrets_manager.get(teams_config.SECRET_NAME_BOT_APP_SECRET)
-        self._tenant_id = await master_secrets_manager.get(teams_config.SECRET_NAME_BOT_TENANT_ID)
-
+        self._app_id, self._app_secret, self._tenant_id = await teams_config.get_bot_credentials()
         self._credentials_loaded = True
 
         if not self._app_id or not self._app_secret:
-            logger.error("Teams bot credentials not found in Master Key Vault")
+            logger.error("Teams bot credentials not available")
             return False
 
-        logger.info("Teams bot credentials loaded successfully")
         return True
 
     async def validate_auth_header(self, auth_header: str) -> AuthValidationResult:
@@ -194,8 +188,9 @@ class TeamsBotService:
             )
             return
 
-        # Send response back to Teams
-        await self._send_reply(activity, response, service_url)
+        # Send error response back to Teams (typing indicator already sent on success)
+        if response:
+            await self._send_reply(activity, response, service_url)
 
     async def _get_linked_user(
         self, teams_user_id: str, teams_tenant_id: str
@@ -231,13 +226,14 @@ class TeamsBotService:
         user_aad_object_id: str = "",
         external_user_id: str = "",
         external_tenant_id: str = "",
-    ) -> str:
+    ) -> str | None:
         """Handle a message from an authenticated user.
 
         Enqueues a Celery task to process the message through the GeneralAgent.
         The agent response will be sent back as a proactive message.
 
-        Returns an immediate acknowledgement to the user.
+        Sends a typing indicator on success (returns None).
+        Returns an error string only if enqueue fails.
         """
         from src.workers.chat_worker.client import send_chat_task_async
 
@@ -279,7 +275,9 @@ class TeamsBotService:
                 "Please try again in a moment."
             )
 
-        return "Let me look into that for you..."
+        # Send typing indicator instead of a permanent placeholder message
+        await self._send_typing(service_url, conversation_id)
+        return None
 
     async def _handle_conversation_update(self, activity: dict[str, Any]) -> None:
         """Handle conversation update (user added/removed, bot installed)."""
@@ -470,6 +468,52 @@ class TeamsBotService:
             "After signing in, return here and try your question again.\n\n"
             "_This link expires in 5 minutes._"
         )
+
+    async def _send_typing(self, service_url: str, conversation_id: str) -> None:
+        """Send a typing indicator to Teams.
+
+        The typing indicator shows "..." in the chat for ~3 seconds,
+        then disappears automatically. Unlike a text message, it leaves
+        no permanent trace in the conversation.
+        """
+        if not service_url or not conversation_id:
+            return
+
+        access_token = await self._get_access_token()
+        if not access_token:
+            logger.warning("Cannot send typing indicator: failed to get access token")
+            return
+
+        url = f"{service_url.rstrip('/')}/v3/conversations/{conversation_id}/activities"
+        typing_activity: dict[str, Any] = {
+            "type": "typing",
+        }
+        # Include bot identity if credentials are loaded
+        if self._app_id:
+            typing_activity["from"] = {"id": self._app_id}
+
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        }
+
+        try:
+            async with (
+                aiohttp.ClientSession() as session,
+                session.post(url, json=typing_activity, headers=headers) as response,
+            ):
+                if response.status in (200, 201, 202):
+                    logger.debug("Typing indicator sent to conversation=%s", conversation_id)
+                else:
+                    response_text = await response.text()
+                    logger.warning(
+                        "Typing indicator failed: status=%s response=%s",
+                        response.status,
+                        response_text[:200],
+                    )
+        except Exception as e:
+            # Non-critical — don't fail the request if typing indicator fails
+            logger.warning("Failed to send typing indicator: %s", e)
 
     async def _send_reply(
         self,

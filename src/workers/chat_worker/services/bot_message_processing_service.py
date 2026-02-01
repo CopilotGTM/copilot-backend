@@ -13,6 +13,7 @@ Follows the fresh session pattern: no DB sessions are held during LLM calls.
 from __future__ import annotations
 
 import asyncio
+import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -26,6 +27,29 @@ if TYPE_CHECKING:
 logger = get_logger("bot_message_processing_service")
 
 FRAME_TYPE_FINALIZE = "finalize"
+
+# ---------------------------------------------------------------------------
+# Persistent event loop for Celery worker process
+# ---------------------------------------------------------------------------
+# asyncio.run() creates and destroys an event loop on each call.  Async
+# resources such as asyncpg connection pools (used by SQLAlchemy async
+# engines) bind to the loop that created them.  When the loop is destroyed
+# and a new one is created on the next Celery task, those pooled connections
+# raise "attached to a different loop".  Keeping one loop per worker process
+# avoids this entirely.
+# ---------------------------------------------------------------------------
+_worker_loop_lock = threading.Lock()
+_worker_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _get_worker_event_loop() -> asyncio.AbstractEventLoop:
+    """Return a long-lived event loop for this Celery worker process."""
+    global _worker_loop
+    with _worker_loop_lock:
+        if _worker_loop is None or _worker_loop.is_closed():
+            _worker_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(_worker_loop)
+        return _worker_loop
 
 
 @dataclass
@@ -90,7 +114,7 @@ class BotMessageProcessingService:
                 user_msg_id = self._persist_user_message(session_id, message_text)
                 chat_history = self._load_history(session_id)
 
-            result = asyncio.run(
+            result = _get_worker_event_loop().run_until_complete(
                 self._run_agent_and_accumulate(
                     user_id,
                     message_text,
@@ -114,7 +138,9 @@ class BotMessageProcessingService:
                     if assistant_text:
                         self._persist_assistant_message(session_id, assistant_text, user_msg_id)
 
-            success = asyncio.run(self._send_payload(provider, reply_context, payload))
+            success = _get_worker_event_loop().run_until_complete(
+                self._send_payload(provider, reply_context, payload)
+            )
 
             if success:
                 logger.info(
@@ -146,7 +172,9 @@ class BotMessageProcessingService:
                     "I'm sorry, something went wrong while processing your request. "
                     "Please try again or use the CopilotGTM web app."
                 )
-                asyncio.run(self._send_payload(provider, reply_context, payload))
+                _get_worker_event_loop().run_until_complete(
+                    self._send_payload(provider, reply_context, payload)
+                )
             except Exception:
                 logger.warning("Failed to send error reply to bot platform")
 

@@ -10,6 +10,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from src.service.bots.form_handlers.add_deal_note_handler import AddDealNoteFormHandler
+from src.service.bots.form_handlers.add_stakeholder_handler import AddStakeholderFormHandler
 from src.service.bots.form_handlers.base import (
     BaseFormHandler,
     CancelFormHandler,
@@ -70,6 +72,12 @@ class FormHandlerRegistry:
 # Register handlers on import
 FormHandlerRegistry.register("create_deal_submit", CreateDealFormHandler())
 FormHandlerRegistry.register("create_deal_cancel", CancelFormHandler("Deal creation cancelled."))
+FormHandlerRegistry.register("add_deal_note_submit", AddDealNoteFormHandler())
+FormHandlerRegistry.register("add_deal_note_cancel", CancelFormHandler("Note cancelled."))
+FormHandlerRegistry.register("add_stakeholder_submit", AddStakeholderFormHandler())
+FormHandlerRegistry.register(
+    "add_stakeholder_cancel", CancelFormHandler("Stakeholder addition cancelled.")
+)
 
 
 __all__ = [

@@ -13,10 +13,8 @@ Used by:
 
 from __future__ import annotations
 
-import os
-
 import aiohttp
-from src.infra.config.configs import secret_manager_config, teams_config
+from src.infra.config.configs import teams_config
 from src.infra.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -31,15 +29,10 @@ async def get_graph_access_token() -> str | None:
     Returns:
         Access token string, or None if authentication fails.
     """
-    app_id = await get_master_secret(teams_config.SECRET_NAME_BOT_APP_ID)
-    app_secret = await get_master_secret(teams_config.SECRET_NAME_BOT_APP_SECRET)
-    tenant_id = await get_master_secret(teams_config.SECRET_NAME_BOT_TENANT_ID)
+    app_id, app_secret, tenant_id = await teams_config.get_bot_credentials()
 
     if not app_id or not app_secret:
-        logger.error(
-            "Graph API auth failed: bot credentials not found in Key Vault %s",
-            secret_manager_config.AZURE_MASTER_KEY_VAULT_URL,
-        )
+        logger.error("Graph API auth failed: bot credentials not available")
         return None
 
     tenant = tenant_id or "common"
@@ -71,47 +64,4 @@ async def get_graph_access_token() -> str | None:
                 return None
     except Exception as e:
         logger.exception("Graph API token request error: %s", e)
-        return None
-
-
-# ---------------------------------------------------------------------------
-# Key Vault
-# ---------------------------------------------------------------------------
-
-
-async def get_master_secret(secret_name: str) -> str | None:
-    """Fetch a secret from the Master Key Vault.
-
-    Args:
-        secret_name: Name of the secret to retrieve.
-
-    Returns:
-        Secret value string, or None if not found.
-    """
-    vault_url = secret_manager_config.AZURE_MASTER_KEY_VAULT_URL
-    if not vault_url:
-        logger.error("AZURE_MASTER_KEY_VAULT_URL not configured")
-        return None
-
-    try:
-        from azure.identity.aio import DefaultAzureCredential
-        from azure.keyvault.secrets.aio import SecretClient
-
-        if os.getenv("ENV") == "local":
-            credential = DefaultAzureCredential(
-                exclude_interactive_browser_credential=True,
-                exclude_visual_studio_code_credential=False,
-            )
-        else:
-            credential = DefaultAzureCredential()
-
-        try:
-            async with SecretClient(vault_url=vault_url, credential=credential) as client:
-                secret = await client.get_secret(secret_name)
-                value: str | None = secret.value
-                return value
-        finally:
-            await credential.close()
-    except Exception as e:
-        logger.warning("Failed to get secret '%s' from Master Key Vault: %s", secret_name, e)
         return None
