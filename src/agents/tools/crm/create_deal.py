@@ -146,10 +146,20 @@ async def create_deal_form(
                 stage_result = await session.execute(stage_stmt)
                 stage_rows = stage_result.all()
 
+                # Prefix stage names with pipeline name when multiple pipelines
+                # exist, to disambiguate identical stage names across pipelines
+                pipeline_names: dict[str, str] = {str(p.pipeline_id): p.name for p in pipeline_rows}
+                multiple_pipelines = len(pipeline_rows) > 1
+
                 for s in stage_rows:
+                    title = (
+                        f"{pipeline_names[str(s.pipeline_id)]} > {s.name}"
+                        if multiple_pipelines
+                        else s.name
+                    )
                     stage_choices.append(
                         {
-                            "title": s.name,
+                            "title": title,
                             "value": f"{s.pipeline_id}|{s.stage_id}",
                         }
                     )
