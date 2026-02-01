@@ -14,7 +14,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.sql.functions import count
 
 from src.agents.tools.base import db_session_lock, execute_with_capabilities
@@ -41,6 +41,8 @@ async def list_deal_channel_messages(
     channel_id: str | None = None,
     messages_per_channel: int = 20,
     include_bot_messages: bool = False,
+    sender_email: str | None = None,
+    sender_name: str | None = None,
 ) -> dict[str, Any]:
     """List messages from channels associated with a deal.
 
@@ -53,6 +55,8 @@ async def list_deal_channel_messages(
         channel_id: Optional channel UUID to filter to a specific channel
         messages_per_channel: Maximum messages to return PER channel (default: 20)
         include_bot_messages: Include messages from bots (default: False)
+        sender_email: Filter messages sent by this email address (exact, case-insensitive)
+        sender_name: Filter messages where sender name contains this string (ILIKE)
 
     Returns:
         Structured dict with:
@@ -187,6 +191,14 @@ async def list_deal_channel_messages(
         if not include_bot_messages:
             message_stmt = message_stmt.where(message_c.is_bot_message.is_(False))
 
+        # Filter by sender email or name (uses participant table already joined)
+        if sender_email:
+            message_stmt = message_stmt.where(
+                func.lower(participant_c.canonical_email) == sender_email.lower()
+            )
+        if sender_name:
+            message_stmt = message_stmt.where(participant_c.display_name.ilike(f"%{sender_name}%"))
+
         try:
             result = await session.execute(message_stmt)
             message_rows = result.fetchall()
@@ -284,11 +296,14 @@ def create_list_deal_channel_messages(
         channel_id: str | None = None,
         messages_per_channel: int = 20,
         include_bot_messages: bool = False,
+        sender_email: str | None = None,
+        sender_name: str | None = None,
     ) -> dict[str, Any]:
         """List messages from messaging channels (Teams, Slack, etc.) linked to a deal.
 
         Returns messages organized by channel, making it clear which messages
         came from which channel. Each channel gets equal representation.
+        Supports filtering by sender email or name.
 
         Args:
             deal_id: The deal UUID. If not provided, uses the current deal context.
@@ -296,6 +311,10 @@ def create_list_deal_channel_messages(
             messages_per_channel: Max messages per channel (default: 20).
                                   Ensures balanced representation across channels.
             include_bot_messages: Include messages sent by bots (default: False)
+            sender_email: Filter messages sent by this email address
+                (exact match, case-insensitive).
+            sender_name: Filter messages where the sender's display name contains this string
+                (case-insensitive partial match).
 
         Returns:
             Structured response with:
@@ -356,6 +375,8 @@ def create_list_deal_channel_messages(
                     "channel_id": channel_id,
                     "messages_per_channel": messages_per_channel,
                     "include_bot_messages": include_bot_messages,
+                    "sender_email": sender_email,
+                    "sender_name": sender_name,
                 },
                 description="Listing deal channel messages",
                 fallback_value={"channels": [], "total_messages": 0, "total_channels": 0},
