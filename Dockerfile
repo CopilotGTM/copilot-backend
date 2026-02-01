@@ -225,6 +225,7 @@ COPY --chown=appuser:appuser src/infra/ ./src/infra/
 COPY --chown=appuser:appuser src/workers/ ./src/workers/
 COPY --chown=appuser:appuser src/service/ ./src/service/
 COPY --chown=appuser:appuser src/agents/ ./src/agents/
+COPY --chown=appuser:appuser src/adapters/ ./src/adapters/
 COPY --chown=appuser:appuser migrations/ ./migrations/
 COPY --chown=appuser:appuser scripts/ ./scripts/
 
@@ -258,6 +259,7 @@ COPY --chown=appuser:appuser src/infra/ ./src/infra/
 COPY --chown=appuser:appuser src/workers/ ./src/workers/
 COPY --chown=appuser:appuser src/service/ ./src/service/
 COPY --chown=appuser:appuser src/agents/ ./src/agents/
+COPY --chown=appuser:appuser src/adapters/ ./src/adapters/
 COPY --chown=appuser:appuser migrations/ ./migrations/
 COPY --chown=appuser:appuser scripts/ ./scripts/
 
@@ -287,6 +289,7 @@ COPY --chown=appuser:appuser src/infra/ ./src/infra/
 COPY --chown=appuser:appuser src/workers/ ./src/workers/
 COPY --chown=appuser:appuser src/service/ ./src/service/
 COPY --chown=appuser:appuser src/agents/ ./src/agents/
+COPY --chown=appuser:appuser src/adapters/ ./src/adapters/
 COPY --chown=appuser:appuser migrations/ ./migrations/
 COPY --chown=appuser:appuser scripts/ ./scripts/
 

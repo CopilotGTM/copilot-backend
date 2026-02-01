@@ -94,23 +94,29 @@ class TeamsBotService:
 
         return await self._auth_validator.validate({"Authorization": auth_header})
 
-    async def process_activity(self, activity: dict[str, Any]) -> None:
+    async def process_activity(self, activity: dict[str, Any]) -> dict[str, Any] | None:
         """
         Process incoming activity from Teams.
 
         Args:
             activity: The Bot Framework activity (message, event, etc.)
+
+        Returns:
+            For invoke activities: response dict to return to Teams. None otherwise.
         """
         activity_type = activity.get("type", "")
 
         if activity_type == "message":
             await self._handle_message(activity)
+            return None
         elif activity_type == "conversationUpdate":
             await self._handle_conversation_update(activity)
+            return None
         elif activity_type == "invoke":
-            self._handle_invoke(activity)
+            return await self._handle_invoke(activity)
         else:
             logger.debug("Unhandled activity type: %s", activity_type)
+            return None
 
     async def _handle_message(self, activity: dict[str, Any]) -> None:
         """Handle incoming message from user with identity-aware routing."""
@@ -140,6 +146,13 @@ class TeamsBotService:
                 user_aad_object_id=user_aad_object_id,
             )
             await self._send_reply(activity, login_message, service_url)
+            return
+
+        # Check for Adaptive Card form submissions (Action.Submit sends as
+        # type=message with form data in "value" and no "text")
+        form_data = activity.get("value")
+        if isinstance(form_data, dict) and form_data.get("action"):
+            await self._handle_form_submission(activity, form_data, service_url)
             return
 
         text: str = activity.get("text") or ""
@@ -283,10 +296,121 @@ class TeamsBotService:
                 await self._send_reply(activity, self._get_welcome_message(), service_url)
                 break
 
-    def _handle_invoke(self, activity: dict[str, Any]) -> None:
-        """Handle invoke activities (adaptive card actions, etc.)."""
+    async def _handle_form_submission(
+        self,
+        activity: dict[str, Any],
+        form_data: dict[str, Any],
+        service_url: str,
+    ) -> None:
+        """Handle Adaptive Card Action.Submit form submissions.
+
+        Teams sends Action.Submit as type=message with form data in "value".
+        This method routes the submission to the appropriate form handler.
+        """
+        from src.service.bots.form_handlers import FormHandlerRegistry
+
+        action = form_data.get("action", "")
+        logger.info("Form submission received: action=%s", action)
+
+        result = await FormHandlerRegistry.handle(action, activity, form_data)
+        if result:
+            await self._send_reply(activity, result.message, service_url)
+        else:
+            logger.warning("No handler for form action: %s", action)
+            await self._send_reply(
+                activity,
+                "Sorry, I couldn't process that form submission.",
+                service_url,
+            )
+
+    async def _handle_invoke(self, activity: dict[str, Any]) -> dict[str, Any] | None:
+        """Handle invoke activities (adaptive card actions, form submissions, etc.).
+
+        Routes Action.Execute invokes (adaptiveCard/action) to card-replacement flow,
+        and falls back to legacy handling for other invoke types.
+
+        Returns:
+            Response dict for Teams (invoke activities require a response body),
+            or None if the invoke is unhandled.
+        """
         invoke_name = activity.get("name", "")
-        logger.debug("Invoke activity received: %s", invoke_name)
+        logger.debug("Invoke activity received: name=%s", invoke_name)
+
+        # Action.Execute sends invoke with name="adaptiveCard/action"
+        if invoke_name == "adaptiveCard/action":
+            return await self._handle_adaptive_card_action(activity)
+
+        # Legacy: Action.Submit that arrives as invoke (value.action)
+        from src.service.bots.form_handlers import FormHandlerRegistry
+
+        form_data = activity.get("value", {})
+        action = form_data.get("action", "")
+
+        if action:
+            service_url = activity.get("serviceUrl", "")
+
+            result = await FormHandlerRegistry.handle(action, activity, form_data)
+            if result:
+                await self._send_reply(activity, result.message, service_url)
+                return {
+                    "status": 200,
+                    "body": {"type": "message", "text": "OK"},
+                }
+
+        logger.debug("Unhandled invoke: name=%s action=%s", invoke_name, action)
+        return None
+
+    async def _handle_adaptive_card_action(self, activity: dict[str, Any]) -> dict[str, Any]:
+        """Handle Action.Execute invoke — process form and return replacement card.
+
+        Action.Execute sends:
+            activity.value.action.verb = "<action_name>"
+            activity.value.action.data = {input field values + metadata}
+
+        Returns an invoke response with a replacement Adaptive Card that Teams
+        swaps in-place (no buttons = no re-submission).
+        """
+        from src.adapters.card_builders.teams_card_builder import (
+            build_confirmation_card,
+            build_error_card,
+        )
+        from src.service.bots.form_handlers import FormHandlerRegistry
+
+        value = activity.get("value", {})
+        action_payload = value.get("action", {})
+        verb = action_payload.get("verb", "")
+        form_data = action_payload.get("data", {})
+
+        logger.info("Adaptive card Action.Execute: verb=%s", verb)
+
+        if not verb:
+            return {
+                "statusCode": 200,
+                "type": "application/vnd.microsoft.activity.message",
+                "value": "Unknown action.",
+            }
+
+        result = await FormHandlerRegistry.handle(verb, activity, form_data)
+
+        if result and result.success:
+            return {
+                "statusCode": 200,
+                "type": "application/vnd.microsoft.card.adaptive",
+                "value": build_confirmation_card(result.message),
+            }
+        elif result:
+            return {
+                "statusCode": 200,
+                "type": "application/vnd.microsoft.card.adaptive",
+                "value": build_error_card(result.message),
+            }
+        else:
+            logger.warning("No handler for Action.Execute verb: %s", verb)
+            return {
+                "statusCode": 200,
+                "type": "application/vnd.microsoft.card.adaptive",
+                "value": build_error_card("Sorry, I couldn't process that form submission."),
+            }
 
     def _get_welcome_message(self) -> str:
         """Generate welcome message for new users."""

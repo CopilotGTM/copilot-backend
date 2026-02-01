@@ -97,6 +97,7 @@ class BotMessageProcessingService:
                     chat_history,
                     bot_context=bot_context,
                     user_email=user_email,
+                    reply_context=reply_context,
                 )
             )
 
@@ -310,6 +311,7 @@ class BotMessageProcessingService:
         chat_history: list[dict] | None = None,
         bot_context: dict | None = None,
         user_email: str | None = None,
+        reply_context: dict | None = None,
     ) -> BotAgentResult:
         """Run agent and accumulate frames.
 
@@ -318,6 +320,10 @@ class BotMessageProcessingService:
 
         For personal chats, history is loaded from the DB before this method is called.
         For group chats, the agent calls the fetch_teams_chat_messages tool itself.
+
+        Args:
+            reply_context: Platform reply context (service_url, conversation_id) -
+                passed into metadata so tools can send proactive cards.
         """
         from src.agents.context import AgentContext
         from src.agents.orchestrator import run_agent_for_chat
@@ -332,6 +338,11 @@ class BotMessageProcessingService:
         if bot_context and conversation_type == "groupChat":
             metadata["conversation_type"] = "groupChat"
             metadata["teams_conversation_id"] = bot_context.get("teams_conversation_id", "")
+
+        # Pass reply context so tools can send proactive cards (e.g. create_deal form)
+        if reply_context:
+            metadata["service_url"] = reply_context.get("service_url", "")
+            metadata["conversation_id"] = reply_context.get("conversation_id", "")
 
         context = AgentContext(
             organisation_id=self.organisation_id,

@@ -58,6 +58,7 @@ class ToolName(str, Enum):
     GET_DEAL_SUMMARY = "get_deal_summary"  # AI-generated deal summary
     GET_DEAL_CHANGE_HISTORY = "get_deal_change_history"  # Stage transition history
     GET_PIPELINE_DETAILS = "get_pipeline_details"  # Pipeline and stage information
+    CREATE_DEAL = "create_deal"  # Send interactive deal creation form to chat
 
     # -------------------------------------------------------------------------
     # STAKEHOLDER TOOLS - For stakeholder info and insights
@@ -137,6 +138,7 @@ class ToolName(str, Enum):
 
 CHANNEL_ONLY_TOOLS: dict[ToolName, set[str]] = {
     ToolName.FETCH_TEAMS_CHAT_MESSAGES: {"teams"},
+    ToolName.CREATE_DEAL: {"teams"},
 }
 
 
@@ -192,6 +194,8 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.RESEARCH_LINKEDIN_PROFILE,  # LinkedIn research for general queries
         # Teams tools
         ToolName.FETCH_TEAMS_CHAT_MESSAGES,  # Fetch group chat history when @mentioned
+        # CRM write tools (channel-only)
+        ToolName.CREATE_DEAL,  # Send interactive deal creation form
     },
     # -------------------------------------------------------------------------
     # BriefingAgent - Meeting Briefing Agent
@@ -321,6 +325,7 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     ToolName.GET_DEAL_SUMMARY: ToolCategory.CRM,
     ToolName.GET_DEAL_CHANGE_HISTORY: ToolCategory.CRM,
     ToolName.GET_PIPELINE_DETAILS: ToolCategory.CRM,
+    ToolName.CREATE_DEAL: ToolCategory.CRM,
     # CRM/Stakeholder
     ToolName.LIST_DEAL_STAKEHOLDERS: ToolCategory.CRM,
     ToolName.GET_STAKEHOLDER_DETAILS: ToolCategory.CRM,
@@ -394,6 +399,7 @@ class ToolRegistry:
             create_list_deal_emails,
         )
         from src.agents.tools.crm import (
+            create_create_deal,
             create_create_stakeholder,
             create_enrich_stakeholder,
             create_get_deal_change_history,
@@ -457,6 +463,9 @@ class ToolRegistry:
             lambda: create_get_deal_change_history(self.context, self.capabilities_getter)
         )
         self._tool_factories[ToolName.GET_PIPELINE_DETAILS] = lambda: create_get_pipeline_details(
+            self.context, self.capabilities_getter
+        )
+        self._tool_factories[ToolName.CREATE_DEAL] = lambda: create_create_deal(
             self.context, self.capabilities_getter
         )
 
