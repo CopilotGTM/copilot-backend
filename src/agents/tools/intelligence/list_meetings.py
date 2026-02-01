@@ -17,12 +17,13 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import select
-from sqlalchemy.orm import selectinload
+from sqlalchemy import func, select
+from sqlalchemy.orm import aliased, selectinload
 
 from src.agents.tools.base import execute_with_capabilities
 from src.domain.models.organisation_tables.sync.calendar import (
     AssociationStatus,
+    CalendarAttendee,
     CalendarEvent,
     CalendarEventDealAssociation,
     GenerationStatus,
@@ -45,6 +46,8 @@ async def list_deal_meetings(
     limit: int = 10,
     include_past: bool = True,
     include_upcoming: bool = True,
+    attendee_email: str | None = None,
+    attendee_name: str | None = None,
 ) -> list[dict[str, Any]]:
     """List all meetings associated with a deal.
 
@@ -60,6 +63,8 @@ async def list_deal_meetings(
         limit: Maximum number of meetings to return (default: 10)
         include_past: Include meetings that have already occurred (default: True)
         include_upcoming: Include future meetings (default: True)
+        attendee_email: Filter meetings where this email is an attendee (exact, case-insensitive)
+        attendee_name: Filter meetings where an attendee's name contains this string (ILIKE)
 
     Returns:
         List of meeting dictionaries with summary information:
@@ -126,6 +131,16 @@ async def list_deal_meetings(
         stmt = stmt.where(event_c.start_at >= now)
     if not include_upcoming:
         stmt = stmt.where(event_c.start_at < now)
+
+    # Optional attendee filter
+    if attendee_email or attendee_name:
+        attendee_filter = aliased(CalendarAttendee)
+        filter_c = cast(Any, attendee_filter).__table__.c
+        stmt = stmt.join(attendee_filter, filter_c.event_id == event_c.event_id)
+        if attendee_email:
+            stmt = stmt.where(func.lower(filter_c.email) == attendee_email.lower())
+        if attendee_name:
+            stmt = stmt.where(filter_c.display_name.ilike(f"%{attendee_name}%"))
 
     # Order by start time (most recent first for past, soonest first for upcoming)
     stmt = stmt.order_by(event_c.start_at.desc()).limit(effective_limit)
@@ -222,17 +237,23 @@ def create_list_deal_meetings(
         limit: int = 10,
         include_past: bool = True,
         include_upcoming: bool = True,
+        attendee_email: str | None = None,
+        attendee_name: str | None = None,
     ) -> list[dict[str, Any]]:
         """List all meetings associated with the current deal.
 
         Use this tool to see what meetings have occurred or are scheduled
         with a customer. Shows both past meetings (with transcript availability)
-        and upcoming meetings.
+        and upcoming meetings. Supports filtering by a specific attendee.
 
         Args:
             limit: Maximum number of results (default: 10, max: 50)
             include_past: Include past meetings (default: True)
             include_upcoming: Include future meetings (default: True)
+            attendee_email: Filter meetings where this email is an attendee
+                (exact match, case-insensitive). Useful for finding meetings with a specific person.
+            attendee_name: Filter meetings where an attendee's display name contains this string
+                (case-insensitive partial match). Useful for role-based searches like "CFO".
 
         Note: organisation_id and deal_id are automatically set from context
         and cannot be overridden. This tool only queries the current deal.
@@ -262,6 +283,8 @@ def create_list_deal_meetings(
                 "limit": limit,
                 "include_past": include_past,
                 "include_upcoming": include_upcoming,
+                "attendee_email": attendee_email,
+                "attendee_name": attendee_name,
             },
             description=f"Listing meetings for deal: {context.deal_id}",
             fallback_value=[],

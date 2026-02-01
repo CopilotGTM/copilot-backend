@@ -8,6 +8,8 @@ USE CASES:
 - "Show me recent meetings" → filter_type="recent"
 - "What meetings do I have today?" → filter_type="today"
 - "List meetings from last month" → filter_type="custom" with dates
+- "Show me meetings with john@company.com" → attendee_email="john@company.com"
+- "List meetings with the CFO" → attendee_name="CFO" (partial match on display name)
 
 SECURITY BOUNDARIES (immutable, from context):
 - organisation_id: Prevents cross-org data access
@@ -22,8 +24,8 @@ from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal, cast
 
-from sqlalchemy import select
-from sqlalchemy.orm import selectinload
+from sqlalchemy import func, select
+from sqlalchemy.orm import aliased, selectinload
 
 from src.agents.tools.base import execute_with_capabilities
 from src.domain.models.organisation_tables.sync.calendar import (
@@ -99,6 +101,8 @@ async def list_meetings_by_date(
     deal_id: str | None = None,
     has_transcript: bool | None = None,
     has_summary: bool | None = None,
+    attendee_email: str | None = None,
+    attendee_name: str | None = None,
     limit: int = 50,
 ) -> list[dict[str, Any]]:
     """List the current user's meetings across deals within a date range.
@@ -120,6 +124,8 @@ async def list_meetings_by_date(
         deal_id: Optional deal UUID to filter by specific deal
         has_transcript: Filter by transcript availability
         has_summary: Filter by summary availability
+        attendee_email: Filter meetings where this email is an attendee (exact, case-insensitive)
+        attendee_name: Filter meetings where an attendee's name contains this string (ILIKE)
         limit: Maximum number of meetings to return (default: 50)
 
     Returns:
@@ -167,6 +173,16 @@ async def list_meetings_by_date(
         stmt = stmt.join(CalendarAttendee, attendee_c.event_id == event_c.event_id).where(
             attendee_c.email == user_email
         )
+
+    # Optional attendee filter (separate from user_email scoping)
+    if attendee_email or attendee_name:
+        attendee_filter = aliased(CalendarAttendee)
+        filter_c = cast(Any, attendee_filter).__table__.c
+        stmt = stmt.join(attendee_filter, filter_c.event_id == event_c.event_id)
+        if attendee_email:
+            stmt = stmt.where(func.lower(filter_c.email) == attendee_email.lower())
+        if attendee_name:
+            stmt = stmt.where(filter_c.display_name.ilike(f"%{attendee_name}%"))
 
     # Optional deal filter
     if deal_id:
@@ -285,12 +301,15 @@ def create_list_meetings_by_date(
         deal_id: str | None = None,
         has_transcript: bool | None = None,
         has_summary: bool | None = None,
+        attendee_email: str | None = None,
+        attendee_name: str | None = None,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
         """List the current user's meetings with flexible date filtering.
 
         Returns only meetings where the current user is an attendee.
         Use this tool when the user asks about their meetings, schedule, or calendar.
+        Supports filtering by a specific attendee's email or name.
 
         Args:
             filter_type: Date filter preset. Must be one of:
@@ -311,6 +330,10 @@ def create_list_meetings_by_date(
                 If omitted (None), no transcript filter is applied.
             has_summary: If True, only meetings with an AI summary. If False, only without.
                 If omitted (None), no summary filter is applied.
+            attendee_email: Filter meetings where this email is an attendee
+                (exact match, case-insensitive). Useful for finding meetings with a specific person.
+            attendee_name: Filter meetings where an attendee's display name contains this string
+                (case-insensitive partial match). Useful for role-based searches like "CFO".
             limit: Maximum number of meetings to return. Default 50, max 100.
 
         Returns:
@@ -369,6 +392,8 @@ def create_list_meetings_by_date(
                 "deal_id": deal_id,
                 "has_transcript": has_transcript,
                 "has_summary": has_summary,
+                "attendee_email": attendee_email,
+                "attendee_name": attendee_name,
                 "limit": limit,
             },
             description=f"Listing {filter_type} meetings",

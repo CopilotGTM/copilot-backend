@@ -11,7 +11,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from src.agents.tools.base import db_session_lock, execute_with_capabilities
 from src.domain.models.organisation_tables.sync.calendar import AssociationStatus
@@ -35,6 +35,8 @@ async def list_deal_emails(
     limit: int = 20,
     direction: str | None = None,
     status: str | None = None,
+    sender_email: str | None = None,
+    sender_name: str | None = None,
     include_body_preview: bool = False,
 ) -> list[dict[str, Any]]:
     """List emails associated with a deal.
@@ -48,6 +50,8 @@ async def list_deal_emails(
         limit: Maximum number of emails to return (default: 20)
         direction: Filter by direction - "inbound", "outbound", or "internal"
         status: Filter by association status - "suggested", "confirmed", "rejected"
+        sender_email: Filter emails sent from this address (exact, case-insensitive)
+        sender_name: Filter emails where sender name contains this string (ILIKE)
         include_body_preview: Include snippet/preview of email body
 
     Returns:
@@ -100,6 +104,14 @@ async def list_deal_emails(
             status_upper = status.upper()
             if status_upper in ("SUGGESTED", "CONFIRMED", "REJECTED"):
                 stmt = stmt.where(assoc_c.status == status_upper)
+
+        # Apply sender email/name filters (requires joining Email table)
+        if sender_email or sender_name:
+            stmt = stmt.join(Email, assoc_c.internet_message_id == email_c.internet_message_id)
+            if sender_email:
+                stmt = stmt.where(func.lower(email_c.from_email) == sender_email.lower())
+            if sender_name:
+                stmt = stmt.where(email_c.from_name.ilike(f"%{sender_name}%"))
 
         try:
             result = await session.execute(stmt)
@@ -180,18 +192,24 @@ def create_list_deal_emails(
         limit: int = 20,
         direction: str | None = None,
         status: str | None = None,
+        sender_email: str | None = None,
+        sender_name: str | None = None,
         include_body_preview: bool = False,
     ) -> list[dict[str, Any]]:
         """List emails associated with a deal.
 
         Use this tool to see email communications related to a deal.
         Emails are matched based on stakeholder participation (team members and contacts).
+        Supports filtering by sender email or name.
 
         Args:
             deal_id: The deal UUID. If not provided, uses the current deal context.
             limit: Maximum number of emails to return (default: 20)
             direction: Filter by "inbound" (from contacts), "outbound" (from team), or "internal"
             status: Filter by "suggested" (auto-matched) or "confirmed" (user-verified)
+            sender_email: Filter emails sent from this address (exact match, case-insensitive).
+            sender_name: Filter emails where the sender's name contains this string
+                (case-insensitive partial match).
             include_body_preview: Include a short preview of the email body
         """
         logger.info(
@@ -214,6 +232,8 @@ def create_list_deal_emails(
                     "limit": limit,
                     "direction": direction,
                     "status": status,
+                    "sender_email": sender_email,
+                    "sender_name": sender_name,
                     "include_body_preview": include_body_preview,
                 },
                 description="Listing deal emails",
