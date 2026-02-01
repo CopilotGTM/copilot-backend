@@ -46,7 +46,6 @@ async def handle_teams_message(
     Authentication is validated using the Bot Framework JWT in the
     Authorization header.
     """
-    logger.info("Teams webhook body: %s", await request.json())
     if not teams_config.TEAMS_ENABLED:
         logger.info("Teams webhook called but TEAMS_ENABLED is false")
         raise HTTPException(

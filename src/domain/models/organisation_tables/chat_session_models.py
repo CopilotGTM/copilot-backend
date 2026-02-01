@@ -18,6 +18,7 @@ class ChatType(str, Enum):
     """
 
     GENERAL_CHAT = "GENERAL_CHAT"
+    TEAMS_CHAT = "TEAMS_CHAT"
     TECHNICAL_DECK = "TECHNICAL_DECK"
     RFP_SHEET = "RFP_SHEET"
 

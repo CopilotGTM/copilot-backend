@@ -53,7 +53,9 @@ async def fetch_teams_chat_messages(
     page_size = min(max(page_size, 1), 50)
 
     # Get access token for Microsoft Graph
-    access_token = await _get_graph_access_token()
+    from src.service.bots.teams_graph_client import get_graph_access_token
+
+    access_token = await get_graph_access_token()
     if not access_token:
         logger.error("fetch_teams_chat_messages: failed to get Graph API access token")
         return {
@@ -156,97 +158,6 @@ async def fetch_teams_chat_messages(
         "has_more": has_more,
         "skip_token": next_skip_token,
     }
-
-
-async def _get_graph_access_token() -> str | None:
-    """Get an access token for Microsoft Graph API using the bot's credentials.
-
-    Uses the same app_id/app_secret from Key Vault but with the Graph API scope.
-    """
-    import aiohttp
-
-    from src.infra.config.configs import secret_manager_config, teams_config
-
-    # We need to load credentials from Key Vault (same as TeamsBotService)
-    app_id = await _get_master_secret(teams_config.SECRET_NAME_BOT_APP_ID)
-    app_secret = await _get_master_secret(teams_config.SECRET_NAME_BOT_APP_SECRET)
-    tenant_id = await _get_master_secret(teams_config.SECRET_NAME_BOT_TENANT_ID)
-
-    if not app_id or not app_secret:
-        logger.error(
-            "Graph API auth failed: bot credentials not found in Key Vault %s",
-            secret_manager_config.AZURE_MASTER_KEY_VAULT_URL,
-        )
-        return None
-
-    # Use the specific tenant (required for application permissions on Graph)
-    tenant = tenant_id or "common"
-    token_url = f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
-
-    data = {
-        "grant_type": "client_credentials",
-        "client_id": app_id,
-        "client_secret": app_secret,
-        "scope": "https://graph.microsoft.com/.default",
-    }
-
-    try:
-        async with (
-            aiohttp.ClientSession() as session,
-            session.post(token_url, data=data) as response,
-        ):
-            if response.status == 200:
-                result = await response.json()
-                return result.get("access_token")
-            else:
-                response_text = await response.text()
-                logger.error(
-                    "Graph API token request failed: status=%s response=%s",
-                    response.status,
-                    response_text[:200],
-                )
-                return None
-    except Exception as e:
-        logger.exception("Graph API token request error: %s", e)
-        return None
-
-
-async def _get_master_secret(secret_name: str) -> str | None:
-    """Fetch a secret from the Master Key Vault.
-
-    Duplicated from TeamsBotService to avoid importing the full service
-    in the worker context. Uses async Azure SDK.
-    """
-    import os
-
-    from src.infra.config.configs import secret_manager_config
-
-    vault_url = secret_manager_config.AZURE_MASTER_KEY_VAULT_URL
-    if not vault_url:
-        logger.error("AZURE_MASTER_KEY_VAULT_URL not configured")
-        return None
-
-    try:
-        from azure.identity.aio import DefaultAzureCredential
-        from azure.keyvault.secrets.aio import SecretClient
-
-        if os.getenv("ENV") == "local":
-            credential = DefaultAzureCredential(
-                exclude_interactive_browser_credential=True,
-                exclude_visual_studio_code_credential=False,
-            )
-        else:
-            credential = DefaultAzureCredential()
-
-        try:
-            async with SecretClient(vault_url=vault_url, credential=credential) as client:
-                secret = await client.get_secret(secret_name)
-                return secret.value
-        finally:
-            await credential.close()
-    except Exception as e:
-        logger.warning("Failed to get secret '%s' from Master Key Vault: %s", secret_name, e)
-        return None
 
 
 def create_fetch_teams_chat_messages(

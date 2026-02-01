@@ -124,14 +124,20 @@ class TeamsBotService:
         from_user = activity.get("from", {})
         teams_user_id = from_user.get("id", "")
         teams_user_name = from_user.get("name", "")
+        user_aad_object_id = from_user.get("aadObjectId", "")
         channel_data = activity.get("channelData", {})
         teams_tenant_id = channel_data.get("tenant", {}).get("id", "")
 
         # Verifying User Identity
-        user = await self._get_linked_user(teams_user_id, teams_tenant_id)
+        user, _ = await self._get_linked_user(teams_user_id, teams_tenant_id)
         if not user:
             login_message = self._get_login_message_with_state(
-                teams_user_id, teams_tenant_id, teams_user_name, service_url, conversation_id
+                teams_user_id,
+                teams_tenant_id,
+                teams_user_name,
+                service_url,
+                conversation_id,
+                user_aad_object_id=user_aad_object_id,
             )
             await self._send_reply(activity, login_message, service_url)
             return
@@ -145,12 +151,26 @@ class TeamsBotService:
         if conversation_type == "personal":
             text = activity.get("text") or ""
             response = await self._handle_authenticated_message(
-                text, user, service_url, conversation_id, conversation_type
+                text,
+                user,
+                service_url,
+                conversation_id,
+                conversation_type,
+                user_aad_object_id=user_aad_object_id,
+                external_user_id=teams_user_id,
+                external_tenant_id=teams_tenant_id,
             )
 
         elif conversation_type in ["groupChat", "channel", "meeting"]:
             response = await self._handle_authenticated_message(
-                text, user, service_url, conversation_id, conversation_type
+                text,
+                user,
+                service_url,
+                conversation_id,
+                conversation_type,
+                user_aad_object_id=user_aad_object_id,
+                external_user_id=teams_user_id,
+                external_tenant_id=teams_tenant_id,
             )
         else:
             logger.warning("Teams unexpected conversationType: %s", conversation_type)
@@ -164,8 +184,14 @@ class TeamsBotService:
         # Send response back to Teams
         await self._send_reply(activity, response, service_url)
 
-    async def _get_linked_user(self, teams_user_id: str, teams_tenant_id: str) -> User | None:
-        """Look up linked CopilotGTM user for Teams identity."""
+    async def _get_linked_user(
+        self, teams_user_id: str, teams_tenant_id: str
+    ) -> tuple[User | None, dict[str, Any] | None]:
+        """Look up linked CopilotGTM user for Teams identity.
+
+        Returns:
+            Tuple of (User, conversation_context) if found, (None, None) otherwise.
+        """
         try:
             async for session in acquire_master_async_session():
                 user, mapping = await self._identity_service.get_user_for_external_identity(
@@ -175,12 +201,12 @@ class TeamsBotService:
                     teams_tenant_id,
                 )
                 if user and mapping:
-                    return user
-                return None
-            return None
+                    return user, mapping.conversation_context
+                return None, None
+            return None, None
         except Exception as e:
             logger.error("Failed to look up Teams identity: %s", e, exc_info=True)
-            return None
+            return None, None
 
     async def _handle_authenticated_message(
         self,
@@ -189,6 +215,9 @@ class TeamsBotService:
         service_url: str,
         conversation_id: str,
         conversation_type: str = "personal",
+        user_aad_object_id: str = "",
+        external_user_id: str = "",
+        external_tenant_id: str = "",
     ) -> str:
         """Handle a message from an authenticated user.
 
@@ -198,6 +227,14 @@ class TeamsBotService:
         Returns an immediate acknowledgement to the user.
         """
         from src.workers.chat_worker.client import send_chat_task_async
+
+        bot_context: dict[str, str] = {
+            "conversation_type": conversation_type,
+            "teams_conversation_id": conversation_id,
+            "user_aad_object_id": user_aad_object_id,
+            "external_user_id": external_user_id,
+            "external_tenant_id": external_tenant_id,
+        }
 
         try:
             task_id = await send_chat_task_async(
@@ -209,6 +246,10 @@ class TeamsBotService:
                     "teams",
                     {"service_url": service_url, "conversation_id": conversation_id},
                 ],
+                kwargs={
+                    "user_email": user.email,
+                    "bot_context": bot_context,
+                },
                 queue="chat_messages",
             )
             logger.info(
@@ -266,6 +307,7 @@ class TeamsBotService:
         teams_user_name: str | None,
         service_url: str,
         conversation_id: str,
+        user_aad_object_id: str = "",
     ) -> str:
         """Generate login prompt with secure state token."""
         if not teams_config.TEAMS_AUTH_LOGIN_URL:
@@ -284,6 +326,7 @@ class TeamsBotService:
             context={
                 "service_url": service_url,
                 "conversation_id": conversation_id,
+                "user_aad_object_id": user_aad_object_id,
             },
         )
 

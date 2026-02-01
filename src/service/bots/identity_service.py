@@ -16,6 +16,7 @@ from uuid import UUID
 
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import col
 from src.domain.models.master_tables import User
 from src.domain.models.master_tables.external_identity_models import (
     ExternalIdentityMapping,
@@ -60,7 +61,7 @@ class ExternalIdentityService:
             (None, None) otherwise
         """
         # Build the query to find active mapping
-        conditions = [
+        conditions: list[Any] = [
             ExternalIdentityMapping.provider == provider,
             ExternalIdentityMapping.external_user_id == external_user_id,
             ExternalIdentityMapping.is_active == True,  # noqa: E712 (SQLAlchemy comparison)
@@ -83,7 +84,7 @@ class ExternalIdentityService:
             return None, None
 
         # Fetch the associated user
-        user_stmt = select(User).where(User.user_id == mapping.user_id)
+        user_stmt = select(User).where(col(User.user_id) == mapping.user_id)
         user_result = await session.execute(user_stmt)
         user = user_result.scalar_one_or_none()
 
@@ -142,7 +143,7 @@ class ExternalIdentityService:
         now = datetime.now(UTC)
 
         # Check for existing mapping (active or inactive)
-        conditions = [
+        conditions: list[Any] = [
             ExternalIdentityMapping.provider == provider,
             ExternalIdentityMapping.external_user_id == external_user_id,
         ]
@@ -225,7 +226,7 @@ class ExternalIdentityService:
         Returns:
             True if a mapping was deactivated, False if none found
         """
-        conditions = [
+        conditions: list[Any] = [
             ExternalIdentityMapping.provider == provider,
             ExternalIdentityMapping.external_user_id == external_user_id,
             ExternalIdentityMapping.is_active == True,  # noqa: E712

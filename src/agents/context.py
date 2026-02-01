@@ -62,6 +62,10 @@ class AgentContext:
     deal_id: UUID | None = None  # SECURITY: Immutable for deal-scoped agents
     org_name: str = "Our Organization"
     user_id: UUID | None = None
+    user_email: str | None = None
+    channel: str = (
+        "web"  # "web" or "teams" — used by tool registry to filter channel-specific tools
+    )
     message_id: str | None = None
     metadata: dict = field(default_factory=dict)
 
@@ -99,6 +103,8 @@ class AgentContext:
             deal_id=self.deal_id,
             org_name=self.org_name,
             user_id=self.user_id,
+            user_email=self.user_email,
+            channel=self.channel,
             message_id=message_id,
             metadata=self.metadata.copy(),
         )
@@ -114,6 +120,8 @@ class AgentContext:
             deal_id=self.deal_id,
             org_name=self.org_name,
             user_id=self.user_id,
+            user_email=self.user_email,
+            channel=self.channel,
             message_id=self.message_id,
             metadata=new_metadata,
         )

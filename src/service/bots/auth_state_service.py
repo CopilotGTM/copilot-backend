@@ -174,7 +174,7 @@ class BotAuthStateService:
         redis_key = f"{BOT_AUTH_STATE_PREFIX}{state_token}"
         redis_client = get_redis_client()
 
-        state_data = redis_client.get(redis_key)
+        state_data: bytes | str | None = redis_client.get(redis_key)  # type: ignore[assignment]
         if not state_data:
             return None
 
@@ -200,7 +200,7 @@ class BotAuthStateService:
         redis_key = f"{BOT_AUTH_STATE_PREFIX}{state_token}"
         redis_client = get_redis_client()
 
-        ttl = redis_client.ttl(redis_key)
+        ttl: int = redis_client.ttl(redis_key)  # type: ignore[assignment]
         # Redis returns -2 if key doesn't exist, -1 if no TTL set
         return max(ttl, 0)
 
@@ -228,8 +228,8 @@ class BotAuthStateService:
         pipe.delete(redis_key)
         results = pipe.execute()
 
-        state_data = results[0]  # GET result
-        deleted = results[1]  # DELETE result (number of keys deleted)
+        state_data: bytes | str | None = results[0]  # GET result
+        deleted: int = results[1]  # DELETE result (number of keys deleted)
 
         if not state_data:
             logger.warning("State token not found or expired: %s...", state_token[:10])

@@ -129,6 +129,18 @@ class ToolName(str, Enum):
 
 
 # =============================================================================
+# CHANNEL-SPECIFIC TOOLS
+# =============================================================================
+# Tools that should ONLY be available on specific channels.
+# Tools not listed here are available on all channels.
+# =============================================================================
+
+CHANNEL_ONLY_TOOLS: dict[ToolName, set[str]] = {
+    ToolName.FETCH_TEAMS_CHAT_MESSAGES: {"teams"},
+}
+
+
+# =============================================================================
 # AGENT-TO-TOOLS MAPPING
 # =============================================================================
 # Maps each agent class to the tools it can access.
@@ -555,11 +567,13 @@ class ToolRegistry:
         logger.warning(f"Tool {tool_name} not registered")
         return None
 
-    def get_tools_for_agent(self, agent_name: str) -> list[Callable]:
-        """Get all tools allowed for a specific agent.
+    def get_tools_for_agent(self, agent_name: str, channel: str = "web") -> list[Callable]:
+        """Get all tools allowed for a specific agent, filtered by channel.
 
         Args:
             agent_name: Name of the agent class (e.g., "GeneralAgent")
+            channel: Channel identifier ("web", "teams"). Tools restricted to
+                     other channels via CHANNEL_ONLY_TOOLS are excluded.
 
         Returns:
             List of tool functions the agent can use
@@ -568,6 +582,12 @@ class ToolRegistry:
         tools: list[Callable] = []
 
         for tool_name in allowed_tools:
+            # Skip tools restricted to other channels
+            allowed_channels = CHANNEL_ONLY_TOOLS.get(tool_name)
+            if allowed_channels and channel not in allowed_channels:
+                logger.debug(f"Skipping tool {tool_name} for {agent_name} (channel={channel})")
+                continue
+
             tool = self.get_tool(tool_name)
             if tool:
                 tools.append(tool)
@@ -634,6 +654,8 @@ def get_tools_for_agent(
 ) -> list[Callable]:
     """Convenience function to get tools for an agent.
 
+    Uses context.channel to filter channel-specific tools automatically.
+
     Args:
         agent_name: Name of the agent class
         context: AgentContext with session and org metadata
@@ -643,7 +665,7 @@ def get_tools_for_agent(
         List of tool functions the agent can use
     """
     registry = ToolRegistry(context, capabilities_getter)
-    return registry.get_tools_for_agent(agent_name)
+    return registry.get_tools_for_agent(agent_name, channel=context.channel)
 
 
 __all__ = [
