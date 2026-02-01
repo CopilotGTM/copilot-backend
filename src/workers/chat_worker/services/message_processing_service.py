@@ -65,6 +65,7 @@ class ConversationData:
     user_message_session_id: UUID
     user_message_parent_id: UUID | None
     user_message_type: ChatMessageType
+    user_email: str | None = None
     history: list[dict] = field(default_factory=list)
 
 
@@ -239,6 +240,15 @@ class MessageProcessingService:
                     }
                 )
 
+            # Look up user email
+            user_email: str | None = None
+            if chat_session.user_id:
+                from src.domain.models.master_tables import User
+
+                user_obj: User | None = session.get(User, chat_session.user_id)
+                if user_obj:
+                    user_email = user_obj.email
+
             logger.info(
                 "Loaded conversation data for job %s: session=%s history_count=%d",
                 job_id,
@@ -253,6 +263,7 @@ class MessageProcessingService:
                 assistant_message_id=assistant_message_id,
                 chat_type=chat_session.chat_type,
                 user_id=chat_session.user_id,
+                user_email=user_email,
                 user_message_session_id=user_message.session_id,
                 user_message_parent_id=user_message.message_id,
                 user_message_type=user_message.message_type,
@@ -326,6 +337,7 @@ class MessageProcessingService:
             organisation_id=self.organisation_id,
             org_name="CopilotGTM",
             user_id=data.user_id,
+            user_email=data.user_email,
             message_id=str(data.assistant_message_id),
         )
 

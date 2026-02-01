@@ -14,10 +14,16 @@ Flow:
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.master_dependencies import get_master_async_session
+from src.api.schemas.bot_auth_models import (
+    BotAuthCallbackRequest,
+    BotAuthCallbackResponse,
+    BotAuthErrorResponse,
+    BotAuthStatusResponse,
+    BotAuthValidateStateResponse,
+)
 from src.domain.models.master_tables import AdminUserStatus, SupabaseUserStatus, User
 from src.domain.models.master_tables.external_identity_models import (
     ExternalIdentityProvider,
@@ -32,48 +38,6 @@ from src.service.bots.teams_bot_service import TeamsBotService
 logger = get_logger(__name__)
 
 router = APIRouter(tags=["bot-auth"])
-
-
-# Request/Response schemas
-class BotAuthCallbackRequest(BaseModel):
-    """Request body for bot auth callback."""
-
-    access_token: str = Field(..., description="Supabase access token from frontend login")
-    state: str = Field(..., description="State token from login URL")
-
-
-class BotAuthCallbackResponse(BaseModel):
-    """Response for successful bot auth callback."""
-
-    success: bool = True
-    message: str = "Account linked successfully"
-    user_email: str | None = None
-    provider: str | None = None
-
-
-class BotAuthStatusResponse(BaseModel):
-    """Response for bot auth status check."""
-
-    is_linked: bool
-    user_email: str | None = None
-    linked_at: str | None = None
-    provider: str | None = None
-
-
-class BotAuthValidateStateResponse(BaseModel):
-    """Response for state token validation check."""
-
-    valid: bool
-    provider: str | None = None
-    expires_in_seconds: int = 0
-
-
-class BotAuthErrorResponse(BaseModel):
-    """Error response for bot auth endpoints."""
-
-    success: bool = False
-    error: str
-    error_code: str | None = None
 
 
 # Dependencies
@@ -226,12 +190,30 @@ async def bot_auth_callback(
             detail="Your account is not active. Please contact your administrator.",
         )
 
+    # Verify the sign-in email matches the CopilotGTM account email
+    app_email = user_data.get("user", {}).get("email", "")
+    if app_email and user.email and app_email.lower() != user.email.lower():
+        logger.warning(
+            "Email mismatch during %s identity linking: signed_in_email=%s, copilot_email=%s",
+            provider.value,
+            app_email,
+            user.email,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"You signed in with {app_email}, but your CopilotGTM account "
+                f"is registered with {user.email}. "
+                "Please sign in with the same email address as your CopilotGTM account."
+            ),
+        )
+
     # Step 4: Create or reactivate identity mapping
     provider_type = PROVIDER_TYPE_MAP.get(provider, ExternalIdentityProviderType.CHAT_BOT)
     user_email = user.email
 
     try:
-        mapping, created = await identity_service.create_or_reactivate_identity_mapping(
+        _, created = await identity_service.create_or_reactivate_identity_mapping(
             session=session,
             user_id=user.user_id,
             organisation_id=user.organisation_id,

@@ -27,6 +27,7 @@ def process_bot_message(
     reply_context: dict,
     chat_history: list[dict] | None = None,
     bot_context: dict | None = None,
+    user_email: str | None = None,
 ):
     """Process a bot message through GeneralAgent and send reply.
 
@@ -38,6 +39,7 @@ def process_bot_message(
         reply_context: Platform-specific context for sending the reply
         chat_history: Optional previous conversation messages
         bot_context: Optional context for bot-specific features (e.g. group chat metadata)
+        user_email: The email of the user who sent the message
     """
     logger.info(
         "Processing bot message org=%s user=%s provider=%s bot_context=%s",
@@ -56,6 +58,7 @@ def process_bot_message(
             reply_context=reply_context,
             chat_history=chat_history,
             bot_context=bot_context,
+            user_email=user_email,
         )
 
         if success:

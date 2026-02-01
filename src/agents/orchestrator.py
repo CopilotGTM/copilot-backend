@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
+from typing import Any
 
 from src.agents.context import AgentContext
 from src.agents.registry import resolve_agent
@@ -12,7 +13,7 @@ from src.infra.messaging.chat_stream_models import Frame
 async def run_agent_for_chat(
     *,
     chat_type: ChatType | str,
-    messages: list[ChatMessage],
+    messages: Sequence[ChatMessage | dict[str, Any]],
     context: AgentContext,
 ) -> AsyncIterator[Frame]:
     """Run the agent for the given chat type and stream back the results.
@@ -24,7 +25,7 @@ async def run_agent_for_chat(
 
     Args:
         chat_type: Type of chat/agent to run
-        messages: Conversation history
+        messages: Conversation history (can be ChatMessage objects or dicts)
         context: AgentContext object with immutable security boundaries
 
     Yields:

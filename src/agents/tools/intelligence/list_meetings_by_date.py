@@ -28,6 +28,7 @@ from sqlalchemy.orm import selectinload
 from src.agents.tools.base import execute_with_capabilities
 from src.domain.models.organisation_tables.sync.calendar import (
     AssociationStatus,
+    CalendarAttendee,
     CalendarEvent,
     CalendarEventDealAssociation,
     GenerationStatus,
@@ -100,13 +101,18 @@ async def list_meetings_by_date(
     has_summary: bool | None = None,
     limit: int = 50,
 ) -> list[dict[str, Any]]:
-    """List meetings across all deals within a date range.
+    """List the current user's meetings across deals within a date range.
+
+    When context.user_email is set, only returns meetings where that email
+    appears in the attendee list. When user_email is None, returns all
+    meetings in the organisation (backwards-compatible).
 
     SECURITY BOUNDARIES (from context, immutable):
     - organisation_id: Prevents cross-org data access
+    - user_email: Scopes results to the requesting user's meetings
 
     Args:
-        context: AgentContext containing organisation metadata
+        context: AgentContext containing organisation metadata and user_email
         filter_type: "upcoming", "recent", "today", or "custom"
         days: Number of days for upcoming/recent filters (default: 7)
         start_date: Start date for custom filter
@@ -128,10 +134,13 @@ async def list_meetings_by_date(
     effective_limit = max(1, min(limit, 100))
     start_dt, end_dt = _get_date_range(filter_type, days, start_date, end_date)
 
+    user_email = context.user_email
+
     # Table columns for type-safe queries
     event_c = cast(Any, CalendarEvent).__table__.c
     assoc_c = cast(Any, CalendarEventDealAssociation).__table__.c
     deal_c = cast(Any, CRMDeal).__table__.c
+    attendee_c = cast(Any, CalendarAttendee).__table__.c
 
     # Build query
     stmt = (
@@ -152,6 +161,12 @@ async def list_meetings_by_date(
             deal_c.is_deleted.is_(False),
         )
     )
+
+    # Filter by user email — only return meetings where the user is an attendee
+    if user_email:
+        stmt = stmt.join(CalendarAttendee, attendee_c.event_id == event_c.event_id).where(
+            attendee_c.email == user_email
+        )
 
     # Optional deal filter
     if deal_id:
@@ -272,30 +287,47 @@ def create_list_meetings_by_date(
         has_summary: bool | None = None,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
-        """List meetings with flexible date filtering.
+        """List the current user's meetings with flexible date filtering.
 
-        Use this tool to find meetings across all deals. Supports preset filters
-        for common queries and custom date ranges.
+        Returns only meetings where the current user is an attendee.
+        Use this tool when the user asks about their meetings, schedule, or calendar.
 
         Args:
-            filter_type: Filter preset - "upcoming", "recent", "today", or "custom"
-                - "upcoming": Next N days (default: 7)
-                - "recent": Past N days (default: 7)
-                - "today": Today's meetings only
-                - "custom": Use start_date and end_date
-            days: Number of days for upcoming/recent filters (default: 7)
-            start_date: Start date for custom filter (YYYY-MM-DD)
-            end_date: End date for custom filter (YYYY-MM-DD)
-            deal_id: Optional deal UUID to filter by specific deal
-            has_transcript: Filter by transcript availability (True/False/None)
-            has_summary: Filter by summary availability (True/False/None)
-            limit: Maximum results (default: 50, max: 100)
+            filter_type: Date filter preset. Must be one of:
+                - "upcoming": Meetings in the next N days from now (use 'days' to control N, default 7).
+                - "recent": Meetings in the past N days from now (use 'days' to control N, default 7).
+                - "today": Only today's meetings (ignores 'days', 'start_date', 'end_date').
+                - "custom": Custom date range. Requires both 'start_date' and 'end_date'.
+            days: Number of days for "upcoming" or "recent" filter_type. Default is 7.
+                Ignored when filter_type is "today" or "custom".
+                Examples: days=1 for tomorrow only, days=14 for next two weeks, days=30 for next month.
+            start_date: Start of custom date range in ISO format (YYYY-MM-DD), e.g. "2025-01-15".
+                Only used when filter_type is "custom". Must be paired with end_date.
+            end_date: End of custom date range in ISO format (YYYY-MM-DD), e.g. "2025-01-31".
+                Only used when filter_type is "custom". Must be paired with start_date.
+            deal_id: Optional deal UUID string to narrow results to a specific deal.
+                If omitted, returns meetings across all deals.
+            has_transcript: If True, only meetings with a transcript. If False, only without.
+                If omitted (None), no transcript filter is applied.
+            has_summary: If True, only meetings with an AI summary. If False, only without.
+                If omitted (None), no summary filter is applied.
+            limit: Maximum number of meetings to return. Default 50, max 100.
 
-        Returns list of meetings with:
-        - event_id, title, start_at, end_at, duration_minutes
-        - deal info (deal_id, name, company_name, amount)
-        - attendee counts, organiser info
-        - has_transcript, has_summary, has_prep flags
+        Returns:
+            List of meeting objects, each containing:
+            - event_id: Calendar event UUID
+            - title: Meeting subject/title
+            - start_at: Meeting start time in ISO 8601 datetime format (UTC)
+            - end_at: Meeting end time in ISO 8601 datetime format (UTC)
+            - duration_minutes: Meeting duration in minutes
+            - deal: Associated deal info (deal_id, name, company_name, amount, currency)
+            - attendee_count: Total number of attendees
+            - external_attendee_count: Number of external (non-organiser) attendees
+            - organiser_name: Name of the meeting organiser
+            - organiser_email: Email of the meeting organiser
+            - has_transcript: Whether a meeting transcript is available
+            - has_summary: Whether an AI-generated summary is available
+            - has_prep: Whether meeting preparation notes are available
         """
         logger.info("[TOOL CALLED] list_meetings_by_date - filter=%s, days=%d", filter_type, days)
 

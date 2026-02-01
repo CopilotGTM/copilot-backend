@@ -5,6 +5,7 @@ import time
 from collections.abc import Iterable
 from typing import Any
 
+from src.infra.config.configs import secret_manager_config
 from src.infra.utils.logger import get_logger
 
 from .azure_key_vault import AzureKeyVaultSecretProvider
@@ -82,5 +83,8 @@ class SecretsManager:
         }
 
 
-# Singleton instance with simplified configuration
+# Singleton instances
 secrets_manager = SecretsManager()
+master_secrets_manager = SecretsManager(
+    provider=AzureKeyVaultSecretProvider(vault_url=secret_manager_config.AZURE_MASTER_KEY_VAULT_URL)
+)

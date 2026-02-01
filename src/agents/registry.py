@@ -15,7 +15,7 @@ def resolve_agent(chat_type: ChatType | str) -> type[Agent]:
             chat_type = ChatType.GENERAL_CHAT
 
     match chat_type:
-        case ChatType.GENERAL_CHAT:
+        case ChatType.GENERAL_CHAT | ChatType.TEAMS_CHAT:
             return GeneralAgent
         case _:
             # default fallback

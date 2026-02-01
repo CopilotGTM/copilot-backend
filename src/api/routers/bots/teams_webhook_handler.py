@@ -1,13 +1,14 @@
 """Teams Bot webhook handler.
 
 This endpoint receives all messages from Microsoft Teams via Azure Bot Service.
-The Bot Framework SDK handles authentication and message routing.
+Authentication is validated using the Bot Framework JWT in the Authorization header.
 
 Endpoint: POST /bots/teams/messages
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from src.infra.config.configs import teams_config
+from src.infra.messaging.redis_client import get_redis_client
 from src.infra.utils.logger import get_logger
 from src.service.bots.teams_bot_service import TeamsBotService
 
@@ -16,9 +17,6 @@ logger = get_logger(__name__)
 router = APIRouter(tags=["teams-bot"])
 
 
-# -----------------------------------------------------------------------------
-# Service Dependency (follows service architecture pattern)
-# -----------------------------------------------------------------------------
 async def get_teams_bot_service():
     """Dependency that yields a TeamsBotService instance with cleanup."""
     service = TeamsBotService()
@@ -31,9 +29,6 @@ async def get_teams_bot_service():
             logger.debug("TeamsBotService close failed", exc_info=True)
 
 
-# -----------------------------------------------------------------------------
-# Webhook Endpoint
-# -----------------------------------------------------------------------------
 @router.post("/messages")
 async def handle_teams_message(
     request: Request,
@@ -48,8 +43,8 @@ async def handle_teams_message(
     3. Processes the activity and returns a response
 
     Note: This endpoint does NOT use standard auth (no get_current_user).
-    Authentication is handled by the Bot Framework SDK using the
-    Authorization header with a JWT token from Azure Bot Service.
+    Authentication is validated using the Bot Framework JWT in the
+    Authorization header.
     """
     if not teams_config.TEAMS_ENABLED:
         logger.info("Teams webhook called but TEAMS_ENABLED is false")
@@ -60,11 +55,19 @@ async def handle_teams_message(
 
     # Get authorization header for Bot Framework validation
     auth_header = request.headers.get("Authorization", "")
+    if not auth_header:
+        logger.warning("Missing Authorization header in Teams webhook")
+        return Response(status_code=status.HTTP_401_UNAUTHORIZED)
+
+    auth_result = await service.validate_auth_header(auth_header)
+    if not auth_result.is_valid:
+        logger.warning("Teams webhook auth failed: %s", auth_result.error)
+        return Response(status_code=status.HTTP_401_UNAUTHORIZED)
 
     # Parse the incoming activity
     try:
         body = await request.json()
-        logger.info("Received Teams webhook body: %s", body)
+        logger.info("Teams webhook body: %s", body)
     except Exception as e:
         logger.error("Failed to parse Teams webhook body: %s", e)
         raise HTTPException(
@@ -73,18 +76,35 @@ async def handle_teams_message(
         ) from e
 
     activity_type = body.get("type", "unknown")
-    from_user = body.get("from", {}).get("name", "unknown")
     activity_id = body.get("id", "unknown")
+    conversation_id = body.get("conversation", {}).get("id", "unknown")
 
     logger.info(
-        "Teams webhook received: type=%s, from=%s, activity_id=%s",
+        "Teams webhook received: type=%s, activity_id=%s, conversation_id=%s",
         activity_type,
-        from_user,
         activity_id,
+        conversation_id,
     )
 
+    # Basic idempotency guard (best-effort)
+    if activity_id and activity_id != "unknown":
+        try:
+            dedupe_key = f"webhook:teams:{conversation_id}:{activity_id}"
+            redis = get_redis_client()
+            deduped = redis.set(
+                dedupe_key,
+                "1",
+                nx=True,
+                ex=teams_config.TEAMS_WEBHOOK_DEDUPE_TTL_SECONDS,
+            )
+            if not deduped:
+                logger.info("Duplicate Teams webhook ignored: activity_id=%s", activity_id)
+                return Response(status_code=status.HTTP_200_OK)
+        except Exception:
+            logger.debug("Teams webhook dedupe check failed", exc_info=True)
+
     try:
-        await service.process_activity(body, auth_header)
+        await service.process_activity(body)
         # Bot Framework expects 200 OK for successful processing
         return Response(status_code=status.HTTP_200_OK)
 
@@ -93,15 +113,3 @@ async def handle_teams_message(
         # Still return 200 to avoid Azure Bot Service retries
         # Log the error for investigation
         return Response(status_code=status.HTTP_200_OK)
-
-
-# -----------------------------------------------------------------------------
-# Health Check Endpoint
-# -----------------------------------------------------------------------------
-@router.get("/health")
-async def teams_health() -> dict:
-    """Health check endpoint for Teams bot."""
-    return {
-        "status": "healthy",
-        "teams_enabled": teams_config.TEAMS_ENABLED,
-    }

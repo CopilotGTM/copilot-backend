@@ -159,6 +159,36 @@ class TeamsConfig:
     SECRET_NAME_BOT_APP_SECRET: str = "teams-bot-app-secret"
     SECRET_NAME_BOT_TENANT_ID: str = "teams-bot-tenant-id"
 
+    # Optional direct credentials (env override; use with caution)
+    TEAMS_BOT_APP_ID: str | None = os.getenv("TEAMS_BOT_APP_ID")
+    TEAMS_BOT_APP_SECRET: str | None = os.getenv("TEAMS_BOT_APP_SECRET")
+    TEAMS_BOT_TENANT_ID: str | None = os.getenv("TEAMS_BOT_TENANT_ID")
+
+    # Bot Framework auth validation
+    TEAMS_BOT_OPENID_CONFIG_URL: str = os.getenv(
+        "TEAMS_BOT_OPENID_CONFIG_URL",
+        "https://login.botframework.com/v1/.well-known/openidconfiguration",
+    )
+    TEAMS_BOT_ALLOWED_ISSUERS: list[str] = [
+        issuer.strip()
+        for issuer in os.getenv("TEAMS_BOT_ALLOWED_ISSUERS", "https://api.botframework.com").split(
+            ","
+        )
+        if issuer.strip()
+    ]
+    TEAMS_BOT_AUTH_JWKS_CACHE_TTL_SECONDS: int = int(
+        os.getenv("TEAMS_BOT_AUTH_JWKS_CACHE_TTL_SECONDS", "86400")
+    )
+    TEAMS_BOT_AUTH_CLOCK_SKEW_SECONDS: int = int(
+        os.getenv("TEAMS_BOT_AUTH_CLOCK_SKEW_SECONDS", "300")
+    )
+    TEAMS_BOT_AUTH_HTTP_TIMEOUT_SEC: float = float(
+        os.getenv("TEAMS_BOT_AUTH_HTTP_TIMEOUT_SEC", "5")
+    )
+    TEAMS_WEBHOOK_DEDUPE_TTL_SECONDS: int = int(
+        os.getenv("TEAMS_WEBHOOK_DEDUPE_TTL_SECONDS", "300")
+    )
+
     # Auth URLs for the login flow
     # Derives from APP_URL if TEAMS_AUTH_LOGIN_URL is not explicitly set
     TEAMS_AUTH_LOGIN_URL: str = os.getenv(

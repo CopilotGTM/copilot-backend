@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+if TYPE_CHECKING:
+    from sqlalchemy import Result
 from sqlmodel import col
 from src.domain.models.organisation_tables.chat_session_models import (
     ChatSession,
@@ -126,6 +129,7 @@ class ChatSessionService:
             col(ChatSession.user_id) == self.user_id,
             col(ChatSession.organisation_id) == self.organisation_id,
             col(ChatSession.is_deleted).is_(False),
+            col(ChatSession.chat_type) != ChatType.TEAMS_CHAT,
         ]
 
         if cursor:
@@ -179,6 +183,7 @@ class ChatSessionService:
                 col(ChatSession.user_id) == self.user_id,
                 col(ChatSession.organisation_id) == self.organisation_id,
                 col(ChatSession.is_deleted).is_(False),
+                col(ChatSession.chat_type) != ChatType.TEAMS_CHAT,
                 col(ChatSession.title).ilike(f"%{query}%"),
             )
             .order_by(col(ChatSession.updated_at).desc(), col(ChatSession.created_at).desc())
@@ -221,7 +226,7 @@ class ChatSessionService:
         await self.db.refresh(chat)
         return chat
 
-    async def _execute_with_retry(self, stmt, *, retries: int = 1):
+    async def _execute_with_retry(self, stmt: Any, *, retries: int = 1) -> Result[Any]:
         attempt = 0
         while True:
             try:

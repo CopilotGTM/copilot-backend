@@ -16,6 +16,7 @@ from uuid import UUID
 
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import col
 from src.domain.models.master_tables import User
 from src.domain.models.master_tables.external_identity_models import (
     ExternalIdentityMapping,
@@ -60,7 +61,7 @@ class ExternalIdentityService:
             (None, None) otherwise
         """
         # Build the query to find active mapping
-        conditions = [
+        conditions: list[Any] = [
             ExternalIdentityMapping.provider == provider,
             ExternalIdentityMapping.external_user_id == external_user_id,
             ExternalIdentityMapping.is_active == True,  # noqa: E712 (SQLAlchemy comparison)
@@ -83,7 +84,7 @@ class ExternalIdentityService:
             return None, None
 
         # Fetch the associated user
-        user_stmt = select(User).where(User.user_id == mapping.user_id)
+        user_stmt = select(User).where(col(User.user_id) == mapping.user_id)
         user_result = await session.execute(user_stmt)
         user = user_result.scalar_one_or_none()
 
@@ -142,7 +143,7 @@ class ExternalIdentityService:
         now = datetime.now(UTC)
 
         # Check for existing mapping (active or inactive)
-        conditions = [
+        conditions: list[Any] = [
             ExternalIdentityMapping.provider == provider,
             ExternalIdentityMapping.external_user_id == external_user_id,
         ]
@@ -207,63 +208,6 @@ class ExternalIdentityService:
 
         return mapping, True
 
-    async def update_conversation_context(
-        self,
-        session: AsyncSession,
-        mapping_id: UUID,
-        context: dict[str, Any],
-    ) -> None:
-        """Update the conversation context for proactive messaging.
-
-        Called whenever a user sends a message to update the bot's
-        context for sending proactive responses.
-
-        Args:
-            session: Database session
-            mapping_id: The mapping ID to update
-            context: Provider-specific context (e.g., service_url, conversation_id for Teams)
-        """
-        stmt = select(ExternalIdentityMapping).where(
-            ExternalIdentityMapping.mapping_id == mapping_id
-        )
-        result = await session.execute(stmt)
-        mapping = result.scalar_one_or_none()
-
-        if not mapping:
-            logger.warning("Mapping not found for context update: %s", mapping_id)
-            return
-
-        # Update context and last_used_at
-        mapping.conversation_context = context
-        mapping.last_used_at = datetime.now(UTC)
-
-        session.add(mapping)
-        await session.commit()
-
-        logger.debug("Updated conversation context for mapping %s", mapping_id)
-
-    async def update_last_used(
-        self,
-        session: AsyncSession,
-        mapping_id: UUID,
-    ) -> None:
-        """Update the last_used_at timestamp for a mapping.
-
-        Args:
-            session: Database session
-            mapping_id: The mapping ID to update
-        """
-        stmt = select(ExternalIdentityMapping).where(
-            ExternalIdentityMapping.mapping_id == mapping_id
-        )
-        result = await session.execute(stmt)
-        mapping = result.scalar_one_or_none()
-
-        if mapping:
-            mapping.last_used_at = datetime.now(UTC)
-            session.add(mapping)
-            await session.commit()
-
     async def deactivate_mapping(
         self,
         session: AsyncSession,
@@ -282,7 +226,7 @@ class ExternalIdentityService:
         Returns:
             True if a mapping was deactivated, False if none found
         """
-        conditions = [
+        conditions: list[Any] = [
             ExternalIdentityMapping.provider == provider,
             ExternalIdentityMapping.external_user_id == external_user_id,
             ExternalIdentityMapping.is_active == True,  # noqa: E712

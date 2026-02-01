@@ -31,7 +31,7 @@ logger = get_logger("azure_key_vault_provider")
 class AzureKeyVaultSecretProvider(SecretProvider):
     """Production-ready Azure Key Vault implementation of :class:`SecretProvider`."""
 
-    def __init__(self):
+    def __init__(self, vault_url: str | None = None):
         self._client: SecretClient | None = None
         self._credential: AsyncTokenCredential | None = None
         self._lock = asyncio.Lock()
@@ -39,6 +39,7 @@ class AzureKeyVaultSecretProvider(SecretProvider):
         self._auth_failure_count = 0
         self._client_creation_time: float | None = None
         self._client_loop: asyncio.AbstractEventLoop | None = None
+        self._vault_url_override = vault_url
 
     async def _ensure_client(self):
         """Create the SecretClient once (lazy init) with automatic recreation on auth failures."""
@@ -87,7 +88,7 @@ class AzureKeyVaultSecretProvider(SecretProvider):
 
     async def _create_client(self):
         """Create a new SecretClient with appropriate credential strategy."""
-        key_vault_url = secret_manager_config.AZURE_KEY_VAULT_URL
+        key_vault_url = self._vault_url_override or secret_manager_config.AZURE_KEY_VAULT_URL
         if not key_vault_url:
             raise RuntimeError("AZURE_KEY_VAULT_URL not configured")
 
