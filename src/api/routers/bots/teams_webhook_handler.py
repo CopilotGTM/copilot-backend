@@ -7,6 +7,7 @@ Endpoint: POST /bots/teams/messages
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi.responses import JSONResponse
 from src.infra.config.configs import teams_config
 from src.infra.messaging.redis_client import get_redis_client
 from src.infra.utils.logger import get_logger
@@ -104,7 +105,12 @@ async def handle_teams_message(
             logger.debug("Teams webhook dedupe check failed", exc_info=True)
 
     try:
-        await service.process_activity(body)
+        result = await service.process_activity(body)
+
+        # Invoke activities may return a response body that Teams expects
+        if body.get("type") == "invoke" and result:
+            return JSONResponse(content=result, status_code=status.HTTP_200_OK)
+
         # Bot Framework expects 200 OK for successful processing
         return Response(status_code=status.HTTP_200_OK)
 
