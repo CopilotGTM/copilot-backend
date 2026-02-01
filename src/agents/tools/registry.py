@@ -61,6 +61,7 @@ class ToolName(str, Enum):
     CREATE_DEAL = "create_deal"  # Send interactive deal creation form to chat
     ADD_DEAL_NOTE = "add_deal_note"  # Send interactive note form for existing deal
     ADD_STAKEHOLDER = "add_stakeholder"  # Send interactive stakeholder form for existing deal
+    UPDATE_DEAL_STAGE = "update_deal_stage"  # Send interactive stage update form
 
     # -------------------------------------------------------------------------
     # STAKEHOLDER TOOLS - For stakeholder info and insights
@@ -143,6 +144,7 @@ CHANNEL_ONLY_TOOLS: dict[ToolName, set[str]] = {
     ToolName.CREATE_DEAL: {"teams"},
     ToolName.ADD_DEAL_NOTE: {"teams"},
     ToolName.ADD_STAKEHOLDER: {"teams"},
+    ToolName.UPDATE_DEAL_STAGE: {"teams"},
 }
 
 
@@ -202,6 +204,7 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.CREATE_DEAL,  # Send interactive deal creation form
         ToolName.ADD_DEAL_NOTE,  # Send interactive note form for existing deal
         ToolName.ADD_STAKEHOLDER,  # Send interactive stakeholder form
+        ToolName.UPDATE_DEAL_STAGE,  # Send interactive stage update form
     },
     # -------------------------------------------------------------------------
     # BriefingAgent - Meeting Briefing Agent
@@ -334,6 +337,7 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     ToolName.CREATE_DEAL: ToolCategory.CRM,
     ToolName.ADD_DEAL_NOTE: ToolCategory.CRM,
     ToolName.ADD_STAKEHOLDER: ToolCategory.CRM,
+    ToolName.UPDATE_DEAL_STAGE: ToolCategory.CRM,
     # CRM/Stakeholder
     ToolName.LIST_DEAL_STAKEHOLDERS: ToolCategory.CRM,
     ToolName.GET_STAKEHOLDER_DETAILS: ToolCategory.CRM,
@@ -424,6 +428,7 @@ class ToolRegistry:
             create_list_deals,
             create_search_contacts,
             create_search_deals,
+            create_update_deal_stage,
         )
         from src.agents.tools.intelligence import (
             create_get_meeting_deal_context,
@@ -482,6 +487,9 @@ class ToolRegistry:
             self.context, self.capabilities_getter
         )
         self._tool_factories[ToolName.ADD_STAKEHOLDER] = lambda: create_add_stakeholder(
+            self.context, self.capabilities_getter
+        )
+        self._tool_factories[ToolName.UPDATE_DEAL_STAGE] = lambda: create_update_deal_stage(
             self.context, self.capabilities_getter
         )
 

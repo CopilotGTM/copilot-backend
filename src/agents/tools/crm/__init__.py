@@ -20,12 +20,14 @@ from src.agents.tools.crm.list_stakeholder_insights import create_list_deal_stak
 from src.agents.tools.crm.list_stakeholders import create_list_deal_stakeholders
 from src.agents.tools.crm.search_contacts import create_search_contacts
 from src.agents.tools.crm.search_deals import create_search_deals
+from src.agents.tools.crm.update_deal_stage import create_update_deal_stage
 
 __all__ = [
     # Deal tools
     "create_add_deal_note",
     "create_add_stakeholder",
     "create_create_deal",
+    "create_update_deal_stage",
     "create_search_deals",
     "create_list_deals",
     "create_get_deal_details",

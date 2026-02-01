@@ -18,6 +18,7 @@ from src.service.bots.form_handlers.base import (
     FormHandlerResult,
 )
 from src.service.bots.form_handlers.create_deal_handler import CreateDealFormHandler
+from src.service.bots.form_handlers.update_deal_stage_handler import UpdateDealStageFormHandler
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,10 @@ FormHandlerRegistry.register("add_deal_note_cancel", CancelFormHandler("Note can
 FormHandlerRegistry.register("add_stakeholder_submit", AddStakeholderFormHandler())
 FormHandlerRegistry.register(
     "add_stakeholder_cancel", CancelFormHandler("Stakeholder addition cancelled.")
+)
+FormHandlerRegistry.register("update_deal_stage_submit", UpdateDealStageFormHandler())
+FormHandlerRegistry.register(
+    "update_deal_stage_cancel", CancelFormHandler("Stage update cancelled.")
 )
 
 
