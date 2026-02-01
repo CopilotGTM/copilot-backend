@@ -14,11 +14,14 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 from uuid import UUID
 
-from src.adapters import AgentResponse, ChannelPayload, get_adapter
-from src.infra.messaging.chat_stream_models import Frame
 from src.infra.utils.logger import get_logger
+
+if TYPE_CHECKING:
+    from src.adapters import ChannelPayload
+    from src.infra.messaging.chat_stream_models import Frame
 
 logger = get_logger("bot_message_processing_service")
 
@@ -75,6 +78,8 @@ class BotMessageProcessingService:
             True if processing and reply succeeded, False otherwise
         """
         try:
+            from src.adapters import AgentResponse, get_adapter
+
             # For personal chat, persist user message and load history from DB
             session_id: UUID | None = None
             user_msg_id: UUID | None = None
