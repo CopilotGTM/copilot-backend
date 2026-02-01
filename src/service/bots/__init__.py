@@ -17,7 +17,6 @@ from .identity_service import ExternalIdentityService
 from .teams_bot_service import TeamsBotService
 from .teams_graph_client import (
     get_graph_access_token,
-    get_master_secret,
 )
 
 __all__ = [
@@ -33,5 +32,4 @@ __all__ = [
     "TeamsBotService",
     # Graph API client
     "get_graph_access_token",
-    "get_master_secret",
 ]

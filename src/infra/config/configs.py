@@ -1,3 +1,4 @@
+import asyncio
 import os
 
 from dotenv import load_dotenv
@@ -139,16 +140,19 @@ class LinkedInEnrichmentConfig:
 class TeamsConfig:
     """Configuration for Microsoft Teams Bot integration.
 
-    Bot credentials are stored in Azure Key Vault (master vault) and fetched at runtime.
-    Key Vault secret names:
-    - teams-bot-app-id: Azure Bot App ID
-    - teams-bot-app-secret: Azure Bot App Secret (client secret)
-    - teams-bot-tenant-id: Azure AD Tenant ID (for single-tenant bot)
+    Bot credentials are stored in Azure Key Vault (master vault) and cached
+    with a configurable TTL (default 6 hours). The first call to
+    ``get_bot_credentials()`` fetches from Key Vault; subsequent calls return
+    from memory until the TTL expires.
+
+    Credentials can also be set via env vars (TEAMS_BOT_APP_ID, etc.) for
+    local development — when present, Key Vault is skipped entirely.
 
     Environment variables:
     - TEAMS_ENABLED: Enable/disable Teams bot functionality
     - TEAMS_AUTH_LOGIN_URL: URL to your login page for Teams auth flow
     - TEAMS_AUTH_CALLBACK_URL: Callback URL after login
+    - TEAMS_BOT_CREDENTIALS_TTL_HOURS: TTL for cached credentials (default 6)
     """
 
     # Feature flag - can be overridden via env var
@@ -159,10 +163,71 @@ class TeamsConfig:
     SECRET_NAME_BOT_APP_SECRET: str = "teams-bot-app-secret"
     SECRET_NAME_BOT_TENANT_ID: str = "teams-bot-tenant-id"
 
-    # Optional direct credentials (env override; use with caution)
-    TEAMS_BOT_APP_ID: str | None = os.getenv("TEAMS_BOT_APP_ID")
-    TEAMS_BOT_APP_SECRET: str | None = os.getenv("TEAMS_BOT_APP_SECRET")
-    TEAMS_BOT_TENANT_ID: str | None = os.getenv("TEAMS_BOT_TENANT_ID")
+    # Cached credential values (populated by get_bot_credentials)
+    BOT_APP_ID: str | None = os.getenv("TEAMS_BOT_APP_ID")
+    BOT_APP_SECRET: str | None = os.getenv("TEAMS_BOT_APP_SECRET")
+    BOT_TENANT_ID: str | None = os.getenv("TEAMS_BOT_TENANT_ID")
+
+    # TTL for cached credentials (hours)
+    _credentials_ttl_hours: float = float(os.getenv("TEAMS_BOT_CREDENTIALS_TTL_HOURS", "6"))
+    _credentials_loaded_at: float | None = None  # epoch timestamp
+    _credentials_from_env: bool = bool(os.getenv("TEAMS_BOT_APP_ID"))
+    _refresh_lock: asyncio.Lock | None = None  # lazy-init (no event loop at import)
+
+    async def get_bot_credentials(self) -> tuple[str | None, str | None, str | None]:
+        """Return cached bot credentials, refreshing from Key Vault if TTL expired.
+
+        Thread-safe via double-checked locking. If credentials are set via
+        env vars, Key Vault is never called.
+
+        Returns:
+            Tuple of (app_id, app_secret, tenant_id).
+        """
+        # Env var override — never expires
+        if self._credentials_from_env:
+            return self.BOT_APP_ID, self.BOT_APP_SECRET, self.BOT_TENANT_ID
+
+        if not self._is_expired():
+            return self.BOT_APP_ID, self.BOT_APP_SECRET, self.BOT_TENANT_ID
+
+        # Lazy-init lock (can't create at import time — no event loop yet)
+        if self._refresh_lock is None:
+            self._refresh_lock = asyncio.Lock()
+
+        async with self._refresh_lock:
+            # Double-check after acquiring lock
+            if not self._is_expired():
+                return self.BOT_APP_ID, self.BOT_APP_SECRET, self.BOT_TENANT_ID
+
+            await self._load_credentials_from_vault()
+
+        return self.BOT_APP_ID, self.BOT_APP_SECRET, self.BOT_TENANT_ID
+
+    def _is_expired(self) -> bool:
+        """Check if cached credentials have exceeded the TTL."""
+        if self._credentials_loaded_at is None:
+            return True
+        import time
+
+        elapsed_hours = (time.time() - self._credentials_loaded_at) / 3600
+        return elapsed_hours >= self._credentials_ttl_hours
+
+    async def _load_credentials_from_vault(self) -> None:
+        """Fetch bot credentials from Master Key Vault and cache them."""
+        import time
+
+        from src.infra.secrets.manager import master_secrets_manager
+
+        logger.info("Loading Teams bot credentials from Key Vault (TTL refresh)")
+        self.BOT_APP_ID = await master_secrets_manager.get(self.SECRET_NAME_BOT_APP_ID)
+        self.BOT_APP_SECRET = await master_secrets_manager.get(self.SECRET_NAME_BOT_APP_SECRET)
+        self.BOT_TENANT_ID = await master_secrets_manager.get(self.SECRET_NAME_BOT_TENANT_ID)
+        self._credentials_loaded_at = time.time()
+
+        if self.BOT_APP_ID and self.BOT_APP_SECRET:
+            logger.info("Teams bot credentials cached (TTL=%.1fh)", self._credentials_ttl_hours)
+        else:
+            logger.error("Teams bot credentials missing from Key Vault")
 
     # Bot Framework auth validation
     TEAMS_BOT_OPENID_CONFIG_URL: str = os.getenv(
