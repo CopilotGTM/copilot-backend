@@ -7,11 +7,14 @@ Creates:
      app-side pool caches TCP connections to pgbouncer)
 
 pgbouncer transaction-mode compatibility:
-  - statement_cache_size=0 (asyncpg) — disables named prepared statements
+  - statement_cache_size=0 (asyncpg) — disables asyncpg's statement cache
   - prepared_statement_cache_size=0 (SQLAlchemy adapter) — disables SQLAlchemy's
     own prepared statement cache
-  - pool_pre_ping=True — detects stale connections safely (uses unnamed statements
-    with both caches disabled)
+  - prepared_statement_name_func=lambda: '' — forces unnamed (anonymous) prepared
+    statements.  Required because asyncpg 0.30 changed semantics: name=None now
+    means "auto-generate a name" (__asyncpg_stmt_N__), which collides across
+    pgbouncer backend connections.  Empty string forces truly anonymous statements.
+  - pool_pre_ping=True — detects stale connections safely
   - search_path set via SET command per session (startup parameters not supported)
 """
 
@@ -48,6 +51,17 @@ logger = get_logger("async_db_provider")
 _POOL_SIZE = int(database_config.DATABASE_POOL_SIZE)
 _MAX_OVERFLOW = int(database_config.DATABASE_MAX_OVERFLOW)
 _POOL_RECYCLE = int(database_config.POOL_RECYCLE_SEC)
+
+
+def _unnamed_stmt() -> str:
+    """Return empty string to force anonymous prepared statements.
+
+    asyncpg 0.30 changed prepare() semantics: name=None now means
+    "auto-generate a name" (__asyncpg_stmt_N__), which causes
+    DuplicatePreparedStatementError with pgbouncer.  Empty string
+    forces truly anonymous (unnamed) prepared statements.
+    """
+    return ""
 
 
 class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
@@ -89,6 +103,7 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
                         "timeout": database_config.DATABASE_CONNECT_TIMEOUT_SEC,
                         "statement_cache_size": 0,
                         "prepared_statement_cache_size": 0,
+                        "prepared_statement_name_func": _unnamed_stmt,
                     },
                 )
             return self._master_engine
@@ -153,6 +168,7 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
                     "timeout": database_config.DATABASE_CONNECT_TIMEOUT_SEC,
                     "statement_cache_size": 0,
                     "prepared_statement_cache_size": 0,
+                    "prepared_statement_name_func": _unnamed_stmt,
                 },
             )
 
