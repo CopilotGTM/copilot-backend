@@ -3,7 +3,7 @@ from json import dumps as json_dumps
 from typing import Any
 
 from celery import Celery
-from celery.signals import task_failure, task_postrun, task_prerun
+from celery.signals import task_failure, task_postrun, task_prerun, worker_process_init
 
 from src.infra.observability.context import load_from_headers, reset_context, set_celery_context
 from src.infra.utils.logger import get_logger
@@ -17,6 +17,23 @@ def _register_observability_signals() -> None:
         return
 
     _signals_registered = True
+
+    @worker_process_init.connect(weak=False)
+    def _reset_db_after_fork(**kwargs):  # noqa: ARG001
+        """Reset DB provider singletons after prefork child process starts.
+
+        Child processes inherit the parent's memory including lazily-created
+        DB provider singletons that hold connections/pools bound to the
+        parent's event loop. Dispose and clear them so fresh engines are
+        created in the child.
+        """
+        from src.infra.utils.async_runner import (
+            _clear_async_db_provider_cache,
+            _clear_sync_db_provider_cache,
+        )
+
+        _clear_async_db_provider_cache()
+        _clear_sync_db_provider_cache()
 
     @task_prerun.connect(weak=False)
     def _task_prerun_handler(task_id=None, task=None, **kwargs):  # noqa: ARG001

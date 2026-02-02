@@ -12,7 +12,6 @@ No sessions are held during long-running operations (LLM calls).
 
 from __future__ import annotations
 
-import asyncio
 import threading
 import time
 from dataclasses import dataclass, field
@@ -31,31 +30,10 @@ from src.infra.database.sessions import acquire_master_session, acquire_org_sess
 from src.infra.messaging.redis_channels import channel_for_chat_job
 from src.infra.messaging.redis_client import get_redis_client
 from src.infra.messaging.redis_streams import xadd_json_frame
+from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 
 logger = get_logger("chat_message_processing_service")
-
-# ---------------------------------------------------------------------------
-# Persistent event loop for Celery worker process
-# ---------------------------------------------------------------------------
-# asyncio.run() creates and destroys an event loop on each call.  Async
-# resources such as asyncpg connection pools bind to the loop that created
-# them.  Reusing one loop per worker process avoids "attached to a different
-# loop" errors on subsequent Celery tasks.
-# ---------------------------------------------------------------------------
-_worker_loop_lock = threading.Lock()
-_worker_loop: asyncio.AbstractEventLoop | None = None
-
-
-def _get_worker_event_loop() -> asyncio.AbstractEventLoop:
-    """Return a long-lived event loop for this Celery worker process."""
-    global _worker_loop
-    with _worker_loop_lock:
-        if _worker_loop is None or _worker_loop.is_closed():
-            _worker_loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(_worker_loop)
-        return _worker_loop
-
 
 # Frame type constants
 FRAME_TYPE_ANSWER_DELTA = "answer.delta"
@@ -304,9 +282,7 @@ class MessageProcessingService:
         All LLM operations happen here without DB connections.
         """
         try:
-            result_summary = _get_worker_event_loop().run_until_complete(
-                self._consume_agent_stream(data)
-            )
+            result_summary = run_async(self._consume_agent_stream(data))
 
             if result_summary is None:
                 logger.error("Agent stream returned None for job %s", data.job_id)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import threading
 from collections.abc import Coroutine
 from typing import Any, TypeVar
@@ -20,6 +21,9 @@ def _clear_async_db_provider_cache() -> None:
     We must clear the cache so new engines are created on the current loop
     (asyncpg connections are bound to the loop that created them).
     Called when we detect the event loop was recreated.
+
+    Engines are disposed (sync_engine.dispose()) before clearing references
+    to close underlying QueuePool TCP connections and prevent connection leaks.
     """
     try:
         from src.infra.database.factory import _async_instance
@@ -28,6 +32,14 @@ def _clear_async_db_provider_cache() -> None:
         if _async_instance is not None and isinstance(_async_instance, AsyncSqlAlchemyProvider):
             provider = _async_instance
             with provider._lock:
+                # Dispose engines to close QueuePool TCP connections
+                for eng in provider._tenant_engines.values():
+                    with contextlib.suppress(Exception):
+                        eng.sync_engine.dispose()
+                if provider._master_engine is not None:
+                    with contextlib.suppress(Exception):
+                        provider._master_engine.sync_engine.dispose()
+
                 if provider._tenant_engines:
                     logger.info(
                         "Clearing %d stale async tenant engines after loop recreation",
@@ -40,6 +52,42 @@ def _clear_async_db_provider_cache() -> None:
                     provider._master_engine = None
     except Exception as e:
         logger.debug("Could not clear async DB provider cache: %s", e)
+
+
+def _clear_sync_db_provider_cache() -> None:
+    """Clear cached sync database engines after fork.
+
+    In prefork workers, child processes inherit the parent's memory including
+    any lazily-created sync DB provider singletons. These hold connections/pools
+    that are not safe to use across fork boundaries. Dispose and clear them so
+    fresh engines are created in the child process.
+    """
+    try:
+        from src.infra.database.factory import _sync_instance
+        from src.infra.database.provider_sync import SyncSqlAlchemyProvider
+
+        if _sync_instance is not None and isinstance(_sync_instance, SyncSqlAlchemyProvider):
+            provider = _sync_instance
+            with provider._lock:
+                for eng in provider._tenant_engines.values():
+                    with contextlib.suppress(Exception):
+                        eng.dispose()
+                if provider._master_engine is not None:
+                    with contextlib.suppress(Exception):
+                        provider._master_engine.dispose()
+
+                if provider._tenant_engines:
+                    logger.info(
+                        "Clearing %d stale sync tenant engines after fork",
+                        len(provider._tenant_engines),
+                    )
+                    provider._tenant_engines.clear()
+                    provider._tenant_locks.clear()
+                if provider._master_engine is not None:
+                    logger.info("Clearing stale sync master engine after fork")
+                    provider._master_engine = None
+    except Exception as e:
+        logger.debug("Could not clear sync DB provider cache: %s", e)
 
 
 def _get_or_create_loop() -> asyncio.AbstractEventLoop:
@@ -111,4 +159,4 @@ def run_async(coro: Coroutine[Any, Any, T]) -> T:
             logger.debug("Task cleanup encountered exception during shutdown", exc_info=True)
 
 
-__all__ = ["run_async"]
+__all__ = ["run_async", "_clear_async_db_provider_cache", "_clear_sync_db_provider_cache"]
