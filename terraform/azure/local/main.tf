@@ -275,80 +275,61 @@ resource "azurerm_postgresql_flexible_server_firewall_rule" "allow_all" {
 }
 
 # -----------------------------------------------------------------
-# Azure OpenAI Service (Public)
-# Note: Azure OpenAI is not available in Central India. Use a region that supports the requested models.
+# Azure OpenAI (uses shared module, same pattern as dev/prod)
 # -----------------------------------------------------------------
-resource "azurerm_cognitive_account" "openai" {
-  name = "openai-${var.project_name}-${var.env}"
-  # Using eastus2 – required by gpt-5.2 (GlobalStandard). Also supports gpt-5 and gpt-5-mini.
-  location                      = "eastus2"
-  network_acls {
-    default_action = "Allow"
-    ip_rules       = []
-  }
+module "azure_openai" {
+  source            = "../modules/azure_openai"
+  prefix            = var.project_name
+  env               = var.env
+  resource_group_id = module.resource_group.resource_group_id
+  location          = "eastus2" # OpenAI models are available in East US 2
 
-  resource_group_name           = module.resource_group.resource_group_name
-  kind                          = "OpenAI"
-  sku_name                      = "S0"
-  public_network_access_enabled = true
-  custom_subdomain_name         = "openai-${var.project_name}-${var.env}"
+  # Define all models to deploy - add/remove models as needed
+  models = {
+    gpt5 = {
+      deployment_name = "gpt-5"
+      model_name      = "gpt-5"
+      sku             = "GlobalStandard"
+      capacity        = 100
+      version         = "2025-08-07"
+    }
+    gpt5_mini = {
+      deployment_name = "gpt-5-mini"
+      model_name      = "gpt-5-mini"
+      sku             = "GlobalStandard"
+      capacity        = 100
+      version         = "2025-08-07"
+    }
+    gpt5_2 = {
+      deployment_name = "gpt-5.2"
+      model_name      = "gpt-5.2"
+      sku             = "GlobalStandard"
+      capacity        = 100
+      version         = "2025-12-11"
+    }
+    transcribe = {
+      deployment_name = "gpt-4o-transcribe-diarize"
+      model_name      = "gpt-4o-transcribe-diarize"
+      sku             = "GlobalStandard"
+      capacity        = 1
+      version         = "2025-10-15"
+    }
+    embedder = {
+      deployment_name = "text-embedding-3-large"
+      model_name      = "text-embedding-3-large"
+      sku             = "Standard"
+      capacity        = 1
+      version         = "1"
+      publisher       = "OpenAI"
+    }
+  }
 
   tags = {
     environment = var.env
     project     = var.project_name
   }
-}
 
-# -----------------------------------------------------------------
-# Azure OpenAI deployments
-# -----------------------------------------------------------------
-
-resource "azurerm_cognitive_deployment" "gpt_5" {
-  name                 = "gpt-5"
-  cognitive_account_id = azurerm_cognitive_account.openai.id
-
-  model {
-    format  = "OpenAI"
-    name    = "gpt-5"
-    version = "2025-08-07"
-  }
-
-  sku {
-    name     = "GlobalStandard"
-    capacity = 100 # Reduced: dev(300) + prod(300) + local(100) = 700 of 1000 quota
-  }
-}
-
-resource "azurerm_cognitive_deployment" "gpt_5_mini" {
-  name                 = "gpt-5-mini"
-  cognitive_account_id = azurerm_cognitive_account.openai.id
-
-  model {
-    format  = "OpenAI"
-    name    = "gpt-5-mini"
-    version = "2025-08-07"
-  }
-
-  sku {
-    name     = "GlobalStandard"
-    capacity = 100 # Reduced: dev(300) + prod(300) + local(100) = 700 of 1000 quota
-  }
-}
-
-resource "azurerm_cognitive_deployment" "gpt_5_2" {
-  name                 = "gpt-5.2"
-  cognitive_account_id = azurerm_cognitive_account.openai.id
-
-  model {
-    format  = "OpenAI"
-    name    = "gpt-5.2"
-    version = "2025-12-11"
-  }
-
-  sku {
-    name     = "GlobalStandard"
-    capacity = 100 # Reduced for local env
-  }
+  depends_on = [module.resource_group]
 }
 
 # -----------------------------------------------------------------
@@ -376,20 +357,4 @@ module "teams_bot" {
     module.resource_group,
     azurerm_key_vault.master_key_vault
   ]
-}
-
-resource "azurerm_cognitive_deployment" "text_embedding_3_large" {
-  name                 = "text-embedding-3-large"
-  cognitive_account_id = azurerm_cognitive_account.openai.id
-
-  model {
-    format  = "OpenAI"
-    name    = "text-embedding-3-large"
-    version = "1"
-  }
-
-  sku {
-    name     = "Standard"
-    capacity = 1 # Reduced: dev(100) + prod(249) = 349 of 350 quota, only 1 available
-  }
 }
