@@ -33,11 +33,11 @@ output "database_password" {
 
 # Azure OpenAI outputs
 output "openai_endpoint" {
-  value = azurerm_cognitive_account.openai.endpoint
+  value = module.azure_openai.openai_endpoint
 }
 
 output "openai_key" {
-  value     = nonsensitive(azurerm_cognitive_account.openai.primary_access_key)
+  value     = nonsensitive(module.azure_openai.primary_key)
   sensitive = false
 }
 
