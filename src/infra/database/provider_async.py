@@ -78,6 +78,7 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
                     connect_args={
                         "ssl": (database_config.DATABASE_HOST != "localhost"),
                         "timeout": database_config.DATABASE_CONNECT_TIMEOUT_SEC,
+                        "statement_cache_size": 0,
                     },
                 )
             return self._master_engine
@@ -156,6 +157,7 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
                 connect_args={
                     "ssl": (database_config.DATABASE_HOST != "localhost"),
                     "timeout": database_config.DATABASE_CONNECT_TIMEOUT_SEC,
+                    "statement_cache_size": 0,
                     "server_settings": {"search_path": f'"{schema}",public'},
                 },
             )
