@@ -1,11 +1,3 @@
-import os
-
-# CRITICAL: Set DB pool limits BEFORE any other imports
-os.environ["MAX_TENANT_ENGINES"] = "1"
-os.environ["TENANT_POOL_MULTIPLIER"] = "1.0"
-
-import contextlib
-
 from celery.signals import (
     worker_ready,
     worker_shutdown,
@@ -38,10 +30,6 @@ app.conf.update(
     worker_max_tasks_per_child=50,  # Restart worker after 50 tasks (memory management)
     result_expires=7200,  # Results expire after 2 hours
 )
-
-# Optional: Register DB pool monitor
-with contextlib.suppress(Exception):
-    import scripts.monitoring.celery_integration  # noqa: F401
 
 
 # Signal Handlers

@@ -1,11 +1,3 @@
-import os
-
-# Set minimal DB pool settings for worker process
-os.environ["MAX_TENANT_ENGINES"] = "1"
-os.environ["TENANT_POOL_MULTIPLIER"] = "1.0"
-
-import contextlib
-
 from celery.signals import (
     worker_ready,
     worker_shutdown,
@@ -31,10 +23,6 @@ tasks_module = "src.workers.chat_worker.tasks"
 
 # Create the Celery app for the Chat Worker
 app = create_celery_app("chat_worker", config, tasks_module)
-
-# Register DB pool monitor for Celery workers (signals-based)
-with contextlib.suppress(Exception):
-    pass
 
 # Add debug configuration
 app.conf.update(

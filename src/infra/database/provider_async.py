@@ -1,11 +1,21 @@
-"""Independent async database provider (no legacy dependency).
+"""Independent async database provider (pgbouncer-aware).
 
 Creates:
-  - One master AsyncEngine
-  - Async tenant engines cached with simple LRU
-    (reuse sync TenantPoolManager logic not yet async aware)
+  - One master AsyncEngine (QueuePool — caches TCP connections to pgbouncer)
+  - Per-tenant AsyncEngines cached to avoid repeated Key Vault lookups
+    (QueuePool — pgbouncer handles backend connection pooling,
+     app-side pool caches TCP connections to pgbouncer)
 
-Each tenant engine uses asyncpg driver.
+pgbouncer transaction-mode compatibility:
+  - statement_cache_size=0 (asyncpg) — disables asyncpg's statement cache
+  - prepared_statement_cache_size=0 (SQLAlchemy adapter) — disables SQLAlchemy's
+    own prepared statement cache
+  - prepared_statement_name_func=lambda: '' — forces unnamed (anonymous) prepared
+    statements.  Required because asyncpg 0.30 changed semantics: name=None now
+    means "auto-generate a name" (__asyncpg_stmt_N__), which collides across
+    pgbouncer backend connections.  Empty string forces truly anonymous statements.
+  - pool_pre_ping=True — detects stale connections safely
+  - search_path set via SET command per session (startup parameters not supported)
 """
 
 from __future__ import annotations
@@ -17,6 +27,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from uuid import UUID
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -35,23 +46,35 @@ from src.infra.utils.resource_naming import (
 
 logger = get_logger("async_db_provider")
 
+# Pool settings for connections to pgbouncer (not to PostgreSQL directly).
+# pgbouncer handles backend pooling; these just cache TCP connections.
+_POOL_SIZE = int(database_config.DATABASE_POOL_SIZE)
+_MAX_OVERFLOW = int(database_config.DATABASE_MAX_OVERFLOW)
+_POOL_RECYCLE = int(database_config.POOL_RECYCLE_SEC)
+
+
+def _unnamed_stmt() -> str:
+    """Return empty string to force anonymous prepared statements.
+
+    asyncpg 0.30 changed prepare() semantics: name=None now means
+    "auto-generate a name" (__asyncpg_stmt_N__), which causes
+    DuplicatePreparedStatementError with pgbouncer.  Empty string
+    forces truly anonymous (unnamed) prepared statements.
+    """
+    return ""
+
 
 class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
-    """Async SQLAlchemy database provider with LRU-cached tenant engines."""
+    """Async SQLAlchemy database provider (pgbouncer-aware, QueuePool)."""
 
-    def __init__(self, *, tenant_pool_max: int = 100, tenant_pool_multiplier: float = 1.0):
-        # Global and per-tenant locks
+    def __init__(self) -> None:
         self._lock = threading.RLock()
         self._tenant_locks: dict[UUID, asyncio.Lock] = {}
 
-        # Master and tenant engines
         self._master_engine: AsyncEngine | None = None
 
-        # Inline minimal tenant engine cache (LRU)
+        # Tenant engines are cached to avoid Key Vault fetches on every request.
         self._tenant_engines: dict[UUID, AsyncEngine] = {}
-        self._tenant_pool_order: list[UUID] = []
-        self._tenant_pool_max = tenant_pool_max
-        self._pool_multiplier = tenant_pool_multiplier
 
     def _get_tenant_lock(self, org_id: UUID) -> asyncio.Lock:
         with self._lock:
@@ -71,13 +94,16 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
                 self._master_engine = create_async_engine(
                     url,
                     echo=False,
+                    pool_size=_POOL_SIZE,
+                    max_overflow=_MAX_OVERFLOW,
+                    pool_recycle=_POOL_RECYCLE,
                     pool_pre_ping=True,
-                    pool_recycle=database_config.POOL_RECYCLE_SEC,
-                    pool_size=database_config.DATABASE_POOL_SIZE,
-                    max_overflow=database_config.DATABASE_MAX_OVERFLOW,
                     connect_args={
                         "ssl": (database_config.DATABASE_HOST != "localhost"),
                         "timeout": database_config.DATABASE_CONNECT_TIMEOUT_SEC,
+                        "statement_cache_size": 0,
+                        "prepared_statement_cache_size": 0,
+                        "prepared_statement_name_func": _unnamed_stmt,
                     },
                 )
             return self._master_engine
@@ -105,31 +131,21 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
         with self._lock:
             engine = self._tenant_engines.get(org_id)
             if engine:
-                logger.debug("Reusing existing engine for org_id: %s", org_id)
-                if org_id in self._tenant_pool_order:
-                    self._tenant_pool_order.remove(org_id)
-                self._tenant_pool_order.append(org_id)
                 return engine
 
-        # Serialize creation for this tenant to prevent duplicate KV calls/engines
+        # Serialize creation per tenant to prevent duplicate Key Vault calls
         lock = self._get_tenant_lock(org_id)
         async with lock:
             # Double-check after acquiring the per-tenant lock
             with self._lock:
                 engine = self._tenant_engines.get(org_id)
                 if engine:
-                    logger.debug("Reusing existing engine after lock for org_id: %s", org_id)
-                    if org_id in self._tenant_pool_order:
-                        self._tenant_pool_order.remove(org_id)
-                    self._tenant_pool_order.append(org_id)
                     return engine
 
-            # Create new engine outside lock to avoid blocking other tenants
             logger.debug("Creating new engine for org_id: %s", org_id)
             role_name = get_role_name(org_id)
             secret_name = get_key_vault_secret_name(org_id)
 
-            # Single, simple fetch path (fallback is alias to get in simplified manager)
             password = await secrets_manager.get_with_fallback(secret_name)
             if not password:
                 password = await secrets_manager.get(secret_name)
@@ -140,50 +156,24 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
 
             url = self._build_tenant_url(role_name, password)
 
-            base_size = database_config.DATABASE_POOL_SIZE
-            overflow = database_config.DATABASE_MAX_OVERFLOW
-            pool_size = max(1, int(base_size * self._pool_multiplier))
-            max_overflow = max(0, int(overflow * self._pool_multiplier))
-            schema = get_schema_name(org_id)
-
             engine = create_async_engine(
                 url,
                 echo=False,
+                pool_size=_POOL_SIZE,
+                max_overflow=_MAX_OVERFLOW,
+                pool_recycle=_POOL_RECYCLE,
                 pool_pre_ping=True,
-                pool_recycle=database_config.POOL_RECYCLE_SEC,
-                pool_size=pool_size,
-                max_overflow=max_overflow,
                 connect_args={
                     "ssl": (database_config.DATABASE_HOST != "localhost"),
                     "timeout": database_config.DATABASE_CONNECT_TIMEOUT_SEC,
-                    "server_settings": {"search_path": f'"{schema}",public'},
+                    "statement_cache_size": 0,
+                    "prepared_statement_cache_size": 0,
+                    "prepared_statement_name_func": _unnamed_stmt,
                 },
             )
 
-            # Add to cache and manage LRU eviction
-            engines_to_dispose: list[AsyncEngine] = []
             with self._lock:
                 self._tenant_engines[org_id] = engine
-
-                # Mark as recently used
-                if org_id in self._tenant_pool_order:
-                    self._tenant_pool_order.remove(org_id)
-                self._tenant_pool_order.append(org_id)
-
-                # LRU eviction: dispose oldest engines when pool exceeds max
-                while len(self._tenant_engines) > self._tenant_pool_max:
-                    evict_id = self._tenant_pool_order.pop(0)
-                    old_engine = self._tenant_engines.pop(evict_id, None)
-                    if old_engine:
-                        engines_to_dispose.append(old_engine)
-                        logger.debug("Evicting tenant engine for org_id: %s", evict_id)
-
-            # Dispose evicted engines outside lock to avoid blocking
-            for old_engine in engines_to_dispose:
-                try:
-                    await old_engine.dispose()
-                except Exception as e:  # pylint: disable=broad-exception-caught
-                    logger.warning("Failed to dispose evicted engine: %s", e)
 
             return engine
 
@@ -208,6 +198,8 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
         factory = async_sessionmaker(engine, expire_on_commit=False)
         session: AsyncSession = factory()
         try:
+            schema = get_schema_name(org_id)
+            await session.execute(text(f'SET search_path TO "{schema}", public'))
             yield session
         except Exception:
             await session.rollback()
@@ -218,8 +210,6 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
     async def invalidate_tenant(self, org_id: UUID) -> None:
         with self._lock:
             eng = self._tenant_engines.pop(org_id, None)
-            if org_id in self._tenant_pool_order:
-                self._tenant_pool_order.remove(org_id)
         if eng:
             await eng.dispose()
 

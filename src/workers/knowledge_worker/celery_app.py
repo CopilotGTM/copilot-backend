@@ -6,10 +6,6 @@ load_dotenv(override=True)
 # Debug: Check if environment variables are loaded
 import os
 
-# Set minimal DB pool settings for worker process
-os.environ["MAX_TENANT_ENGINES"] = "1"
-os.environ["TENANT_POOL_MULTIPLIER"] = "1.0"
-
 # Disable HuggingFace symlinks for Windows compatibility
 # Windows doesn't support symlinks without admin privileges or Developer Mode
 # Setting this makes HF use file copies instead of symlinks (uses more disk space but works)
@@ -49,12 +45,6 @@ app.conf.update(
     result_expires=7200,  # Results expire after 2 hours
     result_persistent=True,  # Persist results to backend
 )
-
-# Register DB pool monitor for Celery workers (signals-based)
-try:
-    import scripts.monitoring.celery_integration  # noqa: F401
-except Exception:
-    pass
 
 
 # Add signal handlers for debugging and resource management

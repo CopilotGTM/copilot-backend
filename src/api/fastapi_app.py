@@ -4,7 +4,6 @@ This module creates and configures the FastAPI application with:
 - CORS middleware
 - Request context middleware
 - Redis connection pool management
-- Database pool monitoring
 - GC tuning for reduced pause times
 """
 
@@ -27,7 +26,6 @@ load_dotenv(BASE_DIR / ".env", override=True)
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from scripts.monitoring.db_pool_monitor import start_pool_monitor, stop_pool_monitor
 from src.api.routers.admin.admin_auth_handler import router as admin_auth_router
 from src.api.routers.admin.organizations_handler import router as admin_org_router
 from src.api.routers.admin.users_handler import router as admin_user_router
@@ -89,10 +87,6 @@ async def lifespan(app: FastAPI):
     await initialize_async_redis_pool()  # Async Redis pool
     logger.info("Redis connection pools initialized successfully")
 
-    # Start DB pool monitor if available
-    if start_pool_monitor is not None:
-        await start_pool_monitor()
-
     yield
 
     # Shutdown
@@ -102,14 +96,6 @@ async def lifespan(app: FastAPI):
     close_redis_pool()
     await close_async_redis_pool()
     logger.info("Redis connection pools closed")
-
-    # Stop DB pool monitor if running
-    if stop_pool_monitor is not None:
-        try:
-            await stop_pool_monitor()
-            logger.info("DB pool monitor stopped")
-        except Exception as e:
-            logger.warning("Failed to stop DB pool monitor: %s", e)
 
 
 def create_fastapi_app():
