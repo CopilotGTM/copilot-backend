@@ -34,9 +34,8 @@ class SupabaseConfig:
 class DatabaseConfig:
     """Database configuration.
 
-    Note: App-side connection pooling is disabled (NullPool). pgbouncer handles
-    all connection pooling. Pool-related settings (pool_size, max_overflow, etc.)
-    are intentionally omitted.
+    App-side QueuePool caches TCP connections to pgbouncer.
+    pgbouncer handles backend PostgreSQL connection pooling.
     """
 
     DATABASE_HOST: str = os.getenv("DATABASE_HOST", "localhost")
@@ -47,7 +46,9 @@ class DatabaseConfig:
     DATABASE_SSL_MODE: str = os.getenv("DATABASE_SSL_MODE", "require")
     DATABASE_SSL_ROOT_CERT: str | None = os.getenv("DATABASE_SSL_ROOT_CERT")
 
-    # Used by migration_manager.py (connects directly to PostgreSQL, not pgbouncer)
+    # App-side pool settings (caches TCP connections to pgbouncer)
+    DATABASE_POOL_SIZE: int = int(os.getenv("DATABASE_POOL_SIZE", "5"))
+    DATABASE_MAX_OVERFLOW: int = int(os.getenv("DATABASE_MAX_OVERFLOW", "10"))
     POOL_RECYCLE_SEC: int = int(os.getenv("POOL_RECYCLE_SEC", "1800"))
 
     # Guard against hangs when DB/pgbouncer unavailable

@@ -27,7 +27,7 @@ from src.domain.models.organisation_tables.chat_message_models import (
 )
 from src.domain.models.organisation_tables.chat_session_models import ChatSession
 from src.domain.models.organisation_tables.job_models import ChatMessageJob, JobStatus
-from src.infra.database.sessions import acquire_org_session
+from src.infra.database.sessions import acquire_master_session, acquire_org_session
 from src.infra.messaging.redis_channels import channel_for_chat_job
 from src.infra.messaging.redis_client import get_redis_client
 from src.infra.messaging.redis_streams import xadd_json_frame
@@ -262,14 +262,16 @@ class MessageProcessingService:
                     }
                 )
 
-            # Look up user email
+            # Look up user email from master schema (org role can't access public.users)
             user_email: str | None = None
             if chat_session.user_id:
                 from src.domain.models.master_tables import User
 
-                user_obj: User | None = session.get(User, chat_session.user_id)
-                if user_obj:
-                    user_email = user_obj.email
+                for master_session in acquire_master_session():
+                    user_obj: User | None = master_session.get(User, chat_session.user_id)
+                    if user_obj:
+                        user_email = user_obj.email
+                    break
 
             logger.info(
                 "Loaded conversation data for job %s: session=%s history_count=%d",

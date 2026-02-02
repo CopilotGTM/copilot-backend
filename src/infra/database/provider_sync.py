@@ -5,8 +5,10 @@ Creates and caches:
   - Per-tenant engines with per-tenant login/password (cached to avoid
     repeated Key Vault lookups)
 
-All engines use NullPool — pgbouncer handles connection pooling.
-Schema selection is applied at connection creation time via search_path.
+All engines use QueuePool to cache TCP connections to pgbouncer.
+pgbouncer handles backend PostgreSQL connection pooling.
+Schema selection and statement_timeout are applied per-session via SET
+commands (pgbouncer rejects startup parameters in transaction mode).
 """
 
 from __future__ import annotations
@@ -22,7 +24,6 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session as SASession
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import NullPool
 from src.infra.config.configs import database_config
 from src.infra.database.interface import SyncDatabaseProvider
 from src.infra.secrets.manager import secrets_manager
@@ -35,6 +36,11 @@ from src.infra.utils.resource_naming import (
 
 logger = get_logger("sync_db_provider")
 
+# Pool settings for connections to pgbouncer (not to PostgreSQL directly).
+_POOL_SIZE = int(database_config.DATABASE_POOL_SIZE)
+_MAX_OVERFLOW = int(database_config.DATABASE_MAX_OVERFLOW)
+_POOL_RECYCLE = int(database_config.POOL_RECYCLE_SEC)
+
 
 class SyncSqlAlchemyProvider(SyncDatabaseProvider):
     def __init__(self) -> None:
@@ -44,7 +50,6 @@ class SyncSqlAlchemyProvider(SyncDatabaseProvider):
         self._master_engine: Engine | None = None
 
         # Tenant engines are cached to avoid Key Vault fetches on every request.
-        # NullPool means these hold no connections — just connection config.
         self._tenant_engines: dict[UUID, Engine] = {}
 
     def _get_tenant_lock(self, org_id: UUID) -> threading.Lock:
@@ -55,7 +60,7 @@ class SyncSqlAlchemyProvider(SyncDatabaseProvider):
                 self._tenant_locks[org_id] = lock
             return lock
 
-    def _get_master_engine(self):
+    def _get_master_engine(self) -> Engine:
         if self._master_engine is not None:
             return self._master_engine
         with self._lock:
@@ -64,13 +69,16 @@ class SyncSqlAlchemyProvider(SyncDatabaseProvider):
                 self._master_engine = create_engine(
                     url,
                     echo=False,
-                    poolclass=NullPool,
+                    pool_size=_POOL_SIZE,
+                    max_overflow=_MAX_OVERFLOW,
+                    pool_recycle=_POOL_RECYCLE,
+                    pool_pre_ping=True,
                     connect_args={
                         "sslmode": database_config.DATABASE_SSL_MODE,
                         "connect_timeout": database_config.DATABASE_CONNECT_TIMEOUT_SEC,
                     },
                 )
-                return self._master_engine
+            return self._master_engine
 
     def _build_master_url(self) -> str:
         host = database_config.DATABASE_HOST
@@ -127,16 +135,16 @@ class SyncSqlAlchemyProvider(SyncDatabaseProvider):
         pw = urllib.parse.quote_plus(password)
         url = f"postgresql://{role_name}:{pw}@{host}:{port}/{db_name}"
 
-        options_str = f"-c statement_timeout={database_config.DATABASE_STATEMENT_TIMEOUT_MS}"
-
         return create_engine(
             url,
             echo=False,
-            poolclass=NullPool,
+            pool_size=_POOL_SIZE,
+            max_overflow=_MAX_OVERFLOW,
+            pool_recycle=_POOL_RECYCLE,
+            pool_pre_ping=True,
             connect_args={
                 "sslmode": database_config.DATABASE_SSL_MODE,
                 "connect_timeout": database_config.DATABASE_CONNECT_TIMEOUT_SEC,
-                "options": options_str,
             },
         )
 
@@ -163,6 +171,9 @@ class SyncSqlAlchemyProvider(SyncDatabaseProvider):
         try:
             schema = get_schema_name(org_id)
             session.execute(text(f'SET search_path TO "{schema}", public'))
+            session.execute(
+                text(f"SET statement_timeout = {database_config.DATABASE_STATEMENT_TIMEOUT_MS}")
+            )
             yield session
             session.commit()
         except Exception:

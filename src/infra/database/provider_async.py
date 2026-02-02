@@ -1,12 +1,18 @@
 """Independent async database provider (pgbouncer-aware).
 
 Creates:
-  - One master AsyncEngine (NullPool — pgbouncer handles pooling)
+  - One master AsyncEngine (QueuePool — caches TCP connections to pgbouncer)
   - Per-tenant AsyncEngines cached to avoid repeated Key Vault lookups
-    (NullPool — no app-side connection pool, pgbouncer handles pooling)
+    (QueuePool — pgbouncer handles backend connection pooling,
+     app-side pool caches TCP connections to pgbouncer)
 
-Each engine uses asyncpg driver with statement_cache_size=0 for
-pgbouncer transaction-mode compatibility.
+pgbouncer transaction-mode compatibility:
+  - statement_cache_size=0 (asyncpg) — disables named prepared statements
+  - prepared_statement_cache_size=0 (SQLAlchemy adapter) — disables SQLAlchemy's
+    own prepared statement cache
+  - pool_pre_ping=True — detects stale connections safely (uses unnamed statements
+    with both caches disabled)
+  - search_path set via SET command per session (startup parameters not supported)
 """
 
 from __future__ import annotations
@@ -25,7 +31,6 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy.pool import NullPool
 from src.infra.config.configs import database_config
 from src.infra.database.interface import AsyncDatabaseProvider
 from src.infra.secrets.manager import secrets_manager
@@ -38,9 +43,15 @@ from src.infra.utils.resource_naming import (
 
 logger = get_logger("async_db_provider")
 
+# Pool settings for connections to pgbouncer (not to PostgreSQL directly).
+# pgbouncer handles backend pooling; these just cache TCP connections.
+_POOL_SIZE = int(database_config.DATABASE_POOL_SIZE)
+_MAX_OVERFLOW = int(database_config.DATABASE_MAX_OVERFLOW)
+_POOL_RECYCLE = int(database_config.POOL_RECYCLE_SEC)
+
 
 class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
-    """Async SQLAlchemy database provider (pgbouncer-aware, NullPool)."""
+    """Async SQLAlchemy database provider (pgbouncer-aware, QueuePool)."""
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
@@ -49,7 +60,6 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
         self._master_engine: AsyncEngine | None = None
 
         # Tenant engines are cached to avoid Key Vault fetches on every request.
-        # NullPool means these hold no connections — just connection config.
         self._tenant_engines: dict[UUID, AsyncEngine] = {}
 
     def _get_tenant_lock(self, org_id: UUID) -> asyncio.Lock:
@@ -70,11 +80,15 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
                 self._master_engine = create_async_engine(
                     url,
                     echo=False,
-                    poolclass=NullPool,
+                    pool_size=_POOL_SIZE,
+                    max_overflow=_MAX_OVERFLOW,
+                    pool_recycle=_POOL_RECYCLE,
+                    pool_pre_ping=True,
                     connect_args={
                         "ssl": (database_config.DATABASE_HOST != "localhost"),
                         "timeout": database_config.DATABASE_CONNECT_TIMEOUT_SEC,
                         "statement_cache_size": 0,
+                        "prepared_statement_cache_size": 0,
                     },
                 )
             return self._master_engine
@@ -130,11 +144,15 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
             engine = create_async_engine(
                 url,
                 echo=False,
-                poolclass=NullPool,
+                pool_size=_POOL_SIZE,
+                max_overflow=_MAX_OVERFLOW,
+                pool_recycle=_POOL_RECYCLE,
+                pool_pre_ping=True,
                 connect_args={
                     "ssl": (database_config.DATABASE_HOST != "localhost"),
                     "timeout": database_config.DATABASE_CONNECT_TIMEOUT_SEC,
                     "statement_cache_size": 0,
+                    "prepared_statement_cache_size": 0,
                 },
             )
 

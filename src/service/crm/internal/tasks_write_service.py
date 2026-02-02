@@ -17,6 +17,7 @@ from src.domain.models.organisation_tables.sync.crm import (
     CRMActivityType,
 )
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
+from src.infra.database.sessions import master_async_session_scope
 from src.infra.utils.logger import get_logger
 from src.service.crm.access.crm_user_service import build_user_display_name
 
@@ -263,7 +264,8 @@ class TasksWriteService:
         if user_id is None:
             return None, None, None
 
-        user = await self.session.get(User, user_id)
+        async with master_async_session_scope() as master_session:
+            user = await master_session.get(User, user_id)
         if not user:
             raise TasksWriteServiceError("User not found", 404)
         if user.organisation_id != self.organisation_id:

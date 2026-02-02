@@ -16,8 +16,9 @@ _thread_local = threading.local()
 def _clear_async_db_provider_cache() -> None:
     """Clear cached async database engines when event loop changes.
 
-    With NullPool engines hold no persistent connections, but we still
-    clear the cache so new engines are created on the current loop.
+    With QueuePool, engines hold persistent connections to pgbouncer.
+    We must clear the cache so new engines are created on the current loop
+    (asyncpg connections are bound to the loop that created them).
     Called when we detect the event loop was recreated.
     """
     try:
