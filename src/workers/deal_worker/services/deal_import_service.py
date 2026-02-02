@@ -13,7 +13,11 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlmodel import col
 from src.domain.models.master_tables.user_models import User as MasterUser
-from src.domain.models.organisation_tables.sync.crm.deals import CRMDealStage, CRMPipeline
+from src.domain.models.organisation_tables.sync.crm.deals import (
+    CRMDealStage,
+    CRMDealStatus,
+    CRMPipeline,
+)
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
 from src.infra.utils.logger import get_logger
@@ -25,6 +29,8 @@ logger = get_logger(__name__)
 
 _EMAIL_SPLIT_RE = re.compile(r"[;,]+")
 _AMOUNT_CLEAN_RE = re.compile(r"[,$]")
+_CUSTOM_PREFIX_RE = re.compile(r"^custom_(.+)$")
+_VALID_DEAL_STATUSES = {s.value for s in CRMDealStatus}
 
 
 @dataclass(slots=True)
@@ -290,6 +296,73 @@ class DealImportProcessingService:
                 status_code=400,
             )
 
+        # Parse new first-class date fields
+        source_created_raw = self._clean_value(row.get("source_created_at"))
+        source_created_at = self._parse_date(source_created_raw)
+        if source_created_raw and source_created_at is None:
+            raise DealWriteServiceError(
+                f"Invalid source_created_at: {row.get('source_created_at')}",
+                status_code=400,
+            )
+
+        last_activity_raw = self._clean_value(row.get("last_activity_at"))
+        last_activity_at = self._parse_date(last_activity_raw)
+        if last_activity_raw and last_activity_at is None:
+            raise DealWriteServiceError(
+                f"Invalid last_activity_at: {row.get('last_activity_at')}",
+                status_code=400,
+            )
+
+        closed_won_raw = self._clean_value(row.get("closed_won_at"))
+        closed_won_at = self._parse_date(closed_won_raw)
+        if closed_won_raw and closed_won_at is None:
+            raise DealWriteServiceError(
+                f"Invalid closed_won_at: {row.get('closed_won_at')}",
+                status_code=400,
+            )
+
+        closed_lost_raw = self._clean_value(row.get("closed_lost_at"))
+        closed_lost_at = self._parse_date(closed_lost_raw)
+        if closed_lost_raw and closed_lost_at is None:
+            raise DealWriteServiceError(
+                f"Invalid closed_lost_at: {row.get('closed_lost_at')}",
+                status_code=400,
+            )
+
+        # Parse deal_status enum
+        deal_status_raw = self._clean_value(row.get("deal_status"))
+        if deal_status_raw:
+            deal_status_lower = deal_status_raw.lower()
+            if deal_status_lower not in _VALID_DEAL_STATUSES:
+                raise DealWriteServiceError(
+                    f"Invalid deal_status: {deal_status_raw} "
+                    f"(must be one of: {', '.join(sorted(_VALID_DEAL_STATUSES))})",
+                    status_code=400,
+                )
+            deal_status = deal_status_lower
+        else:
+            deal_status = None
+
+        # Parse probability (0-100)
+        probability_raw = self._clean_value(row.get("probability"))
+        probability = None
+        if probability_raw:
+            try:
+                probability = float(probability_raw)
+            except ValueError as exc:
+                raise DealWriteServiceError(
+                    f"Invalid probability: {probability_raw} (must be a number 0-100)",
+                    status_code=400,
+                ) from exc
+            if probability < 0 or probability > 100:
+                raise DealWriteServiceError(
+                    f"Invalid probability: {probability_raw} (must be between 0 and 100)",
+                    status_code=400,
+                )
+
+        # Extract custom properties (columns prefixed with custom_)
+        custom_properties = self._extract_custom_properties(row)
+
         account_payload = {
             "domain": company_domain,
             "name": company_name,
@@ -303,17 +376,30 @@ class DealImportProcessingService:
             "name": deal_name,
             "amount": amount,
             "currency": currency,
+            "deal_status": deal_status,
+            "probability": probability,
+            "forecast_category": self._clean_value(row.get("forecast_category")),
             "close_date": close_date,
             "expected_close_date": expected_close_date,
+            "source_created_at": source_created_at,
+            "last_activity_at": last_activity_at,
+            "closed_won_at": closed_won_at,
+            "closed_lost_at": closed_lost_at,
+            "closed_reason": self._clean_value(row.get("closed_reason")),
             "deal_type": self._clean_value(row.get("deal_type")),
             "priority": self._clean_value(row.get("priority")),
             "lead_source": self._clean_value(row.get("lead_source")),
+            "crm_url": self._clean_value(row.get("crm_url")),
             "description": self._clean_value(row.get("description")),
+            "primary_contact_name": self._clean_value(row.get("primary_contact_name")),
+            "primary_contact_email": self._clean_value(row.get("primary_contact_email")),
             "owner_user_id": owner_user_id,
             "pipeline_id": pipeline.pipeline_id if pipeline else None,
             "stage_id": stage.stage_id if stage else None,
             "account": account_payload,
             "team_members": team_members or None,
+            "custom_properties": custom_properties or None,
+            "created_via": "import",
         }
         return payload, warnings
 
@@ -376,3 +462,16 @@ class DealImportProcessingService:
             return []
         parts = [p.strip() for p in _EMAIL_SPLIT_RE.split(raw)]
         return [p for p in parts if p]
+
+    @staticmethod
+    def _extract_custom_properties(row: dict[str, str]) -> dict[str, str]:
+        props: dict[str, str] = {}
+        for col_name, raw_value in row.items():
+            match = _CUSTOM_PREFIX_RE.match(col_name.strip())
+            if not match:
+                continue
+            value = raw_value.strip() if raw_value else None
+            if value:
+                key = match.group(1)
+                props[key] = value
+        return props

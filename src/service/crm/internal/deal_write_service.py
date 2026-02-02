@@ -136,6 +136,17 @@ class DealWriteService:
         now = datetime.now(UTC)
         deal_id = uuid4()
 
+        # Resolve deal_status: use provided value or default to OPEN
+        deal_status_raw = payload.get("deal_status")
+        deal_status = CRMDealStatus(deal_status_raw) if deal_status_raw else CRMDealStatus.OPEN
+
+        # Build properties dict: merge base properties with any custom properties
+        created_via = payload.get("created_via", "api")
+        properties: dict[str, Any] = {"is_internal_crm": True, "created_via": created_via}
+        custom_properties = payload.get("custom_properties")
+        if custom_properties:
+            properties.update(custom_properties)
+
         deal = CRMDeal(
             deal_id=deal_id,
             organisation_id=self.organisation_id,
@@ -150,22 +161,31 @@ class DealWriteService:
             stage_id=stage_id,
             stage_external_id=stage.external_id,
             stage_name=stage.name,
-            deal_status=CRMDealStatus.OPEN,
+            deal_status=deal_status,
+            probability=payload.get("probability"),
+            forecast_category=payload.get("forecast_category"),
             owner_id=owner_id,
             owner_external_id=owner_external_id,
             owner_name=owner_name,
             owner_email=owner_email,
             close_date=payload.get("close_date"),
             expected_close_date=payload.get("expected_close_date"),
+            closed_won_at=payload.get("closed_won_at"),
+            closed_lost_at=payload.get("closed_lost_at"),
+            closed_reason=payload.get("closed_reason"),
+            crm_url=payload.get("crm_url"),
             description=payload.get("description"),
             deal_type=payload.get("deal_type"),
             priority=payload.get("priority"),
             lead_source=payload.get("lead_source"),
-            source_created_at=now,
+            primary_contact_name=payload.get("primary_contact_name"),
+            primary_contact_email=payload.get("primary_contact_email"),
+            source_created_at=payload.get("source_created_at") or now,
+            last_activity_at=payload.get("last_activity_at"),
             source_modified_at=now,
             synced_at=now,
             last_seen_at=now,
-            properties={"is_internal_crm": True, "created_via": "api"},
+            properties=properties,
         )
 
         self.session.add(deal)

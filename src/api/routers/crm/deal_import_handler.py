@@ -1,3 +1,17 @@
+"""Deal CSV import API handler.
+
+Provides a three-step workflow for bulk-importing deals into the internal CRM:
+
+1. GET  /import/template           – Download a CSV template with all supported columns.
+2. POST /import/upload-url         – Obtain a pre-signed Azure Blob URL to upload the filled CSV.
+3. POST /import/process            – Submit the uploaded file for async processing via Celery.
+4. GET  /import/jobs/{job_id}/events – SSE stream delivering real-time progress and results.
+
+The template includes first-class CRM columns (deal_name, amount, stage, etc.) plus
+support for arbitrary custom fields via the ``custom_`` column prefix convention.
+Custom columns are stored in the deal's ``properties`` JSONB field.
+"""
+
 from __future__ import annotations
 
 from uuid import UUID
@@ -39,6 +53,11 @@ deal_import_router = APIRouter()
 async def get_deal_import_service(
     user_ids: UserIDs = Depends(get_current_user),
 ):
+    """Dependency that yields a DealImportService instance for the current user.
+
+    Manages the service lifecycle — the underlying blob storage clients are
+    closed automatically when the request completes.
+    """
     service = DealImportService(user_ids.organisation_id, user_ids.user_id)
     try:
         yield service
@@ -60,6 +79,17 @@ async def get_deal_import_template(
     file_type: DealImportFileType = Query(DealImportFileType.CSV),
     service: DealImportService = Depends(get_deal_import_service),
 ):
+    """Return a pre-signed download URL for the deal import CSV template.
+
+    The template is auto-generated on first request and cached in application
+    blob storage. It contains all supported first-class columns plus
+    example ``custom_`` column headers.
+
+    Response includes:
+    - download_url: Time-limited SAS URL for direct browser download
+    - expires_in_seconds: Remaining lifetime of the download URL
+    - storage_path: Internal blob path (used for diagnostics only)
+    """
     try:
         download_url, blob_path, expires = await service.get_template_download(file_type.value)
         payload = DealImportTemplateResponse(
@@ -92,6 +122,17 @@ async def create_deal_import_upload_url(
     service: DealImportService = Depends(get_deal_import_service),
     _rl: None = Depends(rate_limit_user_write),
 ):
+    """Generate a time-limited pre-signed URL for uploading a deal import CSV.
+
+    The caller should PUT the filled CSV file to the returned ``upload_url``.
+    The blob is stored under a unique path scoped to the current user,
+    which is later passed to the /import/process endpoint.
+
+    Response includes:
+    - upload_url: Time-limited SAS URL accepting a PUT with the CSV body
+    - storage_path: Blob path to supply when triggering processing
+    - expires_in_seconds: Remaining lifetime of the upload URL
+    """
     try:
         upload_url, blob_path, expires = await service.get_upload_url(request.filename)
         payload = DealImportUploadResponse(
@@ -125,7 +166,20 @@ async def process_deal_import(
     session: AsyncSession = Depends(get_org_async_session),
     _rl: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[DealImportProcessResponse]:
-    """Queue a background job to process a deal import CSV."""
+    """Submit an uploaded CSV for asynchronous deal import processing.
+
+    Validates that:
+    - Only CSV file types are accepted
+    - The storage_path belongs to the authenticated user (prevents path traversal)
+
+    Creates a DealJobs record with status=PENDING, dispatches a Celery task
+    to the deal worker queue, and returns a stream URL for real-time progress.
+
+    Response includes:
+    - job_id: Unique identifier for tracking the import job
+    - status: Initial job status (PENDING)
+    - stream_url: SSE endpoint to subscribe to for progress events
+    """
     try:
         if request.file_type and request.file_type != DealImportFileType.CSV:
             return Response.error_response(
@@ -184,6 +238,16 @@ async def deal_import_stream(
     job_id: UUID,
     user_ids: UserIDs = Depends(get_current_user),
 ):
+    """Open an SSE connection that streams real-time progress events for a deal import job.
+
+    Events are published by the Celery deal worker as it processes each CSV row.
+    The stream includes:
+    - progress: Percentage complete with a human-readable stage description
+    - result: Final summary with created/failed/warning counts and row-level details
+    - error: Emitted if the job fails unexpectedly
+
+    The connection is held open until the job completes or the client disconnects.
+    """
     sse_service = DealJobSSEService(user_ids.organisation_id, job_id, user_ids.user_id)
     logger.info(
         "Client connected to deal import SSE: org=%s job=%s",
