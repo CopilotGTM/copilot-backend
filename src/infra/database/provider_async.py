@@ -18,6 +18,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from uuid import UUID
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -125,7 +126,6 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
                 raise RuntimeError(f"Tenant secret '{secret_name}' unavailable")
 
             url = self._build_tenant_url(role_name, password)
-            schema = get_schema_name(org_id)
 
             engine = create_async_engine(
                 url,
@@ -135,7 +135,6 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
                     "ssl": (database_config.DATABASE_HOST != "localhost"),
                     "timeout": database_config.DATABASE_CONNECT_TIMEOUT_SEC,
                     "statement_cache_size": 0,
-                    "server_settings": {"search_path": f'"{schema}",public'},
                 },
             )
 
@@ -165,6 +164,8 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
         factory = async_sessionmaker(engine, expire_on_commit=False)
         session: AsyncSession = factory()
         try:
+            schema = get_schema_name(org_id)
+            await session.execute(text(f'SET search_path TO "{schema}", public'))
             yield session
         except Exception:
             await session.rollback()

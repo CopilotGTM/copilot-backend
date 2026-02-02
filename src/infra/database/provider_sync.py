@@ -18,7 +18,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from uuid import UUID
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session as SASession
 from sqlalchemy.orm import sessionmaker
@@ -112,13 +112,13 @@ class SyncSqlAlchemyProvider(SyncDatabaseProvider):
                 logger.error(f"Password secret '{secret_name}' unavailable for org_id {org_id}")
                 raise RuntimeError(f"Tenant secret '{secret_name}' unavailable")
 
-            eng_new = self._build_tenant_engine(org_id, role_name, password)
+            eng_new = self._build_tenant_engine(role_name, password)
 
             with self._lock:
                 self._tenant_engines[org_id] = eng_new
             return eng_new
 
-    def _build_tenant_engine(self, org_uuid: UUID, role_name: str, password: str) -> Engine:
+    def _build_tenant_engine(self, role_name: str, password: str) -> Engine:
         host = database_config.DATABASE_HOST
         port = database_config.DATABASE_PORT
         db_name = database_config.DATABASE_NAME
@@ -127,11 +127,7 @@ class SyncSqlAlchemyProvider(SyncDatabaseProvider):
         pw = urllib.parse.quote_plus(password)
         url = f"postgresql://{role_name}:{pw}@{host}:{port}/{db_name}"
 
-        schema = get_schema_name(org_uuid)
-        options_parts = [f"-c statement_timeout={database_config.DATABASE_STATEMENT_TIMEOUT_MS}"]
-        if schema:
-            options_parts.insert(0, f'-c search_path="{schema}",public ')
-        options_str = "".join(options_parts)
+        options_str = f"-c statement_timeout={database_config.DATABASE_STATEMENT_TIMEOUT_MS}"
 
         return create_engine(
             url,
@@ -165,6 +161,8 @@ class SyncSqlAlchemyProvider(SyncDatabaseProvider):
         session_local = sessionmaker(bind=engine, expire_on_commit=False, class_=SASession)
         session: SASession = session_local()
         try:
+            schema = get_schema_name(org_id)
+            session.execute(text(f'SET search_path TO "{schema}", public'))
             yield session
             session.commit()
         except Exception:
