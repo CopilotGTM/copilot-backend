@@ -1,12 +1,5 @@
-import os
-
-from dotenv import load_dotenv
-
-# Set minimal DB pool settings for worker process
-os.environ["MAX_TENANT_ENGINES"] = "1"
-os.environ["TENANT_POOL_MULTIPLIER"] = "1.0"
-
 from celery.signals import worker_ready, worker_shutdown
+from dotenv import load_dotenv
 
 # Redis connection pool management
 from src.infra.messaging.redis_client import close_redis_pool, initialize_redis_pool
@@ -33,12 +26,6 @@ app.conf.update(
     worker_log_format="[%(asctime)s: %(levelname)s/%(processName)s] %(message)s",
     worker_task_log_format="[%(asctime)s: %(levelname)s/%(processName)s][%(task_name)s(%(task_id)s)] %(message)s",
 )
-
-# Register DB pool monitor for Celery workers (signals-based)
-try:
-    import scripts.monitoring.celery_integration  # noqa: F401
-except Exception:
-    pass
 
 
 # Add signal handlers for debugging and resource management

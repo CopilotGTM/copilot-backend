@@ -16,18 +16,16 @@ _thread_local = threading.local()
 def _clear_async_db_provider_cache() -> None:
     """Clear cached async database engines when event loop changes.
 
-    This prevents "attached to a different loop" errors when asyncpg
-    connections cached in the provider were created on a previous event loop.
+    With NullPool engines hold no persistent connections, but we still
+    clear the cache so new engines are created on the current loop.
     Called when we detect the event loop was recreated.
     """
     try:
         from src.infra.database.factory import _async_instance
         from src.infra.database.provider_async import AsyncSqlAlchemyProvider
 
-        # Cast to concrete implementation to access internal caches
         if _async_instance is not None and isinstance(_async_instance, AsyncSqlAlchemyProvider):
             provider = _async_instance
-            # Clear the engine caches without async disposal (old loop may be dead)
             with provider._lock:
                 if provider._tenant_engines:
                     logger.info(
@@ -35,7 +33,6 @@ def _clear_async_db_provider_cache() -> None:
                         len(provider._tenant_engines),
                     )
                     provider._tenant_engines.clear()
-                    provider._tenant_pool_order.clear()
                     provider._tenant_locks.clear()
                 if provider._master_engine is not None:
                     logger.info("Clearing stale async master engine after loop recreation")

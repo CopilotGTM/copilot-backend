@@ -1,11 +1,12 @@
-"""Independent async database provider (no legacy dependency).
+"""Independent async database provider (pgbouncer-aware).
 
 Creates:
-  - One master AsyncEngine
-  - Async tenant engines cached with simple LRU
-    (reuse sync TenantPoolManager logic not yet async aware)
+  - One master AsyncEngine (NullPool — pgbouncer handles pooling)
+  - Per-tenant AsyncEngines cached to avoid repeated Key Vault lookups
+    (NullPool — no app-side connection pool, pgbouncer handles pooling)
 
-Each tenant engine uses asyncpg driver.
+Each engine uses asyncpg driver with statement_cache_size=0 for
+pgbouncer transaction-mode compatibility.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.pool import NullPool
 from src.infra.config.configs import database_config
 from src.infra.database.interface import AsyncDatabaseProvider
 from src.infra.secrets.manager import secrets_manager
@@ -37,21 +39,17 @@ logger = get_logger("async_db_provider")
 
 
 class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
-    """Async SQLAlchemy database provider with LRU-cached tenant engines."""
+    """Async SQLAlchemy database provider (pgbouncer-aware, NullPool)."""
 
-    def __init__(self, *, tenant_pool_max: int = 100, tenant_pool_multiplier: float = 1.0):
-        # Global and per-tenant locks
+    def __init__(self) -> None:
         self._lock = threading.RLock()
         self._tenant_locks: dict[UUID, asyncio.Lock] = {}
 
-        # Master and tenant engines
         self._master_engine: AsyncEngine | None = None
 
-        # Inline minimal tenant engine cache (LRU)
+        # Tenant engines are cached to avoid Key Vault fetches on every request.
+        # NullPool means these hold no connections — just connection config.
         self._tenant_engines: dict[UUID, AsyncEngine] = {}
-        self._tenant_pool_order: list[UUID] = []
-        self._tenant_pool_max = tenant_pool_max
-        self._pool_multiplier = tenant_pool_multiplier
 
     def _get_tenant_lock(self, org_id: UUID) -> asyncio.Lock:
         with self._lock:
@@ -71,10 +69,7 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
                 self._master_engine = create_async_engine(
                     url,
                     echo=False,
-                    pool_pre_ping=True,
-                    pool_recycle=database_config.POOL_RECYCLE_SEC,
-                    pool_size=database_config.DATABASE_POOL_SIZE,
-                    max_overflow=database_config.DATABASE_MAX_OVERFLOW,
+                    poolclass=NullPool,
                     connect_args={
                         "ssl": (database_config.DATABASE_HOST != "localhost"),
                         "timeout": database_config.DATABASE_CONNECT_TIMEOUT_SEC,
@@ -106,31 +101,21 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
         with self._lock:
             engine = self._tenant_engines.get(org_id)
             if engine:
-                logger.debug("Reusing existing engine for org_id: %s", org_id)
-                if org_id in self._tenant_pool_order:
-                    self._tenant_pool_order.remove(org_id)
-                self._tenant_pool_order.append(org_id)
                 return engine
 
-        # Serialize creation for this tenant to prevent duplicate KV calls/engines
+        # Serialize creation per tenant to prevent duplicate Key Vault calls
         lock = self._get_tenant_lock(org_id)
         async with lock:
             # Double-check after acquiring the per-tenant lock
             with self._lock:
                 engine = self._tenant_engines.get(org_id)
                 if engine:
-                    logger.debug("Reusing existing engine after lock for org_id: %s", org_id)
-                    if org_id in self._tenant_pool_order:
-                        self._tenant_pool_order.remove(org_id)
-                    self._tenant_pool_order.append(org_id)
                     return engine
 
-            # Create new engine outside lock to avoid blocking other tenants
             logger.debug("Creating new engine for org_id: %s", org_id)
             role_name = get_role_name(org_id)
             secret_name = get_key_vault_secret_name(org_id)
 
-            # Single, simple fetch path (fallback is alias to get in simplified manager)
             password = await secrets_manager.get_with_fallback(secret_name)
             if not password:
                 password = await secrets_manager.get(secret_name)
@@ -140,20 +125,12 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
                 raise RuntimeError(f"Tenant secret '{secret_name}' unavailable")
 
             url = self._build_tenant_url(role_name, password)
-
-            base_size = database_config.DATABASE_POOL_SIZE
-            overflow = database_config.DATABASE_MAX_OVERFLOW
-            pool_size = max(1, int(base_size * self._pool_multiplier))
-            max_overflow = max(0, int(overflow * self._pool_multiplier))
             schema = get_schema_name(org_id)
 
             engine = create_async_engine(
                 url,
                 echo=False,
-                pool_pre_ping=True,
-                pool_recycle=database_config.POOL_RECYCLE_SEC,
-                pool_size=pool_size,
-                max_overflow=max_overflow,
+                poolclass=NullPool,
                 connect_args={
                     "ssl": (database_config.DATABASE_HOST != "localhost"),
                     "timeout": database_config.DATABASE_CONNECT_TIMEOUT_SEC,
@@ -162,30 +139,8 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
                 },
             )
 
-            # Add to cache and manage LRU eviction
-            engines_to_dispose: list[AsyncEngine] = []
             with self._lock:
                 self._tenant_engines[org_id] = engine
-
-                # Mark as recently used
-                if org_id in self._tenant_pool_order:
-                    self._tenant_pool_order.remove(org_id)
-                self._tenant_pool_order.append(org_id)
-
-                # LRU eviction: dispose oldest engines when pool exceeds max
-                while len(self._tenant_engines) > self._tenant_pool_max:
-                    evict_id = self._tenant_pool_order.pop(0)
-                    old_engine = self._tenant_engines.pop(evict_id, None)
-                    if old_engine:
-                        engines_to_dispose.append(old_engine)
-                        logger.debug("Evicting tenant engine for org_id: %s", evict_id)
-
-            # Dispose evicted engines outside lock to avoid blocking
-            for old_engine in engines_to_dispose:
-                try:
-                    await old_engine.dispose()
-                except Exception as e:  # pylint: disable=broad-exception-caught
-                    logger.warning("Failed to dispose evicted engine: %s", e)
 
             return engine
 
@@ -220,8 +175,6 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
     async def invalidate_tenant(self, org_id: UUID) -> None:
         with self._lock:
             eng = self._tenant_engines.pop(org_id, None)
-            if org_id in self._tenant_pool_order:
-                self._tenant_pool_order.remove(org_id)
         if eng:
             await eng.dispose()
 

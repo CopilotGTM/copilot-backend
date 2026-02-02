@@ -32,7 +32,12 @@ class SupabaseConfig:
 
 
 class DatabaseConfig:
-    """Database configuration"""
+    """Database configuration.
+
+    Note: App-side connection pooling is disabled (NullPool). pgbouncer handles
+    all connection pooling. Pool-related settings (pool_size, max_overflow, etc.)
+    are intentionally omitted.
+    """
 
     DATABASE_HOST: str = os.getenv("DATABASE_HOST", "localhost")
     DATABASE_PORT: str = os.getenv("DATABASE_PORT", "5432")
@@ -41,15 +46,14 @@ class DatabaseConfig:
     DATABASE_NAME: str = os.getenv("DATABASE_NAME", "postgres")
     DATABASE_SSL_MODE: str = os.getenv("DATABASE_SSL_MODE", "require")
     DATABASE_SSL_ROOT_CERT: str | None = os.getenv("DATABASE_SSL_ROOT_CERT")
+
+    # Used by migration_manager.py (connects directly to PostgreSQL, not pgbouncer)
     POOL_RECYCLE_SEC: int = int(os.getenv("POOL_RECYCLE_SEC", "1800"))
-    DATABASE_POOL_SIZE: int = int(os.getenv("DATABASE_POOL_SIZE", "5"))
-    DATABASE_MAX_OVERFLOW: int = int(os.getenv("DATABASE_MAX_OVERFLOW", "2"))
 
-    # guard against hangs when DB unavailable
+    # Guard against hangs when DB/pgbouncer unavailable
     DATABASE_CONNECT_TIMEOUT_SEC: int = int(os.getenv("DATABASE_CONNECT_TIMEOUT_SEC", "10"))
-    DATABASE_POOL_TIMEOUT_SEC: int = int(os.getenv("DATABASE_POOL_TIMEOUT_SEC", "30"))
 
-    # default server-side statement timeout (ms). 0 disables.
+    # Default server-side statement timeout (ms). 0 disables.
     DATABASE_STATEMENT_TIMEOUT_MS: int = int(os.getenv("DATABASE_STATEMENT_TIMEOUT_MS", "60000"))
 
 
@@ -472,31 +476,6 @@ class ThumbnailConfig:
 thumbnail_config = ThumbnailConfig()
 
 
-class PoolMonitorConfig:
-    """Defaults for DB pool monitor and enforcement.
-
-    These provide sensible base values so you don't need to set env vars.
-    Env vars still override when present.
-    """
-
-    # Tick interval in seconds (default: 300s = 5 minutes)
-    MONITOR_INTERVAL_SEC: float = float(os.getenv("DB_POOL_MONITOR_INTERVAL_SEC", "300"))
-
-    # App vs Worker max checkout age (seconds)
-    APP_MAX_CHECKOUT_SEC: int = int(os.getenv("APP_DB_CONN_MAX_CHECKOUT_SEC", "900"))  # 15 minutes
-    WORKER_MAX_CHECKOUT_SEC: int = int(
-        os.getenv("WORKER_DB_CONN_MAX_CHECKOUT_SEC", "1200")
-    )  # 20 minutes
-
-    # Force close behavior (recommended false; invalidate on check-in is safer)
-    APP_FORCE_CLOSE: bool = os.getenv("APP_DB_CONN_FORCE_CLOSE", "false").lower() == "true"
-    WORKER_FORCE_CLOSE: bool = os.getenv("WORKER_DB_CONN_FORCE_CLOSE", "false").lower() == "true"
-
-    # Optional discovery/warmup defaults
-    DISCOVER_MASTERS: bool = os.getenv("DB_POOL_MONITOR_DISCOVER_MASTERS", "true").lower() == "true"
-    WARMUP_MIN_IDLE: int = int(os.getenv("DB_POOL_MONITOR_WARMUP_MIN_IDLE", "0"))
-
-
 class RateLimitConfig:
     """Configuration for API rate limiting.
 
@@ -533,7 +512,6 @@ cloud_infra_config = CloudInfraConfig()
 chat_file_upload_config = ChatFileUploadConfig()
 knowledge_file_upload_config = KnowledgeFileUploadConfig()
 # NOTE: thumbnail_config now sourced from thumbnail_config.py for modularity.
-pool_monitor_config = PoolMonitorConfig()
 rate_limit_config = RateLimitConfig()
 nango_integration_config = NangoIntegrationConfig()
 apollo_config = ApolloConfig()

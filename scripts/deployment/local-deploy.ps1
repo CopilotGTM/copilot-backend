@@ -399,6 +399,8 @@ function Deploy-WithHelm {
         "--set", "knowledge-upload-worker.image.repository=$knowledgeRepo",
         "--set", "knowledge-upload-worker.image.tag=$IMAGE_TAG",
         "--set", "knowledge-upload-worker.autoscaling.enabled=true",
+        "--set", "knowledge-beat.image.repository=$knowledgeRepo",
+        "--set", "knowledge-beat.image.tag=$IMAGE_TAG",
         "--set", "organization-worker.image.repository=$lightRepo",
         "--set", "organization-worker.image.tag=$IMAGE_TAG",
         "--set", "organization-worker.autoscaling.enabled=true",
@@ -433,6 +435,7 @@ function Deploy-WithHelm {
         "--set", "api.secrets.APPLICATION_REGION=$($env:APPLICATION_REGION)",
         "--set", "api.secrets.ENV=$($env:ENV)",
         "--set", "api.secrets.AZURE_KEY_VAULT_URL=$($env:AZURE_KEY_VAULT_URL)",
+        "--set", "api.secrets.AZURE_MASTER_KEY_VAULT_URL=$($env:AZURE_MASTER_KEY_VAULT_URL)",
         "--set", "api.secrets.AZURE_RESOURCE_GROUP=$RESOURCE_GROUP",
         "--set", "api.secrets.AZURE_SUBSCRIPTION_ID=$SUBSCRIPTION_ID",
         "--set", "api.secrets.SUPABASE_URL=$($env:SUPABASE_URL)",
@@ -461,8 +464,10 @@ function Deploy-WithHelm {
         "--set", "deal-worker.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
         "--set", "deal-beat.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
         "--set", "integrations-beat.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
+        "--set", "knowledge-beat.workloadIdentity.clientId=$($env:WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)",
         "--set", "knowledge-extract-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
         "--set", "knowledge-upload-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
+        "--set", "knowledge-beat.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
         "--set", "organization-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
         "--set", "chat-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
         "--set", "integrations-worker.workloadIdentity.tenantId=$($env:WORKLOAD_IDENTITY_WORKERS_TENANT_ID)",
@@ -515,10 +520,12 @@ function Deploy-WithHelm {
     kubectl rollout restart deployment copilot-backend-integrations-worker -n $NAMESPACE
     kubectl rollout restart deployment copilot-backend-deal-worker -n $NAMESPACE
     kubectl rollout restart deployment copilot-backend-deal-beat -n $NAMESPACE
-    
+    kubectl rollout restart deployment copilot-backend-knowledge-beat -n $NAMESPACE
+
     Write-Host "Waiting for rollouts to complete..."
     kubectl rollout status deployment copilot-backend-knowledge-extract-worker -n $NAMESPACE --timeout=300s
     kubectl rollout status deployment copilot-backend-knowledge-upload-worker -n $NAMESPACE --timeout=300s
+    kubectl rollout status deployment copilot-backend-knowledge-beat -n $NAMESPACE --timeout=300s
     kubectl rollout status deployment copilot-backend-chat-worker -n $NAMESPACE --timeout=300s
     kubectl rollout status deployment copilot-backend-organization-worker -n $NAMESPACE --timeout=300s
     kubectl rollout status deployment copilot-backend-integrations-worker -n $NAMESPACE --timeout=300s
