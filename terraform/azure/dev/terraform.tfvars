@@ -20,13 +20,15 @@ project_name        = "copilotgtm"
 db_location = "centralus" # Same as location - can be different if needed
 db_name     = "copilotgtm-postgresdb-centralus-dev"
 
-# PgBouncer - Connection pooling to reduce DB connections across workers
-# NOTE: PgBouncer is NOT supported on Burstable tier (B_Standard_B1ms).
-# To enable, upgrade to General Purpose tier (e.g., GP_Standard_D2s_v3).
-pgbouncer_enabled = false
-# pgbouncer_default_pool_size = 50  # Connections per user/database pair
-# pgbouncer_max_client_conn   = 200 # Max client connections
-# pgbouncer_pool_mode         = "transaction" # Release connection after transaction
+# PostgreSQL SKU - General Purpose required for PgBouncer
+# GP_Standard_D2s_v3 = 2 vCores, 8GB RAM (~$100/month)
+db_sku_name = "GP_Standard_D2s_v3"
+
+# PgBouncer - Connection pooling to share DB connections across all workers
+pgbouncer_enabled           = true
+pgbouncer_default_pool_size = 200 # Actual PostgreSQL connections (max 859 on GP_D2s_v3)
+pgbouncer_max_client_conn   = 500 # Max client connections from workers/API to PgBouncer
+pgbouncer_pool_mode         = "transaction" # Release connection after transaction
 
 # -----------------------------------------------------------------
 # Networking
