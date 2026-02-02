@@ -4,8 +4,6 @@ These tasks are executed by the organization worker and publish status updates
 to Redis for SSE streaming to the frontend.
 """
 
-import asyncio
-import threading
 from typing import Any
 from uuid import UUID
 
@@ -16,6 +14,7 @@ from src.domain.models.master_tables.organisation_job_models import (
 )
 from src.infra.database.factory import get_async_provider
 from src.infra.messaging.organisation_job_status_publish import publish_org_job_status
+from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.service.admin.organisation_job_service import organisation_job_service
 from src.service.orgnisation.organization_management import (
@@ -27,28 +26,6 @@ from src.workers.organization_worker.celery_app import app
 load_dotenv(override=True)
 
 logger = get_logger("organization_tasks")
-
-
-_worker_loop_lock = threading.Lock()
-_worker_loop: asyncio.AbstractEventLoop | None = None
-
-
-def _get_worker_event_loop() -> asyncio.AbstractEventLoop:
-    """Return a long-lived event loop for this Celery worker process.
-
-    This worker runs with a sync Celery task entrypoint. Creating and closing
-    a new asyncio event loop per task can break reused async resources (e.g.
-    asyncpg connections/SQLAlchemy engines and asyncio locks) by binding them
-    to a previous loop. Keeping a single loop for the worker process avoids
-    cross-loop Future/lock errors.
-    """
-
-    global _worker_loop
-    with _worker_loop_lock:
-        if _worker_loop is None or _worker_loop.is_closed():
-            _worker_loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(_worker_loop)
-        return _worker_loop
 
 
 def _publish_status(
@@ -118,8 +95,6 @@ def create_organization_task(
         job_id: Optional job UUID for status tracking (new async pattern)
     """
     logger.info(f"Creating organization: {organisation_name} for admin: {admin_id}")
-
-    loop = _get_worker_event_loop()
 
     async def _run_task():
         """Main async task execution."""
@@ -229,4 +204,4 @@ def create_organization_task(
                         )
                 raise
 
-    return loop.run_until_complete(_run_task())
+    return run_async(_run_task())
