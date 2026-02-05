@@ -9,6 +9,8 @@ Handles:
 - Triggering manual syncs (refresh button)
 """
 
+from uuid import UUID
+
 from fastapi import APIRouter, Depends
 from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,12 +24,15 @@ from src.api.schemas.integrations import (
     AvailableIntegration,
     AvailableIntegrationsResponse,
     IntegrationResponse,
+    RefreshChannelsResponse,
 )
 from src.api.utils.http_response import Response
+from src.domain.models.organisation_tables.sync import IntegrationType
 from src.infra.config.constant import IntegrationErrors
 from src.infra.config.integrations_metadata import get_all_integration_metadata
 from src.infra.utils.logger import get_logger
 from src.service.integrations import IntegrationService, NangoClient
+from src.workers.integrations_worker.client import send_integrations_task_async
 
 logger = get_logger(__name__)
 router = APIRouter(tags=["integrations"])
@@ -124,4 +129,94 @@ async def list_available_integrations(
         )
         return Response.internal_server_error_response(
             message=IntegrationErrors.INTEGRATION_LIST_FAILED, response=response
+        )
+
+
+@router.post(
+    "/{integration_id}/refresh-channels",
+    response_model=GenericResponse[RefreshChannelsResponse],
+    summary="Refresh Teams channels for an integration",
+    description="Trigger a manual refresh of Teams channels and chats for an integration.",
+)
+async def refresh_integration_channels(
+    integration_id: UUID,
+    response: FastAPIResponse,
+    service: IntegrationService = Depends(get_integration_service),
+    user_ids: UserIDs = Depends(get_current_user),
+) -> GenericResponse[RefreshChannelsResponse]:
+    """
+    Trigger a manual refresh of Teams channels and chats.
+
+    This endpoint validates the integration and dispatches a Celery task
+    to refresh the channels. The task runs asynchronously and the task_id
+    can be used to track progress.
+    """
+    try:
+        # Get the integration
+        integration = await service.get_integration(integration_id)
+
+        if not integration:
+            return Response.not_found_error_response(
+                message="Integration not found",
+                response=response,
+            )
+
+        # Validate it's a Teams integration
+        if integration.integration_type != IntegrationType.TEAMS:
+            return Response.bad_request_error_response(
+                message="Channel refresh is only supported for Teams integrations",
+                response=response,
+            )
+
+        # Validate it's active
+        if not integration.is_active:
+            return Response.bad_request_error_response(
+                message="Integration is not active",
+                response=response,
+            )
+
+        # Validate it's connected
+        if not integration.connection_id:
+            return Response.bad_request_error_response(
+                message="Integration is not connected",
+                response=response,
+            )
+
+        # Dispatch the Celery task
+        task_id = await send_integrations_task_async(
+            task_name="integrations.sync_messaging_channels_integration",
+            args=[str(user_ids.organisation_id), str(integration_id)],
+            queue="integrations_priority",
+            routing_key="integrations_priority",
+        )
+
+        response_data = RefreshChannelsResponse(
+            task_id=task_id,
+            integration_id=integration_id,
+            message="Channel refresh started successfully",
+        )
+
+        logger.info(
+            "Channel refresh triggered: org=%s integration=%s task_id=%s",
+            user_ids.organisation_id,
+            integration_id,
+            task_id,
+        )
+
+        return Response.success_response(
+            message="Channel refresh started",
+            data=response_data,
+        )
+
+    except Exception as e:
+        logger.error(
+            "Failed to trigger channel refresh: org=%s integration=%s error=%s",
+            user_ids.organisation_id,
+            integration_id,
+            str(e),
+            exc_info=True,
+        )
+        return Response.internal_server_error_response(
+            message="Failed to trigger channel refresh",
+            response=response,
         )

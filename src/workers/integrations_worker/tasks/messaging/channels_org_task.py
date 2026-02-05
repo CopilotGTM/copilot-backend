@@ -40,6 +40,10 @@ from celery import Task
 from sqlalchemy import select
 
 from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
+from src.domain.models.organisation_tables.sync.integration_models import (
+    IntegrationSyncHistory,
+    SyncStatus,
+)
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
@@ -244,6 +248,31 @@ def sync_messaging_channels_org_task(
                 }
 
                 # ─────────────────────────────────────────────────────────────
+                # Create IntegrationSyncHistory record (fresh session)
+                # ─────────────────────────────────────────────────────────────
+                sync_history_id: UUID | None = None
+                sync_start = datetime.now(UTC).replace(tzinfo=None)
+                try:
+                    async for session in acquire_org_async_session(org_id):
+                        sync_history = IntegrationSyncHistory(
+                            integration_id=fetch_data.integration_id,
+                            started_at=sync_start,
+                            status=SyncStatus.IN_PROGRESS,
+                        )
+                        session.add(sync_history)
+                        await session.commit()
+                        await session.refresh(sync_history)
+                        sync_history_id = sync_history.sync_id
+                except Exception as e:
+                    logger.warning(
+                        "Failed to create sync history record: org=%s integration=%s error=%s",
+                        org_id,
+                        fetch_data.integration_id,
+                        str(e),
+                    )
+                    # Continue with sync even if history record fails
+
+                # ─────────────────────────────────────────────────────────────
                 # Phase 2a: Fetch channels from API (NO session held)
                 # ─────────────────────────────────────────────────────────────
                 channels: list[dict[str, Any]] = []
@@ -387,6 +416,49 @@ def sync_messaging_channels_org_task(
                 else:
                     integration_sync_result["status"] = "success"
                     successful += 1
+
+                # ─────────────────────────────────────────────────────────────
+                # Update IntegrationSyncHistory record (fresh session)
+                # ─────────────────────────────────────────────────────────────
+                if sync_history_id:
+                    try:
+                        async for session in acquire_org_async_session(org_id):
+                            history_stmt = select(IntegrationSyncHistory).where(
+                                IntegrationSyncHistory.sync_id == sync_history_id,
+                            )
+                            history_result = await session.execute(history_stmt)
+                            sync_history = history_result.scalar_one_or_none()
+
+                            if sync_history:
+                                sync_history.completed_at = datetime.now(UTC).replace(tzinfo=None)
+                                sync_history.records_processed = (
+                                    integration_sync_result["channels_synced"]
+                                    + integration_sync_result["chats_synced"]
+                                )
+
+                                if integration_sync_result["errors"]:
+                                    sync_history.status = SyncStatus.FAILED
+                                    sync_history.error_details = {
+                                        "errors": integration_sync_result["errors"][:5]
+                                    }
+                                else:
+                                    sync_history.status = SyncStatus.SUCCESS
+
+                                sync_history.sync_metadata = {
+                                    "entity": "messaging_channels",
+                                    "provider": fetch_data.provider,
+                                    "channels_synced": integration_sync_result["channels_synced"],
+                                    "chats_synced": integration_sync_result["chats_synced"],
+                                }
+                                session.add(sync_history)
+                                await session.commit()
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to update sync history: org=%s sync_id=%s error=%s",
+                            org_id,
+                            sync_history_id,
+                            str(e),
+                        )
 
                 integration_results.append(integration_sync_result)
 
