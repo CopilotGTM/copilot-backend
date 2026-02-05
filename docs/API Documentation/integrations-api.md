@@ -907,6 +907,175 @@ sequenceDiagram
 
 ---
 
+## 5. Refresh Teams Channels
+
+### Endpoint
+
+```http
+POST /users/integrations/{integration_id}/refresh-channels
+```
+
+### Description
+
+Triggers a manual refresh of Microsoft Teams channels and chats for a specific integration. This dispatches a background Celery task to fetch the latest channels from Microsoft Graph API.
+
+**Use Cases:**
+- User wants to see newly created Teams channels immediately
+- Troubleshooting sync issues
+- On-demand refresh instead of waiting for daily scheduled sync
+
+**Note:** The scheduled sync runs once daily at 6 AM UTC (per Microsoft Graph API polling guidelines). This endpoint allows users to trigger a refresh on-demand.
+
+### Authentication
+
+Required - Bearer token
+
+### Path Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `integration_id` | UUID | Yes | ID of the Teams integration to refresh |
+
+### Response (200 OK)
+
+```json
+{
+  "status": "success",
+  "message": "Channel refresh started",
+  "data": {
+    "task_id": "abc123-def456-ghi789",
+    "integration_id": "123e4567-e89b-12d3-a456-426614174000",
+    "message": "Channel refresh started successfully"
+  }
+}
+```
+
+### Response Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `task_id` | string | Celery task ID for tracking the background job |
+| `integration_id` | UUID | The integration being refreshed |
+| `message` | string | Status message |
+
+### Error Responses
+
+**404 Not Found:**
+
+```json
+{
+  "status": "error",
+  "message": "Integration not found",
+  "data": null
+}
+```
+
+**400 Bad Request (Not Teams):**
+
+```json
+{
+  "status": "error",
+  "message": "Channel refresh is only supported for Teams integrations",
+  "data": null
+}
+```
+
+**400 Bad Request (Not Active):**
+
+```json
+{
+  "status": "error",
+  "message": "Integration is not active",
+  "data": null
+}
+```
+
+**400 Bad Request (Not Connected):**
+
+```json
+{
+  "status": "error",
+  "message": "Integration is not connected",
+  "data": null
+}
+```
+
+**500 Internal Server Error:**
+
+```json
+{
+  "status": "error",
+  "message": "Failed to trigger channel refresh",
+  "data": null
+}
+```
+
+### Frontend Implementation
+
+```typescript
+const refreshTeamsChannels = async (integrationId: string) => {
+  try {
+    const response = await fetch(
+      `/users/integrations/${integrationId}/refresh-channels`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    const data = await response.json();
+
+    if (data.status === 'success') {
+      showNotification('Channel refresh started. This may take a few moments.');
+
+      // Optionally poll for completion or wait and refresh
+      setTimeout(() => {
+        refreshIntegrationsList();
+      }, 5000);
+    } else {
+      showError(data.message);
+    }
+  } catch (error) {
+    console.error('Failed to refresh channels:', error);
+    showError('Failed to start channel refresh');
+  }
+};
+```
+
+### Example cURL
+
+```bash
+curl -X POST "https://api.example.com/users/integrations/123e4567-e89b-12d3-a456-426614174000/refresh-channels" \
+  -H "Authorization: Bearer YOUR_TOKEN_HERE" \
+  -H "Content-Type: application/json"
+```
+
+### Sync History Tracking
+
+Each channel refresh creates an `IntegrationSyncHistory` record that can be queried for observability:
+
+| Field | Description |
+|-------|-------------|
+| `status` | `in_progress` → `success` or `failed` |
+| `started_at` | When the sync started |
+| `completed_at` | When the sync finished |
+| `records_processed` | Number of channels + chats synced |
+| `sync_metadata.entity` | `"messaging_channels"` |
+| `sync_metadata.provider` | `"teams"` |
+| `sync_metadata.channels_synced` | Count of team channels synced |
+| `sync_metadata.chats_synced` | Count of 1:1/group chats synced |
+
+### Rate Limiting Notes
+
+- **Microsoft Graph API Limits:** 4 requests/second per app per team, 1 request/second per channel
+- **Polling Restrictions:** Microsoft recommends polling once per day for resource changes
+- **Manual Refresh:** This endpoint is for user-initiated refreshes and is not subject to the once-per-day polling rule
+
+---
+
 ## TypeScript Interface
 
 ```typescript
@@ -950,5 +1119,11 @@ interface AvailableIntegrationsResponse {
   integrations: Integration[];
   total_available: number;
   total_connected: number;
+}
+
+interface RefreshChannelsResponse {
+  task_id: string;           // Celery task ID for tracking
+  integration_id: string;    // UUID of the integration
+  message: string;           // Status message
 }
 ```

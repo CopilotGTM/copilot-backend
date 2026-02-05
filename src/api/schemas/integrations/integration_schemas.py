@@ -328,3 +328,14 @@ class EmptyResponse(BaseModel):
     """Empty response model for endpoints that don't return data."""
 
     pass
+
+
+class RefreshChannelsResponse(BaseModel):
+    """Response for channel refresh request."""
+
+    task_id: str = Field(..., description="Celery task ID for tracking the refresh job")
+    integration_id: UUID = Field(..., description="Integration UUID")
+    message: str = Field(..., description="Status message")
+
+    class Config:
+        from_attributes = True

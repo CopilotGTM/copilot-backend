@@ -247,10 +247,10 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
         }
 
         communication_schedule = {
-            # US business hours (12:00-23:00 UTC)
+            # Channel sync: Once daily (Microsoft Graph polling limit)
             "sync-messaging-channels-all-orgs": {
                 "task": "integrations.sync_messaging_channels_all_orgs",
-                "schedule": crontab(minute=0, hour="12-23"),
+                "schedule": crontab(minute=0, hour=6),  # Once daily at 6 AM UTC
                 "kwargs": {},
                 "options": {"queue": "integrations", "routing_key": "integrations"},
             },

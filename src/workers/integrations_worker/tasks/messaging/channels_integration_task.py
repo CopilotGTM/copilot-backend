@@ -37,8 +37,13 @@ from uuid import UUID
 
 from celery import Task
 from sqlalchemy import select
+from sqlmodel import col
 
 from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
+from src.domain.models.organisation_tables.sync.integration_models import (
+    IntegrationSyncHistory,
+    SyncStatus,
+)
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
@@ -141,7 +146,7 @@ def sync_messaging_channels_integration_task(
 
         async for session in acquire_org_async_session(org_id):
             stmt = select(KnowledgeIntegration).where(
-                KnowledgeIntegration.integration_id == int_id,
+                col(KnowledgeIntegration.integration_id) == int_id,
                 KnowledgeIntegration.integration_type.in_(MESSAGING_INTEGRATION_TYPES),
             )
             result = await session.execute(stmt)
@@ -218,6 +223,31 @@ def sync_messaging_channels_integration_task(
             fetch_data.integration_type_value,
         )
 
+        # ─────────────────────────────────────────────────────────────────────
+        # Create IntegrationSyncHistory record (fresh session)
+        # ─────────────────────────────────────────────────────────────────────
+        sync_history_id: UUID | None = None
+        sync_start = datetime.now(UTC).replace(tzinfo=None)
+        try:
+            async for session in acquire_org_async_session(org_id):
+                sync_history = IntegrationSyncHistory(
+                    integration_id=int_id,
+                    started_at=sync_start,
+                    status=SyncStatus.IN_PROGRESS,
+                )
+                session.add(sync_history)
+                await session.commit()
+                await session.refresh(sync_history)
+                sync_history_id = sync_history.sync_id
+        except Exception as e:
+            logger.warning(
+                "Failed to create sync history record: org=%s integration=%s error=%s",
+                org_id,
+                int_id,
+                str(e),
+            )
+            # Continue with sync even if history record fails
+
         channels_synced = 0
         chats_synced = 0
         errors: list[str] = []
@@ -258,7 +288,7 @@ def sync_messaging_channels_integration_task(
                 try:
                     async for session in acquire_org_async_session(org_id):
                         stmt = select(KnowledgeIntegration).where(
-                            KnowledgeIntegration.integration_id == int_id,
+                            col(KnowledgeIntegration.integration_id) == int_id,
                         )
                         result = await session.execute(stmt)
                         integration = result.scalar_one_or_none()
@@ -316,7 +346,7 @@ def sync_messaging_channels_integration_task(
             try:
                 async for session in acquire_org_async_session(org_id):
                     stmt = select(KnowledgeIntegration).where(
-                        KnowledgeIntegration.integration_id == int_id,
+                        col(KnowledgeIntegration.integration_id) == int_id,
                     )
                     result = await session.execute(stmt)
                     integration = result.scalar_one_or_none()
@@ -363,6 +393,44 @@ def sync_messaging_channels_integration_task(
             channels_synced,
             chats_synced,
         )
+
+        # ─────────────────────────────────────────────────────────────────────
+        # Update IntegrationSyncHistory record (fresh session)
+        # ─────────────────────────────────────────────────────────────────────
+        if sync_history_id:
+            try:
+                async for session in acquire_org_async_session(org_id):
+                    history_stmt = select(IntegrationSyncHistory).where(
+                        col(IntegrationSyncHistory.sync_id) == sync_history_id,
+                    )
+                    history_result = await session.execute(history_stmt)
+                    sync_history = history_result.scalar_one_or_none()
+
+                    if sync_history:
+                        sync_history.completed_at = datetime.now(UTC).replace(tzinfo=None)
+                        sync_history.records_processed = channels_synced + chats_synced
+
+                        if errors:
+                            sync_history.status = SyncStatus.FAILED
+                            sync_history.error_details = {"errors": errors[:5]}
+                        else:
+                            sync_history.status = SyncStatus.SUCCESS
+
+                        sync_history.sync_metadata = {
+                            "entity": "messaging_channels",
+                            "provider": fetch_data.provider,
+                            "channels_synced": channels_synced,
+                            "chats_synced": chats_synced,
+                        }
+                        session.add(sync_history)
+                        await session.commit()
+            except Exception as e:
+                logger.warning(
+                    "Failed to update sync history: org=%s sync_id=%s error=%s",
+                    org_id,
+                    sync_history_id,
+                    str(e),
+                )
 
         result_dict: dict[str, Any] = {
             "status": status,

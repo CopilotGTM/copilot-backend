@@ -25,6 +25,8 @@ from .integration_schemas import (
     # OAuth
     OAuthInitiateRequest,
     OAuthInitiateResponse,
+    # Refresh
+    RefreshChannelsResponse,
     SyncHistoryListResponse,
     SyncHistoryResponse,
     # Sync
@@ -48,6 +50,8 @@ __all__ = [
     "SyncTriggerResponse",
     "SyncHistoryResponse",
     "SyncHistoryListResponse",
+    # Refresh
+    "RefreshChannelsResponse",
     # Available integrations
     "AvailableIntegration",
     "AvailableIntegrationsResponse",
