@@ -9,38 +9,53 @@ from src.infra.storage.azure_app_blob_storage import AzureApplicationBlobStorage
 # Keep in sync with DealImportService defaults without importing service modules.
 TEMPLATE_DIR = "crm_templates"
 TEMPLATE_NAME = "deal_import_template"
+# App-blob storage path where this template is saved.
+TEMPLATE_BLOB_PATH = f"{TEMPLATE_DIR}/{TEMPLATE_NAME}.csv"
 
 
 def build_csv_template() -> bytes:
     # Keep headers aligned with DealImportService._build_csv_template
     headers = [
         "deal_name",
-        "owner_email",
-        "pipeline_name",
-        "stage_name",
-        "amount",
-        "currency",
-        "close_date",
-        "expected_close_date",
+        "deal_amount",
+        "deal_currency",
+        "deal_status",
+        "deal_probability",
+        "deal_close_date",
+        "deal_expected_close_date",
+        "deal_closed_won_at",
+        "deal_closed_lost_at",
+        "deal_closed_reason",
+        "deal_stage_name",
+        "deal_forecast_category",
         "deal_type",
-        "priority",
-        "lead_source",
-        "description",
-        "company_domain",
+        "deal_priority",
+        "deal_lead_source",
+        "deal_owner_email",
         "company_name",
+        "company_domain",
+        "deal_primary_contact_name",
+        "deal_primary_contact_email",
+        "deal_source_created_at",
+        "deal_last_activity_at",
+        "deal_description",
+        # Related account/team fields (not on crm_deals directly)
         "company_website",
         "company_linkedin",
-        "team_member_emails",
+        "company_industry",
+        "company_country",
+        "deal_team_member_emails",
     ]
     content = ",".join(headers) + "\n"
     return content.encode("utf-8")
 
 
 async def publish_template(*, output_path: Path | None, overwrite: bool) -> None:
-    blob_path = f"{TEMPLATE_DIR}/{TEMPLATE_NAME}.csv"
+    blob_path = TEMPLATE_BLOB_PATH
     storage = AzureApplicationBlobStorage()
     try:
         template_bytes = build_csv_template()
+        print(f"Template storage path: {blob_path}")
 
         if output_path:
             output_path.write_bytes(template_bytes)
@@ -66,12 +81,12 @@ def main() -> None:
         help="Optional local path to write the CSV template.",
     )
     parser.add_argument(
-        "--overwrite",
+        "--skip-existing",
         action="store_true",
-        help="Overwrite existing template in storage.",
+        help="Do not overwrite if template already exists in storage.",
     )
     args = parser.parse_args()
-    asyncio.run(publish_template(output_path=args.output, overwrite=args.overwrite))
+    asyncio.run(publish_template(output_path=args.output, overwrite=not args.skip_existing))
 
 
 if __name__ == "__main__":

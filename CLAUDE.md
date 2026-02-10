@@ -206,6 +206,56 @@ AGENT_DEAL_SUMMARY_TIMEOUT=180
 
 **Note**: Only run `ruff check` and `mypy` when pushing code or creating a PR. Avoid running them after every step as it hampers development flow.
 
+### Code Comments
+
+**Core principle:** Comments explain **why**, not what — the code already shows what happens.
+
+**Comment these (the "why"):**
+- Business decisions and domain rules
+- Security constraints and safety checks
+- Non-obvious trade-offs, workarounds, or performance choices
+- Caller context in docstrings — who calls this and when
+
+**Don't comment these (the "what"):**
+- Self-explanatory code or well-named functions
+- Restating the next line (`# Get the user` above `user = get_user()`)
+- Obvious control flow or type-hinted signatures
+- Class/method definitions that the name already explains
+
+**Format:**
+- One line of context beats a paragraph — keep inline comments concise
+- Use docstrings on public classes/methods to describe purpose and caller context
+- Place inline comments on the line above the code, not at the end
+
+**Examples from this codebase:**
+
+```python
+# GOOD — explains a business decision
+# Owner not found = row fails. This is intentional — owner is a required relationship.
+owner_user_id = user_map.get(owner_email.lower())
+
+# GOOD — explains a non-obvious performance choice
+# Batch-resolve all emails upfront so we hit the DB once, not once per row
+user_map = await self._resolve_user_map(rows)
+
+# GOOD — explains a security constraint
+# Prevent path traversal — storage_path must live under the user's own import directory
+if not request.storage_path.startswith(expected_prefix):
+
+# GOOD — explains why session is structured this way
+# Session released here — extract metadata into local vars so the DB connection
+# returns to the pool before the long-running import starts
+async for session in acquire_org_async_session(org_uuid):
+
+# BAD — restates what the code does
+# Download the blob contentAccording to the guidelines, the files are also updated. 
+content = await storage.get_blob_content(self.storage_path)
+
+# BAD — obvious from the function name and types
+# Sanitize the filename string
+def _sanitize_filename(self, name: str) -> str:
+```
+
 ## External Services
 
 - **Supabase**: JWT authentication

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi import Response as FastAPIResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,14 +22,19 @@ from src.api.dependencies.rate_limit import rate_limit_user_read, rate_limit_use
 from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.crm_deal_write_models import (
     DealAccountUpdateRequest,
+    DealCloseRequest,
     DealCreateRequest,
     DealOwnerAssignRequest,
+    DealPrimaryContactUpdateRequest,
+    DealReopenRequest,
     DealStageMoveRequest,
     DealUpdateRequest,
     DealWriteResponse,
 )
 from src.api.schemas.crm_models import (
+    DealCustomColumnDefinition,
     DealDetail,
+    DealImportJobStatus,
     DealJobResponse,
     DealListItem,
     DealOwnerDetail,
@@ -40,7 +47,11 @@ from src.api.schemas.crm_models import (
     DealTeamMember,
 )
 from src.api.utils.http_response import Response
-from src.domain.models.organisation_tables.job_models import JobStatus
+from src.domain.models.organisation_tables.job_models import DealJobs, DealJobType, JobStatus
+from src.domain.models.organisation_tables.sync.crm.custom_fields import (
+    CRMCustomFieldDefinition,
+    CRMCustomFieldEntity,
+)
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDealStatus
 from src.domain.models.organisation_tables.sync.integration_models import (
     IntegrationType,
@@ -64,6 +75,53 @@ logger = get_logger("deals_handler")
 _UNEXPECTED_ERR_MSG = "An unexpected error occurred while processing your request"
 
 deals_router = APIRouter()
+
+_INTERNAL_DEAL_RESERVED_PROPERTIES = {
+    "is_internal_crm",
+    "created_via",
+    "updated_via",
+    "deleted_via",
+    "deal_external_ref",
+    "import_source_ref",
+}
+_CURRENCY_SYMBOL_BY_CODE = {
+    "USD": "$",
+    "INR": "₹",
+}
+_CURRENCY_CODE_PATTERN = re.compile(r"\b[A-Z]{3}\b")
+_CURRENCY_CODE_BY_SYMBOL = {
+    "$": "USD",
+    "₹": "INR",
+}
+
+
+def _normalize_currency_code(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip().upper()
+    if not normalized:
+        return None
+
+    if normalized in _CURRENCY_SYMBOL_BY_CODE:
+        return normalized
+
+    if normalized in _CURRENCY_CODE_BY_SYMBOL:
+        return _CURRENCY_CODE_BY_SYMBOL[normalized]
+
+    code_match = _CURRENCY_CODE_PATTERN.search(normalized)
+    if code_match:
+        candidate = code_match.group(0)
+        if candidate in _CURRENCY_SYMBOL_BY_CODE:
+            return candidate
+
+    return normalized
+
+
+def _currency_symbol_for(value: str | None) -> str | None:
+    code = _normalize_currency_code(value)
+    if code is None:
+        return None
+    return _CURRENCY_SYMBOL_BY_CODE.get(code)
 
 
 def get_deals_list_params(
@@ -181,6 +239,33 @@ async def _get_integration_types_map(
     }
 
 
+async def _get_active_import_job_for_user(
+    session: AsyncSession, organisation_id: UUID, user_id: UUID
+) -> DealImportJobStatus | None:
+    """Return the latest active deal-import job for the current user, if any."""
+    stmt = (
+        select(DealJobs)
+        .where(
+            col(DealJobs.organisation_id) == organisation_id,
+            col(DealJobs.user_id) == user_id,
+            col(DealJobs.job_type) == DealJobType.DEAL_IMPORT,
+            col(DealJobs.status).in_([JobStatus.PENDING, JobStatus.IN_PROGRESS]),
+        )
+        .order_by(col(DealJobs.updated_at).desc(), col(DealJobs.created_at).desc())
+        .limit(1)
+    )
+    result = await session.execute(stmt)
+    job = result.scalars().first()
+    if not job or not job.job_id:
+        return None
+    return DealImportJobStatus(
+        job_id=job.job_id,
+        job_type=(job.job_type.value if hasattr(job.job_type, "value") else str(job.job_type)),
+        status=(job.status.value if hasattr(job.status, "value") else str(job.status)),
+        stream_url=f"/users/crm/deals/import/jobs/{job.job_id}/events",
+    )
+
+
 def _map_deal_write_response(deal) -> DealWriteResponse:
     return DealWriteResponse(
         deal_id=deal.deal_id,
@@ -196,6 +281,152 @@ def _map_deal_write_response(deal) -> DealWriteResponse:
         created_at=deal.created_at,
         updated_at=deal.updated_at,
     )
+
+
+async def _get_active_deal_custom_field_keys(
+    session: AsyncSession, organisation_id: UUID
+) -> list[str]:
+    """Return active deal custom field keys for the current organisation."""
+    stmt = (
+        select(col(CRMCustomFieldDefinition.key))
+        .where(
+            col(CRMCustomFieldDefinition.organisation_id) == organisation_id,
+            col(CRMCustomFieldDefinition.entity_type) == CRMCustomFieldEntity.DEAL.value,
+            col(CRMCustomFieldDefinition.is_deleted).is_(False),
+            col(CRMCustomFieldDefinition.is_active).is_(True),
+        )
+        .order_by(
+            col(CRMCustomFieldDefinition.display_order).asc().nulls_last(),
+            col(CRMCustomFieldDefinition.created_at).asc(),
+        )
+    )
+    result = await session.execute(stmt)
+    return [row[0] for row in result.all() if row and row[0]]
+
+
+async def _get_active_deal_custom_field_definitions(
+    session: AsyncSession, organisation_id: UUID
+) -> list[CRMCustomFieldDefinition]:
+    """Return active deal custom field definitions for the current organisation.
+
+    Ordering by display_order then created_at keeps UI control ordering stable
+    across refreshes and environments.
+    """
+    stmt = (
+        select(CRMCustomFieldDefinition)
+        .where(
+            col(CRMCustomFieldDefinition.organisation_id) == organisation_id,
+            col(CRMCustomFieldDefinition.entity_type) == CRMCustomFieldEntity.DEAL.value,
+            col(CRMCustomFieldDefinition.is_deleted).is_(False),
+            col(CRMCustomFieldDefinition.is_active).is_(True),
+        )
+        .order_by(
+            col(CRMCustomFieldDefinition.display_order).asc().nulls_last(),
+            col(CRMCustomFieldDefinition.created_at).asc(),
+        )
+    )
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+def _custom_field_currency_code(
+    field: CRMCustomFieldDefinition,
+    *,
+    default_currency_code: str | None,
+) -> str | None:
+    """Resolve currency code for a currency custom field.
+
+    Precedence is field-level config (`options`/`validation`) first, then
+    fallback to the parent deal currency. This keeps currency rendering stable
+    for older definitions that do not store explicit currency metadata.
+    """
+    options = field.options if isinstance(field.options, dict) else {}
+    validation = field.validation if isinstance(field.validation, dict) else {}
+
+    for source in (options, validation):
+        raw = source.get("currency_code") or source.get("currency")
+        normalized = _normalize_currency_code(raw) if isinstance(raw, str) else None
+        if normalized:
+            return normalized
+
+    return default_currency_code
+
+
+def _map_custom_field_definitions(
+    fields: list[CRMCustomFieldDefinition],
+    *,
+    deal_currency_code: str | None,
+) -> list[DealCustomColumnDefinition]:
+    """Map custom field definitions to frontend-friendly metadata.
+
+    We return this with deal detail so frontend can render typed inputs
+    (date/datetime/currency) without requiring a second API call to fetch
+    custom field schema. Currency fields inherit deal currency when field-level
+    config is not explicitly defined.
+    """
+    mapped: list[DealCustomColumnDefinition] = []
+    for field in fields:
+        data_type = (
+            field.data_type.value if hasattr(field.data_type, "value") else str(field.data_type)
+        )
+        currency_code = None
+        currency_symbol = None
+        if data_type == "currency":
+            currency_code = _custom_field_currency_code(
+                field,
+                default_currency_code=deal_currency_code,
+            )
+            currency_symbol = _currency_symbol_for(currency_code)
+
+        mapped.append(
+            DealCustomColumnDefinition(
+                key=field.key,
+                label=field.label,
+                data_type=data_type,
+                required=bool(field.required),
+                options=field.options if isinstance(field.options, dict) else {},
+                validation=field.validation if isinstance(field.validation, dict) else {},
+                currency_code=currency_code,
+                currency_symbol=currency_symbol,
+            )
+        )
+    return mapped
+
+
+def _extract_custom_columns(
+    properties: dict[str, Any] | None,
+    *,
+    is_internal: bool,
+    known_keys: list[str] | None = None,
+    include_empty: bool = True,
+) -> dict[str, Any] | None:
+    """Return internal custom columns, optionally including known keys with null values."""
+    if not is_internal:
+        return None
+
+    props = properties if isinstance(properties, dict) else {}
+    custom_columns: dict[str, Any] = {}
+    if include_empty and known_keys:
+        for key in known_keys:
+            if key in _INTERNAL_DEAL_RESERVED_PROPERTIES:
+                continue
+            custom_columns[key] = props.get(key)
+
+    for key, value in props.items():
+        if key in _INTERNAL_DEAL_RESERVED_PROPERTIES:
+            continue
+        if value is None and not include_empty:
+            continue
+        if key in custom_columns:
+            if value is not None:
+                custom_columns[key] = value
+        else:
+            custom_columns[key] = value
+
+    if not include_empty:
+        custom_columns = {key: value for key, value in custom_columns.items() if value is not None}
+
+    return custom_columns or None
 
 
 @deals_router.get(
@@ -228,6 +459,7 @@ async def list_deals(
     response: FastAPIResponse,
     params: DealsListParams = Depends(get_deals_list_params),
     service: DealsAccessService = Depends(get_deals_access_service),
+    user_ids: UserIDs = Depends(get_current_user),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[DealsPage]:
     """List CRM deals with optional filters and pagination.
@@ -267,7 +499,8 @@ async def list_deals(
                 external_id=deal.external_id,
                 name=deal.name,
                 amount=deal.amount,
-                currency=deal.currency,
+                currency=_normalize_currency_code(deal.currency),
+                currency_symbol=_currency_symbol_for(deal.currency),
                 deal_status=deal.deal_status,
                 probability=deal.probability,
                 close_date=deal.close_date,
@@ -312,8 +545,17 @@ async def list_deals(
         ]
 
         total_pages = (total_count + params.limit - 1) // params.limit if params.limit else 0
+        active_import_job = None
+        if hasattr(service, "session"):
+            active_import_job = await _get_active_import_job_for_user(
+                service.session,
+                service.organisation_id,
+                user_ids.user_id,
+            )
+
         page_response = DealsPage(
             items=items,
+            active_import_job=active_import_job,
             page=params.page,
             limit=params.limit,
             total_count=total_count,
@@ -456,6 +698,13 @@ async def get_deal(
     response: FastAPIResponse,
     service: DealsAccessService = Depends(get_deals_access_service),
     deal_job_service: DealJobService = Depends(get_deal_job_service),
+    include_empty_custom_columns: bool = Query(
+        True,
+        description=(
+            "Include all active custom field keys with null values for missing entries. "
+            "Set false to return only populated custom values."
+        ),
+    ),
     _rl_read: None = Depends(rate_limit_user_read),
 ) -> GenericResponse[DealDetail]:
     """Retrieve detailed information for a single deal.
@@ -552,28 +801,111 @@ async def get_deal(
             )
             is_internal = integration_types_map.get(deal.integration_id, False)
 
+        custom_field_keys: list[str] | None = None
+        if is_internal and include_empty_custom_columns:
+            try:
+                session = getattr(service, "session", None)
+                if session is not None:
+                    custom_field_keys = await _get_active_deal_custom_field_keys(
+                        session=session,
+                        organisation_id=service.organisation_id,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to load custom field definitions for deal %s: %s",
+                    deal_id,
+                    exc,
+                    exc_info=True,
+                )
+
+        custom_column_definitions: list[DealCustomColumnDefinition] | None = None
+        if is_internal:
+            try:
+                session = getattr(service, "session", None)
+                if session is not None:
+                    # Deal detail includes definition metadata so UI can render
+                    # typed custom controls even when the current value is null.
+                    definitions = await _get_active_deal_custom_field_definitions(
+                        session=session,
+                        organisation_id=service.organisation_id,
+                    )
+                    custom_column_definitions = _map_custom_field_definitions(
+                        definitions,
+                        deal_currency_code=_normalize_currency_code(deal.currency),
+                    )
+            except Exception as exc:
+                # Metadata enrichment is best-effort and should not block core
+                # deal detail responses.
+                logger.warning(
+                    "Failed to load custom field metadata for deal %s: %s",
+                    deal_id,
+                    exc,
+                    exc_info=True,
+                )
+
+        custom_columns = _extract_custom_columns(
+            getattr(deal, "properties", None),
+            is_internal=is_internal,
+            known_keys=custom_field_keys,
+            include_empty=include_empty_custom_columns,
+        )
+
         # Build streamlined response
         detail = DealDetail(
             deal_id=deal.deal_id,
             external_id=deal.external_id,
             name=deal.name,
             amount=deal.amount,
-            currency=deal.currency,
+            currency=_normalize_currency_code(deal.currency),
+            currency_symbol=_currency_symbol_for(deal.currency),
+            predicted_amount=deal.predicted_amount,
             deal_status=deal.deal_status,
+            probability=deal.probability,
+            forecast_category=deal.forecast_category,
             stage_name=deal.stage_name,
             stage_label=deal.stage_label,
+            stage_external_id=deal.stage_external_id,
+            pipeline_name=deal.pipeline_name,
+            pipeline_label=deal.pipeline_label,
+            pipeline_external_id=deal.pipeline_external_id,
             source_created_at=deal.source_created_at,
             close_date=deal.close_date,
+            expected_close_date=deal.expected_close_date,
+            closed_won_at=deal.closed_won_at,
+            closed_lost_at=deal.closed_lost_at,
             last_activity_at=deal.last_activity_at,
+            stage_entered_at=deal.stage_entered_at,
+            stage_updated_at=deal.stage_updated_at,
             deal_age_days=deal_age_days,
             owner_details=owner_details,
             deal_team=deal_team,
+            company_external_id=deal.company_external_id,
             company_name=deal.company_name,
+            company_domain=deal.company_domain,
             company_industry=company_industry,
+            primary_contact_external_id=deal.primary_contact_external_id,
+            primary_contact_name=deal.primary_contact_name,
+            primary_contact_email=deal.primary_contact_email,
+            deal_type=deal.deal_type,
+            priority=deal.priority,
+            lead_source=deal.lead_source,
+            closed_reason=deal.closed_reason,
+            crm_url=deal.crm_url,
+            description=deal.description,
             deal_health=deal_health,
             deal_health_reason=deal_health_reason,
             is_internal=is_internal,
+            custom_columns=custom_columns,
+            custom_column_definitions=custom_column_definitions,
             time_tracked=None,  # Placeholder for future implementation
+            source_modified_at=deal.source_modified_at,
+            last_seen_at=deal.last_seen_at,
+            created_at=deal.created_at,
+            updated_at=deal.updated_at,
+            synced_at=deal.synced_at,
+            associated_contact_count=deal.associated_contact_count,
+            associated_company_count=deal.associated_company_count,
+            note_count=deal.note_count,
             deal_summary_data=deal_summary_data,
             active_deal_jobs=active_deal_jobs,
         )
@@ -700,6 +1032,51 @@ async def update_deal_account(
         )
 
 
+@deals_router.patch(
+    "/deals/{deal_id}/primary-contact",
+    response_model=GenericResponse[DealWriteResponse],
+    tags=["crm", "deals"],
+    summary="Update primary contact details for an internal CRM deal",
+)
+async def update_deal_primary_contact(
+    deal_id: UUID,
+    request: DealPrimaryContactUpdateRequest,
+    response: FastAPIResponse,
+    service: DealWriteService = Depends(get_deal_write_service),
+    _rl_write: None = Depends(rate_limit_user_write),
+) -> GenericResponse[DealWriteResponse]:
+    """Update primary contact details for an internal CRM deal."""
+    try:
+        deal = await service.update_primary_contact(
+            deal_id=deal_id,
+            primary_contact_name=request.primary_contact_name,
+            primary_contact_email=request.primary_contact_email,
+        )
+        await service.session.commit()
+        await service.session.refresh(deal)
+        payload = _map_deal_write_response(deal)
+        return Response.success_response(
+            message="Deal primary contact updated successfully",
+            data=payload,
+        )
+    except DealWriteServiceError as exc:
+        await service.session.rollback()
+        logger.warning("Deal primary contact update error: %s", exc.message, exc_info=True)
+        return Response.error_response(
+            message=exc.message,
+            status_code=exc.status_code,
+            response=response,
+        )
+    except Exception as exc:
+        await service.session.rollback()
+        logger.error("Unexpected error updating deal primary contact: %s", exc, exc_info=True)
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG,
+            status_code=500,
+            response=response,
+        )
+
+
 @deals_router.delete(
     "/deals/{deal_id}",
     response_model=GenericResponse[DealWriteResponse],
@@ -762,6 +1139,84 @@ async def move_deal_stage(
     except Exception as exc:
         await service.session.rollback()
         logger.error("Unexpected error moving deal stage: %s", exc, exc_info=True)
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
+
+
+@deals_router.post(
+    "/deals/{deal_id}/close",
+    response_model=GenericResponse[DealWriteResponse],
+    tags=["crm", "deals"],
+    summary="Close an internal CRM deal as won or lost",
+)
+async def close_deal(
+    deal_id: UUID,
+    request: DealCloseRequest,
+    response: FastAPIResponse,
+    service: DealWriteService = Depends(get_deal_write_service),
+    _rl_write: None = Depends(rate_limit_user_write),
+) -> GenericResponse[DealWriteResponse]:
+    """Close an internal CRM deal and capture close metadata."""
+    try:
+        deal = await service.close_deal(
+            deal_id=deal_id,
+            outcome=request.outcome,
+            closed_reason=request.closed_reason,
+            close_date=request.close_date,
+            stage_id=request.stage_id,
+        )
+        await service.session.commit()
+        await service.session.refresh(deal)
+        payload = _map_deal_write_response(deal)
+        return Response.success_response(message="Deal closed successfully", data=payload)
+    except DealWriteServiceError as exc:
+        await service.session.rollback()
+        logger.warning("Deal close error: %s", exc.message, exc_info=True)
+        return Response.error_response(
+            message=exc.message, status_code=exc.status_code, response=response
+        )
+    except Exception as exc:
+        await service.session.rollback()
+        logger.error("Unexpected error closing deal: %s", exc, exc_info=True)
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
+
+
+@deals_router.post(
+    "/deals/{deal_id}/reopen",
+    response_model=GenericResponse[DealWriteResponse],
+    tags=["crm", "deals"],
+    summary="Reopen an internal CRM deal",
+)
+async def reopen_deal(
+    deal_id: UUID,
+    request: DealReopenRequest,
+    response: FastAPIResponse,
+    service: DealWriteService = Depends(get_deal_write_service),
+    _rl_write: None = Depends(rate_limit_user_write),
+) -> GenericResponse[DealWriteResponse]:
+    """Reopen an internal CRM deal and move it back to an open stage."""
+    try:
+        deal = await service.reopen_deal(
+            deal_id=deal_id,
+            stage_id=request.stage_id,
+            clear_closed_reason=request.clear_closed_reason,
+        )
+        await service.session.commit()
+        await service.session.refresh(deal)
+        payload = _map_deal_write_response(deal)
+        return Response.success_response(message="Deal reopened successfully", data=payload)
+    except DealWriteServiceError as exc:
+        await service.session.rollback()
+        logger.warning("Deal reopen error: %s", exc.message, exc_info=True)
+        return Response.error_response(
+            message=exc.message, status_code=exc.status_code, response=response
+        )
+    except Exception as exc:
+        await service.session.rollback()
+        logger.error("Unexpected error reopening deal: %s", exc, exc_info=True)
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
         )
@@ -885,6 +1340,7 @@ async def generate_deal_summary(
 async def deal_summary_stream(
     deal_id: UUID,
     job_id: UUID,
+    request: Request,
     user_ids: UserIDs = Depends(get_current_user),
 ):
     """
@@ -893,6 +1349,13 @@ async def deal_summary_stream(
     Subscribe with the job_id from POST /deals/{deal_id}/deal-summary/generate.
     """
     sse_service = DealJobSSEService(user_ids.organisation_id, job_id, user_ids.user_id)
+    can_access = await sse_service.ensure_user_access()
+    if can_access is False:
+        raise HTTPException(status_code=403, detail="Not authorized to access this job stream")
+
+    last_event_id = request.headers.get("last-event-id") or request.headers.get("Last-Event-ID")
+    resume_from_id = last_event_id or None
+
     logger.info(
         "Client connected to deal summary SSE: org=%s deal=%s job=%s",
         user_ids.organisation_id,
@@ -902,7 +1365,7 @@ async def deal_summary_stream(
 
     async def event_generator():
         try:
-            async for ev in sse_service.stream_events():
+            async for ev in sse_service.stream_events(resume_from_id=resume_from_id):
                 yield ev
         finally:
             try:

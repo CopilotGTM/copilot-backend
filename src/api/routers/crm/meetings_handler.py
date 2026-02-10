@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.organisation_dependencies import (
@@ -173,6 +173,7 @@ async def meeting_job_stream(
     deal_id: UUID,
     event_id: UUID,
     job_id: UUID,
+    request: Request,
     user_ids: UserIDs = Depends(get_current_user),
 ):
     """
@@ -182,6 +183,13 @@ async def meeting_job_stream(
     Handles reconnection - if user disconnects and reconnects, the stream resumes.
     """
     sse_service = DealJobSSEService(user_ids.organisation_id, job_id, user_ids.user_id)
+    can_access = await sse_service.ensure_user_access()
+    if can_access is False:
+        raise HTTPException(status_code=403, detail="Not authorized to access this job stream")
+
+    last_event_id = request.headers.get("last-event-id") or request.headers.get("Last-Event-ID")
+    resume_from_id = last_event_id or None
+
     logger.info(
         "Client connected to meeting job SSE: org=%s deal=%s event=%s job=%s",
         user_ids.organisation_id,
@@ -192,7 +200,7 @@ async def meeting_job_stream(
 
     async def event_generator():
         try:
-            async for ev in sse_service.stream_events():
+            async for ev in sse_service.stream_events(resume_from_id=resume_from_id):
                 yield ev
         finally:
             try:

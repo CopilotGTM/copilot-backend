@@ -20,6 +20,11 @@ FRAME_TYPE_PROGRESS = "progress.update"
 FRAME_TYPE_ANSWER_REPLACE = "answer.replace"
 FRAME_TYPE_ERROR = "error"
 FRAME_TYPE_FINALIZE = "finalize"
+FRAME_TYPE_DEAL_STARTED = "import.deal.started"
+FRAME_TYPE_DEAL_PROGRESS = "import.deal.progress"
+FRAME_TYPE_DEAL_COMPLETED = "import.deal.completed"
+FRAME_TYPE_DEAL_FAILED = "import.deal.failed"
+FRAME_TYPE_SUMMARY_TICK = "import.summary.tick"
 
 
 class DealJobRedisPublisher:
@@ -103,5 +108,106 @@ class DealJobRedisPublisher:
             {
                 "type": FRAME_TYPE_FINALIZE,
                 "reason": reason,
+            }
+        )
+
+    def publish_deal_started(self, deal_index: int, row_number: int, deal_name: str | None) -> None:
+        """Publish the start of processing for one deal row."""
+        self.publish(
+            {
+                "type": FRAME_TYPE_DEAL_STARTED,
+                "deal_index": deal_index,
+                "row_number": row_number,
+                "deal_name": deal_name,
+            }
+        )
+
+    def publish_deal_progress(
+        self,
+        deal_index: int,
+        row_number: int,
+        step: str,
+        message: str,
+        deal_name: str | None = None,
+    ) -> None:
+        """Publish step-by-step progress for one deal row."""
+        self.publish(
+            {
+                "type": FRAME_TYPE_DEAL_PROGRESS,
+                "deal_index": deal_index,
+                "row_number": row_number,
+                "deal_name": deal_name,
+                "step": step,
+                "message": message,
+            }
+        )
+
+    def publish_deal_completed(
+        self,
+        deal_index: int,
+        row_number: int,
+        outcome: str,
+        deal_id: str | None,
+        deal_name: str | None,
+        warnings: list[dict] | None = None,
+    ) -> None:
+        """Publish successful completion for one deal row.
+
+        outcome: created | updated | skipped
+        """
+        self.publish(
+            {
+                "type": FRAME_TYPE_DEAL_COMPLETED,
+                "deal_index": deal_index,
+                "row_number": row_number,
+                "outcome": outcome,
+                "deal_id": deal_id,
+                "deal_name": deal_name,
+                "warnings": warnings or [],
+            }
+        )
+
+    def publish_deal_failed(
+        self,
+        deal_index: int,
+        row_number: int,
+        deal_name: str | None,
+        error_code: str,
+        message: str,
+    ) -> None:
+        """Publish failed processing for one deal row."""
+        self.publish(
+            {
+                "type": FRAME_TYPE_DEAL_FAILED,
+                "deal_index": deal_index,
+                "row_number": row_number,
+                "deal_name": deal_name,
+                "error_code": error_code,
+                "message": message,
+            }
+        )
+
+    def publish_summary_tick(
+        self,
+        *,
+        processed: int,
+        total: int,
+        created: int,
+        updated: int,
+        skipped: int,
+        failed: int,
+        warnings: int,
+    ) -> None:
+        """Publish running import totals for lightweight live dashboards."""
+        self.publish(
+            {
+                "type": FRAME_TYPE_SUMMARY_TICK,
+                "processed": processed,
+                "total": total,
+                "created": created,
+                "updated": updated,
+                "skipped": skipped,
+                "failed": failed,
+                "warnings": warnings,
             }
         )

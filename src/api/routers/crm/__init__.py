@@ -1,5 +1,6 @@
 """CRM routers package."""
 
+from .custom_fields_handler import custom_fields_router
 from .deal_import_handler import deal_import_router
 from .deal_notes_handler import deal_notes_router
 from .deal_participants_handler import deal_participants_router
@@ -18,6 +19,7 @@ __all__ = [
     "deal_notes_router",
     "deal_participants_router",
     "deal_import_router",
+    "custom_fields_router",
     "deal_timeline_router",
     "deals_router",
     "meetings_router",
@@ -25,7 +27,6 @@ __all__ = [
     "risks_blockers_router",
     "settings_router",
     "stakeholder_insights_router",
-    "stakeholders_handler",
     "stakeholders_router",
     "tasks_router",
     "crm_users_router",
