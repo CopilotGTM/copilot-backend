@@ -1109,6 +1109,119 @@ class TestGetStakeholderDetail:
         assert resp.status_code == 422
 
 
+class TestUpdateStakeholder:
+    """Tests for PATCH /{deal_id}/stakeholders/{stakeholder_id} endpoint."""
+
+    def test_updates_selected_fields(
+        self,
+        client: TestClient,
+        stakeholders_dependency_overrides,
+        fake_stakeholders_service,
+        test_deal_id,
+        test_user_ids,
+    ):
+        stakeholder = create_stakeholder(
+            deal_id=test_deal_id,
+            organisation_id=test_user_ids["organisation_id"],
+            email="jane@acme.com",
+            name="Jane Old",
+            job_title="Manager",
+        )
+        fake_stakeholders_service.add_stakeholder(stakeholder)
+
+        resp = client.patch(
+            f"/users/crm/deals/{test_deal_id}/stakeholders/{stakeholder.stakeholder_id}",
+            json={
+                "name": "Jane Updated",
+                "job_title": "Director of Engineering",
+                "champion_potential": 88.0,
+            },
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "SUCCESS"
+        assert body["message"] == "Stakeholder updated"
+        assert body["data"]["name"] == "Jane Updated"
+        assert body["data"]["job_title"] == "Director of Engineering"
+        assert body["data"]["champion_potential"] == 88.0
+
+        updated = fake_stakeholders_service._get_stakeholder(
+            test_deal_id,
+            stakeholder.stakeholder_id,
+        )
+        assert updated is not None
+        assert updated.stakeholder_data is not None
+        assert set(updated.stakeholder_data["manual_overrides"]) >= {
+            "name",
+            "job_title",
+            "champion_potential",
+        }
+
+    def test_returns_404_for_unknown_stakeholder(
+        self,
+        client: TestClient,
+        stakeholders_dependency_overrides,
+        test_deal_id,
+    ):
+        resp = client.patch(
+            f"/users/crm/deals/{test_deal_id}/stakeholders/{uuid4()}",
+            json={"name": "Updated"},
+        )
+
+        assert resp.status_code == 404
+        body = resp.json()
+        assert body["status"] == "ERROR"
+        assert body["message"] == "Stakeholder not found"
+
+    def test_returns_400_for_empty_payload(
+        self,
+        client: TestClient,
+        stakeholders_dependency_overrides,
+        fake_stakeholders_service,
+        test_deal_id,
+        test_user_ids,
+    ):
+        stakeholder = create_stakeholder(
+            deal_id=test_deal_id,
+            organisation_id=test_user_ids["organisation_id"],
+            email="empty@acme.com",
+        )
+        fake_stakeholders_service.add_stakeholder(stakeholder)
+
+        resp = client.patch(
+            f"/users/crm/deals/{test_deal_id}/stakeholders/{stakeholder.stakeholder_id}",
+            json={},
+        )
+
+        assert resp.status_code == 400
+        body = resp.json()
+        assert body["status"] == "ERROR"
+        assert body["message"] == "No fields provided for update"
+
+    def test_returns_422_for_invalid_champion_potential(
+        self,
+        client: TestClient,
+        stakeholders_dependency_overrides,
+        fake_stakeholders_service,
+        test_deal_id,
+        test_user_ids,
+    ):
+        stakeholder = create_stakeholder(
+            deal_id=test_deal_id,
+            organisation_id=test_user_ids["organisation_id"],
+            email="invalid@acme.com",
+        )
+        fake_stakeholders_service.add_stakeholder(stakeholder)
+
+        resp = client.patch(
+            f"/users/crm/deals/{test_deal_id}/stakeholders/{stakeholder.stakeholder_id}",
+            json={"champion_potential": 120},
+        )
+
+        assert resp.status_code == 422
+
+
 class TestApproveStakeholder:
     """Tests for POST /{deal_id}/stakeholders/{stakeholder_id}/approve endpoint."""
 

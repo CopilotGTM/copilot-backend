@@ -139,6 +139,15 @@ class StakeholderSyncService:
         self.organisation_id = organisation_id
         self._session = session  # Optional - used by sync_for_deal()
 
+    @staticmethod
+    def _get_manual_overrides(stakeholder: DealStakeholder) -> set[str]:
+        """Return user-managed fields that sync must not overwrite."""
+        data = stakeholder.stakeholder_data or {}
+        manual_overrides = data.get("manual_overrides")
+        if not isinstance(manual_overrides, list):
+            return set()
+        return {str(field) for field in manual_overrides}
+
     async def sync_for_organisation(self) -> OrgStakeholderSyncResult:
         """Sync stakeholders for ALL deals in the organization.
 
@@ -333,7 +342,10 @@ class StakeholderSyncService:
         deal_participants_rel = cast(Any, CRMDeal.participants)
         stmt = (
             select(CRMDeal)
-            .where(col(CRMDeal.deal_id) == deal_id)
+            .where(
+                col(CRMDeal.deal_id) == deal_id,
+                col(CRMDeal.organisation_id) == self.organisation_id,
+            )
             .options(selectinload(deal_participants_rel))
         )
         result = await session.execute(stmt)
@@ -387,27 +399,51 @@ class StakeholderSyncService:
             if existing.approval_status == ApprovalStatus.REMOVED:
                 return False
 
-            # TODO: Currently updates fields unconditionally. Future improvement:
-            # Compare old vs new values before updating to avoid unnecessary DB writes
-            # and misleading updated_at timestamps. Should only update if values differ.
-            existing.source = StakeholderSource.CRM
-            existing.source_reference_id = participant.participant_id
-            existing.approval_status = ApprovalStatus.APPROVED  # CRM is always trusted
-            existing.is_deleted = False  # Reactivate if was soft-deleted
-            existing.updated_at = datetime.now(UTC)
+            manual_overrides = self._get_manual_overrides(existing)
+            changed = False
 
-            # Update name if we have one and existing doesn't
-            if participant.related_name and not existing.name:
+            if (
+                existing.source != StakeholderSource.MANUAL
+                and existing.source != StakeholderSource.CRM
+            ):
+                existing.source = StakeholderSource.CRM
+                changed = True
+            if existing.source_reference_id != participant.participant_id:
+                existing.source_reference_id = participant.participant_id
+                changed = True
+            if existing.approval_status != ApprovalStatus.REJECTED:
+                if existing.approval_status != ApprovalStatus.APPROVED:
+                    existing.approval_status = ApprovalStatus.APPROVED
+                    changed = True
+                # Reactivate if was soft-deleted
+                if existing.is_deleted:
+                    existing.is_deleted = False
+                    changed = True
+
+            # Update name from participant when not manually overridden
+            if "name" not in manual_overrides and participant.related_name and not existing.name:
                 existing.name = participant.related_name
+                changed = True
 
             # NOTE: Do NOT set job_title from participant.relationship_role
             # relationship_role contains HubSpot association type (e.g., "deal_to_contact")
             # job_title should come from CRMContact.job_title via enrichment
 
             # Enrich from CRMContact (fixes bad job_title values from old sync)
-            await self._enrich_from_contact(session, existing, email)
+            changed = (
+                await self._enrich_from_contact(
+                    session,
+                    existing,
+                    email,
+                    manual_overrides=manual_overrides,
+                )
+                or changed
+            )
 
-            session.add(existing)
+            if changed:
+                existing.updated_at = datetime.now(UTC)
+                session.add(existing)
+
             return False
 
         # Create new stakeholder
@@ -437,12 +473,16 @@ class StakeholderSyncService:
         return True
 
     async def _enrich_from_contact(
-        self, session: AsyncSession, stakeholder: DealStakeholder, email: str
-    ) -> None:
+        self,
+        session: AsyncSession,
+        stakeholder: DealStakeholder,
+        email: str,
+        manual_overrides: set[str] | None = None,
+    ) -> bool:
         """Enrich stakeholder with CRMContact data if available.
 
-        CRMContact is the authoritative source for job_title, so we always
-        overwrite (fixes bad values from old sync that used relationship_role).
+        CRMContact is authoritative for contact linkage and default attributes,
+        but user-managed fields in manual_overrides are never overwritten.
 
         Args:
             session: Database session to use
@@ -456,10 +496,23 @@ class StakeholderSyncService:
         result = await session.execute(stmt)
         contact = result.scalars().first()
 
+        changed = False
+        override_fields = manual_overrides or set()
+
         if contact:
-            stakeholder.contact_id = contact.contact_id
-            if contact.full_name and not stakeholder.name:
+            if stakeholder.contact_id != contact.contact_id:
+                stakeholder.contact_id = contact.contact_id
+                changed = True
+            if "name" not in override_fields and contact.full_name and not stakeholder.name:
                 stakeholder.name = contact.full_name
-            # Always use CRMContact.job_title as authoritative source
-            if contact.job_title:
+                changed = True
+            # Use CRMContact.job_title unless this field is manually controlled
+            if (
+                "job_title" not in override_fields
+                and contact.job_title
+                and stakeholder.job_title != contact.job_title
+            ):
                 stakeholder.job_title = contact.job_title
+                changed = True
+
+        return changed

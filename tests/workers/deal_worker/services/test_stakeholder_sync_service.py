@@ -1,0 +1,160 @@
+"""Tests for stakeholder sync manual override protections."""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
+
+import pytest
+from src.domain.models.organisation_tables.sync.crm.stakeholders import (
+    ApprovalStatus,
+    StakeholderSource,
+)
+from src.workers.deal_worker.services.deal_mapper_services.stakeholder_sync_service import (
+    StakeholderSyncService,
+)
+
+
+def test_get_manual_overrides_reads_stakeholder_data() -> None:
+    service = StakeholderSyncService(uuid4())
+    stakeholder = SimpleNamespace(stakeholder_data={"manual_overrides": ["name", "job_title"]})
+
+    overrides = service._get_manual_overrides(stakeholder)  # noqa: SLF001 - internal behavior test
+
+    assert overrides == {"name", "job_title"}
+
+
+@pytest.mark.asyncio
+async def test_ensure_stakeholder_keeps_rejected_status_and_manual_fields() -> None:
+    service = StakeholderSyncService(uuid4())
+    service._enrich_from_contact = AsyncMock(return_value=False)  # type: ignore[method-assign]
+
+    session = SimpleNamespace(add=MagicMock())
+    participant_id = uuid4()
+    participant = SimpleNamespace(
+        related_email="person@example.com",
+        related_name="CRM Name",
+        participant_id=participant_id,
+    )
+    deal = SimpleNamespace(deal_id=uuid4(), integration_id=uuid4())
+    existing = SimpleNamespace(
+        approval_status=ApprovalStatus.REJECTED,
+        source=StakeholderSource.CRM,
+        source_reference_id=None,
+        is_deleted=True,
+        updated_at=None,
+        name="Manual Name",
+        stakeholder_data={"manual_overrides": ["name", "job_title"]},
+    )
+
+    was_created = await service._ensure_stakeholder(  # noqa: SLF001 - internal behavior test
+        session=session,
+        deal=deal,
+        participant=participant,
+        existing=existing,
+    )
+
+    assert was_created is False
+    assert existing.approval_status == ApprovalStatus.REJECTED
+    assert existing.is_deleted is True
+    assert existing.name == "Manual Name"
+    assert existing.source_reference_id == participant_id
+    session.add.assert_called_once_with(existing)
+    service._enrich_from_contact.assert_awaited_once()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_ensure_stakeholder_does_not_convert_manual_source() -> None:
+    service = StakeholderSyncService(uuid4())
+    service._enrich_from_contact = AsyncMock(return_value=False)  # type: ignore[method-assign]
+
+    session = SimpleNamespace(add=MagicMock())
+    participant = SimpleNamespace(
+        related_email="person@example.com",
+        related_name="CRM Name",
+        participant_id=uuid4(),
+    )
+    deal = SimpleNamespace(deal_id=uuid4(), integration_id=uuid4())
+    existing = SimpleNamespace(
+        approval_status=ApprovalStatus.APPROVED,
+        source=StakeholderSource.MANUAL,
+        source_reference_id=None,
+        is_deleted=True,
+        updated_at=None,
+        name=None,
+        stakeholder_data={},
+    )
+
+    was_created = await service._ensure_stakeholder(  # noqa: SLF001 - internal behavior test
+        session=session,
+        deal=deal,
+        participant=participant,
+        existing=existing,
+    )
+
+    assert was_created is False
+    assert existing.source == StakeholderSource.MANUAL
+    assert existing.approval_status == ApprovalStatus.APPROVED
+    assert existing.is_deleted is False
+
+
+@pytest.mark.asyncio
+async def test_ensure_stakeholder_skips_write_when_no_values_change() -> None:
+    service = StakeholderSyncService(uuid4())
+    service._enrich_from_contact = AsyncMock(return_value=False)  # type: ignore[method-assign]
+
+    session = SimpleNamespace(add=MagicMock())
+    participant_id = uuid4()
+    participant = SimpleNamespace(
+        related_email="person@example.com",
+        related_name="Same Name",
+        participant_id=participant_id,
+    )
+    deal = SimpleNamespace(deal_id=uuid4(), integration_id=uuid4())
+    original_updated_at = object()
+    existing = SimpleNamespace(
+        approval_status=ApprovalStatus.APPROVED,
+        source=StakeholderSource.CRM,
+        source_reference_id=participant_id,
+        is_deleted=False,
+        updated_at=original_updated_at,
+        name="Same Name",
+        stakeholder_data={},
+    )
+
+    was_created = await service._ensure_stakeholder(  # noqa: SLF001 - internal behavior test
+        session=session,
+        deal=deal,
+        participant=participant,
+        existing=existing,
+    )
+
+    assert was_created is False
+    assert existing.updated_at is original_updated_at
+    session.add.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_enrich_from_contact_respects_manual_override_fields() -> None:
+    service = StakeholderSyncService(uuid4())
+    contact = SimpleNamespace(contact_id=uuid4(), full_name="CRM Name", job_title="CRM Title")
+
+    scalars_result = MagicMock()
+    scalars_result.first.return_value = contact
+    execute_result = MagicMock()
+    execute_result.scalars.return_value = scalars_result
+    session = SimpleNamespace(execute=AsyncMock(return_value=execute_result))
+
+    stakeholder = SimpleNamespace(contact_id=None, name="Manual Name", job_title="Manual Title")
+
+    await service._enrich_from_contact(  # noqa: SLF001 - internal behavior test
+        session=session,
+        stakeholder=stakeholder,
+        email="person@example.com",
+        manual_overrides={"name", "job_title"},
+    )
+
+    assert stakeholder.contact_id == contact.contact_id
+    assert stakeholder.name == "Manual Name"
+    assert stakeholder.job_title == "Manual Title"
