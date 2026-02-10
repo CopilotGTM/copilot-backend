@@ -260,6 +260,22 @@ export interface StakeholderLink {
   added_at: string | null;           // ISO8601
 }
 
+/**
+ * Partial update payload for PATCH /{deal_id}/stakeholders/{stakeholder_id}.
+ * Only include fields that should be changed.
+ */
+export interface UpdateStakeholderRequest {
+  name?: string | null;
+  job_title?: string | null;
+  department?: string | null;
+  stance?: StakeholderStance;
+  decision_power?: DecisionPower;
+  champion_potential?: number;       // 0..100
+  motivation?: string | null;
+  pain_points?: string[] | null;
+  external_links?: StakeholderLink[] | null;
+}
+
 export interface AvailableContactItem {
   contact_id: UUID;
   external_id: string;
@@ -764,7 +780,99 @@ curl -X POST "$BASE_URL/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders" \
 
 ---
 
-## 5. Get Stakeholder Detail
+## 5. Edit Stakeholder
+
+Partially updates an existing stakeholder for a deal. Only fields included in the request are changed.
+
+### Endpoint (Edit Stakeholder)
+
+```http
+PATCH /{deal_id}/stakeholders/{stakeholder_id}
+```
+
+### Path Parameters (Edit Stakeholder)
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `deal_id` | UUID | Yes | The unique identifier of the deal |
+| `stakeholder_id` | UUID | Yes | The unique identifier of the stakeholder |
+
+### Request Body (Edit Stakeholder)
+
+```json
+{
+  "name": "Jane Updated",
+  "job_title": "Director of Engineering",
+  "champion_potential": 88,
+  "motivation": "Accelerate engineering delivery"
+}
+```
+
+### Editable Fields
+
+| Field | Type | Notes |
+|------|------|-------|
+| `name` | string \| null | Stakeholder name |
+| `job_title` | string \| null | Job title |
+| `department` | string \| null | Department |
+| `stance` | enum | Stakeholder stance |
+| `decision_power` | enum | Buying-role classification |
+| `champion_potential` | number | 0 to 100 |
+| `motivation` | string \| null | Motivation summary |
+| `pain_points` | string[] \| null | Known pain points |
+| `external_links` | array \| null | External profile links |
+
+### Success Response (200) (Edit Stakeholder)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Stakeholder updated",
+  "data": {
+    "stakeholder_id": "8fa85f64-5717-4562-b3fc-2c963f66afa9",
+    "deal_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+    "email": "john.smith@prospect.com",
+    "name": "Jane Updated",
+    "job_title": "Director of Engineering",
+    "champion_potential": 88.0,
+    "source": "MANUAL",
+    "approval_status": "APPROVED"
+  }
+}
+```
+
+### Error Responses (Edit Stakeholder)
+
+| Code | Description |
+|------|-------------|
+| `400` | Empty payload or invalid null for non-nullable fields |
+| `401` | Missing or invalid authentication token |
+| `404` | Stakeholder not found for this deal |
+| `422` | Validation error (e.g., champion_potential out of range) |
+| `500` | Internal server error |
+
+### Sync Behavior Note
+
+- When users edit stakeholder fields through this endpoint, those fields are marked as manual overrides.
+- Later stakeholder mapper sync runs (`stakeholder.sync_deal_stakeholders`) do **not** overwrite manually overridden fields.
+- Rejected stakeholders stay rejected during sync; mapper does not force them back to approved automatically.
+
+### Example cURL (Edit Stakeholder)
+
+```bash
+curl -X PATCH "$BASE_URL/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders/8fa85f64-5717-4562-b3fc-2c963f66afa9" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Jane Updated",
+    "job_title": "Director of Engineering",
+    "champion_potential": 88
+  }'
+```
+
+---
+
+## 6. Get Stakeholder Detail
 
 Retrieves full details of a specific stakeholder including engagement history.
 
@@ -870,7 +978,7 @@ curl -X GET "$BASE_URL/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders/7fa85f6
 
 ---
 
-## 6. Approve Stakeholder
+## 7. Approve Stakeholder
 
 Approve a PENDING stakeholder for deal matching. Changes approval_status from PENDING to APPROVED.
 
@@ -929,7 +1037,7 @@ curl -X POST "$BASE_URL/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders/7fa85f
 
 ---
 
-## 7. Reject Stakeholder
+## 8. Reject Stakeholder
 
 Reject a stakeholder to exclude from deal matching. Works for PENDING or APPROVED stakeholders.
 
@@ -993,7 +1101,7 @@ curl -X POST "$BASE_URL/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders/7fa85f
 
 ---
 
-## 8. Remove Stakeholder
+## 9. Remove Stakeholder
 
 Remove an approved stakeholder from the deal. This is different from rejection - removal is for stakeholders that were previously active but should no longer be associated with the deal.
 
@@ -1096,22 +1204,28 @@ curl -X DELETE "$BASE_URL/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders/7fa8
    - Display success/skip summary to user
 
 3. **View Stakeholder Detail**:
-   - User clicks on a stakeholder card
-   - Call `GET /{deal_id}/stakeholders/{stakeholder_id}` for full details
-   - Display engagement history as a trend visualization
+    - User clicks on a stakeholder card
+    - Call `GET /{deal_id}/stakeholders/{stakeholder_id}` for full details
+    - Display engagement history as a trend visualization
 
-4. **Manage Pending Stakeholders** (Approval Flow):
-   - Display PENDING stakeholders with visual indicator (badge, different styling)
-   - Show "Approve" and "Reject" action buttons for pending items
-   - On approve: Call `POST /{deal_id}/stakeholders/{stakeholder_id}/approve`
-   - On reject: Call `POST /{deal_id}/stakeholders/{stakeholder_id}/reject`
-   - Update UI immediately (optimistic update) or refetch list
+4. **Edit Stakeholder**:
+   - User edits stakeholder profile fields in detail view
+   - Call `PATCH /{deal_id}/stakeholders/{stakeholder_id}` with only changed fields
+   - Refresh stakeholder card/detail after success
+   - Edits made through PATCH are preserved during stakeholder mapper sync
 
-5. **Remove Active Stakeholders**:
-   - Show "Remove" action on APPROVED stakeholders (e.g., in dropdown menu or detail view)
-   - On remove: Call `DELETE /{deal_id}/stakeholders/{stakeholder_id}`
-   - Show confirmation dialog: "Remove this stakeholder from the deal?"
-   - Update UI immediately or refetch list
+5. **Manage Pending Stakeholders** (Approval Flow):
+    - Display PENDING stakeholders with visual indicator (badge, different styling)
+    - Show "Approve" and "Reject" action buttons for pending items
+    - On approve: Call `POST /{deal_id}/stakeholders/{stakeholder_id}/approve`
+    - On reject: Call `POST /{deal_id}/stakeholders/{stakeholder_id}/reject`
+    - Update UI immediately (optimistic update) or refetch list
+
+6. **Remove Active Stakeholders**:
+    - Show "Remove" action on APPROVED stakeholders (e.g., in dropdown menu or detail view)
+    - On remove: Call `DELETE /{deal_id}/stakeholders/{stakeholder_id}`
+    - Show confirmation dialog: "Remove this stakeholder from the deal?"
+    - Update UI immediately or refetch list
 
 ### Stakeholder Cards UI
 

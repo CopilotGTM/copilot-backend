@@ -14,6 +14,7 @@ from src.api.schemas.crm_models import (
     SkippedContact,
     StakeholderDetail,
     StakeholderListResponse,
+    UpdateStakeholderRequest,
 )
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal, CRMDealParticipant
@@ -50,6 +51,30 @@ class StakeholdersService:
     @property
     def session(self) -> AsyncSession:
         return self.org_session
+
+    @staticmethod
+    def _serialize_external_links(external_links: list | None) -> list[dict] | None:
+        """Serialize external links to JSON-friendly dicts."""
+        if external_links is None:
+            return None
+
+        serialized: list[dict] = []
+        for link in external_links:
+            if isinstance(link, dict):
+                serialized.append(link)
+                continue
+
+            added_at = getattr(link, "added_at", None)
+            serialized.append(
+                {
+                    "platform": link.platform,
+                    "url": link.url,
+                    "label": link.label,
+                    "added_at": added_at.isoformat() if added_at else None,
+                }
+            )
+
+        return serialized
 
     async def list_stakeholders_by_deal(
         self,
@@ -290,18 +315,7 @@ class StakeholdersService:
                 status_code=409,
             )
 
-        # Convert external_links from Pydantic models to dicts
-        external_links_data = None
-        if request.external_links:
-            external_links_data = [
-                {
-                    "platform": link.platform,
-                    "url": link.url,
-                    "label": link.label,
-                    "added_at": link.added_at.isoformat() if link.added_at else None,
-                }
-                for link in request.external_links
-            ]
+        external_links_data = self._serialize_external_links(request.external_links)
 
         # Create the stakeholder with manual source
         # Use neutral defaults for optional numeric fields
@@ -341,6 +355,48 @@ class StakeholdersService:
         await self.session.refresh(new_stakeholder)
 
         return StakeholderDetail.model_validate(new_stakeholder)
+
+    async def update_stakeholder(
+        self,
+        deal_id: UUID,
+        stakeholder_id: UUID,
+        request: UpdateStakeholderRequest,
+    ) -> StakeholderDetail:
+        """Partially update a stakeholder and mark fields as user-managed."""
+        stakeholder = await self.get_stakeholder(deal_id, stakeholder_id)
+        if not stakeholder:
+            raise StakeholdersServiceError("Stakeholder not found", status_code=404)
+
+        updates = request.model_dump(exclude_unset=True)
+        if not updates:
+            raise StakeholdersServiceError("No fields provided for update", status_code=400)
+
+        non_nullable_fields = {"stance", "decision_power", "champion_potential"}
+        null_non_nullable = [
+            field for field in non_nullable_fields if field in updates and updates[field] is None
+        ]
+        if null_non_nullable:
+            invalid = ", ".join(sorted(null_non_nullable))
+            raise StakeholdersServiceError(
+                f"Cannot set the following fields to null: {invalid}",
+                status_code=400,
+            )
+
+        if "external_links" in updates:
+            updates["external_links"] = self._serialize_external_links(updates["external_links"])
+
+        for field_name, value in updates.items():
+            setattr(stakeholder, field_name, value)
+
+        stakeholder_data = dict(stakeholder.stakeholder_data or {})
+        manual_overrides = set(stakeholder_data.get("manual_overrides") or [])
+        manual_overrides.update(updates.keys())
+        stakeholder_data["manual_overrides"] = sorted(manual_overrides)
+        stakeholder.stakeholder_data = stakeholder_data
+
+        await self.session.commit()
+        await self.session.refresh(stakeholder)
+        return StakeholderDetail.model_validate(stakeholder)
 
     async def list_available_contacts(
         self, deal_id: UUID, query: str | None = None, limit: int = 50

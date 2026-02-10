@@ -24,6 +24,7 @@ from src.api.schemas.crm_models import (
     StakeholderDetail,
     StakeholderFullDetail,
     StakeholderListResponse,
+    UpdateStakeholderRequest,
 )
 from src.api.utils.http_response import Response
 from src.infra.utils.logger import get_logger
@@ -259,6 +260,34 @@ async def get_stakeholder_detail(
         )
     except Exception:
         logger.exception("Failed to get stakeholder %s for deal %s", stakeholder_id, deal_id)
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
+
+
+@stakeholders_router.patch(
+    "/{deal_id}/stakeholders/{stakeholder_id}",
+    response_model=GenericResponse[StakeholderDetail],
+    summary="Edit stakeholder details",
+)
+async def update_stakeholder(
+    deal_id: UUID,
+    stakeholder_id: UUID,
+    request: UpdateStakeholderRequest,
+    response: FastAPIResponse,
+    service: StakeholdersService = Depends(get_stakeholders_service),
+) -> GenericResponse[StakeholderDetail]:
+    """Partially update editable stakeholder fields."""
+    try:
+        stakeholder = await service.update_stakeholder(deal_id, stakeholder_id, request)
+        return Response.success_response(message="Stakeholder updated", data=stakeholder)
+    except StakeholdersServiceError as e:
+        logger.warning("Update stakeholder error: %s", e.message)
+        return Response.error_response(
+            message=e.message, status_code=e.status_code, response=response
+        )
+    except Exception:
+        logger.exception("Failed to update stakeholder %s for deal %s", stakeholder_id, deal_id)
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
         )

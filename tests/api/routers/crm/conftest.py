@@ -45,7 +45,7 @@ from src.domain.models.organisation_tables.sync.stakeholder_insight_models impor
     StakeholderInsightType,
 )
 from src.infra.utils.cursor import decode_cursor, encode_cursor
-from src.service.crm.tasks_access_service import TasksAccessServiceError
+from src.service.crm.access.tasks_access_service import TasksAccessServiceError
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +83,7 @@ class FakeStakeholder:
         keywords: list[str] | None = None,
         external_links: list[dict[str, Any]] | None = None,
         stakeholder_engagement_history: list[dict[str, Any]] | None = None,
+        stakeholder_data: dict[str, Any] | None = None,
     ):
         self.stakeholder_id = stakeholder_id
         self.deal_id = deal_id
@@ -105,6 +106,7 @@ class FakeStakeholder:
         self.keywords = keywords or []
         self.external_links = external_links or []
         self.stakeholder_engagement_history = stakeholder_engagement_history or []
+        self.stakeholder_data = stakeholder_data
         self.created_at = datetime.now(UTC)
         self.updated_at = datetime.now(UTC)
         self.is_deleted = False
@@ -292,7 +294,7 @@ class FakeStakeholdersService:
 
     async def approve_stakeholder(self, deal_id: UUID, stakeholder_id: UUID):
         """Approve a PENDING stakeholder."""
-        from src.service.crm.stakeholders_service import StakeholdersServiceError
+        from src.service.crm.insights.stakeholders_service import StakeholdersServiceError
 
         stakeholder = self._get_stakeholder(deal_id, stakeholder_id)
         if not stakeholder:
@@ -306,7 +308,7 @@ class FakeStakeholdersService:
 
     async def reject_stakeholder(self, deal_id: UUID, stakeholder_id: UUID):
         """Reject a stakeholder."""
-        from src.service.crm.stakeholders_service import StakeholdersServiceError
+        from src.service.crm.insights.stakeholders_service import StakeholdersServiceError
 
         stakeholder = self._get_stakeholder(deal_id, stakeholder_id)
         if not stakeholder:
@@ -320,7 +322,7 @@ class FakeStakeholdersService:
 
     async def remove_stakeholder(self, deal_id: UUID, stakeholder_id: UUID):
         """Remove an approved stakeholder from the deal."""
-        from src.service.crm.stakeholders_service import StakeholdersServiceError
+        from src.service.crm.insights.stakeholders_service import StakeholdersServiceError
 
         stakeholder = self._get_stakeholder(deal_id, stakeholder_id)
         if not stakeholder:
@@ -335,6 +337,39 @@ class FakeStakeholdersService:
             )
 
         stakeholder.approval_status = ApprovalStatus.REMOVED
+        return stakeholder
+
+    async def update_stakeholder(self, deal_id: UUID, stakeholder_id: UUID, request):
+        """Partially update stakeholder fields."""
+        from src.service.crm.insights.stakeholders_service import StakeholdersServiceError
+
+        stakeholder = self._get_stakeholder(deal_id, stakeholder_id)
+        if not stakeholder:
+            raise StakeholdersServiceError("Stakeholder not found", status_code=404)
+
+        updates = request.model_dump(exclude_unset=True)
+        if not updates:
+            raise StakeholdersServiceError("No fields provided for update", status_code=400)
+
+        non_nullable_fields = {"stance", "decision_power", "champion_potential"}
+        null_non_nullable = [
+            field for field in non_nullable_fields if field in updates and updates[field] is None
+        ]
+        if null_non_nullable:
+            raise StakeholdersServiceError(
+                "Cannot set the following fields to null: " + ", ".join(sorted(null_non_nullable)),
+                status_code=400,
+            )
+
+        for field_name, value in updates.items():
+            setattr(stakeholder, field_name, value)
+
+        stakeholder_data = dict(stakeholder.stakeholder_data or {})
+        manual_overrides = set(stakeholder_data.get("manual_overrides") or [])
+        manual_overrides.update(updates.keys())
+        stakeholder_data["manual_overrides"] = sorted(manual_overrides)
+        stakeholder.stakeholder_data = stakeholder_data
+        stakeholder.updated_at = datetime.now(UTC)
         return stakeholder
 
     async def get_stakeholder_detail(self, deal_id: UUID, stakeholder_id: UUID) -> dict | None:
@@ -696,11 +731,6 @@ def create_insight(
         title=title or f"Test Insight {uuid4().hex[:4]}",
         **kwargs,
     )
-
-
-# =============================================================================
-# PYTEST FIXTURES
-# =============================================================================
 
 
 # =============================================================================

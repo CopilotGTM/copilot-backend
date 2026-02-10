@@ -462,6 +462,49 @@ class CreateStakeholderRequest(BaseModel):
     )
 
 
+class UpdateStakeholderRequest(BaseModel):
+    """Request model for partially updating an existing stakeholder."""
+
+    name: str | None = Field(
+        None,
+        description="Full name of the stakeholder",
+    )
+    job_title: str | None = Field(
+        None,
+        description="Job title (e.g., 'VP of Engineering', 'Director of IT')",
+    )
+    department: str | None = Field(
+        None,
+        description="Department (e.g., 'Engineering', 'Finance', 'IT')",
+    )
+    stance: StakeholderStance | None = Field(
+        None,
+        description="Stakeholder's current stance toward your solution",
+    )
+    decision_power: DecisionPower | None = Field(
+        None,
+        description="Stakeholder's role in the buying decision",
+    )
+    champion_potential: float | None = Field(
+        None,
+        ge=0,
+        le=100,
+        description="Champion potential score (0-100)",
+    )
+    motivation: str | None = Field(
+        None,
+        description="What drives this stakeholder? What do they care about?",
+    )
+    pain_points: list[str] | None = Field(
+        None,
+        description="Challenges or problems they've mentioned",
+    )
+    external_links: list[StakeholderLink] | None = Field(
+        None,
+        description="External profile links (LinkedIn, Twitter, etc.)",
+    )
+
+
 class AvailableContactItem(BaseModel):
     """Contact available for adding as a stakeholder.
 
