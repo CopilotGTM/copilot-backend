@@ -67,6 +67,9 @@ class DealListItem(BaseModel):
     name: str | None
     amount: float | None
     currency: str | None
+    currency_symbol: str | None = Field(
+        None, description="Display symbol derived from currency code (for example $, ₹)."
+    )
     deal_status: str
     probability: float | None
     close_date: datetime | None
@@ -104,14 +107,64 @@ class DealListItem(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class DealImportJobStatus(BaseModel):
+    """Active deal import job details for SSE reconnection from list screens."""
+
+    job_id: UUID = Field(..., description="Deal import job ID")
+    job_type: str = Field(..., description="Job type (always `deal_import` for this payload)")
+    status: str = Field(..., description="Current job status")
+    stream_url: str = Field(..., description="SSE URL to reconnect to the active import job")
+
+
 class DealsPage(BaseModel):
     """Paginated list of deals."""
 
     items: list[DealListItem]
+    active_import_job: DealImportJobStatus | None = Field(
+        None,
+        description=(
+            "Current user's active deal import job (if any). "
+            "Use this to reconnect to import SSE after page refresh."
+        ),
+    )
     page: int = Field(..., description="Current page number (1-indexed)")
     limit: int = Field(..., description="Maximum number of items per page")
     total_count: int = Field(..., description="Total number of deals matching filters")
     total_pages: int = Field(..., description="Total number of pages")
+
+
+class DealCustomColumnDefinition(BaseModel):
+    """Custom column metadata for frontend control rendering.
+
+    Returned inline with deal detail to avoid an additional fetch for custom
+    field schema before rendering edit controls. This keeps frontend rendering
+    deterministic even when custom values are null.
+    """
+
+    key: str = Field(..., description="Stable custom field key")
+    label: str = Field(..., description="Display label for the field")
+    data_type: str = Field(
+        ...,
+        description=(
+            "Custom field type used to choose UI controls "
+            "(text/number/integer/boolean/date/datetime/currency/etc.)"
+        ),
+    )
+    required: bool = Field(False, description="Whether value is required")
+    options: dict[str, Any] = Field(default_factory=dict, description="Type-specific UI options")
+    validation: dict[str, Any] = Field(
+        default_factory=dict, description="Validation metadata for frontend hints"
+    )
+    currency_code: str | None = Field(
+        None,
+        description=(
+            "Currency code context for currency custom fields. "
+            "Defaults to the deal currency when field-level override is absent."
+        ),
+    )
+    currency_symbol: str | None = Field(
+        None, description="Currency symbol resolved from currency_code (for example $, ₹)."
+    )
 
 
 class DealDetail(BaseModel):
@@ -125,16 +178,31 @@ class DealDetail(BaseModel):
     # Deal value
     amount: float | None
     currency: str | None
+    currency_symbol: str | None = Field(
+        None, description="Display symbol derived from currency code (for example $, ₹)."
+    )
+    predicted_amount: float | None = None
 
     # Status & Stage
     deal_status: str
+    probability: float | None = None
+    forecast_category: str | None = None
     stage_name: str | None
     stage_label: str | None
+    stage_external_id: str | None = None
+    pipeline_name: str | None = None
+    pipeline_label: str | None = None
+    pipeline_external_id: str | None = None
 
     # Timeline (frontend: Creation Date, Close Date, Deal Age, Last Communication)
     source_created_at: datetime | None
     close_date: datetime | None
+    expected_close_date: datetime | None = None
+    closed_won_at: datetime | None = None
+    closed_lost_at: datetime | None = None
     last_activity_at: datetime | None
+    stage_entered_at: datetime | None = None
+    stage_updated_at: datetime | None = None
     deal_age_days: int | None = Field(None, description="Days since deal was created")
 
     # Owner & Team
@@ -148,8 +216,21 @@ class DealDetail(BaseModel):
     )
 
     # Company/Industry
+    company_external_id: str | None = None
     company_name: str | None = None
+    company_domain: str | None = None
     company_industry: str | None = Field(None, description="Industry of the associated company")
+    primary_contact_external_id: str | None = None
+    primary_contact_name: str | None = None
+    primary_contact_email: str | None = None
+
+    # Additional details
+    deal_type: str | None = None
+    priority: str | None = None
+    lead_source: str | None = None
+    closed_reason: str | None = None
+    crm_url: str | None = None
+    description: str | None = None
 
     # Deal health assessment
     deal_health: str | None = Field(
@@ -167,8 +248,31 @@ class DealDetail(BaseModel):
         description="True if this is an internal CRM deal (editable), False if from external CRM (read-only).",
     )
 
+    # Internal CRM import custom columns (custom_* from CSV imports).
+    custom_columns: dict[str, Any] | None = Field(
+        None,
+        description="Imported custom column key/value pairs for internal CRM deals. Null when absent or for external CRM deals.",
+    )
+    custom_column_definitions: list[DealCustomColumnDefinition] | None = Field(
+        None,
+        description=(
+            "Active custom field definitions for internal CRM deals. "
+            "Frontend should use data_type to render date/datetime/currency controls."
+        ),
+    )
+
     # Time tracked (placeholder for future implementation)
     time_tracked: str | None = Field(None, description="Total time tracked on this deal")
+
+    # System/read-only metadata
+    source_modified_at: datetime | None = None
+    last_seen_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+    synced_at: datetime
+    associated_contact_count: int | None = None
+    associated_company_count: int | None = None
+    note_count: int | None = None
 
     # Deal Summary (AI-generated)
     deal_summary_data: dict[str, Any] | None = Field(

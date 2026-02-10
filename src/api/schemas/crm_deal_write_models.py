@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -15,8 +16,10 @@ class DealAccountInput(BaseModel):
     domain: str | None = None
     website: str | None = None
     linkedin_url: str | None = None
+    industry: str | None = None
+    country: str | None = None
 
-    @field_validator("name", "domain", "website", "linkedin_url")
+    @field_validator("name", "domain", "website", "linkedin_url", "industry", "country")
     @classmethod
     def normalize_strings(cls, v: str | None) -> str | None:
         if v is None:
@@ -70,7 +73,7 @@ class DealCreateRequest(BaseModel):
             raise ValueError("Deal name cannot be empty")
         return value
 
-    @field_validator("currency")
+    @field_validator("currency", mode="before")
     @classmethod
     def normalize_currency(cls, v: str | None) -> str | None:
         if v is None:
@@ -85,6 +88,8 @@ class DealCreateRequest(BaseModel):
                 self.account.domain,
                 self.account.website,
                 self.account.linkedin_url,
+                self.account.industry,
+                self.account.country,
             ]
         ):
             self.account = None
@@ -105,6 +110,9 @@ class DealUpdateRequest(BaseModel):
     deal_type: str | None = None
     priority: str | None = None
     lead_source: str | None = None
+    probability: float | None = Field(default=None, ge=0, le=100)
+    forecast_category: str | None = None
+    custom_properties: dict[str, Any] | None = None
 
     @field_validator("name")
     @classmethod
@@ -114,12 +122,71 @@ class DealUpdateRequest(BaseModel):
         value = v.strip()
         return value or None
 
-    @field_validator("currency")
+    @field_validator("currency", mode="before")
     @classmethod
     def normalize_currency(cls, v: str | None) -> str | None:
         if v is None:
             return None
         return v.strip().upper() or None
+
+    @field_validator(
+        "description",
+        "deal_type",
+        "priority",
+        "lead_source",
+        "forecast_category",
+    )
+    @classmethod
+    def normalize_optional_text(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        value = v.strip()
+        return value or None
+
+
+class DealPrimaryContactUpdateRequest(BaseModel):
+    """Request payload to update primary contact details for an internal CRM deal."""
+
+    primary_contact_name: str | None = None
+    primary_contact_email: str | None = None
+
+    @field_validator("primary_contact_name", "primary_contact_email")
+    @classmethod
+    def normalize_strings(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        value = v.strip()
+        return value or None
+
+
+class DealCloseRequest(BaseModel):
+    """Request payload to close an internal CRM deal as won or lost."""
+
+    outcome: Literal["won", "lost"]
+    closed_reason: str | None = Field(default=None, max_length=255)
+    close_date: datetime | None = None
+    stage_id: UUID | None = None
+
+    @field_validator("closed_reason")
+    @classmethod
+    def normalize_closed_reason(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        value = v.strip()
+        return value or None
+
+    @model_validator(mode="after")
+    def validate_reason_policy(self) -> DealCloseRequest:
+        if self.outcome == "lost" and not self.closed_reason:
+            raise ValueError("closed_reason is required when outcome is 'lost'")
+        return self
+
+
+class DealReopenRequest(BaseModel):
+    """Request payload to reopen a previously closed internal CRM deal."""
+
+    stage_id: UUID | None = None
+    clear_closed_reason: bool = False
 
 
 class DealStageMoveRequest(BaseModel):

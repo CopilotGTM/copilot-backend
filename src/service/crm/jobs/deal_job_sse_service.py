@@ -33,8 +33,6 @@ class DealJobSSEService:
         self.job_id = str(job_id)
         self.user_id = str(user_id)
         self.stream_key = channel_for_deal_job(self.organisation_id, self.job_id)
-        self.consumer_group = f"sse_consumers_{self.job_id}"
-        self.consumer_name = f"user_{self.user_id}"
         self._streams: AsyncRedisStreams | None = None
 
     async def close(self) -> None:
@@ -48,6 +46,7 @@ class DealJobSSEService:
     async def stream_events(
         self,
         *,
+        resume_from_id: str | None = None,
         timeout_seconds: int = 300,  # 5 min timeout
         heartbeat_interval: float = 25.0,
     ) -> AsyncGenerator[dict, None]:
@@ -57,15 +56,35 @@ class DealJobSSEService:
         Handles the following edge cases:
         1. Job already completed - returns cached result immediately
         2. Job in progress - streams events from Redis
-        3. User reconnects mid-job - resumes from where they left off (consumer group)
+        3. User reconnects mid-job - resumes from Last-Event-ID when provided
 
         Args:
             timeout_seconds: Max time before timing out the stream
             heartbeat_interval: Time between heartbeat pings
         """
 
-        # Check job status first (handles reconnection scenario)
-        job_status, result_data = await self._get_job_status()
+        # Check job status first (handles reconnection and authorization scenarios)
+        job_status, result_data, access_denied = await self._get_job_status()
+
+        if access_denied:
+            logger.warning(
+                "Deal job SSE access denied org=%s job=%s user=%s",
+                self.organisation_id,
+                self.job_id,
+                self.user_id,
+            )
+            yield {"event": "ready", "data": json.dumps({"job_id": self.job_id})}
+            yield {
+                "event": "error",
+                "data": json.dumps(
+                    {
+                        "job_id": self.job_id,
+                        "message": "Access denied for this job",
+                        "reconnect": False,
+                    }
+                ),
+            }
+            return
 
         if job_status == JobStatus.COMPLETED:
             # Job finished before or during disconnect - send cached result
@@ -112,11 +131,12 @@ class DealJobSSEService:
         self._streams = AsyncRedisStreams()
 
         logger.info(
-            "Deal job SSE connect org=%s job=%s stream=%s user=%s",
+            "Deal job SSE connect org=%s job=%s stream=%s user=%s resume_from=%s",
             self.organisation_id,
             self.job_id,
             self.stream_key,
             self.user_id,
+            resume_from_id,
         )
 
         # Initial ready event
@@ -126,15 +146,10 @@ class DealJobSSEService:
             loop = asyncio.get_event_loop()
             start_time = loop.time()
             last_heartbeat = start_time
+            next_id = resume_from_id or "0-0"
+            block_ms = int((heartbeat_interval / 2) * 1000)
 
-            async for entry_id, frame in self._streams.read_forever_consumer_group(
-                self.stream_key,
-                self.consumer_group,
-                self.consumer_name,
-                auto_ack=True,
-                block_ms=int((heartbeat_interval / 2) * 1000),
-                count=50,
-            ):
+            while True:
                 # Check timeout
                 now = loop.time()
                 if timeout_seconds and (now - start_time) > timeout_seconds:
@@ -154,17 +169,28 @@ class DealJobSSEService:
                     last_heartbeat = now
                     yield {"event": "ping", "data": json.dumps({"t": int(now)})}
 
-                # Send frame event (includes job_type from the worker)
-                yield {"id": entry_id, "event": "frame", "data": json.dumps(frame)}
+                entries = await self._streams.xread(
+                    self.stream_key,
+                    next_id,
+                    block_ms=block_ms,
+                    count=50,
+                )
+                if not entries:
+                    continue
 
-                # Check for completion
-                if frame.get("type") == "finalize":
-                    yield {
-                        "event": "complete",
-                        "data": json.dumps({"job_id": self.job_id}),
-                    }
-                    await self._cleanup_stream()
-                    return
+                for entry_id, frame in entries:
+                    next_id = entry_id
+                    # Send frame event (includes job_type from the worker)
+                    yield {"id": entry_id, "event": "frame", "data": json.dumps(frame)}
+
+                    # Check for completion
+                    if frame.get("type") == "finalize":
+                        yield {
+                            "event": "complete",
+                            "data": json.dumps({"job_id": self.job_id}),
+                        }
+                        await self._cleanup_stream()
+                        return
 
         except asyncio.CancelledError:
             # Client disconnected - this is expected, log at debug level
@@ -188,20 +214,40 @@ class DealJobSSEService:
         finally:
             await self.close()
 
-    async def _get_job_status(self) -> tuple[JobStatus | None, dict | None]:
+    async def ensure_user_access(self) -> bool | None:
+        """Check whether the current user can access this job.
+
+        Returns:
+            True: Job exists and belongs to the current user.
+            False: Job exists but belongs to a different user.
+            None: Job missing or status check unavailable.
+        """
+        try:
+            async for session in acquire_org_async_session(UUID(self.organisation_id)):
+                job = await session.get(DealJobs, UUID(self.job_id))
+                if not job:
+                    return None
+                return str(job.user_id) == self.user_id
+        except Exception:
+            logger.debug("Failed to validate deal job access", exc_info=True)
+        return None
+
+    async def _get_job_status(self) -> tuple[JobStatus | None, dict | None, bool]:
         """Get current job status and result from database."""
         try:
             async for session in acquire_org_async_session(UUID(self.organisation_id)):
                 job = await session.get(DealJobs, UUID(self.job_id))
                 if not job:
-                    return None, None
-                return job.status, job.result_data
+                    return None, None, False
+                if str(job.user_id) != self.user_id:
+                    return None, None, True
+                return job.status, job.result_data, False
         except Exception:
             logger.debug("Failed to check job status", exc_info=True)
-            return None, None
+            return None, None, False
 
     async def _cleanup_stream(self) -> None:
-        """Clean up Redis stream after completion."""
+        """Delete the per-job Redis stream after completion."""
         try:
             if self._streams:
                 await self._streams.delete_stream(self.stream_key)

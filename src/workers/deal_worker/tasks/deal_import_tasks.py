@@ -18,6 +18,33 @@ from src.workers.deal_worker.services.deal_job_publisher import DealJobRedisPubl
 logger = get_logger(__name__)
 
 
+def _coerce_bool(value: object, default: bool) -> bool:
+    """Coerce persisted metadata values into strict booleans."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes", "y"}:
+            return True
+        if lowered in {"false", "0", "no", "n"}:
+            return False
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return default
+
+
+def _mark_job_failed(organisation_id: UUID, job_id: UUID, error_message: str) -> None:
+    async def _run_mark_failed():
+        async for session in acquire_org_async_session(organisation_id):
+            job = await session.get(DealJobs, job_id)
+            if job:
+                job.status = JobStatus.FAILED
+                job.error_message = error_message
+                await session.commit()
+
+    run_async(_run_mark_failed())
+
+
 @app.task(bind=True, name="deal_import_task.process", acks_late=True, max_retries=2)
 def process_deal_import_job(self: Task, organisation_id: str, job_id: str):
     logger.info("Processing deal import job org=%s job=%s", organisation_id, job_id)
@@ -26,7 +53,8 @@ def process_deal_import_job(self: Task, organisation_id: str, job_id: str):
         org_uuid = UUID(organisation_id)
         job_uuid = UUID(job_id)
 
-        # Load job metadata and mark in progress
+        # Session is released after this block — we extract metadata into local vars
+        # so the DB connection returns to the pool before the long-running import starts
         async for session in acquire_org_async_session(org_uuid):
             job = await session.get(DealJobs, job_uuid)
             if not job:
@@ -36,6 +64,9 @@ def process_deal_import_job(self: Task, organisation_id: str, job_id: str):
             job_metadata = job.job_metadata or {}
             storage_path = job_metadata.get("storage_path")
             actor_user_id = job.user_id
+            import_mode = str(job_metadata.get("import_mode") or "upsert").strip().lower()
+            emit_row_events = _coerce_bool(job_metadata.get("emit_row_events"), True)
+            strict_validation = _coerce_bool(job_metadata.get("strict_validation"), False)
 
         if not storage_path:
             raise DealWriteServiceError("Deal import job missing storage_path", status_code=400)
@@ -46,10 +77,14 @@ def process_deal_import_job(self: Task, organisation_id: str, job_id: str):
             actor_user_id=actor_user_id,
             storage_path=storage_path,
             publisher=publisher,
+            import_mode=import_mode,
+            emit_row_events=emit_row_events,
+            strict_validation=strict_validation,
         )
 
         result_data = await service.process()
 
+        # Persist result to DB so clients that reconnect after completion can still get it
         async for session in acquire_org_async_session(org_uuid):
             job = await session.get(DealJobs, job_uuid)
             if job:
@@ -73,23 +108,27 @@ def process_deal_import_job(self: Task, organisation_id: str, job_id: str):
     except DealWriteServiceError as exc:
         error_message = exc.message
         logger.info("Deal import job failed %s: %s", job_id, error_message)
-        publisher = DealJobRedisPublisher(
-            UUID(organisation_id), UUID(job_id), DealJobType.DEAL_IMPORT.value
-        )
-
-        async def _mark_failed():
-            async for session in acquire_org_async_session(UUID(organisation_id)):
-                job = await session.get(DealJobs, UUID(job_id))
-                if job:
-                    job.status = JobStatus.FAILED
-                    job.error_message = error_message
-                    await session.commit()
-
-        run_async(_mark_failed())
+        org_uuid = UUID(organisation_id)
+        job_uuid = UUID(job_id)
+        publisher = DealJobRedisPublisher(org_uuid, job_uuid, DealJobType.DEAL_IMPORT.value)
+        _mark_job_failed(org_uuid, job_uuid, error_message)
         publisher.publish_error(error_message, "import_failed")
         publisher.publish_finalize("error")
         return {"status": "failed", "job_id": job_id, "error": error_message}
     except Exception as exc:
         logger.error("Deal import task failed %s: %s", job_id, exc, exc_info=True)
+        retries = getattr(self.request, "retries", 0)
+        max_retries = getattr(self, "max_retries", 0) or 0
+        if retries >= max_retries:
+            error_message = f"Deal import task failed after retries: {exc}"
+            logger.error("Deal import job reached max retries %s: %s", job_id, error_message)
+            org_uuid = UUID(organisation_id)
+            job_uuid = UUID(job_id)
+            _mark_job_failed(org_uuid, job_uuid, error_message)
+            publisher = DealJobRedisPublisher(org_uuid, job_uuid, DealJobType.DEAL_IMPORT.value)
+            publisher.publish_error(error_message, "import_failed")
+            publisher.publish_finalize("error")
+            return {"status": "failed", "job_id": job_id, "error": error_message}
+
         # Exponential backoff
-        raise self.retry(exc=exc, countdown=60 * (2**self.request.retries)) from exc
+        raise self.retry(exc=exc, countdown=60 * (2**retries)) from exc

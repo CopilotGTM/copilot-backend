@@ -101,7 +101,12 @@ class InternalCRMSetupService:
         self.user_id = user_id
 
     async def setup_internal_crm(self, *, commit: bool = True) -> InternalCRMSetupResult:
-        """Ensure internal CRM integration and default pipeline exist."""
+        """Ensure internal CRM integration and default pipeline exist.
+
+        Called during org creation (organization_management) and by the
+        ensure_internal_crm_setup maintenance script. Creates missing
+        integration, pipeline, and default stages if they don't exist.
+        """
         integration = await self._ensure_internal_integration()
         pipeline, stages = await self._ensure_default_pipeline(integration.integration_id)
         if commit:
@@ -109,7 +114,11 @@ class InternalCRMSetupService:
         return InternalCRMSetupResult(integration=integration, pipeline=pipeline, stages=stages)
 
     async def get_status(self) -> InternalCRMSetupResult | None:
-        """Return existing internal CRM setup status or None if not configured."""
+        """Return the existing default pipeline + its stages, or None if not configured.
+
+        Read-only: does NOT create missing records (create_missing=False).
+        Used by deal import to load the default pipeline context.
+        """
         integration = await self._get_internal_integration()
         if not integration:
             return None
@@ -124,7 +133,7 @@ class InternalCRMSetupService:
         return InternalCRMSetupResult(integration=integration, pipeline=pipeline, stages=stages)
 
     async def get_internal_integration(self) -> KnowledgeIntegration | None:
-        """Return the internal CRM integration if configured."""
+        """Return the internal CRM integration record, or None if not set up."""
         return await self._get_internal_integration()
 
     async def _get_internal_integration(self) -> KnowledgeIntegration | None:
@@ -241,6 +250,30 @@ class InternalCRMSetupService:
             await self.session.flush()
 
         return pipeline, stages
+
+    async def get_all_pipelines(self, integration_id: UUID) -> list[CRMPipeline]:
+        """Return all active pipelines for the given integration."""
+        stmt = (
+            select(CRMPipeline)
+            .where(
+                col(CRMPipeline.organisation_id) == self.organisation_id,
+                col(CRMPipeline.integration_id) == integration_id,
+                col(CRMPipeline.is_deleted).is_(False),
+            )
+            .order_by(col(CRMPipeline.display_order).asc().nulls_last())
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def get_all_stages(self, integration_id: UUID) -> list[CRMDealStage]:
+        """Return all active stages for the given integration."""
+        stmt = select(CRMDealStage).where(
+            col(CRMDealStage.organisation_id) == self.organisation_id,
+            col(CRMDealStage.integration_id) == integration_id,
+            col(CRMDealStage.is_deleted).is_(False),
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
 
     async def _load_pipeline_stages(self, pipeline_id: UUID) -> list[CRMDealStage]:
         stmt = select(CRMDealStage).where(

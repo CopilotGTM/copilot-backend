@@ -3,6 +3,8 @@ Tests for CRM Deals API endpoints.
 """
 
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -176,6 +178,74 @@ def test_list_deals_with_owner(client: TestClient, deals_dependency_overrides):
     assert item["owner_details"][0]["name"] == "John Sales"
 
 
+def test_list_deals_returns_currency_symbol_and_normalized_code(
+    client: TestClient, deals_dependency_overrides
+):
+    """Deal list should return uppercase currency code and matching symbol."""
+    deals_service = deals_dependency_overrides["deals_service"]
+    org_id = deals_dependency_overrides["user_ids"]["organisation_id"]
+
+    deal = create_deal(org_id, name="INR Deal", currency="inr")
+    deals_service.add_deal(deal)
+
+    resp = client.get("/users/crm/deals")
+    assert resp.status_code == 200, resp.text
+    item = resp.json()["data"]["items"][0]
+    assert item["currency"] == "INR"
+    assert item["currency_symbol"] == "₹"
+
+
+def test_list_deals_currency_normalization_handles_code_with_symbol(
+    client: TestClient, deals_dependency_overrides
+):
+    deals_service = deals_dependency_overrides["deals_service"]
+    org_id = deals_dependency_overrides["user_ids"]["organisation_id"]
+
+    deal = create_deal(org_id, name="INR Decorated", currency="INR (₹)")
+    deals_service.add_deal(deal)
+
+    resp = client.get("/users/crm/deals")
+    assert resp.status_code == 200, resp.text
+    item = resp.json()["data"]["items"][0]
+    assert item["currency"] == "INR"
+    assert item["currency_symbol"] == "₹"
+
+
+def test_list_deals_includes_active_import_job_for_reconnect(
+    client: TestClient, deals_dependency_overrides, monkeypatch
+):
+    deals_service = deals_dependency_overrides["deals_service"]
+    org_id = deals_dependency_overrides["user_ids"]["organisation_id"]
+    user_id = deals_dependency_overrides["user_ids"]["user_id"]
+    deals_service.add_deal(create_deal(org_id, name="Reconnect Deal"))
+    deals_service.session = object()
+
+    active_job_id = uuid4()
+    stream_url = f"/users/crm/deals/import/jobs/{active_job_id}/events"
+    mock_active_import_job = AsyncMock(
+        return_value={
+            "job_id": active_job_id,
+            "job_type": "deal_import",
+            "status": "in_progress",
+            "stream_url": stream_url,
+        }
+    )
+    monkeypatch.setattr(
+        "src.api.routers.crm.deals_handler._get_active_import_job_for_user",
+        mock_active_import_job,
+    )
+
+    resp = client.get("/users/crm/deals")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["active_import_job"] is not None
+    assert data["active_import_job"]["job_id"] == str(active_job_id)
+    assert data["active_import_job"]["job_type"] == "deal_import"
+    assert data["active_import_job"]["status"] == "in_progress"
+    assert data["active_import_job"]["stream_url"] == stream_url
+    mock_active_import_job.assert_awaited_once_with(deals_service.session, org_id, user_id)
+
+
 # =============================================================================
 # GET /deals/stats - Deal Statistics Tests
 # =============================================================================
@@ -253,6 +323,49 @@ def test_get_deal_success(client: TestClient, deals_dependency_overrides):
     data = body["data"]
     assert data["name"] == "Test Deal"
     assert str(data["deal_id"]) == str(deal.deal_id)
+    assert data["currency"] == "USD"
+    assert data["currency_symbol"] == "$"
+
+
+def test_get_deal_returns_expanded_detail_fields(client: TestClient, deals_dependency_overrides):
+    """Deal detail should include expanded core/timeline/metadata fields."""
+    deals_service = deals_dependency_overrides["deals_service"]
+    org_id = deals_dependency_overrides["user_ids"]["organisation_id"]
+
+    now = datetime.now(UTC)
+    deal = create_deal(
+        org_id,
+        name="Expanded Deal",
+        predicted_amount=32000.0,
+        forecast_category="Commit",
+        expected_close_date=now,
+        closed_reason="Budget shift",
+        crm_url="https://crm.example/deal/123",
+        deal_type="Expansion",
+        priority="High",
+        lead_source="Inbound",
+        source_modified_at=now,
+        associated_contact_count=3,
+        associated_company_count=1,
+        note_count=5,
+    )
+    deals_service.add_deal(deal)
+
+    resp = client.get(f"/users/crm/deals/{deal.deal_id}")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["predicted_amount"] == 32000.0
+    assert data["forecast_category"] == "Commit"
+    assert data["expected_close_date"] is not None
+    assert data["closed_reason"] == "Budget shift"
+    assert data["crm_url"] == "https://crm.example/deal/123"
+    assert data["deal_type"] == "Expansion"
+    assert data["priority"] == "High"
+    assert data["lead_source"] == "Inbound"
+    assert data["source_modified_at"] is not None
+    assert data["associated_contact_count"] == 3
+    assert data["associated_company_count"] == 1
+    assert data["note_count"] == 5
 
 
 def test_get_deal_not_found(client: TestClient, deals_dependency_overrides):
@@ -321,6 +434,194 @@ def test_get_deal_with_team(client: TestClient, deals_dependency_overrides):
     body = resp.json()
     data = body["data"]
     assert len(data["deal_team"]) == 2
+
+
+def test_get_deal_includes_custom_columns_for_internal(
+    client: TestClient, deals_dependency_overrides, mocker
+):
+    """Internal deals should expose custom imported properties as custom_columns."""
+    deals_service = deals_dependency_overrides["deals_service"]
+    org_id = deals_dependency_overrides["user_ids"]["organisation_id"]
+
+    integration_id = uuid4()
+    deal = create_deal(org_id, name="Internal Custom Deal")
+    deal.integration_id = integration_id
+    deal.properties = {
+        "is_internal_crm": True,
+        "created_via": "import",
+        "custom_scope": "Geo & Infra",
+        "our_revenue_inr": "25000000",
+    }
+    deals_service.add_deal(deal)
+
+    mocker.patch(
+        "src.api.routers.crm.deals_handler._get_integration_types_map",
+        new=AsyncMock(return_value={integration_id: True}),
+    )
+
+    resp = client.get(f"/users/crm/deals/{deal.deal_id}")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    data = body["data"]
+    assert data["is_internal"] is True
+    assert data["custom_columns"] == {
+        "custom_scope": "Geo & Infra",
+        "our_revenue_inr": "25000000",
+    }
+
+
+def test_get_deal_includes_empty_custom_columns_from_definitions(
+    client: TestClient, deals_dependency_overrides, mocker
+):
+    """Internal deal detail should include active custom keys even when values are missing."""
+    deals_service = deals_dependency_overrides["deals_service"]
+    org_id = deals_dependency_overrides["user_ids"]["organisation_id"]
+
+    integration_id = uuid4()
+    deal = create_deal(org_id, name="Internal Custom Deal With Empty Fields")
+    deal.integration_id = integration_id
+    deal.properties = {
+        "is_internal_crm": True,
+        "created_via": "import",
+        "our_revenue_inr": "25000000",
+    }
+    deals_service.add_deal(deal)
+
+    mocker.patch(
+        "src.api.routers.crm.deals_handler._get_integration_types_map",
+        new=AsyncMock(return_value={integration_id: True}),
+    )
+    mocker.patch(
+        "src.api.routers.crm.deals_handler._get_active_deal_custom_field_keys",
+        new=AsyncMock(return_value=["our_revenue_inr", "next_follow_up_date"]),
+    )
+
+    resp = client.get(f"/users/crm/deals/{deal.deal_id}")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    data = body["data"]
+    assert data["is_internal"] is True
+    assert data["custom_columns"] == {
+        "our_revenue_inr": "25000000",
+        "next_follow_up_date": None,
+    }
+
+
+def test_get_deal_custom_columns_populated_only_mode(
+    client: TestClient, deals_dependency_overrides, mocker
+):
+    """When include_empty_custom_columns=false, only populated custom values should be returned."""
+    deals_service = deals_dependency_overrides["deals_service"]
+    org_id = deals_dependency_overrides["user_ids"]["organisation_id"]
+
+    integration_id = uuid4()
+    deal = create_deal(org_id, name="Internal Custom Deal Populated Only")
+    deal.integration_id = integration_id
+    deal.properties = {
+        "is_internal_crm": True,
+        "created_via": "import",
+        "our_revenue_inr": "25000000",
+    }
+    deals_service.add_deal(deal)
+
+    mocker.patch(
+        "src.api.routers.crm.deals_handler._get_integration_types_map",
+        new=AsyncMock(return_value={integration_id: True}),
+    )
+    custom_keys_mock = mocker.patch(
+        "src.api.routers.crm.deals_handler._get_active_deal_custom_field_keys",
+        new=AsyncMock(return_value=["our_revenue_inr", "next_follow_up_date"]),
+    )
+
+    resp = client.get(
+        f"/users/crm/deals/{deal.deal_id}",
+        params={"include_empty_custom_columns": False},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    data = body["data"]
+    assert data["custom_columns"] == {
+        "our_revenue_inr": "25000000",
+    }
+    custom_keys_mock.assert_not_called()
+
+
+def test_get_deal_includes_custom_column_definitions_with_types(
+    client: TestClient, deals_dependency_overrides, mocker
+):
+    """Internal deal detail should include custom field type metadata for frontend controls."""
+    deals_service = deals_dependency_overrides["deals_service"]
+    org_id = deals_dependency_overrides["user_ids"]["organisation_id"]
+
+    integration_id = uuid4()
+    deal = create_deal(org_id, name="Internal Typed Custom Deal", currency="INR")
+    deal.integration_id = integration_id
+    deal.properties = {"custom_start_at": "2026-02-10T10:00:00Z", "custom_budget": "2500000"}
+    deals_service.add_deal(deal)
+
+    mocker.patch(
+        "src.api.routers.crm.deals_handler._get_integration_types_map",
+        new=AsyncMock(return_value={integration_id: True}),
+    )
+    mocker.patch(
+        "src.api.routers.crm.deals_handler._get_active_deal_custom_field_definitions",
+        new=AsyncMock(
+            return_value=[
+                SimpleNamespace(
+                    key="custom_start_at",
+                    label="Start At",
+                    data_type="datetime",
+                    required=False,
+                    options={},
+                    validation={},
+                ),
+                SimpleNamespace(
+                    key="custom_budget",
+                    label="Budget",
+                    data_type="currency",
+                    required=False,
+                    options={},
+                    validation={},
+                ),
+            ]
+        ),
+    )
+
+    resp = client.get(f"/users/crm/deals/{deal.deal_id}")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    definitions = {item["key"]: item for item in data["custom_column_definitions"]}
+    assert definitions["custom_start_at"]["data_type"] == "datetime"
+    assert definitions["custom_start_at"]["currency_code"] is None
+    assert definitions["custom_budget"]["data_type"] == "currency"
+    assert definitions["custom_budget"]["currency_code"] == "INR"
+    assert definitions["custom_budget"]["currency_symbol"] == "₹"
+
+
+def test_get_deal_omits_custom_columns_for_external(
+    client: TestClient, deals_dependency_overrides, mocker
+):
+    """External deals should not expose internal custom details."""
+    deals_service = deals_dependency_overrides["deals_service"]
+    org_id = deals_dependency_overrides["user_ids"]["organisation_id"]
+
+    integration_id = uuid4()
+    deal = create_deal(org_id, name="External Deal")
+    deal.integration_id = integration_id
+    deal.properties = {"custom_scope": "Should Not Surface"}
+    deals_service.add_deal(deal)
+
+    mocker.patch(
+        "src.api.routers.crm.deals_handler._get_integration_types_map",
+        new=AsyncMock(return_value={integration_id: False}),
+    )
+
+    resp = client.get(f"/users/crm/deals/{deal.deal_id}")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    data = body["data"]
+    assert data["is_internal"] is False
+    assert data["custom_columns"] is None
 
 
 def test_get_deal_with_company_industry(client: TestClient, deals_dependency_overrides):
