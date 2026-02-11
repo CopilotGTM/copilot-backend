@@ -19,7 +19,7 @@
 # ============================================================================
 
 # Build args for flexibility
-ARG PYTHON_VERSION=3.11.10
+ARG PYTHON_VERSION=3.11.11
 ARG UV_VERSION=0.5.13
 # Security: Fixed UID/GID for reproducibility and K8s compatibility (CIS 4.1)
 ARG APP_UID=10001

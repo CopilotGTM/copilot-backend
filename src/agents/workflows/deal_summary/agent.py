@@ -15,7 +15,7 @@ SECURITY BOUNDARIES (immutable, baked into context):
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from agno.agent import Agent
@@ -160,4 +160,25 @@ class DealSummaryAgent:
 
         logger.info("DealSummaryAgent completed summary generation for deal %s", input_data.deal_id)
 
-        return cast(DealSummaryData, response.content)
+        return self._normalize_summary_output(response.content)
+
+    def _normalize_summary_output(self, content: Any) -> DealSummaryData:
+        """Normalize model output into DealSummaryData or raise a clear error."""
+        if isinstance(content, DealSummaryData):
+            return content
+
+        if isinstance(content, dict):
+            try:
+                return DealSummaryData.model_validate(content)
+            except Exception as exc:  # pragma: no cover - defensive guard
+                raise ValueError(
+                    f"Deal summary agent returned schema payload that failed validation: {exc}"
+                ) from exc
+
+        if isinstance(content, str):
+            text = content.strip() or "Empty response"
+            raise ValueError(f"Deal summary agent returned plain text instead of schema: {text}")
+
+        raise ValueError(
+            f"Deal summary agent returned unsupported content type: {type(content).__name__}"
+        )

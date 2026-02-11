@@ -70,7 +70,7 @@ class ToolName(str, Enum):
     LIST_DEAL_STAKEHOLDERS = "list_deal_stakeholders"
     GET_STAKEHOLDER_DETAILS = "get_stakeholder_details"
     LIST_DEAL_STAKEHOLDER_INSIGHTS = "list_deal_stakeholder_insights"
-    CREATE_STAKEHOLDER = "create_stakeholder"  # Create new stakeholders during analysis
+    UPSERT_STAKEHOLDER = "upsert_stakeholder"  # Create-or-update stakeholder by email
     ENRICH_STAKEHOLDER = "enrich_stakeholder"  # Enrich stakeholder with LinkedIn data
     GET_EXISTING_RISKS_BLOCKERS = "get_existing_risks_blockers"
 
@@ -228,7 +228,7 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.LIST_DEAL_STAKEHOLDERS,
         ToolName.GET_STAKEHOLDER_DETAILS,
         ToolName.LIST_DEAL_STAKEHOLDER_INSIGHTS,  # Understand attendee dynamics
-        ToolName.CREATE_STAKEHOLDER,  # Create new stakeholders discovered in analysis
+        ToolName.UPSERT_STAKEHOLDER,  # Maintain stakeholders by email in one call
         # Communication tools
         ToolName.LIST_DEAL_EMAILS,
         ToolName.GET_EMAIL_DETAILS,
@@ -250,9 +250,10 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.LIST_DEAL_STAKEHOLDERS,
         ToolName.GET_STAKEHOLDER_DETAILS,
         ToolName.LIST_DEAL_STAKEHOLDER_INSIGHTS,  # Understand stakeholder roles/concerns
-        ToolName.CREATE_STAKEHOLDER,  # Create new stakeholders discovered in transcript
+        ToolName.UPSERT_STAKEHOLDER,  # Maintain stakeholders by email in one call
         # Risk context
         ToolName.GET_EXISTING_RISKS_BLOCKERS,  # Identify if discussed items are known risks
+        ToolName.LIST_DEAL_NOTES,  # Notes may contain additional stakeholder mentions
     },
     # -------------------------------------------------------------------------
     # DealSummaryAgent - Deal Summary Agent
@@ -269,7 +270,7 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.LIST_DEAL_STAKEHOLDERS,
         ToolName.GET_STAKEHOLDER_DETAILS,
         ToolName.LIST_DEAL_STAKEHOLDER_INSIGHTS,  # Crucial for deal analysis
-        ToolName.CREATE_STAKEHOLDER,  # Create new stakeholders discovered in analysis
+        ToolName.UPSERT_STAKEHOLDER,  # Maintain stakeholders by email in one call
         # Meeting tools
         ToolName.LIST_DEAL_MEETINGS,
         ToolName.GET_MEETING_DETAILS,
@@ -294,7 +295,7 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         # Stakeholder tools (for risk attribution)
         ToolName.LIST_DEAL_STAKEHOLDERS,  # Stakeholders can be source of blockers
         ToolName.GET_STAKEHOLDER_DETAILS,  # Context for risk attribution
-        ToolName.CREATE_STAKEHOLDER,  # Create stakeholders who are blockers
+        ToolName.UPSERT_STAKEHOLDER,  # Maintain stakeholders by email in one call
         # Meeting tools
         ToolName.LIST_DEAL_MEETINGS,
         ToolName.GET_MEETING_DETAILS,
@@ -314,7 +315,7 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         # Stakeholder tools
         ToolName.LIST_DEAL_STAKEHOLDERS,
         ToolName.GET_STAKEHOLDER_DETAILS,
-        ToolName.CREATE_STAKEHOLDER,
+        ToolName.UPSERT_STAKEHOLDER,
         ToolName.ENRICH_STAKEHOLDER,  # LinkedIn enrichment for stakeholders
         # Meeting tools (for context)
         ToolName.LIST_DEAL_MEETINGS,
@@ -341,7 +342,7 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     # CRM/Stakeholder
     ToolName.LIST_DEAL_STAKEHOLDERS: ToolCategory.CRM,
     ToolName.GET_STAKEHOLDER_DETAILS: ToolCategory.CRM,
-    ToolName.CREATE_STAKEHOLDER: ToolCategory.CRM,
+    ToolName.UPSERT_STAKEHOLDER: ToolCategory.CRM,
     ToolName.ENRICH_STAKEHOLDER: ToolCategory.CRM,
     ToolName.GET_EXISTING_RISKS_BLOCKERS: ToolCategory.CRM,
     ToolName.LIST_DEAL_NOTES: ToolCategory.CRM,
@@ -414,7 +415,6 @@ class ToolRegistry:
             create_add_deal_note,
             create_add_stakeholder,
             create_create_deal,
-            create_create_stakeholder,
             create_enrich_stakeholder,
             create_get_deal_change_history,
             create_get_deal_details,
@@ -429,6 +429,7 @@ class ToolRegistry:
             create_search_contacts,
             create_search_deals,
             create_update_deal_stage,
+            create_upsert_stakeholder,
         )
         from src.agents.tools.intelligence import (
             create_get_meeting_deal_context,
@@ -509,7 +510,7 @@ class ToolRegistry:
         self._tool_factories[ToolName.LIST_DEAL_STAKEHOLDER_INSIGHTS] = (
             lambda: create_list_deal_stakeholder_insights(self.context, self.capabilities_getter)
         )
-        self._tool_factories[ToolName.CREATE_STAKEHOLDER] = lambda: create_create_stakeholder(
+        self._tool_factories[ToolName.UPSERT_STAKEHOLDER] = lambda: create_upsert_stakeholder(
             self.context, self.capabilities_getter
         )
         self._tool_factories[ToolName.ENRICH_STAKEHOLDER] = lambda: create_enrich_stakeholder(
