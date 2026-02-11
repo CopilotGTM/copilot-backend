@@ -197,6 +197,33 @@ AGENT_DEAL_SUMMARY_DEBUG=false
 AGENT_DEAL_SUMMARY_TIMEOUT=180
 ```
 
+## CRITICAL: Agent Tooling Strategy (Agno)
+
+Agno already injects tool definitions into model context. Do not rely on model
+"smartness" alone when specific tool coverage is required.
+
+Use this hybrid pattern:
+
+1. Keep tool descriptions as the primary guidance.
+   - Each tool description should clearly state when to use it, when not to use it, and key limits.
+2. Keep prompt tool instructions minimal and strict for must-have context.
+   - Name only required tools/workflows (for example: "always call notes + meetings + emails").
+   - Do not paste large full-tool catalogs into every prompt.
+3. Scope tools per agent/workflow.
+   - Provide only the smallest relevant tool set; too many available tools lowers call reliability.
+4. Enforce critical calls with controls, not just prose.
+   - Use tool selection controls (include/exclude lists, `tool_choice`, call limits) for must-call tools.
+5. Separate required tools from optional deep-dive tools in prompts.
+   - Required tools are mandatory context gatherers.
+   - Optional tools are used only when they materially change the outcome.
+6. Add regression checks for required tool usage.
+   - Validate prompt/workflow contracts in tests so mandatory tools are not silently dropped.
+
+Single source of truth:
+- Tool availability: `src/agents/tools/registry.py`
+- Tool behavior contract: tool function docstrings/descriptions
+- Prompt workflow constraints: agent prompt files in `src/agents/workflows/*/prompts.py`
+
 ## Code Style
 
 - Line length: 100 characters

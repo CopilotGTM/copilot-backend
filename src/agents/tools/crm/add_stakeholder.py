@@ -134,7 +134,7 @@ async def add_stakeholder_form(
         ),
         FormField(
             id="decision_power",
-            label="Role",
+            label="Decision Power",
             field_type="choice",
             required=False,
             value=decision_power,

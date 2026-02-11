@@ -221,7 +221,16 @@ class DealSummaryService:
             deal_id=deal_id,
             publisher=self.publisher,
         )
-        summary_data = await agent.generate(input_data)
+        try:
+            summary_data = await agent.generate(input_data)
+        except DealSummaryError:
+            raise
+        except Exception as exc:
+            raise DealSummaryError(
+                f"AI summary generation failed: {exc}",
+                error_code="ai_generation_failed",
+                retryable=True,
+            ) from exc
 
         self._publish_progress("Saving results...", "saving", 0.95)
 

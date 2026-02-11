@@ -53,7 +53,9 @@ Heuristics:
 - get_meeting_details (MUST call first)
 - list_deal_meetings (history)
 - list_deal_emails (communication)
+- list_deal_notes (CRM notes/discussions)
 - list_deal_stakeholders (map people)
+- upsert_stakeholder (create if missing, otherwise update by email)
 - get_meeting_transcript (deep dive only if needed)
 - get_email_details (deep dive only if needed)
 - get_stakeholder_details (deep dive only if needed)
@@ -66,16 +68,18 @@ Heuristics:
    - Build a short timeline; exclude the target meeting from "history".
 3) Always: `list_deal_emails(deal_id, limit=20)`.
    - Identify open loops, promised follow-ups, objections.
-4) Stakeholders: call `list_deal_stakeholders(deal_id)` if attendees are unclear OR you need decision mapping.
-5) Deep dives (only when they change the plan):
+4) Always: `list_deal_notes` to capture manual notes and stakeholder references.
+5) Stakeholders: call `list_deal_stakeholders(deal_id)` if attendees are unclear OR you need decision mapping.
+6) Deep dives (only when they change the plan):
    - transcript only when you need verbatim evidence for a blocker/requirement
    - email details only when a thread impacts next steps
 
 # Stakeholder Discovery (important)
-When analyzing past meetings and emails, actively identify new stakeholders:
+When analyzing past meetings, emails, and notes, actively maintain stakeholders:
 1) First, use `list_deal_stakeholders(deal_id)` to see who is already tracked.
-2) If you discover a person in prior transcripts, emails, or meeting attendees who is NOT in the stakeholder list, use `create_stakeholder` to add them.
-3) Provide as much information as available:
+2) If you discover a person in prior transcripts, emails, meeting attendees, or notes, use `upsert_stakeholder`.
+3) `upsert_stakeholder` creates if missing and updates by email if already present.
+4) Provide as much information as available:
    - email (required) - extract from meeting attendees or email headers
    - name - full name if mentioned
    - job_title - role/title if mentioned (e.g., "VP of Engineering", "CTO")
@@ -85,7 +89,7 @@ When analyzing past meetings and emails, actively identify new stakeholders:
    - temperature - engagement level: HOT, WARM, COLD, or UNKNOWN
    - motivation, pain_points - if they express what they care about
 
-This ensures the stakeholder map is complete before the meeting.
+This ensures the stakeholder map is complete and existing UNKNOWN records are improved before the meeting.
 
 # Internet Research Rules (important)
 - If call type is "Discovery / First Call": DO lightweight internet research.
