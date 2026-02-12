@@ -1395,7 +1395,7 @@ class FakeDealNotesService:
         sort_order: str = "desc",
     ):
         """Get notes for a deal with pagination."""
-        from src.service.crm.deal_notes_service import DealNotesServiceError
+        from src.service.crm.internal.deal_notes_service import DealNotesServiceError
 
         # Check deal exists
         if deal_id not in self._deals:
@@ -1451,12 +1451,29 @@ class FakeDealNotesService:
         user_id: UUID,
         user_name: str | None,
         user_email: str | None,
-    ) -> FakeNote:
+    ):
         """Create a user note."""
-        from src.service.crm.deal_notes_service import DealNotesServiceError
+        from src.service.crm.internal.deal_notes_service import (
+            CreateUserNoteResult,
+            DealNotesServiceError,
+        )
 
         if deal_id not in self._deals:
             raise DealNotesServiceError("Deal not found", status_code=404)
+
+        existing = next(
+            (
+                n
+                for n in self._notes.get(deal_id, [])
+                if n.integration_id is None
+                and not n.is_deleted
+                and n.body == content
+                and n.subject == subject
+            ),
+            None,
+        )
+        if existing:
+            return CreateUserNoteResult(note=existing, created_new=False)
 
         note = FakeNote(
             activity_id=uuid4(),
@@ -1470,13 +1487,27 @@ class FakeDealNotesService:
             integration_id=None,  # User-created
         )
         self.add_note(note)
-        return note
+        return CreateUserNoteResult(note=note, created_new=True)
 
     def determine_note_source(self, note: FakeNote) -> str:
         """Determine note source."""
         if note.integration_id is None:
             return "user"
         return "hubspot"  # Default CRM source
+
+    async def trigger_deal_insight_pipeline(
+        self,
+        deal_id: UUID,
+        user_id: UUID,
+        trigger_source: str,
+    ) -> dict[str, object]:
+        """No-op pipeline trigger for API tests that mock note creation flow."""
+        return {
+            "triggered": True,
+            "deal_id": str(deal_id),
+            "user_id": str(user_id),
+            "source": trigger_source,
+        }
 
 
 class FakeSession:

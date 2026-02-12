@@ -182,7 +182,7 @@ async def create_deal_note(
     owns the deal can create notes.
     """
     try:
-        note = await service.create_user_note(
+        create_result = await service.create_user_note(
             deal_id=deal_id,
             content=request.content,
             subject=request.subject,
@@ -195,18 +195,28 @@ async def create_deal_note(
         await service.session.commit()
 
         # Map to response schema
-        note_schema = _map_note_to_schema(note, service.determine_note_source(note))
-
-        # Trigger deal insight pipeline after note creation
-        # Chain: risk_blocker → stakeholder → deal_summary (with job)
-        await service.trigger_deal_insight_pipeline(
-            deal_id=deal_id,
-            user_id=user_ids.user_id,
-            trigger_source="note_creation",
+        note_schema = _map_note_to_schema(
+            create_result.note,
+            service.determine_note_source(create_result.note),
         )
 
-        return Response.created_response(
-            message="Note created successfully",
+        if create_result.created_new:
+            # Trigger deal insight pipeline after note creation
+            # Chain: risk_blocker → stakeholder → deal_summary (with job)
+            await service.trigger_deal_insight_pipeline(
+                deal_id=deal_id,
+                user_id=user_ids.user_id,
+                trigger_source="note_creation",
+            )
+
+            return Response.created_response(
+                message="Note created successfully",
+                data=note_schema,
+                response=response,
+            )
+
+        return Response.success_response(
+            message="Identical note already exists; duplicate was not created",
             data=note_schema,
             response=response,
         )

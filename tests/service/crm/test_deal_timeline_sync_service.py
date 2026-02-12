@@ -18,7 +18,7 @@ from src.domain.models.organisation_tables.sync.timeline_models import (
     TimelineEventSource,
     TimelineEventType,
 )
-from src.service.crm.deal_timeline_sync_service import (
+from src.service.crm.timeline.deal_timeline_sync_service import (
     build_deal_created_timeline_event,
     build_email_timeline_event,
     build_meeting_timeline_event,

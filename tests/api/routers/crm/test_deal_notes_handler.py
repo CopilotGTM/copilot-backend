@@ -241,6 +241,53 @@ def test_create_note_with_subject(client: TestClient, notes_dependency_overrides
     assert data["subject"] == "Important Update"
 
 
+def test_create_note_duplicate_returns_existing_note(
+    client: TestClient,
+    notes_dependency_overrides,
+):
+    """Test duplicate note create returns existing note and does not create a new row."""
+    service = notes_dependency_overrides["service"]
+    deal_id = uuid4()
+    service.add_deal(deal_id)
+
+    payload = {"content": "Same content", "subject": "Same subject"}
+    first = client.post(f"/users/crm/deals/{deal_id}/notes", json=payload)
+    assert first.status_code == 201, first.text
+    first_body = first.json()
+
+    second = client.post(f"/users/crm/deals/{deal_id}/notes", json=payload)
+    assert second.status_code == 200, second.text
+    second_body = second.json()
+
+    assert second_body["message"] == "Identical note already exists; duplicate was not created"
+    assert second_body["data"]["note_id"] == first_body["data"]["note_id"]
+    assert len(service._notes.get(deal_id, [])) == 1
+
+
+def test_create_note_same_content_different_subject_creates_new(
+    client: TestClient,
+    notes_dependency_overrides,
+):
+    """Test same content with different subject is treated as a new note."""
+    service = notes_dependency_overrides["service"]
+    deal_id = uuid4()
+    service.add_deal(deal_id)
+
+    first_payload = {"content": "Same content", "subject": "Subject A"}
+    second_payload = {"content": "Same content", "subject": "Subject B"}
+
+    first = client.post(f"/users/crm/deals/{deal_id}/notes", json=first_payload)
+    assert first.status_code == 201, first.text
+
+    second = client.post(f"/users/crm/deals/{deal_id}/notes", json=second_payload)
+    assert second.status_code == 201, second.text
+
+    first_body = first.json()
+    second_body = second.json()
+    assert first_body["data"]["note_id"] != second_body["data"]["note_id"]
+    assert len(service._notes.get(deal_id, [])) == 2
+
+
 def test_create_note_deal_not_found(client: TestClient, notes_dependency_overrides):
     """Test creating note for non-existent deal returns error."""
     non_existent_deal = uuid4()
@@ -358,7 +405,7 @@ def test_create_note_unicode_content(client: TestClient, notes_dependency_overri
     service.add_deal(deal_id)
 
     # Test various unicode characters
-    payload = {"content": "Hello \ud83d\udc4b \u4e2d\u6587 \u0645\u0631\u062d\u0628\u0627"}
+    payload = {"content": "Hello \U0001f44b \u4e2d\u6587 \u0645\u0631\u062d\u0628\u0627"}
     resp = client.post(f"/users/crm/deals/{deal_id}/notes", json=payload)
     assert resp.status_code == 201, resp.text
 

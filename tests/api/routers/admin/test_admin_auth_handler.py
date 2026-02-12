@@ -40,7 +40,7 @@ def test_login_invalid_credentials(admin_auth_client):
         "/admin/auth/login",
         json={"email": "admin@example.com", "password": "wrongpassword"},
     )
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 401, resp.text
     body = resp.json()
     assert body["status"] == "ERROR"
 
@@ -53,7 +53,7 @@ def test_login_user_not_found(admin_auth_client):
         "/admin/auth/login",
         json={"email": "nonexistent@example.com", "password": "password123"},
     )
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 401, resp.text
     body = resp.json()
     assert body["status"] == "ERROR"
 
@@ -117,7 +117,7 @@ def test_reset_password_mismatch(admin_auth_client):
             "action": "forgot",
         },
     )
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 400, resp.text
     body = resp.json()
     assert body["status"] == "ERROR"
 
@@ -135,7 +135,7 @@ def test_reset_password_invalid_token(admin_auth_client):
             "action": "forgot",
         },
     )
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 400, resp.text
     body = resp.json()
     assert body["status"] == "ERROR"
 
@@ -168,7 +168,7 @@ def test_refresh_token_invalid(admin_auth_client):
         "/admin/auth/refresh-token",
         json={"refresh_token": "invalid_refresh_token"},
     )
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 401, resp.text
     body = resp.json()
     assert body["status"] == "ERROR"
 
@@ -297,6 +297,6 @@ def test_change_password_wrong_current(admin_auth_client):
             "new_password": "newpassword123",
         },
     )
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 401, resp.text
     body = resp.json()
     assert body["status"] == "ERROR"

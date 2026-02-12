@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 from src.domain.models.organisation_tables.sync.integration_models import IntegrationType
 from src.domain.models.organisation_tables.sync.timeline_models import TimelineEventSource
-from src.service.crm.timeline_event_source_resolver import (
+from src.service.crm.timeline.timeline_event_source_resolver import (
     resolve_calendar_event_source,
     resolve_email_event_source,
     resolve_meeting_event_source,

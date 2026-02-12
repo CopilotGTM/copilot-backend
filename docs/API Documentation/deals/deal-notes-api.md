@@ -237,6 +237,10 @@ if (data.cursor) {
 
 Creates a new user note for a specific deal. The note is attributed to the authenticated user.
 
+If an active user-created note with the exact same `content` and `subject` already exists
+for the same deal, the API behaves idempotently: it returns the existing note and does not
+create a duplicate row.
+
 ### Endpoint (Create Deal Note)
 
 ```http
@@ -271,6 +275,34 @@ POST /{deal_id}/notes
 {
   "status": "SUCCESS",
   "message": "Note created successfully",
+  "data": {
+    "note_id": "9c9f7b2c-8f12-4ef7-a52c-2b2b7b6d1b53",
+    "deal_id": "a8a3b1db-4d9a-4f3c-a3f6-2a5c1d8b9e1f",
+    "content": "Customer confirmed they have budget approval for Q1. Ready to move forward with POC.",
+    "subject": "Budget Confirmation",
+    "created_at": "2025-12-24T10:40:00Z",
+    "updated_at": "2025-12-24T10:40:00Z",
+    "source": "user",
+    "is_user_created": true,
+    "author": {
+      "id": "b1a7f9c0-1b2c-4f5a-9c1d-8b7c6a5d4e3f",
+      "name": null,
+      "email": null
+    },
+    "metadata": {
+      "external_id": null,
+      "synced_at": null
+    }
+  }
+}
+```
+
+### Idempotent Duplicate Response (200) (Create Deal Note)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Identical note already exists; duplicate was not created",
   "data": {
     "note_id": "9c9f7b2c-8f12-4ef7-a52c-2b2b7b6d1b53",
     "deal_id": "a8a3b1db-4d9a-4f3c-a3f6-2a5c1d8b9e1f",
