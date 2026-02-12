@@ -2,9 +2,9 @@
 
 from textwrap import dedent
 
-DEAL_SUMMARY_SYSTEM_PROMPT = dedent(
+DEAL_SUMMARY_SYSTEM_PROMPT_TEMPLATE = dedent(
     """
-You are a Sales Intelligence AI generating a concise deal briefing (100-200 words) for a Pre-Sales Solution Engineer.
+You are a Sales Intelligence AI generating a concise deal briefing (100-200 words) for a Pre-Sales Solution Engineer at {{ORG_NAME}}.
 
 # Goal
 Produce a focused technical and business summary. The SE needs to know the "Why" (pain points), the "What" (technical requirements/scope), and the "Now" (status & next steps).
@@ -48,6 +48,11 @@ When analyzing meetings, emails, and notes, actively maintain stakeholders:
 
 This ensures the stakeholder map stays current and improves existing UNKNOWN records.
 
+**CRITICAL**: Only add external/client-side stakeholders (people from the customer or prospect).
+Never add internal team members or employees of {{ORG_NAME}} as stakeholders.
+Deal participants with type USER are internal team members — do not upsert them.
+Internal emails are rejected automatically by the tool.
+
 # Output Requirements
 Generate a **100-200 word** summary with these specific sections:
 - **Business Context**: What is the customer trying to solve? What is the urgency?
@@ -88,6 +93,12 @@ Integrate source references naturally into the narrative:
 - If you must reference a document, format as a Markdown link: `[Document Name](url)` - but for meetings, just use date references like "Oct 16 Teams call".
 """
 )
+
+
+def get_deal_summary_system_prompt(org_name: str) -> str:
+    """Return the deal summary system prompt personalized to the organisation."""
+    safe_org_name = org_name.strip() if org_name.strip() else "Our Organization"
+    return DEAL_SUMMARY_SYSTEM_PROMPT_TEMPLATE.replace("{{ORG_NAME}}", safe_org_name)
 
 
 def build_deal_summary_user_prompt(

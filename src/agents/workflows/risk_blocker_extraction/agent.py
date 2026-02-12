@@ -30,8 +30,8 @@ from src.agents.workflows.risk_blocker_extraction.models import (
     RiskBlockerExtractionResult,
 )
 from src.agents.workflows.risk_blocker_extraction.prompts import (
-    RISK_BLOCKER_EXTRACTION_SYSTEM_PROMPT,
     build_risk_blocker_extraction_user_prompt,
+    get_risk_blocker_system_prompt,
 )
 from src.infra.config.agent_config import agent_config
 from src.infra.utils.logger import get_logger
@@ -60,6 +60,7 @@ class RiskBlockerExtractionAgent:
         organisation_id: UUID,
         deal_id: UUID,
         publisher: DealJobRedisPublisher | None = None,
+        org_name: str | None = None,
     ):
         """Initialize the agent with organisation and deal context.
 
@@ -74,6 +75,7 @@ class RiskBlockerExtractionAgent:
             organisation_id: Organisation UUID (IMMUTABLE - security boundary)
             deal_id: Deal UUID (IMMUTABLE - security boundary)
             publisher: Optional Redis publisher for progress updates
+            org_name: Organisation display name for prompt personalization
         """
         self.organisation_id = organisation_id
         self.deal_id = deal_id
@@ -84,6 +86,7 @@ class RiskBlockerExtractionAgent:
         self.context = AgentContext(
             organisation_id=organisation_id,
             deal_id=deal_id,
+            org_name=org_name or "Our Organization",
         )
 
         # Get tools for this agent
@@ -96,7 +99,7 @@ class RiskBlockerExtractionAgent:
         self.agent = Agent(
             model=AzureOpenAI(id=config.model, api_version=config.api_version),
             output_schema=RiskBlockerExtractionResult,
-            description=RISK_BLOCKER_EXTRACTION_SYSTEM_PROMPT,
+            description=get_risk_blocker_system_prompt(self.context.org_name),
             tools=tools,
             markdown=True,
             debug_mode=config.debug_mode,

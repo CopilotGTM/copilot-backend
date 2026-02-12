@@ -29,6 +29,7 @@ from src.workers.deal_worker.utils.deal_job_utils import (
     count_deal_stakeholders,
     get_deal,
     get_deal_meeting_date_range,
+    get_organisation_name,
 )
 
 logger = get_logger(__name__)
@@ -151,10 +152,12 @@ class DealSummaryService:
         email_count: int = 0
         first_date: str | None = None
         last_date: str | None = None
+        org_name: str | None = None
 
         async for session in acquire_org_async_session(self.organisation_id):
             # 1. Load deal
             deal = await get_deal(session, self.organisation_id, deal_id)
+            org_name = await get_organisation_name(session, self.organisation_id)
             if not deal:
                 raise DealNotFoundError(deal_id)
 
@@ -220,6 +223,7 @@ class DealSummaryService:
             organisation_id=self.organisation_id,
             deal_id=deal_id,
             publisher=self.publisher,
+            org_name=org_name,
         )
         try:
             summary_data = await agent.generate(input_data)

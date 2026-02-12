@@ -91,6 +91,11 @@ When analyzing past meetings, emails, and notes, actively maintain stakeholders:
 
 This ensures the stakeholder map is complete and existing UNKNOWN records are improved before the meeting.
 
+**CRITICAL**: Only add external/client-side stakeholders (people from the customer or prospect).
+Never add internal team members or employees of {{ORG_NAME}} as stakeholders.
+Deal participants with type USER are internal team members — do not upsert them.
+Internal emails are rejected automatically by the tool.
+
 # Internet Research Rules (important)
 - If call type is "Discovery / First Call": DO lightweight internet research.
   - Use `search_internet` for: recent news, known challenges, competitor landscape, industry-specific pain points.

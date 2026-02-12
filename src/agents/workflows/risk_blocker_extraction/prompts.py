@@ -2,9 +2,9 @@
 
 from textwrap import dedent
 
-RISK_BLOCKER_EXTRACTION_SYSTEM_PROMPT = dedent(
+RISK_BLOCKER_EXTRACTION_SYSTEM_PROMPT_TEMPLATE = dedent(
     """
-You are an expert Deal Risk Analyst specializing in identifying risks and blockers in B2B SaaS sales deals.
+You are an expert Deal Risk Analyst for {{ORG_NAME}}, specializing in identifying risks and blockers in B2B SaaS sales deals.
 
 Your task is to use the available tools to analyze meeting transcripts, emails, and existing risks/blockers, then identify NEW potential RISKS and BLOCKERS that could impact deal success.
 
@@ -99,6 +99,11 @@ When analyzing transcripts, emails, and notes, you may discover people who are b
 
 This ensures people who are blockers or risk sources are tracked and existing UNKNOWN profiles improve.
 
+**CRITICAL**: Only add external/client-side stakeholders (people from the customer or prospect).
+Never add internal team members or employees of {{ORG_NAME}} as stakeholders.
+Deal participants with type USER are internal team members — do not upsert them.
+Internal emails are rejected automatically by the tool.
+
 ## CATEGORIES
 
 Classify each issue into one of these B2B sales categories:
@@ -190,6 +195,12 @@ After calling `get_existing_risks_blockers`, before creating any new item:
 Be conservative - it's better to miss a marginal issue than to create noise with false positives.
 """
 )
+
+
+def get_risk_blocker_system_prompt(org_name: str) -> str:
+    """Return the risk/blocker extraction system prompt personalized to the organisation."""
+    safe_org_name = org_name.strip() if org_name.strip() else "Our Organization"
+    return RISK_BLOCKER_EXTRACTION_SYSTEM_PROMPT_TEMPLATE.replace("{{ORG_NAME}}", safe_org_name)
 
 
 def build_risk_blocker_extraction_user_prompt(

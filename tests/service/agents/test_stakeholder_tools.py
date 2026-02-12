@@ -61,6 +61,11 @@ class _FakeContext:
     organisation_id: UUID
     deal_id: UUID
     session: _FakeSession
+    metadata: dict = None  # type: ignore[assignment]
+
+    def __post_init__(self):
+        if self.metadata is None:
+            self.metadata = {}
 
     @asynccontextmanager
     async def acquire_session(self):
@@ -74,7 +79,15 @@ def _make_context(
     deal_id = uuid4()
     store = records if records is not None else {}
     session = _FakeSession(store)
-    context = _FakeContext(organisation_id=org_id, deal_id=deal_id, session=session)
+    # Pre-populate internal-user guard cache so guard doesn't hit the fake session
+    metadata = {
+        "_internal_guard_loaded": True,
+        "_internal_domains": set(),
+        "_internal_emails": set(),
+    }
+    context = _FakeContext(
+        organisation_id=org_id, deal_id=deal_id, session=session, metadata=metadata
+    )
     return context, store
 
 
@@ -259,6 +272,79 @@ def test_upsert_stakeholder_tool_signature_does_not_expose_object_schema() -> No
     for field_name in ("stance", "decision_power", "temperature"):
         annotation = str(params[field_name].annotation)
         assert "dict" not in annotation
+
+
+@pytest.mark.asyncio
+async def test_upsert_stakeholder_rejects_internal_domain_email() -> None:
+    """Emails matching an internal org domain are rejected."""
+    context, store = _make_context()
+    # Pre-populate the guard cache so no DB call is needed
+    context.metadata["_internal_guard_loaded"] = True
+    context.metadata["_internal_domains"] = {"acme.com"}
+    context.metadata["_internal_emails"] = set()
+
+    result = await upsert_stakeholder(
+        context=context,  # type: ignore[arg-type]
+        input_data=UpsertStakeholderInput(email="seller@acme.com", name="Seller"),
+    )
+
+    assert result is not None
+    assert result["action"] == "rejected_internal_user"
+    assert result["created"] is False
+    assert result["updated"] is False
+    assert "seller@acme.com" not in store
+
+
+@pytest.mark.asyncio
+async def test_upsert_stakeholder_rejects_deal_owner_email() -> None:
+    """Deal owner emails (exact match) are rejected."""
+    context, store = _make_context()
+    context.metadata["_internal_guard_loaded"] = True
+    context.metadata["_internal_domains"] = set()
+    context.metadata["_internal_emails"] = {"john@personal.com"}
+
+    result = await upsert_stakeholder(
+        context=context,  # type: ignore[arg-type]
+        input_data=UpsertStakeholderInput(email="john@personal.com", name="John"),
+    )
+
+    assert result is not None
+    assert result["action"] == "rejected_internal_user"
+    assert "john@personal.com" not in store
+
+
+@pytest.mark.asyncio
+async def test_upsert_stakeholder_allows_external_email() -> None:
+    """External emails pass through the guard and are created normally."""
+    context, store = _make_context()
+    context.metadata["_internal_guard_loaded"] = True
+    context.metadata["_internal_domains"] = {"acme.com"}
+    context.metadata["_internal_emails"] = set()
+
+    result = await upsert_stakeholder(
+        context=context,  # type: ignore[arg-type]
+        input_data=UpsertStakeholderInput(email="buyer@customer.com", name="Buyer"),
+    )
+
+    assert result is not None
+    assert result["action"] == "created"
+    assert "buyer@customer.com" in store
+
+
+@pytest.mark.asyncio
+async def test_upsert_stakeholder_factory_handles_rejection() -> None:
+    """Factory tool also respects the internal-user guard."""
+    context, store = _make_context()
+    context.metadata["_internal_guard_loaded"] = True
+    context.metadata["_internal_domains"] = {"internal.co"}
+    context.metadata["_internal_emails"] = set()
+
+    tool = create_upsert_stakeholder(context, lambda: None)  # type: ignore[arg-type]
+    result = await tool(email="rep@internal.co", name="Sales Rep")
+
+    assert result is not None
+    assert result["action"] == "rejected_internal_user"
+    assert "rep@internal.co" not in store
 
 
 def test_registry_uses_only_upsert_for_analysis_agents() -> None:
