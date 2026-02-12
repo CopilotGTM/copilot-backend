@@ -321,7 +321,10 @@ def sync_messaging_channels_org_task(
                                         provider=fetch_data.provider,
                                     )
                                 )
-                                channels_synced = channels_metrics.get("channels_processed", 0)
+                                channels_synced = channels_metrics.get(
+                                    "records_processed",
+                                    channels_metrics.get("channels_processed", 0),
+                                )
                                 integration_sync_result["channels_synced"] = channels_synced
                                 total_channels += channels_synced
                         # Session released
@@ -384,7 +387,10 @@ def sync_messaging_channels_org_task(
                                     channels=chats,
                                     provider=fetch_data.provider,
                                 )
-                                chats_synced = chats_metrics.get("channels_processed", 0)
+                                chats_synced = chats_metrics.get(
+                                    "records_processed",
+                                    chats_metrics.get("channels_processed", 0),
+                                )
                                 integration_sync_result["chats_synced"] = chats_synced
                                 total_chats += chats_synced
 

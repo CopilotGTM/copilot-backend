@@ -14,6 +14,7 @@ Microsoft Graph API documentation:
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -25,6 +26,42 @@ from src.infra.utils.logger import get_logger
 from src.service.integrations.nango_client import NangoClient
 
 logger = get_logger(__name__)
+
+
+def _get_positive_int_env(var_name: str, default: int) -> int:
+    """Read positive integer env var with safe fallback."""
+    raw = os.getenv(var_name, str(default))
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(
+            "Invalid %s=%r; falling back to default=%d",
+            var_name,
+            raw,
+            default,
+        )
+        return default
+
+    if value < 1:
+        logger.warning(
+            "Invalid %s=%r; value must be >= 1. Falling back to default=%d",
+            var_name,
+            raw,
+            default,
+        )
+        return default
+
+    return value
+
+
+TEAMS_CHATS_INITIAL_LOOKBACK_DAYS = _get_positive_int_env(
+    "TEAMS_CHATS_INITIAL_LOOKBACK_DAYS",
+    540,
+)
+TEAMS_CHATS_RECURRING_LOOKBACK_DAYS = _get_positive_int_env(
+    "TEAMS_CHATS_RECURRING_LOOKBACK_DAYS",
+    30,
+)
 
 
 @dataclass
@@ -78,6 +115,21 @@ def _mark_as_deleted(message: dict[str, Any]) -> dict[str, Any]:
     return message
 
 
+def _extract_collection_page(response: Any) -> tuple[list[dict[str, Any]], str | None]:
+    """Extract list payload and optional @odata.nextLink from Graph collection responses."""
+    if not isinstance(response, dict):
+        return [], None
+
+    value = response.get("value")
+    items = value if isinstance(value, list) else []
+
+    next_link = response.get("@odata.nextLink")
+    if not isinstance(next_link, str) or not next_link:
+        next_link = None
+
+    return items, next_link
+
+
 async def fetch_channels(
     *,
     nango: NangoClient,
@@ -111,24 +163,32 @@ async def fetch_channels(
 
     provider = provider_config_key or to_nango_connect_integration_key(IntegrationType.TEAMS)
 
-    # Step 1: Get all teams user is part of
+    # Step 1: Get all teams user is part of (with pagination)
+    teams: list[dict[str, Any]] = []
     teams_endpoint = "/v1.0/me/joinedTeams"
-    teams_resp = await nango.proxy_request(
-        provider_config_key=provider,
-        connection_id=connection_id,
-        endpoint=teams_endpoint,
-    )
+    teams_params: dict[str, Any] = {"$select": "id,displayName"}
+    next_link: str | None = None
+    max_pages = 100
 
-    teams = []
-    if (
-        isinstance(teams_resp, dict)
-        and "value" in teams_resp
-        and isinstance(teams_resp["value"], list)
-    ):
-        teams = teams_resp["value"]
+    for _ in range(max_pages):
+        if next_link:
+            endpoint, params = _extract_pagination_params(next_link)
+        else:
+            endpoint, params = teams_endpoint, teams_params
 
-    # Step 2: For each team, fetch all channels
-    all_channels = []
+        teams_resp = await nango.proxy_request(
+            provider_config_key=provider,
+            connection_id=connection_id,
+            endpoint=endpoint,
+            params=params,
+        )
+        page_teams, next_link = _extract_collection_page(teams_resp)
+        teams.extend(page_teams)
+        if not next_link:
+            break
+
+    # Step 2: For each team, fetch all channels (with pagination)
+    all_channels: list[dict[str, Any]] = []
     for team in teams:
         team_id = team.get("id")
         team_name = team.get("displayName", "Unknown Team")
@@ -137,30 +197,33 @@ async def fetch_channels(
             continue
 
         channels_endpoint = f"/v1.0/teams/{team_id}/channels"
-        channels_params = {
+        channels_params: dict[str, Any] = {
             "$select": "id,displayName,description,email,webUrl,membershipType,createdDateTime",
         }
 
-        channels_resp = await nango.proxy_request(
-            provider_config_key=provider,
-            connection_id=connection_id,
-            endpoint=channels_endpoint,
-            params=channels_params,
-        )
+        next_link = None
+        for _ in range(max_pages):
+            if next_link:
+                endpoint, params = _extract_pagination_params(next_link)
+            else:
+                endpoint, params = channels_endpoint, channels_params
 
-        channels = []
-        if (
-            isinstance(channels_resp, dict)
-            and "value" in channels_resp
-            and isinstance(channels_resp["value"], list)
-        ):
-            channels = channels_resp["value"]
+            channels_resp = await nango.proxy_request(
+                provider_config_key=provider,
+                connection_id=connection_id,
+                endpoint=endpoint,
+                params=params,
+            )
+            channels, next_link = _extract_collection_page(channels_resp)
 
-        # Enrich each channel with team context
-        for channel in channels:
-            channel["teamId"] = team_id
-            channel["teamName"] = team_name
-            all_channels.append(channel)
+            # Enrich each channel with team context
+            for channel in channels:
+                channel["teamId"] = team_id
+                channel["teamName"] = team_name
+                all_channels.append(channel)
+
+            if not next_link:
+                break
 
     return all_channels
 
@@ -360,6 +423,22 @@ async def fetch_messages(
     return FetchMessagesResult(messages=all_messages, delta_link=new_delta_link)
 
 
+def _resolve_chats_lookback_days(
+    *,
+    is_initial: bool,
+    last_synced_at: datetime | None,
+    max_age_days: int | None,
+) -> tuple[int, str]:
+    """Resolve Teams chats lookback window for initial/recurring/custom syncs."""
+    if max_age_days is not None:
+        return max_age_days, "custom"
+
+    if is_initial or last_synced_at is None:
+        return TEAMS_CHATS_INITIAL_LOOKBACK_DAYS, "initial"
+
+    return TEAMS_CHATS_RECURRING_LOOKBACK_DAYS, "recurring"
+
+
 async def fetch_chats(
     *,
     nango: NangoClient,
@@ -369,13 +448,13 @@ async def fetch_chats(
     delta_link: str | None = None,
     data_type: str | None = None,
     provider_config_key: str | None = None,
-    max_age_days: int = 90,
+    max_age_days: int | None = None,
 ) -> FetchChatsResult:
     """
     Fetch Teams chats (group and meeting chats only, excludes 1:1).
 
     Uses Microsoft Graph /me/chats endpoint to list chats, ordered by last activity.
-    Only fetches chats with activity in the last `max_age_days` days (default 90).
+    Only fetches chats with activity in a resolved lookback window.
 
     Note: Delta Query is NOT supported for /me/chats in the v1.0 API (only in beta).
     Delta Query IS supported for messages within a chat (/chats/{id}/messages/delta).
@@ -386,7 +465,7 @@ async def fetch_chats(
         is_initial: Whether this is the first sync
         last_synced_at: Timestamp of last successful sync
         delta_link: Not used for chats listing (delta not supported in v1.0)
-        max_age_days: Only fetch chats active in the last N days (default 90)
+        max_age_days: Optional override for chat lookback window (days)
 
     Returns:
         FetchChatsResult with chats list. delta_link will always be None since
@@ -405,14 +484,18 @@ async def fetch_chats(
         }
     """
     _ = data_type
-    _ = is_initial
-    _ = last_synced_at
     _ = delta_link  # Delta not supported for /me/chats in v1.0 API
 
     provider = provider_config_key or to_nango_connect_integration_key(IntegrationType.TEAMS)
 
-    # Calculate cutoff date for max_age_days
-    cutoff_date = datetime.now(UTC) - timedelta(days=max_age_days)
+    resolved_max_age_days, sync_phase = _resolve_chats_lookback_days(
+        is_initial=is_initial,
+        last_synced_at=last_synced_at,
+        max_age_days=max_age_days,
+    )
+
+    # Calculate cutoff date for resolved lookback window
+    cutoff_date = datetime.now(UTC) - timedelta(days=resolved_max_age_days)
 
     # Use standard chats endpoint with ordering by last message (most recent first)
     # This allows us to stop early when we hit chats older than cutoff
@@ -425,8 +508,9 @@ async def fetch_chats(
         "$top": "50",
     }
     logger.info(
-        "Teams Chats: fetching chats with activity in last %d days (cutoff: %s)",
-        max_age_days,
+        "Teams Chats: fetching chats (phase=%s) with activity in last %d days (cutoff: %s)",
+        sync_phase,
+        resolved_max_age_days,
         cutoff_date.isoformat(),
     )
 
@@ -490,7 +574,11 @@ async def fetch_chats(
 
                     if not topic:
                         if chat_type == "group":
-                            member_names = [m.get("displayName", "Unknown") for m in members[:3]]
+                            member_names = [
+                                (m.get("displayName") or m.get("email") or "Unknown")
+                                for m in members[:3]
+                                if isinstance(m, dict)
+                            ]
                             chat["displayName"] = (
                                 ", ".join(member_names) if member_names else "Group Chat"
                             )
@@ -540,11 +628,12 @@ async def fetch_chats(
             break
 
     logger.info(
-        "Teams Chats fetch complete: %d chats after %d pages (reached_cutoff=%s, max_age_days=%d)",
+        "Teams Chats fetch complete: %d chats after %d pages (phase=%s, reached_cutoff=%s, max_age_days=%d)",
         len(all_chats),
         page_num + 1,
+        sync_phase,
         reached_cutoff,
-        max_age_days,
+        resolved_max_age_days,
     )
 
     # Return without delta_link since delta is not supported for chats listing

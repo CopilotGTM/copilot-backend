@@ -300,7 +300,10 @@ def sync_messaging_channels_integration_task(
                                 channels=channels,
                                 provider=fetch_data.provider,
                             )
-                            channels_synced = channels_metrics.get("channels_processed", 0)
+                            channels_synced = channels_metrics.get(
+                                "records_processed",
+                                channels_metrics.get("channels_processed", 0),
+                            )
                     # Session released
                 except Exception as e:
                     logger.error(
@@ -360,7 +363,10 @@ def sync_messaging_channels_integration_task(
                                 channels=chats,
                                 provider=fetch_data.provider,
                             )
-                            chats_synced = chats_metrics.get("channels_processed", 0)
+                            chats_synced = chats_metrics.get(
+                                "records_processed",
+                                chats_metrics.get("channels_processed", 0),
+                            )
 
                         # Update last_synced_at
                         integration.last_synced_at = datetime.now(UTC).replace(tzinfo=None)
