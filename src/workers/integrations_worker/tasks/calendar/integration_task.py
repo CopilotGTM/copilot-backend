@@ -38,19 +38,29 @@ from sqlalchemy import select
 from sqlmodel import col
 
 from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
-from src.infra.config.nango_provider_mapping import to_nango_provider_key
+from src.infra.config.nango_provider_mapping import (
+    to_nango_connect_integration_key,
+    to_nango_provider_key,
+)
 from src.infra.config.provider_categories import categorize_integration_type
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
 from src.service.integrations import NangoClient
+from src.service.integrations.calendar_cursor_metadata import (
+    get_calendar_delta_link,
+    set_calendar_delta_link,
+)
 from src.workers.integrations_worker.adapters.calendar_adapter import upsert_calendar_incremental
 from src.workers.integrations_worker.celery_app import app
 from src.workers.integrations_worker.providers.calendar.google_calendar import (
-    fetch_events as google_fetch_events,
+    FetchEventsResult as GoogleFetchEventsResult,
+)
+from src.workers.integrations_worker.providers.calendar.google_calendar import (
+    fetch_events_with_cursor as google_fetch_events,
 )
 from src.workers.integrations_worker.providers.calendar.outlook_calendar import (
-    FetchEventsResult,
+    FetchEventsResult as OutlookFetchEventsResult,
 )
 from src.workers.integrations_worker.providers.calendar.outlook_calendar import (
     fetch_events as outlook_fetch_events,
@@ -76,7 +86,7 @@ class IntegrationFetchData:
     provider_config_key: str
     is_initial: bool
     last_synced_at: datetime | None
-    delta_link: str | None  # For Outlook incremental sync
+    calendar_delta_link: str | None  # Outlook deltaLink or Google syncToken
 
 
 # Calendar integration types
@@ -84,6 +94,29 @@ CALENDAR_INTEGRATION_TYPES = (
     IntegrationType.GOOGLE_CALENDAR,
     IntegrationType.OUTLOOK_CALENDAR,
 )
+
+
+def _resolve_provider_config_key(
+    *,
+    integration_type: IntegrationType,
+    connection_metadata: dict[str, Any] | None,
+) -> str:
+    """Resolve provider config key with metadata-first strategy.
+
+    Why this exists:
+    - Nango provider config keys can differ across environments.
+    - For Google Calendar, some environments use
+      `google-calendar-getting-started` as the provider key used by proxy calls.
+    """
+    metadata = connection_metadata or {}
+    metadata_key = metadata.get("provider_config_key")
+    if isinstance(metadata_key, str) and metadata_key.strip():
+        return metadata_key.strip()
+
+    if integration_type == IntegrationType.GOOGLE_CALENDAR:
+        return to_nango_connect_integration_key(integration_type)
+
+    return to_nango_provider_key(integration_type)
 
 
 @app.task(
@@ -152,9 +185,9 @@ def sync_calendar_integration_task(
                 col(KnowledgeIntegration.integration_type).in_(CALENDAR_INTEGRATION_TYPES),
             )
             result = await session.execute(stmt)
-            integration = result.scalar_one_or_none()
+            integration_row = result.scalar_one_or_none()
 
-            if not integration:
+            if integration_row is None:
                 return {
                     "status": "failed",
                     "organisation_id": organisation_id,
@@ -164,7 +197,7 @@ def sync_calendar_integration_task(
                     "error": "Integration not found or not a calendar integration",
                 }
 
-            if not integration.is_active:
+            if not integration_row.is_active:
                 return {
                     "status": "failed",
                     "organisation_id": organisation_id,
@@ -174,7 +207,7 @@ def sync_calendar_integration_task(
                     "error": "Integration is not active",
                 }
 
-            if not integration.connection_id:
+            if not integration_row.connection_id:
                 return {
                     "status": "failed",
                     "organisation_id": organisation_id,
@@ -186,30 +219,32 @@ def sync_calendar_integration_task(
 
             # Get provider details
             int_type = (
-                IntegrationType(integration.integration_type)
-                if isinstance(integration.integration_type, str)
-                else integration.integration_type
+                IntegrationType(integration_row.integration_type)
+                if isinstance(integration_row.integration_type, str)
+                else integration_row.integration_type
             )
             _, provider = categorize_integration_type(int_type)
-            provider_config_key = to_nango_provider_key(int_type)
+            provider_config_key = _resolve_provider_config_key(
+                integration_type=int_type,
+                connection_metadata=integration_row.connection_metadata,
+            )
 
-            # Extract delta link for Outlook
-            delta_link = None
-            if int_type == IntegrationType.OUTLOOK_CALENDAR:
-                is_initial = integration.last_synced_at is None
-                if not is_initial:
-                    delta_link = (integration.connection_metadata or {}).get("outlook_delta_link")
+            # Single shared calendar cursor key per integration row.
+            connection_metadata = integration_row.connection_metadata or {}
+            calendar_delta_link = None
+            if integration_row.last_synced_at is not None:
+                calendar_delta_link = get_calendar_delta_link(connection_metadata, int_type)
 
             fetch_data = IntegrationFetchData(
-                integration_id=integration.integration_id,
-                connection_id=integration.connection_id,
+                integration_id=integration_row.integration_id,
+                connection_id=integration_row.connection_id,
                 integration_type=int_type,
                 integration_type_value=int_type.value,
                 provider=provider,
                 provider_config_key=provider_config_key,
-                is_initial=integration.last_synced_at is None,
-                last_synced_at=integration.last_synced_at,
-                delta_link=delta_link,
+                is_initial=integration_row.last_synced_at is None,
+                last_synced_at=integration_row.last_synced_at,
+                calendar_delta_link=calendar_delta_link,
             )
         # Session is now released
 
@@ -232,29 +267,32 @@ def sync_calendar_integration_task(
 
         # Phase 2: Fetch events from external API (NO session held)
         events: list[dict[str, Any]]
-        new_delta_link: str | None = None
+        new_calendar_delta_link: str | None = None
 
         nango = NangoClient()
         try:
             if fetch_data.integration_type == IntegrationType.GOOGLE_CALENDAR:
-                events = await google_fetch_events(
+                google_fetch_result: GoogleFetchEventsResult = await google_fetch_events(
                     nango=nango,
                     connection_id=fetch_data.connection_id,
                     is_initial=fetch_data.is_initial,
                     last_synced_at=fetch_data.last_synced_at,
+                    sync_token=fetch_data.calendar_delta_link,
                     provider_config_key=fetch_data.provider_config_key,
                 )
+                events = google_fetch_result.events
+                new_calendar_delta_link = google_fetch_result.sync_token
             elif fetch_data.integration_type == IntegrationType.OUTLOOK_CALENDAR:
-                fetch_result: FetchEventsResult = await outlook_fetch_events(
+                outlook_fetch_result: OutlookFetchEventsResult = await outlook_fetch_events(
                     nango=nango,
                     connection_id=fetch_data.connection_id,
                     is_initial=fetch_data.is_initial,
                     last_synced_at=fetch_data.last_synced_at,
                     provider_config_key=fetch_data.provider_config_key,
-                    delta_link=fetch_data.delta_link,
+                    delta_link=fetch_data.calendar_delta_link,
                 )
-                events = fetch_result.events
-                new_delta_link = fetch_result.delta_link
+                events = outlook_fetch_result.events
+                new_calendar_delta_link = outlook_fetch_result.delta_link
             else:
                 return {
                     "status": "failed",
@@ -282,9 +320,9 @@ def sync_calendar_integration_task(
                 col(KnowledgeIntegration.integration_id) == int_id,
             )
             result = await session.execute(stmt)
-            integration = result.scalar_one_or_none()
+            integration_db = result.scalar_one_or_none()
 
-            if not integration:
+            if integration_db is None:
                 return {
                     "status": "failed",
                     "organisation_id": organisation_id,
@@ -298,26 +336,29 @@ def sync_calendar_integration_task(
             records_synced = await upsert_calendar_incremental(
                 session=session,
                 organisation_id=org_id,
-                integration=integration,
+                integration=integration_db,
                 provider=fetch_data.provider,
                 events=events,
             )
 
-            # Save new deltaLink for Outlook
-            if new_delta_link and fetch_data.integration_type == IntegrationType.OUTLOOK_CALENDAR:
-                connection_metadata = dict(integration.connection_metadata or {})
-                connection_metadata["outlook_delta_link"] = new_delta_link
-                integration.connection_metadata = connection_metadata
-                session.add(integration)
-                await session.commit()
-                logger.info(
-                    "Outlook calendar: saved new deltaLink (integration=%s)",
-                    int_id,
+            # Persist cursor after successful sync.
+            updated_metadata = dict(integration_db.connection_metadata or {})
+            if new_calendar_delta_link:
+                updated_metadata = set_calendar_delta_link(
+                    updated_metadata,
+                    fetch_data.integration_type,
+                    new_calendar_delta_link,
                 )
+                logger.info(
+                    "Calendar cursor saved (integration=%s provider=%s)",
+                    int_id,
+                    fetch_data.integration_type_value,
+                )
+            integration_db.connection_metadata = updated_metadata
 
             # Update last_synced_at
-            integration.last_synced_at = datetime.now(UTC).replace(tzinfo=None)
-            session.add(integration)
+            integration_db.last_synced_at = datetime.now(UTC).replace(tzinfo=None)
+            session.add(integration_db)
             await session.commit()
 
             logger.info(

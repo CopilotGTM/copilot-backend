@@ -4,6 +4,17 @@
 
 Implemented automatic Teams channel synchronization with both scheduled and on-demand sync capabilities.
 
+## Related Integration Worker Pattern
+
+Teams channels and calendar sync now follow the same worker modernization principles:
+- Dedicated scheduled tasks instead of ad-hoc scripts
+- Durable incremental cursor state in database metadata
+- Clear separation between org-wide scheduled sync and manual integration refresh
+
+For calendar-specific details (Google `syncToken` and Outlook `deltaLink`), see:
+- `docs/Technical Documentation/integration/sync_tasks/calendar-sync-flow.md`
+- `docs/Technical Documentation/integration/sync_tasks/scheduled-sync-architecture.md`
+
 ## Architecture
 
 ### 1. **Scheduled Sync (Celery Beat)**

@@ -326,6 +326,15 @@ All tiers use incremental sync by default:
 - Uses `upsert_calendar_incremental()` adapter
 - Skips unchanged events for efficiency
 
+### First Sync Bootstrap Window
+
+For both calendar providers, first successful sync is a bounded full sync:
+- Past window: last 90 days
+- Future window: next 365 days
+- Trigger condition: `KnowledgeIntegration.last_synced_at IS NULL`
+
+This keeps initial ingestion predictable while still covering recent and near-future meetings.
+
 ### Outlook Delta Link Support
 
 For Outlook Calendar, true incremental sync uses Microsoft's deltaLink:
@@ -341,6 +350,38 @@ Subsequent Syncs:
   → API returns ONLY changed events
   → Receive new deltaLink for next sync
 ```
+
+### Google syncToken Support
+
+Google Calendar uses `nextSyncToken` instead of Microsoft delta links:
+
+```text
+First Sync:
+  → Fetch bounded time window (90 days back, 365 days forward)
+  → API returns nextSyncToken
+  → Store token in integration.connection_metadata.calendar_delta_link
+
+Subsequent Syncs:
+  → Pass stored syncToken
+  → API returns ONLY changes since token was issued
+  → Receive new nextSyncToken and overwrite stored token
+```
+
+If Google rejects the token (for example 410/full sync required), provider logic retries
+immediately with a bounded full sync and then stores a fresh token.
+
+### Calendar Cursor Storage (`KnowledgeIntegration.connection_metadata`)
+
+```python
+{
+  "calendar_delta_link": "https://graph.microsoft.com/.../calendarView/delta?...",
+  # Backward compatibility for existing Outlook records:
+  "outlook_delta_link": "https://graph.microsoft.com/.../calendarView/delta?..."
+}
+```
+
+`calendar_delta_link` stores the current provider cursor for that integration row.
+For Outlook, we also keep legacy `outlook_delta_link` for compatibility with older records.
 
 ---
 

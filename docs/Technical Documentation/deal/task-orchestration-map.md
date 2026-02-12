@@ -9,6 +9,9 @@
 ```
 # Integration Worker Tasks
 integrations.sync_integration_data          # Main sync task for all providers
+integrations.sync_calendar_all_orgs         # Calendar Tier 1 (all org dispatcher)
+integrations.sync_calendar_org              # Calendar Tier 2 (org processor)
+integrations.sync_calendar_integration      # Calendar Tier 3 (single integration)
 integrations.refresh_expiring_tokens        # OAuth token refresh
 integrations.refresh_single_integration     # Manual token refresh
 integrations.sync_teams_channels            # Teams channels and chats sync
@@ -60,6 +63,9 @@ These tasks fetch data from external providers via Nango webhooks.
 | Task | Function | Trigger |
 |------|----------|---------|
 | `integrations.sync_integration_data` | Sync data from external providers | Webhook from Nango |
+| `integrations.sync_calendar_all_orgs` | Tier 1 calendar dispatcher | Beat schedule (30 min) |
+| `integrations.sync_calendar_org` | Tier 2 org-level calendar sync | Dispatched by Tier 1 |
+| `integrations.sync_calendar_integration` | Tier 3 manual calendar sync | Frontend/API manual refresh |
 | `integrations.sync_teams_channels` | Sync Teams channels and chats | Periodic (3h) or manual |
 | `integrations.refresh_expiring_tokens` | Refresh OAuth tokens | Periodic (1h) |
 
@@ -236,6 +242,25 @@ DealMeetingMatcher.process_deal()
 ├── Create DealMeetingAssociation
 ├── Create TimelineEvent (INLINE)
 └── [Enqueue] stakeholder.sync_from_meeting_task
+```
+
+### Chain 1B: Scheduled Calendar Sync (Three-Tier) → Meeting Processing
+
+```
+Beat: integrations.sync_calendar_all_orgs (every 30 min)
+    ↓
+integrations.sync_calendar_org (one task per org)
+    ↓
+[For each calendar integration]
+fetch provider events (Google syncToken / Outlook deltaLink)
+    ↓
+upsert_calendar_incremental()
+    ↓
+update KnowledgeIntegration.last_synced_at + connection_metadata cursors
+    ↓
+deal.match_calendar_to_deals_org
+    ↓
+stakeholder.sync_from_meeting_task (for newly matched meetings)
 ```
 
 ### Chain 2: Email Sync → Email Processing

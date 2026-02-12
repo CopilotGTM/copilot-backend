@@ -265,12 +265,16 @@ class NangoWebhookService:
             nango_connection = await nango.get_connection(
                 provider=provider_config_key, connection_id=new_connection_id
             )
-            connection_metadata = nango_connection.get("connection_metadata", {})
+            raw_metadata = nango_connection.get("connection_metadata", {})
+            connection_metadata = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
         except Exception as e:
             logger.warning("Failed to fetch connection metadata for reactivation: %s", str(e))
-            connection_metadata = integration.connection_metadata or {}
+            connection_metadata = dict(integration.connection_metadata or {})
         finally:
             await nango.close()
+
+        # Persist the exact provider config key used by this connection.
+        connection_metadata["provider_config_key"] = provider_config_key
 
         # Update integration with new connection details
         integration.connection_id = new_connection_id
@@ -444,7 +448,9 @@ class NangoWebhookService:
             nango_connection = await nango.get_connection(
                 provider=provider_config_key, connection_id=connection_id
             )
-            connection_metadata = nango_connection.get("connection_metadata", {})
+            raw_metadata = nango_connection.get("connection_metadata", {})
+            connection_metadata = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
+            connection_metadata["provider_config_key"] = provider_config_key
 
             # Create integration record directly in the org database
             async for org_session in acquire_org_async_session(organisation_id):
