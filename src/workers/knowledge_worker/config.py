@@ -71,9 +71,9 @@ class KnowledgeWorkerConfig(BaseWorkerConfig):
 
         # Beat schedule for periodic tasks
         self.beat_schedule = {
-            "cleanup-stale-knowledge-jobs-hourly": {
+            "cleanup-stale-knowledge-jobs": {
                 "task": "knowledge.cleanup_stale_jobs_all_orgs",
-                "schedule": crontab(minute=0),  # Run every hour at :00
+                "schedule": crontab(minute="0,30"),  # Run every 30 minutes
                 "options": {
                     "queue": "knowledge_upload",
                     "routing_key": "knowledge_upload",
