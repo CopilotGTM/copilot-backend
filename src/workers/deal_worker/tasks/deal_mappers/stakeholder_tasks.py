@@ -36,7 +36,6 @@ from sqlmodel import col
 from src.domain.models.master_tables import Organisation, OrganisationStatus
 from src.infra.database.sessions import (
     acquire_master_async_session,
-    acquire_org_async_session,
 )
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
@@ -97,51 +96,40 @@ def sync_deal_stakeholders_task(
         org_uuid = UUID(organisation_id)
         deal_uuid = UUID(deal_id)
 
-        # Deal-level: Pass session to constructor (sync_for_deal requires it)
-        async for session in acquire_org_async_session(org_uuid):
-            service = StakeholderSyncService(org_uuid, session=session)
-            result = await service.sync_for_deal(deal_uuid)
+        # Deal-level: service manages its own fresh session lifecycle.
+        service = StakeholderSyncService(org_uuid)
+        result = await service.sync_for_deal(deal_uuid)
 
-            rematching_triggered = False
+        rematching_triggered = False
 
-            # Trigger re-matching if new stakeholders were created
-            if trigger_rematching and result.requires_rematching:
-                match_calendar_to_deals_task.delay(organisation_id, deal_id)
-                match_email_to_deals_task.delay(organisation_id, deal_id)
-                rematching_triggered = True
+        # Trigger re-matching if new stakeholders were created
+        if trigger_rematching and result.requires_rematching:
+            match_calendar_to_deals_task.delay(organisation_id, deal_id)
+            match_email_to_deals_task.delay(organisation_id, deal_id)
+            rematching_triggered = True
 
-            logger.info(
-                "Task 1 complete: deal=%s created=%d updated=%d deactivated=%d",
-                deal_id,
-                result.created,
-                result.updated,
-                result.deactivated,
-            )
+        logger.info(
+            "Task 1 complete: deal=%s created=%d updated=%d deactivated=%d",
+            deal_id,
+            result.created,
+            result.updated,
+            result.deactivated,
+        )
 
-            return {
-                "status": "success" if result.success else "partial",
-                "deal_id": deal_id,
-                "change_type": change_type,
-                "started_at": started_at,
-                "completed_at": datetime.now(UTC).isoformat(),
-                "stakeholders_created": result.created,
-                "stakeholders_updated": result.updated,
-                "stakeholders_deactivated": result.deactivated,
-                "stakeholders_skipped": result.skipped,
-                "rematching_triggered": rematching_triggered,
-                "integration_id": integration_id,
-                "integration_type": integration_type,
-                "errors": result.errors,
-            }
-
-        # Session not acquired
         return {
-            "status": "failed",
+            "status": "success" if result.success else "partial",
             "deal_id": deal_id,
             "change_type": change_type,
             "started_at": started_at,
             "completed_at": datetime.now(UTC).isoformat(),
-            "error": "Failed to acquire database session",
+            "stakeholders_created": result.created,
+            "stakeholders_updated": result.updated,
+            "stakeholders_deactivated": result.deactivated,
+            "stakeholders_skipped": result.skipped,
+            "rematching_triggered": rematching_triggered,
+            "integration_id": integration_id,
+            "integration_type": integration_type,
+            "errors": result.errors,
         }
 
     try:
