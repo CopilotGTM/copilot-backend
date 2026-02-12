@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from src.agents.tools.base import execute_with_capabilities
+from src.agents.tools.crm.internal_user_guard import is_internal_email
 from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     ApprovalStatus,
     DealStakeholder,
@@ -170,6 +171,20 @@ async def upsert_stakeholder(
     email = input_data.email.strip().lower()
     if not email:
         return None
+
+    # Guardrail: reject internal team members
+    if await is_internal_email(context, email):
+        return {
+            "email": email,
+            "action": "rejected_internal_user",
+            "updated": False,
+            "created": False,
+            "updated_fields": [],
+            "message": (
+                "This email belongs to an internal team member "
+                "and cannot be added as a stakeholder."
+            ),
+        }
 
     c = DealStakeholder.__table__.c
     stmt = select(DealStakeholder).where(
@@ -337,6 +352,10 @@ def create_upsert_stakeholder(
     ) -> dict[str, Any] | None:
         """Upsert stakeholder by email in the current deal.
 
+        IMPORTANT: Do NOT call this for internal team members. Only external
+        customer/prospect contacts should be added as stakeholders. Internal
+        emails are rejected automatically.
+
         Strategy:
         1. Attempt update by email (fill missing fields by default)
         2. If not found and create_if_missing=True, create the stakeholder
@@ -381,11 +400,18 @@ def create_upsert_stakeholder(
         )
 
         if result:
-            logger.info(
-                "[TOOL RESULT] upsert_stakeholder action=%s email=%s",
-                result.get("action"),
-                result.get("email"),
-            )
+            action = result.get("action")
+            if action == "rejected_internal_user":
+                logger.info(
+                    "[TOOL RESULT] upsert_stakeholder rejected internal email=%s",
+                    result.get("email"),
+                )
+            else:
+                logger.info(
+                    "[TOOL RESULT] upsert_stakeholder action=%s email=%s",
+                    action,
+                    result.get("email"),
+                )
         else:
             logger.info("[TOOL RESULT] upsert_stakeholder failed")
 

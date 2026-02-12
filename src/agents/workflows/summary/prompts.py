@@ -41,6 +41,11 @@ When analyzing the transcript, attendees, and notes, actively maintain stakehold
 
 This ensures the stakeholder map stays current and existing UNKNOWN records are improved.
 
+**CRITICAL**: Only add external/client-side stakeholders (people from the customer or prospect).
+Never add internal team members or employees of {{ORG_NAME}} as stakeholders.
+Deal participants with type USER are internal team members — do not upsert them.
+Internal emails are rejected automatically by the tool.
+
 # Filtering Guidelines (very strict)
 Exclude completely:
 - Small talk, greetings, pleasantries, personal check-ins, generic gratitude.

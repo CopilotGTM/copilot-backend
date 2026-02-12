@@ -25,8 +25,8 @@ from src.agents.context import AgentContext
 from src.agents.tools.registry import get_tools_for_agent
 from src.agents.workflows.deal_summary.models import DealSummaryData, DealSummaryInput
 from src.agents.workflows.deal_summary.prompts import (
-    DEAL_SUMMARY_SYSTEM_PROMPT,
     build_deal_summary_user_prompt,
+    get_deal_summary_system_prompt,
 )
 from src.infra.config.agent_config import agent_config
 from src.infra.utils.logger import get_logger
@@ -94,7 +94,7 @@ class DealSummaryAgent:
         self.agent = Agent(
             model=AzureOpenAI(id=config.model, api_version=config.api_version),
             output_schema=DealSummaryData,
-            description=DEAL_SUMMARY_SYSTEM_PROMPT,
+            description=get_deal_summary_system_prompt(self.context.org_name),
             tools=tools,
             markdown=True,
             debug_mode=config.debug_mode,
