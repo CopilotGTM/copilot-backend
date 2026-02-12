@@ -111,7 +111,7 @@ class StakeholderSyncService:
 
     Uses fresh session pattern for better connection management:
     - Org-level: Acquires fresh session per deal, releases between deals
-    - Deal-level: Uses session passed to constructor
+    - Deal-level: Acquires fresh session for each deal sync
 
     Usage (org-level - for initial sync):
         service = StakeholderSyncService(organisation_id)
@@ -120,24 +120,20 @@ class StakeholderSyncService:
             # Dispatch Task 2/3 for entire org
 
     Usage (per-deal):
-        service = StakeholderSyncService(organisation_id, session=session)
+        service = StakeholderSyncService(organisation_id)
         result = await service.sync_for_deal(deal_id)
         if result.requires_rematching:
             # Dispatch Task 2/3
     """
 
-    def __init__(self, organisation_id: UUID, session: AsyncSession | None = None) -> None:
+    def __init__(self, organisation_id: UUID) -> None:
         """
         Initialize the stakeholder sync service.
 
         Args:
             organisation_id: UUID of the organisation
-            session: Optional async database session. If not provided,
-                     sync_for_organisation() will acquire fresh sessions.
-                     Required for sync_for_deal().
         """
         self.organisation_id = organisation_id
-        self._session = session  # Optional - used by sync_for_deal()
 
     @staticmethod
     def _get_manual_overrides(stakeholder: DealStakeholder) -> set[str]:
@@ -222,7 +218,7 @@ class StakeholderSyncService:
     async def sync_for_deal(self, deal_id: UUID) -> StakeholderSyncResult:
         """Sync stakeholders for a deal from CRMDealParticipant records.
 
-        Requires session to be passed in constructor (used for deal-level tasks).
+        Acquires and releases its own session for this deal sync.
 
         Only processes participants where participant_type = CONTACT.
 
@@ -232,23 +228,25 @@ class StakeholderSyncService:
         Returns:
             StakeholderSyncResult with counts and requires_rematching flag
         """
-        if self._session is None:
-            raise ValueError("Session required for sync_for_deal(). Pass session to constructor.")
-        session = self._session
+        async for session in acquire_org_async_session(self.organisation_id):
+            try:
+                result = await self._sync_deal_internal(session, deal_id)
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                raise
 
-        result = await self._sync_deal_internal(session, deal_id)
-        await session.commit()
+            logger.info(
+                "Stakeholder sync for deal %s: created=%d updated=%d deactivated=%d skipped=%d",
+                deal_id,
+                result.created,
+                result.updated,
+                result.deactivated,
+                result.skipped,
+            )
+            return result
 
-        logger.info(
-            "Stakeholder sync for deal %s: created=%d updated=%d deactivated=%d skipped=%d",
-            deal_id,
-            result.created,
-            result.updated,
-            result.deactivated,
-            result.skipped,
-        )
-
-        return result
+        raise RuntimeError("Failed to acquire organization session")
 
     async def _sync_deal_internal(
         self, session: AsyncSession, deal_id: UUID
