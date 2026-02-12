@@ -312,27 +312,15 @@ def sync_deal_timeline_task(
     async def _run() -> dict[str, Any]:
         parsed_types = [TimelineEventType(t) for t in event_types] if event_types else None
 
-        # Deal-level: Pass session to constructor (sync_deal_timeline requires it)
-        async for session in acquire_org_async_session(org_uuid):
-            service = DealTimelineSyncService(org_uuid, session=session)
-            result = await service.sync_deal_timeline(deal_uuid, parsed_types)
-            await session.commit()
-            return {
-                "status": "success",
-                "organisation_id": organisation_id,
-                "deal_id": deal_id,
-                "started_at": started_at,
-                "completed_at": datetime.now(UTC).isoformat(),
-                **result,
-            }
-
+        service = DealTimelineSyncService(org_uuid)
+        result = await service.sync_deal_timeline(deal_uuid, parsed_types)
         return {
-            "status": "failed",
+            "status": "success",
             "organisation_id": organisation_id,
             "deal_id": deal_id,
             "started_at": started_at,
             "completed_at": datetime.now(UTC).isoformat(),
-            "error": "Failed to acquire database session",
+            **result,
         }
 
     try:
