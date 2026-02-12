@@ -1,26 +1,46 @@
 """Stale job cleanup service for knowledge worker.
 
-This service handles cleanup of knowledge processing jobs that have been
-stuck in non-terminal states:
-- PENDING for more than 2 hours → mark as FAILED
-- IN_PROGRESS for more than 24 hours → mark as FAILED
+Marks stuck sources and jobs as FAILED so the frontend stops showing
+files as perpetually "processing" / "extracting" / "queued".
 
-Follows the fresh session pattern - sessions are acquired only when needed
-for database operations and released immediately after.
+Three cleanup passes, each catching a different failure mode:
+
+1. STALE SOURCES — the most common case.
+   A file's source record has been sitting in an active status (PROCESSING,
+   EXTRACTING, etc.) longer than its allowed threshold. This happens when the
+   Celery task crashed, timed out, or was never picked up. We find these by
+   checking source.updated_at vs a per-status time threshold, then mark both
+   the source and any non-terminal jobs as FAILED.
+
+2. ORPHANED SOURCES — a state-mismatch bug.
+   The source still shows PROCESSING/EXTRACTING but ALL of its jobs have
+   already reached a terminal state (COMPLETED/FAILED/CANCELLED). This means
+   the job finished but the code path that ran it forgot (or failed) to update
+   the source status. No time threshold needed — the mismatch alone tells us
+   the source is stuck. We just set the source to FAILED.
+
+3. STALE JOBS (safety net) — catches anything the first two passes missed.
+   Individual jobs stuck in PENDING or IN_PROGRESS beyond a flat 2h threshold.
+   This covers edge cases like: source.updated_at was refreshed (so pass #1
+   skipped it) but the job itself is still stuck. We fail the job AND sync the
+   parent source to FAILED so the frontend reflects the real state.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import exists, select, update
 from sqlmodel import col
 
 from src.domain.models.organisation_tables.job_models import (
     JobStatus,
     KnowledgeProcessingJob,
+)
+from src.domain.models.organisation_tables.knowledge_models import (
+    OrganisationSource,
+    OrganisationSourceStatus,
 )
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.async_runner import run_async
@@ -28,167 +48,208 @@ from src.infra.utils.logger import get_logger
 
 logger = get_logger("stale_job_cleanup_service")
 
-# Threshold configurations for different job states
-PENDING_THRESHOLD_HOURS = 2  # Jobs pending for more than 2 hours
-IN_PROGRESS_THRESHOLD_HOURS = 24  # Jobs in progress for more than 24 hours
+# (threshold_hours, user-facing error message) per active source status
+SOURCE_THRESHOLDS: dict[OrganisationSourceStatus, tuple[int, str]] = {
+    OrganisationSourceStatus.PENDING_UPLOAD: (24, "Upload was not completed in time"),
+    OrganisationSourceStatus.UPLOADED: (2, "File uploaded but processing never started"),
+    OrganisationSourceStatus.PROCESSING: (2, "File processing timed out"),
+    OrganisationSourceStatus.CHUNKING: (3, "File chunking timed out"),
+    OrganisationSourceStatus.EXTRACTING: (3, "File extraction timed out"),
+}
 
+# Flat threshold for the safety-net job pass
+JOB_THRESHOLD_HOURS = 2
 
-@dataclass
-class CleanupResult:
-    """Result of cleanup operation for a specific status."""
+# Jobs in these statuses are "done" — we never touch them
+TERMINAL_JOB_STATUSES = (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED)
 
-    status: JobStatus
-    threshold_hours: int
-    jobs_found: int
-    jobs_marked_failed: int
+# Every source status that should eventually reach COMPLETED or FAILED
+ACTIVE_SOURCE_STATUSES = tuple(SOURCE_THRESHOLDS.keys())
 
 
 class StaleJobCleanupService:
-    """Service for cleaning up stale knowledge processing jobs.
+    """Cleans up stuck knowledge sources and jobs for one organisation.
 
-    A job is considered stale based on its status:
-    - PENDING: stuck for more than 2 hours from created_at
-    - IN_PROGRESS: stuck for more than 24 hours from created_at
+    Called by the per-org Tier 2 Celery task (cleanup_stale_jobs_org_task).
+    Each pass uses a fresh DB session so connections aren't held across passes.
     """
 
     def __init__(self, organisation_id: UUID):
-        """Initialize the service.
-
-        Args:
-            organisation_id: The organisation UUID
-        """
         self.organisation_id = organisation_id
 
     def cleanup_stale_jobs(self) -> dict:
-        """Main entry point - cleanup stale jobs for this organisation.
+        return run_async(self._run())
 
-        Returns:
-            dict with cleanup results
-        """
-        return run_async(self._cleanup_stale_jobs_async())
-
-    async def _cleanup_stale_jobs_async(self) -> dict:
-        """Async implementation of stale job cleanup."""
+    async def _run(self) -> dict:
         now = datetime.now(UTC)
-
-        # Cleanup PENDING jobs (threshold: 2 hours)
-        pending_result = await self._cleanup_jobs_by_status(
-            status=JobStatus.PENDING,
-            threshold_hours=PENDING_THRESHOLD_HOURS,
-            now=now,
-        )
-
-        # Cleanup IN_PROGRESS jobs (threshold: 24 hours)
-        in_progress_result = await self._cleanup_jobs_by_status(
-            status=JobStatus.IN_PROGRESS,
-            threshold_hours=IN_PROGRESS_THRESHOLD_HOURS,
-            now=now,
-        )
-
-        total_found = pending_result.jobs_found + in_progress_result.jobs_found
-        total_marked = pending_result.jobs_marked_failed + in_progress_result.jobs_marked_failed
-
-        logger.info(
-            "Stale job cleanup completed for org=%s: "
-            "pending (>%dh): found=%d, marked=%d | "
-            "in_progress (>%dh): found=%d, marked=%d",
-            self.organisation_id,
-            PENDING_THRESHOLD_HOURS,
-            pending_result.jobs_found,
-            pending_result.jobs_marked_failed,
-            IN_PROGRESS_THRESHOLD_HOURS,
-            in_progress_result.jobs_found,
-            in_progress_result.jobs_marked_failed,
-        )
-
-        return {
-            "organisation_id": str(self.organisation_id),
-            "total_stale_jobs_found": total_found,
-            "total_jobs_marked_failed": total_marked,
-            "pending_jobs": {
-                "threshold_hours": PENDING_THRESHOLD_HOURS,
-                "found": pending_result.jobs_found,
-                "marked_failed": pending_result.jobs_marked_failed,
-            },
-            "in_progress_jobs": {
-                "threshold_hours": IN_PROGRESS_THRESHOLD_HOURS,
-                "found": in_progress_result.jobs_found,
-                "marked_failed": in_progress_result.jobs_marked_failed,
-            },
+        counts: dict[str, int] = {
+            "stale_sources": 0,
+            "orphaned_sources": 0,
+            "stale_jobs": 0,
         }
 
-    async def _cleanup_jobs_by_status(
-        self,
-        status: JobStatus,
-        threshold_hours: int,
-        now: datetime,
-    ) -> CleanupResult:
-        """Cleanup stale jobs for a specific status.
+        # ── Pass 1: Stale sources ─────────────────────────────────────
+        # For each active status, find sources whose updated_at is older than
+        # the allowed threshold. Mark them + their non-terminal jobs as FAILED.
+        for status, (hours, msg) in SOURCE_THRESHOLDS.items():
+            cutoff = now - timedelta(hours=hours)
+            error = f"{msg} (cleanup at {now.isoformat()})"
 
-        Args:
-            status: The job status to check (PENDING or IN_PROGRESS)
-            threshold_hours: Hours after which jobs are considered stale
-            now: Current timestamp for cutoff calculation
+            async for session in acquire_org_async_session(self.organisation_id):
+                source_ids = (
+                    (
+                        await session.execute(
+                            select(col(OrganisationSource.source_id)).where(
+                                col(OrganisationSource.status) == status,
+                                col(OrganisationSource.is_deleted).is_(False),
+                                col(OrganisationSource.updated_at) < cutoff,
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
 
-        Returns:
-            CleanupResult with statistics
-        """
-        cutoff_time = now - timedelta(hours=threshold_hours)
-        stale_job_ids: list[str] = []
-        updated_count = 0
+                if not source_ids:
+                    continue
 
-        # Phase 1: Find stale jobs for this status
+                # Fail the sources
+                await session.execute(
+                    update(OrganisationSource)
+                    .where(col(OrganisationSource.source_id).in_(source_ids))
+                    .values(status=OrganisationSourceStatus.FAILED, error_message=error)
+                )
+                # Fail any of their jobs that haven't already finished
+                await session.execute(
+                    update(KnowledgeProcessingJob)
+                    .where(
+                        col(KnowledgeProcessingJob.source_id).in_(source_ids),
+                        col(KnowledgeProcessingJob.status).notin_(TERMINAL_JOB_STATUSES),
+                    )
+                    .values(status=JobStatus.FAILED, error_message=error)
+                )
+                await session.commit()
+                counts["stale_sources"] += len(source_ids)
+
+                logger.info(
+                    "Marked %d stale %s sources as FAILED (>%dh) for org=%s",
+                    len(source_ids),
+                    status.value,
+                    hours,
+                    self.organisation_id,
+                )
+
+        # ── Pass 2: Orphaned sources ──────────────────────────────────
+        # Source is in an active status but ALL its jobs already finished.
+        # The job completed/failed but never updated the parent source — fix it.
         async for session in acquire_org_async_session(self.organisation_id):
-            stmt = select(col(KnowledgeProcessingJob.job_id)).where(
-                col(KnowledgeProcessingJob.status) == status,
-                col(KnowledgeProcessingJob.created_at) < cutoff_time,
+            # Source must have at least one job (otherwise it's just new, not orphaned)
+            has_any_job = exists(
+                select(col(KnowledgeProcessingJob.job_id)).where(
+                    col(KnowledgeProcessingJob.source_id) == col(OrganisationSource.source_id)
+                )
             )
-            result = await session.execute(stmt)
-            stale_job_ids = [str(row[0]) for row in result.all()]
+            # Source must NOT have any still-running job
+            has_active_job = exists(
+                select(col(KnowledgeProcessingJob.job_id)).where(
+                    col(KnowledgeProcessingJob.source_id) == col(OrganisationSource.source_id),
+                    col(KnowledgeProcessingJob.status).notin_(TERMINAL_JOB_STATUSES),
+                )
+            )
 
-        if not stale_job_ids:
-            return CleanupResult(
-                status=status,
-                threshold_hours=threshold_hours,
-                jobs_found=0,
-                jobs_marked_failed=0,
+            orphaned_ids = (
+                (
+                    await session.execute(
+                        select(col(OrganisationSource.source_id)).where(
+                            col(OrganisationSource.status).in_(ACTIVE_SOURCE_STATUSES),
+                            col(OrganisationSource.is_deleted).is_(False),
+                            has_any_job,
+                            ~has_active_job,
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
+            if orphaned_ids:
+                error = (
+                    "All jobs finished but file status was never updated"
+                    f" (cleanup at {now.isoformat()})"
+                )
+                await session.execute(
+                    update(OrganisationSource)
+                    .where(col(OrganisationSource.source_id).in_(orphaned_ids))
+                    .values(status=OrganisationSourceStatus.FAILED, error_message=error)
+                )
+                await session.commit()
+                counts["orphaned_sources"] = len(orphaned_ids)
+
+                logger.info(
+                    "Fixed %d orphaned sources for org=%s",
+                    len(orphaned_ids),
+                    self.organisation_id,
+                )
+
+        # ── Pass 3: Stale jobs (safety net) ───────────────────────────
+        # Catches jobs that pass 1 missed (e.g. source.updated_at was refreshed
+        # but the job itself is still stuck). Fails the job AND syncs its parent
+        # source so the frontend doesn't show a stuck file.
+        cutoff = now - timedelta(hours=JOB_THRESHOLD_HOURS)
+
+        async for session in acquire_org_async_session(self.organisation_id):
+            rows = (
+                await session.execute(
+                    select(
+                        col(KnowledgeProcessingJob.job_id),
+                        col(KnowledgeProcessingJob.source_id),
+                    ).where(
+                        col(KnowledgeProcessingJob.status).in_(
+                            (JobStatus.PENDING, JobStatus.IN_PROGRESS)
+                        ),
+                        col(KnowledgeProcessingJob.created_at) < cutoff,
+                    )
+                )
+            ).all()
+
+            if not rows:
+                continue
+
+            job_ids = [r[0] for r in rows]
+            source_ids = list({r[1] for r in rows})
+            error = f"Stuck beyond {JOB_THRESHOLD_HOURS}h (cleanup at {now.isoformat()})"
+
+            # Fail the stuck jobs
+            await session.execute(
+                update(KnowledgeProcessingJob)
+                .where(col(KnowledgeProcessingJob.job_id).in_(job_ids))
+                .values(status=JobStatus.FAILED, error_message=error)
+            )
+            # Also sync the parent source — this is why it's called "safety net"
+            await session.execute(
+                update(OrganisationSource)
+                .where(
+                    col(OrganisationSource.source_id).in_(source_ids),
+                    col(OrganisationSource.status).in_(ACTIVE_SOURCE_STATUSES),
+                )
+                .values(status=OrganisationSourceStatus.FAILED, error_message=error)
+            )
+            await session.commit()
+            counts["stale_jobs"] = len(job_ids)
+
+            logger.info(
+                "Safety net: failed %d stale jobs across %d sources for org=%s",
+                len(job_ids),
+                len(source_ids),
+                self.organisation_id,
             )
 
         logger.info(
-            "Found %d stale %s jobs (>%d hours) for org=%s",
-            len(stale_job_ids),
-            status.value,
-            threshold_hours,
+            "Cleanup done for org=%s: stale_sources=%d, orphaned=%d, stale_jobs=%d",
             self.organisation_id,
+            counts["stale_sources"],
+            counts["orphaned_sources"],
+            counts["stale_jobs"],
         )
 
-        # Phase 2: Mark stale jobs as failed
-        async for session in acquire_org_async_session(self.organisation_id):
-            error_message = (
-                f"Job automatically marked as failed: was in {status.value} state for more than "
-                f"{threshold_hours} hours without progress (cleanup at {now.isoformat()})"
-            )
-
-            update_stmt = (
-                update(KnowledgeProcessingJob)
-                .where(
-                    col(KnowledgeProcessingJob.job_id).in_([UUID(jid) for jid in stale_job_ids]),
-                    # Double-check status hasn't changed (idempotency)
-                    col(KnowledgeProcessingJob.status) == status,
-                )
-                .values(
-                    status=JobStatus.FAILED,
-                    error_message=error_message,
-                )
-            )
-            result = await session.execute(update_stmt)
-            # rowcount exists on CursorResult but type stubs don't expose it
-            updated_count = getattr(result, "rowcount", len(stale_job_ids))
-            await session.commit()
-
-        return CleanupResult(
-            status=status,
-            threshold_hours=threshold_hours,
-            jobs_found=len(stale_job_ids),
-            jobs_marked_failed=updated_count,
-        )
+        return {"organisation_id": str(self.organisation_id), **counts}

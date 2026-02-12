@@ -4,9 +4,10 @@ Three-tier architecture:
 - Tier 1: cleanup_stale_jobs_all_orgs_task - Coordinator, dispatches to all orgs
 - Tier 2: cleanup_stale_jobs_org_task - Per-org cleanup with retry support
 
-Runs hourly via Celery Beat to mark stale jobs as FAILED:
-- PENDING jobs: stuck for more than 2 hours
-- IN_PROGRESS jobs: stuck for more than 24 hours
+Runs every 30 minutes via Celery Beat. Cleans up:
+- Stale sources (PENDING_UPLOAD >24h, PROCESSING >2h, EXTRACTING >3h)
+- Orphaned sources (active status but all jobs already terminal)
+- Stale jobs (PENDING/IN_PROGRESS >2h) with source status sync
 """
 
 from __future__ import annotations
@@ -49,7 +50,7 @@ def cleanup_stale_jobs_all_orgs_task() -> dict[str, Any]:
     2. Dispatches Tier 2 task for each organization
     3. Returns summary of dispatched tasks
 
-    Scheduled to run every hour via Celery Beat.
+    Scheduled to run every 2 minutes via Celery Beat.
     """
     logger.info("Starting stale job cleanup coordinator for all organizations")
 
@@ -127,12 +128,12 @@ def cleanup_stale_jobs_org_task(
     self: Task,
     organisation_id: str,
 ) -> dict[str, Any]:
-    """Tier 2: Per-organization stale job cleanup.
+    """Tier 2: Per-organization stale source and job cleanup.
 
     This task:
-    1. Finds PENDING jobs older than 2 hours and marks them FAILED
-    2. Finds IN_PROGRESS jobs older than 24 hours and marks them FAILED
-    3. Returns cleanup statistics for both categories
+    1. Marks stale sources (PENDING_UPLOAD/PROCESSING/EXTRACTING) as FAILED
+    2. Fixes orphaned sources (active status but all jobs terminal)
+    3. Safety-net: marks stale jobs as FAILED and syncs parent source
 
     Args:
         organisation_id: The organization UUID string
@@ -148,10 +149,11 @@ def cleanup_stale_jobs_org_task(
         result = service.cleanup_stale_jobs()
 
         logger.info(
-            "Stale job cleanup completed for org=%s: found=%d, marked_failed=%d",
+            "Stale cleanup completed for org=%s: stale_sources=%d, orphaned=%d, stale_jobs=%d",
             organisation_id,
-            result.get("stale_jobs_found", 0),
-            result.get("jobs_marked_failed", 0),
+            result.get("stale_sources", 0),
+            result.get("orphaned_sources", 0),
+            result.get("stale_jobs", 0),
         )
 
         return {
