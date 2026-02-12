@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID
 
@@ -205,6 +206,29 @@ class DealMeetingMatcher:
             return None
         return email.split("@")[1].lower()
 
+    def _resolve_completed_contact_time(self, event: CalendarEvent) -> datetime | None:
+        """Return event contact time only for completed meetings (never upcoming)."""
+        candidate = event.end_at or event.start_at
+        if candidate.tzinfo is None:
+            candidate = candidate.replace(tzinfo=UTC)
+        if candidate > datetime.now(UTC):
+            return None
+        return candidate
+
+    def _collect_event_participant_emails(self, event: CalendarEvent) -> set[str]:
+        """Collect normalized participant emails from organizer + attendees."""
+        emails: set[str] = set()
+        organizer_email = self._normalize_email(event.organiser_email)
+        if organizer_email:
+            emails.add(organizer_email)
+
+        for attendee in event.attendees or []:
+            normalized = self._normalize_email(attendee.email)
+            if normalized:
+                emails.add(normalized)
+
+        return emails
+
     def _collect_customer_domains(self, deal: CRMDeal) -> set[str]:
         """Collect customer domains from deal's CONTACT participants.
 
@@ -268,6 +292,7 @@ class DealMeetingMatcher:
             return 0
 
         discovered = 0
+        contact_time = self._resolve_completed_contact_time(event)
 
         for attendee in event.attendees:
             if not attendee.email:
@@ -319,6 +344,7 @@ class DealMeetingMatcher:
                 stance=StakeholderStance.UNKNOWN,
                 temperature=StakeholderTemperature.UNKNOWN,
                 engagement_score=0.0,
+                last_contact_at=contact_time,
             )
             session.add(stakeholder)
             discovered += 1
@@ -667,6 +693,40 @@ class DealMeetingMatcher:
             team_emails=team_emails,
         )
 
+    async def _update_stakeholder_last_contact_from_event(
+        self,
+        session: AsyncSession,
+        deal_id: UUID,
+        event: CalendarEvent,
+    ) -> int:
+        """Update last_contact_at for stakeholders only when the meeting is completed."""
+        contact_time = self._resolve_completed_contact_time(event)
+        if contact_time is None:
+            return 0
+
+        participant_emails = self._collect_event_participant_emails(event)
+        if not participant_emails:
+            return 0
+
+        stmt = select(DealStakeholder).where(
+            col(DealStakeholder.organisation_id) == self.organisation_id,
+            col(DealStakeholder.deal_id) == deal_id,
+            col(DealStakeholder.is_deleted).is_(False),
+            func.lower(DealStakeholder.email).in_(participant_emails),
+        )
+        result = await session.execute(stmt)
+        stakeholders = list(result.scalars().all())
+
+        updated_count = 0
+        updated_at = datetime.now(UTC)
+        for stakeholder in stakeholders:
+            if stakeholder.last_contact_at is None or contact_time > stakeholder.last_contact_at:
+                stakeholder.last_contact_at = contact_time
+                stakeholder.updated_at = updated_at
+                updated_count += 1
+
+        return updated_count
+
     async def _create_associations(
         self,
         session: AsyncSession,
@@ -781,12 +841,20 @@ class DealMeetingMatcher:
                 session.add(timeline_event)
 
                 linked_count += 1
-                linked_event_ids.add(event.event_id)
 
                 # Discover stakeholders from event attendees (only customer domain)
                 await self._discover_stakeholders_from_event(
                     session, deal, event, customer_domains, team_emails
                 )
+
+            # Always evaluate stakeholder last-contact recency for matched meetings,
+            # even when the association already exists from an earlier upcoming run.
+            await self._update_stakeholder_last_contact_from_event(
+                session=session,
+                deal_id=deal.deal_id,
+                event=event,
+            )
+            linked_event_ids.add(event.event_id)
 
         return linked_count
 

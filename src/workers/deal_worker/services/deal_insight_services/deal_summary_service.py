@@ -235,7 +235,17 @@ class DealSummaryService:
         self._publish_progress("Saving results...", "saving", 0.95)
 
         # 6. Wrap result with metadata
-        summary_dict = summary_data.model_dump()
+        if isinstance(summary_data, dict):
+            summary_dict = summary_data
+        elif hasattr(summary_data, "model_dump"):
+            summary_dict = summary_data.model_dump()
+        else:
+            raise DealSummaryError(
+                "AI summary generation failed: Deal summary agent returned unsupported payload "
+                f"type: {type(summary_data).__name__}.",
+                error_code="ai_generation_failed",
+                retryable=True,
+            )
         wrapped_result = wrap_generated_content(summary_dict)
 
         # Phase 3: Save result (fresh session)

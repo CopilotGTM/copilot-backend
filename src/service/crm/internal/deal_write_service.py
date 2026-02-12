@@ -766,6 +766,21 @@ class DealWriteService:
         deal = await self._load_internal_deal(deal_id)
         now = datetime.now(UTC)
 
+        # Preserve existing company name when only domain/other fields are updated
+        if "name" not in account_payload and deal.company_name:
+            account_payload["name"] = deal.company_name
+
+        # Carry over existing company fields so they aren't lost when
+        # the domain change creates or links to a different company record.
+        if deal.company_external_id:
+            existing_company = await self._get_current_company(
+                deal.company_external_id, deal.integration_id
+            )
+            if existing_company:
+                for field in ("website", "linkedin_url", "industry", "country"):
+                    if field not in account_payload and getattr(existing_company, field, None):
+                        account_payload[field] = getattr(existing_company, field)
+
         try:
             company, fallback_name = await self._upsert_company_from_account(
                 account_payload, deal.integration_id, now

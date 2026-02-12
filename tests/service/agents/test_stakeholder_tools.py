@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from uuid import UUID, uuid4
@@ -248,6 +249,16 @@ async def test_upsert_stakeholder_tool_factory_honors_create_if_missing_false() 
     assert result is not None
     assert result["action"] == "not_found"
     assert result["updated"] is False
+
+
+def test_upsert_stakeholder_tool_signature_does_not_expose_object_schema() -> None:
+    context, _ = _make_context()
+    tool = create_upsert_stakeholder(context, lambda: None)  # type: ignore[arg-type]
+
+    params = inspect.signature(tool).parameters
+    for field_name in ("stance", "decision_power", "temperature"):
+        annotation = str(params[field_name].annotation)
+        assert "dict" not in annotation
 
 
 def test_registry_uses_only_upsert_for_analysis_agents() -> None:

@@ -16,6 +16,7 @@ See docs/Technical Documentation/deal/deal-email-matching-automation.md for deta
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID
 
@@ -168,6 +169,10 @@ class DealEmailMatcher:
 
         return domains
 
+    def _resolve_email_contact_time(self, email: Email) -> datetime | None:
+        """Resolve canonical contact time for stakeholder engagement from an email."""
+        return email.received_at or email.sent_at
+
     async def _discover_stakeholders_from_email(
         self,
         session: AsyncSession,
@@ -198,6 +203,7 @@ class DealEmailMatcher:
             return 0
 
         discovered = 0
+        contact_time = self._resolve_email_contact_time(email)
 
         # Collect all email participants (from, to, cc)
         all_participants: set[str] = set()
@@ -262,6 +268,7 @@ class DealEmailMatcher:
                 stance=StakeholderStance.UNKNOWN,
                 temperature=StakeholderTemperature.UNKNOWN,
                 engagement_score=0.0,
+                last_contact_at=contact_time,
             )
             session.add(stakeholder)
             discovered += 1
@@ -597,6 +604,44 @@ class DealEmailMatcher:
 
         return 0.0, DealEmailDirection.INTERNAL
 
+    async def _update_stakeholder_last_contact_from_email(
+        self,
+        session: AsyncSession,
+        deal_id: UUID,
+        matched_emails: list[str],
+        contact_time: datetime | None,
+    ) -> int:
+        """Update last_contact_at for matched stakeholders using an email timestamp."""
+        if contact_time is None:
+            return 0
+
+        normalized_emails = {
+            normalized
+            for email in matched_emails
+            if (normalized := self._normalize_email(email)) is not None
+        }
+        if not normalized_emails:
+            return 0
+
+        stmt = select(DealStakeholder).where(
+            col(DealStakeholder.organisation_id) == self.organisation_id,
+            col(DealStakeholder.deal_id) == deal_id,
+            col(DealStakeholder.is_deleted).is_(False),
+            func.lower(DealStakeholder.email).in_(normalized_emails),
+        )
+        result = await session.execute(stmt)
+        stakeholders = list(result.scalars().all())
+
+        updated_count = 0
+        updated_at = datetime.now(UTC)
+        for stakeholder in stakeholders:
+            if stakeholder.last_contact_at is None or contact_time > stakeholder.last_contact_at:
+                stakeholder.last_contact_at = contact_time
+                stakeholder.updated_at = updated_at
+                updated_count += 1
+
+        return updated_count
+
     async def _create_association(
         self,
         session: AsyncSession,
@@ -667,6 +712,13 @@ class DealEmailMatcher:
                 event_source=resolved_source,
             )
             session.add(timeline_event)
+
+            await self._update_stakeholder_last_contact_from_email(
+                session=session,
+                deal_id=match.deal_id,
+                matched_emails=match.matched_emails,
+                contact_time=self._resolve_email_contact_time(email),
+            )
             return association
 
         return None

@@ -121,7 +121,7 @@ class AddDealNoteFormHandler(BaseFormHandler):
                         organisation_id=org_id,
                     )
 
-                    await notes_service.create_user_note(
+                    create_result = await notes_service.create_user_note(
                         deal_id=deal_id,
                         content=note_content,
                         subject=None,
@@ -131,17 +131,29 @@ class AddDealNoteFormHandler(BaseFormHandler):
                     )
                     await org_session.commit()
 
+                    if create_result.created_new:
+                        logger.info(
+                            "Note added via form: deal_id=%s deal='%s' org=%s user=%s",
+                            deal_id,
+                            deal_name,
+                            org_id,
+                            user.user_id,
+                        )
+                        return FormHandlerResult(
+                            success=True,
+                            message=f"Note added to deal **{deal_name}**!",
+                        )
+
                     logger.info(
-                        "Note added via form: deal_id=%s deal='%s' org=%s user=%s",
+                        "Duplicate form note ignored: deal_id=%s deal='%s' org=%s user=%s",
                         deal_id,
                         deal_name,
                         org_id,
                         user.user_id,
                     )
-
                     return FormHandlerResult(
                         success=True,
-                        message=f"Note added to deal **{deal_name}**!",
+                        message=f"Identical note already exists for **{deal_name}**.",
                     )
 
                 except Exception as e:

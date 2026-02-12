@@ -15,6 +15,7 @@ from uuid import UUID
 from fastapi import Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
+from src.domain.models.authentication import Authentication
 from src.domain.models.master_tables import User
 from src.infra.auth.user_auth import user_auth
 
@@ -26,6 +27,10 @@ from src.infra.database.sessions import (
 from src.infra.database.sessions import (
     acquire_org_session as _acquire_org_session,
 )
+
+# Backward compatibility alias used by legacy imports and test bootstrap.
+# Keep this object exposing verify_session for older dependency overrides.
+auth = Authentication()
 
 
 def get_current_user(user: User = Depends(user_auth)) -> UserIDs:
@@ -92,6 +97,7 @@ async def acquire_org_async_session(
 
 
 __all__ = [
+    "auth",
     "get_org_session",
     "acquire_org_session",
     "get_org_async_session",

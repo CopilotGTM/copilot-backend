@@ -29,6 +29,14 @@ class ParticipantInfo:
     name: str | None
 
 
+@dataclass
+class CreateUserNoteResult:
+    """Result wrapper for user note creation with idempotency semantics."""
+
+    note: CRMActivity
+    created_new: bool
+
+
 class DealNotesServiceError(Exception):
     """Custom exception for deal notes service errors."""
 
@@ -209,7 +217,7 @@ class DealNotesService:
         user_id: UUID,
         user_name: str | None,
         user_email: str | None,
-    ) -> CRMActivity:
+    ) -> CreateUserNoteResult:
         """Create a new user-generated note for a deal.
 
         User-created notes are distinguished from CRM-synced notes by:
@@ -225,13 +233,30 @@ class DealNotesService:
             user_email: Email of user creating the note
 
         Returns:
-            Created CRMActivity note record
+            CreateUserNoteResult containing the note and whether a new note was created
 
         Raises:
             DealNotesServiceError: If deal not found or access denied
         """
         # Verify deal exists and get deal details
         deal = await self._verify_deal_access(deal_id)
+
+        # Idempotency guard for double-submits/retries:
+        # if an identical active user note already exists for this deal,
+        # return it instead of creating another row.
+        existing_note = await self._find_existing_user_note(
+            deal_id=deal_id,
+            content=content,
+            subject=subject,
+        )
+        if existing_note:
+            logger.info(
+                "Duplicate user note ignored for deal %s by user %s; existing note %s reused",
+                deal_id,
+                user_id,
+                existing_note.activity_id,
+            )
+            return CreateUserNoteResult(note=existing_note, created_new=False)
 
         now = datetime.now(UTC)
         note_id = uuid4()
@@ -269,7 +294,7 @@ class DealNotesService:
             user_id,
         )
 
-        return note
+        return CreateUserNoteResult(note=note, created_new=True)
 
     async def update_user_note(
         self,
@@ -468,6 +493,35 @@ class DealNotesService:
         if note.integration_id is not None:
             raise DealNotesServiceError("External CRM notes are read-only", status_code=409)
         return note
+
+    async def _find_existing_user_note(
+        self,
+        deal_id: UUID,
+        content: str,
+        subject: str | None,
+    ) -> CRMActivity | None:
+        """Find an existing active user-created note with exact same content/subject."""
+        c = cast(Any, CRMActivity).__table__.c
+
+        stmt = select(CRMActivity).where(
+            c.organisation_id == self.organisation_id,
+            c.deal_id == deal_id,
+            c.activity_type == CRMActivityType.NOTE.value,
+            c.integration_id.is_(None),
+            c.body == content,
+            or_(c.is_deleted.is_(False), c.is_deleted.is_(None)),
+        )
+
+        if subject is None:
+            stmt = stmt.where(c.subject.is_(None))
+        else:
+            stmt = stmt.where(c.subject == subject)
+
+        sort_ts = func.coalesce(c.source_created_at, c.created_at)
+        stmt = stmt.order_by(sort_ts.desc(), c.activity_id.desc()).limit(1)
+
+        result = await self.org_session.execute(stmt)
+        return result.scalars().first()
 
     def determine_note_source(self, note: CRMActivity) -> str:
         """Determine the source of a note (user, hubspot, salesforce).
