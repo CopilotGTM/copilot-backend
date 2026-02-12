@@ -766,6 +766,12 @@ class DealWriteService:
         deal = await self._load_internal_deal(deal_id)
         now = datetime.now(UTC)
 
+        # Auto-derive domain from website — domain is never sent by the frontend.
+        if "website" in account_payload and "domain" not in account_payload:
+            derived = self._normalize_domain(account_payload["website"])
+            if derived:
+                account_payload["domain"] = derived
+
         # Preserve existing company name when only domain/other fields are updated
         if "name" not in account_payload and deal.company_name:
             account_payload["name"] = deal.company_name
@@ -1038,10 +1044,10 @@ class DealWriteService:
                 if len(name_matches) == 1:
                     company = name_matches[0]
                     updated = False
-                    if website and not company.website:
+                    if website and company.website != website:
                         company.website = website
                         updated = True
-                    if linkedin_url and not company.linkedin_url:
+                    if linkedin_url and company.linkedin_url != linkedin_url:
                         company.linkedin_url = linkedin_url
                         updated = True
                     if industry and not company.industry:
@@ -1100,13 +1106,15 @@ class DealWriteService:
 
         if company:
             updated = False
-            if name and not company.name:
+            # Always update name when user provides one — fixes previously
+            # corrupted records where name was set to the domain value.
+            if name and company.name != name:
                 company.name = name
                 updated = True
-            if website and not company.website:
+            if website and company.website != website:
                 company.website = website
                 updated = True
-            if linkedin_url and not company.linkedin_url:
+            if linkedin_url and company.linkedin_url != linkedin_url:
                 company.linkedin_url = linkedin_url
                 updated = True
             if industry and not company.industry:
@@ -1376,6 +1384,19 @@ class DealWriteService:
             raise DealWriteServiceError("External CRM deals are read-only", status_code=409)
 
         return deal
+
+    async def _get_current_company(
+        self, company_external_id: str, integration_id: UUID
+    ) -> CRMCompany | None:
+        """Fetch the company currently associated with a deal."""
+        stmt = select(CRMCompany).where(
+            col(CRMCompany.organisation_id) == self.organisation_id,
+            col(CRMCompany.integration_id) == integration_id,
+            col(CRMCompany.external_id) == company_external_id,
+            col(CRMCompany.is_deleted).is_(False),
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().first()
 
     async def _load_pipeline(self, pipeline_id: UUID, integration_id: UUID) -> CRMPipeline:
         """Load and verify a pipeline belongs to this org and integration."""

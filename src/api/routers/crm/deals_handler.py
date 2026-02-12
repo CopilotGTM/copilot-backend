@@ -767,12 +767,16 @@ async def get_deal(
                 created_at = created_at.replace(tzinfo=UTC)
             deal_age_days = (datetime.now(UTC) - created_at).days
 
-        # Fetch company industry from associated company (industry is on CRMCompany, not CRMDeal)
+        # Fetch company details from associated company (these live on CRMCompany, not CRMDeal)
         company_industry = None
+        company_website = None
+        company_linkedin_url = None
         if deal.company_external_id:
             company = await service.get_company_by_external_id(deal.company_external_id)
             if company:
                 company_industry = company.industry
+                company_website = company.website
+                company_linkedin_url = company.linkedin_url
 
         # Check for active deal-level jobs (for SSE reconnection)
         active_deal_jobs = None
@@ -883,6 +887,8 @@ async def get_deal(
             company_name=deal.company_name,
             company_domain=deal.company_domain,
             company_industry=company_industry,
+            company_website=company_website,
+            company_linkedin_url=company_linkedin_url,
             primary_contact_external_id=deal.primary_contact_external_id,
             primary_contact_name=deal.primary_contact_name,
             primary_contact_email=deal.primary_contact_email,
