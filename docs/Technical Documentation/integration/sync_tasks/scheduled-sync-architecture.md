@@ -1024,45 +1024,49 @@ The following legacy files have been removed and replaced with the three-tier ar
 
 ---
 
-## Delta Link Support
+## Cursor-Based Incremental Sync Support
 
 ### Overview
 
-Microsoft Graph APIs support **Delta Query** for efficient incremental synchronization. Instead of fetching all data each time, Delta Query returns only the changes (created, updated, deleted) since the last sync.
+Calendar, email, and Teams integrations use provider cursors for true incremental sync.
+Depending on provider, the cursor is either:
+- Microsoft Graph `@odata.deltaLink`
+- Google Calendar `nextSyncToken`
 
-### How Delta Link Works
+Instead of fetching full datasets each run, providers return only changes since the last
+cursor.
+
+### How Cursor Incremental Sync Works
 
 ```text
 INITIAL SYNC:
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  1. First sync: GET /messages/delta                                         │
-│     • Returns ALL messages                                                  │
-│     • Response includes @odata.deltaLink (token for next sync)              │
+│  1. First sync: fetch provider bootstrap window/full snapshot               │
+│     • Returns initial dataset                                                │
+│     • Response includes a cursor (deltaLink or nextSyncToken)              │
 │                                                                             │
-│  2. Store deltaLink in database for this channel/folder                     │
+│  2. Store cursor in database                                                │
 └─────────────────────────────────────────────────────────────────────────────┘
 
 INCREMENTAL SYNC:
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  1. Use stored deltaLink: GET {deltaLink}                                   │
-│     • Returns ONLY messages changed since deltaLink was issued              │
-│     • Created messages: Full message object                                 │
-│     • Updated messages: Full message object with changes                    │
-│     • Deleted messages: @removed annotation with message ID                 │
+│  1. Use stored cursor in provider incremental call                          │
+│     • Returns ONLY changes since cursor was issued                          │
+│     • Includes created/updated/deleted records                              │
 │                                                                             │
-│  2. Process changes and store new deltaLink for next sync                   │
+│  2. Process changes and store new cursor for next sync                      │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Delta Link by Integration Type
+### Cursor Support by Integration Type
 
-| Integration | Delta Support | Initial Fetch | Storage Location | API Endpoint |
+| Integration | Cursor Support | Initial Fetch | Storage Location | API Endpoint |
 |-------------|---------------|---------------|------------------|--------------|
-| **Outlook Calendar** | Yes | Events (last 6 months) | `KnowledgeIntegration.connection_metadata` | `/calendarView/delta` |
+| **Outlook Calendar** | Yes (`deltaLink`) | Events (90 days back, 365 days forward) | `KnowledgeIntegration.connection_metadata` | `/calendarView/delta` |
 | **Outlook Email** | Yes | Messages (last 90 days) | `KnowledgeIntegration.connection_metadata` | `/mailFolders/{id}/messages/delta` |
 | **Teams Channel Messages** | Yes | All messages | `MessagingChannel.last_sync_cursor` | `/teams/{id}/channels/{id}/messages/delta` |
 | **Teams Chat Messages** | **No*** | All messages | `MessagingChannel.last_synced_at` | `/chats/{id}/messages` |
-| **Google Calendar** | Yes | Events (last 6 months) | `KnowledgeIntegration.connection_metadata` | Uses `syncToken` |
+| **Google Calendar** | Yes (`syncToken`) | Events (90 days back, 365 days forward) | `KnowledgeIntegration.connection_metadata` | `/calendar/v3/calendars/primary/events` |
 | **CRM (HubSpot/Salesforce)** | No** | Modified since last sync | N/A | Uses `modifiedAfter` timestamp |
 
 *Teams chat messages do NOT support Delta Query. Microsoft Graph returns error: "Change tracking is not supported against 'microsoft.graph.chatMessage'". We use client-side filtering with `last_synced_at` instead.
@@ -1133,13 +1137,13 @@ Our providers translate this to `_sync_metadata` for consistent handling:
 
 Services then mark these items as `is_deleted = True` in the database.
 
-### Handling Expired Delta Links
+### Handling Expired Cursors
 
-Delta links can expire (typically after 30-45 days of inactivity). When this happens:
+Provider cursors can expire. When this happens:
 
-1. Microsoft returns error 410 Gone or `syncStateNotFound`
-2. Our providers detect this and automatically retry with fresh delta query
-3. A full re-sync occurs, and a new delta link is stored
+1. Provider returns token-expiration style errors (for example 410 Gone/full sync required)
+2. Provider logic detects this and retries with a fresh bounded sync
+3. A new cursor is stored for the next incremental run
 
 ```python
 # Automatic recovery in teams.py
@@ -1148,7 +1152,7 @@ if "410" in error_msg or "syncStateNotFound" in error_code:
     return await fetch_messages(delta_link=None, ...)
 ```
 
-### Delta Link Storage Strategy
+### Cursor Storage Strategy
 
 **For Email (per folder):**
 ```python
@@ -1172,7 +1176,9 @@ channel.last_sync_cursor = "https://graph.microsoft.com/.../delta?$skiptoken=...
 ```python
 # Stored in KnowledgeIntegration.connection_metadata
 {
-  "calendar_delta_link": "https://graph.microsoft.com/.../delta?$skiptoken=..."
+  "calendar_delta_link": "https://graph.microsoft.com/.../calendarView/delta?$skiptoken=...",
+  # Legacy compatibility key still present for Outlook records during migration:
+  "outlook_delta_link": "https://graph.microsoft.com/.../calendarView/delta?$skiptoken=..."
 }
 ```
 
