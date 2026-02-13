@@ -6,7 +6,9 @@ into channel-specific payloads (Teams Adaptive Cards, Slack Block Kit, etc.).
 Architecture:
 - FormField: Single form input definition
 - FormDefinition: Complete form with fields, actions, and metadata
-- FormCardBuilder: Abstract base class for channel-specific renderers
+- VisualizationPoint/Series/Definition: Declarative visualization summary cards
+- FormCardBuilder: Abstract base class for channel-specific form renderers
+- VisualizationCardBuilder: Abstract base class for visualization card renderers
 """
 
 from __future__ import annotations
@@ -73,6 +75,40 @@ class FormDefinition:
     metadata: dict[str, str] = field(default_factory=dict)
 
 
+@dataclass
+class VisualizationPoint:
+    """Single data point used in a visualization series."""
+
+    label: str
+    value: float | int | str
+
+
+@dataclass
+class VisualizationSeries:
+    """Single named series for a chart."""
+
+    name: str
+    points: list[VisualizationPoint] = field(default_factory=list)
+
+
+@dataclass
+class VisualizationDefinition:
+    """Channel-agnostic visualization summary card definition.
+
+    This does not attempt to encode full chart rendering instructions for Teams.
+    Instead, it carries a compact summary plus an optional link to a rich
+    interactive view (dialog/tab/web app).
+    """
+
+    title: str
+    chart_type: str
+    subtitle: str | None = None
+    insight_text: str | None = None
+    series: list[VisualizationSeries] = field(default_factory=list)
+    interactive_url: str | None = None
+    open_label: str = "Open Interactive View"
+
+
 class FormCardBuilder(ABC):
     """Abstract builder that converts FormDefinition into a channel payload dict.
 
@@ -93,8 +129,21 @@ class FormCardBuilder(ABC):
         ...
 
 
+class VisualizationCardBuilder(ABC):
+    """Abstract builder that converts VisualizationDefinition into channel payload."""
+
+    @abstractmethod
+    def build_visualization(self, visualization: VisualizationDefinition) -> dict[str, Any]:
+        """Build a channel-specific visualization summary payload."""
+        ...
+
+
 __all__ = [
     "FormField",
     "FormDefinition",
+    "VisualizationPoint",
+    "VisualizationSeries",
+    "VisualizationDefinition",
     "FormCardBuilder",
+    "VisualizationCardBuilder",
 ]

@@ -100,6 +100,7 @@ class ToolName(str, Enum):
     LIST_DEAL_NOTES = "list_deal_notes"
     LIST_DEAL_CHANNEL_MESSAGES = "list_deal_channel_messages"
     FETCH_TEAMS_CHAT_MESSAGES = "fetch_teams_chat_messages"
+    CREATE_VISUALIZATION_CARD = "create_visualization_card"
 
     # -------------------------------------------------------------------------
     # RESEARCH TOOLS - External research
@@ -141,6 +142,7 @@ class ToolName(str, Enum):
 
 CHANNEL_ONLY_TOOLS: dict[ToolName, set[str]] = {
     ToolName.FETCH_TEAMS_CHAT_MESSAGES: {"teams"},
+    ToolName.CREATE_VISUALIZATION_CARD: {"teams"},
     ToolName.CREATE_DEAL: {"teams"},
     ToolName.ADD_DEAL_NOTE: {"teams"},
     ToolName.ADD_STAKEHOLDER: {"teams"},
@@ -190,6 +192,7 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.GET_EMAIL_DETAILS,
         ToolName.LIST_DEAL_NOTES,
         ToolName.LIST_DEAL_CHANNEL_MESSAGES,
+        ToolName.CREATE_VISUALIZATION_CARD,  # Send visualization summary card
         # Research tools
         ToolName.SEARCH_WIKIPEDIA,
         ToolName.GET_STOCK_INFO,
@@ -367,6 +370,7 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     ToolName.GET_EMAIL_DETAILS: ToolCategory.COMMUNICATION,
     ToolName.LIST_DEAL_CHANNEL_MESSAGES: ToolCategory.COMMUNICATION,
     ToolName.FETCH_TEAMS_CHAT_MESSAGES: ToolCategory.COMMUNICATION,
+    ToolName.CREATE_VISUALIZATION_CARD: ToolCategory.COMMUNICATION,
     # Research tools
     ToolName.SEARCH_WIKIPEDIA: ToolCategory.SEARCH,
     ToolName.GET_STOCK_INFO: ToolCategory.SEARCH,
@@ -406,6 +410,7 @@ class ToolRegistry:
         """Register all available tool factories."""
         # Import here to avoid circular imports
         from src.agents.tools.communication import (
+            create_create_visualization_card,
             create_fetch_teams_chat_messages,
             create_get_email_details,
             create_list_deal_channel_messages,
@@ -554,6 +559,9 @@ class ToolRegistry:
         )
         self._tool_factories[ToolName.FETCH_TEAMS_CHAT_MESSAGES] = (
             lambda: create_fetch_teams_chat_messages(self.context, self.capabilities_getter)
+        )
+        self._tool_factories[ToolName.CREATE_VISUALIZATION_CARD] = (
+            lambda: create_create_visualization_card(self.context, self.capabilities_getter)
         )
 
         # Research tools (free, no API keys - stateless, no context needed)
