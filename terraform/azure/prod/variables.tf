@@ -782,6 +782,10 @@ variable "appgw_sku" {
   description = "Application Gateway SKU. Use 'Standard_v2' for cost savings (~$180/mo) or 'WAF_v2' for OWASP rules (~$400/mo)."
   type        = string
   default     = "WAF_v2"
+  validation {
+    condition     = contains(["Standard_v2", "WAF_v2"], var.appgw_sku)
+    error_message = "appgw_sku must be 'Standard_v2' or 'WAF_v2'."
+  }
 }
 
 # -----------------------------------------------------------------
