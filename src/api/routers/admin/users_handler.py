@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, Query
 from fastapi import Response as FastAPIResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.master_dependencies import get_master_async_session
+from src.api.dependencies.rate_limit import rate_limit_admin_read
 from src.api.schemas.base_models import GenericResponse
 from src.api.utils.http_response import Response
 from src.domain.models.admin_user_models import (
@@ -23,6 +24,7 @@ from src.domain.models.master_tables import (
     UserAppRole,
 )
 from src.infra.auth.admin_auth import admin_auth
+from src.infra.auth.email_service import email_service
 from src.infra.config.constant import AdminUserErrors
 from src.infra.utils.logger import get_logger
 from src.service.admin.admin_user_service import (
@@ -110,6 +112,22 @@ async def create_user(
             created_at=result.created_at,
         )
 
+        # Release DB session before the email API call
+        await service.close()
+
+        email_sent = email_service.send_user_creation_email(
+            to_email=result.email,
+            first_name=result.first_name,
+            temp_password=result.temp_password,
+        )
+        if email_sent:
+            logger.info(f"Successfully sent creation email to {result.email}")
+        else:
+            logger.warning(
+                f"Failed to send creation email to {result.email}. "
+                "Please send credentials manually."
+            )
+
         logger.info(f"Successfully created user: {result.email} with ID: {result.user_id}")
         return Response.success_response(message="User created successfully", data=response_data)
 
@@ -144,6 +162,7 @@ async def get_user(
     response: FastAPIResponse,
     current_admin: SuperAdmin = Depends(admin_auth),
     service: AdminUserService = Depends(get_admin_user_service),
+    _rl_admin_read: None = Depends(rate_limit_admin_read),
 ) -> GenericResponse[UserResponse]:
     """
     Retrieve a single user by their ID.
@@ -193,6 +212,7 @@ async def list_users(
     organisation_id: UUID | None = Query(None, description="Filter users by organization ID"),
     current_admin: SuperAdmin = Depends(admin_auth),
     service: AdminUserService = Depends(get_admin_user_service),
+    _rl_admin_read: None = Depends(rate_limit_admin_read),
 ) -> GenericResponse[PaginatedUsers]:
     """
     Retrieve a list of users with pagination.
@@ -313,6 +333,7 @@ async def list_user_action_history(
     cursor: str | None = Query(None),
     current_admin: SuperAdmin = Depends(admin_auth),
     service: AdminUserService = Depends(get_admin_user_service),
+    _rl_admin_read: None = Depends(rate_limit_admin_read),
 ) -> GenericResponse[PaginatedUserActionHistoryResponse]:
     """
     Retrieve the action history for all users in an organisation.

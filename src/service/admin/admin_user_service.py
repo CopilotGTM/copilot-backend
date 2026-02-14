@@ -30,7 +30,6 @@ from src.domain.models.master_tables import (
     UserActionHistory,
     UserEventType,
 )
-from src.infra.auth.email_service import email_service
 from src.infra.auth.user_auth import user_auth
 from src.infra.config.constant import AdminUserErrors
 from src.infra.utils.cursor import decode_cursor, encode_cursor
@@ -86,10 +85,12 @@ class InvalidUserDataError(AdminUserServiceError):
 class CreateUserResult:
     """Result for user creation."""
 
-    def __init__(self, user: User):
+    def __init__(self, user: User, temp_password: str):
         self.user_id = user.user_id
         self.email = user.email
+        self.first_name = user.first_name
         self.created_at = user.created_at
+        self.temp_password = temp_password
 
 
 class UpdateUserStatusResult:
@@ -217,23 +218,8 @@ class AdminUserService:
         await self._session.commit()
         await self._session.refresh(new_user)
 
-        # Send welcome email
-        email_sent = email_service.send_user_creation_email(
-            to_email=new_user.email,
-            first_name=new_user.first_name,
-            temp_password=temp_password,
-        )
-
-        if email_sent:
-            logger.info(f"Successfully sent creation email to {new_user.email}")
-        else:
-            logger.warning(
-                f"Failed to send creation email to {new_user.email}. "
-                "Please send credentials manually."
-            )
-
         logger.info(f"Successfully created user {new_user.email} with ID {new_user.user_id}")
-        return CreateUserResult(new_user)
+        return CreateUserResult(new_user, temp_password=temp_password)
 
     async def get_user(self, user_id: UUID) -> UserResponse:
         """Get a user by ID.
