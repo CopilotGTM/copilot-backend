@@ -31,6 +31,11 @@ variables:
   - name: ENABLE_FLOWER
     value: 'true'
 
+  # Observability Stack (Loki + Promtail + Grafana)
+  # DISABLED in prod - enable only for targeted debugging sessions
+  - name: ENABLE_OBSERVABILITY
+    value: 'false'
+
   # Image repositories
   - name: API_IMAGE_REPOSITORY
     value: 'copilot-backend-api'
@@ -567,7 +572,7 @@ stages:
     dependsOn:
       - CheckChanges
       - BuildAndPush
-    condition: and(succeeded(), ne(dependencies.CheckChanges.outputs['DetectChanges.CheckDocs.SKIP_PIPELINE'], 'true'))
+    condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'), ne(dependencies.CheckChanges.outputs['DetectChanges.CheckDocs.SKIP_PIPELINE'], 'true'))
     variables:
       - name: KUBECONFIG_FILE
         value: '$(Pipeline.Workspace)/kubeconfig-prod.yaml'
@@ -600,6 +605,9 @@ stages:
                     EXTRA_HELM_ARGS=""
                     if [ "$(ENABLE_FLOWER)" = "true" ]; then
                       EXTRA_HELM_ARGS="$EXTRA_HELM_ARGS --set flower.enabled=true --set global.celery.enableEvents=true"
+                    fi
+                    if [ "$(ENABLE_OBSERVABILITY)" = "true" ]; then
+                      EXTRA_HELM_ARGS="$EXTRA_HELM_ARGS --set loki.enabled=true --set promtail.enabled=true --set grafana.enabled=true"
                     fi
 
                     helm upgrade --install "$HELM_RELEASE_NAME" "$CHART_PATH" \
