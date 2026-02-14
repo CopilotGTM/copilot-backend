@@ -21,7 +21,7 @@ class CountryMetadata:
 
 
 COUNTRIES: dict[str, CountryMetadata] = {
-    # Default MVP: USA only
+    "IN": CountryMetadata(code="IN", name="India", allowed_for_org_provisioning=True),
     "US": CountryMetadata(code="US", name="United States", allowed_for_org_provisioning=True),
 }
 

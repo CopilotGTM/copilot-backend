@@ -251,6 +251,7 @@ async def list_organizations(
     ),
     current_admin: SuperAdmin = Depends(admin_auth),
     service: AdminOrganisationService = Depends(get_admin_organisation_service),
+    _rl_admin_read: None = Depends(rate_limit_admin_read),
 ) -> GenericResponse[PaginationOrganizations]:
     """
     Retrieve a list of all organizations with pagination.
@@ -297,6 +298,7 @@ async def get_all_organisation_history(
     cursor: str | None = None,
     current_admin: SuperAdmin = Depends(admin_auth),
     service: AdminOrganisationService = Depends(get_admin_organisation_service),
+    _rl_admin_read: None = Depends(rate_limit_admin_read),
 ):
     """
     Retrieve the action history for all organizations.
@@ -334,6 +336,7 @@ async def get_organization(
     response: FastAPIResponse,
     current_admin: SuperAdmin = Depends(admin_auth),
     service: AdminOrganisationService = Depends(get_admin_organisation_service),
+    _rl_admin_read: None = Depends(rate_limit_admin_read),
 ) -> GenericResponse[ListOrganizationResponse]:
     """
     Retrieve a single organization by its ID.
@@ -515,6 +518,7 @@ async def get_organisation_history(
     cursor: str | None = None,
     current_admin: SuperAdmin = Depends(admin_auth),
     service: AdminOrganisationService = Depends(get_admin_organisation_service),
+    _rl_admin_read: None = Depends(rate_limit_admin_read),
 ):
     """
     Retrieve the action history for a specific organization.

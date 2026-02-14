@@ -19,6 +19,7 @@ from src.domain.models.admin_models import (
 )
 from src.domain.models.master_tables import SuperAdmin
 from src.infra.auth.admin_auth import admin_auth
+from src.infra.auth.email_service import email_service
 from src.infra.auth.supabase_admin_client import (
     SupabaseAuthError,
     supabase_admin_client,
@@ -228,7 +229,18 @@ async def forgot_password(
     Rate limited to 3 requests per 15 minutes, 10 per hour.
     """
     try:
-        await service.forgot_password(forgot_password_request.email)
+        result = await service.forgot_password(forgot_password_request.email)
+
+        # Release DB session before the email API call
+        await service.close()
+
+        if result.reset_link and result.admin_email:
+            email_service.send_password_reset_email(
+                to_email=result.admin_email,
+                first_name=result.admin_first_name or "",
+                reset_url=result.reset_link,
+            )
+
         return Response.success_response(
             message="If an account with this email exists, a password reset link has been sent."
         )

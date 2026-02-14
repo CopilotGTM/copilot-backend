@@ -29,7 +29,11 @@ from src.infra.config.configs import (
     database_config,
     secret_manager_config,
 )
-from src.infra.database.sessions import acquire_org_async_session, master_session_scope
+from src.infra.database.sessions import (
+    acquire_org_async_session,
+    master_async_session_scope,
+    master_session_scope,
+)
 from src.infra.utils.cursor import decode_cursor, encode_cursor
 from src.infra.utils.logger import get_logger
 from src.infra.utils.resource_naming import (
@@ -74,15 +78,17 @@ class OrganizationManagementService:
         self,
         admin_id: UUID,
         organisation_name: str,
-        session: AsyncSession,
         **org_details,
     ) -> dict[str, Any]:
         """
         Creates a new organization with a dedicated schema, role, and runs migrations.
 
+        Manages its own sessions in three phases to avoid holding a DB connection
+        across long-running provisioning steps (migrations, Key Vault, storage).
+
         Args:
+            admin_id: UUID of the admin creating the organisation.
             organisation_name: The name of the organization.
-            session: The database session for the master database.
             **org_details: Additional details for the organization.
 
         Returns:
@@ -90,61 +96,70 @@ class OrganizationManagementService:
 
         Raises:
             ProvisioningError: If any step in the organization creation process fails.
-            ValueError: If the organization already exists and is not in a FAILED state.
+            ValueError: If the organization already exists and is not retryable.
         """
         logger.info(f"Starting creation process for organization: {organisation_name}")
 
-        # Check for an existing organization
-        org_table = cast(_HasTable, Organisation).__table__
-        org_name_col = cast(Any, org_table.c.organisation_name)
-        result = await session.execute(
-            select(Organisation).where(org_name_col == organisation_name)
-        )
-        existing_org = result.scalars().first()
-
-        if existing_org:
-            if existing_org.status == OrganisationStatus.FAILED:
-                logger.info(
-                    f"Retrying provisioning for failed organization '{organisation_name}' (ID: {existing_org.organisation_id})."
-                )
-                organization = existing_org
-                organization.status = OrganisationStatus.PROVISIONING
-                # Update details from the new request
-                for key, value in org_details.items():
-                    setattr(organization, key, value)
-            else:
-                raise ValueError(
-                    f"Organization '{organisation_name}' already exists with status '{existing_org.status.value}'."
-                )
-        else:
-            # Create a new organization record
-            org_data = org_details.copy()
-            org_data["linked_urls"] = org_data.pop("linked_in_url", [])
-            org_data["website_urls"] = org_data.pop("website_url", [])
-
-            organization = Organisation(
-                organisation_id=uuid4(),
-                organisation_name=organisation_name,
-                status=OrganisationStatus.PROVISIONING,
-                created_by_auth_user_id=str(admin_id),
-                **org_data,
+        # ── Phase 1: create/update org record, then release session ──
+        async with master_async_session_scope() as session:
+            org_table = cast(_HasTable, Organisation).__table__
+            org_name_col = cast(Any, org_table.c.organisation_name)
+            result = await session.execute(
+                select(Organisation).where(org_name_col == organisation_name)
             )
-            session.add(organization)
+            existing_org = result.scalars().first()
 
-        await session.commit()
-        await session.refresh(organization)
+            if existing_org:
+                # Allow retry from FAILED or PROVISIONING (task retry / idempotency)
+                if existing_org.status in (
+                    OrganisationStatus.FAILED,
+                    OrganisationStatus.PROVISIONING,
+                ):
+                    logger.info(
+                        f"Retrying provisioning for organization '{organisation_name}' "
+                        f"(ID: {existing_org.organisation_id}, "
+                        f"status: {existing_org.status.value})."
+                    )
+                    organization = existing_org
+                    organization.status = OrganisationStatus.PROVISIONING
+                    for key, value in org_details.items():
+                        setattr(organization, key, value)
+                else:
+                    raise ValueError(
+                        f"Organization '{organisation_name}' already exists "
+                        f"with status '{existing_org.status.value}'."
+                    )
+            else:
+                org_data = org_details.copy()
+                org_data["linked_urls"] = org_data.pop("linked_in_url", [])
+                org_data["website_urls"] = org_data.pop("website_url", [])
 
-        organisation_id = organization.organisation_id
+                organization = Organisation(
+                    organisation_id=uuid4(),
+                    organisation_name=organisation_name,
+                    status=OrganisationStatus.PROVISIONING,
+                    created_by_auth_user_id=str(admin_id),
+                    **org_data,
+                )
+                session.add(organization)
+
+            await session.commit()
+            await session.refresh(organization)
+
+            # Extract into locals so session can be released
+            organisation_id = organization.organisation_id
+            org_name = organization.organisation_name
+
+        # ── Phase 2: provisioning (no session held) ──
         schema_name = get_schema_name(organisation_id)
         role_name = get_role_name(organisation_id)
         role_password = secrets.token_urlsafe(16)
 
         logger.info(
-            f"Organization record is ready for provisioning with ID: {organisation_id}, status: {organization.status}"
+            f"Organization record ready for provisioning — ID: {organisation_id}, name: {org_name}"
         )
 
         try:
-            # 2. Provision all resources with timing metrics
             provision_metrics: dict[str, float] = {}
 
             def time_step(label: str, fn: Callable[[], None]):
@@ -152,7 +167,8 @@ class OrganizationManagementService:
                 fn()
                 provision_metrics[label] = round(time.perf_counter() - start, 4)
 
-            # Order: DB role+schema -> migrations -> storage -> key vault (DB first keeps core local, then slower cloud ops)
+            # Key Vault before internal CRM — CRM opens an org session that
+            # needs the tenant secret from Key Vault.
             time_step(
                 "db_role_schema",
                 lambda: self._create_database_role_and_schema(
@@ -160,6 +176,10 @@ class OrganizationManagementService:
                 ),
             )
             time_step("migrations", lambda: self._run_organization_migrations(schema_name))
+            time_step(
+                "store_secret",
+                lambda: self._store_password_in_key_vault(organisation_id, role_password),
+            )
             crm_start = time.perf_counter()
             await self._setup_internal_crm(organisation_id, admin_id)
             provision_metrics["internal_crm_setup"] = round(time.perf_counter() - crm_start, 4)
@@ -167,60 +187,76 @@ class OrganizationManagementService:
                 "storage_container",
                 lambda: self._provision_org_storage_container(organisation_id),
             )
-            time_step(
-                "store_secret",
-                lambda: self._store_password_in_key_vault(organisation_id, role_password),
-            )
-
-            # 3. If successful, update status to PENDING
-            organization.status = OrganisationStatus.PENDING
-            history_entry = OrganisationActionHistory(
-                organisation_id=organisation_id,
-                action=OrganisationEventType.CREATED,
-                actor_admin_id=admin_id,
-                details={
-                    "message": "Organization provisioned and ready for approval.",
-                    "metrics": provision_metrics,
-                },
-            )
-            session.add(history_entry)
-            await session.commit()
-            await session.refresh(organization)
-            logger.info(
-                f"Successfully provisioned organization: {organisation_name} | metrics={provision_metrics}"
-            )
-
-            return {"organization": organization, "schema_name": schema_name}
         except ProvisioningError:
-            # already wrapped
-            await session.rollback()
-            organization.status = OrganisationStatus.FAILED
-            session.add(
-                OrganisationActionHistory(
-                    organisation_id=organisation_id,
-                    action=OrganisationEventType.SYSTEM_MIGRATION,
-                    actor_admin_id=admin_id,
-                    details={"error": "Provisioning failed (wrapped)."},
-                )
+            await self._mark_org_failed(
+                organisation_id,
+                admin_id,
+                details={"error": "Provisioning failed (wrapped)."},
             )
-            await session.commit()
             raise
         except Exception as e:
-            await session.rollback()
-            organization.status = OrganisationStatus.FAILED
+            await self._mark_org_failed(
+                organisation_id,
+                admin_id,
+                details={
+                    "error": f"Provisioning failed: {e.__class__.__name__}",
+                    "message": str(e),
+                },
+            )
+            raise ProvisioningError(str(e), organisation_id=organisation_id) from e
+
+        # ── Phase 3: mark PENDING with a fresh session ──
+        async with master_async_session_scope() as session:
+            org_row = await session.get(Organisation, organisation_id)
+            if not org_row:
+                raise ProvisioningError(
+                    "Organisation row disappeared after provisioning",
+                    organisation_id=organisation_id,
+                )
+            organization = org_row
+            organization.status = OrganisationStatus.PENDING
             session.add(
                 OrganisationActionHistory(
                     organisation_id=organisation_id,
-                    action=OrganisationEventType.SYSTEM_MIGRATION,
+                    action=OrganisationEventType.CREATED,
                     actor_admin_id=admin_id,
                     details={
-                        "error": f"Provisioning failed: {e.__class__.__name__}",
-                        "message": str(e),
+                        "message": "Organization provisioned and ready for approval.",
+                        "metrics": provision_metrics,
                     },
                 )
             )
             await session.commit()
-            raise ProvisioningError(str(e), organisation_id=organisation_id) from e
+            await session.refresh(organization)
+
+        logger.info(
+            f"Successfully provisioned organization: {org_name} | metrics={provision_metrics}"
+        )
+        return {"organization": organization, "schema_name": schema_name}
+
+    async def _mark_org_failed(
+        self,
+        organisation_id: UUID,
+        admin_id: UUID,
+        details: dict[str, Any],
+    ) -> None:
+        """Mark an organisation as FAILED using a fresh session."""
+        try:
+            async with master_async_session_scope() as session:
+                org = await session.get(Organisation, organisation_id)
+                if org:
+                    org.status = OrganisationStatus.FAILED
+                    session.add(
+                        OrganisationActionHistory(
+                            organisation_id=organisation_id,
+                            action=OrganisationEventType.SYSTEM_MIGRATION,
+                            actor_admin_id=admin_id,
+                            details=details,
+                        )
+                    )
+                    await session.commit()
+        except Exception:
+            logger.error("Failed to mark org %s as FAILED in DB", organisation_id, exc_info=True)
 
     def _create_database_role_and_schema(self, schema_name: str, role_name: str, password: str):
         """

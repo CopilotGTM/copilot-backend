@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 from src.domain.models.master_tables.organisation_job_models import (
     OrganisationJobStatus,
 )
-from src.infra.database.factory import get_async_provider
+from src.infra.database.sessions import master_async_session_scope
 from src.infra.messaging.organisation_job_status_publish import publish_org_job_status
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
@@ -50,7 +50,6 @@ def _publish_status(
 
 
 async def _update_job_in_db(
-    session,
     job_id: str,
     status: OrganisationJobStatus,
     progress: int,
@@ -60,22 +59,32 @@ async def _update_job_in_db(
     error_code: str | None = None,
     organisation_id: UUID | None = None,
 ):
-    """Update job status in database using provided session."""
-    if organisation_id:
-        await organisation_job_service.set_organisation_id(session, UUID(job_id), organisation_id)
-    await organisation_job_service.update_job_status(
-        session=session,
-        job_id=UUID(job_id),
-        status=status,
-        progress=progress,
-        status_message=status_message,
-        result_data=result_data,
-        error_message=error_message,
-        error_code=error_code,
-    )
+    """Update job status in database using a scoped session."""
+    async with master_async_session_scope() as session:
+        if organisation_id:
+            await organisation_job_service.set_organisation_id(
+                session, UUID(job_id), organisation_id
+            )
+        await organisation_job_service.update_job_status(
+            session=session,
+            job_id=UUID(job_id),
+            status=status,
+            progress=progress,
+            status_message=status_message,
+            result_data=result_data,
+            error_message=error_message,
+            error_code=error_code,
+        )
 
 
-@app.task(name="organization.create", bind=True, acks_late=True, max_retries=3)
+@app.task(
+    name="organization.create",
+    bind=True,
+    acks_late=True,
+    max_retries=3,
+    soft_time_limit=600,  # 10 minutes — migrations alone can take 4+ minutes
+    time_limit=660,
+)
 def create_organization_task(
     self,
     admin_id: str,
@@ -97,111 +106,98 @@ def create_organization_task(
     logger.info(f"Creating organization: {organisation_name} for admin: {admin_id}")
 
     async def _run_task():
-        """Main async task execution."""
-        provider = get_async_provider()
+        """Main async task execution.
 
-        async with provider.master_session() as session:
-            try:
-                # Publish initial status if job tracking enabled
-                if job_id:
-                    _publish_status(
-                        job_id=job_id,
-                        status=OrganisationJobStatus.IN_PROGRESS,
-                        progress=10,
-                        status_message="Starting organisation provisioning",
-                    )
-                    await _update_job_in_db(
-                        session=session,
-                        job_id=job_id,
-                        status=OrganisationJobStatus.IN_PROGRESS,
-                        progress=10,
-                        status_message="Starting organisation provisioning",
-                    )
-
-                # Progress: 20% - Creating database records
-                if job_id:
-                    _publish_status(
-                        job_id=job_id,
-                        status=OrganisationJobStatus.IN_PROGRESS,
-                        progress=20,
-                        status_message="Creating organisation record",
-                    )
-
-                result = await organization_management_service.create_organization(
-                    admin_id=UUID(admin_id),
-                    organisation_name=organisation_name,
-                    session=session,
-                    **org_details,
+        Each status update uses its own scoped session so no single
+        connection is held across the long provisioning phase.
+        """
+        try:
+            # DB-first: persist IN_PROGRESS before publishing to SSE
+            if job_id:
+                await _update_job_in_db(
+                    job_id=job_id,
+                    status=OrganisationJobStatus.IN_PROGRESS,
+                    progress=10,
+                    status_message="Starting organisation provisioning",
+                )
+                _publish_status(
+                    job_id=job_id,
+                    status=OrganisationJobStatus.IN_PROGRESS,
+                    progress=10,
+                    status_message="Starting organisation provisioning",
                 )
 
-                # Progress: 80% - Finalizing
-                if job_id:
-                    _publish_status(
-                        job_id=job_id,
-                        status=OrganisationJobStatus.IN_PROGRESS,
-                        progress=80,
-                        status_message="Finalizing organisation setup",
-                    )
-
-                organization = result["organization"]
-                logger.info(f"Successfully created organization: {organization.organisation_id}")
-
-                response_data = {
-                    "organisation_id": str(organization.organisation_id),
-                    "organisation_name": organization.organisation_name,
-                    "schema_name": result["schema_name"],
-                    "created_at": organization.created_at.isoformat(),
-                    "updated_at": organization.updated_at.isoformat(),
-                }
-
-                # Publish completion status
-                if job_id:
-                    _publish_status(
-                        job_id=job_id,
-                        status=OrganisationJobStatus.COMPLETED,
-                        progress=100,
-                        status_message="Organisation created successfully",
-                        result_data=response_data,
-                    )
-                    await _update_job_in_db(
-                        session=session,
-                        job_id=job_id,
-                        status=OrganisationJobStatus.COMPLETED,
-                        progress=100,
-                        status_message="Organisation created successfully",
-                        result_data=response_data,
-                        organisation_id=organization.organisation_id,
-                    )
-
-                return response_data
-
-            except Exception as e:
-                logger.error(
-                    f"Failed to create organization {organisation_name}: {e}", exc_info=True
+            if job_id:
+                _publish_status(
+                    job_id=job_id,
+                    status=OrganisationJobStatus.IN_PROGRESS,
+                    progress=20,
+                    status_message="Creating organisation record",
                 )
 
-                # Publish failure status
-                if job_id:
-                    error_msg = str(e)
-                    _publish_status(
-                        job_id=job_id,
-                        status=OrganisationJobStatus.FAILED,
-                        progress=0,
-                        status_message="Organisation creation failed",
-                        error_message=error_msg,
-                        error_code="PROVISIONING_ERROR",
-                    )
-                    # Use a new session for error update since main session may be in bad state
-                    async with provider.master_session() as error_session:
-                        await _update_job_in_db(
-                            session=error_session,
-                            job_id=job_id,
-                            status=OrganisationJobStatus.FAILED,
-                            progress=0,
-                            status_message="Organisation creation failed",
-                            error_message=error_msg,
-                            error_code="PROVISIONING_ERROR",
-                        )
-                raise
+            # create_organization manages its own sessions internally
+            result = await organization_management_service.create_organization(
+                admin_id=UUID(admin_id),
+                organisation_name=organisation_name,
+                **org_details,
+            )
+
+            organization = result["organization"]
+            logger.info(f"Successfully created organization: {organization.organisation_id}")
+
+            response_data = {
+                "organisation_id": str(organization.organisation_id),
+                "organisation_name": organization.organisation_name,
+                "schema_name": result["schema_name"],
+                "created_at": organization.created_at.isoformat(),
+                "updated_at": organization.updated_at.isoformat(),
+            }
+
+            # DB-first: persist COMPLETED before publishing to SSE
+            if job_id:
+                await _update_job_in_db(
+                    job_id=job_id,
+                    status=OrganisationJobStatus.COMPLETED,
+                    progress=100,
+                    status_message="Organisation created successfully",
+                    result_data=response_data,
+                    organisation_id=organization.organisation_id,
+                )
+                _publish_status(
+                    job_id=job_id,
+                    status=OrganisationJobStatus.COMPLETED,
+                    progress=100,
+                    status_message="Organisation created successfully",
+                    result_data=response_data,
+                )
+
+            return response_data
+
+        except Exception as e:
+            logger.error(
+                f"Failed to create organization {organisation_name}: {e}",
+                exc_info=True,
+            )
+
+            # DB-first: persist FAILED before publishing to SSE
+            if job_id:
+                error_msg = str(e)
+                await _update_job_in_db(
+                    job_id=job_id,
+                    status=OrganisationJobStatus.FAILED,
+                    progress=0,
+                    status_message="Organisation creation failed",
+                    error_message=error_msg,
+                    error_code="PROVISIONING_ERROR",
+                )
+                _publish_status(
+                    job_id=job_id,
+                    status=OrganisationJobStatus.FAILED,
+                    progress=0,
+                    status_message="Organisation creation failed",
+                    error_message=error_msg,
+                    error_code="PROVISIONING_ERROR",
+                )
+            raise
 
     return run_async(_run_task())

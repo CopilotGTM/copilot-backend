@@ -11,7 +11,6 @@ from src.domain.models.admin_models import (
     PasswordResetAction,
 )
 from src.domain.models.master_tables import AdminUserStatus, SupabaseAdminStatus, SuperAdmin
-from src.infra.auth.email_service import email_service
 from src.infra.auth.supabase_admin_client import supabase_admin_client
 from src.infra.config.constant import AdminAuthErrors
 from src.infra.security.token_revocation import token_revocation_service
@@ -63,6 +62,23 @@ class PasswordMismatchError(AdminAuthServiceError):
     """Raised when passwords do not match."""
 
     pass
+
+
+class ForgotPasswordResult:
+    """Result for forgot password — carries data needed to send the reset email.
+
+    Fields are None when admin not found (anti-enumeration: caller still returns success).
+    """
+
+    def __init__(
+        self,
+        admin_email: str | None = None,
+        admin_first_name: str | None = None,
+        reset_link: str | None = None,
+    ):
+        self.admin_email = admin_email
+        self.admin_first_name = admin_first_name
+        self.reset_link = reset_link
 
 
 class PendingSetupResult:
@@ -422,14 +438,12 @@ class AdminAuthService:
     # Forgot Password Methods
     # -------------------------------------------------------------------------
 
-    async def forgot_password(self, email: str) -> bool:
-        """Trigger a password reset email for an admin.
+    async def forgot_password(self, email: str) -> ForgotPasswordResult:
+        """Look up admin and generate a password reset link.
 
-        Args:
-            email: The admin's email address
-
-        Returns:
-            True if email was sent (or appears to be sent for security)
+        Returns a ForgotPasswordResult. When the admin is not found the result
+        fields are None — caller should still return success to prevent user
+        enumeration.
         """
         super_admin = await self.get_super_admin_by_email(email)
         if not super_admin:
@@ -437,20 +451,17 @@ class AdminAuthService:
                 "Password reset requested for non-existent user: %s",
                 email,
             )
-            # Return True to avoid user enumeration
-            return True
+            return ForgotPasswordResult()
 
         password_reset_link = supabase_admin_client.generate_password_reset_link(
             email=super_admin.email
         )
 
-        email_service.send_password_reset_email(
-            to_email=super_admin.email,
-            first_name=super_admin.first_name,
-            reset_url=password_reset_link,
+        return ForgotPasswordResult(
+            admin_email=super_admin.email,
+            admin_first_name=super_admin.first_name,
+            reset_link=password_reset_link,
         )
-
-        return True
 
     # -------------------------------------------------------------------------
     # Logout Methods
