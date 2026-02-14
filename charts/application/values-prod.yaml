@@ -1,0 +1,85 @@
+# =============================================================================
+# PROD ENVIRONMENT OVERRIDES
+# =============================================================================
+# Production resource settings - higher availability and resource limits.
+# Base values.yaml defines dev defaults; this file overrides for production.
+#
+# Usage: helm upgrade --install ... -f values.yaml -f values-prod.yaml
+# =============================================================================
+
+api:
+  replicaCount: 2
+  environment: production
+  autoscaling:
+    minReplicas: 2
+    maxReplicas: 5
+  resources:
+    limits:
+      cpu: 1500m
+      memory: 6Gi
+    requests:
+      cpu: 1000m
+      memory: 3Gi
+
+knowledge-upload-worker:
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "1500m"
+      memory: "1.5Gi"
+
+knowledge-beat:
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "128Mi"
+    limits:
+      cpu: "150m"
+      memory: "256Mi"
+
+chat-worker:
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1.5Gi"
+    limits:
+      cpu: "1500m"
+      memory: "2.5Gi"
+
+integrations-worker:
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "2Gi"
+    limits:
+      cpu: "2000m"
+      memory: "4Gi"
+
+deal-worker:
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "768Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1.5Gi"
+
+deal-beat:
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "250m"
+      memory: "512Mi"
+
+integrations-beat:
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "128Mi"
+    limits:
+      cpu: "150m"
+      memory: "256Mi"
