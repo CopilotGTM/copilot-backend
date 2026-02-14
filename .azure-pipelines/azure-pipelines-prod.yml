@@ -47,10 +47,64 @@ variables:
 
 stages:
   # ==========================================================================
+  # Stage 0: Check if only docs changed (skip pipeline if so)
+  # ==========================================================================
+  - stage: CheckChanges
+    displayName: Check for Code Changes
+    jobs:
+      - job: DetectChanges
+        displayName: Detect if only docs changed
+        pool:
+          name: $(AGENT_POOL)
+        steps:
+          - checkout: self
+            fetchDepth: '0'  # Need full history to compare commits
+
+          - script: |
+              echo "##[section]🔍 Checking what files changed..."
+
+              # Get the merge base (last common commit with target branch)
+              # For PRs, compare against the target branch
+              # For pushes, compare against the previous commit
+              if [ "$(Build.Reason)" = "PullRequest" ]; then
+                BASE_BRANCH="origin/$(System.PullRequest.TargetBranch)"
+                echo "PR detected - comparing against $BASE_BRANCH"
+              else
+                # For direct pushes, compare with parent commit
+                BASE_BRANCH="HEAD~1"
+                echo "Direct push detected - comparing against previous commit"
+              fi
+
+              # Get list of changed files
+              CHANGED_FILES=$(git diff --name-only $BASE_BRANCH HEAD 2>/dev/null || git diff --name-only HEAD~1 HEAD)
+
+              echo "Changed files:"
+              echo "$CHANGED_FILES"
+              echo ""
+
+              # Check if ALL changed files are in docs/ folder
+              NON_DOCS_CHANGES=$(echo "$CHANGED_FILES" | grep -v "^docs/" | grep -v "^$" || true)
+
+              if [ -z "$NON_DOCS_CHANGES" ]; then
+                echo "##[section]📚 Only documentation changes detected!"
+                echo "Changed files are all in docs/ folder. Skipping build and deploy."
+                echo "##vso[task.setvariable variable=SKIP_PIPELINE;isOutput=true]true"
+              else
+                echo "##[section]💻 Code changes detected!"
+                echo "Non-docs changes:"
+                echo "$NON_DOCS_CHANGES"
+                echo "##vso[task.setvariable variable=SKIP_PIPELINE;isOutput=true]false"
+              fi
+            name: CheckDocs
+            displayName: 'Check if only docs/ changed'
+
+  # ==========================================================================
   # Stage 1: Code Quality & Testing
   # ==========================================================================
   - stage: QualityCheck
     displayName: Code Quality & Tests
+    dependsOn: CheckChanges
+    condition: and(succeeded(), ne(dependencies.CheckChanges.outputs['DetectChanges.CheckDocs.SKIP_PIPELINE'], 'true'))
     jobs:
       - job: QualityAndSecurity
         displayName: Quality Checks & Security Scan
@@ -135,8 +189,10 @@ stages:
   # ==========================================================================
   - stage: BuildAndPush
     displayName: Build & Push Docker Image to ACR
-    dependsOn: QualityCheck
-    condition: succeeded()
+    dependsOn:
+      - CheckChanges
+      - QualityCheck
+    condition: and(succeeded(), ne(dependencies.CheckChanges.outputs['DetectChanges.CheckDocs.SKIP_PIPELINE'], 'true'))
     jobs:
       - job: dockerBuildPush
         displayName: Build and Push to ACR
@@ -508,8 +564,10 @@ stages:
   # ==========================================================================
   - stage: Deploy
     displayName: Deploy to Prod AKS
-    dependsOn: BuildAndPush
-    condition: succeeded()
+    dependsOn:
+      - CheckChanges
+      - BuildAndPush
+    condition: and(succeeded(), ne(dependencies.CheckChanges.outputs['DetectChanges.CheckDocs.SKIP_PIPELINE'], 'true'))
     variables:
       - name: KUBECONFIG_FILE
         value: '$(Pipeline.Workspace)/kubeconfig-prod.yaml'
