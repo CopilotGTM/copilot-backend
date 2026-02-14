@@ -61,6 +61,7 @@ _GENERAL_PROMPT_TEMPLATE = dedent(
     - Meetings: `ListDealMeetings`, `GetMeetingDetails`
     - Communications: `ListDealEmails`, `GetEmailDetails`
     - Notes: `ListDealNotes`
+    - Teams Visualizations: `CreateVisualizationCard`
 
     **Tool selection guidance:**
     - For company-specific questions → InternalKnowledgeBase first
@@ -72,6 +73,12 @@ _GENERAL_PROMPT_TEMPLATE = dedent(
     - For technical/research topics → SearchArxiv for academic papers
     - For news articles → ExtractNewsArticle for clean article parsing
     - Chain tools when needed: get stakeholder list → then get details on key people
+    - For numeric trends/comparisons in Teams → use CreateVisualizationCard
+      (only after you have numeric data points prepared)
+      and choose `chart_type` based on the data shape:
+      bar/grouped_bar/stacked_bar for category comparisons,
+      line for trends, pie/donut for part-to-whole,
+      horizontal_bar/stacked_horizontal_bar for ranking and composition.
 
     ---
 

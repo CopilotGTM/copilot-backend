@@ -198,7 +198,6 @@ The system prompt (`GENERAL_PROMPT`) is assembled from reusable sections in `src
 | Section | Content |
 |---------|---------|
 | Role definition | Presales expert for Xeno Organization |
-| `TOOLING_GUIDANCE` | Instructions for using InternalKnowledgeBase and InternetSearch |
 | `AEP_METADATA_GUIDANCE` | Output format rules for the metadata block |
 
 ### Key Behavioral Rules

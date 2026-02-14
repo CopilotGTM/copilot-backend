@@ -3,6 +3,9 @@
 Tools for accessing email and messaging communication information.
 """
 
+from src.agents.tools.communication.create_visualization_card import (
+    create_create_visualization_card,
+)
 from src.agents.tools.communication.fetch_teams_chat_messages import (
     create_fetch_teams_chat_messages,
 )
@@ -17,4 +20,5 @@ __all__ = [
     "create_get_email_details",
     "create_list_deal_channel_messages",
     "create_fetch_teams_chat_messages",
+    "create_create_visualization_card",
 ]
