@@ -180,11 +180,14 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.LIST_DEAL_STAKEHOLDERS,
         ToolName.GET_STAKEHOLDER_DETAILS,
         ToolName.LIST_DEAL_STAKEHOLDER_INSIGHTS,
+        ToolName.GET_EXISTING_RISKS_BLOCKERS,
         # Meeting tools
         ToolName.LIST_DEAL_MEETINGS,
         ToolName.LIST_MEETINGS_BY_DATE,
         ToolName.GET_MEETING_DETAILS,
         ToolName.GET_MEETING_SUMMARY,
+        ToolName.GET_MEETING_TRANSCRIPT,
+        ToolName.GET_MEETING_DEAL_CONTEXT,
         # Contact tools
         ToolName.SEARCH_CONTACTS,
         # Communication tools
