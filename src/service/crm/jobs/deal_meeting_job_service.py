@@ -190,16 +190,15 @@ class DealMeetingJobService:
                 status_code=400,
             )
 
-        if meeting.status == MeetingStatus.NOT_AVAILABLE:
+        # Allow FAILED/NOT_AVAILABLE through — user-initiated summary will
+        # re-attempt transcript fetch via ensure_transcript in the task.
+        if meeting.status in (MeetingStatus.FAILED, MeetingStatus.NOT_AVAILABLE):
             logger.info(
-                "Meeting %s has status NOT_AVAILABLE - no transcript",
+                "Meeting %s has status %s — allowing user-initiated summary (will re-fetch)",
                 event_id,
+                meeting.status.value,
             )
-            raise DealMeetingJobServiceError(
-                "No transcript available for this meeting. The meeting was not recorded "
-                "or transcription was not enabled.",
-                status_code=400,
-            )
+            return
 
         if meeting.status == MeetingStatus.PENDING:
             logger.info(
@@ -218,18 +217,6 @@ class DealMeetingJobService:
             )
             raise DealMeetingJobServiceError(
                 "Transcript is currently being fetched. Please try again shortly.",
-                status_code=400,
-            )
-
-        if meeting.status == MeetingStatus.FAILED:
-            logger.info(
-                "Meeting %s has status FAILED - transcript fetch failed: %s",
-                event_id,
-                meeting.status_message,
-            )
-            raise DealMeetingJobServiceError(
-                f"Transcript fetch failed: {meeting.status_message or 'Unknown error'}. "
-                "The system will retry automatically.",
                 status_code=400,
             )
 

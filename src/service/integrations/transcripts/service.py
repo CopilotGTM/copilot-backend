@@ -8,7 +8,10 @@ from uuid import UUID
 
 from sqlalchemy import select
 from sqlmodel import col
-from src.domain.models.organisation_tables.sync.calendar import CalendarEvent
+from src.domain.models.organisation_tables.sync.calendar import (
+    CalendarEvent,
+    CalendarEventUserState,
+)
 from src.domain.models.organisation_tables.sync.integration_models import (
     IntegrationType,
     KnowledgeIntegration,
@@ -70,7 +73,12 @@ class TranscriptService:
     async def ensure_transcript(
         self, event_id: UUID, force_refetch: bool = False
     ) -> Meeting | None:
-        """Ensure transcript exists for a calendar event."""
+        """Ensure transcript exists for a calendar event.
+
+        Tries all available integrations (via CalendarEventUserState) in
+        priority order. If one integration fails with a retryable error,
+        the next integration is attempted automatically.
+        """
         existing = await self._get_meeting(event_id)
 
         if existing and str(existing.status) == MeetingStatus.READY.value and not force_refetch:
@@ -81,13 +89,23 @@ class TranscriptService:
         if not event or not event.online_meeting_id:
             return existing
 
-        if event.online_meeting_provider == "teamsForBusiness":
-            integration = (
-                await self._get_integration(event.integration_id) if event.integration_id else None
-            )
-            if integration and integration.connection_id:
-                result = await self._fetch_teams(event, integration, existing)
+        integrations = await self.find_integrations_for_event(event)
+        if not integrations:
+            logger.warning("No integrations available for event %s", event_id)
+            return existing
+
+        for integration in integrations:
+            result = await self.try_fetch_with_integration(event, integration, existing)
+            if result.success:
                 return result.meeting
+            if not result.should_retry:
+                break
+            logger.debug(
+                "Integration %s failed for event %s, trying next...",
+                integration.integration_email,
+                event_id,
+            )
+
         return existing
 
     async def get_transcript_status(self, event_id: UUID) -> MeetingStatus | None:
@@ -120,34 +138,55 @@ class TranscriptService:
         return None
 
     async def find_integrations_for_event(self, event: CalendarEvent) -> list[KnowledgeIntegration]:
-        """Find all integrations that could fetch transcript, in priority order."""
+        """Find all integrations that could fetch transcript, in priority order.
+
+        Uses CalendarEventUserState as the direct source of truth for which
+        integrations have synced this event. Organiser's integration is
+        prioritised first. Falls back to email lookup for old data that
+        predates CalendarEventUserState.
+        """
         integrations: list[KnowledgeIntegration] = []
-        seen: set[str] = set()
+        results: list[KnowledgeIntegration] = []
 
-        async def try_add(email: str | None = None, integration_id: UUID | None = None):
-            if email:
-                email = email.lower()
-                if email in seen:
-                    return
-                integration = await self.find_integration_by_email(email)
-            elif integration_id:
-                integration = await self._get_integration(integration_id)
-                email = (integration.integration_email or "").lower() if integration else ""
-                if email in seen:
-                    return
+        async for session in acquire_org_async_session(self.organisation_id):
+            stmt = (
+                select(KnowledgeIntegration)
+                .join(
+                    CalendarEventUserState,
+                    CalendarEventUserState.integration_id == KnowledgeIntegration.integration_id,
+                )
+                .where(
+                    CalendarEventUserState.event_id == event.event_id,
+                    CalendarEventUserState.is_deleted == False,  # noqa: E712
+                    col(KnowledgeIntegration.is_active) == True,  # noqa: E712
+                    col(KnowledgeIntegration.connection_id).isnot(None),
+                    col(KnowledgeIntegration.integration_type).in_(
+                        [IntegrationType.OUTLOOK_CALENDAR, IntegrationType.GOOGLE_CALENDAR]
+                    ),
+                )
+            )
+            results = list((await session.execute(stmt)).scalars().all())
+
+        if not results:
+            # Fallback for old data without CalendarEventUserState rows
+            fallback = await self.find_integration_by_email(event.organiser_email)
+            return [fallback] if fallback else []
+
+        # Prioritise organiser's integration first
+        organiser_email = (event.organiser_email or "").lower()
+        organiser: list[KnowledgeIntegration] = []
+        others: list[KnowledgeIntegration] = []
+        seen: set[UUID] = set()
+        for ki in results:
+            if ki.integration_id in seen:
+                continue
+            seen.add(ki.integration_id)
+            if (ki.integration_email or "").lower() == organiser_email:
+                organiser.append(ki)
             else:
-                return
-            if integration and integration.connection_id:
-                integrations.append(integration)
-                if email:
-                    seen.add(email)
+                others.append(ki)
+        integrations = organiser + others
 
-        await try_add(email=event.organiser_email)
-        await try_add(integration_id=event.integration_id)
-        if hasattr(event, "attendees") and event.attendees:
-            for attendee in event.attendees:
-                if attendee.email:
-                    await try_add(email=attendee.email)
         return integrations
 
     async def fetch_transcript_for_event(
