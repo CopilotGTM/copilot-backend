@@ -95,10 +95,17 @@ async def get_meeting_summary(
             logger.info("get_meeting_summary: event not found: %s", event_id)
             return None
 
-        # Get the deal association which contains the summary
+        # Get the deal association which contains the summary.
+        # A meeting can be associated with multiple deals, so scope by
+        # deal_id when available; otherwise prefer the one with a completed summary.
         assoc_stmt = select(CalendarEventDealAssociation).where(
             assoc_c.event_id == parsed_event_id,
         )
+
+        if context.deal_id:
+            assoc_stmt = assoc_stmt.where(assoc_c.deal_id == context.deal_id)
+
+        assoc_stmt = assoc_stmt.order_by(assoc_c.meeting_summary_status.asc()).limit(1)
 
         try:
             assoc_result = await session.execute(assoc_stmt)
