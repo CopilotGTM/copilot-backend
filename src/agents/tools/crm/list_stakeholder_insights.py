@@ -3,11 +3,8 @@
 Tool for listing AI-generated stakeholder insights associated with a deal.
 
 SECURITY BOUNDARIES (immutable, from context):
-- organisation_id: Prevents cross-org data access
-- deal_id: Prevents cross-deal data access (deal-scoped tool)
-
-This is a DEAL-SCOPED tool. It does NOT accept organisation_id or deal_id
-as parameters - both come from context.
+- organisation_id: Always from context (immutable) - prevents cross-org data access
+- deal_id: Can be passed as an optional parameter; falls back to context if not provided
 """
 
 from __future__ import annotations
@@ -15,6 +12,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
+from uuid import UUID
 
 from sqlalchemy import select
 
@@ -36,6 +34,7 @@ logger = logging.getLogger(__name__)
 async def list_deal_stakeholder_insights(
     *,
     context: AgentContext,
+    deal_id: str | None = None,
     limit: int = 20,
     include_expired: bool = False,
 ) -> list[dict[str, Any]]:
@@ -44,28 +43,30 @@ async def list_deal_stakeholder_insights(
     Returns insights about stakeholder engagement, sentiment changes,
     champion opportunities, and other actionable recommendations.
 
-    SECURITY BOUNDARIES (from context, immutable):
-    - organisation_id: Prevents cross-org data access
-    - deal_id: Prevents cross-deal data access
+    SECURITY BOUNDARIES:
+    - organisation_id: Always from context (immutable) - prevents cross-org data access
+    - deal_id: Parameter overrides context; falls back to context if not provided
 
     Args:
         context: AgentContext containing organisation and deal metadata
+        deal_id: Optional deal ID string; overrides context.deal_id if provided
         limit: Maximum number of insights to return (default: 20)
         include_expired: Whether to include expired/resolved/dismissed insights
 
     Returns:
         List of insight dictionaries with summary information.
     """
-    # SECURITY: Both organisation_id and deal_id come from context, not parameters
+    # SECURITY: organisation_id always from context (immutable)
     organisation_id = context.organisation_id
-    deal_id = context.deal_id
+    # deal_id: parameter overrides context
+    actual_deal_id = UUID(deal_id) if deal_id else context.deal_id
 
     if not organisation_id:
         logger.warning("list_deal_stakeholder_insights: missing organisation_id in context")
         return []
 
-    if not deal_id:
-        logger.warning("list_deal_stakeholder_insights: missing deal_id in context")
+    if not actual_deal_id:
+        logger.warning("list_deal_stakeholder_insights: no deal_id provided and none in context")
         return []
 
     effective_limit = max(1, min(limit, 50))
@@ -77,7 +78,7 @@ async def list_deal_stakeholder_insights(
     # SECURITY: Both organisation_id and deal_id from context (immutable)
     stmt = select(DealStakeholderInsight).where(
         c.organisation_id == organisation_id,
-        c.deal_id == deal_id,
+        c.deal_id == actual_deal_id,
     )
 
     # Filter out expired/resolved/dismissed by default
@@ -141,7 +142,7 @@ async def list_deal_stakeholder_insights(
     # Session released
 
     logger.info(
-        "list_deal_stakeholder_insights: found %d insights for deal %s", len(output), deal_id
+        "list_deal_stakeholder_insights: found %d insights for deal %s", len(output), actual_deal_id
     )
     return output
 
@@ -152,30 +153,29 @@ def create_list_deal_stakeholder_insights(
 ) -> Callable[..., Any]:
     """Factory to create list_deal_stakeholder_insights tool bound to a context.
 
-    SECURITY BOUNDARIES (from context, immutable):
-    - organisation_id: Prevents cross-org data access
-    - deal_id: Prevents cross-deal data access
-
-    This is a DEAL-SCOPED tool. It does NOT accept organisation_id or deal_id
-    as parameters - both come from context.
+    SECURITY BOUNDARIES:
+    - organisation_id: Always from context (immutable) - prevents cross-org data access
+    - deal_id: Can be passed as an optional parameter; falls back to context if not provided
     """
 
     async def list_deal_stakeholder_insights_tool(
+        deal_id: str | None = None,
         limit: int = 20,
         include_expired: bool = False,
     ) -> list[dict[str, Any]]:
-        """List AI-generated stakeholder insights for the current deal.
+        """List AI-generated stakeholder insights for a deal.
 
         Retrieves insights about stakeholder engagement gaps, sentiment changes,
         champion opportunities, unaddressed concerns, and other actionable
         recommendations for improving deal outcomes.
 
         Args:
+            deal_id: Optional deal ID to query. If not provided, uses the
+                current deal from context.
             limit: Maximum number of insights to return (1-50, default: 20)
             include_expired: Whether to include resolved/dismissed insights
 
-        Note: organisation_id and deal_id are automatically set from context
-        and cannot be overridden. This tool only queries the current deal.
+        Note: organisation_id is always set from context and cannot be overridden.
         """
         logger.info(
             "[TOOL CALLED] list_deal_stakeholder_insights - limit=%d, include_expired=%s",
@@ -189,8 +189,11 @@ def create_list_deal_stakeholder_insights(
             )
             return []
 
-        if not context.deal_id:
-            logger.warning("list_deal_stakeholder_insights unavailable: missing deal_id in context")
+        effective_deal_id = deal_id or (str(context.deal_id) if context.deal_id else None)
+        if not effective_deal_id:
+            logger.warning(
+                "list_deal_stakeholder_insights unavailable: no deal_id provided or in context"
+            )
             return []
 
         # Tool acquires its own sessions on-demand, no lock needed
@@ -200,10 +203,11 @@ def create_list_deal_stakeholder_insights(
             tool_func=list_deal_stakeholder_insights,
             parameters={
                 "context": context,
+                "deal_id": effective_deal_id,
                 "limit": limit,
                 "include_expired": include_expired,
             },
-            description=f"Listing stakeholder insights for deal: {context.deal_id}",
+            description=f"Listing stakeholder insights for deal: {effective_deal_id}",
             fallback_value=[],
         )
 

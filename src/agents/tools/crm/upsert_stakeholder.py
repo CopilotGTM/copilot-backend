@@ -9,7 +9,7 @@ import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated, Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -159,13 +159,15 @@ def _format_upsert_output(
 async def upsert_stakeholder(
     *,
     context: AgentContext,
+    deal_id: str | None = None,
     input_data: UpsertStakeholderInput,
 ) -> dict[str, Any] | None:
     """Upsert stakeholder by email in the current deal."""
     organisation_id = context.organisation_id
-    deal_id = context.deal_id
+    # deal_id: parameter overrides context
+    actual_deal_id = UUID(deal_id) if deal_id else context.deal_id
 
-    if not organisation_id or not deal_id:
+    if not organisation_id or not actual_deal_id:
         return None
 
     email = input_data.email.strip().lower()
@@ -189,7 +191,7 @@ async def upsert_stakeholder(
     c = DealStakeholder.__table__.c
     stmt = select(DealStakeholder).where(
         c.organisation_id == organisation_id,
-        c.deal_id == deal_id,
+        c.deal_id == actual_deal_id,
         c.email == email,
     )
 
@@ -292,7 +294,7 @@ async def upsert_stakeholder(
                 "stakeholder_id": uuid4(),
                 "organisation_id": organisation_id,
                 "integration_id": None,
-                "deal_id": deal_id,
+                "deal_id": actual_deal_id,
                 "contact_id": None,
                 "email": email,
                 "name": _clean_text(input_data.name),
@@ -337,6 +339,7 @@ def create_upsert_stakeholder(
 
     async def upsert_stakeholder_tool(
         email: str,
+        deal_id: str | None = None,
         name: str | None = None,
         job_title: str | None = None,
         department: str | None = None,
@@ -352,6 +355,8 @@ def create_upsert_stakeholder(
     ) -> dict[str, Any] | None:
         """Upsert stakeholder by email in the current deal.
 
+        deal_id: Deal UUID. If not provided, uses the current deal context.
+
         IMPORTANT: Do NOT call this for internal team members. Only external
         customer/prospect contacts should be added as stakeholders. Internal
         emails are rejected automatically.
@@ -366,8 +371,9 @@ def create_upsert_stakeholder(
             logger.warning("upsert_stakeholder unavailable: missing organisation_id")
             return None
 
-        if not context.deal_id:
-            logger.warning("upsert_stakeholder unavailable: missing deal_id")
+        effective_deal_id = deal_id or (str(context.deal_id) if context.deal_id else None)
+        if not effective_deal_id:
+            logger.warning("upsert_stakeholder unavailable: no deal_id provided or in context")
             return None
 
         normalized_stance = _normalize_optional_stance(stance)
@@ -394,7 +400,7 @@ def create_upsert_stakeholder(
             capabilities_getter(),
             tool_name="UpsertStakeholder",
             tool_func=upsert_stakeholder,
-            parameters={"context": context, "input_data": input_data},
+            parameters={"context": context, "deal_id": effective_deal_id, "input_data": input_data},
             description=f"Upserting stakeholder: {email}",
             fallback_value=None,
         )
