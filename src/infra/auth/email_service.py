@@ -1,5 +1,6 @@
 import datetime
 import os
+from html import escape as html_escape
 
 import resend
 from src.infra.utils.logger import get_logger
@@ -107,14 +108,18 @@ class EmailService:
         subject = f"Welcome to {self.app_name} - Super Admin Account Created"
         preheader = "Your super admin account is ready."
 
+        safe_name = html_escape(first_name)
+        safe_email = html_escape(to_email)
+        safe_password = html_escape(temp_password)
+
         main_content = f"""
-            <h2>Welcome, {first_name}!</h2>
+            <h2>Welcome, {safe_name}!</h2>
             <p>Your Super Admin account for {self.app_name} has been successfully created.</p>
 
             <div class="credentials">
                 <h3>Your Login Credentials:</h3>
-                <p><strong>Email:</strong> {to_email}</p>
-                <p><strong>Temporary Password:</strong> <code>{temp_password}</code></p>
+                <p><strong>Email:</strong> {safe_email}</p>
+                <p><strong>Temporary Password:</strong> <code>{safe_password}</code></p>
             </div>
 
             <p><strong>⚠️ Important:</strong> You will be required to change this password upon your first login for security reasons.</p>
@@ -152,14 +157,18 @@ class EmailService:
         subject = f"Welcome to {self.app_name} - Your Account is Ready"
         preheader = "Your new account has been successfully created."
 
+        safe_name = html_escape(first_name)
+        safe_email = html_escape(to_email)
+        safe_password = html_escape(temp_password)
+
         main_content = f"""
-            <h2>Welcome, {first_name}!</h2>
+            <h2>Welcome, {safe_name}!</h2>
             <p>Your account for {self.app_name} has been successfully created.</p>
 
             <div class="credentials">
                 <h3>Your Login Credentials:</h3>
-                <p><strong>Email:</strong> {to_email}</p>
-                <p><strong>Temporary Password:</strong> <code>{temp_password}</code></p>
+                <p><strong>Email:</strong> {safe_email}</p>
+                <p><strong>Temporary Password:</strong> <code>{safe_password}</code></p>
             </div>
 
             <p><strong>⚠️ Important:</strong> You will be required to change this password upon your first login for security reasons.</p>
@@ -196,21 +205,24 @@ class EmailService:
         subject = f"{self.app_name} - Password Reset Request"
         preheader = "A request to reset your password was received."
 
+        safe_name = html_escape(first_name)
+        safe_url = html_escape(reset_url)
+
         main_content = f"""
             <h2>Password Reset Request</h2>
-            <p>Hello {first_name},</p>
+            <p>Hello {safe_name},</p>
             <p>We received a request to reset the password for your {self.app_name} account.</p>
 
             <p>If you did not make this request, you can safely ignore this email.</p>
 
             <div class="button-container">
-                <a href="{reset_url}" class="button">Reset Your Password</a>
+                <a href="{safe_url}" class="button">Reset Your Password</a>
             </div>
 
             <p>This password reset link is valid for the next 24 hours.</p>
 
             <p>If you're having trouble with the button, copy and paste the URL below into your web browser:</p>
-            <p><a href="{reset_url}">{reset_url}</a></p>
+            <p><a href="{safe_url}">{safe_url}</a></p>
 
             <p>Best regards,<br>The {self.app_name} Team</p>
         """
