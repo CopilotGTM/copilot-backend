@@ -5,12 +5,9 @@ Tool for listing CRM notes (activity_type=NOTE) associated with a specific deal.
 Notes are stored in the organisation DB in the canonical CRM activities table
 (`crm_activities`) as `CRMActivity` records.
 
-SECURITY BOUNDARIES (immutable, from context):
-- organisation_id: Prevents cross-org data access
-- deal_id: Prevents cross-deal data access (deal-scoped tool)
-
-This is a DEAL-SCOPED tool. It does NOT accept organisation_id or deal_id
-as parameters - both come from context.
+SECURITY BOUNDARIES:
+- organisation_id: Always from context (immutable). Prevents cross-org data access.
+- deal_id: Can be passed as an optional parameter or falls back to context.deal_id.
 """
 
 from __future__ import annotations
@@ -18,6 +15,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
+from uuid import UUID
 
 from sqlalchemy import select
 
@@ -34,6 +32,7 @@ logger = logging.getLogger(__name__)
 async def list_deal_notes(
     *,
     context: AgentContext,
+    deal_id: str | None = None,
     limit: int = 20,
     include_body: bool = True,
     max_body_length: int | None = 5000,
@@ -57,16 +56,17 @@ async def list_deal_notes(
     Returns:
         List of note dictionaries.
     """
-    # SECURITY: Both organisation_id and deal_id come from context, not parameters
+    # SECURITY: organisation_id always from context (immutable)
     organisation_id = context.organisation_id
-    deal_id = context.deal_id
+    # deal_id: parameter overrides context
+    actual_deal_id = UUID(deal_id) if deal_id else context.deal_id
 
     if not organisation_id:
         logger.warning("list_deal_notes: missing organisation_id in context")
         return []
 
-    if not deal_id:
-        logger.warning("list_deal_notes: missing deal_id in context")
+    if not actual_deal_id:
+        logger.warning("list_deal_notes: no deal_id provided and none in context")
         return []
 
     effective_limit = max(1, min(limit, 100))
@@ -78,7 +78,7 @@ async def list_deal_notes(
         select(CRMActivity)
         .where(
             c.organisation_id == organisation_id,
-            c.deal_id == deal_id,
+            c.deal_id == actual_deal_id,
             c.activity_type == CRMActivityType.NOTE.value,
             c.is_deleted.is_(False),
         )
@@ -129,7 +129,7 @@ async def list_deal_notes(
             output.append(item)
     # Session released
 
-    logger.info("list_deal_notes: returning %d notes for deal %s", len(output), deal_id)
+    logger.info("list_deal_notes: returning %d notes for deal %s", len(output), actual_deal_id)
     return output
 
 
@@ -139,32 +139,31 @@ def create_list_deal_notes(
 ) -> Callable[..., Any]:
     """Factory to create list_deal_notes tool bound to a context.
 
-    SECURITY BOUNDARIES (from context, immutable):
-    - organisation_id: Prevents cross-org data access
-    - deal_id: Prevents cross-deal data access
-
-    This is a DEAL-SCOPED tool. It does NOT accept organisation_id or deal_id
-    as parameters - both come from context.
+    SECURITY BOUNDARIES:
+    - organisation_id: Always from context (immutable). Prevents cross-org data access.
+    - deal_id: Can be passed as an optional parameter or falls back to context.deal_id.
     """
 
     async def list_deal_notes_tool(
+        deal_id: str | None = None,
         limit: int = 20,
         include_body: bool = True,
         max_body_length: int | None = 5000,
         include_properties: bool = False,
     ) -> list[dict[str, Any]]:
-        """List CRM notes associated with the current deal.
+        """List CRM notes associated with a deal.
 
         Use this tool to fetch notes linked to a deal from synced CRM activity data.
 
         Args:
+            deal_id: Optional deal ID to query. Falls back to context deal_id if omitted.
             limit: Maximum number of notes to return (default: 20, max: 100)
             include_body: Include note body content (default: True)
             max_body_length: Truncate note body to N characters (default: 5000)
             include_properties: Include provider properties dict (default: False)
 
-        Note: organisation_id and deal_id are automatically set from context
-        and cannot be overridden. This tool only queries the current deal.
+        Note: organisation_id is automatically set from context and cannot be
+        overridden.
         """
         logger.info(
             "[TOOL CALLED] list_deal_notes - limit=%d, include_body=%s",
@@ -176,8 +175,9 @@ def create_list_deal_notes(
             logger.warning("list_deal_notes unavailable: missing organisation_id in context")
             return []
 
-        if not context.deal_id:
-            logger.warning("list_deal_notes unavailable: missing deal_id in context")
+        effective_deal_id = deal_id or (str(context.deal_id) if context.deal_id else None)
+        if not effective_deal_id:
+            logger.warning("list_deal_notes unavailable: no deal_id provided or in context")
             return []
 
         # Tool acquires its own sessions on-demand, no lock needed
@@ -187,12 +187,13 @@ def create_list_deal_notes(
             tool_func=list_deal_notes,
             parameters={
                 "context": context,
+                "deal_id": effective_deal_id,
                 "limit": limit,
                 "include_body": include_body,
                 "max_body_length": max_body_length,
                 "include_properties": include_properties,
             },
-            description=f"Listing notes for deal: {context.deal_id}",
+            description=f"Listing notes for deal: {effective_deal_id}",
             fallback_value=[],
         )
 

@@ -4,11 +4,8 @@ Tool for retrieving existing risks and blockers for a deal,
 used by the extraction agent for deduplication.
 
 SECURITY BOUNDARIES (immutable, from context):
-- organisation_id: Prevents cross-org data access
-- deal_id: Prevents cross-deal data access (deal-scoped tool)
-
-This is a DEAL-SCOPED tool. It does NOT accept organisation_id or deal_id
-as parameters - both come from context.
+- organisation_id: Always from context — prevents cross-org data access
+- deal_id: Can be passed as an optional parameter; falls back to context
 """
 
 from __future__ import annotations
@@ -16,6 +13,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
+from uuid import UUID
 
 from sqlalchemy import select
 
@@ -39,6 +37,7 @@ logger = logging.getLogger(__name__)
 async def get_existing_risks_blockers(
     *,
     context: AgentContext,
+    deal_id: str | None = None,
     include_dismissed: bool = False,
 ) -> list[dict[str, Any]]:
     """Get all existing risks and blockers for a deal.
@@ -46,27 +45,29 @@ async def get_existing_risks_blockers(
     Used by the extraction agent to check for duplicates before
     creating new AI-suggested items.
 
-    SECURITY BOUNDARIES (from context, immutable):
-    - organisation_id: Prevents cross-org data access
-    - deal_id: Prevents cross-deal data access
+    SECURITY BOUNDARIES:
+    - organisation_id: Always from context (immutable) — prevents cross-org access
+    - deal_id: Optional parameter; falls back to context if not provided
 
     Args:
         context: AgentContext containing organisation and deal metadata
+        deal_id: Optional deal ID override; defaults to context.deal_id
         include_dismissed: Whether to include dismissed/AI_dismissed items
 
     Returns:
         List of risk/blocker dictionaries with relevant fields for matching.
     """
-    # SECURITY: Both organisation_id and deal_id come from context, not parameters
+    # SECURITY: organisation_id always from context (immutable)
     organisation_id = context.organisation_id
-    deal_id = context.deal_id
+    # deal_id: parameter overrides context
+    actual_deal_id = UUID(deal_id) if deal_id else context.deal_id
 
     if not organisation_id:
         logger.warning("get_existing_risks_blockers: missing organisation_id in context")
         return []
 
-    if not deal_id:
-        logger.warning("get_existing_risks_blockers: missing deal_id in context")
+    if not actual_deal_id:
+        logger.warning("get_existing_risks_blockers: no deal_id provided and none in context")
         return []
 
     # Use table columns for SQLAlchemy operations (type-safe pattern)
@@ -75,7 +76,7 @@ async def get_existing_risks_blockers(
     # SECURITY: Both organisation_id and deal_id from context (immutable)
     stmt = select(DealRiskBlocker).where(
         c.organisation_id == organisation_id,
-        c.deal_id == deal_id,
+        c.deal_id == actual_deal_id,
     )
 
     # Optionally exclude dismissed items
@@ -132,7 +133,9 @@ async def get_existing_risks_blockers(
             )
     # Session released
 
-    logger.info("get_existing_risks_blockers: found %d items for deal %s", len(output), deal_id)
+    logger.info(
+        "get_existing_risks_blockers: found %d items for deal %s", len(output), actual_deal_id
+    )
     return output
 
 
@@ -142,18 +145,16 @@ def create_get_existing_risks_blockers(
 ) -> Callable[..., Any]:
     """Factory to create get_existing_risks_blockers tool bound to a context.
 
-    SECURITY BOUNDARIES (from context, immutable):
-    - organisation_id: Prevents cross-org data access
-    - deal_id: Prevents cross-deal data access
-
-    This is a DEAL-SCOPED tool. It does NOT accept organisation_id or deal_id
-    as parameters - both come from context.
+    SECURITY BOUNDARIES:
+    - organisation_id: Always from context (immutable) — prevents cross-org access
+    - deal_id: Can be passed as an optional parameter; falls back to context
     """
 
     async def get_existing_risks_blockers_tool(
+        deal_id: str | None = None,
         include_dismissed: bool = False,
     ) -> list[dict[str, Any]]:
-        """Get all existing risks and blockers for the current deal.
+        """Get all existing risks and blockers for a deal.
 
         Use this tool to check what risks and blockers already exist for a deal
         before suggesting new ones. This helps avoid creating duplicates.
@@ -169,10 +170,10 @@ def create_get_existing_risks_blockers(
         - source_type: Where it was identified (MEETING, EMAIL, SLACK, etc.)
 
         Args:
+            deal_id: Optional deal ID to query. Defaults to the current deal in context.
             include_dismissed: Include dismissed items (default: false)
 
-        Note: organisation_id and deal_id are automatically set from context
-        and cannot be overridden. This tool only queries the current deal.
+        Note: organisation_id is always set from context and cannot be overridden.
         """
         logger.info(
             "[TOOL CALLED] get_existing_risks_blockers - include_dismissed=%s",
@@ -185,8 +186,11 @@ def create_get_existing_risks_blockers(
             )
             return []
 
-        if not context.deal_id:
-            logger.warning("get_existing_risks_blockers unavailable: missing deal_id in context")
+        effective_deal_id = deal_id or (str(context.deal_id) if context.deal_id else None)
+        if not effective_deal_id:
+            logger.warning(
+                "get_existing_risks_blockers unavailable: no deal_id provided or in context"
+            )
             return []
 
         # Tool acquires its own sessions on-demand, no lock needed
@@ -196,9 +200,10 @@ def create_get_existing_risks_blockers(
             tool_func=get_existing_risks_blockers,
             parameters={
                 "context": context,
+                "deal_id": effective_deal_id,
                 "include_dismissed": include_dismissed,
             },
-            description=f"Getting existing risks/blockers for deal: {context.deal_id}",
+            description=f"Getting existing risks/blockers for deal: {effective_deal_id}",
             fallback_value=[],
         )
 

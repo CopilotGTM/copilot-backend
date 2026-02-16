@@ -3,11 +3,10 @@
 Tool for listing meetings associated with a deal.
 
 SECURITY BOUNDARIES (immutable, from context):
-- organisation_id: Prevents cross-org data access
-- deal_id: Prevents cross-deal data access (deal-scoped tool)
+- organisation_id: Always from context — prevents cross-org data access
 
-This is a DEAL-SCOPED tool. It does NOT accept organisation_id or deal_id
-as parameters - both come from context.
+deal_id can be passed as an optional parameter (e.g. from search_deals output)
+or falls back to context.deal_id when available.
 """
 
 from __future__ import annotations
@@ -16,6 +15,7 @@ import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
+from uuid import UUID
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import aliased, selectinload
@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 async def list_deal_meetings(
     *,
     context: AgentContext,
+    deal_id: str | None = None,
     limit: int = 10,
     include_past: bool = True,
     include_upcoming: bool = True,
@@ -86,16 +87,17 @@ async def list_deal_meetings(
         - association_status: SUGGESTED, CONFIRMED, or REJECTED
         - match_score: Confidence score of deal association
     """
-    # SECURITY: Both organisation_id and deal_id come from context, not parameters
+    # SECURITY: organisation_id always from context (immutable)
     organisation_id = context.organisation_id
-    deal_id = context.deal_id
+    # deal_id: parameter overrides context
+    actual_deal_id = UUID(deal_id) if deal_id else context.deal_id
 
     if not organisation_id:
         logger.warning("list_deal_meetings: missing organisation_id in context")
         return []
 
-    if not deal_id:
-        logger.warning("list_deal_meetings: missing deal_id in context")
+    if not actual_deal_id:
+        logger.warning("list_deal_meetings: no deal_id provided and none in context")
         return []
 
     effective_limit = max(1, min(limit, 50))
@@ -116,7 +118,7 @@ async def list_deal_meetings(
         )
         .where(
             assoc_c.organisation_id == organisation_id,
-            assoc_c.deal_id == deal_id,
+            assoc_c.deal_id == actual_deal_id,
             assoc_c.status == AssociationStatus.ACTIVE,  # Only include active associations
         )
         .join(CalendarEvent, assoc_c.event_id == event_c.event_id)
@@ -215,7 +217,7 @@ async def list_deal_meetings(
             )
     # Session released
 
-    logger.info("list_deal_meetings: found %d meetings for deal %s", len(output), deal_id)
+    logger.info("list_deal_meetings: found %d meetings for deal %s", len(output), actual_deal_id)
     return output
 
 
@@ -225,28 +227,27 @@ def create_list_deal_meetings(
 ) -> Callable[..., Any]:
     """Factory to create list_deal_meetings tool bound to a context.
 
-    SECURITY BOUNDARIES (from context, immutable):
-    - organisation_id: Prevents cross-org data access
-    - deal_id: Prevents cross-deal data access
-
-    This is a DEAL-SCOPED tool. It does NOT accept organisation_id or deal_id
-    as parameters - both come from context.
+    SECURITY: organisation_id always from context (immutable).
+    deal_id can be passed as a parameter or falls back to context.deal_id.
     """
 
     async def list_deal_meetings_tool(
+        deal_id: str | None = None,
         limit: int = 10,
         include_past: bool = True,
         include_upcoming: bool = True,
         attendee_email: str | None = None,
         attendee_name: str | None = None,
     ) -> list[dict[str, Any]]:
-        """List all meetings associated with the current deal.
+        """List all meetings associated with a deal.
 
         Use this tool to see what meetings have occurred or are scheduled
         with a customer. Shows both past meetings (with transcript availability)
         and upcoming meetings. Supports filtering by a specific attendee.
 
         Args:
+            deal_id: Deal UUID to query. If not provided, uses the current deal context.
+                Pass this when you got a deal_id from search_deals but are not in a deal view.
             limit: Maximum number of results (default: 10, max: 50)
             include_past: Include past meetings (default: True)
             include_upcoming: Include future meetings (default: True)
@@ -254,9 +255,6 @@ def create_list_deal_meetings(
                 (exact match, case-insensitive). Useful for finding meetings with a specific person.
             attendee_name: Filter meetings where an attendee's display name contains this string
                 (case-insensitive partial match). Useful for role-based searches like "CFO".
-
-        Note: organisation_id and deal_id are automatically set from context
-        and cannot be overridden. This tool only queries the current deal.
         """
         logger.info(
             "[TOOL CALLED] list_deal_meetings - limit=%d, include_past=%s, include_upcoming=%s",
@@ -269,8 +267,9 @@ def create_list_deal_meetings(
             logger.warning("list_deal_meetings unavailable: missing organisation_id in context")
             return []
 
-        if not context.deal_id:
-            logger.warning("list_deal_meetings unavailable: missing deal_id in context")
+        effective_deal_id = deal_id or (str(context.deal_id) if context.deal_id else None)
+        if not effective_deal_id:
+            logger.warning("list_deal_meetings unavailable: no deal_id provided or in context")
             return []
 
         # Tool acquires its own sessions on-demand, no lock needed
@@ -280,13 +279,14 @@ def create_list_deal_meetings(
             tool_func=list_deal_meetings,
             parameters={
                 "context": context,
+                "deal_id": effective_deal_id,
                 "limit": limit,
                 "include_past": include_past,
                 "include_upcoming": include_upcoming,
                 "attendee_email": attendee_email,
                 "attendee_name": attendee_name,
             },
-            description=f"Listing meetings for deal: {context.deal_id}",
+            description=f"Listing meetings for deal: {effective_deal_id}",
             fallback_value=[],
         )
 

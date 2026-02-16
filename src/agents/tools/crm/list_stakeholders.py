@@ -3,11 +3,11 @@
 Tool for listing stakeholders associated with a deal.
 
 SECURITY BOUNDARIES (immutable, from context):
-- organisation_id: Prevents cross-org data access
-- deal_id: Prevents cross-deal data access (deal-scoped tool)
+- organisation_id: Always from context — prevents cross-org data access
 
-This is a DEAL-SCOPED tool. It does NOT accept organisation_id or deal_id
-as parameters - both come from context.
+deal_id can be passed as an optional parameter. If not provided, falls back
+to context.deal_id. This allows the tool to be used both in deal-scoped
+views and in cross-deal queries (e.g. from search_deals results).
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
+from uuid import UUID
 
 from sqlalchemy import select
 
@@ -37,6 +38,7 @@ logger = logging.getLogger(__name__)
 async def list_deal_stakeholders(
     *,
     context: AgentContext,
+    deal_id: str | None = None,
     limit: int = 20,
 ) -> list[dict[str, Any]]:
     """List all stakeholders associated with a deal.
@@ -55,16 +57,17 @@ async def list_deal_stakeholders(
     Returns:
         List of stakeholder dictionaries with summary information.
     """
-    # SECURITY: Both organisation_id and deal_id come from context, not parameters
+    # SECURITY: organisation_id always from context (immutable)
     organisation_id = context.organisation_id
-    deal_id = context.deal_id
+    # deal_id: parameter overrides context
+    actual_deal_id = UUID(deal_id) if deal_id else context.deal_id
 
     if not organisation_id:
         logger.warning("list_deal_stakeholders: missing organisation_id in context")
         return []
 
-    if not deal_id:
-        logger.warning("list_deal_stakeholders: missing deal_id in context")
+    if not actual_deal_id:
+        logger.warning("list_deal_stakeholders: no deal_id provided and none in context")
         return []
 
     effective_limit = max(1, min(limit, 50))
@@ -77,7 +80,7 @@ async def list_deal_stakeholders(
         select(DealStakeholder)
         .where(
             c.organisation_id == organisation_id,
-            c.deal_id == deal_id,
+            c.deal_id == actual_deal_id,
         )
         .order_by(
             c.decision_power.asc(),
@@ -123,7 +126,9 @@ async def list_deal_stakeholders(
             )
     # Session released
 
-    logger.info("list_deal_stakeholders: found %d stakeholders for deal %s", len(output), deal_id)
+    logger.info(
+        "list_deal_stakeholders: found %d stakeholders for deal %s", len(output), actual_deal_id
+    )
     return output
 
 
@@ -134,27 +139,30 @@ def create_list_deal_stakeholders(
     """Factory to create list_deal_stakeholders tool bound to a context.
 
     SECURITY BOUNDARIES (from context, immutable):
-    - organisation_id: Prevents cross-org data access
-    - deal_id: Prevents cross-deal data access
+    - organisation_id: Always from context — prevents cross-org data access
 
-    This is a DEAL-SCOPED tool. It does NOT accept organisation_id or deal_id
-    as parameters - both come from context.
+    deal_id can be passed as an optional parameter. If not provided, falls back
+    to context.deal_id.
     """
 
     async def list_deal_stakeholders_tool(
+        deal_id: str | None = None,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
-        """List all stakeholders (contacts) associated with the current deal.
+        """List all stakeholders (contacts) associated with a deal.
 
         Use this tool to understand the buying committee and key people involved
         in the deal. Returns summary information about each stakeholder including
         their name, role, stance, decision power, and engagement level.
 
         Args:
+            deal_id: Deal UUID to query. If not provided, uses the current deal
+                context. Pass this when you got a deal_id from search_deals but
+                are not in a deal view.
             limit: Maximum number of results (default: 20, max: 50)
 
-        Note: organisation_id and deal_id are automatically set from context
-        and cannot be overridden. This tool only queries the current deal.
+        Note: organisation_id is automatically set from context and cannot be
+        overridden.
         """
         logger.info("[TOOL CALLED] list_deal_stakeholders - limit=%d", limit)
 
@@ -162,8 +170,9 @@ def create_list_deal_stakeholders(
             logger.warning("list_deal_stakeholders unavailable: missing organisation_id in context")
             return []
 
-        if not context.deal_id:
-            logger.warning("list_deal_stakeholders unavailable: missing deal_id in context")
+        effective_deal_id = deal_id or (str(context.deal_id) if context.deal_id else None)
+        if not effective_deal_id:
+            logger.warning("list_deal_stakeholders unavailable: no deal_id provided or in context")
             return []
 
         # Tool acquires its own sessions on-demand, no lock needed
@@ -173,9 +182,10 @@ def create_list_deal_stakeholders(
             tool_func=list_deal_stakeholders,
             parameters={
                 "context": context,
+                "deal_id": effective_deal_id,
                 "limit": limit,
             },
-            description=f"Listing stakeholders for deal: {context.deal_id}",
+            description=f"Listing stakeholders for deal: {effective_deal_id}",
             fallback_value=[],
         )
 
