@@ -12,8 +12,10 @@ Email data is stored in dedicated email tables.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any
 from uuid import UUID
 
@@ -547,6 +549,8 @@ class EmailSyncService:
         """Extract folder fields from provider data."""
         if provider in ("microsoft", "outlook"):
             return cls._extract_outlook_folder_fields(folder_data)
+        if provider in ("gmail", "google"):
+            return cls._extract_gmail_folder_fields(folder_data)
         return cls._extract_generic_folder_fields(folder_data)
 
     @classmethod
@@ -591,6 +595,45 @@ class EmailSyncService:
             return "archive"
         return "user"
 
+    # Gmail label ID -> folder_type mapping
+    _GMAIL_LABEL_TYPE_MAP: dict[str, str] = {
+        "INBOX": "inbox",
+        "SENT": "sent",
+        "DRAFT": "drafts",
+        "TRASH": "trash",
+        "SPAM": "junk",
+        "STARRED": "starred",
+        "IMPORTANT": "important",
+    }
+
+    @classmethod
+    def _extract_gmail_folder_fields(cls, label_data: dict[str, Any]) -> dict[str, Any]:
+        """Extract folder fields from Gmail label data."""
+        label_id = label_data.get("id", "")
+        label_name = label_data.get("name", label_id)
+
+        # System labels use ID for classification; user labels fall through to "user"
+        folder_type = cls._GMAIL_LABEL_TYPE_MAP.get(label_id, "user")
+        # Category labels (CATEGORY_PROMOTIONS, etc.)
+        if label_id.startswith("CATEGORY_"):
+            folder_type = "category"
+
+        is_monitored = "true" if folder_type in cls.MONITORED_FOLDER_TYPES else "false"
+
+        return {
+            "folder_name": label_name,
+            "folder_path": None,
+            "folder_type": folder_type,
+            "is_monitored": is_monitored,
+            "total_count": label_data.get("messagesTotal", 0),
+            "unread_count": label_data.get("messagesUnread", 0),
+            "folder_metadata": {
+                "label_type": label_data.get("type"),
+                "label_list_visibility": label_data.get("labelListVisibility"),
+                "message_list_visibility": label_data.get("messageListVisibility"),
+            },
+        }
+
     @staticmethod
     def _extract_generic_folder_fields(folder_data: dict[str, Any]) -> dict[str, Any]:
         """Extract folder fields from generic provider data."""
@@ -609,6 +652,8 @@ class EmailSyncService:
         """Extract message fields from provider data."""
         if provider in ("microsoft", "outlook"):
             return cls._extract_outlook_message_fields(message_data)
+        if provider in ("gmail", "google"):
+            return cls._extract_gmail_message_fields(message_data)
         return cls._extract_generic_message_fields(message_data)
 
     @classmethod
@@ -621,10 +666,15 @@ class EmailSyncService:
         cc_recipients = message_data.get("ccRecipients", [])
         bcc_recipients = message_data.get("bccRecipients", [])
 
-        # Extract body
+        # Extract body; generate plain text from HTML when the provider only sends HTML
         body = message_data.get("body", {})
         body_type = body.get("contentType", "text")
         body_content = body.get("content", "")
+
+        body_text = body_content if body_type == "text" else None
+        body_html = body_content if body_type == "html" else None
+        if not body_text and body_html:
+            body_text = cls._html_to_text(body_html)
 
         return {
             "thread_id": message_data.get("conversationId"),
@@ -636,11 +686,11 @@ class EmailSyncService:
             "cc_emails": [r.get("emailAddress", {}).get("address") for r in cc_recipients],
             "bcc_emails": [r.get("emailAddress", {}).get("address") for r in bcc_recipients],
             "subject": message_data.get("subject"),
-            "body_text": body_content if body_type == "text" else None,
-            "body_html": body_content if body_type == "html" else None,
+            "body_text": body_text,
+            "body_html": body_html,
             "snippet": message_data.get("bodyPreview"),
-            "received_at": cls._parse_iso_datetime(message_data.get("receivedDateTime")),
-            "sent_at": cls._parse_iso_datetime(message_data.get("sentDateTime")),
+            "received_at": cls._parse_datetime(message_data.get("receivedDateTime")),
+            "sent_at": cls._parse_datetime(message_data.get("sentDateTime")),
             "is_read": "true" if message_data.get("isRead", False) else "false",
             "is_starred": "false",  # Outlook uses flag instead (stored as string in DB)
             "is_important": "true" if message_data.get("importance") == "high" else "false",
@@ -653,6 +703,78 @@ class EmailSyncService:
                 "inference_classification": message_data.get("inferenceClassification"),
                 "internet_message_id": message_data.get("internetMessageId"),
                 "parent_folder_id": message_data.get("parentFolderId"),
+            },
+        }
+
+    @classmethod
+    def _extract_gmail_message_fields(cls, message_data: dict[str, Any]) -> dict[str, Any]:
+        """Extract message fields from Gmail API message (format=full)."""
+        from src.workers.integrations_worker.providers.email.gmail_email import (
+            extract_body_from_payload,
+            get_header,
+        )
+
+        headers = message_data.get("payload", {}).get("headers", [])
+        payload = message_data.get("payload", {})
+
+        # Parse sender: "Display Name <email@example.com>" or just "email@example.com"
+        from_raw = get_header(headers, "From") or ""
+        from_email, from_name = _parse_email_address(from_raw)
+
+        # Parse recipients
+        to_emails = _parse_email_list(get_header(headers, "To"))
+        cc_emails = _parse_email_list(get_header(headers, "Cc"))
+        bcc_emails = _parse_email_list(get_header(headers, "Bcc"))
+
+        # Body from recursive MIME parsing; generate plain text from HTML when missing
+        body_text, body_html = extract_body_from_payload(payload)
+        if not body_text and body_html:
+            body_text = cls._html_to_text(body_html)
+
+        # received_at from internalDate (Unix milliseconds)
+        internal_date_ms = message_data.get("internalDate")
+        received_at = (
+            datetime.fromtimestamp(int(internal_date_ms) / 1000, tz=UTC)
+            if internal_date_ms
+            else datetime.now(UTC)
+        )
+
+        # sent_at from Date header
+        sent_at = cls._parse_datetime(get_header(headers, "Date"))
+
+        label_ids = message_data.get("labelIds", [])
+        label_set = set(label_ids)
+
+        has_attachments = any(
+            part.get("filename") for part in payload.get("parts", []) if part.get("filename")
+        )
+
+        return {
+            "thread_id": message_data.get("threadId"),
+            "internet_message_id": get_header(headers, "Message-ID"),
+            "in_reply_to": get_header(headers, "In-Reply-To"),
+            "from_email": from_email,
+            "from_name": from_name,
+            "to_emails": to_emails,
+            "cc_emails": cc_emails,
+            "bcc_emails": bcc_emails,
+            "subject": get_header(headers, "Subject"),
+            "body_text": body_text,
+            "body_html": body_html,
+            "snippet": message_data.get("snippet"),
+            "received_at": received_at,
+            "sent_at": sent_at,
+            "is_read": "false" if "UNREAD" in label_set else "true",
+            "is_starred": "true" if "STARRED" in label_set else "false",
+            "is_important": "true" if "IMPORTANT" in label_set else "false",
+            "is_draft": "true" if "DRAFT" in label_set else "false",
+            "has_attachments": "true" if has_attachments else "false",
+            "labels": label_ids,
+            "email_metadata": {
+                "gmail_id": message_data.get("id"),
+                "history_id": message_data.get("historyId"),
+                "size_estimate": message_data.get("sizeEstimate"),
+                "label_ids": label_ids,
             },
         }
 
@@ -684,17 +806,52 @@ class EmailSyncService:
         }
 
     @staticmethod
-    def _parse_iso_datetime(value: str | None) -> datetime | None:
-        """Parse ISO datetime string to datetime object."""
+    def _parse_datetime(value: str | None) -> datetime | None:
+        """Parse a datetime string (ISO 8601 or RFC 2822) to a tz-aware datetime.
+
+        Outlook sends ISO 8601 (sentDateTime); Gmail sends RFC 2822 (Date header).
+        """
         if not value:
             return None
+        # ISO 8601 first (Outlook)
         try:
-            # Handle 'Z' suffix and convert to UTC
             if value.endswith("Z"):
                 value = value[:-1] + "+00:00"
             return datetime.fromisoformat(value)
         except (ValueError, AttributeError):
+            pass
+        # RFC 2822 fallback (Gmail Date header, e.g. "Sun, 16 Feb 2026 10:30:45 +0530")
+        try:
+            return parsedate_to_datetime(value)
+        except (ValueError, TypeError):
             return None
+
+    @staticmethod
+    def _html_to_text(html: str) -> str:
+        """Convert HTML body to plain text by stripping tags.
+
+        Used as fallback when the email provider only returns HTML
+        (most modern emails omit the text/plain MIME part).
+        """
+        # Remove <style> and <script> blocks entirely
+        text = re.sub(
+            r"<(style|script)[^>]*>.*?</\1>",
+            "",
+            html,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        # Block-level elements → newlines
+        text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+        text = re.sub(r"</(?:p|div|tr|li|h[1-6])>", "\n", text, flags=re.IGNORECASE)
+        # Strip remaining tags
+        text = re.sub(r"<[^>]+>", "", text)
+        # Decode common HTML entities
+        text = text.replace("&nbsp;", " ").replace("&amp;", "&")
+        text = text.replace("&lt;", "<").replace("&gt;", ">")
+        text = text.replace("&quot;", '"')
+        # Collapse excessive whitespace
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
 
     async def _ensure_folder_id(
         self,
@@ -748,6 +905,9 @@ class EmailSyncService:
         """Extract provider-specific folder identifier from message payload."""
         if provider in ("microsoft", "outlook"):
             return message_data.get("parentFolderId") or message_data.get("parent_folder_id")
+        if provider in ("gmail", "google"):
+            # Injected by gmail_email.py during fetch to track which label the message came from
+            return message_data.get("_gmail_label_id")
         return message_data.get("folderId")
 
     # -------------------------------------------------------------------------
@@ -1320,6 +1480,31 @@ class EmailSyncService:
             and existing_parent_folder
             and incoming_folder_id != existing_parent_folder
         )
+
+
+def _parse_email_address(raw: str) -> tuple[str, str | None]:
+    """Parse 'Display Name <email@example.com>' into (email, name).
+
+    Also handles bare 'email@example.com' with no display name.
+    """
+    raw = raw.strip()
+    if "<" in raw and raw.endswith(">"):
+        # "Display Name <email@example.com>"
+        name_part, email_part = raw.rsplit("<", 1)
+        return email_part.rstrip(">").strip(), name_part.strip().strip('"') or None
+    return raw, None
+
+
+def _parse_email_list(header_value: str | None) -> list[str]:
+    """Parse a comma-separated email header into a list of email addresses."""
+    if not header_value:
+        return []
+    addresses: list[str] = []
+    for part in header_value.split(","):
+        email, _ = _parse_email_address(part)
+        if email:
+            addresses.append(email)
+    return addresses
 
 
 __all__ = ["EmailSyncService"]
