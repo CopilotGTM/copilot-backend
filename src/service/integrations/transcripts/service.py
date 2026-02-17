@@ -26,6 +26,7 @@ from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.service.integrations.nango_client import NangoConnectionError
 
+from .google_meet_provider import GoogleMeetTranscriptProvider
 from .teams_provider import TeamsTranscriptProvider
 
 logger = get_logger(__name__)
@@ -65,6 +66,7 @@ class TranscriptService:
     def __init__(self, organisation_id: UUID):
         self.organisation_id = organisation_id
         self._teams = TeamsTranscriptProvider()
+        self._google_meet = GoogleMeetTranscriptProvider()
 
     # -------------------------------------------------------------------------
     # Public API
@@ -153,12 +155,13 @@ class TranscriptService:
                 select(KnowledgeIntegration)
                 .join(
                     CalendarEventUserState,
-                    CalendarEventUserState.integration_id == KnowledgeIntegration.integration_id,
+                    col(CalendarEventUserState.integration_id)
+                    == col(KnowledgeIntegration.integration_id),
                 )
                 .where(
-                    CalendarEventUserState.event_id == event.event_id,
-                    CalendarEventUserState.is_deleted == False,  # noqa: E712
-                    col(KnowledgeIntegration.is_active) == True,  # noqa: E712
+                    col(CalendarEventUserState.event_id) == event.event_id,
+                    col(CalendarEventUserState.is_deleted).is_(False),
+                    col(KnowledgeIntegration.is_active).is_(True),
                     col(KnowledgeIntegration.connection_id).isnot(None),
                     col(KnowledgeIntegration.integration_type).in_(
                         [IntegrationType.OUTLOOK_CALENDAR, IntegrationType.GOOGLE_CALENDAR]
@@ -169,6 +172,8 @@ class TranscriptService:
 
         if not results:
             # Fallback for old data without CalendarEventUserState rows
+            if not event.organiser_email:
+                return []
             fallback = await self.find_integration_by_email(event.organiser_email)
             return [fallback] if fallback else []
 
@@ -271,13 +276,11 @@ class TranscriptService:
 
         if event.online_meeting_provider == "teamsForBusiness":
             return await self._fetch_teams(event, integration, existing)
+        elif event.online_meeting_provider == "googleMeet":
+            return await self._fetch_google_meet(event, integration, existing)
         elif event.online_meeting_provider == "zoom":
             return TranscriptFetchResult(
                 success=False, error="Zoom not implemented", should_retry=False
-            )
-        elif event.online_meeting_provider == "googleMeet":
-            return TranscriptFetchResult(
-                success=False, error="Google Meet not available via API", should_retry=False
             )
         return TranscriptFetchResult(
             success=False,
@@ -298,9 +301,11 @@ class TranscriptService:
 
         try:
             # Step 2: External API calls (NO session held here)
+            # connection_id is guaranteed non-None by try_fetch_with_integration guard
+            connection_id: str = integration.connection_id  # type: ignore[assignment]
             actual_meeting_id = await self._teams.resolve_meeting_id(
-                integration.connection_id,
-                event.conference_link,  # type: ignore
+                connection_id,
+                event.conference_link,  # type: ignore[arg-type]
             )
             if not actual_meeting_id:
                 logger.info("Could not resolve Teams meeting ID for event %s", event.event_id)
@@ -311,9 +316,7 @@ class TranscriptService:
                     should_retry=True,
                 )
 
-            transcript_data = await self._teams.fetch_transcript(
-                integration.connection_id, actual_meeting_id
-            )  # type: ignore
+            transcript_data = await self._teams.fetch_transcript(connection_id, actual_meeting_id)
             if not transcript_data:
                 return TranscriptFetchResult(
                     success=False, meeting=meeting, error="No transcript found", should_retry=True
@@ -359,6 +362,100 @@ class TranscriptService:
             )
 
     # -------------------------------------------------------------------------
+    # Google Meet Provider Integration
+    # -------------------------------------------------------------------------
+
+    async def _fetch_google_meet(
+        self, event: CalendarEvent, integration: KnowledgeIntegration, existing: Meeting | None
+    ) -> TranscriptFetchResult:
+        """Fetch Google Meet transcript — mirrors _fetch_teams structure."""
+        meeting = await self._create_or_get_meeting(
+            event.event_id, existing, source=MeetingSource.GOOGLE_MEET
+        )
+
+        try:
+            # Step 1: Resolve conference record (no session held)
+            meeting_code = event.online_meeting_id
+            if not meeting_code:
+                return TranscriptFetchResult(
+                    success=False,
+                    meeting=meeting,
+                    error="No meeting code",
+                    should_retry=False,
+                )
+
+            conference_record = await self._google_meet.resolve_conference_record(
+                integration.connection_id,
+                meeting_code,  # type: ignore[arg-type]
+            )
+            if not conference_record:
+                return TranscriptFetchResult(
+                    success=False,
+                    meeting=meeting,
+                    error="No conference record found",
+                    should_retry=True,
+                )
+
+            # Step 2: Fetch transcript data (no session held)
+            transcript_data = await self._google_meet.fetch_transcript(
+                integration.connection_id,
+                conference_record,  # type: ignore[arg-type]
+            )
+            if not transcript_data:
+                return TranscriptFetchResult(
+                    success=False,
+                    meeting=meeting,
+                    error="No transcript found",
+                    should_retry=True,
+                )
+
+            # Step 3: Parse (pure computation)
+            full_transcript, segments = self._google_meet.parse_entries(
+                transcript_data["entries"],
+                transcript_data["participant_map"],
+                meeting.meeting_id,
+            )
+
+            # Step 4: Save (quick DB operation)
+            await self._save_transcript(
+                meeting.meeting_id,
+                full_transcript,
+                segments,
+                transcript_data.get("language"),
+                {
+                    "fetched_with_integration": str(integration.integration_id),
+                    "fetched_with_email": integration.integration_email,
+                    "conference_record": conference_record,
+                },
+                existing is not None,
+            )
+
+            meeting = await self._get_meeting(event.event_id)
+            logger.info(
+                "Fetched Google Meet transcript: %d segments, %d chars",
+                len(segments),
+                len(full_transcript),
+            )
+            return TranscriptFetchResult(success=True, meeting=meeting)
+
+        except NangoConnectionError as e:
+            logger.warning("Connection error with %s: %s", integration.integration_email, e)
+            return TranscriptFetchResult(
+                success=False,
+                meeting=meeting,
+                error=str(e)[:500],
+                should_retry=True,
+            )
+        except Exception as e:
+            logger.warning("Unexpected error with %s: %s", integration.integration_email, e)
+            return TranscriptFetchResult(
+                success=False,
+                meeting=meeting,
+                error=str(e)[:500],
+                should_retry=False,
+            )
+
+    # -------------------------------------------------------------------------
     # Database Operations (each acquires and releases session immediately)
     # -------------------------------------------------------------------------
 
@@ -391,7 +488,12 @@ class TranscriptService:
             return (await session.execute(stmt)).scalars().first()
         return None
 
-    async def _create_or_get_meeting(self, event_id: UUID, existing: Meeting | None) -> Meeting:
+    async def _create_or_get_meeting(
+        self,
+        event_id: UUID,
+        existing: Meeting | None,
+        source: MeetingSource = MeetingSource.TEAMS_TRANSCRIPT,
+    ) -> Meeting:
         async for session in acquire_org_async_session(self.organisation_id):
             if existing:
                 stmt = select(Meeting).where(col(Meeting.meeting_id) == existing.meeting_id)
@@ -413,7 +515,7 @@ class TranscriptService:
             meeting = Meeting(
                 organisation_id=self.organisation_id,
                 calendar_event_id=event_id,
-                source=MeetingSource.TEAMS_TRANSCRIPT,
+                source=source,
                 status=MeetingStatus.FETCHING,
             )
             session.add(meeting)

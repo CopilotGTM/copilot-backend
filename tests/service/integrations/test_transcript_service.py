@@ -405,16 +405,20 @@ class TestTryFetchWithIntegration:
         assert "zoom" in (result.error or "").lower()
 
     @pytest.mark.asyncio
-    async def test_google_meet_returns_non_retryable(self) -> None:
-        """googleMeet provider returns non-retryable failure."""
+    async def test_google_meet_delegates_to_fetch_google_meet(self) -> None:
+        """googleMeet provider delegates to _fetch_google_meet."""
         svc = _make_service()
+        svc._google_meet = MagicMock()  # provider needed on service
         event = FakeCalendarEvent(online_meeting_provider="googleMeet")
         integration = FakeIntegration()
+        expected = TranscriptFetchResult(success=True, meeting=FakeMeeting())
+
+        svc._fetch_google_meet = AsyncMock(return_value=expected)  # type: ignore[method-assign]
 
         result = await svc.try_fetch_with_integration(event, integration)  # type: ignore[arg-type]
 
-        assert result.success is False
-        assert result.should_retry is False
+        assert result == expected
+        svc._fetch_google_meet.assert_awaited_once_with(event, integration, None)
 
     @pytest.mark.asyncio
     async def test_unknown_provider_returns_non_retryable(self) -> None:

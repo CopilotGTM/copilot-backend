@@ -64,7 +64,7 @@ def _make_event() -> SimpleNamespace:
 
 
 class TestVerifyTranscriptForSummary:
-    """All MeetingStatus branches of _verify_transcript_for_summary."""
+    """Only FETCHING blocks; all other states allow through."""
 
     @pytest.fixture
     def org_id(self):
@@ -81,7 +81,7 @@ class TestVerifyTranscriptForSummary:
     def _make_service(self, session, org_id, user_id):
         return DealMeetingJobService(session, org_id, user_id)
 
-    # -- happy path --
+    # -- states that pass through (ensure_transcript handles fetch) --
 
     @pytest.mark.asyncio
     async def test_ready_with_transcript_passes(self, org_id, user_id, event_id):
@@ -91,11 +91,8 @@ class TestVerifyTranscriptForSummary:
 
         await svc._verify_transcript_for_summary(event_id)  # no exception
 
-    # -- the fix: FAILED / NOT_AVAILABLE now pass --
-
     @pytest.mark.asyncio
     async def test_failed_status_allows_regeneration(self, org_id, user_id, event_id):
-        """FAILED status should allow user-triggered regeneration (regression guard)."""
         meeting = _make_meeting(MeetingStatus.FAILED)
         session = _FakeSession(event=_make_event(), meeting=meeting)
         svc = self._make_service(session, org_id, user_id)
@@ -104,55 +101,59 @@ class TestVerifyTranscriptForSummary:
 
     @pytest.mark.asyncio
     async def test_not_available_status_allows_regeneration(self, org_id, user_id, event_id):
-        """NOT_AVAILABLE status should allow user-triggered regeneration (regression guard)."""
         meeting = _make_meeting(MeetingStatus.NOT_AVAILABLE)
         session = _FakeSession(event=_make_event(), meeting=meeting)
         svc = self._make_service(session, org_id, user_id)
 
         await svc._verify_transcript_for_summary(event_id)  # no exception
 
-    # -- statuses that still block --
-
     @pytest.mark.asyncio
-    async def test_pending_status_raises_400(self, org_id, user_id, event_id):
+    async def test_pending_status_passes(self, org_id, user_id, event_id):
         meeting = _make_meeting(MeetingStatus.PENDING)
         session = _FakeSession(event=_make_event(), meeting=meeting)
         svc = self._make_service(session, org_id, user_id)
 
-        with pytest.raises(DealMeetingJobServiceError) as exc_info:
-            await svc._verify_transcript_for_summary(event_id)
-        assert exc_info.value.status_code == 400
+        await svc._verify_transcript_for_summary(event_id)  # no exception
 
     @pytest.mark.asyncio
-    async def test_fetching_status_raises_400(self, org_id, user_id, event_id):
-        meeting = _make_meeting(MeetingStatus.FETCHING)
-        session = _FakeSession(event=_make_event(), meeting=meeting)
-        svc = self._make_service(session, org_id, user_id)
-
-        with pytest.raises(DealMeetingJobServiceError) as exc_info:
-            await svc._verify_transcript_for_summary(event_id)
-        assert exc_info.value.status_code == 400
-
-    @pytest.mark.asyncio
-    async def test_processing_status_raises_400(self, org_id, user_id, event_id):
+    async def test_processing_status_raises_409(self, org_id, user_id, event_id):
         meeting = _make_meeting(MeetingStatus.PROCESSING)
         session = _FakeSession(event=_make_event(), meeting=meeting)
         svc = self._make_service(session, org_id, user_id)
 
         with pytest.raises(DealMeetingJobServiceError) as exc_info:
             await svc._verify_transcript_for_summary(event_id)
-        assert exc_info.value.status_code == 400
-
-    # -- missing data --
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
-    async def test_no_meeting_record_raises_400(self, org_id, user_id, event_id):
+    async def test_no_meeting_record_passes(self, org_id, user_id, event_id):
         session = _FakeSession(event=_make_event(), meeting=None)
+        svc = self._make_service(session, org_id, user_id)
+
+        await svc._verify_transcript_for_summary(event_id)  # no exception
+
+    @pytest.mark.asyncio
+    async def test_ready_without_transcript_passes(self, org_id, user_id, event_id):
+        meeting = _make_meeting(MeetingStatus.READY, transcript=None)
+        session = _FakeSession(event=_make_event(), meeting=meeting)
+        svc = self._make_service(session, org_id, user_id)
+
+        await svc._verify_transcript_for_summary(event_id)  # no exception
+
+    # -- only FETCHING blocks --
+
+    @pytest.mark.asyncio
+    async def test_fetching_status_raises_409(self, org_id, user_id, event_id):
+        meeting = _make_meeting(MeetingStatus.FETCHING)
+        session = _FakeSession(event=_make_event(), meeting=meeting)
         svc = self._make_service(session, org_id, user_id)
 
         with pytest.raises(DealMeetingJobServiceError) as exc_info:
             await svc._verify_transcript_for_summary(event_id)
-        assert exc_info.value.status_code == 400
+        assert exc_info.value.status_code == 409
+        assert "currently being fetched" in str(exc_info.value).lower()
+
+    # -- event not found --
 
     @pytest.mark.asyncio
     async def test_event_not_found_raises_404(self, org_id, user_id, event_id):
@@ -162,16 +163,6 @@ class TestVerifyTranscriptForSummary:
         with pytest.raises(DealMeetingJobServiceError) as exc_info:
             await svc._verify_transcript_for_summary(event_id)
         assert exc_info.value.status_code == 404
-
-    @pytest.mark.asyncio
-    async def test_ready_without_transcript_raises_400(self, org_id, user_id, event_id):
-        meeting = _make_meeting(MeetingStatus.READY, transcript=None)
-        session = _FakeSession(event=_make_event(), meeting=meeting)
-        svc = self._make_service(session, org_id, user_id)
-
-        with pytest.raises(DealMeetingJobServiceError) as exc_info:
-            await svc._verify_transcript_for_summary(event_id)
-        assert exc_info.value.status_code == 400
 
 
 # ---------------------------------------------------------------------------
@@ -199,24 +190,46 @@ class TestCreateMeetingJobTranscriptCheck:
         return uuid4()
 
     @pytest.mark.asyncio
-    async def test_summary_job_calls_verify_transcript(self, org_id, user_id, deal_id, event_id):
+    async def test_active_job_returns_existing_without_verify(
+        self, org_id, user_id, deal_id, event_id
+    ):
+        """Active job found → return it immediately, skip transcript verify."""
         session = AsyncMock()
         svc = DealMeetingJobService(session, org_id, user_id)
 
+        existing_job = SimpleNamespace(job_id=uuid4())
+        svc.get_active_job = AsyncMock(return_value=existing_job)
         svc._verify_transcript_for_summary = AsyncMock()
-        svc.get_active_job = AsyncMock(return_value=SimpleNamespace(job_id=uuid4()))
+
+        result = await svc.create_meeting_job(deal_id, event_id, DealJobType.MEETING_SUMMARY)
+
+        assert result == existing_job
+        svc._verify_transcript_for_summary.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_active_job_calls_verify_for_summary(self, org_id, user_id, deal_id, event_id):
+        """No active job + summary type → verify transcript before creating."""
+        session = AsyncMock()
+        svc = DealMeetingJobService(session, org_id, user_id)
+
+        svc.get_active_job = AsyncMock(return_value=None)
+        svc._verify_transcript_for_summary = AsyncMock()
+        svc.create_job = AsyncMock(return_value=SimpleNamespace(job_id=uuid4()))
 
         await svc.create_meeting_job(deal_id, event_id, DealJobType.MEETING_SUMMARY)
 
         svc._verify_transcript_for_summary.assert_awaited_once_with(event_id)
+        svc.create_job.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_briefing_job_skips_verify_transcript(self, org_id, user_id, deal_id, event_id):
+        """Briefing jobs never call verify transcript."""
         session = AsyncMock()
         svc = DealMeetingJobService(session, org_id, user_id)
 
         svc._verify_transcript_for_summary = AsyncMock()
-        svc.get_active_job = AsyncMock(return_value=SimpleNamespace(job_id=uuid4()))
+        svc.get_active_job = AsyncMock(return_value=None)
+        svc.create_job = AsyncMock(return_value=SimpleNamespace(job_id=uuid4()))
 
         await svc.create_meeting_job(deal_id, event_id, DealJobType.MEETING_BRIEFING)
 

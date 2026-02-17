@@ -132,11 +132,8 @@ class DealMeetingJobService:
         Raises:
             DealMeetingJobServiceError: If meeting summary requested but no transcript exists
         """
-        # For meeting summary, verify transcript exists before triggering task
-        if job_type == DealJobType.MEETING_SUMMARY:
-            await self._verify_transcript_for_summary(event_id)
-
-        # Check if already generating (idempotent)
+        # Return existing job if one is already running (idempotent) — check
+        # this first so the user gets a job ID even if the meeting is FETCHING.
         active_job = await self.get_active_job(deal_id, job_type, event_id=event_id)
         if active_job:
             logger.info(
@@ -147,6 +144,10 @@ class DealMeetingJobService:
             )
             return active_job
 
+        # Only gate new job creation — block if transcript fetch is in flight
+        if job_type == DealJobType.MEETING_SUMMARY:
+            await self._verify_transcript_for_summary(event_id)
+
         return await self.create_job(
             job_type=job_type,
             deal_id=deal_id,
@@ -155,23 +156,19 @@ class DealMeetingJobService:
         )
 
     async def _verify_transcript_for_summary(self, event_id: UUID) -> None:
-        """Verify that a transcript exists for meeting summary generation.
+        """Gate summary generation — only block when a backend job is already in flight.
 
-        Checks if a Meeting record exists with READY status and has a transcript.
-        This prevents triggering a task that will immediately fail.
-
-        Args:
-            event_id: The calendar event ID to check
+        All other states are allowed through because the summary worker calls
+        ensure_transcript() which will (re-)attempt the fetch if needed.
 
         Raises:
-            DealMeetingJobServiceError: If no transcript is available
+            DealMeetingJobServiceError: If the event doesn't exist or a
+                fetch/processing job is already running (FETCHING/PROCESSING).
         """
-        # First check if the calendar event exists
         event = await self.session.get(CalendarEvent, event_id)
         if not event:
             raise DealMeetingJobServiceError("Calendar event not found.", status_code=404)
 
-        # Check for Meeting record with transcript
         stmt = select(Meeting).where(
             col(Meeting.calendar_event_id) == event_id,
             col(Meeting.organisation_id) == self.organisation_id,
@@ -180,55 +177,19 @@ class DealMeetingJobService:
         meeting = result.scalars().first()
 
         if not meeting:
-            logger.info(
-                "No meeting record for event %s - transcript not available",
-                event_id,
-            )
-            raise DealMeetingJobServiceError(
-                "No transcript available for this meeting. The meeting may not have been "
-                "recorded or the transcript has not been fetched yet.",
-                status_code=400,
-            )
+            return
 
-        # Allow FAILED/NOT_AVAILABLE through — user-initiated summary will
-        # re-attempt transcript fetch via ensure_transcript in the task.
-        if meeting.status in (MeetingStatus.FAILED, MeetingStatus.NOT_AVAILABLE):
+        # Block only when a backend job is actively working on this meeting
+        in_progress = (MeetingStatus.FETCHING, MeetingStatus.PROCESSING)
+        if meeting.status in in_progress:
             logger.info(
-                "Meeting %s has status %s — allowing user-initiated summary (will re-fetch)",
+                "Meeting %s has status %s — job already in progress",
                 event_id,
                 meeting.status.value,
             )
-            return
-
-        if meeting.status == MeetingStatus.PENDING:
-            logger.info(
-                "Meeting %s has status PENDING - transcript still being fetched",
-                event_id,
-            )
-            raise DealMeetingJobServiceError(
-                "Transcript is still being processed. Please try again later.",
-                status_code=400,
-            )
-
-        if meeting.status == MeetingStatus.FETCHING:
-            logger.info(
-                "Meeting %s has status FETCHING - transcript fetch in progress",
-                event_id,
-            )
             raise DealMeetingJobServiceError(
                 "Transcript is currently being fetched. Please try again shortly.",
-                status_code=400,
-            )
-
-        if meeting.status != MeetingStatus.READY or not meeting.full_transcript:
-            logger.info(
-                "Meeting %s status=%s has no transcript content",
-                event_id,
-                meeting.status,
-            )
-            raise DealMeetingJobServiceError(
-                "Transcript is not ready yet. Please try again later.",
-                status_code=400,
+                status_code=409,
             )
 
     async def get_active_job(
