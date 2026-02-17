@@ -55,15 +55,12 @@ def test_download_with_custom_expires(access_client):
 
 
 def test_download_not_found(access_client):
-    """Test download URL for non-existent attachment returns error.
-
-    Note: API returns HTTP 200 with status=ERROR in body (design pattern).
-    """
+    """Test download URL for non-existent attachment returns 404."""
     client = access_client["client"]
     non_existent_id = uuid4()
 
     resp = client.get(f"/chats/attachment/{non_existent_id}/download")
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 404, resp.text
     body = resp.json()
     assert body["status"] == "ERROR"
     assert "not found" in body["message"].lower() or "access denied" in body["message"].lower()
@@ -93,7 +90,7 @@ def test_download_attachment_not_completed(access_client):
     service._store[pending_attachment.attachment_id] = pending_attachment
 
     resp = client.get(f"/chats/attachment/{pending_attachment.attachment_id}/download")
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 400, resp.text
     body = resp.json()
     assert body["status"] == "ERROR"
     assert "not ready" in body["message"].lower()
