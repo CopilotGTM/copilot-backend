@@ -236,7 +236,7 @@ async def _fetch_full(
     label_id: str | None,
 ) -> FetchMessagesResult:
     """Full sync: list message IDs then batch-get details."""
-    cutoff = datetime.now(UTC) - timedelta(days=90)
+    cutoff = datetime.now(UTC) - timedelta(days=365)
     cutoff_epoch = int(cutoff.timestamp())
 
     # Build query — exclude category emails at the API level so we don't

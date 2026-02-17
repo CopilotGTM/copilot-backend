@@ -242,8 +242,8 @@ async def fetch_messages(
         )
     else:
         # Fresh delta query (initial sync)
-        # Use delta endpoint with receivedDateTime filter for last 90 days
-        time_min = now - timedelta(days=90)
+        # Use delta endpoint with receivedDateTime filter for last 1 year
+        time_min = now - timedelta(days=365)
         time_min_str = time_min.strftime("%Y-%m-%dT%H:%M:%SZ")
 
         initial_endpoint = f"/v1.0/me/mailFolders/{folder_id}/messages/delta"
