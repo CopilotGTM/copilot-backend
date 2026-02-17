@@ -138,7 +138,9 @@ async def test_ensure_stakeholder_skips_write_when_no_values_change() -> None:
 @pytest.mark.asyncio
 async def test_enrich_from_contact_respects_manual_override_fields() -> None:
     service = StakeholderSyncService(uuid4())
-    contact = SimpleNamespace(contact_id=uuid4(), full_name="CRM Name", job_title="CRM Title")
+    contact = SimpleNamespace(
+        contact_id=uuid4(), full_name="CRM Name", job_title="CRM Title", phone="+1 800-CRM"
+    )
 
     scalars_result = MagicMock()
     scalars_result.first.return_value = contact
@@ -146,7 +148,9 @@ async def test_enrich_from_contact_respects_manual_override_fields() -> None:
     execute_result.scalars.return_value = scalars_result
     session = SimpleNamespace(execute=AsyncMock(return_value=execute_result))
 
-    stakeholder = SimpleNamespace(contact_id=None, name="Manual Name", job_title="Manual Title")
+    stakeholder = SimpleNamespace(
+        contact_id=None, name="Manual Name", job_title="Manual Title", phone_number="+1 800-MANUAL"
+    )
 
     await service._enrich_from_contact(  # noqa: SLF001 - internal behavior test
         session=session,

@@ -522,6 +522,13 @@ class StakeholderSyncService:
             ):
                 stakeholder.job_title = contact.job_title
                 changed = True
+            if (
+                "phone_number" not in override_fields
+                and contact.phone
+                and stakeholder.phone_number != contact.phone
+            ):
+                stakeholder.phone_number = contact.phone
+                changed = True
 
         return changed
 

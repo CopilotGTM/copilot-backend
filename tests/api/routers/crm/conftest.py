@@ -68,6 +68,7 @@ class FakeStakeholder:
         email: str,
         name: str | None = None,
         job_title: str | None = None,
+        phone_number: str | None = None,
         department: str | None = None,
         source: StakeholderSource = StakeholderSource.CRM,
         approval_status: ApprovalStatus = ApprovalStatus.APPROVED,
@@ -91,6 +92,7 @@ class FakeStakeholder:
         self.email = email
         self.name = name
         self.job_title = job_title
+        self.phone_number = phone_number
         self.department = department
         self.source = source
         self.approval_status = approval_status
@@ -255,6 +257,7 @@ class FakeStakeholdersService:
                 "email": s.email,
                 "name": s.name,
                 "job_title": s.job_title,
+                "phone_number": s.phone_number,
                 "external_links": s.external_links,
                 "stance": s.stance.value if hasattr(s.stance, "value") else s.stance,
                 "decision_power": s.decision_power.value
@@ -400,6 +403,7 @@ class FakeStakeholdersService:
             "email": stakeholder.email,
             "name": stakeholder.name,
             "job_title": stakeholder.job_title,
+            "phone_number": stakeholder.phone_number,
             "department": stakeholder.department,
             "external_links": stakeholder.external_links,
             "stance": stakeholder.stance.value
