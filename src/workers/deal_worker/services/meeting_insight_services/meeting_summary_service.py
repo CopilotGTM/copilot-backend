@@ -207,11 +207,11 @@ class MeetingSummaryService:
                 meeting.status_message,
             )
 
-            if meeting.status == MeetingStatus.FAILED:
-                error_msg = meeting.status_message or ""
-                if "connection" in error_msg.lower() or "timeout" in error_msg.lower():
-                    self._publish_progress("Connection error - will retry", "error", 0.4)
-                    raise RuntimeError(f"Teams API connection error (retryable): {error_msg}")
+            # if meeting.status == MeetingStatus.FAILED:
+            #     error_msg = meeting.status_message or ""
+            #     if "connection" in error_msg.lower() or "timeout" in error_msg.lower():
+            #         self._publish_progress("Connection error - will retry", "error", 0.4)
+            #         raise RuntimeError(f"Teams API connection error (retryable): {error_msg}")
 
             if meeting.status == MeetingStatus.NOT_AVAILABLE:
                 raise NonRetryableJobError(
@@ -220,13 +220,12 @@ class MeetingSummaryService:
                     "no_transcript",
                 )
 
-            if meeting.status == MeetingStatus.PENDING:
-                raise RuntimeError(f"Transcript is still being processed. Status: {meeting.status}")
-
+            # PENDING after ensure_transcript() means fetch was attempted but
+            # transcript is not available (no integration, meeting not recorded, etc.)
             raise NonRetryableJobError(
-                f"Transcript not available. Status: {meeting.status}. "
-                f"{meeting.status_message or ''}",
-                "transcript_unavailable",
+                "No transcript available for this meeting. The meeting may not have been "
+                "recorded or transcription was not enabled.",
+                "no_transcript",
             )
 
         self._publish_progress("Checking stakeholders...", "Getting Stakeholders", 0.2)
