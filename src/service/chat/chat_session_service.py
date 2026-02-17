@@ -30,6 +30,8 @@ class ChatSessionService:
 
     NOT_FOUND_MSG = "Chat session not found"
 
+    _MAX_TITLE_LENGTH = 100
+
     async def create_session(
         self,
         *,
@@ -41,8 +43,9 @@ class ChatSessionService:
         if not title or not title.strip():
             raise ValueError("Title cannot be null or empty")
 
-        if len(title.strip()) > 100:
-            raise ValueError("Title cannot exceed 100 characters")
+        title = title.strip()
+        if len(title) > self._MAX_TITLE_LENGTH:
+            title = title[: self._MAX_TITLE_LENGTH - 3].rstrip() + "..."
 
         # Normalize chat_type in case a raw string is passed
         if isinstance(chat_type, str):
@@ -54,7 +57,7 @@ class ChatSessionService:
         chat = ChatSession(
             user_id=self.user_id,
             organisation_id=self.organisation_id,
-            title=title.strip(),
+            title=title,
             chat_type=chat_type,
             properties=properties or {},
             tags=tags or [],
@@ -99,8 +102,9 @@ class ChatSessionService:
         """Rename a chat session, scoped by user/org and not deleted."""
         if not title or not title.strip():
             raise ValueError("Title cannot be null or empty")
-        if len(title.strip()) > 100:
-            raise ValueError("Title cannot exceed 100 characters")
+        title = title.strip()
+        if len(title) > self._MAX_TITLE_LENGTH:
+            title = title[: self._MAX_TITLE_LENGTH - 3].rstrip() + "..."
 
         stmt = select(ChatSession).where(
             col(ChatSession.session_id) == session_id,
@@ -113,7 +117,7 @@ class ChatSessionService:
         if not chat:
             raise ValueError(self.NOT_FOUND_MSG)
 
-        chat.title = title.strip()
+        chat.title = title
         self.db.add(chat)
         await self.db.commit()
         await self.db.refresh(chat)

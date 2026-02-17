@@ -1,52 +1,25 @@
-"""Chat Attachment Upload Handler Tests (Reduced)
+"""Chat Attachment Upload Handler Tests
 
-This module intentionally retains ONLY ONE illustrative test to serve as a
-template / reference for writing further tests. All other test cases have been
-removed per request to simplify the file.
-
-Retained Test: test_presign_succeeds
-Why this one? It exercises the very first step of the attachment lifecycle
-(presign) and validates the happy‑path response schema, including:
- - HTTP status 200
- - Presence and format of the generated upload URL
- - Correct initial attachment status (pending_upload)
- - success flag in response payload
-
-Developers can replicate this pattern for finalize, polling, batch, and error
-scenarios. Additional recommended future test stubs:
- - test_finalize_succeeds_and_dispatches_task
- - test_presign_rejects_invalid_mimetype
- - test_finalize_invalid_attachment_returns_404
- - test_batch_presign_mixed_success
- - test_finalize_twice_rejected
- - test_download_requires_completed_status
+Covers presign validation, finalize lifecycle, get-status polling, and delete.
 """
 
-import logging
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
-from src.api.schemas.upload_models import ALLOWED_MIMETYPES
+from src.api.schemas.upload_models import ALLOWED_MIMETYPES, MAX_FILE_SIZE_BYTES
 from src.domain.models.organisation_tables.chat_message_models import AttachmentStatus
 
-logger = logging.getLogger("test.chat_attachments.presign")
+from tests.api.routers.mocks import FakeUploadService
 
-# Constant prefix asserted to ensure URL shape comes from our (fake) storage layer override.
 FAKE_BLOB_STORAGE_URL_PREFIX = "https://fake.blob.core.windows.net/"
 
 
 def _choose_valid_mimetype() -> str:
-    """Select a valid mimetype from config for the presign request.
-
-    Preference order is deterministic for readability; falls back to any allowed type.
-    """
     preferred = [
         "application/pdf",
         "text/plain",
         "text/csv",
         "application/msword",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "application/vnd.ms-powerpoint",
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     ]
     for mt in preferred:
         if mt in ALLOWED_MIMETYPES:
@@ -54,46 +27,196 @@ def _choose_valid_mimetype() -> str:
     return next(iter(ALLOWED_MIMETYPES))
 
 
-def test_presign_succeeds(client: TestClient, dependency_overrides):
-    """Happy path: a valid presign request returns an upload URL and correct initial status.
+# ---------------------------------------------------------------------------
+# Presign happy-path (retained from original)
+# ---------------------------------------------------------------------------
 
-    GIVEN a JSON body with an allowed mimetype and positive size
-    WHEN  POST /users/chats/upload/presign
-    THEN 200 OK with:
-         - success flag true
-         - status == pending_upload
-         - upload_url starts with expected blob base
-    """
+
+def test_presign_succeeds(client: TestClient, dependency_overrides):
     payload = {
         "filename": "example_document.bin",
         "mimetype": _choose_valid_mimetype(),
         "size_bytes": 1234,
     }
-    logger.info("STEP 1: Sending presign request payload=%s", payload)
     response = client.post("/users/chats/upload/presign", json=payload)
-
-    # Basic HTTP success
-    logger.info("STEP 2: Received HTTP %s", response.status_code)
     assert response.status_code == 200, response.text
-
-    body = response.json()
-    logger.info("STEP 3: Raw response body=%s", body)
-    assert "data" in body, "Response should contain 'data' envelope"
-    data = body["data"]
-
-    # Core shape / semantic assertions
-    logger.info("STEP 4: Validating success/status/url fields")
+    data = response.json()["data"]
     assert data["success"] is True
     assert data["status"] == AttachmentStatus.PENDING_UPLOAD.value
     assert data["upload_url"].startswith(FAKE_BLOB_STORAGE_URL_PREFIX)
-
-    # Spot‑check a few expected fields exist (not exhaustively validating schema)
-    logger.info("STEP 5: Checking presence of key fields")
-    for key in ["attachment_id", "filename", "mimetype", "expires_in_seconds"]:
-        assert key in data, f"Missing key in presign response: {key}"
-
-    # Filename & mimetype echo
-    logger.info("STEP 6: Verifying echoed filename & mimetype")
     assert data["filename"] == payload["filename"]
     assert data["mimetype"] == payload["mimetype"]
-    logger.info("TEST COMPLETE: Presign happy path validated")
+    for key in ["attachment_id", "expires_in_seconds"]:
+        assert key in data, f"Missing key: {key}"
+
+
+# ---------------------------------------------------------------------------
+# Presign validation (schema-level rejections → 422)
+# ---------------------------------------------------------------------------
+
+
+def test_presign_rejects_invalid_mimetype(client: TestClient, dependency_overrides):
+    payload = {"filename": "video.mp4", "mimetype": "video/mp4", "size_bytes": 1234}
+    resp = client.post("/users/chats/upload/presign", json=payload)
+    assert resp.status_code == 422, resp.text
+
+
+def test_presign_rejects_oversized_file(client: TestClient, dependency_overrides):
+    payload = {
+        "filename": "huge.pdf",
+        "mimetype": _choose_valid_mimetype(),
+        "size_bytes": MAX_FILE_SIZE_BYTES + 1,
+    }
+    resp = client.post("/users/chats/upload/presign", json=payload)
+    assert resp.status_code == 422, resp.text
+
+
+def test_presign_rejects_zero_size(client: TestClient, dependency_overrides):
+    payload = {
+        "filename": "empty.pdf",
+        "mimetype": _choose_valid_mimetype(),
+        "size_bytes": 0,
+    }
+    resp = client.post("/users/chats/upload/presign", json=payload)
+    assert resp.status_code == 422, resp.text
+
+
+# ---------------------------------------------------------------------------
+# Finalize lifecycle
+# ---------------------------------------------------------------------------
+
+
+def test_finalize_upload_success(
+    client: TestClient, dependency_overrides: FakeUploadService, mocker
+):
+    mocker.patch(
+        "src.api.routers.chat_attachments.upload_handler.send_chat_task_async",
+        return_value="mock-task-id",
+    )
+
+    # Step 1: presign
+    presign_resp = client.post(
+        "/users/chats/upload/presign",
+        json={
+            "filename": "report.pdf",
+            "mimetype": _choose_valid_mimetype(),
+            "size_bytes": 2048,
+        },
+    )
+    assert presign_resp.status_code == 200
+    attachment_id = presign_resp.json()["data"]["attachment_id"]
+
+    # Step 2: finalize
+    finalize_resp = client.post(
+        "/users/chats/upload/finalize",
+        json={"attachment_id": attachment_id},
+    )
+    assert finalize_resp.status_code == 200, finalize_resp.text
+    data = finalize_resp.json()["data"]
+    assert data["status"] == AttachmentStatus.PROCESSING.value
+
+
+def test_finalize_unknown_attachment_returns_error(
+    client: TestClient, dependency_overrides, mocker
+):
+    mocker.patch(
+        "src.api.routers.chat_attachments.upload_handler.send_chat_task_async",
+        return_value="mock-task-id",
+    )
+
+    resp = client.post(
+        "/users/chats/upload/finalize",
+        json={"attachment_id": str(uuid4())},
+    )
+    assert resp.status_code == 404, resp.text
+    body = resp.json()
+    assert body["status"] == "ERROR"
+
+
+# ---------------------------------------------------------------------------
+# Get attachment status
+# ---------------------------------------------------------------------------
+
+
+def test_get_attachment_status_after_presign(
+    client: TestClient, dependency_overrides: FakeUploadService
+):
+    presign_resp = client.post(
+        "/users/chats/upload/presign",
+        json={
+            "filename": "deck.pptx",
+            "mimetype": _choose_valid_mimetype(),
+            "size_bytes": 4096,
+        },
+    )
+    assert presign_resp.status_code == 200
+    attachment_id = presign_resp.json()["data"]["attachment_id"]
+
+    status_resp = client.get(f"/users/chats/upload/attachment/{attachment_id}")
+    assert status_resp.status_code == 200, status_resp.text
+    data = status_resp.json()["data"]
+    assert data["status"] == AttachmentStatus.PENDING_UPLOAD.value
+
+
+def test_get_attachment_status_after_finalize(
+    client: TestClient, dependency_overrides: FakeUploadService, mocker
+):
+    mocker.patch(
+        "src.api.routers.chat_attachments.upload_handler.send_chat_task_async",
+        return_value="mock-task-id",
+    )
+
+    presign_resp = client.post(
+        "/users/chats/upload/presign",
+        json={
+            "filename": "notes.txt",
+            "mimetype": _choose_valid_mimetype(),
+            "size_bytes": 512,
+        },
+    )
+    assert presign_resp.status_code == 200
+    attachment_id = presign_resp.json()["data"]["attachment_id"]
+
+    client.post("/users/chats/upload/finalize", json={"attachment_id": attachment_id})
+
+    status_resp = client.get(f"/users/chats/upload/attachment/{attachment_id}")
+    assert status_resp.status_code == 200, status_resp.text
+    data = status_resp.json()["data"]
+    assert data["status"] == AttachmentStatus.PROCESSING.value
+
+
+def test_get_attachment_status_not_found(client: TestClient, dependency_overrides):
+    resp = client.get(f"/users/chats/upload/attachment/{uuid4()}")
+    assert resp.status_code == 404, resp.text
+    body = resp.json()
+    assert body["status"] == "ERROR"
+
+
+# ---------------------------------------------------------------------------
+# Delete attachment
+# ---------------------------------------------------------------------------
+
+
+def test_delete_attachment_success(client: TestClient, dependency_overrides: FakeUploadService):
+    presign_resp = client.post(
+        "/users/chats/upload/presign",
+        json={
+            "filename": "draft.docx",
+            "mimetype": _choose_valid_mimetype(),
+            "size_bytes": 1024,
+        },
+    )
+    assert presign_resp.status_code == 200
+    attachment_id = presign_resp.json()["data"]["attachment_id"]
+
+    del_resp = client.delete(f"/users/chats/upload/attachment/{attachment_id}")
+    assert del_resp.status_code == 200, del_resp.text
+    body = del_resp.json()
+    assert body["message"] == "Attachment deleted successfully"
+
+
+def test_delete_attachment_not_found(client: TestClient, dependency_overrides):
+    resp = client.delete(f"/users/chats/upload/attachment/{uuid4()}")
+    assert resp.status_code == 404, resp.text
+    body = resp.json()
+    assert body["status"] == "ERROR"

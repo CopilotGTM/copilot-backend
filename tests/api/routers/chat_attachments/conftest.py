@@ -37,7 +37,7 @@ def dependency_overrides(client, test_user_ids):
 
     _fastapp.dependency_overrides[get_current_user] = _override_user
     _fastapp.dependency_overrides[get_upload_service] = _override_service
-    yield
+    yield fake_service
     _fastapp.dependency_overrides = {}
 
 

@@ -15,6 +15,8 @@ from src.infra.utils.cursor import decode_cursor, encode_cursor
 
 
 class FakeChatSessionService:
+    _MAX_TITLE_LENGTH = 100
+
     def __init__(self, organisation_id, user_id):
         self.organisation_id = organisation_id
         self.user_id = user_id
@@ -27,6 +29,9 @@ class FakeChatSessionService:
     async def create_session(self, *, title, chat_type=None, properties=None, tags=None):
         if not title or not str(title).strip():
             raise ValueError("Title cannot be null or empty")
+        title = str(title).strip()
+        if len(title) > self._MAX_TITLE_LENGTH:
+            title = title[: self._MAX_TITLE_LENGTH - 3].rstrip() + "..."
         sid = str(uuid4())
         rec = {
             "session_id": sid,
@@ -53,11 +58,14 @@ class FakeChatSessionService:
     async def rename_session(self, *, session_id: UUID, title: str):
         if not title or not str(title).strip():
             raise ValueError("Title cannot be null or empty")
+        title = title.strip()
+        if len(title) > self._MAX_TITLE_LENGTH:
+            title = title[: self._MAX_TITLE_LENGTH - 3].rstrip() + "..."
         sid = str(session_id)
         rec = self.sessions.get(sid)
         if not rec or rec.get("is_deleted"):
             raise ValueError("Chat session not found")
-        rec["title"] = title.strip()
+        rec["title"] = title
         return SimpleNamespace(**rec)
 
     async def list_sessions(self, *, limit: int = 20, cursor: str | None = None):
@@ -265,7 +273,7 @@ class FakeChatMessageService:
         )
         self.messages[str(assistant_msg_id)] = assistant_msg
 
-        return user_msg, job, assistant_msg_id
+        return user_msg, job, str(assistant_msg_id)
 
     async def list_messages(
         self,
