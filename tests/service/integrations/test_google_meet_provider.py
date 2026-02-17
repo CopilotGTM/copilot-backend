@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
 import pytest
@@ -63,11 +63,14 @@ def _make_service(org_id: UUID | None = None) -> TranscriptService:
 # TestResolveConferenceRecord
 # =============================================================================
 
+_FAKE_TOKEN_RESPONSE = {"credentials": {"access_token": "test-token"}}
+
 
 def _make_provider() -> GoogleMeetTranscriptProvider:
-    """Create a GoogleMeetTranscriptProvider bypassing __init__ env check."""
+    """Create a GoogleMeetTranscriptProvider with mocked Nango client."""
     provider = GoogleMeetTranscriptProvider.__new__(GoogleMeetTranscriptProvider)
-    provider._nango_secret_key = "test-secret"
+    provider._nango = MagicMock()
+    provider._nango.get_connection = AsyncMock(return_value=_FAKE_TOKEN_RESPONSE)
     return provider
 
 
@@ -77,39 +80,64 @@ class TestResolveConferenceRecord:
     @pytest.mark.asyncio
     async def test_happy_path_returns_name(self) -> None:
         provider = _make_provider()
-        provider._meet_api_get = AsyncMock(
-            return_value={
-                "conferenceRecords": [{"name": "conferenceRecords/abc123"}],
-            }
-        )
 
-        result = await provider.resolve_conference_record("conn-1", "abc-defg-hij")
+        with patch(
+            "src.service.integrations.transcripts.google_meet_provider._meet_api_get",
+            new_callable=AsyncMock,
+            return_value={"conferenceRecords": [{"name": "conferenceRecords/abc123"}]},
+        ) as mock_get:
+            result = await provider.resolve_conference_record("conn-1", "abc-defg-hij")
 
         assert result == "conferenceRecords/abc123"
-        provider._meet_api_get.assert_awaited_once()
+        mock_get.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_no_records_returns_none(self) -> None:
         provider = _make_provider()
-        provider._meet_api_get = AsyncMock(return_value={"conferenceRecords": []})
 
-        result = await provider.resolve_conference_record("conn-1", "abc-defg-hij")
+        with patch(
+            "src.service.integrations.transcripts.google_meet_provider._meet_api_get",
+            new_callable=AsyncMock,
+            return_value={"conferenceRecords": []},
+        ):
+            result = await provider.resolve_conference_record("conn-1", "abc-defg-hij")
 
         assert result is None
 
     @pytest.mark.asyncio
     async def test_api_error_returns_none(self) -> None:
         provider = _make_provider()
-        provider._meet_api_get = AsyncMock(side_effect=RuntimeError("timeout"))
 
-        result = await provider.resolve_conference_record("conn-1", "abc-defg-hij")
+        with patch(
+            "src.service.integrations.transcripts.google_meet_provider._meet_api_get",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("timeout"),
+        ):
+            result = await provider.resolve_conference_record("conn-1", "abc-defg-hij")
 
         assert result is None
 
     @pytest.mark.asyncio
     async def test_nango_connection_error_propagates(self) -> None:
         provider = _make_provider()
-        provider._meet_api_get = AsyncMock(side_effect=NangoConnectionError("token expired"))
+
+        with (
+            patch(
+                "src.service.integrations.transcripts.google_meet_provider._meet_api_get",
+                new_callable=AsyncMock,
+                side_effect=NangoConnectionError("token expired"),
+            ),
+            pytest.raises(NangoConnectionError),
+        ):
+            await provider.resolve_conference_record("conn-1", "abc-defg-hij")
+
+    @pytest.mark.asyncio
+    async def test_nango_token_error_propagates(self) -> None:
+        """NangoConnectionError from token retrieval propagates."""
+        provider = _make_provider()
+        provider._nango.get_connection = AsyncMock(
+            side_effect=NangoConnectionError("Connection not found")
+        )
 
         with pytest.raises(NangoConnectionError):
             await provider.resolve_conference_record("conn-1", "abc-defg-hij")
@@ -127,7 +155,7 @@ class TestFetchTranscript:
     async def test_happy_path(self) -> None:
         provider = _make_provider()
 
-        async def fake_get(conn_id, path, params=None):
+        async def fake_get(client, path, params=None):
             if "transcripts" in path and "entries" not in path:
                 return {
                     "transcripts": [
@@ -154,9 +182,12 @@ class TestFetchTranscript:
                 }
             return {}
 
-        provider._meet_api_get = AsyncMock(side_effect=fake_get)
-
-        result = await provider.fetch_transcript("conn-1", "conferenceRecords/abc")
+        with patch(
+            "src.service.integrations.transcripts.google_meet_provider._meet_api_get",
+            new_callable=AsyncMock,
+            side_effect=fake_get,
+        ):
+            result = await provider.fetch_transcript("conn-1", "conferenceRecords/abc")
 
         assert result is not None
         assert len(result["entries"]) == 1
@@ -166,18 +197,22 @@ class TestFetchTranscript:
     @pytest.mark.asyncio
     async def test_no_transcripts_returns_none(self) -> None:
         provider = _make_provider()
-        provider._meet_api_get = AsyncMock(return_value={"transcripts": []})
 
-        result = await provider.fetch_transcript("conn-1", "conferenceRecords/abc")
+        with patch(
+            "src.service.integrations.transcripts.google_meet_provider._meet_api_get",
+            new_callable=AsyncMock,
+            return_value={"transcripts": []},
+        ):
+            result = await provider.fetch_transcript("conn-1", "conferenceRecords/abc")
 
         assert result is None
 
     @pytest.mark.asyncio
     async def test_file_generated_state_accepted(self) -> None:
         """FILE_GENERATED transcript should be accepted like ENDED."""
-        provider = GoogleMeetTranscriptProvider.__new__(GoogleMeetTranscriptProvider)
+        provider = _make_provider()
 
-        async def fake_get(conn_id, path, params=None):
+        async def fake_get(client, path, params=None):
             if "transcripts" in path and "entries" not in path:
                 return {
                     "transcripts": [
@@ -193,9 +228,12 @@ class TestFetchTranscript:
                 return {"transcriptEntries": []}
             return {}
 
-        provider._meet_api_get = AsyncMock(side_effect=fake_get)
-
-        result = await provider.fetch_transcript("conn-1", "conferenceRecords/abc")
+        with patch(
+            "src.service.integrations.transcripts.google_meet_provider._meet_api_get",
+            new_callable=AsyncMock,
+            side_effect=fake_get,
+        ):
+            result = await provider.fetch_transcript("conn-1", "conferenceRecords/abc")
 
         assert result is not None
         assert result["entries"] == []
@@ -204,24 +242,32 @@ class TestFetchTranscript:
     async def test_transcript_started_state_returns_none(self) -> None:
         """Transcript still being generated should return None."""
         provider = _make_provider()
-        provider._meet_api_get = AsyncMock(
+
+        with patch(
+            "src.service.integrations.transcripts.google_meet_provider._meet_api_get",
+            new_callable=AsyncMock,
             return_value={
                 "transcripts": [
                     {"name": "conferenceRecords/abc/transcripts/t1", "state": "STARTED"}
                 ]
-            }
-        )
-
-        result = await provider.fetch_transcript("conn-1", "conferenceRecords/abc")
+            },
+        ):
+            result = await provider.fetch_transcript("conn-1", "conferenceRecords/abc")
 
         assert result is None
 
     @pytest.mark.asyncio
     async def test_nango_connection_error_propagates(self) -> None:
         provider = _make_provider()
-        provider._meet_api_get = AsyncMock(side_effect=NangoConnectionError("auth error"))
 
-        with pytest.raises(NangoConnectionError):
+        with (
+            patch(
+                "src.service.integrations.transcripts.google_meet_provider._meet_api_get",
+                new_callable=AsyncMock,
+                side_effect=NangoConnectionError("auth error"),
+            ),
+            pytest.raises(NangoConnectionError),
+        ):
             await provider.fetch_transcript("conn-1", "conferenceRecords/abc")
 
 

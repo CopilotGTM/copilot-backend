@@ -170,31 +170,61 @@ Start an AI generation job for a meeting. This is the **recommended endpoint** f
 
 **Behavior:**
 
-- **Idempotent**: If a job of the same type is already running, returns the existing job
+- **Idempotent**: If a job of the same type is already running for this event, returns the existing job (same `202` status code)
 - Returns immediately with `job_id` for SSE subscription
 - Background worker processes the job asynchronously
 
-**Success Response (202):**
+### Response Codes
+
+| Status | Condition | `data` | Frontend Action |
+| --- | --- | --- | --- |
+| **202** | Job created (new) OR existing job returned (idempotent) | `DealJobResponse` with `job_id` | Connect to SSE stream using `data.job_id` |
+| **400** | Invalid `job_type` (must be briefing/summary/followup) | `null` | Show error message |
+| **404** | Calendar event not found | `null` | Show error message |
+| **409** | Transcript is currently being fetched or processed (summary only) | `null` | Show "Transcript is being fetched, please wait" and retry after a delay |
+| **500** | Internal server error | `null` | Show error message |
+
+> **Important**: The status code is **202** (Accepted), not 200 or 201. Frontend must check for `202`.
+
+**Success Response (202 — new job):**
 
 ```json
 {
   "status": "SUCCESS",
-  "message": "Briefing generation initiated",
+  "message": "Summary generation initiated",
   "data": {
     "job_id": "7a85f64-5717-4562-b3fc-2c963f66afa6",
-    "job_type": "DealJobType.MEETING_BRIEFING",
+    "job_type": "DealJobType.MEETING_SUMMARY",
     "status": "JobStatus.PENDING"
   }
 }
 ```
 
-### Error Responses
+**Success Response (202 — existing job, idempotent):**
 
-| Status | Condition |
-| --- | --- |
-| `400` | Invalid `job_type` (must be briefing/summary/followup) |
-| `404` | Deal or meeting not found |
-| `401` | Unauthorized |
+```json
+{
+  "status": "SUCCESS",
+  "message": "Summary generation already in progress",
+  "data": {
+    "job_id": "7a85f64-5717-4562-b3fc-2c963f66afa6",
+    "job_type": "DealJobType.MEETING_SUMMARY",
+    "status": "JobStatus.IN_PROGRESS"
+  }
+}
+```
+
+**Error Response (409 — transcript being fetched):**
+
+```json
+{
+  "status": "ERROR",
+  "message": "Transcript is currently being fetched. Please try again shortly.",
+  "data": null
+}
+```
+
+> **409 Handling**: This only applies to `summary` jobs. It means the backend is actively downloading the transcript from Teams/Google Meet. The frontend should show the `message` to the user and can retry after 10-15 seconds or poll `GET /{deal_id}/meetings` to check when the transcript becomes available.
 
 ---
 
@@ -533,94 +563,111 @@ Generated after the summary to create action items and follow-up communication.
 ```typescript
 const baseUrl = '/users/crm/deals';
 
-// 1. Check for active jobs when loading meetings
-const meetings = await fetch(`${baseUrl}/${dealId}/meetings`);
-const meeting = meetings.data[0];
+// =========================================================================
+// 1. On page load — check for active jobs (reconnection support)
+// =========================================================================
+const meetingsRes = await fetch(`${baseUrl}/${dealId}/meetings`);
+const meetings = meetingsRes.data;
 
-// 2. Determine UI state
-if (meeting.active_jobs?.meeting_briefing) {
-  // Job running - connect to SSE stream
-  const jobId = meeting.active_jobs.meeting_briefing.job_id;
-  connectToSSE(dealId, meeting.event_id, jobId);
-} else if (meeting.meeting_prep_status === "COMPLETED") {
-  // Show generated content (access data inside envelope)
-  const { data } = meeting.meeting_prep_data;
-  displayBriefing(data);
-} else {
-  // Show "Generate" button
+for (const meeting of meetings) {
+  // Check each job type for active (PENDING/IN_PROGRESS) jobs
+  const activeJob = meeting.active_jobs?.meeting_summary
+    ?? meeting.active_jobs?.meeting_briefing
+    ?? meeting.active_jobs?.meeting_followup;
+
+  if (activeJob) {
+    // A job is running — reconnect to its SSE stream immediately
+    connectToSSE(dealId, meeting.event_id, activeJob.job_id);
+  } else if (meeting.meeting_summary_status === "COMPLETED") {
+    // Show the previously generated content
+    displayResult(meeting.meeting_summary_data.data);
+  } else {
+    // No active job, no completed content — show "Generate" button
+  }
 }
 
-// 3. Start a new job
-async function startJob(jobType: "briefing" | "summary" | "followup") {
-  const response = await fetch(
+// =========================================================================
+// 2. Start a new job — handle ALL response codes
+// =========================================================================
+async function startJob(
+  dealId: string,
+  eventId: string,
+  jobType: "briefing" | "summary" | "followup"
+) {
+  const res = await fetch(
     `${baseUrl}/${dealId}/meetings/${eventId}/jobs/${jobType}`,
     { method: "POST" }
   );
-  const { job_id } = response.data;
-  connectToSSE(dealId, eventId, job_id);
+
+  switch (res.status) {
+    case 202: {
+      // SUCCESS — job created (or existing job returned)
+      // ALWAYS connect to SSE using the job_id from response
+      const { job_id } = res.data;
+      connectToSSE(dealId, eventId, job_id);
+      break;
+    }
+    case 409:
+      // Transcript is being fetched — show message, retry later
+      showInfo(res.message); // "Transcript is currently being fetched..."
+      // Optionally: poll GET /meetings after 10-15s to check status
+      setTimeout(() => startJob(dealId, eventId, jobType), 15000);
+      break;
+    case 400:
+    case 404:
+    case 500:
+    default:
+      // Show error to user
+      showError(res.message);
+      break;
+  }
 }
 
-// 4. SSE stream handling with actual frame types
+// =========================================================================
+// 3. SSE stream — handle all frame types
+// =========================================================================
 function connectToSSE(dealId: string, eventId: string, jobId: string) {
   const es = new EventSource(
     `${baseUrl}/${dealId}/meetings/${eventId}/jobs/${jobId}/stream`
   );
 
-es.onmessage = (event) => {
+  es.onmessage = (event) => {
     const frame = JSON.parse(event.data);
 
-switch (frame.type) {
+    switch (frame.type) {
       case "progress.update":
-        // Show progress indicator
         updateProgressBar(frame.progress);
         showStatusMessage(frame.message);
-        console.log(`Stage: ${frame.stage}, Progress: ${frame.progress * 100}%`);
         break;
 
-case "answer.replace":
-        // Display the final generated content (inside data envelope)
-        const { schema_version, generated_at, data } = frame.content;
-        console.log(`Generated at: ${generated_at}, version: ${schema_version}`);
-        displayResult(data);
+      case "answer.replace":
+        // Final result — display the generated content
+        displayResult(frame.content.data);
         break;
 
-case "error":
-        // Show user-friendly error message
+      case "error":
         showError(frame.message);
-        console.error(`Job failed: ${frame.error_code} - ${frame.message}`);
-        // Optionally handle specific error codes
+        // Handle specific error codes if needed
         if (frame.error_code === "no_transcript") {
           showNoTranscriptMessage();
         }
         break;
 
-case "finalize":
+      case "finalize":
+        es.close();
         if (frame.reason === "done") {
           showSuccess("Generation complete!");
-        } else {
-          // Error already shown via "error" frame
-          console.log("Job finalized with error");
         }
-        es.close();
+        // If reason === "error", the error frame was already shown above
         break;
     }
   };
 
-es.onerror = (error) => {
-    console.error("SSE connection error:", error);
+  es.onerror = () => {
     es.close();
+    // SSE disconnected — can reconnect using Last-Event-ID header
+    // or poll GET /meetings to check active_jobs
   };
-}
-
-// 5. Example progress UI update
-function updateProgressBar(progress: number) {
-  const progressBar = document.getElementById("progress-bar");
-  progressBar.style.width = `${progress * 100}%`;
-}
-
-function showStatusMessage(message: string) {
-  const statusEl = document.getElementById("status-message");
-  statusEl.textContent = message;
 }
 ```
 
