@@ -166,6 +166,7 @@ export interface StakeholderDetail {
   email: string;
   name: string | null;
   job_title: string | null;
+  phone_number: string | null;          // Phone number as provided by CRM or user (stored as-is)
   external_links: StakeholderLink[] | null;
 
   // AI-Inferred Engagement Attributes
@@ -217,6 +218,7 @@ export interface StakeholderDetail {
  * Returned when fetching a single stakeholder.
  */
 export interface StakeholderFullDetail extends StakeholderDetail {
+  // phone_number is inherited from StakeholderDetail
   department: string | null;         // Inferred from job title or external sources
 
   /**
@@ -267,6 +269,7 @@ export interface StakeholderLink {
 export interface UpdateStakeholderRequest {
   name?: string | null;
   job_title?: string | null;
+  phone_number?: string | null;
   department?: string | null;
   stance?: StakeholderStance;
   decision_power?: DecisionPower;
@@ -355,6 +358,7 @@ Use `include_pending=true` (default) to show pending stakeholders for user revie
         "email": "jane.doe@example.com",
         "name": "Jane Doe",
         "job_title": "Director of IT, Information Technology",
+        "phone_number": "+1-555-987-6543",
         "external_links": [
           {
             "platform": "linkedin",
@@ -518,6 +522,7 @@ POST /{deal_id}/stakeholders/add-from-contacts
         "email": "alice.smith@acmecorp.com",
         "name": "Alice Smith",
         "job_title": "VP of Engineering",
+        "phone_number": "+1-555-123-4567",
         "stance": "UNKNOWN",
         "decision_power": "UNKNOWN",
         "champion_potential": 0.0,
@@ -601,6 +606,7 @@ The request body includes UI metadata to help frontend developers build appropri
   "email": "john.smith@prospect.com",
   "name": "John Smith",
   "job_title": "CTO",
+  "phone_number": "+1 (555) 123-4567",
   "stance": "SUPPORTER",
   "decision_power": "DECISION_MAKER",
   "department": "Technology",
@@ -635,6 +641,7 @@ Fields are categorized to help frontend build appropriate UI:
 |-------|------|---------|-------------|--------------|
 | `name` | string | null | Full name (strongly recommended) | Text input |
 | `job_title` | string | null | Job title | Text input |
+| `phone_number` | string | null | Phone number (stored as-is, no formatting) | Text input |
 | `stance` | enum | UNKNOWN | Attitude toward solution | Select dropdown |
 | `decision_power` | enum | UNKNOWN | Role in buying process | Select dropdown |
 
@@ -695,6 +702,7 @@ Fields are categorized to help frontend build appropriate UI:
     "email": "john.smith@prospect.com",
     "name": "John Smith",
     "job_title": "CTO",
+    "phone_number": "+1 (555) 123-4567",
     "stance": "SUPPORTER",
     "decision_power": "DECISION_MAKER",
     "champion_potential": 75.0,
@@ -742,6 +750,7 @@ curl -X POST "$BASE_URL/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders" \
     "email": "john.smith@prospect.com",
     "name": "John Smith",
     "job_title": "CTO",
+    "phone_number": "+1 (555) 123-4567",
     "stance": "SUPPORTER",
     "decision_power": "DECISION_MAKER",
     "champion_potential": 75
@@ -762,6 +771,7 @@ curl -X POST "$BASE_URL/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders" \
 │  ─── Primary Details ───                                    │
 │  Name:      [_________________________________]             │
 │  Job Title: [_________________________________]             │
+│  Phone:     [_________________________________]             │
 │  Stance:    [UNKNOWN        ▼]                              │
 │  Role:      [UNKNOWN        ▼]                              │
 │                                                             │
@@ -803,6 +813,7 @@ PATCH /{deal_id}/stakeholders/{stakeholder_id}
 {
   "name": "Jane Updated",
   "job_title": "Director of Engineering",
+  "phone_number": "+44 20 7946 0958",
   "champion_potential": 88,
   "motivation": "Accelerate engineering delivery"
 }
@@ -814,6 +825,7 @@ PATCH /{deal_id}/stakeholders/{stakeholder_id}
 |------|------|-------|
 | `name` | string \| null | Stakeholder name |
 | `job_title` | string \| null | Job title |
+| `phone_number` | string \| null | Phone number (stored as-is) |
 | `department` | string \| null | Department |
 | `stance` | enum | Stakeholder stance |
 | `decision_power` | enum | Buying-role classification |
@@ -834,6 +846,7 @@ PATCH /{deal_id}/stakeholders/{stakeholder_id}
     "email": "john.smith@prospect.com",
     "name": "Jane Updated",
     "job_title": "Director of Engineering",
+    "phone_number": "+44 20 7946 0958",
     "champion_potential": 88.0,
     "source": "MANUAL",
     "approval_status": "APPROVED"
@@ -866,6 +879,7 @@ curl -X PATCH "$BASE_URL/3fa85f64-5717-4562-b3fc-2c963f66afa6/stakeholders/8fa85
   -d '{
     "name": "Jane Updated",
     "job_title": "Director of Engineering",
+    "phone_number": "+44 20 7946 0958",
     "champion_potential": 88
   }'
 ```
@@ -904,6 +918,7 @@ Returns `StakeholderFullDetail` with engagement history.
     "email": "jane.doe@example.com",
     "name": "Jane Doe",
     "job_title": "Director of IT",
+    "phone_number": "+1-555-987-6543",
     "department": "Information Technology",
     "external_links": [
       {

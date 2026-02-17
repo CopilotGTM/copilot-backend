@@ -107,6 +107,7 @@ async def list_deal_stakeholders(
                     "email": s.email,
                     "name": s.name,
                     "job_title": s.job_title,
+                    "phone_number": s.phone_number,
                     "department": s.department,
                     "stance": s.stance.value
                     if isinstance(s.stance, StakeholderStance)

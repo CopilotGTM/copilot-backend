@@ -93,6 +93,7 @@ async def get_stakeholder_details(
             "email": stakeholder.email,
             "name": stakeholder.name,
             "job_title": stakeholder.job_title,
+            "phone_number": stakeholder.phone_number,
             "department": stakeholder.department,
             "stance": stakeholder.stance.value
             if isinstance(stakeholder.stance, StakeholderStance)

@@ -58,6 +58,7 @@ async def add_stakeholder_form(
     email: str | None = None,
     name: str | None = None,
     job_title: str | None = None,
+    phone_number: str | None = None,
     stance: str | None = None,
     decision_power: str | None = None,
 ) -> dict[str, Any] | None:
@@ -123,6 +124,14 @@ async def add_stakeholder_form(
             required=False,
             value=job_title,
             placeholder="e.g. VP of Sales",
+        ),
+        FormField(
+            id="phone_number",
+            label="Phone Number",
+            field_type="text",
+            required=False,
+            value=phone_number,
+            placeholder="e.g. +1 (555) 123-4567",
         ),
         FormField(
             id="stance",
@@ -210,6 +219,7 @@ def create_add_stakeholder(
         email: str | None = None,
         name: str | None = None,
         job_title: str | None = None,
+        phone_number: str | None = None,
         stance: str | None = None,
         decision_power: str | None = None,
     ) -> dict[str, Any] | None:
@@ -265,6 +275,7 @@ def create_add_stakeholder(
                 "email": email,
                 "name": name,
                 "job_title": job_title,
+                "phone_number": phone_number,
                 "stance": stance,
                 "decision_power": decision_power,
             },

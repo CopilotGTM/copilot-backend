@@ -88,6 +88,11 @@ class DealStakeholder(FlexibleSyncedRecordMixin, table=True):
     department: str | None = Field(
         default=None, description="Department inferred from title or external sources"
     )
+    phone_number: str | None = Field(
+        default=None,
+        sa_column=Column(String(50), nullable=True),
+        description="Phone number as provided by CRM or user. Stored as-is, no formatting applied.",
+    )
 
     # Flexible links (LinkedIn, CRM, Twitter, etc.)
     # Stored as a list of dicts: [{ "platform": "linkedin", "url": "...", "label": "...", "added_at": "..." }]

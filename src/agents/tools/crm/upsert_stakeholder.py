@@ -36,6 +36,7 @@ class UpsertStakeholderInput(BaseModel):
     email: Annotated[str, Field(description="Stakeholder email (required)")]
     name: Annotated[str | None, Field(default=None, description="Full name")] = None
     job_title: Annotated[str | None, Field(default=None, description="Job title")] = None
+    phone_number: Annotated[str | None, Field(default=None, description="Phone number")] = None
     department: Annotated[str | None, Field(default=None, description="Department")] = None
     stance: Annotated[StakeholderStance | None, Field(default=None)] = None
     decision_power: Annotated[DecisionPower | None, Field(default=None)] = None
@@ -131,6 +132,7 @@ def _format_upsert_output(
         "email": stakeholder.email,
         "name": stakeholder.name,
         "job_title": stakeholder.job_title,
+        "phone_number": stakeholder.phone_number,
         "department": stakeholder.department,
         "stance": stakeholder.stance.value
         if isinstance(stakeholder.stance, StakeholderStance)
@@ -225,6 +227,13 @@ async def upsert_stakeholder(
                     stakeholder.department = cleaned_department
                     updated_fields.append("department")
 
+                cleaned_phone = _clean_text(input_data.phone_number)
+                if cleaned_phone is not None and (
+                    not only_fill_missing or _is_missing_text(stakeholder.phone_number)
+                ):
+                    stakeholder.phone_number = cleaned_phone
+                    updated_fields.append("phone_number")
+
                 if input_data.stance is not None and (
                     not only_fill_missing or _is_unknown_enum(stakeholder.stance)
                 ):
@@ -299,6 +308,7 @@ async def upsert_stakeholder(
                 "email": email,
                 "name": _clean_text(input_data.name),
                 "job_title": _clean_text(input_data.job_title),
+                "phone_number": _clean_text(input_data.phone_number),
                 "department": _clean_text(input_data.department),
                 "stance": input_data.stance or StakeholderStance.UNKNOWN,
                 "decision_power": input_data.decision_power or DecisionPower.UNKNOWN,
@@ -342,6 +352,7 @@ def create_upsert_stakeholder(
         deal_id: str | None = None,
         name: str | None = None,
         job_title: str | None = None,
+        phone_number: str | None = None,
         department: str | None = None,
         stance: StakeholderStance | str | None = None,
         decision_power: DecisionPower | str | None = None,
@@ -384,6 +395,7 @@ def create_upsert_stakeholder(
             email=email,
             name=name,
             job_title=job_title,
+            phone_number=phone_number,
             department=department,
             stance=normalized_stance,
             decision_power=normalized_decision_power,
