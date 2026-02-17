@@ -484,6 +484,19 @@ beat_schedule = {
 
 ---
 
+## Validation Layer (Self-Healing)
+
+The matcher includes a built-in validation layer that runs every cycle to ensure data integrity. This is core pipeline logic, not a one-off cleanup.
+
+| Stage | What | When |
+|-------|------|------|
+| **Stage 2: Stakeholder Validation** | Rejects stakeholders whose email domain matches the org's internal domains | Before collecting contact emails |
+| **Stage 5: Association Validation** | Removes ACTIVE associations where no event attendee matches current contacts | After matching passes complete |
+
+> **Full detail**: See [deal-meeting-matcher-pipeline.md](deal-meeting-matcher-pipeline.md) for the complete pipeline reference — starting from stakeholder mapping (Phase 1), through all matching stages (Phase 2), data flow diagrams, status model, and self-healing scenarios.
+
+---
+
 ## Summary
 
 The calendar-to-deal mapping system:
@@ -492,5 +505,6 @@ The calendar-to-deal mapping system:
 2. **Stakeholder Discovery**: Automatically identifies new stakeholders from meeting attendees
 3. **5-Limit Rule**: Auto-approves first 5 discovered stakeholders, rest require approval
 4. **Cancelled Handling**: Proactively marks associations as CANCELLED when events are cancelled
-5. **Timeline Integration**: Creates timeline events for matched meetings
-6. **AI Integration**: Enables meeting briefings and summaries via association status tracking
+5. **Self-Healing Validation**: Rejects internal-domain stakeholders and removes orphaned associations every run
+6. **Timeline Integration**: Creates timeline events for matched meetings
+7. **AI Integration**: Enables meeting briefings and summaries via association status tracking

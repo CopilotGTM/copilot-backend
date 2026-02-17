@@ -9,6 +9,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
 from sqlmodel import col
+from src.domain.models.master_tables.organisation_models import Organisation
 from src.domain.models.organisation_tables.sync.calendar import (
     AssociationStatus,
     CalendarAttendee,
@@ -63,6 +64,7 @@ class DealMeetingMatcher:
         self._session = session  # Optional - used by process_deal()
         self._contact_cache_by_id: dict[UUID, CRMContact] = {}
         self._contact_cache_by_external: dict[str, CRMContact] = {}
+        self._internal_domains: set[str] | None = None  # Lazy-loaded cache
 
     def _normalize_email(self, email: str | None) -> str | None:
         """Normalize email string by stripping whitespace and converting to lowercase."""
@@ -199,6 +201,49 @@ class DealMeetingMatcher:
                 emails.add(owner_email)
 
         return emails
+
+    async def _collect_internal_domains(self, session: AsyncSession) -> set[str]:
+        """Collect the organisation's internal email domains.
+
+        Uses Organisation.domain (admin-configured). If empty, derives from
+        all USER participant emails across all deals in the org.
+
+        Cached after first call to avoid repeated DB lookups.
+        """
+        if self._internal_domains is not None:
+            return self._internal_domains
+
+        domains: set[str] = set()
+
+        # Tier 1: Organisation.domain (authoritative)
+        org_stmt = select(col(Organisation.domain)).where(
+            col(Organisation.organisation_id) == self.organisation_id,
+        )
+        org_result = await session.execute(org_stmt)
+        domains_raw = org_result.scalar_one_or_none()
+        if domains_raw and isinstance(domains_raw, list):
+            domains = {d.strip().lower() for d in domains_raw if d and d.strip()}
+
+        # Tier 2: Derive from all USER participant emails in the org
+        if not domains:
+            participant_stmt = select(func.distinct(col(CRMDealParticipant.related_email))).where(
+                col(CRMDealParticipant.participant_type) == CRMParticipantType.USER,
+            )
+            participant_result = await session.execute(participant_stmt)
+            for (email,) in participant_result.all():
+                if email and "@" in email:
+                    domain = email.strip().lower().split("@")[-1]
+                    domains.add(domain)
+
+        self._internal_domains = domains
+        return domains
+
+    def _is_internal_email(self, email: str, internal_domains: set[str]) -> bool:
+        """Check if an email belongs to an internal domain."""
+        if not email or "@" not in email:
+            return False
+        domain = email.split("@")[-1]
+        return domain in internal_domains
 
     def _extract_domain(self, email: str) -> str | None:
         """Extract domain from email address."""
@@ -502,9 +547,17 @@ class DealMeetingMatcher:
             logger.debug(f"No team emails found for deal {deal.deal_id}")
             return 0
 
-        # 2. Collect all known emails for deal contacts
+        # Collect all known emails for deal contacts (REJECTED excluded by query)
         contact_emails = await self._collect_contact_emails(session, deal)
         contact_emails -= team_emails  # Remove team emails to avoid self-matching
+
+        # Double safety: also filter by domain in case a stakeholder was just added
+        # in this same transaction and hasn't been rejected yet
+        internal_domains = await self._collect_internal_domains(session)
+        if internal_domains:
+            contact_emails = {
+                e for e in contact_emails if not self._is_internal_email(e, internal_domains)
+            }
 
         if not contact_emails:
             logger.debug(f"No contact emails found for deal {deal.deal_id}")
@@ -540,6 +593,11 @@ class DealMeetingMatcher:
             team_emails,
         )
         linked_count += attendee_count
+
+        # STEP C: Deactivate associations orphaned by stakeholder cleanup.
+        # An association is orphaned if none of the event's attendees match
+        # the current (clean) contact_emails set.
+        await self._cleanup_orphaned_associations(session, deal, contact_emails)
 
         logger.info(
             f"Linked {linked_count} meetings for deal {deal.deal_id} "
@@ -857,6 +915,54 @@ class DealMeetingMatcher:
             linked_event_ids.add(event.event_id)
 
         return linked_count
+
+    async def _cleanup_orphaned_associations(
+        self,
+        session: AsyncSession,
+        deal: CRMDeal,
+        contact_emails: set[str],
+    ) -> int:
+        """Deactivate associations whose events have no current contact attendees.
+
+        After internal stakeholders are rejected and contact_emails recalculated,
+        any ACTIVE association where no attendee matches the remaining contacts
+        is orphaned (matched only because of a now-rejected stakeholder).
+        """
+        event_rel = cast(Any, CalendarEventDealAssociation.event)
+        attendees_rel = cast(Any, CalendarEvent.attendees)
+
+        stmt = (
+            select(CalendarEventDealAssociation)
+            .options(selectinload(event_rel).selectinload(attendees_rel))
+            .where(
+                col(CalendarEventDealAssociation.deal_id) == deal.deal_id,
+                col(CalendarEventDealAssociation.status) == AssociationStatus.ACTIVE,
+            )
+        )
+        result = await session.execute(stmt)
+        associations = list(result.scalars().all())
+
+        count = 0
+        for assoc in associations:
+            event = assoc.event
+            participant_emails = self._collect_event_participant_emails(event)
+            if not (participant_emails & contact_emails):
+                assoc.status = AssociationStatus.REMOVED
+                count += 1
+                logger.debug(
+                    "Deactivated orphaned association: event_id=%s, deal_id=%s",
+                    assoc.event_id,
+                    deal.deal_id,
+                )
+
+        if count > 0:
+            logger.info(
+                "Deactivated %d orphaned associations for deal %s",
+                count,
+                deal.deal_id,
+            )
+
+        return count
 
     async def _handle_cancelled_associations(
         self, session: AsyncSession, deal_id: UUID | None = None

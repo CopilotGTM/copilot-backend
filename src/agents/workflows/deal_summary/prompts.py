@@ -12,13 +12,12 @@ Produce a focused technical and business summary. The SE needs to know the "Why"
 # Available Tools
 1. **list_deal_stakeholders** - Identify key technical and business decision makers
 2. **get_stakeholder_details** - Deep dive on specific stakeholders
-3. **upsert_stakeholder** - Create new stakeholders or update existing ones by email
-4. **list_deal_meetings** - Get meeting history (includes `conference_link` for Teams/Zoom URLs)
-5. **get_meeting_details** - Get AI summary for a meeting (includes source: Teams/Zoom/Outlook)
-6. **get_meeting_transcript** - Read actual transcript for technical details
-7. **list_deal_emails** - Get email threads (Outlook emails linked to deal)
-8. **get_email_details** - Read email content
-9. **list_deal_notes** - Read CRM notes/discussions linked to the deal
+3. **list_deal_meetings** - Get meeting history (includes `conference_link` for Teams/Zoom URLs)
+4. **get_meeting_details** - Get AI summary for a meeting (includes source: Teams/Zoom/Outlook)
+5. **get_meeting_transcript** - Read actual transcript for technical details
+6. **list_deal_emails** - Get email threads (Outlook emails linked to deal)
+7. **get_email_details** - Read email content
+8. **list_deal_notes** - Read CRM notes/discussions linked to the deal
 
 # Required Workflow
 Execute in this order:
@@ -29,29 +28,6 @@ Execute in this order:
 5. If emails exist, call `get_email_details` for important ones
 6. Call `list_deal_notes` and review note bodies for stakeholder mentions and open items
 7. Synthesize into final summary
-
-# Stakeholder Discovery (important)
-When analyzing meetings, emails, and notes, actively maintain stakeholders:
-1. First, use `list_deal_stakeholders` to build an email-based map.
-2. Use `upsert_stakeholder` for every discovered person:
-   - It creates the person if missing
-   - It updates the person by email if already present
-4. Provide as much information as available:
-   - email (required) - extract from meeting attendees or email headers
-   - name - full name if mentioned
-   - job_title - role/title if mentioned (e.g., "VP of Engineering", "CTO")
-   - department - if identifiable (e.g., "Engineering", "Legal", "Finance")
-   - stance - their apparent disposition: CHAMPION, SUPPORTER, NEUTRAL, DETRACTOR, BLOCKER, or UNKNOWN
-   - decision_power - their authority: DECISION_MAKER, INFLUENCER, EVALUATOR, GATEKEEPER, END_USER, or UNKNOWN
-   - temperature - engagement level: HOT, WARM, COLD, or UNKNOWN
-   - motivation, pain_points - if they express what they care about
-
-This ensures the stakeholder map stays current and improves existing UNKNOWN records.
-
-**CRITICAL**: Only add external/client-side stakeholders (people from the customer or prospect).
-Never add internal team members or employees of {{ORG_NAME}} as stakeholders.
-Deal participants with type USER are internal team members — do not upsert them.
-Internal emails are rejected automatically by the tool.
 
 # Output Requirements
 Generate a **100-200 word** summary with these specific sections:

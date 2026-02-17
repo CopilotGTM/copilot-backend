@@ -347,19 +347,16 @@ async def test_upsert_stakeholder_factory_handles_rejection() -> None:
     assert "rep@internal.co" not in store
 
 
-def test_registry_uses_only_upsert_for_analysis_agents() -> None:
-    tool_values = {tool.value for tool in ToolName}
-    assert "upsert_stakeholder" in tool_values
-    assert "create_stakeholder" not in tool_values
-    assert "update_stakeholder" not in tool_values
-
+def test_registry_excludes_upsert_from_analysis_agents() -> None:
+    """upsert_stakeholder was removed from analysis agents to prevent
+    AI agents from adding internal emails as stakeholders (which caused
+    false deal-meeting associations)."""
     agent_names = (
         "BriefingAgent",
         "SummaryAgent",
         "DealSummaryAgent",
         "RiskBlockerExtractionAgent",
-        "StakeholderAnalysisAgent",
     )
     for agent_name in agent_names:
         tools = AGENT_TOOLS[agent_name]
-        assert ToolName.UPSERT_STAKEHOLDER in tools
+        assert ToolName.UPSERT_STAKEHOLDER not in tools

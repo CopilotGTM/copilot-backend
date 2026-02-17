@@ -158,3 +158,125 @@ async def test_enrich_from_contact_respects_manual_override_fields() -> None:
     assert stakeholder.contact_id == contact.contact_id
     assert stakeholder.name == "Manual Name"
     assert stakeholder.job_title == "Manual Title"
+
+
+# ---------------------------------------------------------------------------
+# _reject_internal_stakeholders
+# ---------------------------------------------------------------------------
+
+
+class _FakeScalarResult:
+    def __init__(self, rows: list[SimpleNamespace]):
+        self._rows = rows
+
+    def all(self) -> list[SimpleNamespace]:
+        return self._rows
+
+
+class _FakeExecuteResult:
+    def __init__(self, rows: list[SimpleNamespace]):
+        self._rows = rows
+
+    def scalars(self) -> _FakeScalarResult:
+        return _FakeScalarResult(self._rows)
+
+
+class _FakeSession:
+    def __init__(self, rows: list[SimpleNamespace]):
+        self._rows = rows
+
+    async def execute(self, _stmt):  # noqa: ANN001
+        return _FakeExecuteResult(self._rows)
+
+
+class TestRejectInternalStakeholders:
+    @pytest.mark.asyncio
+    async def test_rejects_internal_emails(self) -> None:
+        service = StakeholderSyncService(uuid4())
+        service._internal_domains = {"copilotgtm.com"}
+
+        s_internal = SimpleNamespace(
+            email="saksham@copilotgtm.com",
+            approval_status=ApprovalStatus.APPROVED,
+        )
+        s_external = SimpleNamespace(
+            email="buyer@acme.com",
+            approval_status=ApprovalStatus.APPROVED,
+        )
+        session = _FakeSession([s_internal, s_external])
+        deal_id = uuid4()
+
+        count = await service._reject_internal_stakeholders(session, deal_id)  # noqa: SLF001
+
+        assert count == 1
+        assert s_internal.approval_status == ApprovalStatus.REJECTED
+        assert s_external.approval_status == ApprovalStatus.APPROVED
+
+    @pytest.mark.asyncio
+    async def test_preserves_external_emails(self) -> None:
+        service = StakeholderSyncService(uuid4())
+        service._internal_domains = {"copilotgtm.com"}
+
+        s1 = SimpleNamespace(email="buyer@acme.com", approval_status=ApprovalStatus.APPROVED)
+        s2 = SimpleNamespace(email="cto@bigco.com", approval_status=ApprovalStatus.PENDING)
+        session = _FakeSession([s1, s2])
+        deal_id = uuid4()
+
+        count = await service._reject_internal_stakeholders(session, deal_id)  # noqa: SLF001
+
+        assert count == 0
+        assert s1.approval_status == ApprovalStatus.APPROVED
+        assert s2.approval_status == ApprovalStatus.PENDING
+
+    @pytest.mark.asyncio
+    async def test_skips_already_rejected(self) -> None:
+        """Already-REJECTED stakeholders are filtered by WHERE clause.
+
+        The fake session returns all rows, so we verify the method
+        is idempotent: an already-REJECTED stakeholder stays REJECTED.
+        """
+        service = StakeholderSyncService(uuid4())
+        service._internal_domains = {"copilotgtm.com"}
+
+        already_rejected = SimpleNamespace(
+            email="old@copilotgtm.com",
+            approval_status=ApprovalStatus.REJECTED,
+        )
+        session = _FakeSession([already_rejected])
+        deal_id = uuid4()
+
+        await service._reject_internal_stakeholders(session, deal_id)  # noqa: SLF001
+
+        assert already_rejected.approval_status == ApprovalStatus.REJECTED
+
+    @pytest.mark.asyncio
+    async def test_no_internal_domains_returns_zero(self) -> None:
+        service = StakeholderSyncService(uuid4())
+        service._internal_domains = set()
+
+        s1 = SimpleNamespace(email="anyone@anywhere.com", approval_status=ApprovalStatus.APPROVED)
+        session = _FakeSession([s1])
+        deal_id = uuid4()
+
+        count = await service._reject_internal_stakeholders(session, deal_id)  # noqa: SLF001
+
+        assert count == 0
+        assert s1.approval_status == ApprovalStatus.APPROVED
+
+    @pytest.mark.asyncio
+    async def test_rejects_multiple_internal_domains(self) -> None:
+        service = StakeholderSyncService(uuid4())
+        service._internal_domains = {"copilotgtm.com", "copilot.io"}
+
+        s1 = SimpleNamespace(email="a@copilotgtm.com", approval_status=ApprovalStatus.APPROVED)
+        s2 = SimpleNamespace(email="b@copilot.io", approval_status=ApprovalStatus.APPROVED)
+        s3 = SimpleNamespace(email="buyer@acme.com", approval_status=ApprovalStatus.APPROVED)
+        session = _FakeSession([s1, s2, s3])
+        deal_id = uuid4()
+
+        count = await service._reject_internal_stakeholders(session, deal_id)  # noqa: SLF001
+
+        assert count == 2
+        assert s1.approval_status == ApprovalStatus.REJECTED
+        assert s2.approval_status == ApprovalStatus.REJECTED
+        assert s3.approval_status == ApprovalStatus.APPROVED
