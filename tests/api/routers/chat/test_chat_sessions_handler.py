@@ -189,6 +189,98 @@ def test_favorite_chat_toggle(client: TestClient, dependency_overrides):
     assert body2["data"]["is_favorite"] is False
 
 
+def test_create_chat_title_just_under_boundary(client: TestClient, dependency_overrides):
+    title = "A" * 99
+    resp = client.post("/users/chats/create_chat", json={"title": title})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["title"] == title
+
+
+def test_create_chat_title_at_boundary(client: TestClient, dependency_overrides):
+    title = "A" * 100
+    resp = client.post("/users/chats/create_chat", json={"title": title})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["title"] == title
+
+
+def test_create_chat_truncates_long_title(client: TestClient, dependency_overrides):
+    title = "A" * 150
+    resp = client.post("/users/chats/create_chat", json={"title": title})
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert len(data["title"]) <= 100
+    assert data["title"].endswith("...")
+    assert data["title"] == "A" * 97 + "..."
+
+
+def test_create_chat_long_message_as_title(client: TestClient, dependency_overrides):
+    title = (
+        "I wanted to discuss the quarterly sales projections and how they align "
+        "with our current pipeline metrics and the forecasted revenue targets "
+        "for the upcoming fiscal year"
+    )
+    assert len(title) > 100
+    resp = client.post("/users/chats/create_chat", json={"title": title})
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert len(data["title"]) <= 100
+    assert data["title"].endswith("...")
+
+
+def test_rename_chat_truncates_long_title(client: TestClient, dependency_overrides):
+    create = client.post("/users/chats/create_chat", json={"title": "Short"})
+    assert create.status_code == 200, create.text
+    session_id = create.json()["data"]["session_id"]
+
+    long_title = "B" * 120
+    resp = client.request(
+        "PATCH",
+        "/users/chats/rename_chat",
+        json={"session_id": session_id, "title": long_title},
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert len(data["title"]) <= 100
+    assert data["title"].endswith("...")
+    assert data["title"] == "B" * 97 + "..."
+
+
+def test_delete_already_deleted_chat(client: TestClient, dependency_overrides):
+    # Create a chat, delete it, then try to delete again
+    create = client.post("/users/chats/create_chat", json={"title": "Doomed"})
+    assert create.status_code == 200, create.text
+    session_id = create.json()["data"]["session_id"]
+
+    first_del = client.request(
+        "DELETE", "/users/chats/delete_chat", json={"session_id": session_id}
+    )
+    assert first_del.status_code == 200
+
+    second_del = client.request(
+        "DELETE", "/users/chats/delete_chat", json={"session_id": session_id}
+    )
+    assert second_del.status_code == 404, second_del.text
+    assert "not found" in second_del.json()["message"].lower()
+
+
+def test_list_chats_empty(client: TestClient, dependency_overrides):
+    resp = client.get("/users/chats/list_chats")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "SUCCESS"
+    data = body["data"]
+    assert data["items"] == []
+    assert data["cursor"] is None
+
+
+def test_search_chats_no_results(client: TestClient, dependency_overrides):
+    client.post("/users/chats/create_chat", json={"title": "Alpha"})
+    resp = client.get("/users/chats/search_chats", params={"q": "zzzznotfound"})
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["items"] == []
+
+
 def test_favorite_chat_not_found(client: TestClient, dependency_overrides):
     from uuid import uuid4
 

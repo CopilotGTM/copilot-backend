@@ -93,6 +93,29 @@ def test_send_message_is_edited_without_edited_message_id_rejected(
     assert resp.status_code == 422, resp.text
 
 
+def test_send_message_edited_with_edited_message_id(
+    client: TestClient, messages_dependency_overrides, mocker
+):
+    """Test that is_edited=True with a valid edited_message_id is accepted."""
+    mocker.patch(
+        "src.api.routers.chat.messages_handler.send_chat_task_async",
+        return_value="mock-task-id",
+    )
+
+    session_id = str(uuid4())
+    payload = {
+        "session_id": session_id,
+        "content": "Updated content",
+        "is_edited": True,
+        "edited_message_id": str(uuid4()),
+    }
+    resp = client.post("/users/chats/send_message", json=payload)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "SUCCESS"
+    assert body["message"] == "Message accepted"
+
+
 def test_send_message_with_attachments(client: TestClient, messages_dependency_overrides, mocker):
     """Test sending a message with attachments."""
     mocker.patch(

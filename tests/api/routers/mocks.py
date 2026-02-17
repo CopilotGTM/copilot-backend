@@ -23,6 +23,7 @@ class FakeAttachment:
         self.storage_path = f"attachments/{user_id}/{attachment_id}/{filename}"
         self.created_at = datetime.now(UTC)
         self.status = AttachmentStatus.PENDING_UPLOAD
+        self.is_deleted = False
 
 
 class FakeUploadService:
@@ -114,6 +115,18 @@ class FakeUploadService:
         att.status = AttachmentStatus.COMPLETED
         self._store[att_id] = att
         return att
+
+    async def delete_attachment(self, attachment_id: UUID):
+        """Delete an attachment (matches real service signature)."""
+        from src.service.chat.chat_attachments_service import UploadServiceError
+
+        att = self._store.get(attachment_id)
+        if not att or att.user_id != self.user_id:
+            raise UploadServiceError("Attachment not found or access denied", status_code=404)
+        if att.is_deleted:
+            raise UploadServiceError("Attachment has already been deleted", status_code=400)
+        att.is_deleted = True
+        return True
 
     async def close(self):
         return None
