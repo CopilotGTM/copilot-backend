@@ -36,7 +36,7 @@ Session Management:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -379,16 +379,31 @@ class EmailDeltaSyncService:
         try:
             # ─────────────────────────────────────────────────────────────────
             # Phase 2: Fetch folders from external API (NO session held)
+            # Folders rarely change — skip if synced within the last 24 hours
             # ─────────────────────────────────────────────────────────────────
-            logger.debug(
-                "Fetching folders: integration=%s",
-                sync_data.integration_id,
+            folders_data: list[dict[str, Any]] = []
+            folder_refresh_interval = timedelta(hours=24)
+            folder_sync_due = (
+                sync_data.last_synced_at is None
+                or (datetime.now(UTC).replace(tzinfo=None) - sync_data.last_synced_at)
+                >= folder_refresh_interval
             )
 
-            folders_data = await _fetch_folders_for_provider(
-                nango=nango,
-                sync_data=sync_data,
-            )
+            if folder_sync_due:
+                logger.debug(
+                    "Fetching folders: integration=%s",
+                    sync_data.integration_id,
+                )
+                folders_data = await _fetch_folders_for_provider(
+                    nango=nango,
+                    sync_data=sync_data,
+                )
+            else:
+                logger.debug(
+                    "Skipping folder fetch (last synced %s): integration=%s",
+                    sync_data.last_synced_at,
+                    sync_data.integration_id,
+                )
 
             # ─────────────────────────────────────────────────────────────────
             # Phase 3: Write folders to DB + get monitored folders
