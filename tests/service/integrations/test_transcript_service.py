@@ -63,10 +63,11 @@ class FakeMeeting:
 
 
 def _make_service(org_id: UUID | None = None) -> TranscriptService:
-    """Create a TranscriptService with patched TeamsTranscriptProvider."""
+    """Create a TranscriptService with patched providers."""
     svc = TranscriptService.__new__(TranscriptService)
     svc.organisation_id = org_id or uuid4()
     svc._teams = MagicMock()
+    svc._google_meet = MagicMock()
     return svc
 
 

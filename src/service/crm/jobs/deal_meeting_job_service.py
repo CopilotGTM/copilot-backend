@@ -185,7 +185,7 @@ class DealMeetingJobService:
             logger.info(
                 "Meeting %s has status %s — job already in progress",
                 event_id,
-                meeting.status.value,
+                meeting.status,
             )
             raise DealMeetingJobServiceError(
                 "Transcript is currently being fetched. Please try again shortly.",

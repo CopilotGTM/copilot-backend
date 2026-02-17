@@ -221,12 +221,10 @@ class MeetingSummaryService:
                 )
 
             if meeting.status == MeetingStatus.PENDING:
-                raise RuntimeError(
-                    f"Transcript is still being processed. Status: {meeting.status.value}"
-                )
+                raise RuntimeError(f"Transcript is still being processed. Status: {meeting.status}")
 
             raise NonRetryableJobError(
-                f"Transcript not available. Status: {meeting.status.value}. "
+                f"Transcript not available. Status: {meeting.status}. "
                 f"{meeting.status_message or ''}",
                 "transcript_unavailable",
             )
