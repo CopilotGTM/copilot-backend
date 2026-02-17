@@ -37,9 +37,10 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 from sqlmodel import col
+from src.domain.models.master_tables.organisation_models import Organisation
 from src.domain.models.organisation_tables.sync.crm import CRMContact, CRMDeal
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDealParticipant,
@@ -70,6 +71,7 @@ class StakeholderSyncResult:
     created: int = 0
     updated: int = 0
     deactivated: int = 0
+    rejected: int = 0
     skipped: int = 0
     errors: list[str] = field(default_factory=list)
 
@@ -94,6 +96,7 @@ class OrgStakeholderSyncResult:
     stakeholders_created: int = 0
     stakeholders_updated: int = 0
     stakeholders_deactivated: int = 0
+    stakeholders_rejected: int = 0
     errors: list[str] = field(default_factory=list)
 
     @property
@@ -134,6 +137,7 @@ class StakeholderSyncService:
             organisation_id: UUID of the organisation
         """
         self.organisation_id = organisation_id
+        self._internal_domains: set[str] | None = None  # Lazy-loaded cache
 
     @staticmethod
     def _get_manual_overrides(stakeholder: DealStakeholder) -> set[str]:
@@ -188,6 +192,7 @@ class StakeholderSyncService:
                     result.stakeholders_created += deal_result.created
                     result.stakeholders_updated += deal_result.updated
                     result.stakeholders_deactivated += deal_result.deactivated
+                    result.stakeholders_rejected += deal_result.rejected
 
                     if deal_result.errors:
                         result.errors.extend(deal_result.errors[:3])  # Limit per deal
@@ -327,6 +332,11 @@ class StakeholderSyncService:
                 stakeholder.updated_at = datetime.now(UTC)
                 session.add(stakeholder)
                 result.deactivated += 1
+
+        # Reject stakeholders whose email domain matches the org's internal domains.
+        # This self-cleans internal employees accidentally added as stakeholders
+        # (e.g., by AI agents). Runs every sync cycle so the DB converges to clean state.
+        result.rejected = await self._reject_internal_stakeholders(session, deal_id)
 
         return result
 
@@ -514,3 +524,81 @@ class StakeholderSyncService:
                 changed = True
 
         return changed
+
+    async def _collect_internal_domains(self, session: AsyncSession) -> set[str]:
+        """Collect the organisation's internal email domains.
+
+        Tier 1: Organisation.domain (admin-configured, authoritative).
+        Tier 2: Derived from USER participant emails across all deals (fallback).
+
+        Cached after first call to avoid repeated DB lookups within one sync run.
+        """
+        if self._internal_domains is not None:
+            return self._internal_domains
+
+        domains: set[str] = set()
+
+        # Tier 1: Organisation.domain (authoritative)
+        org_stmt = select(col(Organisation.domain)).where(
+            col(Organisation.organisation_id) == self.organisation_id,
+        )
+        org_result = await session.execute(org_stmt)
+        domains_raw = org_result.scalar_one_or_none()
+        if domains_raw and isinstance(domains_raw, list):
+            domains = {d.strip().lower() for d in domains_raw if d and d.strip()}
+
+        # Tier 2: Derive from all USER participant emails in the org
+        if not domains:
+            participant_stmt = select(func.distinct(col(CRMDealParticipant.related_email))).where(
+                col(CRMDealParticipant.participant_type) == CRMParticipantType.USER,
+            )
+            participant_result = await session.execute(participant_stmt)
+            for (email,) in participant_result.all():
+                if email and "@" in email:
+                    domain = email.strip().lower().split("@")[-1]
+                    domains.add(domain)
+
+        self._internal_domains = domains
+        return domains
+
+    @staticmethod
+    def _is_internal_email(email: str, internal_domains: set[str]) -> bool:
+        """Check if an email belongs to an internal domain."""
+        if not email or "@" not in email:
+            return False
+        domain = email.split("@")[-1].lower()
+        return domain in internal_domains
+
+    async def _reject_internal_stakeholders(self, session: AsyncSession, deal_id: UUID) -> int:
+        """Reject stakeholders whose email domain matches the org's internal domains.
+
+        Called at the end of every stakeholder sync to self-clean internal employees
+        that were accidentally added (e.g., by AI agents). Sets approval_status=REJECTED
+        so they are excluded from meeting matching but preserved for audit trail.
+        """
+        internal_domains = await self._collect_internal_domains(session)
+        if not internal_domains:
+            return 0
+
+        stmt = select(DealStakeholder).where(
+            col(DealStakeholder.deal_id) == deal_id,
+            col(DealStakeholder.is_deleted).is_(False),
+            col(DealStakeholder.approval_status) != ApprovalStatus.REJECTED,
+        )
+        result = await session.execute(stmt)
+        stakeholders = list(result.scalars().all())
+
+        count = 0
+        for stakeholder in stakeholders:
+            if self._is_internal_email(stakeholder.email, internal_domains):
+                stakeholder.approval_status = ApprovalStatus.REJECTED
+                count += 1
+
+        if count > 0:
+            logger.info(
+                "Rejected %d internal-domain stakeholders for deal %s",
+                count,
+                deal_id,
+            )
+
+        return count

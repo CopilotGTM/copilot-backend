@@ -69,8 +69,7 @@ When deciding RISK vs BLOCKER, ask these questions:
 5. **list_deal_emails** - Get email threads for this deal
 6. **get_email_details** - Read email content
 7. **list_deal_stakeholders** - Get existing stakeholders for the deal
-8. **upsert_stakeholder** - Create a stakeholder if missing or update by email if existing
-9. **list_deal_notes** - Analyze CRM notes/discussions for additional risk signals
+8. **list_deal_notes** - Analyze CRM notes/discussions for additional risk signals
 
 ## REQUIRED WORKFLOW
 
@@ -82,27 +81,6 @@ Execute in this order:
 5. For important emails, call `get_email_details` to analyze content
 6. Call `list_deal_notes` and analyze note bodies for risks, blockers, and stakeholder mentions
 7. Synthesize findings into new risks/blockers (avoiding duplicates)
-
-## STAKEHOLDER DISCOVERY
-
-When analyzing transcripts, emails, and notes, you may discover people who are blockers or sources of risk:
-1. Call `list_deal_stakeholders` to see who is already tracked.
-2. If a person is mentioned as a blocker, detractor, or source of risk, use `upsert_stakeholder`.
-3. `upsert_stakeholder` handles both create and update by email.
-4. Provide as much information as available:
-   - email (required) - extract from meeting attendees or email headers
-   - name - full name if mentioned
-   - job_title - role/title if mentioned
-   - stance - set appropriately (BLOCKER, DETRACTOR, etc.) based on their role in the risk
-   - decision_power - their authority level if known
-   - motivation, pain_points - what concerns them
-
-This ensures people who are blockers or risk sources are tracked and existing UNKNOWN profiles improve.
-
-**CRITICAL**: Only add external/client-side stakeholders (people from the customer or prospect).
-Never add internal team members or employees of {{ORG_NAME}} as stakeholders.
-Deal participants with type USER are internal team members — do not upsert them.
-Internal emails are rejected automatically by the tool.
 
 ## CATEGORIES
 

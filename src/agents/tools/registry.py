@@ -234,7 +234,6 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.LIST_DEAL_STAKEHOLDERS,
         ToolName.GET_STAKEHOLDER_DETAILS,
         ToolName.LIST_DEAL_STAKEHOLDER_INSIGHTS,  # Understand attendee dynamics
-        ToolName.UPSERT_STAKEHOLDER,  # Maintain stakeholders by email in one call
         # Communication tools
         ToolName.LIST_DEAL_EMAILS,
         ToolName.GET_EMAIL_DETAILS,
@@ -256,7 +255,6 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.LIST_DEAL_STAKEHOLDERS,
         ToolName.GET_STAKEHOLDER_DETAILS,
         ToolName.LIST_DEAL_STAKEHOLDER_INSIGHTS,  # Understand stakeholder roles/concerns
-        ToolName.UPSERT_STAKEHOLDER,  # Maintain stakeholders by email in one call
         # Risk context
         ToolName.GET_EXISTING_RISKS_BLOCKERS,  # Identify if discussed items are known risks
         ToolName.LIST_DEAL_NOTES,  # Notes may contain additional stakeholder mentions
@@ -276,7 +274,6 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.LIST_DEAL_STAKEHOLDERS,
         ToolName.GET_STAKEHOLDER_DETAILS,
         ToolName.LIST_DEAL_STAKEHOLDER_INSIGHTS,  # Crucial for deal analysis
-        ToolName.UPSERT_STAKEHOLDER,  # Maintain stakeholders by email in one call
         # Meeting tools
         ToolName.LIST_DEAL_MEETINGS,
         ToolName.GET_MEETING_DETAILS,
@@ -301,7 +298,6 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         # Stakeholder tools (for risk attribution)
         ToolName.LIST_DEAL_STAKEHOLDERS,  # Stakeholders can be source of blockers
         ToolName.GET_STAKEHOLDER_DETAILS,  # Context for risk attribution
-        ToolName.UPSERT_STAKEHOLDER,  # Maintain stakeholders by email in one call
         # Meeting tools
         ToolName.LIST_DEAL_MEETINGS,
         ToolName.GET_MEETING_DETAILS,
@@ -321,7 +317,6 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         # Stakeholder tools
         ToolName.LIST_DEAL_STAKEHOLDERS,
         ToolName.GET_STAKEHOLDER_DETAILS,
-        ToolName.UPSERT_STAKEHOLDER,
         ToolName.ENRICH_STAKEHOLDER,  # LinkedIn enrichment for stakeholders
         # Meeting tools (for context)
         ToolName.LIST_DEAL_MEETINGS,
