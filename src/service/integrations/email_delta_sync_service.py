@@ -36,12 +36,11 @@ Session Management:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import attributes
 from sqlmodel import col
 from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
@@ -51,11 +50,7 @@ from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.service.integrations.email_sync_service import EmailSyncService
 from src.service.integrations.nango_client import NangoClient
-from src.workers.integrations_worker.providers.email.outlook_email import (
-    FetchMessagesResult,
-    fetch_folders,
-    fetch_messages,
-)
+from src.workers.integrations_worker.providers.email import gmail_email, outlook_email
 
 logger = get_logger(__name__)
 
@@ -94,15 +89,21 @@ class FolderSyncData:
 # Email integration types to sync
 EMAIL_INTEGRATION_TYPES = (
     IntegrationType.OUTLOOK_EMAIL,
-    # IntegrationType.GMAIL,  # Not yet implemented
+    IntegrationType.GMAIL,
 )
 
 # Note: Folder monitoring is controlled by is_monitored flag in email_folders table
 # By default, inbox and sent folders are set to is_monitored=True
 # Users can enable/disable monitoring for any folder
 
-# Key for storing email folder delta links in connection_metadata
-EMAIL_DELTA_LINKS_KEY = "email_folder_delta_links"
+# Cursor storage keys in connection_metadata
+EMAIL_DELTA_LINKS_KEY = "email_folder_delta_links"  # Outlook: per-folder delta links
+GMAIL_HISTORY_ID_KEY = "gmail_history_id"  # Gmail: single global historyId
+
+_PROVIDER_MAP: dict[IntegrationType, str] = {
+    IntegrationType.OUTLOOK_EMAIL: "outlook",
+    IntegrationType.GMAIL: "gmail",
+}
 
 
 def _get_provider_key(integration_type: IntegrationType) -> str:
@@ -110,65 +111,108 @@ def _get_provider_key(integration_type: IntegrationType) -> str:
     return to_nango_connect_integration_key(integration_type)
 
 
-def _get_folder_delta_link(integration: KnowledgeIntegration, folder_id: str) -> str | None:
+def _get_cursor_for_folder(
+    sync_data: IntegrationSyncData,
+    external_folder_id: str,
+) -> str | None:
+    """Get the incremental sync cursor for a folder.
+
+    Outlook: per-folder deltaLink from email_folder_delta_links.{folder_id}
+    Gmail: single global historyId shared across all labels
     """
-    Get stored deltaLink for a specific folder from connection_metadata.
-
-    Args:
-        integration: The integration with connection_metadata
-        folder_id: The external folder ID
-
-    Returns:
-        Stored deltaLink or None if not found
-    """
-    metadata = integration.connection_metadata or {}
-    delta_links = metadata.get(EMAIL_DELTA_LINKS_KEY, {})
-    return delta_links.get(folder_id)
+    metadata = sync_data.connection_metadata or {}
+    if sync_data.provider == "gmail":
+        return metadata.get(GMAIL_HISTORY_ID_KEY)
+    return metadata.get(EMAIL_DELTA_LINKS_KEY, {}).get(external_folder_id)
 
 
-def _set_folder_delta_link(
+def _persist_cursors(
     integration: KnowledgeIntegration,
-    folder_id: str,
-    delta_link: str | None,
+    provider: str,
+    cursor_updates: dict[str, str | None],
 ) -> None:
-    """
-    Store deltaLink for a specific folder in connection_metadata.
+    """Write cursor updates back to connection_metadata.
 
-    Args:
-        integration: The integration to update
-        folder_id: The external folder ID
-        delta_link: The deltaLink to store (or None to remove)
+    Outlook: stores per-folder delta links
+    Gmail: stores the highest historyId (global)
     """
     if integration.connection_metadata is None:
         integration.connection_metadata = {}
 
-    if EMAIL_DELTA_LINKS_KEY not in integration.connection_metadata:
-        integration.connection_metadata[EMAIL_DELTA_LINKS_KEY] = {}
+    if provider == "gmail":
+        # Take the highest historyId across all label syncs
+        max_hid = 0
+        for val in cursor_updates.values():
+            if val and val.isdigit():
+                max_hid = max(max_hid, int(val))
+        if max_hid:
+            integration.connection_metadata[GMAIL_HISTORY_ID_KEY] = str(max_hid)
+    else:
+        # Outlook: per-folder delta links
+        if EMAIL_DELTA_LINKS_KEY not in integration.connection_metadata:
+            integration.connection_metadata[EMAIL_DELTA_LINKS_KEY] = {}
+        for folder_id, delta_link in cursor_updates.items():
+            if delta_link:
+                integration.connection_metadata[EMAIL_DELTA_LINKS_KEY][folder_id] = delta_link
 
-    if delta_link:
-        integration.connection_metadata[EMAIL_DELTA_LINKS_KEY][folder_id] = delta_link
-    elif folder_id in integration.connection_metadata[EMAIL_DELTA_LINKS_KEY]:
-        del integration.connection_metadata[EMAIL_DELTA_LINKS_KEY][folder_id]
+
+async def _fetch_folders_for_provider(
+    *,
+    nango: NangoClient,
+    sync_data: IntegrationSyncData,
+) -> list[dict[str, Any]]:
+    """Route folder fetch to the correct provider."""
+    if sync_data.provider == "gmail":
+        return await gmail_email.fetch_labels(
+            nango=nango,
+            connection_id=sync_data.connection_id,
+            is_initial=False,
+            last_synced_at=sync_data.last_synced_at,
+            provider_config_key=sync_data.provider_key,
+        )
+    return await outlook_email.fetch_folders(
+        nango=nango,
+        connection_id=sync_data.connection_id,
+        is_initial=False,
+        last_synced_at=sync_data.last_synced_at,
+        provider_config_key=sync_data.provider_key,
+    )
 
 
-def _get_folder_delta_link_from_metadata(
-    metadata: dict[str, Any] | None,
-    folder_id: str,
-) -> str | None:
+async def _fetch_messages_for_provider(
+    *,
+    nango: NangoClient,
+    sync_data: IntegrationSyncData,
+    folder_data: FolderSyncData,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Route message fetch to the correct provider.
+
+    Returns (messages, cursor) where cursor is either a deltaLink or historyId.
     """
-    Get stored deltaLink for a specific folder from extracted metadata dict.
+    is_initial = folder_data.delta_link is None
 
-    Args:
-        metadata: The extracted connection_metadata dictionary
-        folder_id: The external folder ID
+    if sync_data.provider == "gmail":
+        result = await gmail_email.fetch_messages(
+            nango=nango,
+            connection_id=sync_data.connection_id,
+            is_initial=is_initial,
+            last_synced_at=folder_data.last_synced_at,
+            history_id=folder_data.delta_link,
+            provider_config_key=sync_data.provider_key,
+            label_id=folder_data.external_folder_id,
+        )
+        return result.messages, result.history_id
 
-    Returns:
-        Stored deltaLink or None if not found
-    """
-    if not metadata:
-        return None
-    delta_links = metadata.get(EMAIL_DELTA_LINKS_KEY, {})
-    return delta_links.get(folder_id)
+    result = await outlook_email.fetch_messages(
+        nango=nango,
+        connection_id=sync_data.connection_id,
+        is_initial=is_initial,
+        last_synced_at=folder_data.last_synced_at,
+        delta_link=folder_data.delta_link,
+        provider_config_key=sync_data.provider_key,
+        folder_id=folder_data.external_folder_id,
+    )
+    return result.messages, result.delta_link
 
 
 class EmailDeltaSyncService:
@@ -266,7 +310,7 @@ class EmailDeltaSyncService:
                     int_type.value if hasattr(int_type, "value") else str(int_type)
                 ),
                 connection_id=integration.connection_id,  # type: ignore
-                provider="outlook",  # Currently only Outlook is supported
+                provider=_PROVIDER_MAP.get(int_type, "outlook"),
                 provider_key=_get_provider_key(int_type),
                 last_synced_at=integration.last_synced_at,
                 connection_metadata=dict(integration.connection_metadata or {}),
@@ -335,19 +379,31 @@ class EmailDeltaSyncService:
         try:
             # ─────────────────────────────────────────────────────────────────
             # Phase 2: Fetch folders from external API (NO session held)
+            # Folders rarely change — skip if synced within the last 24 hours
             # ─────────────────────────────────────────────────────────────────
-            logger.debug(
-                "Fetching folders: integration=%s",
-                sync_data.integration_id,
+            folders_data: list[dict[str, Any]] = []
+            folder_refresh_interval = timedelta(hours=24)
+            folder_sync_due = (
+                sync_data.last_synced_at is None
+                or (datetime.now(UTC).replace(tzinfo=None) - sync_data.last_synced_at)
+                >= folder_refresh_interval
             )
 
-            folders_data = await fetch_folders(
-                nango=nango,
-                connection_id=sync_data.connection_id,
-                is_initial=False,  # Always incremental for scheduled sync
-                last_synced_at=sync_data.last_synced_at,
-                provider_config_key=sync_data.provider_key,
-            )
+            if folder_sync_due:
+                logger.debug(
+                    "Fetching folders: integration=%s",
+                    sync_data.integration_id,
+                )
+                folders_data = await _fetch_folders_for_provider(
+                    nango=nango,
+                    sync_data=sync_data,
+                )
+            else:
+                logger.debug(
+                    "Skipping folder fetch (last synced %s): integration=%s",
+                    sync_data.last_synced_at,
+                    sync_data.integration_id,
+                )
 
             # ─────────────────────────────────────────────────────────────────
             # Phase 3: Write folders to DB + get monitored folders
@@ -387,11 +443,7 @@ class EmailDeltaSyncService:
                 monitored_folders = result.scalars().all()
 
                 for folder in monitored_folders:
-                    # Get delta link from connection_metadata
-                    delta_link = _get_folder_delta_link_from_metadata(
-                        sync_data.connection_metadata,
-                        folder.external_folder_id,
-                    )
+                    cursor = _get_cursor_for_folder(sync_data, folder.external_folder_id)
                     folders_to_sync.append(
                         FolderSyncData(
                             folder_id=folder.folder_id,
@@ -399,7 +451,7 @@ class EmailDeltaSyncService:
                             folder_name=folder.folder_name,
                             folder_type=folder.folder_type,
                             last_synced_at=folder.last_synced_at or sync_data.last_synced_at,
-                            delta_link=delta_link,
+                            delta_link=cursor,
                         )
                     )
             # Session released
@@ -456,18 +508,8 @@ class EmailDeltaSyncService:
                 integration = result.scalar_one_or_none()
 
                 if integration:
-                    # Apply delta link updates
                     if delta_link_updates:
-                        if integration.connection_metadata is None:
-                            integration.connection_metadata = {}
-                        if EMAIL_DELTA_LINKS_KEY not in integration.connection_metadata:
-                            integration.connection_metadata[EMAIL_DELTA_LINKS_KEY] = {}
-
-                        for folder_id, delta_link in delta_link_updates.items():
-                            if delta_link:
-                                integration.connection_metadata[EMAIL_DELTA_LINKS_KEY][
-                                    folder_id
-                                ] = delta_link
+                        _persist_cursors(integration, sync_data.provider, delta_link_updates)
 
                     integration.last_synced_at = datetime.now(UTC).replace(tzinfo=None)
                     attributes.flag_modified(integration, "connection_metadata")
@@ -536,27 +578,15 @@ class EmailDeltaSyncService:
             # ─────────────────────────────────────────────────────────────────
             # Fetch messages from external API (NO session held)
             # ─────────────────────────────────────────────────────────────────
-            fetch_result: FetchMessagesResult = await fetch_messages(
+            messages_data, new_cursor = await _fetch_messages_for_provider(
                 nango=nango,
-                connection_id=sync_data.connection_id,
-                is_initial=is_initial,
-                last_synced_at=folder_data.last_synced_at,
-                delta_link=folder_data.delta_link,
-                provider_config_key=sync_data.provider_key,
-                folder_id=folder_data.external_folder_id,
+                sync_data=sync_data,
+                folder_data=folder_data,
             )
 
-            messages_data = fetch_result.messages
-            new_delta_link = fetch_result.delta_link
-
-            # Track delta link for later persistence
-            if new_delta_link:
-                delta_link_updates[folder_data.external_folder_id] = new_delta_link
-                logger.debug(
-                    "Will store new deltaLink for folder: integration=%s folder=%s",
-                    sync_data.integration_id,
-                    folder_name,
-                )
+            # Track cursor for later persistence
+            if new_cursor:
+                delta_link_updates[folder_data.external_folder_id] = new_cursor
 
             if not messages_data:
                 logger.debug(
@@ -600,11 +630,21 @@ class EmailDeltaSyncService:
                         "error": "Integration no longer exists",
                     }
 
-                sync_result = await email_service.sync_messages_incremental(
-                    integration=integration,
-                    messages=messages_data,
-                    provider=sync_data.provider,
-                )
+                # Full sync uses always-upsert to ensure field-parsing fixes
+                # are applied; incremental sync uses change detection to skip
+                # unchanged messages
+                if is_initial:
+                    sync_result = await email_service.sync_messages(
+                        integration=integration,
+                        messages=messages_data,
+                        provider=sync_data.provider,
+                    )
+                else:
+                    sync_result = await email_service.sync_messages_incremental(
+                        integration=integration,
+                        messages=messages_data,
+                        provider=sync_data.provider,
+                    )
                 messages_synced = sync_result.get("records_processed", 0)
 
                 # Update folder last_synced_at
@@ -647,235 +687,6 @@ class EmailDeltaSyncService:
                 "folder_id": str(folder_data.folder_id),
                 "folder_name": folder_name,
                 "folder_type": folder_data.folder_type,
-                "status": "failed",
-                "error": str(e),
-            }
-
-    async def _sync_folders(
-        self,
-        *,
-        nango: NangoClient,
-        email_service: EmailSyncService,
-        integration: KnowledgeIntegration,
-        provider: str,
-        provider_key: str,
-    ) -> dict[str, Any]:
-        """
-        Fetch and sync email folders.
-
-        Args:
-            nango: Nango client
-            email_service: Email sync service
-            integration: The integration
-            provider: Provider name (outlook, gmail)
-            provider_key: Nango provider config key
-
-        Returns:
-            Dictionary with folder sync results
-        """
-        logger.debug(
-            "Fetching folders: integration=%s",
-            integration.integration_id,
-        )
-
-        # connection_id is validated earlier in the flow
-        assert integration.connection_id is not None
-
-        # Fetch folders from provider
-        folders_data = await fetch_folders(
-            nango=nango,
-            connection_id=integration.connection_id,
-            is_initial=False,  # Always incremental for scheduled sync
-            last_synced_at=integration.last_synced_at,
-            provider_config_key=provider_key,
-        )
-
-        if not folders_data:
-            logger.debug(
-                "No folders returned from provider: integration=%s",
-                integration.integration_id,
-            )
-            return {"folders_synced": 0}
-
-        # Sync folders to database
-        result = await email_service.sync_folders_incremental(
-            integration=integration,
-            folders=folders_data,
-            provider=provider,
-        )
-
-        folders_synced = result.get("records_processed", 0)
-        logger.debug(
-            "Folders synced: integration=%s count=%d",
-            integration.integration_id,
-            folders_synced,
-        )
-
-        return {"folders_synced": folders_synced, "details": result}
-
-    async def _get_folders_to_sync(
-        self,
-        session: AsyncSession,
-        integration_id: UUID,
-    ) -> list[EmailFolder]:
-        """
-        Get folders that should have messages synced.
-
-        Returns folders where is_monitored=True.
-        By default, inbox and sent are monitored. Users can enable/disable monitoring.
-
-        Args:
-            session: Database session
-            integration_id: The integration UUID
-
-        Returns:
-            List of EmailFolder objects to sync
-        """
-        # Note: is_monitored is stored as string "true"/"false" in DB
-        stmt = select(EmailFolder).where(
-            col(EmailFolder.integration_id) == integration_id,
-            col(EmailFolder.is_deleted).is_(False),
-            col(EmailFolder.is_monitored) == "true",
-        )
-        result = await session.execute(stmt)
-        folders_to_sync = result.scalars().all()
-
-        logger.info(
-            "Folders to sync messages: integration=%s monitored=%d (folders=%s)",
-            integration_id,
-            len(folders_to_sync),
-            [f"{f.folder_name} ({f.folder_type})" for f in folders_to_sync],
-        )
-
-        return list(folders_to_sync)
-
-    async def _sync_folder_messages(
-        self,
-        *,
-        nango: NangoClient,
-        email_service: EmailSyncService,
-        integration: KnowledgeIntegration,
-        folder: EmailFolder,
-        provider: str,
-        provider_key: str,
-    ) -> dict[str, Any]:
-        """
-        Sync messages for a single folder using Delta Query.
-
-        Uses Microsoft Graph Delta Query for efficient incremental sync:
-        - Initial sync: delta query with receivedDateTime filter (last 90 days)
-        - Incremental: uses stored deltaLink (returns ONLY changes)
-
-        DeltaLinks are stored per-folder in integration.connection_metadata.
-
-        Args:
-            nango: Nango client
-            email_service: Email sync service
-            integration: The integration
-            folder: The folder to sync
-            provider: Provider name
-            provider_key: Nango provider config key
-
-        Returns:
-            Dictionary with folder sync results
-        """
-        folder_name = folder.folder_name or folder.external_folder_id
-        external_folder_id = folder.external_folder_id
-
-        # Get stored deltaLink for this folder (if any)
-        stored_delta_link = _get_folder_delta_link(integration, external_folder_id)
-        is_initial = stored_delta_link is None
-
-        logger.debug(
-            "Fetching messages: integration=%s folder=%s (%s) initial=%s",
-            integration.integration_id,
-            folder_name,
-            folder.folder_type,
-            is_initial,
-        )
-
-        # connection_id is validated earlier in the flow
-        assert integration.connection_id is not None
-
-        try:
-            # Fetch messages using delta query
-            fetch_result: FetchMessagesResult = await fetch_messages(
-                nango=nango,
-                connection_id=integration.connection_id,
-                is_initial=is_initial,
-                last_synced_at=folder.last_synced_at or integration.last_synced_at,
-                delta_link=stored_delta_link,
-                provider_config_key=provider_key,
-                folder_id=external_folder_id,
-            )
-
-            messages_data = fetch_result.messages
-            new_delta_link = fetch_result.delta_link
-
-            # Store new deltaLink for next sync
-            if new_delta_link:
-                _set_folder_delta_link(integration, external_folder_id, new_delta_link)
-                logger.debug(
-                    "Stored new deltaLink for folder: integration=%s folder=%s",
-                    integration.integration_id,
-                    folder_name,
-                )
-
-            if not messages_data:
-                logger.debug(
-                    "No messages returned: integration=%s folder=%s",
-                    integration.integration_id,
-                    folder_name,
-                )
-                return {
-                    "folder_id": str(folder.folder_id),
-                    "folder_name": folder_name,
-                    "folder_type": folder.folder_type,
-                    "messages_synced": 0,
-                    "is_initial": is_initial,
-                }
-
-            # Sync messages to database
-            result = await email_service.sync_messages_incremental(
-                integration=integration,
-                messages=messages_data,
-                provider=provider,
-            )
-
-            messages_synced = result.get("records_processed", 0)
-
-            # Update folder last_synced_at
-            folder.last_synced_at = datetime.now(UTC).replace(tzinfo=None)
-
-            logger.info(
-                "Messages synced: integration=%s folder=%s count=%d initial=%s",
-                integration.integration_id,
-                folder_name,
-                messages_synced,
-                is_initial,
-            )
-
-            return {
-                "folder_id": str(folder.folder_id),
-                "folder_name": folder_name,
-                "folder_type": folder.folder_type,
-                "messages_synced": messages_synced,
-                "is_initial": is_initial,
-                "details": result,
-            }
-
-        except Exception as e:
-            logger.error(
-                "Failed to sync folder messages: integration=%s folder=%s error=%s",
-                integration.integration_id,
-                folder_name,
-                str(e),
-                exc_info=True,
-            )
-            return {
-                "folder_id": str(folder.folder_id),
-                "folder_name": folder_name,
-                "folder_type": folder.folder_type,
                 "status": "failed",
                 "error": str(e),
             }

@@ -14,7 +14,7 @@ _INTEGRATION_TO_NANGO: dict[IntegrationType, str] = {
     # Collaboration & Communication
     IntegrationType.SLACK: "slack",
     IntegrationType.TEAMS: "microsoft-teams",
-    IntegrationType.GMAIL: "gmail",
+    IntegrationType.GMAIL: "google-mail",
     IntegrationType.GOOGLE_CHAT: "google-chat",
     IntegrationType.ZOOM: "zoom",
     IntegrationType.GOOGLE_DRIVE: "google-drive",
@@ -69,7 +69,7 @@ _NANGO_CONNECT_KEYS: dict[IntegrationType, str] = {
     # Collaboration & Communication
     IntegrationType.SLACK: "slack",
     IntegrationType.TEAMS: "microsoft-teams",
-    IntegrationType.GMAIL: "gmail",
+    IntegrationType.GMAIL: "google-mail",
     IntegrationType.GOOGLE_CHAT: "google-chat",
     IntegrationType.ZOOM: "zoom",
     IntegrationType.GOOGLE_DRIVE: "google-drive",
