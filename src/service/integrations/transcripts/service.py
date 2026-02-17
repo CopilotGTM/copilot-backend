@@ -83,6 +83,7 @@ class TranscriptService:
         """
         existing = await self._get_meeting(event_id)
 
+        # str() defensive — DB may return status as plain string, not MeetingStatus enum
         if existing and str(existing.status) == MeetingStatus.READY.value and not force_refetch:
             logger.info("Transcript exists for event %s", event_id)
             return existing
@@ -376,6 +377,7 @@ class TranscriptService:
         try:
             # Step 1: Resolve conference record (no session held)
             meeting_code = event.online_meeting_id
+            conn_id: str = integration.connection_id  # type: ignore[assignment]
             if not meeting_code:
                 return TranscriptFetchResult(
                     success=False,
@@ -385,8 +387,8 @@ class TranscriptService:
                 )
 
             conference_record = await self._google_meet.resolve_conference_record(
-                integration.connection_id,
-                meeting_code,  # type: ignore[arg-type]
+                conn_id,
+                meeting_code,
             )
             if not conference_record:
                 return TranscriptFetchResult(
@@ -398,8 +400,8 @@ class TranscriptService:
 
             # Step 2: Fetch transcript data (no session held)
             transcript_data = await self._google_meet.fetch_transcript(
-                integration.connection_id,
-                conference_record,  # type: ignore[arg-type]
+                conn_id,
+                conference_record,
             )
             if not transcript_data:
                 return TranscriptFetchResult(

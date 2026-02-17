@@ -23,10 +23,17 @@ logger = get_logger(__name__)
 PROVIDER_CONFIG_KEY = "google-calendar-getting-started"
 MEET_API_BASE = "https://meet.googleapis.com"
 _ENTRIES_PAGE_SIZE = 100
+_MAX_PAGES = 50
 
 
 class GoogleMeetTranscriptProvider:
     """Fetches transcripts from Google Meet via the Meet REST API v2."""
+
+    def __init__(self) -> None:
+        nango_secret_key = os.getenv("NANGO_SECRET_KEY")
+        if not nango_secret_key:
+            raise RuntimeError("NANGO_SECRET_KEY not set")
+        self._nango_secret_key = nango_secret_key
 
     async def _meet_api_get(
         self,
@@ -35,14 +42,10 @@ class GoogleMeetTranscriptProvider:
         params: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """GET request to Google Meet API via Nango proxy with base-url override."""
-        nango_secret_key = os.getenv("NANGO_SECRET_KEY")
-        if not nango_secret_key:
-            raise RuntimeError("NANGO_SECRET_KEY not set")
-
         url = f"/proxy{path}"
         async with httpx.AsyncClient(
             base_url="https://api.nango.dev",
-            headers={"Authorization": f"Bearer {nango_secret_key}"},
+            headers={"Authorization": f"Bearer {self._nango_secret_key}"},
             timeout=60.0,
         ) as client:
             response = await client.get(
@@ -161,7 +164,7 @@ class GoogleMeetTranscriptProvider:
         participant_map: dict[str, str] = {}
         page_token: str | None = None
 
-        while True:
+        for _ in range(_MAX_PAGES):
             params: dict[str, str] = {}
             if page_token:
                 params["pageToken"] = page_token
@@ -169,7 +172,7 @@ class GoogleMeetTranscriptProvider:
             resp = await self._meet_api_get(
                 connection_id,
                 f"/v2/{conference_record_name}/participants",
-                params=params or None,
+                params=params,
             )
 
             for p in resp.get("participants", []):
@@ -192,7 +195,7 @@ class GoogleMeetTranscriptProvider:
         all_entries: list[dict[str, Any]] = []
         page_token: str | None = None
 
-        while True:
+        for _ in range(_MAX_PAGES):
             params: dict[str, str] = {"pageSize": str(_ENTRIES_PAGE_SIZE)}
             if page_token:
                 params["pageToken"] = page_token

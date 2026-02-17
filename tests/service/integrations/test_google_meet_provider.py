@@ -64,12 +64,19 @@ def _make_service(org_id: UUID | None = None) -> TranscriptService:
 # =============================================================================
 
 
+def _make_provider() -> GoogleMeetTranscriptProvider:
+    """Create a GoogleMeetTranscriptProvider bypassing __init__ env check."""
+    provider = GoogleMeetTranscriptProvider.__new__(GoogleMeetTranscriptProvider)
+    provider._nango_secret_key = "test-secret"
+    return provider
+
+
 class TestResolveConferenceRecord:
     """Tests for GoogleMeetTranscriptProvider.resolve_conference_record."""
 
     @pytest.mark.asyncio
     async def test_happy_path_returns_name(self) -> None:
-        provider = GoogleMeetTranscriptProvider()
+        provider = _make_provider()
         provider._meet_api_get = AsyncMock(
             return_value={
                 "conferenceRecords": [{"name": "conferenceRecords/abc123"}],
@@ -83,7 +90,7 @@ class TestResolveConferenceRecord:
 
     @pytest.mark.asyncio
     async def test_no_records_returns_none(self) -> None:
-        provider = GoogleMeetTranscriptProvider()
+        provider = _make_provider()
         provider._meet_api_get = AsyncMock(return_value={"conferenceRecords": []})
 
         result = await provider.resolve_conference_record("conn-1", "abc-defg-hij")
@@ -92,7 +99,7 @@ class TestResolveConferenceRecord:
 
     @pytest.mark.asyncio
     async def test_api_error_returns_none(self) -> None:
-        provider = GoogleMeetTranscriptProvider()
+        provider = _make_provider()
         provider._meet_api_get = AsyncMock(side_effect=RuntimeError("timeout"))
 
         result = await provider.resolve_conference_record("conn-1", "abc-defg-hij")
@@ -101,7 +108,7 @@ class TestResolveConferenceRecord:
 
     @pytest.mark.asyncio
     async def test_nango_connection_error_propagates(self) -> None:
-        provider = GoogleMeetTranscriptProvider()
+        provider = _make_provider()
         provider._meet_api_get = AsyncMock(side_effect=NangoConnectionError("token expired"))
 
         with pytest.raises(NangoConnectionError):
@@ -118,7 +125,7 @@ class TestFetchTranscript:
 
     @pytest.mark.asyncio
     async def test_happy_path(self) -> None:
-        provider = GoogleMeetTranscriptProvider()
+        provider = _make_provider()
 
         async def fake_get(conn_id, path, params=None):
             if "transcripts" in path and "entries" not in path:
@@ -158,7 +165,7 @@ class TestFetchTranscript:
 
     @pytest.mark.asyncio
     async def test_no_transcripts_returns_none(self) -> None:
-        provider = GoogleMeetTranscriptProvider()
+        provider = _make_provider()
         provider._meet_api_get = AsyncMock(return_value={"transcripts": []})
 
         result = await provider.fetch_transcript("conn-1", "conferenceRecords/abc")
@@ -166,9 +173,37 @@ class TestFetchTranscript:
         assert result is None
 
     @pytest.mark.asyncio
+    async def test_file_generated_state_accepted(self) -> None:
+        """FILE_GENERATED transcript should be accepted like ENDED."""
+        provider = GoogleMeetTranscriptProvider.__new__(GoogleMeetTranscriptProvider)
+
+        async def fake_get(conn_id, path, params=None):
+            if "transcripts" in path and "entries" not in path:
+                return {
+                    "transcripts": [
+                        {
+                            "name": "conferenceRecords/abc/transcripts/t1",
+                            "state": "FILE_GENERATED",
+                        }
+                    ]
+                }
+            if "participants" in path:
+                return {"participants": []}
+            if "entries" in path:
+                return {"transcriptEntries": []}
+            return {}
+
+        provider._meet_api_get = AsyncMock(side_effect=fake_get)
+
+        result = await provider.fetch_transcript("conn-1", "conferenceRecords/abc")
+
+        assert result is not None
+        assert result["entries"] == []
+
+    @pytest.mark.asyncio
     async def test_transcript_started_state_returns_none(self) -> None:
         """Transcript still being generated should return None."""
-        provider = GoogleMeetTranscriptProvider()
+        provider = _make_provider()
         provider._meet_api_get = AsyncMock(
             return_value={
                 "transcripts": [
@@ -183,7 +218,7 @@ class TestFetchTranscript:
 
     @pytest.mark.asyncio
     async def test_nango_connection_error_propagates(self) -> None:
-        provider = GoogleMeetTranscriptProvider()
+        provider = _make_provider()
         provider._meet_api_get = AsyncMock(side_effect=NangoConnectionError("auth error"))
 
         with pytest.raises(NangoConnectionError):
