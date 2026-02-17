@@ -4,12 +4,16 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import httpx
+
 from src.domain.models.organisation_tables.sync import IntegrationType
 from src.infra.config.nango_provider_mapping import to_nango_connect_integration_key
 from src.infra.utils.logger import get_logger
 from src.service.integrations.nango_client import NangoClient
 
 logger = get_logger(__name__)
+
+_GOOGLE_CALENDAR_BASE_URL = "https://www.googleapis.com"
 
 
 @dataclass
@@ -20,26 +24,57 @@ class FetchEventsResult:
     sync_token: str | None = None
 
 
-def _is_google_sync_token_expired_error(payload: dict[str, Any]) -> bool:
-    """Detect token-expiration style errors from Google Calendar responses."""
-    error = payload.get("error")
-    if not isinstance(error, dict):
-        return False
+# ---------------------------------------------------------------------------
+# Token helper
+# ---------------------------------------------------------------------------
 
-    code = str(error.get("code", "")).lower()
-    message = str(error.get("message", "")).lower()
-    return (
-        code == "410"
-        or "fullsyncrequired" in message
-        or "sync token is no longer valid" in message
-        or "sync token" in message
-        and "valid" in message
-        or "gone" in message
+
+async def _get_access_token(
+    nango: NangoClient,
+    connection_id: str,
+    provider_config_key: str,
+) -> str:
+    """Retrieve a fresh OAuth access token from Nango.
+
+    Uses Nango's connection API (not proxy) to get/refresh the token.
+    """
+    connection = await nango.get_connection(
+        provider=provider_config_key,
+        connection_id=connection_id,
+        force_refresh=True,
     )
+    credentials = connection.get("credentials", {})
+    token = credentials.get("access_token")
+    if not token:
+        raise RuntimeError(f"No access_token in Nango connection for {connection_id}")
+    return token
+
+
+# ---------------------------------------------------------------------------
+# Direct Google API helper
+# ---------------------------------------------------------------------------
+
+
+async def _calendar_api_request(
+    client: httpx.AsyncClient,
+    endpoint: str,
+    *,
+    params: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Make a GET request to the Google Calendar API.
+
+    Raises httpx.HTTPStatusError on non-2xx responses.
+    """
+    url = f"{_GOOGLE_CALENDAR_BASE_URL}{endpoint}"
+    response = await client.get(url, params=params)
+    response.raise_for_status()
+    return response.json()  # type: ignore[no-any-return]
 
 
 def _is_google_sync_token_expired_exception(exc: Exception) -> bool:
     """Detect token-expiration style errors from raised exceptions."""
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 410:
+        return True
     message = str(exc).lower()
     return (
         "410" in message
@@ -61,7 +96,10 @@ async def fetch_events_with_cursor(
     provider_config_key: str | None = None,
 ) -> FetchEventsResult:
     """
-    Fetch Google Calendar events via Nango proxy with syncToken incremental support.
+    Fetch Google Calendar events via direct Google API with syncToken incremental support.
+
+    OAuth tokens are managed by Nango (token storage + refresh) but API calls
+    bypass the Nango proxy to avoid proxy request quota limits.
 
     Business rules:
     - Initial/full sync: bounded window (90 days past to 365 days future).
@@ -117,73 +155,73 @@ async def fetch_events_with_cursor(
             "orderBy": "startTime",
         }
 
-    # Google endpoint; Nango proxy takes endpoint path only
     endpoint = "/calendar/v3/calendars/primary/events"
+
+    token = await _get_access_token(nango, connection_id, provider)
 
     all_items: list[dict[str, Any]] = []
     page_token: str | None = None
     next_sync_token: str | None = None
     max_pages = 50  # Safety limit to prevent infinite loops
 
-    for page_index in range(max_pages):
-        # Add page token if we have one from previous request
-        if page_token:
-            params["pageToken"] = page_token
-        elif "pageToken" in params:
-            del params["pageToken"]
+    async with httpx.AsyncClient(
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=30.0,
+    ) as client:
+        for page_index in range(max_pages):
+            if page_token:
+                params["pageToken"] = page_token
+            elif "pageToken" in params:
+                del params["pageToken"]
 
-        # NangoClient.proxy_request returns dict; normalize 'items'
-        try:
-            resp = await nango.proxy_request(
-                provider_config_key=provider,
-                connection_id=connection_id,
-                endpoint=endpoint,
-                params=params,
-            )
-        except Exception as exc:
-            # A stale sync token should not break calendar sync forever.
-            # We recover by doing a bounded full sync and obtaining a fresh token.
-            if (
-                using_sync_token
-                and page_index == 0
-                and _is_google_sync_token_expired_exception(exc)
-            ):
-                logger.warning(
-                    "Google Calendar syncToken expired for connection=%s; falling back to full sync",
-                    connection_id,
-                )
-                return await fetch_events_with_cursor(
-                    nango=nango,
-                    connection_id=connection_id,
-                    is_initial=True,
-                    last_synced_at=last_synced_at,
-                    sync_token=None,
-                    data_type=data_type,
-                    provider_config_key=provider_config_key,
-                )
-            raise
-
-        if isinstance(resp, dict):
-            # Some proxies return token errors in payload instead of raising exceptions.
-            if using_sync_token and page_index == 0 and _is_google_sync_token_expired_error(resp):
-                logger.warning(
-                    "Google Calendar syncToken rejected for connection=%s; falling back to full sync",
-                    connection_id,
-                )
-                return await fetch_events_with_cursor(
-                    nango=nango,
-                    connection_id=connection_id,
-                    is_initial=True,
-                    last_synced_at=last_synced_at,
-                    sync_token=None,
-                    data_type=data_type,
-                    provider_config_key=provider_config_key,
-                )
+            try:
+                resp = await _calendar_api_request(client, endpoint, params=params)
+            except httpx.HTTPStatusError as exc:
+                # A stale sync token should not break calendar sync forever.
+                if (
+                    using_sync_token
+                    and page_index == 0
+                    and _is_google_sync_token_expired_exception(exc)
+                ):
+                    logger.warning(
+                        "Google Calendar syncToken expired for connection=%s;"
+                        " falling back to full sync",
+                        connection_id,
+                    )
+                    return await fetch_events_with_cursor(
+                        nango=nango,
+                        connection_id=connection_id,
+                        is_initial=True,
+                        last_synced_at=last_synced_at,
+                        sync_token=None,
+                        data_type=data_type,
+                        provider_config_key=provider_config_key,
+                    )
+                raise
+            except Exception as exc:
+                if (
+                    using_sync_token
+                    and page_index == 0
+                    and _is_google_sync_token_expired_exception(exc)
+                ):
+                    logger.warning(
+                        "Google Calendar syncToken expired for connection=%s;"
+                        " falling back to full sync",
+                        connection_id,
+                    )
+                    return await fetch_events_with_cursor(
+                        nango=nango,
+                        connection_id=connection_id,
+                        is_initial=True,
+                        last_synced_at=last_synced_at,
+                        sync_token=None,
+                        data_type=data_type,
+                        provider_config_key=provider_config_key,
+                    )
+                raise
 
             if "items" in resp and isinstance(resp["items"], list):
                 all_items.extend(resp["items"])
-            elif "results" in resp and isinstance(resp["results"], list):
-                all_items.extend(resp["results"])
 
             # Check for next page
             page_token = resp.get("nextPageToken")
@@ -192,8 +230,6 @@ async def fetch_events_with_cursor(
                 if isinstance(sync_token_candidate, str) and sync_token_candidate:
                     next_sync_token = sync_token_candidate
                 break
-        else:
-            break
 
     logger.info(
         "Google Calendar fetch complete: events=%d initial=%s used_sync_token=%s",
