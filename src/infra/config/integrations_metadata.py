@@ -249,6 +249,7 @@ INTEGRATION_METADATA: dict[IntegrationType, IntegrationMetadata] = {
         availability_status=AvailabilityStatus.BETA,
         oauth_scopes=[
             "https://www.googleapis.com/auth/calendar.readonly",
+            "https://www.googleapis.com/auth/meetings.space.readonly",
         ],
         documentation_url="https://developers.google.com/calendar/api",
         default_sync_frequency="hourly",
