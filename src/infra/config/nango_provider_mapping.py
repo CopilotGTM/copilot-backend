@@ -73,7 +73,7 @@ _NANGO_CONNECT_KEYS: dict[IntegrationType, str] = {
     IntegrationType.GOOGLE_CHAT: "google-chat",
     IntegrationType.ZOOM: "zoom",
     IntegrationType.GOOGLE_DRIVE: "google-drive",
-    IntegrationType.GOOGLE_CALENDAR: "google-calendar-getting-started",
+    IntegrationType.GOOGLE_CALENDAR: "google-calendar",
     IntegrationType.OUTLOOK_CALENDAR: "outlook-bflm",
     IntegrationType.OUTLOOK_EMAIL: "outlook",
     IntegrationType.SHAREPOINT: "sharepoint",
@@ -131,7 +131,7 @@ def from_nango_provider_key(provider_key: str) -> IntegrationType:
     """Map a Nango provider_config_key back to our IntegrationType.
 
     Tries explicit reverse maps first (provider and connect keys). If not found,
-    progressively trims hyphen suffixes (e.g., "google-calendar-getting-started"
+    progressively trims hyphen suffixes (e.g., "google-calendar"
     -> "google-calendar"). Finally, replaces hyphens with underscores and tries
     to construct the enum (e.g., "google-calendar" -> "google_calendar").
     """

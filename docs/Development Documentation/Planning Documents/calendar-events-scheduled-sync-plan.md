@@ -18,7 +18,7 @@ This plan covers **Google Calendar** and **Outlook Calendar** event synchronizat
 
 | Integration Type | Provider | Provider Config Key | Nango Connect Key |
 |-----------------|----------|---------------------|-------------------|
-| `GOOGLE_CALENDAR` | `google` | `google-calendar` | `google-calendar-getting-started` |
+| `GOOGLE_CALENDAR` | `google` | `google-calendar` | `google-calendar` |
 | `OUTLOOK_CALENDAR` | `outlook` | `outlook-bflm` | `outlook-bflm` |
 
 Both use:

@@ -45,7 +45,7 @@ This document describes the complete end-to-end data synchronization flow for in
            │ Body: {
            │   "type": "sync",
            │   "connectionId": "492d7c5f-e1c1...",
-           │   "providerConfigKey": "google-calendar-getting-started",
+           │   "providerConfigKey": "google-calendar",
            │   "syncName": "events",
            │   "model": "GoogleCalendarEvent",
            │   "responseResults": {...}
@@ -91,7 +91,7 @@ This document describes the complete end-to-end data synchronization flow for in
   │    Result: integration_id = "4418889b-0a99..."              │
   │                                                              │
   │ C. Map Provider Config Key                                   │
-  │    "google-calendar-getting-started" → "google"              │
+  │    "google-calendar" → "google"              │
   │    Category: "calendar"                                      │
   │    Data Types: ["events"]                                    │
   │                                                              │

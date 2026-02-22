@@ -19,7 +19,7 @@ from src.service.integrations.nango_client import NangoClient, NangoConnectionEr
 logger = get_logger(__name__)
 
 # Nango provider key for Google Calendar OAuth tokens (reused for Meet)
-PROVIDER_CONFIG_KEY = "google-calendar-getting-started"
+PROVIDER_CONFIG_KEY = "google-calendar"
 _MEET_API_BASE = "https://meet.googleapis.com"
 _ENTRIES_PAGE_SIZE = 100
 _MAX_PAGES = 50

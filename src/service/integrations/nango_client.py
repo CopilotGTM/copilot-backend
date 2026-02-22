@@ -722,7 +722,7 @@ class NangoClient:
         Docs: https://docs.nango.dev/reference/api/proxy/post
 
         Args:
-            provider_config_key: Nango provider config key (e.g., 'google-calendar-getting-started')
+            provider_config_key: Nango provider config key (e.g., 'google-calendar')
             connection_id: Connection identifier
             endpoint: API endpoint to call (e.g., '/v1/contacts')
             method: HTTP method (GET, POST, PUT, DELETE, etc.)

@@ -149,7 +149,7 @@ class IntegrationService:
             integration_type: The integration type enum or string
 
         Returns:
-            Nango provider config key string (e.g., 'google-calendar-getting-started', 'hubspot')
+            Nango provider config key string (e.g., 'google-calendar', 'hubspot')
         """
         # Convert string to enum if needed
         if isinstance(integration_type, str):

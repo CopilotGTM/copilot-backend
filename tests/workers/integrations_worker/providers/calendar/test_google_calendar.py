@@ -42,8 +42,7 @@ class TestGoogleCalendarMapping:
 
     def test_connect_key_for_oauth_session(self) -> None:
         assert (
-            to_nango_connect_integration_key(IntegrationType.GOOGLE_CALENDAR)
-            == "google-calendar-getting-started"
+            to_nango_connect_integration_key(IntegrationType.GOOGLE_CALENDAR) == "google-calendar"
         )
 
     def test_provider_key_for_proxy_requests(self) -> None:
