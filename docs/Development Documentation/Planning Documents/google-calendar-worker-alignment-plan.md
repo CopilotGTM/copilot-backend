@@ -157,7 +157,7 @@ Files:
 - Optional helper tests for cursor metadata.
 
 Work:
-- Fix stale connect key expectation (`google-calendar-getting-started`).
+- Fix stale connect key expectation (`google-calendar`).
 - Add tests:
   - updated_min mode
   - sync_token mode

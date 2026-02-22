@@ -106,7 +106,7 @@ def _resolve_provider_config_key(
     Why this exists:
     - Nango provider config keys can differ across environments.
     - For Google Calendar, some environments use
-      `google-calendar-getting-started` as the provider key used by proxy calls.
+      `google-calendar` as the provider key used by proxy calls.
     """
     metadata = connection_metadata or {}
     metadata_key = metadata.get("provider_config_key")
