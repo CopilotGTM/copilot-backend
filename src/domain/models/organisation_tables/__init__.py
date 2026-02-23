@@ -26,6 +26,12 @@ from .job_models import (
     KnowledgeProcessingJob,
 )
 from .knowledge_models import OrganisationDocument, OrganisationSource
+from .reminder_models import (
+    ReminderRecurrence,
+    ReminderStatus,
+    ReminderType,
+    UserReminder,
+)
 from .sync import (
     CalendarAttendee,
     CalendarEvent,
@@ -106,4 +112,9 @@ __all__ = [
     "KnowledgeProcessingJob",
     "DealJobs",
     "DealJobType",
+    # Reminder Models
+    "UserReminder",
+    "ReminderType",
+    "ReminderRecurrence",
+    "ReminderStatus",
 ]

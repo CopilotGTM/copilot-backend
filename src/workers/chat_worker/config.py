@@ -48,4 +48,37 @@ class ChatWorkerConfig(BaseWorkerConfig):
                 "queue": "chat_messages",
                 "routing_key": "chat_messages",
             },
+            # Reminder scheduler tasks
+            "chat.poll_due_reminders": {
+                "queue": "chat_processing",
+                "routing_key": "chat_processing",
+            },
+            "chat.recovery_sweep_reminders": {
+                "queue": "chat_processing",
+                "routing_key": "chat_processing",
+            },
+            "chat.execute_reminder": {
+                "queue": "chat_messages",
+                "routing_key": "chat_messages",
+            },
+        }
+
+        # Beat schedule — periodic tasks run by the scheduler
+        self.beat_schedule = {
+            "poll-due-reminders": {
+                "task": "chat.poll_due_reminders",
+                "schedule": 5.0,
+                "options": {
+                    "queue": "chat_processing",
+                    "routing_key": "chat_processing",
+                },
+            },
+            "recovery-sweep-reminders": {
+                "task": "chat.recovery_sweep_reminders",
+                "schedule": 300.0,
+                "options": {
+                    "queue": "chat_processing",
+                    "routing_key": "chat_processing",
+                },
+            },
         }

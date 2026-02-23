@@ -344,6 +344,11 @@ class BotMessageProcessingService:
             metadata["service_url"] = reply_context.get("service_url", "")
             metadata["conversation_id"] = reply_context.get("conversation_id", "")
 
+        # Pass user timezone from Teams activity (if available) so tools don't need to ask
+        user_tz = (bot_context or {}).get("user_timezone", "")
+        if user_tz:
+            metadata["user_timezone"] = user_tz
+
         context = AgentContext(
             organisation_id=self.organisation_id,
             org_name="CopilotGTM",

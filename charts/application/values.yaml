@@ -292,6 +292,39 @@ chat-worker:
     scaleDownDelay: 240
     scaleUpDelay: 5
 
+# Chat Beat Scheduler (Celery Beat for reminder polling)
+# Runs periodic tasks defined in ChatWorkerConfig.beat_schedule:
+# - chat.poll_due_reminders: Every 5 seconds (pops due reminders from Redis ZSET)
+# - chat.recovery_sweep_reminders: Every 5 minutes (re-syncs ZSET from DB)
+chat-beat:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: "copilotgtmacrdev.azurecr.io/copilot-backend"
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  config:
+    queueName: "chat_processing"
+    # Beat mode - runs scheduler instead of worker
+    beatMode: true
+  # Use shared ServiceAccount (created at parent chart level)
+  serviceAccount:
+    create: false
+    name: "copilot-workers"
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "128Mi"
+    limits:
+      cpu: "150m"
+      memory: "256Mi"
+  # Beat scheduler doesn't need autoscaling - single instance only
+  autoscaling:
+    enabled: false
+  # Beat scheduler doesn't need PDB
+  pdb:
+    enabled: false
+
 # Integrations Worker (handles CRM/third-party sync pipelines)
 integrations-worker:
   enabled: true

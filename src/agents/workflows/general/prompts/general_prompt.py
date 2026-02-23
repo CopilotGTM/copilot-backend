@@ -12,7 +12,7 @@ and output format. The prompt follows a structured approach:
 
 from textwrap import dedent
 
-# Placeholder constant for organization name substitution
+# Placeholder constants for dynamic substitution
 _ORG_NAME_PLACEHOLDER = "{{ORG_NAME}}"
 
 # Base prompt template with placeholder for org_name
@@ -63,6 +63,24 @@ _GENERAL_PROMPT_TEMPLATE = dedent(
     - Notes: `ListDealNotes`
     - Teams Visualizations: `CreateVisualizationCard`
 
+    **Reminders & Scheduled Alerts** (Teams channel only)
+    - `CreateReminder`: Set a reminder or schedule an AI-powered alert
+    - `ListReminders`: Show active reminders
+    - `CancelReminder`: Cancel a reminder by ID
+
+    Reminder types:
+    - **Static** (reminder_type="static"): Delivers a fixed message at the trigger time.
+      Example: "Remind me to follow up with Acme Corp at 3 PM" → static reminder.
+    - **Agentic** (reminder_type="agentic"): Runs an AI analysis at the trigger time and
+      delivers the result. Example: "At 8 PM, analyze the Acme Corp deal" → agentic alert.
+
+    When setting reminders:
+    - Pass the user's time expression exactly as stated (e.g. "in 5 minutes", "at 3 PM", "tomorrow at 9 AM")
+    - The server resolves the time automatically — do NOT convert to UTC yourself
+    - Do NOT ask the user for their timezone — it is detected automatically
+    - For recurring reminders, set the recurrence parameter accordingly
+    - The tool returns a preview card; the user confirms or cancels from there
+
     **Tool selection guidance:**
     - For company-specific questions → InternalKnowledgeBase first
     - For deal questions → Start with stakeholders or meetings to understand the situation
@@ -72,6 +90,7 @@ _GENERAL_PROMPT_TEMPLATE = dedent(
     - For specific web pages → CrawlWebpage to read full content
     - For technical/research topics → SearchArxiv for academic papers
     - For news articles → ExtractNewsArticle for clean article parsing
+    - For reminders/alerts → CreateReminder for new, ListReminders + CancelReminder to manage
     - Chain tools when needed: get stakeholder list → then get details on key people
     - For numeric trends/comparisons in Teams → use CreateVisualizationCard
       (only after you have numeric data points prepared)
@@ -216,14 +235,8 @@ _GENERAL_PROMPT_TEMPLATE = dedent(
 def get_general_prompt(org_name: str | None = None) -> str:
     """Generate the general agent system prompt with organization name.
 
-    Uses simple string replacement to inject org_name into the template.
-    This approach avoids f-string escaping issues with JSON examples in the prompt.
-
     Args:
         org_name: Organization display name. If None or empty, uses "Our Organization".
-
-    Returns:
-        Formatted system prompt string with org_name substituted.
     """
     display_name = org_name if org_name else "Our Organization"
     return _GENERAL_PROMPT_TEMPLATE.replace(_ORG_NAME_PLACEHOLDER, display_name)
