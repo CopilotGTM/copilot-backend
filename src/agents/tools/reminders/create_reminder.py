@@ -37,6 +37,22 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _strip_recurrence_prefix(expr: str) -> str:
+    """Strip recurrence-related prefixes that confuse dateparser.
+
+    "every day at 10 AM" → "at 10 AM"
+    "daily at 10 AM IST" → "at 10 AM IST"
+    """
+    import re
+
+    return re.sub(
+        r"^(every\s+day\s+|daily\s+|each\s+day\s+|every\s+morning\s+|every\s+evening\s+)",
+        "",
+        expr.strip(),
+        flags=re.IGNORECASE,
+    ).strip()
+
+
 def _resolve_trigger_time(
     trigger_time_expr: str,
     timezone_name: str,
@@ -62,6 +78,9 @@ def _resolve_trigger_time(
     except (ValueError, TypeError):
         pass
 
+    # Strip recurrence prefixes that confuse dateparser
+    cleaned_expr = _strip_recurrence_prefix(trigger_time_expr)
+
     # Slow path: natural language via dateparser
     try:
         import dateparser
@@ -74,7 +93,7 @@ def _resolve_trigger_time(
             settings["TIMEZONE"] = timezone_name
             settings["TO_TIMEZONE"] = "UTC"
 
-        parsed = dateparser.parse(trigger_time_expr, settings=settings)
+        parsed = dateparser.parse(cleaned_expr, settings=settings)
         if parsed:
             if parsed.tzinfo is None:
                 parsed = parsed.replace(tzinfo=UTC)
@@ -276,8 +295,19 @@ async def create_reminder(
             ),
         }
 
+    # For recurring reminders, if resolved time is in the past, advance to next occurrence.
+    # E.g. "daily at 10 AM" created at 6 PM → advance to tomorrow 10 AM.
     if trigger_dt <= datetime.now(UTC):
-        return {"status": "error", "message": "Trigger time must be in the future."}
+        if r_recurrence != ReminderRecurrence.NONE:
+            from src.workers.chat_worker.services.reminder_execution_service import (
+                ReminderExecutionService,
+            )
+
+            trigger_dt = ReminderExecutionService._compute_next_trigger(
+                trigger_dt, r_recurrence, timezone_name
+            )
+        else:
+            return {"status": "error", "message": "Trigger time must be in the future."}
 
     # Validate content based on type
     if r_type == ReminderType.STATIC and not message:
