@@ -52,10 +52,10 @@ chat-beat:
   resources:
     requests:
       cpu: "50m"
-      memory: "128Mi"
+      memory: "256Mi"
     limits:
       cpu: "150m"
-      memory: "256Mi"
+      memory: "512Mi"
 
 integrations-worker:
   resources:
