@@ -24,15 +24,12 @@ dependencies = [
     "python-dotenv==1.2.1",
     "pydantic~=2.11.7",
     "pydantic[email]",
-    
     # Caching and Task Queue (All workers need Celery/Redis)
     "redis==6.2.0",
     "celery~=5.5.3",
-    
     # HTTP Clients (Shared infrastructure)
     "requests>=2.32.4",
     "httpx>=0.28.1",
-    
     # Database and ORM (All components access DB)
     "sqlmodel==0.0.24",
     "SQLAlchemy==2.0.45",
@@ -40,14 +37,13 @@ dependencies = [
     "asyncpg==0.30.0",
     "alembic==1.16.4",
     "pgvector==0.4.2",
-    
     # Azure Core Services (KeyVault for secrets, Identity for auth)
     "azure-identity==1.25.1",
     "azure-keyvault-secrets>=4.7.0",
     "azure-common==1.1.28",
-    
     # Utilities
     "packaging==25.0",
+    "dateparser>=1.3.0",
 ]
 
 [project.optional-dependencies]

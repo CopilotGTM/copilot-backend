@@ -17,6 +17,11 @@ from src.service.bots.form_handlers.base import (
     CancelFormHandler,
     FormHandlerResult,
 )
+from src.service.bots.form_handlers.cancel_reminder_handler import CancelReminderFormHandler
+from src.service.bots.form_handlers.confirm_reminder_handler import (
+    CancelPendingReminderFormHandler,
+    ConfirmReminderFormHandler,
+)
 from src.service.bots.form_handlers.create_deal_handler import CreateDealFormHandler
 from src.service.bots.form_handlers.update_deal_stage_handler import UpdateDealStageFormHandler
 
@@ -83,6 +88,12 @@ FormHandlerRegistry.register("update_deal_stage_submit", UpdateDealStageFormHand
 FormHandlerRegistry.register(
     "update_deal_stage_cancel", CancelFormHandler("Stage update cancelled.")
 )
+FormHandlerRegistry.register("cancel_reminder_submit", CancelReminderFormHandler())
+FormHandlerRegistry.register(
+    "cancel_reminder_cancel", CancelFormHandler("Reminder cancellation dismissed.")
+)
+FormHandlerRegistry.register("confirm_reminder_submit", ConfirmReminderFormHandler())
+FormHandlerRegistry.register("confirm_reminder_cancel", CancelPendingReminderFormHandler())
 
 
 __all__ = [

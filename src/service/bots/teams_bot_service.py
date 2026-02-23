@@ -155,6 +155,9 @@ class TeamsBotService:
             await self._send_reply(activity, "I received an empty message.", service_url)
             return
 
+        # Teams sends the user's IANA timezone (e.g. "Asia/Kolkata") on the activity
+        local_timezone = activity.get("localTimezone", "")
+
         if conversation_type == "personal":
             text = activity.get("text") or ""
             response = await self._handle_authenticated_message(
@@ -166,6 +169,7 @@ class TeamsBotService:
                 user_aad_object_id=user_aad_object_id,
                 external_user_id=teams_user_id,
                 external_tenant_id=teams_tenant_id,
+                local_timezone=local_timezone,
             )
 
         elif conversation_type in ["groupChat", "channel", "meeting"]:
@@ -178,6 +182,7 @@ class TeamsBotService:
                 user_aad_object_id=user_aad_object_id,
                 external_user_id=teams_user_id,
                 external_tenant_id=teams_tenant_id,
+                local_timezone=local_timezone,
             )
         else:
             logger.warning("Teams unexpected conversationType: %s", conversation_type)
@@ -226,6 +231,7 @@ class TeamsBotService:
         user_aad_object_id: str = "",
         external_user_id: str = "",
         external_tenant_id: str = "",
+        local_timezone: str = "",
     ) -> str | None:
         """Handle a message from an authenticated user.
 
@@ -244,6 +250,8 @@ class TeamsBotService:
             "external_user_id": external_user_id,
             "external_tenant_id": external_tenant_id,
         }
+        if local_timezone:
+            bot_context["user_timezone"] = local_timezone
 
         try:
             task_id = await send_chat_task_async(

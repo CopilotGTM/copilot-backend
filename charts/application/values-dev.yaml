@@ -44,6 +44,15 @@ chat-worker:
       cpu: "50m"
       memory: "1Gi"
 
+chat-beat:
+  resources:
+    requests:
+      cpu: "10m"
+      memory: "128Mi"
+    limits:
+      cpu: "150m"
+      memory: "256Mi"
+
 integrations-worker:
   # Actual usage: 3m CPU, 1081Mi memory
   resources:
