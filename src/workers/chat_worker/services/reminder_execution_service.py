@@ -192,7 +192,7 @@ class ReminderExecutionService:
 
             from src.domain.models.master_tables import Organisation, User
 
-            org_stmt = select(col(Organisation.name)).where(
+            org_stmt = select(col(Organisation.organisation_name)).where(
                 col(Organisation.organisation_id) == self.organisation_id
             )
             org_row = (await session.execute(org_stmt)).scalar_one_or_none()
