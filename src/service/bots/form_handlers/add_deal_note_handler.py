@@ -11,6 +11,7 @@ from uuid import UUID
 
 from src.infra.utils.logger import get_logger
 from src.service.bots.form_handlers.base import BaseFormHandler, FormHandlerResult
+from src.service.bots.form_handlers.nonce import validate_and_consume_nonce
 
 logger = get_logger(__name__)
 
@@ -28,6 +29,17 @@ class AddDealNoteFormHandler(BaseFormHandler):
         Extracts note content, resolves the submitting user,
         and creates the note in the database.
         """
+        # Validate one-time nonce
+        nonce = form_data.get("nonce", "")
+        if not nonce or not validate_and_consume_nonce("note_confirm", nonce):
+            return FormHandlerResult(
+                success=False,
+                message=(
+                    "This confirmation has expired or was already used. "
+                    "Please ask the assistant to send a new one."
+                ),
+            )
+
         # Extract and validate note content
         note_content = (form_data.get("note_content") or "").strip()
         if not note_content:

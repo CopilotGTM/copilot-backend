@@ -11,6 +11,7 @@ from uuid import UUID
 
 from src.infra.utils.logger import get_logger
 from src.service.bots.form_handlers.base import BaseFormHandler, FormHandlerResult
+from src.service.bots.form_handlers.nonce import validate_and_consume_nonce
 
 logger = get_logger(__name__)
 
@@ -28,6 +29,17 @@ class CreateDealFormHandler(BaseFormHandler):
         Extracts form fields, resolves the submitting user,
         and creates the deal in the database.
         """
+        # Validate one-time nonce to prevent duplicate/stale card submissions
+        nonce = form_data.get("nonce", "")
+        if not nonce or not validate_and_consume_nonce("deal_confirm", nonce):
+            return FormHandlerResult(
+                success=False,
+                message=(
+                    "This confirmation has expired or was already used. "
+                    "Please ask the assistant to send a new one."
+                ),
+            )
+
         # Extract form fields
         deal_name = (form_data.get("name") or "").strip()
         if not deal_name:

@@ -65,8 +65,29 @@ class CancelFormHandler(BaseFormHandler):
         return FormHandlerResult(success=True, message=self._message)
 
 
+class NonceCancelFormHandler(BaseFormHandler):
+    """Cancel handler that also consumes the Redis nonce."""
+
+    def __init__(self, nonce_prefix: str, message: str = "Action cancelled."):
+        self._nonce_prefix = nonce_prefix
+        self._message = message
+
+    async def handle(
+        self,
+        activity: dict[str, Any],  # noqa: ARG002
+        form_data: dict[str, Any],
+    ) -> FormHandlerResult:
+        nonce = form_data.get("nonce", "")
+        if nonce:
+            from src.service.bots.form_handlers.nonce import validate_and_consume_nonce
+
+            validate_and_consume_nonce(self._nonce_prefix, nonce)
+        return FormHandlerResult(success=True, message=self._message)
+
+
 __all__ = [
     "BaseFormHandler",
     "CancelFormHandler",
     "FormHandlerResult",
+    "NonceCancelFormHandler",
 ]
