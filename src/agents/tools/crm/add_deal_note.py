@@ -1,13 +1,10 @@
-"""Add Deal Note tool - sends an interactive note form to the user's chat channel.
-
-This tool builds a FormDefinition with a note content field (optionally
-pre-filled), renders it via the appropriate card builder, and sends it
-as a proactive message to the user's chat.
+"""Add Deal Note tool - sends a confirmation preview card to the user's chat channel.
 
 The LLM is responsible for resolving the deal first (via search_deals),
 then calling this tool with a confirmed deal_id and deal_name.
 
-The actual note creation happens when the user submits the form,
+The card shows a read-only preview of the note with Confirm/Cancel buttons.
+The actual note creation happens when the user clicks Confirm,
 handled by AddDealNoteFormHandler in src/service/bots/form_handlers/.
 
 SECURITY BOUNDARIES (immutable, from context):
@@ -22,8 +19,9 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from src.adapters.card_builders import FormDefinition, FormField, get_card_builder
 from src.agents.tools.base import execute_with_capabilities
+from src.service.bots.form_handlers.nonce import create_nonce
+from src.service.bots.teams_bot_service import TeamsBotService
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
@@ -39,24 +37,21 @@ async def add_deal_note_form(
     deal_name: str,
     note_content: str | None = None,
 ) -> dict[str, Any] | None:
-    """Send an interactive note form for a known deal to the user's chat.
-
-    Args:
-        context: AgentContext with organisation_id and channel metadata
-        deal_id: UUID string of the deal (already resolved by LLM)
-        deal_name: Display name of the deal (already resolved by LLM)
-        note_content: Optional pre-filled note content
-
-    Returns:
-        Dict with status and message, or None on error
-    """
+    """Build and send a confirmation preview card for adding a deal note."""
     organisation_id = context.organisation_id
 
     if not organisation_id:
         logger.warning("add_deal_note_form: missing organisation_id in context")
         return None
 
-    # Verify channel metadata is available for sending the card
+    if not note_content or not note_content.strip():
+        return {
+            "status": "error",
+            "message": (
+                "Note content is required. Please ask the user what they'd like the note to say."
+            ),
+        }
+
     service_url = context.metadata.get("service_url", "")
     conversation_id = context.metadata.get("conversation_id", "")
 
@@ -67,74 +62,126 @@ async def add_deal_note_form(
         return {
             "status": "error",
             "message": (
-                "Cannot send interactive form: missing channel context. "
+                "Cannot send confirmation card: missing channel context. "
                 "This tool is only available in Teams chat."
             ),
         }
 
-    # Build the form definition
-    fields: list[FormField] = [
-        FormField(
-            id="note_content",
-            label="Note",
-            field_type="text",
-            required=True,
-            value=note_content,
-            placeholder="Type your note here...",
-            multiline=True,
-        ),
+    nonce = create_nonce("note_confirm")
+    em = "\u2014"
+
+    body: list[dict[str, Any]] = [
+        {
+            "type": "TextBlock",
+            "text": "Add Note to Deal",
+            "size": "Medium",
+            "weight": "Bolder",
+            "wrap": True,
+        },
+        {
+            "type": "FactSet",
+            "facts": [
+                {"title": "Deal", "value": deal_name},
+            ],
+        },
+        {
+            "type": "TextBlock",
+            "text": f"**Note:** {note_content or em}",
+            "wrap": True,
+            "spacing": "Small",
+        },
+        {
+            "type": "TextBlock",
+            "text": "Please confirm or cancel.",
+            "size": "Small",
+            "isSubtle": True,
+            "wrap": True,
+            "spacing": "Medium",
+        },
     ]
 
-    form = FormDefinition(
-        title="Add Note to Deal",
-        subtitle=f"Deal: {deal_name}",
-        fields=fields,
-        submit_action="add_deal_note_submit",
-        submit_label="Add Note",
-        cancel_action="add_deal_note_cancel",
-        cancel_label="Cancel",
-        metadata={
-            "organisation_id": str(organisation_id),
-            "deal_id": deal_id,
-            "deal_name": deal_name,
+    confirm_data: dict[str, Any] = {
+        "nonce": nonce,
+        "organisation_id": str(organisation_id),
+        "deal_id": deal_id,
+        "deal_name": deal_name,
+        "note_content": note_content or "",
+    }
+
+    cancel_data: dict[str, Any] = {
+        "nonce": nonce,
+        "organisation_id": str(organisation_id),
+    }
+
+    confirm_fallback = {"action": "add_deal_note_submit", **confirm_data}
+    cancel_fallback = {"action": "add_deal_note_cancel", **cancel_data}
+
+    actions = [
+        {
+            "type": "Action.Execute",
+            "title": "Confirm",
+            "style": "positive",
+            "verb": "add_deal_note_submit",
+            "data": confirm_data,
+            "fallback": {
+                "type": "Action.Submit",
+                "title": "Confirm",
+                "style": "positive",
+                "data": confirm_fallback,
+            },
         },
-    )
+        {
+            "type": "Action.Execute",
+            "title": "Cancel",
+            "style": "destructive",
+            "verb": "add_deal_note_cancel",
+            "data": cancel_data,
+            "fallback": {
+                "type": "Action.Submit",
+                "title": "Cancel",
+                "style": "destructive",
+                "data": cancel_fallback,
+            },
+        },
+    ]
 
-    # Build the card for the target channel
-    try:
-        builder = get_card_builder(context.channel)
-        card_payload = builder.build(form)
-    except ValueError:
-        logger.warning("add_deal_note_form: no card builder for channel=%s", context.channel)
-        return {
-            "status": "error",
-            "message": f"Interactive forms are not supported on {context.channel}.",
-        }
-
-    # Send the card via proactive messaging
-    from src.service.bots.teams_bot_service import TeamsBotService
+    card_payload = {
+        "text": " ",
+        "attachments": [
+            {
+                "contentType": "application/vnd.microsoft.card.adaptive",
+                "content": {
+                    "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                    "type": "AdaptiveCard",
+                    "version": "1.4",
+                    "body": body,
+                    "actions": actions,
+                },
+            }
+        ],
+    }
 
     bot_service = TeamsBotService()
     sent = await bot_service.send_proactive_payload(
         service_url=service_url,
         conversation_id=conversation_id,
         payload=card_payload,
-        text_fallback="Add note to deal form",
+        text_fallback=f"Note preview for deal {deal_name}",
     )
 
     if sent:
         return {
-            "status": "form_sent",
+            "status": "preview_sent",
             "message": (
-                f"I've sent a form to add a note to deal **{deal_name}**. "
-                "Please fill it out and submit."
+                f"I've sent a preview to add a note to deal **{deal_name}**. "
+                "Please review and click **Confirm**, or tell me what to change."
             ),
         }
     else:
         logger.error("add_deal_note_form: failed to send proactive payload")
         return {
             "status": "error",
-            "message": "Failed to send the note form. Please try again.",
+            "message": "Failed to send the note preview. Please try again.",
         }
 
 
@@ -150,31 +197,33 @@ def create_add_deal_note(
     async def add_deal_note_tool(
         deal_id: str,
         deal_name: str,
-        note_content: str | None = None,
+        note_content: str,
     ) -> dict[str, Any] | None:
-        """Send an interactive form to add a note to an existing deal.
+        """Send a confirmation preview to add a note to an existing deal.
 
         IMPORTANT: Before calling this tool, you MUST first use search_deals to
         find the deal and confirm it with the user. Do NOT call this tool without
         a confirmed deal_id.
 
+        note_content is REQUIRED. If the user says "add a note" without providing
+        note text, ask them what they'd like the note to say before calling this tool.
+
         Workflow:
         1. User asks to add a note to a deal
         2. You call search_deals to find matching deals
         3. If multiple matches, ask user which deal they mean
-        4. Once confirmed, call this tool with the deal_id and deal_name
-        5. Optionally pre-fill note_content if the user provided note text
+        4. Once confirmed, call this tool with the deal_id, deal_name, and note_content
 
-        After the form is sent successfully, respond with a brief confirmation
+        After the preview is sent successfully, respond with a brief confirmation
         only. Do not add extra suggestions.
 
         Args:
             deal_id: UUID of the deal (from search_deals result)
             deal_name: Name of the deal (from search_deals result)
-            note_content: Optional note text to pre-fill in the form
+            note_content: The note text (REQUIRED)
 
         Returns:
-            Status dict indicating whether the form was sent successfully.
+            Status dict indicating whether the preview was sent successfully.
         """
         logger.info(
             "[TOOL CALLED] add_deal_note - deal_id='%s', deal_name='%s', has_content=%s",

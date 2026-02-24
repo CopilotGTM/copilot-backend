@@ -16,12 +16,14 @@ from src.service.bots.form_handlers.base import (
     BaseFormHandler,
     CancelFormHandler,
     FormHandlerResult,
+    NonceCancelFormHandler,
 )
 from src.service.bots.form_handlers.cancel_reminder_handler import CancelReminderFormHandler
 from src.service.bots.form_handlers.confirm_reminder_handler import (
     CancelPendingReminderFormHandler,
     ConfirmReminderFormHandler,
 )
+from src.service.bots.form_handlers.create_deal_edit_handler import CreateDealEditFormHandler
 from src.service.bots.form_handlers.create_deal_handler import CreateDealFormHandler
 from src.service.bots.form_handlers.update_deal_stage_handler import UpdateDealStageFormHandler
 
@@ -77,9 +79,16 @@ class FormHandlerRegistry:
 
 # Register handlers on import
 FormHandlerRegistry.register("create_deal_submit", CreateDealFormHandler())
-FormHandlerRegistry.register("create_deal_cancel", CancelFormHandler("Deal creation cancelled."))
+FormHandlerRegistry.register("create_deal_edit", CreateDealEditFormHandler())
+FormHandlerRegistry.register(
+    "create_deal_cancel",
+    NonceCancelFormHandler("deal_confirm", "Deal creation cancelled."),
+)
 FormHandlerRegistry.register("add_deal_note_submit", AddDealNoteFormHandler())
-FormHandlerRegistry.register("add_deal_note_cancel", CancelFormHandler("Note cancelled."))
+FormHandlerRegistry.register(
+    "add_deal_note_cancel",
+    NonceCancelFormHandler("note_confirm", "Note cancelled."),
+)
 FormHandlerRegistry.register("add_stakeholder_submit", AddStakeholderFormHandler())
 FormHandlerRegistry.register(
     "add_stakeholder_cancel", CancelFormHandler("Stakeholder addition cancelled.")
@@ -101,4 +110,5 @@ __all__ = [
     "CancelFormHandler",
     "FormHandlerRegistry",
     "FormHandlerResult",
+    "NonceCancelFormHandler",
 ]

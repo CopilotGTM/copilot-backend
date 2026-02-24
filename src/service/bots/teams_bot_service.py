@@ -319,7 +319,24 @@ class TeamsBotService:
         logger.info("Form submission received: action=%s", action)
 
         result = await FormHandlerRegistry.handle(action, activity, form_data)
-        if result:
+        if result and result.card_payload:
+            conversation = activity.get("conversation", {})
+            conversation_id = conversation.get("id", "")
+            await self.send_proactive_payload(
+                service_url=service_url,
+                conversation_id=conversation_id,
+                payload={
+                    "text": " ",
+                    "attachments": [
+                        {
+                            "contentType": "application/vnd.microsoft.card.adaptive",
+                            "content": result.card_payload,
+                        }
+                    ],
+                },
+                text_fallback=result.message or "Form update",
+            )
+        elif result:
             await self._send_reply(activity, result.message, service_url)
         else:
             logger.warning("No handler for form action: %s", action)
@@ -398,7 +415,13 @@ class TeamsBotService:
 
         result = await FormHandlerRegistry.handle(verb, activity, form_data)
 
-        if result and result.success:
+        if result and result.card_payload:
+            return {
+                "statusCode": 200,
+                "type": "application/vnd.microsoft.card.adaptive",
+                "value": result.card_payload,
+            }
+        elif result and result.success:
             return {
                 "statusCode": 200,
                 "type": "application/vnd.microsoft.card.adaptive",
