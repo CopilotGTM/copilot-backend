@@ -36,6 +36,8 @@ from src.api.schemas.crm_deal_import_models import (
     DealImportTemplateResponse,
     DealImportUploadRequest,
     DealImportUploadResponse,
+    PipelineInfo,
+    StageInfo,
 )
 from src.api.utils.http_response import Response
 from src.domain.models.organisation_tables.job_models import DealJobs, DealJobType, JobStatus
@@ -53,6 +55,7 @@ from src.service.crm.internal.deal_import_service import (
     DealImportService,
     DealImportServiceError,
 )
+from src.service.crm.internal.internal_crm_setup_service import InternalCRMSetupService
 from src.service.crm.jobs.deal_job_sse_service import DealJobSSEService
 from src.workers.deal_worker.client import send_deal_task_async
 from sse_starlette.sse import EventSourceResponse
@@ -77,6 +80,8 @@ def _map_import_type_to_custom_data_type(
         return CRMCustomFieldDataType.DATETIME, {}
     if import_type == DealImportCustomColumnType.BOOLEAN:
         return CRMCustomFieldDataType.BOOLEAN, {}
+    if import_type == DealImportCustomColumnType.PERCENTAGE:
+        return CRMCustomFieldDataType.PERCENTAGE, {}
     return CRMCustomFieldDataType.TEXT, {}
 
 
@@ -312,6 +317,104 @@ async def process_deal_import(
                 key: _serialize_data_type(data_type) for key, data_type in field_type_result.all()
             }
 
+        # --- Stage mapping check ---
+        # A pipeline is an atomic entity — ALL CSV stages must belong to the
+        # same pipeline.  If any stage doesn't match, the user must choose or
+        # create a pipeline that covers every stage in the file.
+        target_pipeline_id = None
+        csv_stage_names = await deal_import_service.inspect_stage_names(request.storage_path)
+
+        setup_service = InternalCRMSetupService(session, user_ids.organisation_id, user_ids.user_id)
+
+        if request.pipeline_id:
+            # User selected an existing pipeline in a previous round-trip
+            target_pipeline_id = request.pipeline_id
+        elif request.pipeline_config:
+            # User wants to create a new pipeline with custom stages
+            integration = await setup_service.get_internal_integration()
+            if not integration:
+                return Response.error_response(
+                    message="Internal CRM is not configured",
+                    status_code=409,
+                    response=response,
+                )
+            pipeline, _stages = await setup_service.create_import_pipeline(
+                integration_id=integration.integration_id,
+                pipeline_name=request.pipeline_config.name,
+                stages=[s.model_dump() for s in request.pipeline_config.stages],
+            )
+            await session.commit()
+            target_pipeline_id = pipeline.pipeline_id
+        elif csv_stage_names:
+            # No pipeline info provided — check ALL pipelines for a full match.
+            integration = await setup_service.get_internal_integration()
+            if not integration:
+                return Response.error_response(
+                    message="Internal CRM is not configured",
+                    status_code=409,
+                    response=response,
+                )
+
+            csv_lower = {s.lower() for s in csv_stage_names}
+            pipelines = await setup_service.get_all_pipelines(integration.integration_id)
+            all_stages = await setup_service.get_all_stages(integration.integration_id)
+
+            # Group stages by pipeline and build name sets
+            stages_by_pipeline: dict[str, list[StageInfo]] = {}
+            stage_names_by_pipeline: dict[str, set[str]] = {}
+            for st in all_stages:
+                pid = str(st.pipeline_id)
+                stages_by_pipeline.setdefault(pid, []).append(
+                    StageInfo(
+                        stage_id=st.stage_id,
+                        name=st.name,
+                        stage_state=st.stage_state.value
+                        if hasattr(st.stage_state, "value")
+                        else str(st.stage_state),
+                    )
+                )
+                names = stage_names_by_pipeline.setdefault(pid, set())
+                if st.name:
+                    names.add(st.name.lower())
+                if st.label:
+                    names.add(st.label.lower())
+
+            # Find the first pipeline whose stages fully cover every CSV stage
+            matched_pipeline_id = None
+            for p in pipelines:
+                pid = str(p.pipeline_id)
+                if csv_lower <= stage_names_by_pipeline.get(pid, set()):
+                    matched_pipeline_id = p.pipeline_id
+                    break
+
+            if matched_pipeline_id:
+                target_pipeline_id = matched_pipeline_id
+            else:
+                # No pipeline covers all CSV stages — 409 bounce with ALL
+                # stage names so the frontend can present the full picture.
+                all_pipelines: list[PipelineInfo] = [
+                    PipelineInfo(
+                        pipeline_id=p.pipeline_id,
+                        name=p.name,
+                        is_default=p.is_default,
+                        stages=stages_by_pipeline.get(str(p.pipeline_id), []),
+                    )
+                    for p in pipelines
+                ]
+
+                payload = DealImportProcessResponse(
+                    status="stage_mapping_required",
+                    requires_stage_mapping=True,
+                    unknown_stage_names=csv_stage_names,
+                    existing_pipelines=all_pipelines,
+                )
+                return Response.error_response(
+                    message="Pipeline/stage mapping required before import can continue",
+                    status_code=409,
+                    response=response,
+                    data=payload,
+                )
+
         # Job record is created first so the frontend can subscribe to SSE before the worker starts
         job = DealJobs(
             organisation_id=user_ids.organisation_id,
@@ -327,6 +430,7 @@ async def process_deal_import(
                 "strict_validation": request.strict_validation,
                 "custom_columns": custom_columns or None,
                 "custom_column_types": resolved_custom_types or None,
+                "pipeline_id": str(target_pipeline_id) if target_pipeline_id else None,
             },
         )
         session.add(job)

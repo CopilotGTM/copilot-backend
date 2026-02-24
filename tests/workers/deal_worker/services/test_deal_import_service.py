@@ -8,6 +8,7 @@ from uuid import uuid4
 import pytest
 from src.service.crm.internal.deal_write_service import DealWriteServiceError
 from src.workers.deal_worker.services.deal_import_service import (
+    ActorInfo,
     CustomFieldRuntime,
     DealImportContext,
     DealImportProcessingService,
@@ -41,6 +42,7 @@ def _context(pipeline, stage=None) -> DealImportContext:
     return DealImportContext(
         integration_id=uuid4(),
         default_pipeline_id=pipeline.pipeline_id,
+        pipeline=pipeline,
         stage_by_name=stage_by_name,
         custom_fields_by_key={},
     )
@@ -96,7 +98,14 @@ def test_build_payload_owner_defaults_to_importer_when_email_missing() -> None:
 async def test_update_deal_preserves_existing_owner_when_owner_email_missing() -> None:
     service = _service()
     existing_owner_id = uuid4()
-    existing_deal = SimpleNamespace(deal_id=uuid4(), owner_id=existing_owner_id, stage_id=None)
+    pipeline = SimpleNamespace(pipeline_id=uuid4(), name="Pipeline", label=None, external_id="p1")
+    existing_deal = SimpleNamespace(
+        deal_id=uuid4(),
+        owner_id=existing_owner_id,
+        stage_id=None,
+        pipeline_id=pipeline.pipeline_id,
+    )
+    context = _context(pipeline)
 
     class _FakeDealWriteService:
         def __init__(self):
@@ -128,11 +137,18 @@ async def test_update_deal_preserves_existing_owner_when_owner_email_missing() -
         "owner_email_provided": False,
     }
 
+    actor_info = ActorInfo(
+        user_id=service.actor_user_id,
+        user_name="Test User",
+        user_email="test@example.com",
+    )
     await service._update_deal(
         existing_deal=existing_deal,
         payload=payload,
+        context=context,
         service=fake_service,
         org_session=fake_session,
+        actor_info=actor_info,
     )
 
     assert fake_service.assign_owner_called is False
@@ -141,7 +157,14 @@ async def test_update_deal_preserves_existing_owner_when_owner_email_missing() -
 @pytest.mark.asyncio
 async def test_update_deal_assigns_owner_when_owner_email_provided() -> None:
     service = _service()
-    existing_deal = SimpleNamespace(deal_id=uuid4(), owner_id=uuid4(), stage_id=None)
+    pipeline = SimpleNamespace(pipeline_id=uuid4(), name="Pipeline", label=None, external_id="p1")
+    existing_deal = SimpleNamespace(
+        deal_id=uuid4(),
+        owner_id=uuid4(),
+        stage_id=None,
+        pipeline_id=pipeline.pipeline_id,
+    )
+    context = _context(pipeline)
 
     class _FakeDealWriteService:
         def __init__(self):
@@ -175,11 +198,18 @@ async def test_update_deal_assigns_owner_when_owner_email_provided() -> None:
         "owner_email_provided": True,
     }
 
+    actor_info = ActorInfo(
+        user_id=service.actor_user_id,
+        user_name="Test User",
+        user_email="test@example.com",
+    )
     await service._update_deal(
         existing_deal=existing_deal,
         payload=payload,
+        context=context,
         service=fake_service,
         org_session=fake_session,
+        actor_info=actor_info,
     )
 
     assert fake_service.assign_owner_called is True
@@ -189,7 +219,14 @@ async def test_update_deal_assigns_owner_when_owner_email_provided() -> None:
 @pytest.mark.asyncio
 async def test_update_deal_assigns_importer_when_owner_missing_and_existing_owner_empty() -> None:
     service = _service()
-    existing_deal = SimpleNamespace(deal_id=uuid4(), owner_id=None, stage_id=None)
+    pipeline = SimpleNamespace(pipeline_id=uuid4(), name="Pipeline", label=None, external_id="p1")
+    existing_deal = SimpleNamespace(
+        deal_id=uuid4(),
+        owner_id=None,
+        stage_id=None,
+        pipeline_id=pipeline.pipeline_id,
+    )
+    context = _context(pipeline)
 
     class _FakeDealWriteService:
         def __init__(self):
@@ -223,11 +260,18 @@ async def test_update_deal_assigns_importer_when_owner_missing_and_existing_owne
         "owner_email_provided": False,
     }
 
+    actor_info = ActorInfo(
+        user_id=service.actor_user_id,
+        user_name="Test User",
+        user_email="test@example.com",
+    )
     await service._update_deal(
         existing_deal=existing_deal,
         payload=payload,
+        context=context,
         service=fake_service,
         org_session=fake_session,
+        actor_info=actor_info,
     )
 
     assert fake_service.assign_owner_called is True

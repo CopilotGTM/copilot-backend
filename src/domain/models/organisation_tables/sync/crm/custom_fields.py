@@ -27,6 +27,7 @@ class CRMCustomFieldDataType(str, Enum):
     DATE = "date"
     DATETIME = "datetime"
     CURRENCY = "currency"
+    PERCENTAGE = "percentage"
     BOOLEAN = "boolean"
     SELECT = "select"
     MULTISELECT = "multiselect"

@@ -115,6 +115,33 @@ class DealImportService:
         content = ",".join(self.TEMPLATE_HEADERS) + "\n"
         return content.encode("utf-8")
 
+    async def inspect_stage_names(self, storage_path: str) -> list[str]:
+        """Extract distinct stage names from the CSV, preserving first-seen order."""
+        content = await self.org_storage.get_blob_content(storage_path)
+        text = content.decode("utf-8-sig", errors="replace")
+        reader = csv.DictReader(io.StringIO(text))
+        if not reader.fieldnames:
+            return []
+
+        # Find the stage column via known aliases
+        stage_aliases = {"deal_stage_name", "stage_name", "stage"}
+        stage_header: str | None = None
+        for field in reader.fieldnames:
+            if field and field.strip().lower() in stage_aliases:
+                stage_header = field
+                break
+        if not stage_header:
+            return []
+
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for row in reader:
+            value = self._clean_value(row.get(stage_header))
+            if value and value.lower() not in seen:
+                seen.add(value.lower())
+                ordered.append(value)
+        return ordered
+
     async def inspect_custom_columns(self, storage_path: str) -> tuple[list[str], dict[str, str]]:
         """Inspect uploaded CSV and return custom column keys with suggested scalar types."""
         content = await self.org_storage.get_blob_content(storage_path)
@@ -215,6 +242,8 @@ class DealImportService:
             return "date"
         if cls._all_currency(samples):
             return "currency"
+        if cls._all_percentage(samples):
+            return "percentage"
         if cls._all_number(samples):
             return "number"
         return "text"
@@ -298,3 +327,21 @@ class DealImportService:
                 return False
         # Avoid classifying plain numeric columns as currency when no marker is present.
         return saw_currency_marker
+
+    @staticmethod
+    def _all_percentage(values: list[str]) -> bool:
+        """Detect percentage columns: values with '%' suffix or all numbers in 0–1 range."""
+        saw_pct_sign = False
+        for value in values:
+            stripped = value.strip()
+            if stripped.endswith("%"):
+                saw_pct_sign = True
+                stripped = stripped[:-1].strip()
+            try:
+                num = float(stripped)
+            except ValueError:
+                return False
+            # Without an explicit % sign, only treat 0–1 range as percentage.
+            if not saw_pct_sign and not (0 <= num <= 1):
+                return False
+        return True

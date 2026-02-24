@@ -67,6 +67,8 @@ def process_deal_import_job(self: Task, organisation_id: str, job_id: str):
             import_mode = str(job_metadata.get("import_mode") or "upsert").strip().lower()
             emit_row_events = _coerce_bool(job_metadata.get("emit_row_events"), True)
             strict_validation = _coerce_bool(job_metadata.get("strict_validation"), False)
+            raw_pipeline_id = job_metadata.get("pipeline_id")
+            pipeline_id = UUID(raw_pipeline_id) if raw_pipeline_id else None
 
         if not storage_path:
             raise DealWriteServiceError("Deal import job missing storage_path", status_code=400)
@@ -80,6 +82,7 @@ def process_deal_import_job(self: Task, organisation_id: str, job_id: str):
             import_mode=import_mode,
             emit_row_events=emit_row_events,
             strict_validation=strict_validation,
+            pipeline_id=pipeline_id,
         )
 
         result_data = await service.process()
