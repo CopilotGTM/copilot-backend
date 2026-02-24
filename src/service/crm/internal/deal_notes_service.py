@@ -217,12 +217,13 @@ class DealNotesService:
         user_id: UUID,
         user_name: str | None,
         user_email: str | None,
+        created_via: str = "api",
     ) -> CreateUserNoteResult:
         """Create a new user-generated note for a deal.
 
         User-created notes are distinguished from CRM-synced notes by:
         - integration_id = NULL
-        - properties contains {"is_user_created": True, "created_via": "api"}
+        - properties contains {"is_user_created": True, "created_via": ...}
 
         Args:
             deal_id: Internal deal UUID
@@ -231,6 +232,7 @@ class DealNotesService:
             user_id: ID of user creating the note
             user_name: Name of user creating the note
             user_email: Email of user creating the note
+            created_via: Source channel — "api", "import", "bot", etc.
 
         Returns:
             CreateUserNoteResult containing the note and whether a new note was created
@@ -279,7 +281,7 @@ class DealNotesService:
             last_seen_at=now,
             properties={
                 "is_user_created": True,
-                "created_via": "api",
+                "created_via": created_via,
             },
         )
 

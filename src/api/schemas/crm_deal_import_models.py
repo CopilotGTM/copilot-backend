@@ -25,6 +25,7 @@ class DealImportCustomColumnType(str, Enum):
     DATETIME = "datetime"
     CURRENCY = "currency"
     BOOLEAN = "boolean"
+    PERCENTAGE = "percentage"
 
 
 _CUSTOM_KEY_SANITIZE_RE = re.compile(r"[^a-z0-9_]+")
@@ -58,6 +59,41 @@ class DealImportUploadResponse(BaseModel):
     expires_in_seconds: int
 
 
+# --- Pipeline / stage mapping schemas ---
+
+
+class StageConfig(BaseModel):
+    """A single stage definition supplied by the frontend when creating a new pipeline."""
+
+    name: str = Field(..., min_length=1, max_length=255)
+    stage_state: str = Field(..., pattern=r"^(open|won|lost)$")
+    display_order: int
+
+
+class PipelineConfig(BaseModel):
+    """Frontend-supplied definition for a new import pipeline."""
+
+    name: str = Field(..., min_length=1, max_length=255)
+    stages: list[StageConfig] = Field(..., min_length=1)
+
+
+class StageInfo(BaseModel):
+    """Read-only stage summary returned to the frontend."""
+
+    stage_id: UUID
+    name: str
+    stage_state: str
+
+
+class PipelineInfo(BaseModel):
+    """Read-only pipeline summary returned to the frontend."""
+
+    pipeline_id: UUID
+    name: str
+    is_default: bool
+    stages: list[StageInfo]
+
+
 class DealImportProcessRequest(BaseModel):
     storage_path: str = Field(..., min_length=1)
     file_type: DealImportFileType | None = None
@@ -66,6 +102,8 @@ class DealImportProcessRequest(BaseModel):
     strict_validation: bool = False
     custom_column_types: dict[str, DealImportCustomColumnType] | None = None
     custom_column_labels: dict[str, str] | None = None
+    pipeline_id: UUID | None = None
+    pipeline_config: PipelineConfig | None = None
 
     @field_validator("custom_column_types", mode="before")
     @classmethod
@@ -126,3 +164,6 @@ class DealImportProcessResponse(BaseModel):
     requires_custom_column_mapping: bool = False
     unknown_custom_columns: list[str] | None = None
     suggested_types: dict[str, DealImportCustomColumnType] | None = None
+    requires_stage_mapping: bool = False
+    unknown_stage_names: list[str] | None = None
+    existing_pipelines: list[PipelineInfo] | None = None

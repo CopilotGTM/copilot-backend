@@ -8,7 +8,7 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,11 +24,14 @@ from src.domain.models.organisation_tables.sync.crm.custom_fields import (
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDeal,
     CRMDealStage,
+    CRMDealStageHistory,
     CRMDealStatus,
+    CRMPipeline,
 )
 from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
 from src.infra.utils.logger import get_logger
+from src.service.crm.internal.deal_notes_service import DealNotesService
 from src.service.crm.internal.deal_write_service import DealWriteService, DealWriteServiceError
 from src.service.crm.internal.internal_crm_setup_service import InternalCRMSetupService
 from src.workers.deal_worker.services.deal_job_publisher import DealJobRedisPublisher
@@ -102,6 +105,8 @@ _CSV_HEADER_ALIASES = {
     "company_linkedin": "company_linkedin",
     "company_industry": "company_industry",
     "company_country": "company_country",
+    "deal_note": "import_note",
+    "import_note": "import_note",
     "deal_external_ref": "deal_external_ref",
     "import_source_ref": "deal_external_ref",
     "deal_team_member_emails": "team_member_emails",
@@ -113,6 +118,7 @@ _CSV_HEADER_ALIASES = {
 class DealImportContext:
     integration_id: UUID
     default_pipeline_id: UUID
+    pipeline: CRMPipeline
     stage_by_name: dict[str, CRMDealStage]
     custom_fields_by_key: dict[str, CustomFieldRuntime]
 
@@ -121,6 +127,13 @@ class DealImportContext:
 class CustomFieldRuntime:
     data_type: str
     validation: dict
+
+
+@dataclass(slots=True)
+class ActorInfo:
+    user_id: UUID
+    user_name: str
+    user_email: str
 
 
 class DealImportProcessingService:
@@ -135,6 +148,7 @@ class DealImportProcessingService:
         import_mode: str = "upsert",
         emit_row_events: bool = True,
         strict_validation: bool = False,
+        pipeline_id: UUID | None = None,
     ) -> None:
         self.organisation_id = organisation_id
         self.actor_user_id = actor_user_id
@@ -143,6 +157,7 @@ class DealImportProcessingService:
         self.import_mode = self._normalize_import_mode(import_mode)
         self.emit_row_events = emit_row_events
         self.strict_validation = strict_validation
+        self.pipeline_id = pipeline_id
 
     async def process(self) -> dict:
         self.publisher.publish_progress("Downloading import file", "download", 0.05)
@@ -156,8 +171,9 @@ class DealImportProcessingService:
         context = await self._load_context()
         # Batch-resolve all emails upfront so we hit the DB once, not once per row
         user_map = await self._resolve_user_map(rows)
+        actor_info = await self._resolve_actor_info()
 
-        return await self._process_rows(rows, context, user_map)
+        return await self._process_rows(rows, context, user_map, actor_info)
 
     async def _download_blob(self) -> bytes:
         storage = AzureOrganisationBlobStorage(self.organisation_id)
@@ -201,19 +217,50 @@ class DealImportProcessingService:
         return rows
 
     async def _load_context(self) -> DealImportContext:
-        """Load the default pipeline and only its stages — imports don't support pipeline selection."""
+        """Load pipeline stages and custom field definitions for the import.
+
+        When self.pipeline_id is set (from job metadata), loads that specific
+        pipeline's stages. Otherwise falls back to the default pipeline.
+        """
         async for session in acquire_org_async_session(self.organisation_id):
             setup_service = InternalCRMSetupService(
                 session, self.organisation_id, self.actor_user_id
             )
-            # Read-only — won't create missing pipeline/stages; fails if CRM isn't set up
             result = await setup_service.get_status()
             if not result:
                 raise DealWriteServiceError("Internal CRM is not configured", status_code=409)
 
+            integration_id = result.integration.integration_id
+
+            if self.pipeline_id:
+                # Load stages for the explicitly-specified pipeline
+                pipeline_stmt = select(CRMPipeline).where(
+                    col(CRMPipeline.pipeline_id) == self.pipeline_id,
+                    col(CRMPipeline.organisation_id) == self.organisation_id,
+                    col(CRMPipeline.is_deleted).is_(False),
+                )
+                pipeline_result = await session.execute(pipeline_stmt)
+                target_pipeline = pipeline_result.scalars().first()
+                if not target_pipeline:
+                    raise DealWriteServiceError(
+                        f"Pipeline {self.pipeline_id} not found", status_code=404
+                    )
+                target_pipeline_id = target_pipeline.pipeline_id
+
+                stage_stmt = select(CRMDealStage).where(
+                    col(CRMDealStage.pipeline_id) == target_pipeline_id,
+                    col(CRMDealStage.organisation_id) == self.organisation_id,
+                    col(CRMDealStage.is_deleted).is_(False),
+                )
+                stage_result = await session.execute(stage_stmt)
+                pipeline_stages = list(stage_result.scalars().all())
+            else:
+                target_pipeline_id = result.pipeline.pipeline_id
+                pipeline_stages = result.stages
+
             # Case-insensitive lookup so CSV values like "Closed Won" and "closed won" both match
             stage_by_name: dict[str, CRMDealStage] = {}
-            for stage in result.stages:
+            for stage in pipeline_stages:
                 if stage.name:
                     stage_by_name[stage.name.lower()] = stage
                 if stage.label:
@@ -236,9 +283,16 @@ class DealImportProcessingService:
                 for row in custom_field_result.scalars().all()
             }
 
+            # Resolve the pipeline object for context
+            if self.pipeline_id and target_pipeline:
+                context_pipeline = target_pipeline
+            else:
+                context_pipeline = result.pipeline
+
             return DealImportContext(
-                integration_id=result.integration.integration_id,
-                default_pipeline_id=result.pipeline.pipeline_id,
+                integration_id=integration_id,
+                default_pipeline_id=target_pipeline_id,
+                pipeline=context_pipeline,
                 stage_by_name=stage_by_name,
                 custom_fields_by_key=custom_fields_by_key,
             )
@@ -268,11 +322,65 @@ class DealImportProcessingService:
 
         return {}
 
+    async def _resolve_actor_info(self) -> ActorInfo:
+        """Look up the importing user's name and email for note attribution."""
+        async for master_session in acquire_master_async_session():
+            stmt = select(
+                col(MasterUser.first_name),
+                col(MasterUser.last_name),
+                col(MasterUser.email),
+            ).where(col(MasterUser.user_id) == self.actor_user_id)
+            result = await master_session.execute(stmt)
+            row = result.one_or_none()
+            if row:
+                first_name, last_name, email = row
+                return ActorInfo(
+                    user_id=self.actor_user_id,
+                    user_name=f"{first_name} {last_name}".strip(),
+                    user_email=str(email),
+                )
+
+        # Fallback — should not happen in practice
+        return ActorInfo(
+            user_id=self.actor_user_id,
+            user_name="Import User",
+            user_email="",
+        )
+
+    async def _create_import_note(
+        self,
+        *,
+        deal: CRMDeal,
+        description: str,
+        org_session: AsyncSession,
+        actor_info: ActorInfo,
+    ) -> None:
+        """Create a deal note from the CSV description column.
+
+        Uses DealNotesService.create_user_note() which deduplicates on
+        body + subject, so re-importing the same file won't create duplicates.
+        Does NOT trigger the deal insight pipeline (too expensive for bulk).
+        """
+        notes_service = DealNotesService(
+            org_session=org_session,
+            organisation_id=self.organisation_id,
+        )
+        await notes_service.create_user_note(
+            deal_id=deal.deal_id,
+            content=description,
+            subject="Import Note",
+            user_id=actor_info.user_id,
+            user_name=actor_info.user_name,
+            user_email=actor_info.user_email,
+            created_via="import",
+        )
+
     async def _process_rows(
         self,
         rows: list[dict[str, str | None]],
         context: DealImportContext,
         user_map: dict[str, UUID],
+        actor_info: ActorInfo,
     ) -> dict:
         total_rows = len(rows)
         created: list[dict] = []
@@ -387,8 +495,10 @@ class DealImportProcessingService:
                             deal = await self._update_deal(
                                 existing_deal=existing_deal,
                                 payload=payload,
+                                context=context,
                                 service=service,
                                 org_session=org_session,
+                                actor_info=actor_info,
                             )
                             updated.append(
                                 {
@@ -422,7 +532,9 @@ class DealImportProcessingService:
                                     "Creating deal record",
                                     deal_name,
                                 )
-                            deal = await self._create_deal(payload, service, org_session)
+                            deal = await self._create_deal(
+                                payload, service, org_session, actor_info
+                            )
                             created.append(
                                 {
                                     "row_number": row_number,
@@ -542,77 +654,47 @@ class DealImportProcessingService:
         payload: dict,
         context: DealImportContext,
     ) -> CRMDeal | None:
+        """Find an existing deal by deal_name + company_name (account name).
+
+        Match → update the deal.  No match → create a new deal.
+        Searches across ALL pipelines.
+        """
         deal_name = self._clean_value(payload.get("name"))
         if not deal_name:
             return None
+
+        account_payload = payload.get("account") or {}
+        company_name = self._clean_value(account_payload.get("name")) or self._clean_value(
+            row.get("company_name")
+        )
 
         stmt = select(CRMDeal).where(
             col(CRMDeal.organisation_id) == self.organisation_id,
             col(CRMDeal.integration_id) == context.integration_id,
             col(CRMDeal.is_deleted).is_(False),
-            col(CRMDeal.pipeline_id) == context.default_pipeline_id,
             func.lower(col(CRMDeal.name)) == deal_name.lower(),
         )
-        result = await org_session.execute(stmt)
-        candidates = list(result.scalars().all())
-        if not candidates:
-            return None
 
-        external_ref = self._clean_value(row.get("deal_external_ref"))
-        if external_ref:
-            external_matches: list[CRMDeal] = []
-            for candidate in candidates:
-                props = candidate.properties or {}
-                candidate_ref = self._clean_value(
-                    props.get("deal_external_ref") or props.get("import_source_ref")
-                )
-                if candidate_ref and candidate_ref.lower() == external_ref.lower():
-                    external_matches.append(candidate)
-            if len(external_matches) > 1:
-                raise DealWriteServiceError(
-                    "Ambiguous match for deal_external_ref", status_code=409
-                )
-            if len(external_matches) == 1:
-                return external_matches[0]
-            return None
-
-        account_payload = payload.get("account") or {}
-        company_domain = self._normalize_domain(account_payload.get("domain"))
-        if company_domain:
-            domain_matches = [
-                candidate
-                for candidate in candidates
-                if self._normalize_domain(candidate.company_domain)
-                and self._normalize_domain(candidate.company_domain) == company_domain
-            ]
-            if len(domain_matches) > 1:
-                raise DealWriteServiceError(
-                    "Ambiguous match for company_domain + deal_name", status_code=409
-                )
-            if len(domain_matches) == 1:
-                return domain_matches[0]
-
-        company_name = self._clean_value(account_payload.get("name")) or self._clean_value(
-            row.get("company_name")
-        )
         if company_name:
-            company_matches = [
-                candidate
-                for candidate in candidates
-                if self._clean_value(candidate.company_name)
-                and self._clean_value(candidate.company_name).lower() == company_name.lower()
-            ]
-            if len(company_matches) > 1:
-                raise DealWriteServiceError(
-                    "Ambiguous match for company_name + deal_name", status_code=409
-                )
-            if len(company_matches) == 1:
-                return company_matches[0]
-            return None
+            stmt = stmt.where(func.lower(col(CRMDeal.company_name)) == company_name.lower())
 
-        if len(candidates) > 1:
-            raise DealWriteServiceError("Ambiguous match for deal_name", status_code=409)
-        return candidates[0]
+        result = await org_session.execute(stmt)
+        match = result.scalars().first()
+
+        if match:
+            logger.debug(
+                "Matched existing deal %s (name=%s, company=%s)",
+                match.deal_id,
+                deal_name,
+                company_name,
+            )
+        else:
+            logger.debug(
+                "No matching deal found (name=%s, company=%s) — will create",
+                deal_name,
+                company_name,
+            )
+        return match
 
     async def _resolve_account_warnings(
         self,
@@ -916,6 +998,7 @@ class DealImportProcessingService:
             "account": account_payload,
             "team_members": team_members or None,
             "custom_properties": custom_properties or None,
+            "import_note": self._clean_value(row.get("import_note")),
             "created_via": "import",
         }
         return payload, warnings
@@ -925,10 +1008,19 @@ class DealImportProcessingService:
         payload: dict,
         service: DealWriteService,
         org_session: AsyncSession,
+        actor_info: ActorInfo,
     ):
         # Each row commits independently so one failure doesn't roll back prior rows
         try:
             deal = await service.create_deal(payload)
+            import_note = payload.get("import_note")
+            if import_note:
+                await self._create_import_note(
+                    deal=deal,
+                    description=import_note,
+                    org_session=org_session,
+                    actor_info=actor_info,
+                )
             await org_session.commit()
             await org_session.refresh(deal)
             return deal
@@ -941,8 +1033,10 @@ class DealImportProcessingService:
         *,
         existing_deal: CRMDeal,
         payload: dict,
+        context: DealImportContext,
         service: DealWriteService,
         org_session: AsyncSession,
+        actor_info: ActorInfo,
     ):
         # Preserve existing values by only updating explicitly supported non-null fields.
         update_payload = {
@@ -975,8 +1069,22 @@ class DealImportProcessingService:
             if should_assign_owner and owner_user_id != deal.owner_id:
                 deal = await service.assign_owner(existing_deal.deal_id, owner_user_id)
 
+            # Pipeline + stage handling: if the import targets a different pipeline,
+            # reassign the deal to the new pipeline and clean up old stage history.
+            target_pipeline_id = payload.get("pipeline_id")
             stage_id = payload.get("stage_id")
-            if stage_id and deal.stage_id != stage_id:
+            pipeline_changed = (
+                target_pipeline_id and deal.pipeline_id and target_pipeline_id != deal.pipeline_id
+            )
+
+            if pipeline_changed:
+                await self._reassign_pipeline(
+                    deal=deal,
+                    pipeline=context.pipeline,
+                    stage_id=stage_id,
+                    org_session=org_session,
+                )
+            elif stage_id and deal.stage_id != stage_id:
                 deal = await service.move_stage(existing_deal.deal_id, stage_id)
 
             account_payload = payload.get("account")
@@ -995,12 +1103,97 @@ class DealImportProcessingService:
                     else None,
                 )
 
+            import_note = payload.get("import_note")
+            if import_note:
+                await self._create_import_note(
+                    deal=deal,
+                    description=import_note,
+                    org_session=org_session,
+                    actor_info=actor_info,
+                )
+
             await org_session.commit()
             await org_session.refresh(deal)
             return deal
         except Exception:
             await org_session.rollback()
             raise
+
+    async def _reassign_pipeline(
+        self,
+        *,
+        deal: CRMDeal,
+        pipeline: CRMPipeline,
+        stage_id: UUID | None,
+        org_session: AsyncSession,
+    ) -> None:
+        """Move a deal to a different pipeline: update pipeline fields, delete
+        old stage history, and set the new stage."""
+        now = datetime.now(UTC)
+
+        # Delete old stage history — stages from the previous pipeline are irrelevant
+        old_history_stmt = select(CRMDealStageHistory).where(
+            col(CRMDealStageHistory.deal_id) == deal.deal_id,
+        )
+        old_history_result = await org_session.execute(old_history_stmt)
+        for record in old_history_result.scalars().all():
+            await org_session.delete(record)
+
+        # Update pipeline fields on the deal
+        deal.pipeline_id = pipeline.pipeline_id
+        deal.pipeline_external_id = pipeline.external_id
+        deal.pipeline_name = pipeline.name
+
+        # Resolve and apply the new stage
+        if stage_id:
+            stage = await org_session.get(CRMDealStage, stage_id)
+        else:
+            # Fall back to the first stage in the new pipeline
+            first_stage_stmt = (
+                select(CRMDealStage)
+                .where(
+                    col(CRMDealStage.pipeline_id) == pipeline.pipeline_id,
+                    col(CRMDealStage.organisation_id) == self.organisation_id,
+                    col(CRMDealStage.is_deleted).is_(False),
+                )
+                .order_by(col(CRMDealStage.display_order).asc())
+                .limit(1)
+            )
+            stage_result = await org_session.execute(first_stage_stmt)
+            stage = stage_result.scalars().first()
+
+        if stage:
+            deal.stage_id = stage.stage_id
+            deal.stage_external_id = stage.external_id
+            deal.stage_name = stage.name
+
+            # Record the first history entry in the new pipeline
+            history_id = uuid4()
+            history = CRMDealStageHistory(
+                history_id=history_id,
+                organisation_id=self.organisation_id,
+                integration_id=deal.integration_id,
+                external_id=str(history_id),
+                deal_id=deal.deal_id,
+                stage_id=stage.stage_id,
+                stage_external_id=stage.external_id,
+                entered_at=now,
+                synced_at=now,
+                last_seen_at=now,
+            )
+            org_session.add(history)
+
+        deal.source_modified_at = now
+        deal.synced_at = now
+        deal.last_seen_at = now
+        org_session.add(deal)
+
+        logger.info(
+            "Reassigned deal %s to pipeline %s (stage=%s)",
+            deal.deal_id,
+            pipeline.name,
+            stage.name if stage else "none",
+        )
 
     @staticmethod
     def _clean_value(value: object | None) -> str | None:

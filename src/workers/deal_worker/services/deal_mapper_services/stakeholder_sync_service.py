@@ -53,7 +53,7 @@ from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     StakeholderStance,
     StakeholderTemperature,
 )
-from src.infra.database.sessions import acquire_org_async_session
+from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.infra.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -546,13 +546,15 @@ class StakeholderSyncService:
         domains: set[str] = set()
 
         # Tier 1: Organisation.domain (authoritative)
-        org_stmt = select(col(Organisation.domain)).where(
-            col(Organisation.organisation_id) == self.organisation_id,
-        )
-        org_result = await session.execute(org_stmt)
-        domains_raw = org_result.scalar_one_or_none()
-        if domains_raw and isinstance(domains_raw, list):
-            domains = {d.strip().lower() for d in domains_raw if d and d.strip()}
+        # Organisation lives in the public schema — requires a master session.
+        async for master_session in acquire_master_async_session():
+            org_stmt = select(col(Organisation.domain)).where(
+                col(Organisation.organisation_id) == self.organisation_id,
+            )
+            org_result = await master_session.execute(org_stmt)
+            domains_raw = org_result.scalar_one_or_none()
+            if domains_raw and isinstance(domains_raw, list):
+                domains = {d.strip().lower() for d in domains_raw if d and d.strip()}
 
         # Tier 2: Derive from all USER participant emails in the org
         if not domains:

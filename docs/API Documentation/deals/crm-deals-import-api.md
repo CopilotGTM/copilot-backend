@@ -93,7 +93,9 @@ POST /users/crm/deals/import/process
   },
   "custom_column_labels": {
     "custom_steel_target": "Steel Target"
-  }
+  },
+  "pipeline_id": null,
+  "pipeline_config": null
 }
 ```
 
@@ -106,6 +108,19 @@ POST /users/crm/deals/import/process
   Allowed values: `text | number | integer | date | datetime | currency | boolean`
   Frontend rendering guidance: `date` -> date picker, `datetime` -> date-time picker, `currency` -> numeric input with currency symbol/code.
 - `custom_column_labels` (optional): friendly labels for newly defined custom columns.
+- `pipeline_id` (optional): UUID of an existing pipeline to use for the import. Returned in the `stage_mapping_required` 409 response.
+- `pipeline_config` (optional): create a new pipeline with custom stages. Cannot be combined with `pipeline_id`.
+  ```json
+  {
+    "name": "My Sales Pipeline",
+    "stages": [
+      { "name": "Lead", "stage_state": "open", "display_order": 1 },
+      { "name": "Opportunity", "stage_state": "open", "display_order": 2 },
+      { "name": "Contract Signed", "stage_state": "won", "display_order": 3 },
+      { "name": "Did Not Close", "stage_state": "lost", "display_order": 4 }
+    ]
+  }
+  ```
 
 ### Response (202)
 
@@ -141,6 +156,49 @@ When uploaded CSV contains unknown `custom_*` columns and mapping is not provide
   }
 }
 ```
+
+### Response (409) - Pipeline/Stage Mapping Required
+
+When no existing pipeline fully covers **all** `deal_stage_name` values from the CSV,
+and neither `pipeline_id` nor `pipeline_config` is provided. A pipeline is an atomic
+entity — all deals in an import must use the same pipeline, so the backend checks every
+pipeline in the org (not just the default) for a full match.
+
+`unknown_stage_names` contains **all** distinct stage names found in the CSV (not just
+the unmatched ones), so the frontend has the complete picture for mapping.
+
+```json
+{
+  "status": "ERROR",
+  "message": "Pipeline/stage mapping required before import can continue",
+  "data": {
+    "status": "stage_mapping_required",
+    "requires_stage_mapping": true,
+    "unknown_stage_names": ["Lead", "Opportunity", "Contract Signed"],
+    "existing_pipelines": [
+      {
+        "pipeline_id": "abc-123",
+        "name": "Default Pipeline",
+        "is_default": true,
+        "stages": [
+          { "stage_id": "s1", "name": "Qualification", "stage_state": "open" },
+          { "stage_id": "s2", "name": "Discovery", "stage_state": "open" },
+          { "stage_id": "s3", "name": "Closed Won", "stage_state": "won" },
+          { "stage_id": "s4", "name": "Closed Lost", "stage_state": "lost" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Frontend should present the user with two options:
+1. **Select an existing pipeline** — user picks from `existing_pipelines` and re-calls with `pipeline_id`.
+   Only pipelines whose stages fully cover every CSV stage name should be selectable.
+2. **Create a new pipeline** — user names stages, sets order and state (open/won/lost), and re-calls with `pipeline_config`.
+   CSV stage names are pre-populated so the user can adjust states/order.
+
+This follows the same 409-bounce pattern used for custom column mapping.
 
 ---
 
@@ -236,7 +294,8 @@ deal_team_member_emails
   - emits `contact_email_missing` warning for name-only contacts and `ambiguous_contact_name` when multiple contact name matches exist.
 - If `deal_name` is empty, we fall back to `company_name` or `company_domain`.
 - `deal_owner_email` must exist in your organisation users.
-- `pipeline` is currently fixed to the org default during import.
+- `pipeline` defaults to the org default but can be overridden via `pipeline_id` or `pipeline_config`.
+- If CSV stage names don't match the default pipeline, a `409` is returned with `stage_mapping_required`.
 - `custom_*` columns are not part of the standard template, but are supported in upload files.
 - New custom columns trigger a mapping gate (`409`) unless type mapping is supplied.
 - Once mapped, definitions are stored and reused in future imports.
@@ -299,6 +358,13 @@ curl -N \
 ---
 
 ## Changelog
+
+### 2026-02-24
+
+- Added pipeline/stage mapping support: `pipeline_id` and `pipeline_config` fields in process request.
+- Documented `409` `stage_mapping_required` response for unmatched CSV stage names.
+- Frontend can select an existing pipeline or create a new one with custom stages.
+- Pipeline is no longer fixed to the org default during import.
 
 ### 2026-02-10
 
