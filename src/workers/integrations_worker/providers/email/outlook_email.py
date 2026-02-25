@@ -19,7 +19,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from urllib.parse import parse_qs, urlparse
 
 import httpx
 
@@ -30,9 +29,14 @@ from src.service.integrations.nango_client import NangoClient
 from src.workers.integrations_worker.providers._microsoft_graph import (
     get_access_token,
     graph_api_request,
+    graph_api_request_url,
 )
 
 logger = get_logger(__name__)
+
+
+# Batch size for body backfill requests (Microsoft Graph $batch supports up to 20)
+_BODY_BATCH_SIZE = 20
 
 
 @dataclass
@@ -41,25 +45,6 @@ class FetchMessagesResult:
 
     messages: list[dict[str, Any]]
     delta_link: str | None = None
-
-
-def _extract_pagination_params(next_link: str) -> tuple[str, dict[str, Any]]:
-    """
-    Extract endpoint path and query params from Microsoft Graph @odata.nextLink or @odata.deltaLink.
-
-    Microsoft Graph returns full URLs like:
-    https://graph.microsoft.com/v1.0/me/mailFolders/{id}/messages/delta?$skiptoken=xxx...
-
-    We need to extract the path and query params for direct API calls.
-    """
-    parsed = urlparse(next_link)
-    endpoint = parsed.path
-
-    # Parse query string into dict (parse_qs returns lists, we want single values)
-    query_dict = parse_qs(parsed.query)
-    params: dict[str, Any] = {k: v[0] if len(v) == 1 else v for k, v in query_dict.items()}
-
-    return endpoint, params
 
 
 def _mark_as_deleted(message: dict[str, Any]) -> dict[str, Any]:
@@ -119,6 +104,65 @@ def _filter_other_inbox_messages(
         filtered.append(message)
 
     return filtered, skipped
+
+
+async def _backfill_bodies(
+    client: httpx.AsyncClient,
+    messages: list[dict[str, Any]],
+) -> None:
+    """Fetch body content for messages that don't have it.
+
+    Delta query excludes body to ensure Microsoft Graph returns @odata.deltaLink.
+    This function backfills body content via $batch requests.
+    Deleted messages (@removed) are skipped.
+    """
+    ids_to_fetch = [
+        m["id"] for m in messages if "body" not in m and "@removed" not in m and m.get("id")
+    ]
+
+    if not ids_to_fetch:
+        return
+
+    logger.info("Backfilling body for %d messages", len(ids_to_fetch))
+
+    msg_by_id: dict[str, dict[str, Any]] = {m["id"]: m for m in messages if m.get("id")}
+
+    for i in range(0, len(ids_to_fetch), _BODY_BATCH_SIZE):
+        batch_ids = ids_to_fetch[i : i + _BODY_BATCH_SIZE]
+
+        batch_requests = [
+            {
+                "id": str(idx),
+                "method": "GET",
+                "url": f"/me/messages/{msg_id}?$select=id,body",
+            }
+            for idx, msg_id in enumerate(batch_ids)
+        ]
+
+        try:
+            batch_resp = await client.post(
+                "https://graph.microsoft.com/v1.0/$batch",
+                json={"requests": batch_requests},
+            )
+            batch_resp.raise_for_status()
+            batch_data = batch_resp.json()
+
+            for response in batch_data.get("responses", []):
+                if response.get("status") == 200:
+                    body_data = response.get("body", {})
+                    msg_id = body_data.get("id")
+                    if msg_id and msg_id in msg_by_id:
+                        msg_by_id[msg_id]["body"] = body_data.get("body")
+        except Exception:
+            logger.warning(
+                "Body backfill batch failed (batch %d-%d), continuing without body",
+                i,
+                i + len(batch_ids),
+                exc_info=True,
+            )
+
+    fetched = sum(1 for mid in ids_to_fetch if "body" in msg_by_id.get(mid, {}))
+    logger.info("Body backfill complete: %d/%d messages", fetched, len(ids_to_fetch))
 
 
 async def fetch_folders(
@@ -237,27 +281,33 @@ async def fetch_messages(
     now = datetime.now(UTC)
     using_stored_delta_link = False
 
+    # stored_delta_url: when resuming incremental sync, use the opaque URL as-is
+    stored_delta_url: str | None = None
+
     if delta_link:
-        # True incremental sync: use stored deltaLink
-        # Returns ONLY messages that changed since the deltaLink was issued
-        initial_endpoint, initial_params = _extract_pagination_params(delta_link)
+        # True incremental sync: use stored deltaLink URL directly
+        stored_delta_url = delta_link
         using_stored_delta_link = True
         logger.info(
             "Outlook Email: using stored deltaLink for folder (true incremental)",
         )
-    else:
-        # Fresh delta query (initial sync)
-        # Use delta endpoint with receivedDateTime filter for last 1 year
-        time_min = now - timedelta(days=365)
-        time_min_str = time_min.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-        initial_endpoint = f"/v1.0/me/mailFolders/{folder_id}/messages/delta"
-        initial_params: dict[str, Any] = {
-            "$filter": f"receivedDateTime ge {time_min_str}",
-            # Note: $select is encoded into deltaLink, don't need to repeat
-            # Including body for full email content
-            "$select": "id,conversationId,subject,bodyPreview,body,from,toRecipients,ccRecipients,bccRecipients,replyTo,sentDateTime,receivedDateTime,hasAttachments,importance,isRead,isDraft,internetMessageId,parentFolderId,inferenceClassification",
-        }
+    # Fresh delta query params (used when no delta_link and no next_link)
+    time_min = now - timedelta(days=365)
+    time_min_str = time_min.strftime("%Y-%m-%dT%H:%M:%SZ")
+    initial_endpoint = f"/v1.0/me/mailFolders/{folder_id}/messages/delta"
+    initial_params: dict[str, Any] = {
+        "$filter": f"receivedDateTime ge {time_min_str}",
+        # body excluded — including it prevents Microsoft Graph from returning
+        # @odata.deltaLink. Body is backfilled separately after the delta query.
+        "$select": (
+            "id,conversationId,subject,bodyPreview,from,toRecipients,"
+            "ccRecipients,bccRecipients,replyTo,sentDateTime,receivedDateTime,"
+            "hasAttachments,importance,isRead,isDraft,internetMessageId,"
+            "parentFolderId,inferenceClassification"
+        ),
+    }
+    if not delta_link:
         logger.info(
             "Outlook Email: fresh delta query for folder=%s (since=%s)",
             folder_id,
@@ -267,22 +317,26 @@ async def fetch_messages(
     all_items: list[dict[str, Any]] = []
     next_link: str | None = None
     new_delta_link: str | None = None
-    max_pages = 100  # Safety limit (100 pages * ~100 items = 10,000 messages max)
+    max_pages = 500  # Safety limit (500 pages * 50 items = 25,000 messages max)
 
     token = await get_access_token(nango, connection_id, provider)
 
     async with httpx.AsyncClient(
-        headers={"Authorization": f"Bearer {token}"}, timeout=30.0
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Prefer": "odata.maxpagesize=50",
+        },
+        timeout=30.0,
     ) as client:
         for page_num in range(max_pages):
-            # Determine endpoint and params for this request
-            if next_link:
-                endpoint, params = _extract_pagination_params(next_link)
-            else:
-                endpoint, params = initial_endpoint, initial_params
-
             try:
-                resp = await graph_api_request(client, endpoint, params=params)
+                if next_link:
+                    resp = await graph_api_request_url(client, next_link)
+                elif stored_delta_url:
+                    resp = await graph_api_request_url(client, stored_delta_url)
+                    stored_delta_url = None  # only used for the first request
+                else:
+                    resp = await graph_api_request(client, initial_endpoint, params=initial_params)
             except httpx.HTTPStatusError as exc:
                 # Handle expired deltaLink (Microsoft returns 410 Gone)
                 if using_stored_delta_link and page_num == 0 and exc.response.status_code == 410:
@@ -367,12 +421,40 @@ async def fetch_messages(
                     new_delta_link = resp.get("@odata.deltaLink")
                     if new_delta_link:
                         logger.info(
-                            "Delta sync complete after %d pages, new deltaLink received",
+                            "Delta sync complete after %d pages, new deltaLink received"
+                            " (length=%d, folder=%s)",
                             page_num + 1,
+                            len(new_delta_link),
+                            folder_id,
+                        )
+                    else:
+                        # Log response keys to diagnose missing deltaLink
+                        resp_keys = [k for k in resp if k != "value"]
+                        logger.warning(
+                            "Microsoft Graph did NOT return @odata.deltaLink on last"
+                            " page (folder=%s, pages=%d, items=%d, resp_keys=%s)",
+                            folder_id,
+                            page_num + 1,
+                            len(all_items),
+                            resp_keys,
                         )
                     break
             else:
                 break
+
+        # Warn if we hit the safety limit — pagination was truncated
+        if not new_delta_link and next_link:
+            logger.warning(
+                "Outlook Email: hit max_pages=%d safety limit with nextLink still"
+                " present — deltaLink will be missing (folder=%s, items=%d)",
+                max_pages,
+                folder_id,
+                len(all_items),
+            )
+
+        # Backfill body content (excluded from delta $select to get deltaLink)
+        if all_items:
+            await _backfill_bodies(client, all_items)
 
     # Filter out "Other" inbox messages (less important emails like newsletters)
     filtered_messages, skipped_count = _filter_other_inbox_messages(all_items)

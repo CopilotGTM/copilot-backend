@@ -53,3 +53,17 @@ async def graph_api_request(
     response = await client.get(url, params=params)
     response.raise_for_status()
     return response.json()  # type: ignore[no-any-return]
+
+
+async def graph_api_request_url(
+    client: httpx.AsyncClient,
+    url: str,
+) -> dict[str, Any]:
+    """Follow an opaque Microsoft Graph URL (@odata.nextLink or @odata.deltaLink).
+
+    These URLs must be used as-is — Microsoft Graph encodes pagination state
+    into them and any URL decode/re-encode corrupts the tokens.
+    """
+    response = await client.get(url)
+    response.raise_for_status()
+    return response.json()  # type: ignore[no-any-return]
