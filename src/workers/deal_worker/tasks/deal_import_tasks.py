@@ -17,6 +17,9 @@ from src.workers.deal_worker.services.deal_job_publisher import DealJobRedisPubl
 
 logger = get_logger(__name__)
 
+IMPORT_TASK_SOFT_TIME_LIMIT_SECONDS = 1200  # 20 minutes soft limit
+IMPORT_TASK_TIME_LIMIT_SECONDS = 1260  # 21 minutes hard limit
+
 
 def _coerce_bool(value: object, default: bool) -> bool:
     """Coerce persisted metadata values into strict booleans."""
@@ -45,7 +48,14 @@ def _mark_job_failed(organisation_id: UUID, job_id: UUID, error_message: str) ->
     run_async(_run_mark_failed())
 
 
-@app.task(bind=True, name="deal_import_task.process", acks_late=True, max_retries=2)
+@app.task(
+    bind=True,
+    name="deal_import_task.process",
+    acks_late=True,
+    max_retries=2,
+    soft_time_limit=IMPORT_TASK_SOFT_TIME_LIMIT_SECONDS,
+    time_limit=IMPORT_TASK_TIME_LIMIT_SECONDS,
+)
 def process_deal_import_job(self: Task, organisation_id: str, job_id: str):
     logger.info("Processing deal import job org=%s job=%s", organisation_id, job_id)
 

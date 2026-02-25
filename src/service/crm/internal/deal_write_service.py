@@ -266,7 +266,7 @@ class DealWriteService:
 
         # Update allowed fields
         updated = False
-        if "name" in payload and payload["name"]:
+        if "name" in payload:
             deal.name = payload["name"]
             updated = True
         if "amount" in payload:
@@ -275,11 +275,35 @@ class DealWriteService:
         if "currency" in payload:
             deal.currency = payload["currency"]
             updated = True
+        if "deal_status" in payload:
+            deal_status_raw = payload["deal_status"]
+            deal.deal_status = (
+                CRMDealStatus(deal_status_raw) if deal_status_raw else CRMDealStatus.OPEN
+            )
+            updated = True
         if "close_date" in payload:
             deal.close_date = payload["close_date"]
             updated = True
         if "expected_close_date" in payload:
             deal.expected_close_date = payload["expected_close_date"]
+            updated = True
+        if "closed_won_at" in payload:
+            deal.closed_won_at = payload["closed_won_at"]
+            updated = True
+        if "closed_lost_at" in payload:
+            deal.closed_lost_at = payload["closed_lost_at"]
+            updated = True
+        if "closed_reason" in payload:
+            deal.closed_reason = payload["closed_reason"]
+            updated = True
+        if "crm_url" in payload:
+            deal.crm_url = payload["crm_url"]
+            updated = True
+        if "source_created_at" in payload:
+            deal.source_created_at = payload["source_created_at"]
+            updated = True
+        if "last_activity_at" in payload:
+            deal.last_activity_at = payload["last_activity_at"]
             updated = True
         if "description" in payload:
             deal.description = payload["description"]
@@ -778,7 +802,11 @@ class DealWriteService:
 
         # Carry over existing company fields so they aren't lost when
         # the domain change creates or links to a different company record.
-        if deal.company_external_id:
+        needs_company_field_backfill = any(
+            field not in account_payload
+            for field in ("website", "linkedin_url", "industry", "country")
+        )
+        if deal.company_external_id and needs_company_field_backfill:
             existing_company = await self._get_current_company(
                 deal.company_external_id, deal.integration_id
             )
@@ -792,7 +820,15 @@ class DealWriteService:
                 account_payload, deal.integration_id, now
             )
             if company:
-                await self._replace_company_participant(deal, company, now)
+                same_company = deal.company_external_id == company.external_id
+                if same_company and await self._has_active_company_participant(
+                    deal=deal, company_external_id=company.external_id
+                ):
+                    # Fast path for import replays: avoid participant-service churn when
+                    # the company link is already present and only company fields changed.
+                    self._sync_deal_company_snapshot(deal=deal, company=company, now=now)
+                else:
+                    await self._replace_company_participant(deal, company, now)
             elif fallback_name:
                 await self._apply_fallback_company_name(deal, fallback_name, now)
             else:
@@ -1016,6 +1052,10 @@ class DealWriteService:
         integration_id: UUID,
         now: datetime,
     ) -> tuple[CRMCompany | None, str | None]:
+        website_provided = "website" in account_payload
+        linkedin_provided = "linkedin_url" in account_payload
+        industry_provided = "industry" in account_payload
+        country_provided = "country" in account_payload
         name = self._clean_string(account_payload.get("name"))
         domain = self._normalize_domain(
             account_payload.get("domain") or account_payload.get("website")
@@ -1044,16 +1084,16 @@ class DealWriteService:
                 if len(name_matches) == 1:
                     company = name_matches[0]
                     updated = False
-                    if website and company.website != website:
+                    if website_provided and company.website != website:
                         company.website = website
                         updated = True
-                    if linkedin_url and company.linkedin_url != linkedin_url:
+                    if linkedin_provided and company.linkedin_url != linkedin_url:
                         company.linkedin_url = linkedin_url
                         updated = True
-                    if industry and not company.industry:
+                    if industry_provided and company.industry != industry:
                         company.industry = industry
                         updated = True
-                    if country and not company.country:
+                    if country_provided and company.country != country:
                         company.country = country
                         updated = True
                     if updated:
@@ -1111,16 +1151,16 @@ class DealWriteService:
             if name and company.name != name:
                 company.name = name
                 updated = True
-            if website and company.website != website:
+            if website_provided and company.website != website:
                 company.website = website
                 updated = True
-            if linkedin_url and company.linkedin_url != linkedin_url:
+            if linkedin_provided and company.linkedin_url != linkedin_url:
                 company.linkedin_url = linkedin_url
                 updated = True
-            if industry and not company.industry:
+            if industry_provided and company.industry != industry:
                 company.industry = industry
                 updated = True
-            if country and not company.country:
+            if country_provided and company.country != country:
                 company.country = country
                 updated = True
 
@@ -1204,6 +1244,43 @@ class DealWriteService:
             participant.synced_at = now
             participant.last_seen_at = now
             self.session.add(participant)
+
+    async def _has_active_company_participant(
+        self, *, deal: CRMDeal, company_external_id: str
+    ) -> bool:
+        stmt = (
+            select(CRMDealParticipant.participant_id)
+            .where(
+                col(CRMDealParticipant.organisation_id) == self.organisation_id,
+                col(CRMDealParticipant.integration_id) == deal.integration_id,
+                col(CRMDealParticipant.deal_id) == deal.deal_id,
+                col(CRMDealParticipant.participant_type) == CRMParticipantType.COMPANY.value,
+                col(CRMDealParticipant.related_external_id) == company_external_id,
+                col(CRMDealParticipant.is_deleted).is_(False),
+            )
+            .limit(1)
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none() is not None
+
+    def _sync_deal_company_snapshot(
+        self, *, deal: CRMDeal, company: CRMCompany, now: datetime
+    ) -> None:
+        changed = False
+        if deal.company_external_id != company.external_id:
+            deal.company_external_id = company.external_id
+            changed = True
+        if deal.company_name != company.name:
+            deal.company_name = company.name
+            changed = True
+        if deal.company_domain != company.domain:
+            deal.company_domain = company.domain
+            changed = True
+        if changed:
+            deal.source_modified_at = now
+            deal.synced_at = now
+            deal.last_seen_at = now
+            self.session.add(deal)
 
     async def _replace_primary_contact_participant(
         self,

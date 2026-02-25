@@ -5,7 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
@@ -650,7 +650,7 @@ class DealImportProcessingService:
         self,
         *,
         org_session: AsyncSession,
-        row: dict[str, str | None],
+        row: Mapping[str, str | None],
         payload: dict,
         context: DealImportContext,
     ) -> CRMDeal | None:
@@ -717,7 +717,7 @@ class DealImportProcessingService:
             return []
 
         # Domain is missing, so name collisions need human review/merge later.
-        stmt = select(CRMCompany.company_id).where(
+        stmt = select(col(CRMCompany.company_id)).where(
             col(CRMCompany.organisation_id) == self.organisation_id,
             col(CRMCompany.integration_id) == context.integration_id,
             col(CRMCompany.is_deleted).is_(False),
@@ -760,7 +760,7 @@ class DealImportProcessingService:
         if not normalized_name:
             return warnings
 
-        stmt = select(CRMContact.contact_id).where(
+        stmt = select(col(CRMContact.contact_id)).where(
             col(CRMContact.organisation_id) == self.organisation_id,
             col(CRMContact.integration_id) == context.integration_id,
             col(CRMContact.is_deleted).is_(False),
@@ -778,7 +778,7 @@ class DealImportProcessingService:
             )
         return warnings
 
-    def _resolve_input_deal_name(self, row: dict[str, str | None]) -> str | None:
+    def _resolve_input_deal_name(self, row: Mapping[str, str | None]) -> str | None:
         """Build a stable deal label for SSE frames even before row validation succeeds."""
         return (
             self._clean_value(row.get("deal_name"))
@@ -810,7 +810,7 @@ class DealImportProcessingService:
 
     def _build_payload(
         self,
-        row: dict[str, str | None],
+        row: Mapping[str, str | None],
         context: DealImportContext,
         user_map: dict[str, UUID],
     ) -> tuple[dict, list[dict]]:
@@ -949,7 +949,7 @@ class DealImportProcessingService:
                 )
 
         # Custom fields are cast using org-level definitions captured at import start.
-        custom_properties, custom_warnings = self._extract_custom_properties(
+        custom_properties, custom_warnings, has_custom_columns = self._extract_custom_properties(
             row=row,
             custom_fields_by_key=context.custom_fields_by_key,
         )
@@ -997,7 +997,7 @@ class DealImportProcessingService:
             "stage_id": stage.stage_id if stage else None,
             "account": account_payload,
             "team_members": team_members or None,
-            "custom_properties": custom_properties or None,
+            "custom_properties": custom_properties if has_custom_columns else None,
             "import_note": self._clean_value(row.get("import_note")),
             "created_via": "import",
         }
@@ -1038,20 +1038,29 @@ class DealImportProcessingService:
         org_session: AsyncSession,
         actor_info: ActorInfo,
     ):
-        # Preserve existing values by only updating explicitly supported non-null fields.
+        # Re-apply the full mapped row for matched deals. Explicit empty cells
+        # are passed as None so existing values are cleared on update.
         update_payload = {
             "name": payload.get("name"),
             "amount": payload.get("amount"),
             "currency": payload.get("currency"),
+            "deal_status": payload.get("deal_status"),
+            "probability": payload.get("probability"),
+            "forecast_category": payload.get("forecast_category"),
             "close_date": payload.get("close_date"),
             "expected_close_date": payload.get("expected_close_date"),
+            "closed_won_at": payload.get("closed_won_at"),
+            "closed_lost_at": payload.get("closed_lost_at"),
+            "closed_reason": payload.get("closed_reason"),
+            "crm_url": payload.get("crm_url"),
+            "source_created_at": payload.get("source_created_at"),
+            "last_activity_at": payload.get("last_activity_at"),
             "description": payload.get("description"),
             "deal_type": payload.get("deal_type"),
             "priority": payload.get("priority"),
             "lead_source": payload.get("lead_source"),
             "custom_properties": payload.get("custom_properties"),
         }
-        update_payload = {key: value for key, value in update_payload.items() if value is not None}
 
         try:
             deal = existing_deal
@@ -1279,24 +1288,29 @@ class DealImportProcessingService:
     def _extract_custom_properties(
         self,
         *,
-        row: dict[str, str | None],
+        row: Mapping[str, str | None],
         custom_fields_by_key: dict[str, CustomFieldRuntime],
-    ) -> tuple[dict[str, object], list[dict[str, str]]]:
-        props: dict[str, object] = {}
+    ) -> tuple[dict[str, object | None], list[dict[str, str]], bool]:
+        props: dict[str, object | None] = {}
         warnings: list[dict[str, str]] = []
+        has_custom_columns = False
         for col_name, raw_value in row.items():
             if not col_name:
                 continue
             match = _CUSTOM_PREFIX_RE.match(str(col_name).strip())
             if not match:
                 continue
-            raw_clean_value = DealImportProcessingService._clean_value(raw_value)
-            if raw_clean_value is None:
-                continue
+            has_custom_columns = True
             key = match.group(1)
             key = _CUSTOM_KEY_ALIASES.get(key, key)
-
             definition = custom_fields_by_key.get(key)
+
+            raw_clean_value = DealImportProcessingService._clean_value(raw_value)
+            if raw_clean_value is None:
+                if definition:
+                    # Explicitly clear known custom fields when CSV cell is empty.
+                    props[key] = None
+                continue
             if not definition:
                 props[key] = raw_clean_value
                 continue
@@ -1321,7 +1335,7 @@ class DealImportProcessingService:
                         "message": exc.message,
                     }
                 )
-        return props, warnings
+        return props, warnings, has_custom_columns
 
     @staticmethod
     def _coerce_custom_value(
