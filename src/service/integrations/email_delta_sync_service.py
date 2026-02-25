@@ -151,9 +151,19 @@ def _persist_cursors(
         # Outlook: per-folder delta links
         if EMAIL_DELTA_LINKS_KEY not in integration.connection_metadata:
             integration.connection_metadata[EMAIL_DELTA_LINKS_KEY] = {}
+        persisted_count = 0
         for folder_id, delta_link in cursor_updates.items():
             if delta_link:
                 integration.connection_metadata[EMAIL_DELTA_LINKS_KEY][folder_id] = delta_link
+                persisted_count += 1
+        logger.info(
+            "_persist_cursors: wrote %d/%d delta link(s) to connection_metadata"
+            " (integration=%s, metadata_keys=%s)",
+            persisted_count,
+            len(cursor_updates),
+            integration.integration_id,
+            list(integration.connection_metadata.keys()),
+        )
 
 
 async def _fetch_folders_for_provider(
@@ -509,11 +519,32 @@ class EmailDeltaSyncService:
 
                 if integration:
                     if delta_link_updates:
+                        logger.info(
+                            "Persisting %d delta link(s) for integration=%s: folders=%s",
+                            len(delta_link_updates),
+                            sync_data.integration_id,
+                            list(delta_link_updates.keys()),
+                        )
                         _persist_cursors(integration, sync_data.provider, delta_link_updates)
+                    else:
+                        logger.warning(
+                            "No delta links to persist for integration=%s"
+                            " — all folders returned None cursor",
+                            sync_data.integration_id,
+                        )
 
                     integration.last_synced_at = datetime.now(UTC).replace(tzinfo=None)
                     attributes.flag_modified(integration, "connection_metadata")
                     await session.commit()
+
+                    # Verify delta links were persisted
+                    stored = (integration.connection_metadata or {}).get(EMAIL_DELTA_LINKS_KEY, {})
+                    logger.info(
+                        "Post-commit connection_metadata delta links: %d folder(s)"
+                        " stored for integration=%s",
+                        len(stored),
+                        sync_data.integration_id,
+                    )
             # Session released
 
             logger.info(
@@ -584,9 +615,21 @@ class EmailDeltaSyncService:
                 folder_data=folder_data,
             )
 
-            # Track cursor for later persistence
+            # Track cursor for later persistence (Phase 5 will write to DB)
             if new_cursor:
                 delta_link_updates[folder_data.external_folder_id] = new_cursor
+                logger.info(
+                    "Delta link captured for folder=%s (%s), length=%d",
+                    folder_name,
+                    folder_data.external_folder_id,
+                    len(new_cursor),
+                )
+            else:
+                logger.warning(
+                    "No delta link returned for folder=%s (%s) — next sync will be a full re-fetch",
+                    folder_name,
+                    folder_data.external_folder_id,
+                )
 
             if not messages_data:
                 logger.debug(

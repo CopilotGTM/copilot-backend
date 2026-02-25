@@ -20,7 +20,6 @@ import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from urllib.parse import parse_qs, urlparse
 
 import httpx
 
@@ -31,6 +30,7 @@ from src.service.integrations.nango_client import NangoClient
 from src.workers.integrations_worker.providers._microsoft_graph import (
     get_access_token,
     graph_api_request,
+    graph_api_request_url,
 )
 
 logger = get_logger(__name__)
@@ -86,25 +86,6 @@ class FetchChatsResult:
 
     chats: list[dict[str, Any]]
     delta_link: str | None = None
-
-
-def _extract_pagination_params(next_link: str) -> tuple[str, dict[str, Any]]:
-    """
-    Extract endpoint path and query params from Microsoft Graph @odata.nextLink or @odata.deltaLink.
-
-    Microsoft Graph returns full URLs like:
-    https://graph.microsoft.com/v1.0/teams/{id}/channels/{id}/messages/delta?$skiptoken=xxx...
-
-    We need to extract the path and query params for direct API calls.
-    """
-    parsed = urlparse(next_link)
-    endpoint = parsed.path
-
-    # Parse query string into dict (parse_qs returns lists, we want single values)
-    query_dict = parse_qs(parsed.query)
-    params: dict[str, Any] = {k: v[0] if len(v) == 1 else v for k, v in query_dict.items()}
-
-    return endpoint, params
 
 
 def _mark_as_deleted(message: dict[str, Any]) -> dict[str, Any]:
@@ -177,19 +158,20 @@ async def fetch_channels(
     teams_endpoint = "/v1.0/me/joinedTeams"
     teams_params: dict[str, Any] = {"$select": "id,displayName"}
     next_link: str | None = None
-    max_pages = 100
+    max_pages = 500
 
     async with httpx.AsyncClient(
-        headers={"Authorization": f"Bearer {token}"},
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Prefer": "odata.maxpagesize=50",
+        },
         timeout=30.0,
     ) as client:
         for _ in range(max_pages):
             if next_link:
-                endpoint, params = _extract_pagination_params(next_link)
+                teams_resp = await graph_api_request_url(client, next_link)
             else:
-                endpoint, params = teams_endpoint, teams_params
-
-            teams_resp = await graph_api_request(client, endpoint, params=params)
+                teams_resp = await graph_api_request(client, teams_endpoint, params=teams_params)
             page_teams, next_link = _extract_collection_page(teams_resp)
             teams.extend(page_teams)
             if not next_link:
@@ -212,11 +194,11 @@ async def fetch_channels(
             next_link = None
             for _ in range(max_pages):
                 if next_link:
-                    endpoint, params = _extract_pagination_params(next_link)
+                    channels_resp = await graph_api_request_url(client, next_link)
                 else:
-                    endpoint, params = channels_endpoint, channels_params
-
-                channels_resp = await graph_api_request(client, endpoint, params=params)
+                    channels_resp = await graph_api_request(
+                        client, channels_endpoint, params=channels_params
+                    )
                 channels, next_link = _extract_collection_page(channels_resp)
 
                 # Enrich each channel with team context
@@ -298,22 +280,22 @@ async def fetch_messages(
     provider = provider_config_key or to_nango_connect_integration_key(IntegrationType.TEAMS)
 
     using_stored_delta_link = False
+    stored_delta_url: str | None = None
 
     if delta_link:
-        # True incremental sync: use stored deltaLink
-        # Returns ONLY messages that changed since the deltaLink was issued
-        initial_endpoint, initial_params = _extract_pagination_params(delta_link)
+        # True incremental sync: use stored deltaLink URL directly
+        stored_delta_url = delta_link
         using_stored_delta_link = True
         logger.info(
             "Teams Messages: using stored deltaLink for channel (true incremental)",
         )
-    else:
-        # Fresh delta query (initial sync)
-        # Use delta endpoint - fetches all messages, returns deltaLink for next sync
-        initial_endpoint = f"/v1.0/teams/{team_id}/channels/{channel_id}/messages/delta"
-        initial_params: dict[str, Any] = {
-            "$top": "50",
-        }
+
+    # Fresh delta query params (used when no delta_link and no next_link)
+    initial_endpoint = f"/v1.0/teams/{team_id}/channels/{channel_id}/messages/delta"
+    initial_params: dict[str, Any] = {
+        "$top": "50",
+    }
+    if not delta_link:
         logger.info(
             "Teams Messages: fresh delta query for team=%s channel=%s",
             team_id,
@@ -323,23 +305,26 @@ async def fetch_messages(
     all_messages: list[dict[str, Any]] = []
     next_link: str | None = None
     new_delta_link: str | None = None
-    max_pages = 100  # Safety limit (100 pages * 50 items = 5,000 messages max)
+    max_pages = 500  # Safety limit
 
     token = await get_access_token(nango, connection_id, provider)
 
     async with httpx.AsyncClient(
-        headers={"Authorization": f"Bearer {token}"},
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Prefer": "odata.maxpagesize=50",
+        },
         timeout=30.0,
     ) as client:
         for page_num in range(max_pages):  # noqa: B007
-            # Determine endpoint and params for this request
-            if next_link:
-                endpoint, params = _extract_pagination_params(next_link)
-            else:
-                endpoint, params = initial_endpoint, initial_params
-
             try:
-                resp = await graph_api_request(client, endpoint, params=params)
+                if next_link:
+                    resp = await graph_api_request_url(client, next_link)
+                elif stored_delta_url:
+                    resp = await graph_api_request_url(client, stored_delta_url)
+                    stored_delta_url = None  # only used for the first request
+                else:
+                    resp = await graph_api_request(client, initial_endpoint, params=initial_params)
             except httpx.HTTPStatusError as exc:
                 # Handle expired deltaLink (Microsoft returns 410 Gone)
                 if using_stored_delta_link and page_num == 0 and exc.response.status_code == 410:
@@ -543,23 +528,23 @@ async def fetch_chats(
 
     all_chats: list[dict[str, Any]] = []
     next_link: str | None = None
-    max_pages = 100  # Safety limit
+    max_pages = 500  # Safety limit
     reached_cutoff = False
 
     token = await get_access_token(nango, connection_id, provider)
 
     async with httpx.AsyncClient(
-        headers={"Authorization": f"Bearer {token}"},
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Prefer": "odata.maxpagesize=50",
+        },
         timeout=30.0,
     ) as client:
         for page_num in range(max_pages):  # noqa: B007
-            # Determine endpoint and params for this request
             if next_link:
-                endpoint, params = _extract_pagination_params(next_link)
+                resp = await graph_api_request_url(client, next_link)
             else:
-                endpoint, params = initial_endpoint, initial_params
-
-            resp = await graph_api_request(client, endpoint, params=params)
+                resp = await graph_api_request(client, initial_endpoint, params=initial_params)
 
             if isinstance(resp, dict):
                 # Extract chats from response
@@ -729,24 +714,24 @@ async def fetch_chat_messages(
 
     all_messages: list[dict[str, Any]] = []
     next_link: str | None = None
-    max_pages = 100  # Safety limit (100 pages * 50 items = 5,000 messages max)
+    max_pages = 500  # Safety limit
     reached_cutoff = False
 
     token = await get_access_token(nango, connection_id, provider)
 
     async with httpx.AsyncClient(
-        headers={"Authorization": f"Bearer {token}"},
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Prefer": "odata.maxpagesize=50",
+        },
         timeout=30.0,
     ) as client:
         for page_num in range(max_pages):  # noqa: B007
-            # Determine endpoint and params for this request
-            if next_link:
-                endpoint, params = _extract_pagination_params(next_link)
-            else:
-                endpoint, params = initial_endpoint, initial_params
-
             try:
-                resp = await graph_api_request(client, endpoint, params=params)
+                if next_link:
+                    resp = await graph_api_request_url(client, next_link)
+                else:
+                    resp = await graph_api_request(client, initial_endpoint, params=initial_params)
             except Exception:
                 logger.exception(
                     "Teams Chat Messages: API error for chat=%s page=%d",

@@ -17,7 +17,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from urllib.parse import parse_qs, urlparse
 
 import httpx
 
@@ -28,6 +27,7 @@ from src.service.integrations.nango_client import NangoClient
 from src.workers.integrations_worker.providers._microsoft_graph import (
     get_access_token,
     graph_api_request,
+    graph_api_request_url,
 )
 
 logger = get_logger(__name__)
@@ -39,26 +39,6 @@ class FetchEventsResult:
 
     events: list[dict[str, Any]]
     delta_link: str | None = None
-
-
-def _extract_pagination_params(next_link: str) -> tuple[str, dict[str, Any]]:
-    """
-    Extract endpoint path and query params from Microsoft Graph @odata.nextLink or @odata.deltaLink.
-
-    Microsoft Graph returns full URLs like:
-    https://graph.microsoft.com/v1.0/me/calendarView/delta?$skiptoken=xxx...
-    https://graph.microsoft.com/v1.0/me/calendarView/delta?$deltatoken=xxx...
-
-    We need to extract the path and query params for direct API calls.
-    """
-    parsed = urlparse(next_link)
-    endpoint = parsed.path  # e.g., /v1.0/me/calendar/events or /v1.0/me/calendar/events/delta
-
-    # Parse query string into dict (parse_qs returns lists, we want single values)
-    query_dict = parse_qs(parsed.query)
-    params: dict[str, Any] = {k: v[0] if len(v) == 1 else v for k, v in query_dict.items()}
-
-    return endpoint, params
 
 
 def _mark_as_deleted(event: dict[str, Any]) -> dict[str, Any]:
@@ -189,27 +169,25 @@ async def fetch_events(
 
     # Track if we're using a stored deltaLink for true incremental sync
     using_stored_delta_link = False
+    stored_delta_url: str | None = None
 
     if delta_link:
-        # True incremental sync: use stored deltaLink
-        # This returns ONLY events that changed since the deltaLink was issued
-        initial_endpoint, initial_params = _extract_pagination_params(delta_link)
+        # True incremental sync: use stored deltaLink URL directly
+        stored_delta_url = delta_link
         using_stored_delta_link = True
         logger.info(
             "Outlook Calendar: using stored deltaLink (true incremental - only changed events)",
         )
-    else:
-        # Fresh delta query (initial sync OR first incremental without deltaLink)
-        # Use calendarView/delta which returns FULL event properties
-        # (events/delta returns LIMITED properties - missing organizer, onlineMeeting, etc.)
-        # Date range: 90 days past to 365 days future
-        start_dt = (now - timedelta(days=90)).strftime("%Y-%m-%dT%H:%M:%S.0000000Z")
-        end_dt = (now + timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%S.0000000Z")
-        initial_params: dict[str, Any] = {
-            "startDateTime": start_dt,
-            "endDateTime": end_dt,
-        }
-        initial_endpoint = "/v1.0/me/calendarView/delta"
+
+    # Fresh delta query params (used when no delta_link and no next_link)
+    start_dt = (now - timedelta(days=90)).strftime("%Y-%m-%dT%H:%M:%S.0000000Z")
+    end_dt = (now + timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%S.0000000Z")
+    initial_endpoint = "/v1.0/me/calendarView/delta"
+    initial_params: dict[str, Any] = {
+        "startDateTime": start_dt,
+        "endDateTime": end_dt,
+    }
+    if not delta_link:
         logger.info(
             "Outlook Calendar: fresh calendarView/delta query (start=%s, end=%s)",
             start_dt,
@@ -221,21 +199,24 @@ async def fetch_events(
     all_items: list[dict[str, Any]] = []
     next_link: str | None = None
     new_delta_link: str | None = None
-    max_pages = 50  # Safety limit to prevent infinite loops
+    max_pages = 500  # Safety limit
 
     async with httpx.AsyncClient(
-        headers={"Authorization": f"Bearer {token}"},
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Prefer": "odata.maxpagesize=50",
+        },
         timeout=30.0,
     ) as client:
         for page_num in range(max_pages):
-            # Determine endpoint and params for this request
-            if next_link:
-                endpoint, params = _extract_pagination_params(next_link)
-            else:
-                endpoint, params = initial_endpoint, initial_params
-
             try:
-                resp = await graph_api_request(client, endpoint, params=params)
+                if next_link:
+                    resp = await graph_api_request_url(client, next_link)
+                elif stored_delta_url:
+                    resp = await graph_api_request_url(client, stored_delta_url)
+                    stored_delta_url = None  # only used for the first request
+                else:
+                    resp = await graph_api_request(client, initial_endpoint, params=initial_params)
             except httpx.HTTPStatusError as exc:
                 if using_stored_delta_link and page_num == 0 and exc.response.status_code == 410:
                     logger.warning(
