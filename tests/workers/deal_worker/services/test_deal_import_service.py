@@ -112,7 +112,7 @@ async def test_update_deal_preserves_existing_owner_when_owner_email_missing() -
         def __init__(self):
             self.assign_owner_called = False
 
-        async def update_deal(self, _deal_id, _payload):
+        async def update_deal(self, _deal_id, _payload, **_kw):
             return existing_deal
 
         async def assign_owner(self, _deal_id, _owner_user_id):
@@ -171,7 +171,7 @@ async def test_update_deal_assigns_owner_when_owner_email_provided() -> None:
         def __init__(self):
             self.assign_owner_called = False
 
-        async def update_deal(self, _deal_id, _payload):
+        async def update_deal(self, _deal_id, _payload, **_kw):
             return existing_deal
 
         async def assign_owner(self, _deal_id, _owner_user_id):
@@ -233,7 +233,7 @@ async def test_update_deal_assigns_importer_when_owner_missing_and_existing_owne
         def __init__(self):
             self.assign_owner_called = False
 
-        async def update_deal(self, _deal_id, _payload):
+        async def update_deal(self, _deal_id, _payload, **_kw):
             return existing_deal
 
         async def assign_owner(self, _deal_id, _owner_user_id):
@@ -295,7 +295,7 @@ async def test_update_deal_passes_none_values_for_full_row_rewrite() -> None:
         def __init__(self):
             self.last_update_payload = None
 
-        async def update_deal(self, _deal_id, _payload):
+        async def update_deal(self, _deal_id, _payload, **_kw):
             self.last_update_payload = _payload
             return existing_deal
 

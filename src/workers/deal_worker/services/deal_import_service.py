@@ -1065,7 +1065,13 @@ class DealImportProcessingService:
         try:
             deal = existing_deal
             if update_payload:
-                deal = await service.update_deal(existing_deal.deal_id, update_payload)
+                # Import extraction already validated custom properties against
+                # cached field definitions — skip the per-row DB round-trip.
+                deal = await service.update_deal(
+                    existing_deal.deal_id,
+                    update_payload,
+                    skip_custom_validation=True,
+                )
 
             # Ownership behavior:
             # - explicit owner_email in CSV -> assign resolved owner
