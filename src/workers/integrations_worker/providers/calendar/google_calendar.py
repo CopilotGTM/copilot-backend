@@ -10,10 +10,12 @@ from src.domain.models.organisation_tables.sync import IntegrationType
 from src.infra.config.nango_provider_mapping import to_nango_connect_integration_key
 from src.infra.utils.logger import get_logger
 from src.service.integrations.nango_client import NangoClient
+from src.workers.integrations_worker.providers._google_api import (
+    calendar_api_request,
+    get_access_token,
+)
 
 logger = get_logger(__name__)
-
-_GOOGLE_CALENDAR_BASE_URL = "https://www.googleapis.com"
 
 
 @dataclass
@@ -22,53 +24,6 @@ class FetchEventsResult:
 
     events: list[dict[str, Any]]
     sync_token: str | None = None
-
-
-# ---------------------------------------------------------------------------
-# Token helper
-# ---------------------------------------------------------------------------
-
-
-async def _get_access_token(
-    nango: NangoClient,
-    connection_id: str,
-    provider_config_key: str,
-) -> str:
-    """Retrieve a fresh OAuth access token from Nango.
-
-    Uses Nango's connection API (not proxy) to get/refresh the token.
-    """
-    connection = await nango.get_connection(
-        provider=provider_config_key,
-        connection_id=connection_id,
-        force_refresh=True,
-    )
-    credentials = connection.get("credentials", {})
-    token = credentials.get("access_token")
-    if not token:
-        raise RuntimeError(f"No access_token in Nango connection for {connection_id}")
-    return token
-
-
-# ---------------------------------------------------------------------------
-# Direct Google API helper
-# ---------------------------------------------------------------------------
-
-
-async def _calendar_api_request(
-    client: httpx.AsyncClient,
-    endpoint: str,
-    *,
-    params: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Make a GET request to the Google Calendar API.
-
-    Raises httpx.HTTPStatusError on non-2xx responses.
-    """
-    url = f"{_GOOGLE_CALENDAR_BASE_URL}{endpoint}"
-    response = await client.get(url, params=params)
-    response.raise_for_status()
-    return response.json()  # type: ignore[no-any-return]
 
 
 def _is_google_sync_token_expired_exception(exc: Exception) -> bool:
@@ -157,7 +112,7 @@ async def fetch_events_with_cursor(
 
     endpoint = "/calendar/v3/calendars/primary/events"
 
-    token = await _get_access_token(nango, connection_id, provider)
+    token = await get_access_token(nango, connection_id, provider)
 
     all_items: list[dict[str, Any]] = []
     page_token: str | None = None
@@ -175,7 +130,7 @@ async def fetch_events_with_cursor(
                 del params["pageToken"]
 
             try:
-                resp = await _calendar_api_request(client, endpoint, params=params)
+                resp = await calendar_api_request(client, endpoint, params=params)
             except httpx.HTTPStatusError as exc:
                 # A stale sync token should not break calendar sync forever.
                 if (

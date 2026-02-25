@@ -28,10 +28,12 @@ from src.domain.models.organisation_tables.sync import IntegrationType
 from src.infra.config.nango_provider_mapping import to_nango_connect_integration_key
 from src.infra.utils.logger import get_logger
 from src.service.integrations.nango_client import NangoClient
+from src.workers.integrations_worker.providers._google_api import (
+    get_access_token,
+    gmail_api_request,
+)
 
 logger = get_logger(__name__)
-
-_GMAIL_BASE_URL = "https://gmail.googleapis.com"
 
 # Gmail category label IDs — used for post-fetch safety-net filtering
 CATEGORY_LABELS = frozenset(
@@ -56,53 +58,6 @@ class FetchMessagesResult:
 
     messages: list[dict[str, Any]]
     history_id: str | None = None
-
-
-# ---------------------------------------------------------------------------
-# Token helper
-# ---------------------------------------------------------------------------
-
-
-async def _get_access_token(
-    nango: NangoClient,
-    connection_id: str,
-    provider_config_key: str,
-) -> str:
-    """Retrieve a fresh OAuth access token from Nango.
-
-    Uses Nango's connection API (not proxy) to get/refresh the token.
-    """
-    connection = await nango.get_connection(
-        provider=provider_config_key,
-        connection_id=connection_id,
-        force_refresh=True,
-    )
-    credentials = connection.get("credentials", {})
-    token = credentials.get("access_token")
-    if not token:
-        raise RuntimeError(f"No access_token in Nango connection for {connection_id}")
-    return token
-
-
-# ---------------------------------------------------------------------------
-# Direct Google API helper
-# ---------------------------------------------------------------------------
-
-
-async def _gmail_api_request(
-    client: httpx.AsyncClient,
-    endpoint: str,
-    *,
-    params: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Make a GET request to the Gmail API.
-
-    Raises httpx.HTTPStatusError on non-2xx responses.
-    """
-    url = f"{_GMAIL_BASE_URL}{endpoint}"
-    response = await client.get(url, params=params)
-    response.raise_for_status()
-    return response.json()  # type: ignore[no-any-return]
 
 
 def _is_history_expired_error(payload: dict[str, Any]) -> bool:
@@ -145,13 +100,13 @@ async def fetch_labels(
 
     provider = provider_config_key or to_nango_connect_integration_key(IntegrationType.GMAIL)
 
-    token = await _get_access_token(nango, connection_id, provider)
+    token = await get_access_token(nango, connection_id, provider)
 
     async with httpx.AsyncClient(
         headers={"Authorization": f"Bearer {token}"},
         timeout=30.0,
     ) as client:
-        resp = await _gmail_api_request(client, "/gmail/v1/users/me/labels")
+        resp = await gmail_api_request(client, "/gmail/v1/users/me/labels")
 
         labels = resp.get("labels", [])
 
@@ -159,7 +114,7 @@ async def fetch_labels(
         detailed_labels: list[dict[str, Any]] = []
         for label in labels:
             label_id = label.get("id", "")
-            detail = await _gmail_api_request(client, f"/gmail/v1/users/me/labels/{label_id}")
+            detail = await gmail_api_request(client, f"/gmail/v1/users/me/labels/{label_id}")
             detailed_labels.append(detail)
 
     logger.info(
@@ -195,7 +150,7 @@ async def fetch_messages(
 
     provider = provider_config_key or to_nango_connect_integration_key(IntegrationType.GMAIL)
 
-    token = await _get_access_token(nango, connection_id, provider)
+    token = await get_access_token(nango, connection_id, provider)
 
     # Force full sync on initial even if a stale history_id was passed
     if is_initial and history_id:
@@ -257,7 +212,7 @@ async def _fetch_full(
         if page_token:
             params["pageToken"] = page_token
 
-        resp = await _gmail_api_request(client, "/gmail/v1/users/me/messages", params=params)
+        resp = await gmail_api_request(client, "/gmail/v1/users/me/messages", params=params)
 
         for msg in resp.get("messages", []):
             message_ids.append(msg["id"])
@@ -334,7 +289,7 @@ async def _fetch_incremental(
             params["pageToken"] = page_token
 
         try:
-            resp = await _gmail_api_request(client, "/gmail/v1/users/me/history", params=params)
+            resp = await gmail_api_request(client, "/gmail/v1/users/me/history", params=params)
         except httpx.HTTPStatusError as exc:
             # Expired historyId -> fallback to full sync
             if page_idx == 0 and _is_history_expired_status(exc):
@@ -425,7 +380,7 @@ async def _batch_get_messages(
     async def _get_one(msg_id: str) -> dict[str, Any] | None:
         async with semaphore:
             try:
-                return await _gmail_api_request(
+                return await gmail_api_request(
                     client,
                     f"/gmail/v1/users/me/messages/{msg_id}",
                     params={"format": "full"},

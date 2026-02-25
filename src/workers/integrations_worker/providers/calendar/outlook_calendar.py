@@ -1,3 +1,17 @@
+"""Outlook Calendar fetcher via Microsoft Graph API (direct calls).
+
+Fetches calendar events from Outlook/Office 365 calendars.
+OAuth tokens are managed by Nango (token storage + refresh) but API calls
+bypass the Nango proxy to avoid proxy request quota limits.
+
+Uses Microsoft Graph calendarView/delta for efficient incremental sync:
+- Initial sync: calendarView/delta with startDateTime/endDateTime (90 days past to 365 days future)
+- Incremental sync: Use stored deltaLink (returns ONLY changed events)
+
+Microsoft Graph API documentation:
+- calendarView delta: https://learn.microsoft.com/en-us/graph/api/calendarview-delta
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -5,10 +19,16 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+import httpx
+
 from src.domain.models.organisation_tables.sync import IntegrationType
 from src.infra.config.nango_provider_mapping import to_nango_connect_integration_key
 from src.infra.utils.logger import get_logger
 from src.service.integrations.nango_client import NangoClient
+from src.workers.integrations_worker.providers._microsoft_graph import (
+    get_access_token,
+    graph_api_request,
+)
 
 logger = get_logger(__name__)
 
@@ -29,7 +49,7 @@ def _extract_pagination_params(next_link: str) -> tuple[str, dict[str, Any]]:
     https://graph.microsoft.com/v1.0/me/calendarView/delta?$skiptoken=xxx...
     https://graph.microsoft.com/v1.0/me/calendarView/delta?$deltatoken=xxx...
 
-    We need to extract the path and query params for Nango's proxy_request.
+    We need to extract the path and query params for direct API calls.
     """
     parsed = urlparse(next_link)
     endpoint = parsed.path  # e.g., /v1.0/me/calendar/events or /v1.0/me/calendar/events/delta
@@ -139,7 +159,7 @@ async def fetch_events(
     provider_config_key: str | None = None,
 ) -> FetchEventsResult:
     """
-    Fetch Outlook Calendar events via Nango proxy.
+    Fetch Outlook Calendar events via direct Microsoft Graph API calls.
 
     Uses Microsoft Graph API calendarView/delta endpoint which returns FULL event properties
     (unlike events/delta which returns limited properties).
@@ -196,56 +216,30 @@ async def fetch_events(
             end_dt,
         )
 
+    token = await get_access_token(nango, connection_id, provider)
+
     all_items: list[dict[str, Any]] = []
     next_link: str | None = None
     new_delta_link: str | None = None
     max_pages = 50  # Safety limit to prevent infinite loops
 
-    for page_num in range(max_pages):
-        # Determine endpoint and params for this request
-        if next_link:
-            endpoint, params = _extract_pagination_params(next_link)
-        else:
-            endpoint, params = initial_endpoint, initial_params
+    async with httpx.AsyncClient(
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=30.0,
+    ) as client:
+        for page_num in range(max_pages):
+            # Determine endpoint and params for this request
+            if next_link:
+                endpoint, params = _extract_pagination_params(next_link)
+            else:
+                endpoint, params = initial_endpoint, initial_params
 
-        # NangoClient.proxy_request returns dict; normalize 'value' (Graph uses 'value' not 'items')
-        try:
-            resp = await nango.proxy_request(
-                provider_config_key=provider,
-                connection_id=connection_id,
-                endpoint=endpoint,
-                params=params,
-            )
-        except Exception as e:
-            # Handle expired deltaLink (Microsoft returns 410 Gone or similar)
-            # If using stored deltaLink and get an error, retry with fresh delta query
-            if using_stored_delta_link and page_num == 0:
-                error_msg = str(e).lower()
-                if "410" in error_msg or "gone" in error_msg or "sync state" in error_msg:
+            try:
+                resp = await graph_api_request(client, endpoint, params=params)
+            except httpx.HTTPStatusError as exc:
+                if using_stored_delta_link and page_num == 0 and exc.response.status_code == 410:
                     logger.warning(
-                        "Outlook Calendar: stored deltaLink expired, retrying with fresh delta query"
-                    )
-                    # Retry without deltaLink - recursive call with delta_link=None
-                    return await fetch_events(
-                        nango=nango,
-                        connection_id=connection_id,
-                        is_initial=False,
-                        last_synced_at=last_synced_at,
-                        delta_link=None,  # Force fresh delta query
-                        data_type=data_type,
-                        provider_config_key=provider_config_key,
-                    )
-            # Re-raise if not a deltaLink expiration issue
-            raise
-
-        if isinstance(resp, dict):
-            # Check for error response (deltaLink might be expired)
-            if "error" in resp and using_stored_delta_link and page_num == 0:
-                error_code = resp.get("error", {}).get("code", "").lower()
-                if error_code in ("syncstatenotfound", "resyncresquired", "invalidrequest"):
-                    logger.warning(
-                        "Outlook Calendar: deltaLink invalid (error=%s), retrying with fresh delta query",
-                        error_code,
+                        "Outlook Calendar: stored deltaLink expired (410), retrying with fresh delta query"
                     )
                     return await fetch_events(
                         nango=nango,
@@ -256,38 +250,74 @@ async def fetch_events(
                         data_type=data_type,
                         provider_config_key=provider_config_key,
                     )
-
-            if "value" in resp and isinstance(resp["value"], list):
-                for item in resp["value"]:
-                    # Check for deleted items (delta sync returns @removed annotation)
-                    if "@removed" in item:
-                        # Mark as deleted for downstream handling
-                        logger.debug(
-                            "Delta sync: detected deleted event id=%s reason=%s",
-                            item.get("id"),
-                            item.get("@removed", {}).get("reason"),
+                raise
+            except Exception as e:
+                # Handle expired deltaLink (Microsoft returns 410 Gone or similar)
+                # If using stored deltaLink and get an error, retry with fresh delta query
+                if using_stored_delta_link and page_num == 0:
+                    error_msg = str(e).lower()
+                    if "410" in error_msg or "gone" in error_msg or "sync state" in error_msg:
+                        logger.warning(
+                            "Outlook Calendar: stored deltaLink expired, retrying with fresh delta query"
                         )
-                        all_items.append(_mark_as_deleted(item))
-                    else:
-                        all_items.append(item)
-            elif "items" in resp and isinstance(resp["items"], list):
-                # Fallback if Nango normalizes to 'items'
-                all_items.extend(resp["items"])
+                        return await fetch_events(
+                            nango=nango,
+                            connection_id=connection_id,
+                            is_initial=False,
+                            last_synced_at=last_synced_at,
+                            delta_link=None,
+                            data_type=data_type,
+                            provider_config_key=provider_config_key,
+                        )
+                raise
 
-            # Check for next page - Microsoft Graph uses @odata.nextLink
-            # For delta sync, @odata.deltaLink indicates sync is complete (no more pages)
-            next_link = resp.get("@odata.nextLink")
-            if not next_link:
-                # Capture deltaLink for next sync (only present on last page of delta responses)
-                new_delta_link = resp.get("@odata.deltaLink")
-                if new_delta_link:
-                    logger.info(
-                        "Delta sync complete after %d pages, new deltaLink received",
-                        page_num + 1,
-                    )
+            if isinstance(resp, dict):
+                # Check for error response (deltaLink might be expired)
+                if "error" in resp and using_stored_delta_link and page_num == 0:
+                    error_code = resp.get("error", {}).get("code", "").lower()
+                    if error_code in ("syncstatenotfound", "resyncresquired", "invalidrequest"):
+                        logger.warning(
+                            "Outlook Calendar: deltaLink invalid (error=%s), retrying with fresh delta query",
+                            error_code,
+                        )
+                        return await fetch_events(
+                            nango=nango,
+                            connection_id=connection_id,
+                            is_initial=False,
+                            last_synced_at=last_synced_at,
+                            delta_link=None,
+                            data_type=data_type,
+                            provider_config_key=provider_config_key,
+                        )
+
+                if "value" in resp and isinstance(resp["value"], list):
+                    for item in resp["value"]:
+                        # Check for deleted items (delta sync returns @removed annotation)
+                        if "@removed" in item:
+                            # Mark as deleted for downstream handling
+                            logger.debug(
+                                "Delta sync: detected deleted event id=%s reason=%s",
+                                item.get("id"),
+                                item.get("@removed", {}).get("reason"),
+                            )
+                            all_items.append(_mark_as_deleted(item))
+                        else:
+                            all_items.append(item)
+
+                # Check for next page - Microsoft Graph uses @odata.nextLink
+                # For delta sync, @odata.deltaLink indicates sync is complete (no more pages)
+                next_link = resp.get("@odata.nextLink")
+                if not next_link:
+                    # Capture deltaLink for next sync (only present on last page of delta responses)
+                    new_delta_link = resp.get("@odata.deltaLink")
+                    if new_delta_link:
+                        logger.info(
+                            "Delta sync complete after %d pages, new deltaLink received",
+                            page_num + 1,
+                        )
+                    break
+            else:
                 break
-        else:
-            break
 
     # For incremental syncs using unbounded delta, filter out very old events
     # to avoid processing events from years ago that were modified
