@@ -991,6 +991,9 @@ class DealImportProcessingService:
             "description": self._clean_value(row.get("description")),
             "primary_contact_name": self._clean_value(row.get("primary_contact_name")),
             "primary_contact_email": self._clean_value(row.get("primary_contact_email")),
+            "primary_contact_columns_mapped": (
+                "primary_contact_name" in row or "primary_contact_email" in row
+            ),
             "owner_user_id": owner_user_id,
             "owner_email_provided": owner_email_provided,
             "pipeline_id": context.default_pipeline_id,
@@ -1065,7 +1068,13 @@ class DealImportProcessingService:
         try:
             deal = existing_deal
             if update_payload:
-                deal = await service.update_deal(existing_deal.deal_id, update_payload)
+                # Import extraction already validated custom properties against
+                # cached field definitions — skip the per-row DB round-trip.
+                deal = await service.update_deal(
+                    existing_deal.deal_id,
+                    update_payload,
+                    skip_custom_validation=True,
+                )
 
             # Ownership behavior:
             # - explicit owner_email in CSV -> assign resolved owner
@@ -1102,6 +1111,7 @@ class DealImportProcessingService:
 
             contact_name = payload.get("primary_contact_name")
             contact_email = payload.get("primary_contact_email")
+            contact_columns_mapped = payload.get("primary_contact_columns_mapped", False)
             if contact_name or contact_email:
                 deal = await service.update_primary_contact(
                     existing_deal.deal_id,
@@ -1111,6 +1121,10 @@ class DealImportProcessingService:
                     if isinstance(account_payload, dict)
                     else None,
                 )
+            elif contact_columns_mapped:
+                # Columns mapped but empty — clear existing primary contact fields.
+                deal.primary_contact_name = None
+                deal.primary_contact_email = None
 
             import_note = payload.get("import_note")
             if import_note:

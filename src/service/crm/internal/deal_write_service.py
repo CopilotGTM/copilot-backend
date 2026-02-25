@@ -246,12 +246,21 @@ class DealWriteService:
         logger.info("Created internal CRM deal %s: %s", deal.deal_id, deal.name)
         return deal
 
-    async def update_deal(self, deal_id: UUID, payload: dict[str, Any]) -> CRMDeal:
+    async def update_deal(
+        self,
+        deal_id: UUID,
+        payload: dict[str, Any],
+        *,
+        skip_custom_validation: bool = False,
+    ) -> CRMDeal:
         """Update an internal CRM deal.
 
         Args:
             deal_id: Deal UUID
             payload: Fields to update (only provided fields are updated)
+            skip_custom_validation: When True the caller already validated custom
+                properties (e.g. the import service pre-validates against cached
+                definitions), so the extra DB round-trip is skipped.
 
         Returns:
             Updated CRMDeal record
@@ -324,10 +333,14 @@ class DealWriteService:
             deal.forecast_category = payload["forecast_category"]
             updated = True
         if "custom_properties" in payload and payload["custom_properties"] is not None:
-            validated_custom = await self._validate_custom_properties(payload["custom_properties"])
-            properties = deal.properties or {}
-            properties.update(validated_custom)
-            deal.properties = properties
+            custom_props = payload["custom_properties"]
+            validated_custom = (
+                custom_props
+                if skip_custom_validation
+                else await self._validate_custom_properties(custom_props)
+            )
+            # New dict so SQLAlchemy detects the JSONB column change.
+            deal.properties = {**(deal.properties or {}), **validated_custom}
             updated = True
 
         if not updated:
@@ -337,9 +350,8 @@ class DealWriteService:
         deal.source_modified_at = now
         deal.synced_at = now
         deal.last_seen_at = now
-        properties = deal.properties or {}
-        properties["updated_via"] = "api"
-        deal.properties = properties
+        # New dict so SQLAlchemy detects the JSONB column change.
+        deal.properties = {**(deal.properties or {}), "updated_via": "api"}
 
         await self.session.flush()
         logger.info("Updated internal CRM deal %s", deal.deal_id)
@@ -538,9 +550,7 @@ class DealWriteService:
         deal.source_modified_at = now
         deal.synced_at = now
         deal.last_seen_at = now
-        properties = deal.properties or {}
-        properties["deleted_via"] = "api"
-        deal.properties = properties
+        deal.properties = {**(deal.properties or {}), "deleted_via": "api"}
 
         await self.session.flush()
         logger.info("Deleted internal CRM deal %s", deal.deal_id)
@@ -621,10 +631,11 @@ class DealWriteService:
             deal.closed_won_at = None
             deal.closed_reason = closed_reason
 
-        properties = deal.properties or {}
-        properties["closed_via"] = "api"
-        properties["closed_by_user_id"] = str(self.actor_user_id)
-        deal.properties = properties
+        deal.properties = {
+            **(deal.properties or {}),
+            "closed_via": "api",
+            "closed_by_user_id": str(self.actor_user_id),
+        }
 
         await self.session.flush()
         logger.info("Closed deal %s with outcome=%s", deal.deal_id, normalized_outcome)
@@ -657,10 +668,11 @@ class DealWriteService:
         if clear_closed_reason:
             deal.closed_reason = None
 
-        properties = deal.properties or {}
-        properties["reopened_via"] = "api"
-        properties["reopened_by_user_id"] = str(self.actor_user_id)
-        deal.properties = properties
+        deal.properties = {
+            **(deal.properties or {}),
+            "reopened_via": "api",
+            "reopened_by_user_id": str(self.actor_user_id),
+        }
 
         await self.session.flush()
         logger.info("Reopened deal %s", deal.deal_id)
