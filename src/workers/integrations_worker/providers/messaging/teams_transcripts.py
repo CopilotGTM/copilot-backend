@@ -1,13 +1,17 @@
 """
 Teams Transcript Provider.
 
-Fetches meeting transcripts from Microsoft Teams via Microsoft Graph API.
+Fetches meeting transcripts from Microsoft Teams via direct Microsoft Graph API calls.
+OAuth tokens are managed by Nango (token storage + refresh) but API calls
+bypass the Nango proxy to avoid proxy request quota limits.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 from uuid import UUID
+
+import httpx
 
 from src.domain.models.organisation_tables.sync.conversation_intelligence import (
     CICall,
@@ -19,6 +23,10 @@ from src.domain.models.organisation_tables.sync.conversation_intelligence import
     TranscriptContentFormat,
 )
 from src.service.integrations.nango_client import NangoClient
+from src.workers.integrations_worker.providers._microsoft_graph import (
+    get_access_token,
+    graph_api_request,
+)
 
 
 class TeamsTranscriptProvider:
@@ -40,44 +48,38 @@ class TeamsTranscriptProvider:
 
         Returns None if no transcript is found.
         """
-        # 1. List transcripts for the meeting
-        # GET /me/onlineMeetings/{id}/transcripts
         endpoint = f"/v1.0/me/onlineMeetings/{online_meeting_id}/transcripts"
-        try:
-            resp = await self.nango.proxy_request(
-                provider_config_key=provider_config_key,
-                connection_id=connection_id,
-                endpoint=endpoint,
+
+        token = await get_access_token(self.nango, connection_id, provider_config_key)
+        async with httpx.AsyncClient(
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=30.0,
+        ) as client:
+            # 1. List transcripts for the meeting
+            try:
+                resp = await graph_api_request(client, endpoint)
+            except Exception:
+                # If 404 or other error, assume no transcript available yet
+                return None
+
+            transcripts = resp.get("value", [])
+            if not transcripts:
+                return None
+
+            transcript_meta = transcripts[0]
+            transcript_id = transcript_meta["id"]
+            created_at_str = transcript_meta.get("createdDateTime")
+            created_at = (
+                datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
+                if created_at_str
+                else None
             )
-        except Exception:
-            # If 404 or other error, assume no transcript available yet
-            return None
 
-        transcripts = resp.get("value", [])
-        if not transcripts:
-            return None
+            # 2. Fetch metadata content (segments with speakers)
+            metadata_endpoint = f"{endpoint}/{transcript_id}/metadataContent"
+            metadata_resp = await graph_api_request(client, metadata_endpoint)
 
-        # Pick the first transcript (usually there's only one, or we pick the latest?)
-        # For now, let's take the first one.
-        transcript_meta = transcripts[0]
-        transcript_id = transcript_meta["id"]
-        created_at_str = transcript_meta.get("createdDateTime")
-        created_at = (
-            datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
-            if created_at_str
-            else None
-        )
-
-        # 2. Fetch metadata content (Segments with speakers)
-        # GET /me/onlineMeetings/{id}/transcripts/{id}/metadataContent
-        metadata_endpoint = f"{endpoint}/{transcript_id}/metadataContent"
-        metadata_resp = await self.nango.proxy_request(
-            provider_config_key=provider_config_key,
-            connection_id=connection_id,
-            endpoint=metadata_endpoint,
-        )
-
-        # Parse metadata into segments
+        # Parse metadata into segments (outside httpx client block)
         entries = metadata_resp.get("entries", [])
 
         # Create CICall object

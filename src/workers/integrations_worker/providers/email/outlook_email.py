@@ -1,6 +1,8 @@
-"""Outlook Email fetcher via Microsoft Graph API through Nango proxy.
+"""Outlook Email fetcher via Microsoft Graph API (direct calls).
 
 Fetches email folders and messages from Outlook/Office 365 mailboxes.
+OAuth tokens are managed by Nango (token storage + refresh) but API calls
+bypass the Nango proxy to avoid proxy request quota limits.
 
 Uses Microsoft Graph Delta Query for efficient incremental sync:
 - Initial sync: /messages/delta with receivedDateTime filter (last 90 days)
@@ -19,10 +21,16 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+import httpx
+
 from src.domain.models.organisation_tables.sync import IntegrationType
 from src.infra.config.nango_provider_mapping import to_nango_connect_integration_key
 from src.infra.utils.logger import get_logger
 from src.service.integrations.nango_client import NangoClient
+from src.workers.integrations_worker.providers._microsoft_graph import (
+    get_access_token,
+    graph_api_request,
+)
 
 logger = get_logger(__name__)
 
@@ -42,7 +50,7 @@ def _extract_pagination_params(next_link: str) -> tuple[str, dict[str, Any]]:
     Microsoft Graph returns full URLs like:
     https://graph.microsoft.com/v1.0/me/mailFolders/{id}/messages/delta?$skiptoken=xxx...
 
-    We need to extract the path and query params for Nango's proxy_request.
+    We need to extract the path and query params for direct API calls.
     """
     parsed = urlparse(next_link)
     endpoint = parsed.path
@@ -123,7 +131,7 @@ async def fetch_folders(
     provider_config_key: str | None = None,
 ) -> list[dict[str, Any]]:
     """
-    Fetch Outlook email folders via Nango proxy.
+    Fetch Outlook email folders via direct Microsoft Graph API calls.
 
     Uses Microsoft Graph API: GET /v1.0/me/mailFolders
 
@@ -155,19 +163,16 @@ async def fetch_folders(
         "$select": "id,displayName,parentFolderId,childFolderCount,unreadItemCount,totalItemCount,isHidden",
     }
 
-    resp = await nango.proxy_request(
-        provider_config_key=provider,
-        connection_id=connection_id,
-        endpoint=endpoint,
-        params=params,
-    )
+    token = await get_access_token(nango, connection_id, provider)
 
-    items = []
-    if isinstance(resp, dict):
-        if "value" in resp and isinstance(resp["value"], list):
-            items = resp["value"]
-        elif "items" in resp and isinstance(resp["items"], list):
-            items = resp["items"]
+    async with httpx.AsyncClient(
+        headers={"Authorization": f"Bearer {token}"}, timeout=30.0
+    ) as client:
+        resp = await graph_api_request(client, endpoint, params=params)
+
+    items: list[dict[str, Any]] = []
+    if isinstance(resp, dict) and "value" in resp and isinstance(resp["value"], list):
+        items = resp["value"]
 
     return items
 
@@ -184,7 +189,7 @@ async def fetch_messages(
     folder_id: str | None = None,
 ) -> FetchMessagesResult:
     """
-    Fetch Outlook email messages via Nango proxy using Delta Query.
+    Fetch Outlook email messages via direct Microsoft Graph API using Delta Query.
 
     Uses Microsoft Graph Delta API for efficient incremental sync:
     - Initial sync: /messages/delta with receivedDateTime filter (last 90 days)
@@ -264,29 +269,27 @@ async def fetch_messages(
     new_delta_link: str | None = None
     max_pages = 100  # Safety limit (100 pages * ~100 items = 10,000 messages max)
 
-    for page_num in range(max_pages):
-        # Determine endpoint and params for this request
-        if next_link:
-            endpoint, params = _extract_pagination_params(next_link)
-        else:
-            endpoint, params = initial_endpoint, initial_params
+    token = await get_access_token(nango, connection_id, provider)
 
-        try:
-            resp = await nango.proxy_request(
-                provider_config_key=provider,
-                connection_id=connection_id,
-                endpoint=endpoint,
-                params=params,
-            )
-        except Exception as e:
-            # Handle expired deltaLink (Microsoft returns 410 Gone or similar)
-            if using_stored_delta_link and page_num == 0:
-                error_msg = str(e).lower()
-                if "410" in error_msg or "gone" in error_msg or "sync state" in error_msg:
+    async with httpx.AsyncClient(
+        headers={"Authorization": f"Bearer {token}"}, timeout=30.0
+    ) as client:
+        for page_num in range(max_pages):
+            # Determine endpoint and params for this request
+            if next_link:
+                endpoint, params = _extract_pagination_params(next_link)
+            else:
+                endpoint, params = initial_endpoint, initial_params
+
+            try:
+                resp = await graph_api_request(client, endpoint, params=params)
+            except httpx.HTTPStatusError as exc:
+                # Handle expired deltaLink (Microsoft returns 410 Gone)
+                if using_stored_delta_link and page_num == 0 and exc.response.status_code == 410:
                     logger.warning(
-                        "Outlook Email: stored deltaLink expired, retrying with fresh delta query"
+                        "Outlook Email: stored deltaLink expired (HTTP 410), "
+                        "retrying with fresh delta query"
                     )
-                    # Retry without deltaLink
                     return await fetch_messages(
                         nango=nango,
                         connection_id=connection_id,
@@ -297,57 +300,79 @@ async def fetch_messages(
                         provider_config_key=provider_config_key,
                         folder_id=folder_id,
                     )
-            raise
-
-        if isinstance(resp, dict):
-            # Check for error response (deltaLink might be expired)
-            if "error" in resp and using_stored_delta_link and page_num == 0:
-                error_code = resp.get("error", {}).get("code", "").lower()
-                if error_code in ("syncstatenotfound", "resyncresquired", "invalidrequest"):
-                    logger.warning(
-                        "Outlook Email: deltaLink invalid (error=%s), retrying fresh",
-                        error_code,
-                    )
-                    return await fetch_messages(
-                        nango=nango,
-                        connection_id=connection_id,
-                        is_initial=True,
-                        last_synced_at=last_synced_at,
-                        delta_link=None,
-                        data_type=data_type,
-                        provider_config_key=provider_config_key,
-                        folder_id=folder_id,
-                    )
-
-            # Extract messages from response
-            if "value" in resp and isinstance(resp["value"], list):
-                for item in resp["value"]:
-                    # Check for deleted items (delta sync returns @removed annotation)
-                    if "@removed" in item:
-                        logger.debug(
-                            "Delta sync: detected deleted message id=%s reason=%s",
-                            item.get("id"),
-                            item.get("@removed", {}).get("reason"),
+                raise
+            except Exception as e:
+                # Handle expired deltaLink via string-based detection
+                if using_stored_delta_link and page_num == 0:
+                    error_msg = str(e).lower()
+                    if "410" in error_msg or "gone" in error_msg or "sync state" in error_msg:
+                        logger.warning(
+                            "Outlook Email: stored deltaLink expired, "
+                            "retrying with fresh delta query"
                         )
-                        # Mark for downstream handling with proper sync metadata
-                        _mark_as_deleted(item)
-                    all_items.append(item)
-            elif "items" in resp and isinstance(resp["items"], list):
-                all_items.extend(resp["items"])
+                        return await fetch_messages(
+                            nango=nango,
+                            connection_id=connection_id,
+                            is_initial=True,
+                            last_synced_at=last_synced_at,
+                            delta_link=None,  # Force fresh delta query
+                            data_type=data_type,
+                            provider_config_key=provider_config_key,
+                            folder_id=folder_id,
+                        )
+                raise
 
-            # Check for next page or deltaLink
-            next_link = resp.get("@odata.nextLink")
-            if not next_link:
-                # Capture deltaLink for next sync (only on last page)
-                new_delta_link = resp.get("@odata.deltaLink")
-                if new_delta_link:
-                    logger.info(
-                        "Delta sync complete after %d pages, new deltaLink received",
-                        page_num + 1,
-                    )
+            if isinstance(resp, dict):
+                # Check for error response (deltaLink might be expired)
+                if "error" in resp and using_stored_delta_link and page_num == 0:
+                    error_code = resp.get("error", {}).get("code", "").lower()
+                    if error_code in (
+                        "syncstatenotfound",
+                        "resyncresquired",
+                        "invalidrequest",
+                    ):
+                        logger.warning(
+                            "Outlook Email: deltaLink invalid (error=%s), retrying fresh",
+                            error_code,
+                        )
+                        return await fetch_messages(
+                            nango=nango,
+                            connection_id=connection_id,
+                            is_initial=True,
+                            last_synced_at=last_synced_at,
+                            delta_link=None,
+                            data_type=data_type,
+                            provider_config_key=provider_config_key,
+                            folder_id=folder_id,
+                        )
+
+                # Extract messages from response
+                if "value" in resp and isinstance(resp["value"], list):
+                    for item in resp["value"]:
+                        # Check for deleted items (delta sync returns @removed annotation)
+                        if "@removed" in item:
+                            logger.debug(
+                                "Delta sync: detected deleted message id=%s reason=%s",
+                                item.get("id"),
+                                item.get("@removed", {}).get("reason"),
+                            )
+                            # Mark for downstream handling with proper sync metadata
+                            _mark_as_deleted(item)
+                        all_items.append(item)
+
+                # Check for next page or deltaLink
+                next_link = resp.get("@odata.nextLink")
+                if not next_link:
+                    # Capture deltaLink for next sync (only on last page)
+                    new_delta_link = resp.get("@odata.deltaLink")
+                    if new_delta_link:
+                        logger.info(
+                            "Delta sync complete after %d pages, new deltaLink received",
+                            page_num + 1,
+                        )
+                    break
+            else:
                 break
-        else:
-            break
 
     # Filter out "Other" inbox messages (less important emails like newsletters)
     filtered_messages, skipped_count = _filter_other_inbox_messages(all_items)
