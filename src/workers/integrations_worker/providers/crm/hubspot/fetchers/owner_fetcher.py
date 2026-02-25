@@ -5,12 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 from src.infra.utils.logger import get_logger
-from src.workers.integrations_worker.core import BaseFetcher
+from src.workers.integrations_worker.providers.crm.hubspot.fetchers.base import HubSpotDirectFetcher
 
 logger = get_logger(__name__)
 
 
-class HubSpotOwnerFetcher(BaseFetcher):
+class HubSpotOwnerFetcher(HubSpotDirectFetcher):
     """Fetches owner data from HubSpot CRM.
 
     Owners in HubSpot are users who can be assigned to records (deals, contacts, etc.).
@@ -62,9 +62,7 @@ class HubSpotOwnerFetcher(BaseFetcher):
 
         for owner_id in entity_ids:
             try:
-                response = await self.nango_client.proxy_request(
-                    provider_config_key=self.provider_config_key,
-                    connection_id=self.connection_id,
+                response = await self._make_request(
                     endpoint=f"/crm/v3/owners/{owner_id}",
                     method="GET",
                 )

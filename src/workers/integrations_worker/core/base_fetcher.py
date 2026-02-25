@@ -94,6 +94,23 @@ class BaseFetcher(ABC):
         )
         return []
 
+    async def _make_request(
+        self,
+        endpoint: str,
+        method: str = "GET",
+        params: dict[str, Any] | None = None,
+        data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Make an API request. Override in subclass for direct API calls."""
+        return await self.nango_client.proxy_request(
+            provider_config_key=self.provider_config_key,
+            connection_id=self.connection_id,
+            endpoint=endpoint,
+            method=method,
+            params=params,
+            data=data,
+        )
+
     async def _fetch_paginated(
         self,
         endpoint: str,
@@ -131,9 +148,7 @@ class BaseFetcher(ABC):
             )
 
             try:
-                response = await self.nango_client.proxy_request(
-                    provider_config_key=self.provider_config_key,
-                    connection_id=self.connection_id,
+                response = await self._make_request(
                     endpoint=endpoint,
                     method="GET",
                     params=params,
@@ -226,9 +241,7 @@ class BaseFetcher(ABC):
             )
 
             try:
-                response = await self.nango_client.proxy_request(
-                    provider_config_key=self.provider_config_key,
-                    connection_id=self.connection_id,
+                response = await self._make_request(
                     endpoint=endpoint,
                     method="POST",
                     data={"ids": batch},

@@ -5,12 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 from src.infra.utils.logger import get_logger
-from src.workers.integrations_worker.core.base_fetcher import BaseFetcher
+from src.workers.integrations_worker.providers.crm.hubspot.fetchers.base import HubSpotDirectFetcher
 
 logger = get_logger(__name__)
 
 
-class HubSpotPipelineFetcher(BaseFetcher):
+class HubSpotPipelineFetcher(HubSpotDirectFetcher):
     """Fetches pipeline records from HubSpot via Nango.
 
     HubSpot pipelines represent deal workflows with stages.
@@ -34,9 +34,7 @@ class HubSpotPipelineFetcher(BaseFetcher):
         )
 
         # HubSpot pipelines endpoint for deals
-        response = await self.nango_client.proxy_request(
-            provider_config_key=self.provider_config_key,
-            connection_id=self.connection_id,
+        response = await self._make_request(
             endpoint="/crm/v3/pipelines/deals",
             method="GET",
             params={},

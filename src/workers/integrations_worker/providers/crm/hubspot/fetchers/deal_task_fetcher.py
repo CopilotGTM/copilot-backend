@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from src.infra.utils.logger import get_logger
-from src.workers.integrations_worker.core import BaseFetcher
+from src.workers.integrations_worker.providers.crm.hubspot.fetchers.base import HubSpotDirectFetcher
 
 logger = get_logger(__name__)
 
@@ -35,7 +35,7 @@ HUBSPOT_DEAL_TASK_PROPERTIES = [
 HUBSPOT_DEAL_TASK_ASSOCIATIONS = ["deals", "contacts", "companies"]
 
 
-class HubSpotDealTaskFetcher(BaseFetcher):
+class HubSpotDealTaskFetcher(HubSpotDirectFetcher):
     """Fetcher for HubSpot task data (supports both deal-associated and standalone tasks)."""
 
     async def fetch_all(
@@ -138,9 +138,7 @@ class HubSpotDealTaskFetcher(BaseFetcher):
             if after:
                 body["after"] = after
 
-            response = await self.nango_client.proxy_request(
-                provider_config_key=self.provider_config_key,
-                connection_id=self.connection_id,
+            response = await self._make_request(
                 endpoint="/crm/v3/objects/tasks/search",
                 method="POST",
                 data=body,

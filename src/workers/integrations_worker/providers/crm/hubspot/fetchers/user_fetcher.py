@@ -5,12 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 from src.infra.utils.logger import get_logger
-from src.workers.integrations_worker.core.base_fetcher import BaseFetcher
+from src.workers.integrations_worker.providers.crm.hubspot.fetchers.base import HubSpotDirectFetcher
 
 logger = get_logger(__name__)
 
 
-class HubSpotUserFetcher(BaseFetcher):
+class HubSpotUserFetcher(HubSpotDirectFetcher):
     """Fetches user/owner records from HubSpot via Nango.
 
     HubSpot users represent team members who can own records,
@@ -35,9 +35,7 @@ class HubSpotUserFetcher(BaseFetcher):
 
         # HubSpot owners endpoint returns all owners (no pagination needed typically)
         # The API returns a simple array of owner objects
-        response = await self.nango_client.proxy_request(
-            provider_config_key=self.provider_config_key,
-            connection_id=self.connection_id,
+        response = await self._make_request(
             endpoint="/crm/v3/owners",
             method="GET",
             params={},

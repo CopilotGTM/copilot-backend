@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from src.infra.utils.logger import get_logger
-from src.workers.integrations_worker.core import BaseFetcher
+from src.workers.integrations_worker.providers.crm.hubspot.fetchers.base import HubSpotDirectFetcher
 
 logger = get_logger(__name__)
 
@@ -35,7 +35,7 @@ HUBSPOT_NOTE_PROPERTIES = [
 HUBSPOT_NOTE_ASSOCIATIONS = ["deals", "contacts", "companies"]
 
 
-class HubSpotNoteFetcher(BaseFetcher):
+class HubSpotNoteFetcher(HubSpotDirectFetcher):
     """Fetcher for HubSpot note data."""
 
     async def fetch_all(
@@ -131,9 +131,7 @@ class HubSpotNoteFetcher(BaseFetcher):
             if after:
                 body["after"] = after
 
-            response = await self.nango_client.proxy_request(
-                provider_config_key=self.provider_config_key,
-                connection_id=self.connection_id,
+            response = await self._make_request(
                 endpoint="/crm/v3/objects/notes/search",
                 method="POST",
                 data=body,

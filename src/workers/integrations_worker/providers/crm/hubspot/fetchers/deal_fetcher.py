@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from src.infra.utils.logger import get_logger
-from src.workers.integrations_worker.core import BaseFetcher
+from src.workers.integrations_worker.providers.crm.hubspot.fetchers.base import HubSpotDirectFetcher
 
 logger = get_logger(__name__)
 
@@ -85,7 +85,7 @@ HUBSPOT_DEAL_PROPERTY_HISTORY = [
 ]
 
 
-class HubSpotDealFetcher(BaseFetcher):
+class HubSpotDealFetcher(HubSpotDirectFetcher):
     """Fetcher for HubSpot deal data."""
 
     async def fetch_all(
@@ -190,9 +190,7 @@ class HubSpotDealFetcher(BaseFetcher):
             if after:
                 body["after"] = after
 
-            response = await self.nango_client.proxy_request(
-                provider_config_key=self.provider_config_key,
-                connection_id=self.connection_id,
+            response = await self._make_request(
                 endpoint="/crm/v3/objects/deals/search",
                 method="POST",
                 data=body,
