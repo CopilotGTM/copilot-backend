@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from src.infra.utils.logger import get_logger
-from src.workers.integrations_worker.core import BaseFetcher
+from src.workers.integrations_worker.providers.crm.hubspot.fetchers.base import HubSpotDirectFetcher
 
 logger = get_logger(__name__)
 
@@ -64,7 +64,7 @@ HUBSPOT_CONTACT_PROPERTIES = [
 HUBSPOT_CONTACT_ASSOCIATIONS = ["companies", "deals"]
 
 
-class HubSpotContactFetcher(BaseFetcher):
+class HubSpotContactFetcher(HubSpotDirectFetcher):
     """Fetcher for HubSpot contact data."""
 
     async def fetch_all(
@@ -171,9 +171,7 @@ class HubSpotContactFetcher(BaseFetcher):
             if after:
                 body["after"] = after
 
-            response = await self.nango_client.proxy_request(
-                provider_config_key=self.provider_config_key,
-                connection_id=self.connection_id,
+            response = await self._make_request(
                 endpoint="/crm/v3/objects/contacts/search",
                 method="POST",
                 data=body,
@@ -254,9 +252,7 @@ class HubSpotContactFetcher(BaseFetcher):
         }
 
         # HubSpot search by email
-        response = await self.nango_client.proxy_request(
-            provider_config_key=self.provider_config_key,
-            connection_id=self.connection_id,
+        response = await self._make_request(
             endpoint=f"/crm/v3/objects/contacts/{email}",
             method="GET",
             params=params,

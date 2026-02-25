@@ -74,51 +74,53 @@ async def fetch_companies(
     """
     _ = data_type  # Unused parameter
     fetcher = HubSpotCompanyFetcher(nango, provider_config_key, connection_id)
+    try:
+        # Convert datetime to Unix timestamp in milliseconds for HubSpot API filtering
+        last_sync_time_ms = int(last_synced_at.timestamp() * 1000) if last_synced_at else None
 
-    # Convert datetime to Unix timestamp in milliseconds for HubSpot API filtering
-    last_sync_time_ms = int(last_synced_at.timestamp() * 1000) if last_synced_at else None
+        logger.info(
+            "HubSpot companies fetch starting: is_initial=%s last_synced_at=%s (ms=%s)",
+            is_initial,
+            last_synced_at,
+            last_sync_time_ms,
+        )
 
-    logger.info(
-        "HubSpot companies fetch starting: is_initial=%s last_synced_at=%s (ms=%s)",
-        is_initial,
-        last_synced_at,
-        last_sync_time_ms,
-    )
+        records = await fetcher.fetch_all(
+            incremental=not is_initial,
+            last_sync_time=str(last_sync_time_ms) if last_sync_time_ms else None,
+        )
 
-    records = await fetcher.fetch_all(
-        incremental=not is_initial,
-        last_sync_time=str(last_sync_time_ms) if last_sync_time_ms else None,
-    )
+        # Add sync metadata for incremental processing optimization
+        context = SyncContext.from_params(
+            sync_type=sync_type,
+            is_initial=is_initial,
+            response_results=response_results,
+        )
 
-    # Add sync metadata for incremental processing optimization
-    context = SyncContext.from_params(
-        sync_type=sync_type,
-        is_initial=is_initial,
-        response_results=response_results,
-    )
+        processed_records, counts = classify_records(
+            records,
+            context=context,
+            add_metadata=True,
+        )
 
-    processed_records, counts = classify_records(
-        records,
-        context=context,
-        add_metadata=True,
-    )
+        log_sync_action_distribution(
+            counts,
+            entity_type="companies",
+            provider="hubspot",
+            sync_type=sync_type,
+        )
 
-    log_sync_action_distribution(
-        counts,
-        entity_type="companies",
-        provider="hubspot",
-        sync_type=sync_type,
-    )
+        logger.info(
+            "HubSpot companies fetch completed: total=%d (webhook_expected: added=%d updated=%d deleted=%d)",
+            len(processed_records),
+            response_results.get("added", 0) if response_results else 0,
+            response_results.get("updated", 0) if response_results else 0,
+            response_results.get("deleted", 0) if response_results else 0,
+        )
 
-    logger.info(
-        "HubSpot companies fetch completed: total=%d (webhook_expected: added=%d updated=%d deleted=%d)",
-        len(processed_records),
-        response_results.get("added", 0) if response_results else 0,
-        response_results.get("updated", 0) if response_results else 0,
-        response_results.get("deleted", 0) if response_results else 0,
-    )
-
-    return processed_records
+        return processed_records
+    finally:
+        await fetcher.close()
 
 
 async def fetch_contacts(
@@ -149,51 +151,53 @@ async def fetch_contacts(
     """
     _ = data_type  # Unused parameter
     fetcher = HubSpotContactFetcher(nango, provider_config_key, connection_id)
+    try:
+        # Convert datetime to Unix timestamp in milliseconds for HubSpot API filtering
+        last_sync_time_ms = int(last_synced_at.timestamp() * 1000) if last_synced_at else None
 
-    # Convert datetime to Unix timestamp in milliseconds for HubSpot API filtering
-    last_sync_time_ms = int(last_synced_at.timestamp() * 1000) if last_synced_at else None
+        logger.info(
+            "HubSpot contacts fetch starting: is_initial=%s last_synced_at=%s (ms=%s)",
+            is_initial,
+            last_synced_at,
+            last_sync_time_ms,
+        )
 
-    logger.info(
-        "HubSpot contacts fetch starting: is_initial=%s last_synced_at=%s (ms=%s)",
-        is_initial,
-        last_synced_at,
-        last_sync_time_ms,
-    )
+        records = await fetcher.fetch_all(
+            incremental=not is_initial,
+            last_sync_time=str(last_sync_time_ms) if last_sync_time_ms else None,
+        )
 
-    records = await fetcher.fetch_all(
-        incremental=not is_initial,
-        last_sync_time=str(last_sync_time_ms) if last_sync_time_ms else None,
-    )
+        # Add sync metadata for incremental processing optimization
+        context = SyncContext.from_params(
+            sync_type=sync_type,
+            is_initial=is_initial,
+            response_results=response_results,
+        )
 
-    # Add sync metadata for incremental processing optimization
-    context = SyncContext.from_params(
-        sync_type=sync_type,
-        is_initial=is_initial,
-        response_results=response_results,
-    )
+        processed_records, counts = classify_records(
+            records,
+            context=context,
+            add_metadata=True,
+        )
 
-    processed_records, counts = classify_records(
-        records,
-        context=context,
-        add_metadata=True,
-    )
+        log_sync_action_distribution(
+            counts,
+            entity_type="contacts",
+            provider="hubspot",
+            sync_type=sync_type,
+        )
 
-    log_sync_action_distribution(
-        counts,
-        entity_type="contacts",
-        provider="hubspot",
-        sync_type=sync_type,
-    )
+        logger.info(
+            "HubSpot contacts fetch completed: total=%d (webhook_expected: added=%d updated=%d deleted=%d)",
+            len(processed_records),
+            response_results.get("added", 0) if response_results else 0,
+            response_results.get("updated", 0) if response_results else 0,
+            response_results.get("deleted", 0) if response_results else 0,
+        )
 
-    logger.info(
-        "HubSpot contacts fetch completed: total=%d (webhook_expected: added=%d updated=%d deleted=%d)",
-        len(processed_records),
-        response_results.get("added", 0) if response_results else 0,
-        response_results.get("updated", 0) if response_results else 0,
-        response_results.get("deleted", 0) if response_results else 0,
-    )
-
-    return processed_records
+        return processed_records
+    finally:
+        await fetcher.close()
 
 
 async def fetch_deals(
@@ -224,55 +228,57 @@ async def fetch_deals(
     """
     _ = data_type  # Unused parameter
     fetcher = HubSpotDealFetcher(nango, provider_config_key, connection_id)
+    try:
+        # Convert datetime to Unix timestamp in milliseconds for HubSpot API filtering
+        last_sync_time_ms = int(last_synced_at.timestamp() * 1000) if last_synced_at else None
 
-    # Convert datetime to Unix timestamp in milliseconds for HubSpot API filtering
-    last_sync_time_ms = int(last_synced_at.timestamp() * 1000) if last_synced_at else None
+        logger.info(
+            "HubSpot deals fetch starting: is_initial=%s last_synced_at=%s (ms=%s)",
+            is_initial,
+            last_synced_at,
+            last_sync_time_ms,
+        )
 
-    logger.info(
-        "HubSpot deals fetch starting: is_initial=%s last_synced_at=%s (ms=%s)",
-        is_initial,
-        last_synced_at,
-        last_sync_time_ms,
-    )
+        records = await fetcher.fetch_all(
+            incremental=not is_initial,
+            last_sync_time=str(last_sync_time_ms) if last_sync_time_ms else None,
+        )
 
-    records = await fetcher.fetch_all(
-        incremental=not is_initial,
-        last_sync_time=str(last_sync_time_ms) if last_sync_time_ms else None,
-    )
+        # Add sync metadata for incremental processing optimization
+        context = SyncContext.from_params(
+            sync_type=sync_type,
+            is_initial=is_initial,
+            response_results=response_results,
+        )
 
-    # Add sync metadata for incremental processing optimization
-    context = SyncContext.from_params(
-        sync_type=sync_type,
-        is_initial=is_initial,
-        response_results=response_results,
-    )
+        # Classify records and add _sync_metadata
+        # Note: For HubSpot, archived=True records are already fetched separately
+        # and will be classified as DELETED
+        processed_records, counts = classify_records(
+            records,
+            context=context,
+            add_metadata=True,
+        )
 
-    # Classify records and add _sync_metadata
-    # Note: For HubSpot, archived=True records are already fetched separately
-    # and will be classified as DELETED
-    processed_records, counts = classify_records(
-        records,
-        context=context,
-        add_metadata=True,
-    )
+        # Log action distribution for observability
+        log_sync_action_distribution(
+            counts,
+            entity_type="deals",
+            provider="hubspot",
+            sync_type=sync_type,
+        )
 
-    # Log action distribution for observability
-    log_sync_action_distribution(
-        counts,
-        entity_type="deals",
-        provider="hubspot",
-        sync_type=sync_type,
-    )
+        logger.info(
+            "HubSpot deals fetch completed: total=%d (webhook_expected: added=%d updated=%d deleted=%d)",
+            len(processed_records),
+            response_results.get("added", 0) if response_results else 0,
+            response_results.get("updated", 0) if response_results else 0,
+            response_results.get("deleted", 0) if response_results else 0,
+        )
 
-    logger.info(
-        "HubSpot deals fetch completed: total=%d (webhook_expected: added=%d updated=%d deleted=%d)",
-        len(processed_records),
-        response_results.get("added", 0) if response_results else 0,
-        response_results.get("updated", 0) if response_results else 0,
-        response_results.get("deleted", 0) if response_results else 0,
-    )
-
-    return processed_records
+        return processed_records
+    finally:
+        await fetcher.close()
 
 
 async def fetch_owners(
@@ -300,15 +306,29 @@ async def fetch_owners(
     """
     _ = last_synced_at, data_type
     fetcher = HubSpotOwnerFetcher(nango, provider_config_key, connection_id)
-    owners = await fetcher.fetch_all(incremental=not is_initial)
+    try:
+        owners = await fetcher.fetch_all(incremental=not is_initial)
 
-    # Add sync metadata for incremental sync
-    if sync_type and sync_type.upper() == "INCREMENTAL" and owners:
-        context = SyncContext(response_results=response_results)
-        classify_records(owners, context)
-        log_sync_action_distribution(owners, "owners", logger)
+        context = SyncContext.from_params(
+            sync_type=sync_type,
+            is_initial=is_initial,
+            response_results=response_results,
+        )
+        processed_records, counts = classify_records(
+            owners,
+            context=context,
+            add_metadata=True,
+        )
+        log_sync_action_distribution(
+            counts,
+            entity_type="owners",
+            provider="hubspot",
+            sync_type=sync_type,
+        )
 
-    return owners
+        return processed_records
+    finally:
+        await fetcher.close()
 
 
 async def fetch_pipelines(
@@ -336,15 +356,29 @@ async def fetch_pipelines(
     """
     _ = last_synced_at, data_type
     fetcher = HubSpotPipelineFetcher(nango, provider_config_key, connection_id)
-    pipelines = await fetcher.fetch_all(incremental=not is_initial)
+    try:
+        pipelines = await fetcher.fetch_all(incremental=not is_initial)
 
-    # Add sync metadata for incremental sync
-    if sync_type and sync_type.upper() == "INCREMENTAL" and pipelines:
-        context = SyncContext(response_results=response_results)
-        classify_records(pipelines, context)
-        log_sync_action_distribution(pipelines, "pipelines", logger)
+        context = SyncContext.from_params(
+            sync_type=sync_type,
+            is_initial=is_initial,
+            response_results=response_results,
+        )
+        processed_records, counts = classify_records(
+            pipelines,
+            context=context,
+            add_metadata=True,
+        )
+        log_sync_action_distribution(
+            counts,
+            entity_type="pipelines",
+            provider="hubspot",
+            sync_type=sync_type,
+        )
 
-    return pipelines
+        return processed_records
+    finally:
+        await fetcher.close()
 
 
 async def fetch_users(
@@ -372,15 +406,29 @@ async def fetch_users(
     """
     _ = last_synced_at, data_type
     fetcher = HubSpotUserFetcher(nango, provider_config_key, connection_id)
-    users = await fetcher.fetch_all(incremental=not is_initial)
+    try:
+        users = await fetcher.fetch_all(incremental=not is_initial)
 
-    # Add sync metadata for incremental sync
-    if sync_type and sync_type.upper() == "INCREMENTAL" and users:
-        context = SyncContext(response_results=response_results)
-        classify_records(users, context)
-        log_sync_action_distribution(users, "users", logger)
+        context = SyncContext.from_params(
+            sync_type=sync_type,
+            is_initial=is_initial,
+            response_results=response_results,
+        )
+        processed_records, counts = classify_records(
+            users,
+            context=context,
+            add_metadata=True,
+        )
+        log_sync_action_distribution(
+            counts,
+            entity_type="users",
+            provider="hubspot",
+            sync_type=sync_type,
+        )
 
-    return users
+        return processed_records
+    finally:
+        await fetcher.close()
 
 
 async def fetch_deal_tasks(
@@ -408,51 +456,53 @@ async def fetch_deal_tasks(
     """
     _ = data_type  # Unused parameter
     fetcher = HubSpotDealTaskFetcher(nango, provider_config_key, connection_id)
+    try:
+        # Convert datetime to Unix timestamp in milliseconds for HubSpot API filtering
+        last_sync_time_ms = int(last_synced_at.timestamp() * 1000) if last_synced_at else None
 
-    # Convert datetime to Unix timestamp in milliseconds for HubSpot API filtering
-    last_sync_time_ms = int(last_synced_at.timestamp() * 1000) if last_synced_at else None
+        logger.info(
+            "HubSpot deal_tasks fetch starting: is_initial=%s last_synced_at=%s (ms=%s)",
+            is_initial,
+            last_synced_at,
+            last_sync_time_ms,
+        )
 
-    logger.info(
-        "HubSpot deal_tasks fetch starting: is_initial=%s last_synced_at=%s (ms=%s)",
-        is_initial,
-        last_synced_at,
-        last_sync_time_ms,
-    )
+        tasks = await fetcher.fetch_all(
+            incremental=not is_initial,
+            last_sync_time=str(last_sync_time_ms) if last_sync_time_ms else None,
+        )
 
-    tasks = await fetcher.fetch_all(
-        incremental=not is_initial,
-        last_sync_time=str(last_sync_time_ms) if last_sync_time_ms else None,
-    )
+        # Add sync metadata for incremental processing optimization
+        context = SyncContext.from_params(
+            sync_type=sync_type,
+            is_initial=is_initial,
+            response_results=response_results,
+        )
 
-    # Add sync metadata for incremental processing optimization
-    context = SyncContext.from_params(
-        sync_type=sync_type,
-        is_initial=is_initial,
-        response_results=response_results,
-    )
+        processed_records, counts = classify_records(
+            tasks,
+            context=context,
+            add_metadata=True,
+        )
 
-    processed_records, counts = classify_records(
-        tasks,
-        context=context,
-        add_metadata=True,
-    )
+        log_sync_action_distribution(
+            counts,
+            entity_type="deal_tasks",
+            provider="hubspot",
+            sync_type=sync_type,
+        )
 
-    log_sync_action_distribution(
-        counts,
-        entity_type="deal_tasks",
-        provider="hubspot",
-        sync_type=sync_type,
-    )
+        logger.info(
+            "HubSpot deal_tasks fetch completed: total=%d (webhook_expected: added=%d updated=%d deleted=%d)",
+            len(processed_records),
+            response_results.get("added", 0) if response_results else 0,
+            response_results.get("updated", 0) if response_results else 0,
+            response_results.get("deleted", 0) if response_results else 0,
+        )
 
-    logger.info(
-        "HubSpot deal_tasks fetch completed: total=%d (webhook_expected: added=%d updated=%d deleted=%d)",
-        len(processed_records),
-        response_results.get("added", 0) if response_results else 0,
-        response_results.get("updated", 0) if response_results else 0,
-        response_results.get("deleted", 0) if response_results else 0,
-    )
-
-    return processed_records
+        return processed_records
+    finally:
+        await fetcher.close()
 
 
 def _hs_note_to_canonical_activity(note: dict[str, Any]) -> dict[str, Any]:
@@ -462,7 +512,8 @@ def _hs_note_to_canonical_activity(note: dict[str, Any]) -> dict[str, Any]:
     existing DealTaskSyncService can persist it into crm_activities.
     """
 
-    props = note.get("properties") if isinstance(note.get("properties"), dict) else {}
+    raw_props = note.get("properties")
+    props: dict[str, Any] = raw_props if isinstance(raw_props, dict) else {}
     body = props.get("hs_note_body")
 
     canonical_props: dict[str, Any] = dict(props)
@@ -510,18 +561,40 @@ async def fetch_notes(
     """
     _ = data_type
     fetcher = HubSpotNoteFetcher(nango, provider_config_key, connection_id)
-    # Keep parity with other HubSpot CRM fetchers: incremental based on integration sync.
-    # last_synced_at is passed through for potential future use.
-    notes = await fetcher.fetch_all(
-        incremental=not is_initial,
-        last_sync_time=str(last_synced_at) if last_synced_at is not None else None,
-    )
-    canonical_notes = [_hs_note_to_canonical_activity(n) for n in notes if isinstance(n, dict)]
+    try:
+        # Convert datetime to Unix timestamp in milliseconds for HubSpot API filtering
+        last_sync_time_ms = int(last_synced_at.timestamp() * 1000) if last_synced_at else None
 
-    # Add sync metadata for incremental sync
-    if sync_type and sync_type.upper() == "INCREMENTAL" and canonical_notes:
-        context = SyncContext(response_results=response_results)
-        classify_records(canonical_notes, context)
-        log_sync_action_distribution(canonical_notes, "notes", logger)
+        logger.info(
+            "HubSpot notes fetch starting: is_initial=%s last_synced_at=%s (ms=%s)",
+            is_initial,
+            last_synced_at,
+            last_sync_time_ms,
+        )
 
-    return canonical_notes
+        notes = await fetcher.fetch_all(
+            incremental=not is_initial,
+            last_sync_time=str(last_sync_time_ms) if last_sync_time_ms else None,
+        )
+        canonical_notes = [_hs_note_to_canonical_activity(n) for n in notes if isinstance(n, dict)]
+
+        context = SyncContext.from_params(
+            sync_type=sync_type,
+            is_initial=is_initial,
+            response_results=response_results,
+        )
+        processed_records, counts = classify_records(
+            canonical_notes,
+            context=context,
+            add_metadata=True,
+        )
+        log_sync_action_distribution(
+            counts,
+            entity_type="notes",
+            provider="hubspot",
+            sync_type=sync_type,
+        )
+
+        return processed_records
+    finally:
+        await fetcher.close()
