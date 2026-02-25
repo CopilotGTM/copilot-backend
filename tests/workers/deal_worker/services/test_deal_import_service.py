@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any, cast
 from uuid import uuid4
 
 import pytest
@@ -29,7 +30,7 @@ def _service(
         organisation_id=uuid4(),
         actor_user_id=uuid4(),
         storage_path="crm_imports/deals/test.csv",
-        publisher=DummyPublisher(),
+        publisher=cast(Any, DummyPublisher()),
         import_mode=import_mode,
         strict_validation=strict_validation,
     )
@@ -64,7 +65,7 @@ def test_build_payload_uses_company_fallback_and_default_pipeline() -> None:
     assert payload["name"] == "Acme Corp"
     assert payload["pipeline_id"] == pipeline.pipeline_id
     assert payload["stage_id"] is None
-    assert warnings == []
+    assert warnings == [{"warning": "owner_defaulted_to_importer"}]
 
 
 def test_build_payload_owner_email_missing_raises() -> None:
@@ -278,6 +279,84 @@ async def test_update_deal_assigns_importer_when_owner_missing_and_existing_owne
     assert existing_deal.owner_id == fallback_owner_id
 
 
+@pytest.mark.asyncio
+async def test_update_deal_passes_none_values_for_full_row_rewrite() -> None:
+    service = _service()
+    pipeline = SimpleNamespace(pipeline_id=uuid4(), name="Pipeline", label=None, external_id="p1")
+    existing_deal = SimpleNamespace(
+        deal_id=uuid4(),
+        owner_id=uuid4(),
+        stage_id=None,
+        pipeline_id=pipeline.pipeline_id,
+    )
+    context = _context(pipeline)
+
+    class _FakeDealWriteService:
+        def __init__(self):
+            self.last_update_payload = None
+
+        async def update_deal(self, _deal_id, _payload):
+            self.last_update_payload = _payload
+            return existing_deal
+
+    class _FakeOrgSession:
+        async def commit(self):
+            return None
+
+        async def refresh(self, _deal):
+            return None
+
+        async def rollback(self):
+            return None
+
+    fake_service = _FakeDealWriteService()
+    fake_session = _FakeOrgSession()
+
+    payload = {
+        "name": "Deal Updated",
+        "amount": None,
+        "currency": None,
+        "deal_status": "open",
+        "probability": None,
+        "forecast_category": None,
+        "close_date": None,
+        "expected_close_date": None,
+        "closed_won_at": None,
+        "closed_lost_at": None,
+        "closed_reason": None,
+        "crm_url": None,
+        "source_created_at": None,
+        "last_activity_at": None,
+        "description": None,
+        "deal_type": None,
+        "priority": None,
+        "lead_source": None,
+        "custom_properties": None,
+        "owner_user_id": service.actor_user_id,
+        "owner_email_provided": False,
+    }
+
+    actor_info = ActorInfo(
+        user_id=service.actor_user_id,
+        user_name="Test User",
+        user_email="test@example.com",
+    )
+    await service._update_deal(
+        existing_deal=existing_deal,
+        payload=payload,
+        context=context,
+        service=fake_service,
+        org_session=fake_session,
+        actor_info=actor_info,
+    )
+
+    assert fake_service.last_update_payload is not None
+    assert "priority" in fake_service.last_update_payload
+    assert fake_service.last_update_payload["priority"] is None
+    assert "description" in fake_service.last_update_payload
+    assert fake_service.last_update_payload["description"] is None
+
+
 def test_build_payload_stage_not_found_raises() -> None:
     service = _service()
     pipeline = SimpleNamespace(pipeline_id=uuid4(), name="Pipeline", label=None)
@@ -309,7 +388,10 @@ def test_build_payload_team_member_warning() -> None:
     payload, warnings = service._build_payload(row, context, user_map=user_map)
 
     assert payload["team_members"] == [{"user_id": user_id, "role": "member"}]
-    assert warnings == [{"email": "missing@acme.com", "warning": "team_member_not_found"}]
+    assert warnings == [
+        {"warning": "owner_defaulted_to_importer"},
+        {"email": "missing@acme.com", "warning": "team_member_not_found"},
+    ]
 
 
 def test_build_payload_invalid_close_date_raises() -> None:
@@ -375,13 +457,16 @@ def test_extract_custom_properties_uses_custom_prefix_only() -> None:
         "custom_empty_value": "   ",
     }
 
-    props, warnings = service._extract_custom_properties(row=row, custom_fields_by_key={})
+    props, warnings, has_custom_columns = service._extract_custom_properties(
+        row=row, custom_fields_by_key={}
+    )
 
     assert props == {
         "client_relationship_type": "Existing Client – Upsell",
         "margin": "67%",
     }
     assert warnings == []
+    assert has_custom_columns is True
 
 
 def test_build_payload_maps_company_industry_and_geography() -> None:
@@ -417,7 +502,9 @@ def test_extract_custom_properties_aliases_legacy_revenue_key() -> None:
         "custom_our_revenue_inr": "2000000",
     }
 
-    props, warnings = service._extract_custom_properties(row=row, custom_fields_by_key={})
+    props, warnings, _has_custom_columns = service._extract_custom_properties(
+        row=row, custom_fields_by_key={}
+    )
 
     assert props == {"our_revenue_inr": "2000000"}
     assert warnings == []
@@ -441,7 +528,7 @@ def test_extract_custom_properties_casts_typed_values() -> None:
         "project_budget": CustomFieldRuntime(data_type="currency", validation={}),
     }
 
-    props, warnings = service._extract_custom_properties(
+    props, warnings, _has_custom_columns = service._extract_custom_properties(
         row=row, custom_fields_by_key=custom_fields
     )
 
@@ -460,7 +547,7 @@ def test_extract_custom_properties_falls_back_on_type_cast_error_when_not_strict
         "target_count": CustomFieldRuntime(data_type="integer", validation={}),
     }
 
-    props, warnings = service._extract_custom_properties(
+    props, warnings, _has_custom_columns = service._extract_custom_properties(
         row=row, custom_fields_by_key=custom_fields
     )
 
@@ -481,6 +568,39 @@ def test_extract_custom_properties_raises_on_type_cast_error_when_strict() -> No
     assert "Invalid integer for custom field 'target_count'" in exc.value.message
 
 
+def test_extract_custom_properties_includes_none_for_known_empty_custom_column() -> None:
+    service = _service()
+    row = {"custom_target_count": "   "}
+    custom_fields = {
+        "target_count": CustomFieldRuntime(data_type="integer", validation={}),
+    }
+
+    props, warnings, has_custom_columns = service._extract_custom_properties(
+        row=row, custom_fields_by_key=custom_fields
+    )
+
+    assert has_custom_columns is True
+    assert props == {"target_count": None}
+    assert warnings == []
+
+
+def test_build_payload_keeps_known_custom_column_when_value_is_empty() -> None:
+    service = _service()
+    pipeline = SimpleNamespace(pipeline_id=uuid4(), name="Pipeline", label=None)
+    context = _context(pipeline)
+    context.custom_fields_by_key = {
+        "target_count": CustomFieldRuntime(data_type="integer", validation={})
+    }
+
+    payload, _warnings = service._build_payload(
+        {"deal_name": "Deal", "custom_target_count": "   "},
+        context,
+        user_map={},
+    )
+
+    assert payload["custom_properties"] == {"target_count": None}
+
+
 def test_normalize_import_mode_rejects_unknown_value() -> None:
     with pytest.raises(DealWriteServiceError) as exc:
         _service(import_mode="invalid_mode")
@@ -490,7 +610,7 @@ def test_normalize_import_mode_rejects_unknown_value() -> None:
 
 def test_select_import_action_create_only_skips_existing_deal() -> None:
     service = _service(import_mode="create_only")
-    existing_deal = SimpleNamespace(deal_id=uuid4())
+    existing_deal = cast(Any, SimpleNamespace(deal_id=uuid4()))
 
     action = service._select_import_action(existing_deal)
 
@@ -508,7 +628,7 @@ def test_select_import_action_update_only_requires_existing_deal() -> None:
 
 def test_select_import_action_upsert_updates_when_match_exists() -> None:
     service = _service(import_mode="upsert")
-    existing_deal = SimpleNamespace(deal_id=uuid4())
+    existing_deal = cast(Any, SimpleNamespace(deal_id=uuid4()))
 
     action = service._select_import_action(existing_deal)
 
@@ -556,7 +676,7 @@ async def test_resolve_account_warnings_flags_ambiguous_name_only_account() -> N
             return _FakeResult([uuid4(), uuid4()])
 
     warnings = await service._resolve_account_warnings(
-        org_session=_FakeSession(),
+        org_session=cast(Any, _FakeSession()),
         context=context,
         payload={"account": {"name": "Acme", "domain": None}},
     )
@@ -595,7 +715,7 @@ async def test_resolve_account_warnings_ignores_non_ambiguous_name_only_account(
             return _FakeResult([uuid4()])
 
     warnings = await service._resolve_account_warnings(
-        org_session=_FakeSession(),
+        org_session=cast(Any, _FakeSession()),
         context=context,
         payload={"account": {"name": "Acme", "domain": None}},
     )
@@ -628,7 +748,7 @@ async def test_resolve_contact_warnings_flags_name_only_contact() -> None:
             return _FakeResult([uuid4()])
 
     warnings = await service._resolve_contact_warnings(
-        org_session=_FakeSession(),
+        org_session=cast(Any, _FakeSession()),
         context=context,
         payload={"primary_contact_name": "Jane Doe", "primary_contact_email": None},
     )
@@ -661,7 +781,7 @@ async def test_resolve_contact_warnings_flags_ambiguous_name_only_contact() -> N
             return _FakeResult([uuid4(), uuid4()])
 
     warnings = await service._resolve_contact_warnings(
-        org_session=_FakeSession(),
+        org_session=cast(Any, _FakeSession()),
         context=context,
         payload={"primary_contact_name": "Jane Doe", "primary_contact_email": None},
     )
@@ -683,7 +803,7 @@ async def test_resolve_contact_warnings_ignores_email_contacts() -> None:
             raise AssertionError("DB query should not run when contact email is present")
 
     warnings = await service._resolve_contact_warnings(
-        org_session=_FakeSession(),
+        org_session=cast(Any, _FakeSession()),
         context=context,
         payload={"primary_contact_name": "Jane Doe", "primary_contact_email": "jane@acme.com"},
     )
