@@ -9,6 +9,8 @@ Authentication for events is validated using the Slack Signing Secret (HMAC-SHA2
 """
 
 import json
+from typing import Any
+from urllib.parse import parse_qs
 
 import aiohttp
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -25,6 +27,32 @@ from src.service.bots.slack_bot_service import SlackBotService
 logger = get_logger(__name__)
 
 router = APIRouter(tags=["slack-bot"])
+
+
+def _parse_slack_webhook_payload(body: bytes) -> tuple[dict[str, Any], str]:
+    """Parse Slack webhook body as JSON event payload or form-encoded interaction payload.
+
+    Returns:
+        Tuple of (payload, payload_kind) where payload_kind is "event" or "interaction".
+    """
+    body_text = body.decode("utf-8", errors="replace")
+
+    # Primary path: Events API sends application/json.
+    try:
+        parsed = json.loads(body_text)
+        if isinstance(parsed, dict):
+            return parsed, "event"
+    except json.JSONDecodeError:
+        pass
+
+    # Compatibility path: interactive payload accidentally posted to /events.
+    form_payload = parse_qs(body_text, keep_blank_values=True).get("payload", [])
+    if form_payload:
+        parsed = json.loads(form_payload[0] or "{}")
+        if isinstance(parsed, dict):
+            return parsed, "interaction"
+
+    raise ValueError("Invalid Slack webhook payload")
 
 
 @router.post("/events")
@@ -50,9 +78,10 @@ async def handle_slack_event(request: Request) -> Response:
     # Read raw body for signature verification
     body = await request.body()
 
-    # Parse the JSON payload
+    # Parse JSON events payload, with compatibility support for form-encoded
+    # interaction payloads sent to /events.
     try:
-        payload = await request.json()
+        payload, payload_kind = _parse_slack_webhook_payload(body)
     except Exception as e:
         logger.error("Failed to parse Slack webhook body: %s", e)
         raise HTTPException(
@@ -84,6 +113,26 @@ async def handle_slack_event(request: Request) -> Response:
     except Exception as e:
         logger.error("Slack auth validation error: %s", e, exc_info=True)
         return Response(status_code=status.HTTP_401_UNAUTHORIZED)
+
+    if payload_kind == "interaction":
+        interaction_type = payload.get("type", "")
+        team_id = payload.get("team", {}).get("id", "unknown")
+        user_id = payload.get("user", {}).get("id", "unknown")
+        logger.warning(
+            "Slack interaction payload received on /events (type=%s team=%s user=%s). "
+            "Process it and return 200 for compatibility.",
+            interaction_type,
+            team_id,
+            user_id,
+        )
+        try:
+            await service.process_interaction(payload)
+            return Response(status_code=status.HTTP_200_OK)
+        except Exception as e:
+            logger.error("Error processing Slack interaction on /events: %s", e, exc_info=True)
+            return Response(status_code=status.HTTP_200_OK)
+        finally:
+            await service.close()
 
     # Idempotency guard
     event = payload.get("event", {})

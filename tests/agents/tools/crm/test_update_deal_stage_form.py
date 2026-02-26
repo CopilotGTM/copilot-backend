@@ -315,3 +315,54 @@ class TestUpdateDealStageForm:
 
         assert result is not None
         assert result["status"] == "error"
+
+    @pytest.mark.asyncio
+    @patch("src.service.bots.slack_bot_service.SlackBotService")
+    @patch("src.agents.tools.crm.update_deal_stage.get_card_builder")
+    async def test_slack_channel_sends_block_kit(
+        self,
+        mock_builder_fn: MagicMock,
+        mock_slack_cls: MagicMock,
+        mock_context: MagicMock,
+    ) -> None:
+        mock_context.channel = "slack"
+        mock_context.metadata = {"team_id": "T123", "channel_id": "C123"}
+
+        deal_row = MagicMock()
+        deal_row.pipeline_id = UUID("33333333-3333-3333-3333-333333333333")
+        deal_row.stage_id = UUID("44444444-4444-4444-4444-444444444444")
+        deal_row.integration_id = UUID("55555555-5555-5555-5555-555555555555")
+
+        int_row = MagicMock()
+        int_row.integration_type = "internal_crm"
+
+        stage_row = MagicMock()
+        stage_row.stage_id = UUID("44444444-4444-4444-4444-444444444444")
+        stage_row.name = "Negotiation"
+
+        session = await mock_context.acquire_session().__aenter__()
+        session.execute = AsyncMock(
+            side_effect=[
+                MagicMock(first=MagicMock(return_value=deal_row)),
+                MagicMock(first=MagicMock(return_value=int_row)),
+                MagicMock(all=MagicMock(return_value=[stage_row])),
+            ]
+        )
+
+        mock_builder = MagicMock()
+        mock_builder.build = MagicMock(
+            return_value={"blocks": [{"type": "section"}], "text": "stage form"}
+        )
+        mock_builder_fn.return_value = mock_builder
+
+        mock_slack = MagicMock()
+        mock_slack.send_block_kit_message = AsyncMock(return_value=True)
+        mock_slack_cls.return_value = mock_slack
+
+        result = await update_deal_stage_form(
+            context=mock_context, deal_id=DEAL_ID, deal_name=DEAL_NAME
+        )
+
+        assert result is not None
+        assert result["status"] == "form_sent"
+        mock_slack.send_block_kit_message.assert_called_once()

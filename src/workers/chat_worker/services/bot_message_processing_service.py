@@ -416,10 +416,11 @@ class BotMessageProcessingService:
                     "content": (
                         "You are responding to an @mention in a Slack channel. "
                         "You do NOT have the channel history in your conversation context. "
-                        "To understand what the channel has been discussing, you MUST call the "
-                        "fetch_slack_channel_messages tool FIRST before answering. "
-                        "This tool fetches recent messages from the Slack channel so you can "
-                        "provide a relevant and informed response."
+                        "Do not claim you have read prior channel messages. "
+                        "If context is missing, ask a brief clarifying question before answering. "
+                        "For CRM write requests (for example, creating a deal), "
+                        "call the write tool immediately once required fields are present. "
+                        "Do not ask follow-up questions for optional fields before calling tools."
                     ),
                 }
             )

@@ -65,20 +65,26 @@ async def update_deal_stage_form(
         logger.warning("update_deal_stage_form: missing organisation_id in context")
         return None
 
-    # Verify channel metadata is available for sending the card
+    channel = (context.channel or "teams").lower()
     service_url = context.metadata.get("service_url", "")
     conversation_id = context.metadata.get("conversation_id", "")
+    team_id = context.metadata.get("team_id", "")
+    channel_id = context.metadata.get("channel_id", "")
 
-    if not service_url or not conversation_id:
+    if channel == "slack":
+        if not team_id or not channel_id:
+            logger.warning("update_deal_stage_form: missing Slack team_id/channel_id in metadata")
+            return {
+                "status": "error",
+                "message": "Cannot send interactive form: missing Slack channel context.",
+            }
+    elif not service_url or not conversation_id:
         logger.warning(
-            "update_deal_stage_form: missing service_url or conversation_id in context metadata"
+            "update_deal_stage_form: missing Teams service_url/conversation_id in metadata"
         )
         return {
             "status": "error",
-            "message": (
-                "Cannot send interactive form: missing channel context. "
-                "This tool is only available in Teams chat."
-            ),
+            "message": "Cannot send interactive form: missing Teams channel context.",
         }
 
     # Parse deal_id
@@ -231,16 +237,32 @@ async def update_deal_stage_form(
             "message": f"Interactive forms are not supported on {context.channel}.",
         }
 
-    # Send the card via proactive messaging
-    from src.service.bots.teams_bot_service import TeamsBotService
+    # Send the card via the channel-specific bot service.
+    if channel == "slack":
+        from src.service.bots.slack_bot_service import SlackBotService
 
-    bot_service = TeamsBotService()
-    sent = await bot_service.send_proactive_payload(
-        service_url=service_url,
-        conversation_id=conversation_id,
-        payload=card_payload,
-        text_fallback="Update deal stage form",
-    )
+        bot_service = SlackBotService()
+        blocks = card_payload.get("blocks")
+        text_fallback = card_payload.get("text") or "Update deal stage form"
+        if blocks:
+            sent = await bot_service.send_block_kit_message(
+                team_id=team_id,
+                channel_id=channel_id,
+                blocks=blocks,
+                text_fallback=text_fallback,
+            )
+        else:
+            sent = await bot_service._send_message(team_id, channel_id, text_fallback)
+    else:
+        from src.service.bots.teams_bot_service import TeamsBotService
+
+        bot_service = TeamsBotService()
+        sent = await bot_service.send_proactive_payload(
+            service_url=service_url,
+            conversation_id=conversation_id,
+            payload=card_payload,
+            text_fallback="Update deal stage form",
+        )
 
     if sent:
         return {

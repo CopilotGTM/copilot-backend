@@ -152,13 +152,13 @@ class ToolName(str, Enum):
 CHANNEL_ONLY_TOOLS: dict[ToolName, set[str]] = {
     ToolName.FETCH_TEAMS_CHAT_MESSAGES: {"teams"},
     ToolName.CREATE_VISUALIZATION_CARD: {"teams"},
-    ToolName.CREATE_DEAL: {"teams"},
-    ToolName.ADD_DEAL_NOTE: {"teams"},
-    ToolName.ADD_STAKEHOLDER: {"teams"},
-    ToolName.UPDATE_DEAL_STAGE: {"teams"},
-    ToolName.CREATE_REMINDER: {"teams"},
-    ToolName.LIST_REMINDERS: {"teams"},
-    ToolName.CANCEL_REMINDER: {"teams"},
+    ToolName.CREATE_DEAL: {"teams", "slack"},
+    ToolName.ADD_DEAL_NOTE: {"teams", "slack"},
+    ToolName.ADD_STAKEHOLDER: {"teams", "slack"},
+    ToolName.UPDATE_DEAL_STAGE: {"teams", "slack"},
+    ToolName.CREATE_REMINDER: {"teams", "slack"},
+    ToolName.LIST_REMINDERS: {"teams", "slack"},
+    ToolName.CANCEL_REMINDER: {"teams", "slack"},
 }
 
 

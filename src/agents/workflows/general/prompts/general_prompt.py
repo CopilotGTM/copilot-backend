@@ -85,7 +85,7 @@ _GENERAL_PROMPT_TEMPLATE = dedent(
     - Contacts: `SearchContacts`
     - Teams Visualizations: `CreateVisualizationCard`
 
-    **CRM Write Actions** (Teams channel only)
+    **CRM Write Actions** (Teams and Slack)
     - `CreateDeal`: Send interactive deal creation form
     - `AddDealNote`: Send interactive note form for existing deal
     - `AddStakeholder`: Send interactive stakeholder form
@@ -118,6 +118,13 @@ _GENERAL_PROMPT_TEMPLATE = dedent(
     - Deal questions -> establish deal context first, then go deeper as needed
     - Market/competitor info -> internal competitive intel + web search
     - Reminders/alerts -> CreateReminder (new), ListReminders + CancelReminder (manage)
+    - Deal creation requests -> call `CreateDeal` as soon as the deal name is known
+      (name is the only required field; account/amount/close date are optional pre-fill values)
+
+    **CRM write behavior on supported channels (Teams/Slack):**
+    - Prefer the write tool over back-and-forth questions once required fields are present.
+    - For `CreateDeal`, do NOT ask for company/account before calling the tool.
+      Call it with the known deal name and let the preview card collect/confirm optional details.
 
     **Visualizations (Teams only):**
     Use `CreateVisualizationCard` only AFTER you have numeric data points prepared.

@@ -297,3 +297,46 @@ class TestCreateDealConfirmation:
         assert fallback["type"] == "Action.Submit"
         assert fallback["data"]["action"] == "create_deal_edit"
         assert fallback["data"]["name"] == "Fallback Test"
+
+    @pytest.mark.asyncio
+    @patch("src.service.bots.slack_bot_service.SlackBotService")
+    @patch("src.agents.tools.crm.create_deal.create_nonce", return_value="nonce-slack")
+    async def test_slack_preview_sends_confirm_cancel_buttons(
+        self,
+        mock_nonce: MagicMock,
+        mock_slack_cls: MagicMock,
+        mock_context: MagicMock,
+    ) -> None:
+        mock_context.channel = "slack"
+        mock_context.metadata = {"team_id": "T123", "channel_id": "C123"}
+
+        mock_slack = MagicMock()
+        mock_slack.send_block_kit_message = AsyncMock(return_value=True)
+        mock_slack_cls.return_value = mock_slack
+
+        result = await create_deal_form(
+            context=mock_context,
+            name="Slack Deal",
+            amount=12000,
+            currency="USD",
+        )
+
+        assert result is not None
+        assert result["status"] == "preview_sent"
+        mock_slack.send_block_kit_message.assert_called_once()
+
+        blocks = mock_slack.send_block_kit_message.call_args[1]["blocks"]
+        assert blocks[0]["type"] == "header"
+        assert blocks[0]["text"]["text"] == "Create New Deal"
+        field_section = next(b for b in blocks if b["type"] == "section" and "fields" in b)
+        field_labels = [f["text"].split("\n")[0] for f in field_section["fields"]]
+        assert "*Name*" in field_labels
+        assert "*Amount*" in field_labels
+        assert any(
+            "*Description*" in b["text"]["text"]
+            for b in blocks
+            if b["type"] == "section" and "text" in b
+        )
+        actions_block = next(b for b in blocks if b["type"] == "actions")
+        action_ids = [el["action_id"] for el in actions_block["elements"]]
+        assert action_ids == ["create_deal_submit", "create_deal_cancel"]

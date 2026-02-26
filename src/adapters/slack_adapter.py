@@ -319,18 +319,32 @@ class SlackAdapter(ChannelAdapter):
         paragraphs = text.split("\n\n")
         chunk = ""
 
+        def _append_block(block_text: str) -> None:
+            if block_text.strip():
+                blocks.append(
+                    {"type": "section", "text": {"type": "mrkdwn", "text": block_text.strip()}}
+                )
+
         for para in paragraphs:
+            # If a single paragraph exceeds Slack's hard limit, split it deterministically.
+            if len(para) > _SECTION_TEXT_LIMIT:
+                if chunk:
+                    _append_block(chunk)
+                    chunk = ""
+                start = 0
+                while start < len(para):
+                    _append_block(para[start : start + _SECTION_TEXT_LIMIT])
+                    start += _SECTION_TEXT_LIMIT
+                continue
+
             candidate = f"{chunk}\n\n{para}" if chunk else para
             if len(candidate) > _SECTION_TEXT_LIMIT and chunk:
-                blocks.append(
-                    {"type": "section", "text": {"type": "mrkdwn", "text": chunk.strip()}}
-                )
+                _append_block(chunk)
                 chunk = para
             else:
                 chunk = candidate
 
-        if chunk.strip():
-            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": chunk.strip()}})
+        _append_block(chunk)
 
         return blocks or [
             {"type": "section", "text": {"type": "mrkdwn", "text": text[:_SECTION_TEXT_LIMIT]}}

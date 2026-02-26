@@ -223,3 +223,33 @@ class TestAddStakeholderForm:
         assert result is not None
         assert result["status"] == "error"
         assert "not supported" in result["message"].lower()
+
+    @pytest.mark.asyncio
+    @patch("src.service.bots.slack_bot_service.SlackBotService")
+    @patch("src.agents.tools.crm.add_stakeholder.get_card_builder")
+    async def test_slack_channel_sends_block_kit(
+        self,
+        mock_builder_fn: MagicMock,
+        mock_slack_cls: MagicMock,
+        mock_context: MagicMock,
+    ) -> None:
+        mock_context.channel = "slack"
+        mock_context.metadata = {"team_id": "T123", "channel_id": "C123"}
+
+        mock_builder = MagicMock()
+        mock_builder.build = MagicMock(
+            return_value={"blocks": [{"type": "section"}], "text": "card"}
+        )
+        mock_builder_fn.return_value = mock_builder
+
+        mock_slack = MagicMock()
+        mock_slack.send_block_kit_message = AsyncMock(return_value=True)
+        mock_slack_cls.return_value = mock_slack
+
+        result = await add_stakeholder_form(
+            context=mock_context, deal_id=DEAL_ID, deal_name=DEAL_NAME
+        )
+
+        assert result is not None
+        assert result["status"] == "form_sent"
+        mock_slack.send_block_kit_message.assert_called_once()
