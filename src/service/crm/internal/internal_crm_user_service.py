@@ -124,10 +124,10 @@ class InternalCRMUserService:
         integration_id = await self._get_internal_integration_id()
 
         # Fetch all org users from public.users (master session).
-        # No status filter — allow any existing user to be a deal owner even if
-        # their Supabase account is still pending setup or admin approval is pending.
-        # This is intentional; we want CSV import to succeed when the owner email
-        # belongs to a real org member regardless of activation state.
+        # TODO: Revert this — restore `col(User.status) == SupabaseUserStatus.ACTIVE`
+        #   filter once the customer onboarding flow guarantees all imported owners
+        #   are pre-approved. Currently relaxed so CSV import succeeds when owner
+        #   email belongs to a real org member regardless of activation state.
         stmt = select(User).where(
             col(User.organisation_id) == self.organisation_id,
         )
