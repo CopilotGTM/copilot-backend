@@ -114,24 +114,28 @@ class InternalCRMUserService:
     async def sync_org_users_to_crm(self) -> int:
         """Bulk sync all organisation users from public.users to crm_users.
 
-        This creates or updates CRM user records for all active app users
-        in the organisation. Used for initial setup or refresh.
+        This creates or updates CRM user records for all app users in the
+        organisation regardless of their activation or approval status.
+        Used for initial setup or refresh.
 
         Returns:
             Number of users synced.
         """
         integration_id = await self._get_internal_integration_id()
 
-        # Fetch all org users from public.users (master session)
+        # Fetch all org users from public.users (master session).
+        # TODO: Revert this — restore `col(User.status) == SupabaseUserStatus.ACTIVE`
+        #   filter once the customer onboarding flow guarantees all imported owners
+        #   are pre-approved. Currently relaxed so CSV import succeeds when owner
+        #   email belongs to a real org member regardless of activation state.
         stmt = select(User).where(
             col(User.organisation_id) == self.organisation_id,
-            col(User.status) == SupabaseUserStatus.ACTIVE,
         )
         result = await self.master_session.execute(stmt)
         app_users = list(result.scalars().all())
 
         if not app_users:
-            logger.info("No active users to sync for org %s", self.organisation_id)
+            logger.info("No users to sync for org %s", self.organisation_id)
             return 0
 
         # Get existing CRM users for this integration
