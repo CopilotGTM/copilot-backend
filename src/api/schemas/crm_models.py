@@ -224,6 +224,7 @@ class DealDetail(BaseModel):
     company_linkedin_url: str | None = Field(
         None, description="LinkedIn URL of the associated company"
     )
+    company_country: str | None = Field(None, description="Country of the associated company")
     primary_contact_external_id: str | None = None
     primary_contact_name: str | None = None
     primary_contact_email: str | None = None

@@ -173,7 +173,7 @@ GET /users/crm/deals
 | `max_amount` | number | - | Maximum deal amount |
 | `min_close_date` | string | - | Minimum close date (ISO 8601) |
 | `max_close_date` | string | - | Maximum close date (ISO 8601) |
-| `q` | string | - | Case-insensitive search by deal name |
+| `q` | string | - | Case-insensitive search by deal name or company name |
 
 ### Success Response (200)
 
@@ -285,6 +285,7 @@ GET /users/crm/deals/{deal_id}
     "company_name": "Acme Corp",
     "company_domain": "acme.com",
     "company_industry": "Manufacturing",
+    "company_country": "United States",
     "primary_contact_external_id": "contact_123",
     "primary_contact_name": "Jane Buyer",
     "primary_contact_email": "jane@acme.com",
@@ -356,6 +357,7 @@ GET /users/crm/deals/{deal_id}
 | `custom_column_definitions` | array \| null | Active custom field metadata for internal deals. Use `data_type` to render controls; for `currency` fields use `currency_code` + `currency_symbol`. |
 | `owner_details` | array | Canonical owner payload. Use this list (0..1 for internal CRM) instead of legacy single-owner fields. |
 | `currency_symbol` | string \| null | Symbol derived from `currency` (for example `$`, `₹`) for consistent detail rendering. |
+| `company_country` | string \| null | Country/geography of the associated company. Populated from the linked CRM company record. |
 | `source_modified_at` / `last_seen_at` / `synced_at` | datetime | System read-only sync metadata for advanced view and troubleshooting. |
 
 ---
@@ -771,6 +773,8 @@ PATCH /users/crm/deals/{deal_id}/account
 | `domain` | string | No | Company domain (recommended; used to create/link company) |
 | `website` | string | No | Company website URL |
 | `linkedin_url` | string | No | Company LinkedIn URL |
+| `industry` | string | No | Company industry classification |
+| `country` | string | No | Company country/geography |
 
 ### Behavior
 
@@ -1133,6 +1137,12 @@ See `docs/API Documentation/deals/crm-deals-import-api.md` for full request/resp
 ---
 
 ## Changelog
+
+### 2026-02-26
+
+1. Added `company_country` to `GET /users/crm/deals/{deal_id}` response. Populated from linked CRM company record.
+2. Added `industry` and `country` fields to `PATCH /users/crm/deals/{deal_id}/account` request. These are now editable via the account update endpoint.
+3. Expanded `q` search parameter in `GET /users/crm/deals` to match against both deal name and company name (OR condition).
 
 ### 2026-02-10
 
