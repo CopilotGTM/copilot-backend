@@ -202,13 +202,11 @@ def get_adapter(channel: str, *args, **kwargs) -> ChannelAdapter:
 
         return TeamsAdapter(*args, **kwargs)
     elif channel == "slack":
-        raise NotImplementedError(
-            "Slack adapter is not implemented yet. "
-            "It's on the roadmap for future development. "
-            "The adapter architecture is ready - just create src/adapters/slack_adapter.py"
-        )
+        from src.adapters.slack_adapter import SlackAdapter
+
+        return SlackAdapter(*args, **kwargs)
     else:
-        raise ValueError(f"Unsupported channel: {channel}. Supported channels: teams")
+        raise ValueError(f"Unsupported channel: {channel}. Supported channels: teams, slack")
 
 
 __all__ = [

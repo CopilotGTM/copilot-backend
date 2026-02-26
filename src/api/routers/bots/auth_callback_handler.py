@@ -241,23 +241,75 @@ async def bot_auth_callback(
         created,
     )
 
-    # Send a welcome message to the Teams conversation
-    context = auth_state.context or {}
-    service_url = context.get("service_url")
-    conversation_id = context.get("conversation_id")
-
-    if provider == ExternalIdentityProvider.TEAMS and service_url and conversation_id:
-        welcome_text = (
-            f"You're now signed in as **{user_email}**.\n\n"
-            "You can now ask me questions and I'll help you find answers "
-            "from your organization's knowledge base!\n\n"
-            "Type **help** to see available commands."
-        )
+    # Step 5: Link the bot installation to this user's organisation
+    # The installation was created during OAuth with organisation_id=NULL;
+    # now that we know which org this workspace belongs to, link them.
+    if auth_state.external_tenant_id and user.organisation_id:
         try:
-            bot_service = TeamsBotService()
-            await bot_service.send_proactive_message(service_url, conversation_id, welcome_text)
+            from src.domain.models.master_tables.bot_platform_installation_models import (
+                BotPlatformProvider,
+            )
+            from src.service.bots.bot_installation_service import BotInstallationService
+
+            provider_to_platform = {
+                ExternalIdentityProvider.TEAMS: BotPlatformProvider.TEAMS,
+                ExternalIdentityProvider.SLACK: BotPlatformProvider.SLACK,
+            }
+            platform_provider = provider_to_platform.get(provider)
+            if platform_provider:
+                install_service = BotInstallationService()
+                linked = await install_service.link_organisation(
+                    session=session,
+                    provider=platform_provider,
+                    external_workspace_id=auth_state.external_tenant_id,
+                    organisation_id=user.organisation_id,
+                )
+                if linked:
+                    logger.info(
+                        "Linked %s installation workspace=%s to org=%s",
+                        provider.value,
+                        auth_state.external_tenant_id,
+                        user.organisation_id,
+                    )
         except Exception:
-            logger.warning("Failed to send Teams welcome message", exc_info=True)
+            logger.warning("Failed to link installation to organisation", exc_info=True)
+
+    # Send a welcome message back to the bot conversation
+    context = auth_state.context or {}
+
+    if provider == ExternalIdentityProvider.TEAMS:
+        service_url = context.get("service_url")
+        conversation_id = context.get("conversation_id")
+        if service_url and conversation_id:
+            welcome_text = (
+                f"You're now signed in as **{user_email}**.\n\n"
+                "You can now ask me questions and I'll help you find answers "
+                "from your organization's knowledge base!\n\n"
+                "Type **help** to see available commands."
+            )
+            try:
+                bot_service = TeamsBotService()
+                await bot_service.send_proactive_message(service_url, conversation_id, welcome_text)
+            except Exception:
+                logger.warning("Failed to send Teams welcome message", exc_info=True)
+
+    elif provider == ExternalIdentityProvider.SLACK:
+        channel_id = context.get("channel_id")
+        slack_team_id = auth_state.external_tenant_id
+        if channel_id and slack_team_id:
+            welcome_text = (
+                f"You're now signed in as *{user_email}*.\n\n"
+                "You can now ask me questions and I'll help you find answers "
+                "from your organization's knowledge base!\n\n"
+                "Type *help* to see available commands."
+            )
+            try:
+                from src.service.bots.slack_bot_service import SlackBotService
+
+                slack_service = SlackBotService()
+                await slack_service._send_message(slack_team_id, channel_id, welcome_text)
+            except Exception:
+                logger.warning("Failed to send Slack welcome message", exc_info=True)
 
     return BotAuthCallbackResponse(
         success=True,

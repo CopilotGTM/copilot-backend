@@ -18,6 +18,10 @@ with type checking handled via `if TYPE_CHECKING:` blocks to prevent circular im
 """
 
 from .base_mixins import CreatedAtMixin, TimestampMixin
+from .bot_platform_installation_models import (
+    BotPlatformInstallation,
+    BotPlatformProvider,
+)
 from .external_identity_models import (
     ExternalIdentityMapping,
     ExternalIdentityProvider,
@@ -78,4 +82,7 @@ __all__ = [
     "ExternalIdentityMapping",
     "ExternalIdentityProvider",
     "ExternalIdentityProviderType",
+    # Bot Platform Installation Models
+    "BotPlatformInstallation",
+    "BotPlatformProvider",
 ]
