@@ -111,6 +111,55 @@ class InternalCRMUserService:
         result = await self.session.execute(stmt)
         return result.scalars().first()
 
+    async def _sync_single_user_to_crm(self, user_id: UUID) -> CRMUser | None:
+        """Sync a single app user from public.users into crm_users on-demand.
+
+        Called when ensure_crm_user can't find a user but CRM users already
+        exist (so the bulk initial sync won't re-run). No status filter — any
+        existing org member can be synced. Temporary relaxation; tighten once
+        the onboarding flow guarantees all owners are pre-approved.
+        """
+        integration_id = await self._get_internal_integration_id()
+
+        stmt = select(User).where(
+            col(User.user_id) == user_id,
+            col(User.organisation_id) == self.organisation_id,
+        )
+        result = await self.master_session.execute(stmt)
+        app_user = result.scalars().first()
+        if not app_user:
+            return None
+
+        now = datetime.now(UTC)
+        crm_user = CRMUser(
+            organisation_id=self.organisation_id,
+            integration_id=integration_id,
+            external_id=str(app_user.user_id),
+        )
+        crm_user.email = str(app_user.email) if app_user.email else None
+        crm_user.first_name = app_user.first_name
+        crm_user.last_name = app_user.last_name
+        crm_user.full_name = build_user_display_name(app_user)
+        crm_user.user_role = (
+            app_user.user_role.value if hasattr(app_user.user_role, "value") else None
+        )
+        crm_user.job_title = app_user.job_title
+        crm_user.is_active = app_user.status == SupabaseUserStatus.ACTIVE
+        crm_user.source_created_at = now
+        crm_user.source_modified_at = now
+        crm_user.synced_at = now
+        crm_user.last_seen_at = now
+        crm_user.is_deleted = False
+
+        self.session.add(crm_user)
+        await self.session.flush()
+        logger.info(
+            "On-demand synced user %s to internal CRM for org %s",
+            user_id,
+            self.organisation_id,
+        )
+        return crm_user
+
     async def sync_org_users_to_crm(self) -> int:
         """Bulk sync all organisation users from public.users to crm_users.
 
@@ -123,7 +172,6 @@ class InternalCRMUserService:
         """
         integration_id = await self._get_internal_integration_id()
 
-        # Fetch all org users from public.users (master session).
         # TODO: Revert this — restore `col(User.status) == SupabaseUserStatus.ACTIVE`
         #   filter once the customer onboarding flow guarantees all imported owners
         #   are pre-approved. Currently relaxed so CSV import succeeds when owner
@@ -193,7 +241,7 @@ class InternalCRMUserService:
         MVP Flow:
         1. Check if user exists in crm_users
         2. If not found and no CRM users exist → bulk sync all org users
-        3. Look up user again
+        3. If still not found → on-demand sync this single user
         4. If still not found → error
 
         Future Flow (when AUTO_SYNC_ENABLED=False):
@@ -216,31 +264,31 @@ class InternalCRMUserService:
 
         # Step 2: User not found - check if we should auto-sync
         if self.AUTO_SYNC_ENABLED:
-            # Check if ANY CRM users exist
             has_users = await self.has_crm_users()
             if not has_users:
-                # First time - bulk sync all org users
                 logger.info(
                     "No CRM users found for org %s, triggering initial sync",
                     self.organisation_id,
                 )
                 await self.sync_org_users_to_crm()
 
-                # Try to find the user again
                 crm_user = await self.get_crm_user_by_app_user_id(user_id)
                 if crm_user:
                     return crm_user
 
-        # Step 3: User still not found - return appropriate error
+            # Step 3: CRM users exist but this user is missing — sync them on-demand
+            crm_user = await self._sync_single_user_to_crm(user_id)
+            if crm_user:
+                return crm_user
+
+        # Step 4: User not in public.users for this org at all
         if self.AUTO_SYNC_ENABLED:
-            # User might be new (added after initial sync) or inactive
             raise InternalCRMUserServiceError(
-                "User not found in CRM. The user may be inactive or was added "
-                "after CRM setup. Please contact support.",
+                "User not found in CRM. The user may not belong to this "
+                "organisation or does not exist. Please contact support.",
                 status_code=404,
             )
         else:
-            # Admin-controlled mode
             raise InternalCRMUserServiceError(
                 "User not available in CRM. Please add the user via CRM Settings "
                 "before assigning them to deals.",
