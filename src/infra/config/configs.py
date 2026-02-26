@@ -520,6 +520,99 @@ linkedin_enrichment_config = LinkedInEnrichmentConfig()
 teams_config = TeamsConfig()
 
 
+class SlackConfig:
+    """Configuration for Slack Bot integration.
+
+    Bot credentials are stored in Azure Key Vault (master vault) and cached
+    with a configurable TTL (default 6 hours).
+
+    Required Key Vault secrets:
+    - slack-bot-token: Bot User OAuth Token (xoxb-...)
+    - slack-signing-secret: Slack app signing secret for request verification
+    - slack-app-id: Slack application ID
+    """
+
+    SLACK_ENABLED: bool = os.getenv("SLACK_ENABLED", "true").lower() == "true"
+
+    # Key Vault secret names
+    SECRET_NAME_SIGNING_SECRET: str = "slack-signing-secret"
+    SECRET_NAME_APP_ID: str = "slack-app-id"
+    SECRET_NAME_CLIENT_ID: str = "slack-client-id"
+    SECRET_NAME_CLIENT_SECRET: str = "slack-client-secret"
+
+    # Cached credential values (global app-level, not per-workspace)
+    SIGNING_SECRET: str | None = None
+    APP_ID: str | None = None
+    CLIENT_ID: str | None = None
+    CLIENT_SECRET: str | None = None
+
+    # TTL for cached credentials (hours)
+    _credentials_ttl_hours: float = float(os.getenv("SLACK_BOT_CREDENTIALS_TTL_HOURS", "6"))
+    _credentials_loaded_at: float | None = None
+    _refresh_lock: asyncio.Lock | None = None
+
+    async def get_credentials(self) -> tuple[str | None, str | None, str | None, str | None]:
+        """Return cached app credentials, refreshing from Key Vault if TTL expired.
+
+        These are global app-level credentials (signing secret, client ID/secret).
+        Per-workspace bot tokens are stored in bot_platform_installations table.
+
+        Returns:
+            Tuple of (signing_secret, app_id, client_id, client_secret).
+        """
+        if not self._is_expired():
+            return self.SIGNING_SECRET, self.APP_ID, self.CLIENT_ID, self.CLIENT_SECRET
+
+        if self._refresh_lock is None:
+            self._refresh_lock = asyncio.Lock()
+
+        async with self._refresh_lock:
+            if not self._is_expired():
+                return self.SIGNING_SECRET, self.APP_ID, self.CLIENT_ID, self.CLIENT_SECRET
+            await self._load_credentials_from_vault()
+
+        return self.SIGNING_SECRET, self.APP_ID, self.CLIENT_ID, self.CLIENT_SECRET
+
+    def _is_expired(self) -> bool:
+        if self._credentials_loaded_at is None:
+            return True
+        import time
+
+        elapsed_hours = (time.time() - self._credentials_loaded_at) / 3600
+        return elapsed_hours >= self._credentials_ttl_hours
+
+    async def _load_credentials_from_vault(self) -> None:
+        import time
+
+        from src.infra.secrets.manager import master_secrets_manager
+
+        logger.info("Loading Slack app credentials from Key Vault (TTL refresh)")
+        self.SIGNING_SECRET = await master_secrets_manager.get(self.SECRET_NAME_SIGNING_SECRET)
+        self.APP_ID = await master_secrets_manager.get(self.SECRET_NAME_APP_ID)
+        self.CLIENT_ID = await master_secrets_manager.get(self.SECRET_NAME_CLIENT_ID)
+        self.CLIENT_SECRET = await master_secrets_manager.get(self.SECRET_NAME_CLIENT_SECRET)
+        self._credentials_loaded_at = time.time()
+
+        if self.SIGNING_SECRET and self.CLIENT_ID:
+            logger.info("Slack app credentials cached (TTL=%.1fh)", self._credentials_ttl_hours)
+        else:
+            logger.error("Slack app credentials missing from Key Vault")
+
+    # Webhook deduplication
+    SLACK_WEBHOOK_DEDUPE_TTL_SECONDS: int = int(
+        os.getenv("SLACK_WEBHOOK_DEDUPE_TTL_SECONDS", "300")
+    )
+
+    # Auth URLs for the login flow
+    SLACK_AUTH_LOGIN_URL: str = os.getenv(
+        "SLACK_AUTH_LOGIN_URL",
+        f"{os.getenv('APP_URL', '').rstrip('/')}/bots/auth" if os.getenv("APP_URL") else "",
+    )
+
+
+slack_config = SlackConfig()
+
+
 class Config:
     _instance = None
     _initialized = False

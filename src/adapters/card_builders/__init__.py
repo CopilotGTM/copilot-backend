@@ -14,6 +14,10 @@ from src.adapters.card_builders.base import (
     VisualizationPoint,
     VisualizationSeries,
 )
+from src.adapters.card_builders.slack_card_builder import (
+    SlackFormCardBuilder,
+    SlackVisualizationCardBuilder,
+)
 from src.adapters.card_builders.teams_card_builder import (
     TeamsFormCardBuilder,
     TeamsVisualizationCardBuilder,
@@ -36,8 +40,10 @@ def get_card_builder(channel: str) -> FormCardBuilder:
 
     if channel == "teams":
         return TeamsFormCardBuilder()
+    if channel == "slack":
+        return SlackFormCardBuilder()
 
-    raise ValueError(f"No card builder for channel: {channel}. Supported: teams")
+    raise ValueError(f"No card builder for channel: {channel}. Supported: teams, slack")
 
 
 def get_visualization_card_builder(channel: str) -> VisualizationCardBuilder:
@@ -46,8 +52,12 @@ def get_visualization_card_builder(channel: str) -> VisualizationCardBuilder:
 
     if channel == "teams":
         return TeamsVisualizationCardBuilder()
+    if channel == "slack":
+        return SlackVisualizationCardBuilder()
 
-    raise ValueError(f"No visualization card builder for channel: {channel}. Supported: teams")
+    raise ValueError(
+        f"No visualization card builder for channel: {channel}. Supported: teams, slack"
+    )
 
 
 __all__ = [
@@ -60,6 +70,8 @@ __all__ = [
     "VisualizationSeries",
     "TeamsFormCardBuilder",
     "TeamsVisualizationCardBuilder",
+    "SlackFormCardBuilder",
+    "SlackVisualizationCardBuilder",
     "get_card_builder",
     "get_visualization_card_builder",
 ]

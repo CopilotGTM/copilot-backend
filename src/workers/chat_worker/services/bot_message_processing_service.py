@@ -86,7 +86,7 @@ class BotMessageProcessingService:
             conversation_type = (bot_context or {}).get("conversation_type", "personal")
 
             if conversation_type == "personal":
-                session_id = self._get_or_create_teams_session(user_id)
+                session_id = self._get_or_create_bot_session(user_id, provider)
                 user_msg_id = self._persist_user_message(session_id, message_text)
                 chat_history = self._load_history(session_id)
 
@@ -156,10 +156,10 @@ class BotMessageProcessingService:
     # Personal chat DB persistence
     # ------------------------------------------------------------------
 
-    def _get_or_create_teams_session(self, user_id: UUID) -> UUID:
-        """Get or create a TEAMS_CHAT session for this user+org.
+    def _get_or_create_bot_session(self, user_id: UUID, provider: str = "teams") -> UUID:
+        """Get or create a bot chat session for this user+org.
 
-        Each user gets one TEAMS_CHAT session per org, reused across all
+        Each user gets one session per provider per org, reused across all
         personal messages.  Uses try/except on IntegrityError for the race
         condition where two concurrent messages try to create the session.
         """
@@ -172,11 +172,14 @@ class BotMessageProcessingService:
         )
         from src.infra.database.sessions import org_session_scope
 
+        chat_type = ChatType.SLACK_CHAT if provider == "slack" else ChatType.TEAMS_CHAT
+        session_title = "Slack Chat" if provider == "slack" else "Teams Chat"
+
         with org_session_scope(self.organisation_id) as session:
             stmt = select(ChatSession).where(
                 col(ChatSession.user_id) == user_id,
                 col(ChatSession.organisation_id) == self.organisation_id,
-                col(ChatSession.chat_type) == ChatType.TEAMS_CHAT,
+                col(ChatSession.chat_type) == chat_type,
                 col(ChatSession.is_deleted).is_(False),
             )
             existing = session.execute(stmt).scalars().first()
@@ -188,14 +191,15 @@ class BotMessageProcessingService:
             new_session = ChatSession(
                 user_id=user_id,
                 organisation_id=self.organisation_id,
-                chat_type=ChatType.TEAMS_CHAT,
-                title="Teams Chat",
+                chat_type=chat_type,
+                title=session_title,
             )
             session.add(new_session)
             try:
                 session.commit()
                 logger.info(
-                    "Created TEAMS_CHAT session=%s for user=%s org=%s",
+                    "Created %s session=%s for user=%s org=%s",
+                    chat_type.value,
                     new_session.session_id,
                     user_id,
                     self.organisation_id,
@@ -207,7 +211,7 @@ class BotMessageProcessingService:
                 stmt = select(ChatSession).where(
                     col(ChatSession.user_id) == user_id,
                     col(ChatSession.organisation_id) == self.organisation_id,
-                    col(ChatSession.chat_type) == ChatType.TEAMS_CHAT,
+                    col(ChatSession.chat_type) == chat_type,
                     col(ChatSession.is_deleted).is_(False),
                 )
                 existing = session.execute(stmt).scalars().first()
@@ -334,17 +338,27 @@ class BotMessageProcessingService:
 
         messages = self._build_messages(message_text, chat_history, bot_context=bot_context)
 
+        # Determine channel from reply_context or bot_context
+        channel = "teams"
+        if reply_context and "channel_id" in reply_context and "service_url" not in reply_context:
+            channel = "slack"
+
         metadata: dict = {}
         if bot_context and conversation_type == "groupChat":
             metadata["conversation_type"] = "groupChat"
             metadata["teams_conversation_id"] = bot_context.get("teams_conversation_id", "")
+        elif bot_context and conversation_type == "channel":
+            metadata["conversation_type"] = "channel"
+            metadata["slack_channel_id"] = bot_context.get("slack_channel_id", "")
 
         # Pass reply context so tools can send proactive cards (e.g. create_deal form)
         if reply_context:
             metadata["service_url"] = reply_context.get("service_url", "")
             metadata["conversation_id"] = reply_context.get("conversation_id", "")
+            metadata["channel_id"] = reply_context.get("channel_id", "")
+            metadata["team_id"] = reply_context.get("team_id", "")
 
-        # Pass user timezone from Teams activity (if available) so tools don't need to ask
+        # Pass user timezone if available so tools don't need to ask
         user_tz = (bot_context or {}).get("user_timezone", "")
         if user_tz:
             metadata["user_timezone"] = user_tz
@@ -354,7 +368,7 @@ class BotMessageProcessingService:
             org_name="CopilotGTM",
             user_id=user_id,
             user_email=user_email,
-            channel="teams",
+            channel=channel,
             metadata=metadata,
         )
 
@@ -395,6 +409,21 @@ class BotMessageProcessingService:
                     ),
                 }
             )
+        elif bot_context and bot_context.get("conversation_type") == "channel":
+            messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "You are responding to an @mention in a Slack channel. "
+                        "You do NOT have the channel history in your conversation context. "
+                        "Do not claim you have read prior channel messages. "
+                        "If context is missing, ask a brief clarifying question before answering. "
+                        "For CRM write requests (for example, creating a deal), "
+                        "call the write tool immediately once required fields are present. "
+                        "Do not ask follow-up questions for optional fields before calling tools."
+                    ),
+                }
+            )
 
         if chat_history:
             messages.extend(chat_history)
@@ -414,6 +443,8 @@ class BotMessageProcessingService:
         """Dispatch rendered payload to the correct bot platform service."""
         if provider == "teams":
             return await self._send_teams_payload(reply_context, payload)
+        elif provider == "slack":
+            return await self._send_slack_payload(reply_context, payload)
         else:
             logger.error("Unsupported bot provider: %s", provider)
             return False
@@ -440,3 +471,60 @@ class BotMessageProcessingService:
             payload=payload.content,
             text_fallback=payload.text_fallback,
         )
+
+    async def _send_slack_payload(self, reply_context: dict, payload: ChannelPayload) -> bool:
+        """Send rendered payload to Slack via Web API.
+
+        If reply_context contains a thinking_message_ts, the thinking placeholder
+        is updated in-place via chat.update instead of posting a new message.
+        """
+        from src.service.bots.slack_bot_service import SlackBotService
+
+        channel_id = reply_context.get("channel_id", "")
+        team_id = reply_context.get("team_id", "")
+        thinking_ts = reply_context.get("thinking_message_ts", "")
+
+        if not channel_id or not team_id:
+            logger.error(
+                "Missing Slack reply context: channel_id=%s team_id=%s",
+                bool(channel_id),
+                bool(team_id),
+            )
+            return False
+
+        bot_service = SlackBotService()
+        blocks = payload.content.get("blocks")
+        text = payload.content.get("text") or payload.text_fallback or ""
+
+        # Update thinking placeholder in-place if we have a ts
+        if thinking_ts:
+            if blocks:
+                updated = await bot_service._update_message_blocks(
+                    team_id=team_id,
+                    channel_id=channel_id,
+                    message_ts=thinking_ts,
+                    blocks=blocks,
+                    text_fallback=text,
+                )
+            else:
+                updated = await bot_service._update_message(
+                    team_id=team_id,
+                    channel_id=channel_id,
+                    message_ts=thinking_ts,
+                    text=text,
+                )
+            if updated:
+                return True
+            # Fallback: update failed, post as a new message instead
+            logger.warning("chat.update failed, falling back to new message")
+
+        # Post a new message (or fallback from failed update)
+        if blocks:
+            return await bot_service.send_block_kit_message(
+                team_id=team_id,
+                channel_id=channel_id,
+                blocks=blocks,
+                text_fallback=text,
+            )
+        else:
+            return await bot_service._send_message(team_id, channel_id, text)

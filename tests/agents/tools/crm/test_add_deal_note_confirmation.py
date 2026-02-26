@@ -160,3 +160,38 @@ class TestAddDealNoteConfirmation:
         assert result is not None
         assert result["status"] == "error"
         assert "failed" in result["message"].lower()
+
+    @pytest.mark.asyncio
+    @patch("src.service.bots.slack_bot_service.SlackBotService")
+    @patch("src.agents.tools.crm.add_deal_note.create_nonce", return_value="nonce-slack")
+    async def test_slack_preview_sends_block_kit(
+        self,
+        mock_nonce: MagicMock,
+        mock_slack_cls: MagicMock,
+        mock_context: MagicMock,
+    ) -> None:
+        mock_context.channel = "slack"
+        mock_context.metadata = {"team_id": "T123", "channel_id": "C123"}
+
+        mock_slack = MagicMock()
+        mock_slack.send_block_kit_message = AsyncMock(return_value=True)
+        mock_slack_cls.return_value = mock_slack
+
+        result = await add_deal_note_form(
+            context=mock_context,
+            deal_id="22222222-2222-2222-2222-222222222222",
+            deal_name="Acme Corp",
+            note_content="Slack note",
+        )
+
+        assert result is not None
+        assert result["status"] == "preview_sent"
+        mock_slack.send_block_kit_message.assert_called_once()
+
+        blocks = mock_slack.send_block_kit_message.call_args[1]["blocks"]
+        assert blocks[0]["type"] == "header"
+        assert blocks[0]["text"]["text"] == "Add Note to Deal"
+        assert any("*Note Preview*" in b["text"]["text"] for b in blocks if b["type"] == "section")
+        actions_block = next(b for b in blocks if b["type"] == "actions")
+        action_ids = [el["action_id"] for el in actions_block["elements"]]
+        assert action_ids == ["add_deal_note_submit", "add_deal_note_cancel"]

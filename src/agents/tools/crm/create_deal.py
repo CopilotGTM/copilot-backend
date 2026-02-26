@@ -15,6 +15,7 @@ This is an ORG-SCOPED tool. deal_id is NOT required.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
@@ -36,6 +37,24 @@ if TYPE_CHECKING:
     from src.agents.tools.transparent_tools import AgentCapabilities
 
 logger = logging.getLogger(__name__)
+
+
+def _escape_slack_mrkdwn(value: str) -> str:
+    """Escape special characters for Slack mrkdwn."""
+    return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _slack_field(label: str, value: Any) -> dict[str, str]:
+    """Build a Slack section field with label + value."""
+    text = _escape_slack_mrkdwn(str(value))
+    return {"type": "mrkdwn", "text": f"*{label}*\n{text}"}
+
+
+def _slack_quote(value: str) -> str:
+    """Render multi-line text as a Slack blockquote."""
+    escaped = _escape_slack_mrkdwn(value)
+    lines = escaped.splitlines() or [escaped]
+    return "\n".join(f"> {line}" if line else ">" for line in lines)
 
 
 async def create_deal_form(
@@ -70,19 +89,26 @@ async def create_deal_form(
             ),
         }
 
+    channel = (context.channel or "teams").lower()
     service_url = context.metadata.get("service_url", "")
     conversation_id = context.metadata.get("conversation_id", "")
+    team_id = context.metadata.get("team_id", "")
+    channel_id = context.metadata.get("channel_id", "")
 
-    if not service_url or not conversation_id:
+    if channel == "slack":
+        if not team_id or not channel_id:
+            logger.warning("create_deal_form: missing Slack team_id/channel_id in metadata")
+            return {
+                "status": "error",
+                "message": "Cannot send confirmation card: missing Slack channel context.",
+            }
+    elif not service_url or not conversation_id:
         logger.warning(
-            "create_deal_form: missing service_url or conversation_id in context metadata"
+            "create_deal_form: missing Teams service_url/conversation_id in context metadata"
         )
         return {
             "status": "error",
-            "message": (
-                "Cannot send confirmation card: missing channel context. "
-                "This tool is only available in Teams chat."
-            ),
+            "message": "Cannot send confirmation card: missing Teams channel context.",
         }
 
     # Query pipelines and stages to resolve default names for the preview
@@ -249,38 +275,119 @@ async def create_deal_form(
         },
     ]
 
-    card_payload = {
-        "text": " ",
-        "attachments": [
-            {
-                "contentType": "application/vnd.microsoft.card.adaptive",
-                "content": {
-                    "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-                    "type": "AdaptiveCard",
-                    "version": "1.4",
-                    "body": body,
-                    "actions": actions,
-                },
-            }
-        ],
-    }
+    if channel == "slack":
+        from src.service.bots.slack_bot_service import SlackBotService
 
-    # Send the card
-    bot_service = TeamsBotService()
-    sent = await bot_service.send_proactive_payload(
-        service_url=service_url,
-        conversation_id=conversation_id,
-        payload=card_payload,
-        text_fallback="Deal creation preview",
-    )
+        confirm_value = json.dumps(deal_data, separators=(",", ":"))
+        cancel_value = json.dumps(cancel_data, separators=(",", ":"))
+        description_value = description or em
+        slack_fields = [
+            _slack_field("Name", name),
+            _slack_field("Amount", amount_display),
+            _slack_field("Pipeline", default_pipeline_name or em),
+            _slack_field("Stage", default_stage_name or em),
+            _slack_field("Close Date", close_date or em),
+            _slack_field("Priority", (priority or em).capitalize() if priority else em),
+            _slack_field("Account", account_name or em),
+            _slack_field("Domain", account_domain or em),
+        ]
+        slack_blocks = [
+            {
+                "type": "header",
+                "text": {"type": "plain_text", "text": "Create New Deal"},
+            },
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": "Review the details below before creating the deal.",
+                    }
+                ],
+            },
+            {"type": "divider"},
+            {
+                "type": "section",
+                "fields": slack_fields,
+            },
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*Description*\n{_slack_quote(str(description_value))}",
+                },
+            },
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": "Click *Confirm* to create the deal or *Cancel* to discard.",
+                    }
+                ],
+            },
+            {
+                "type": "actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Confirm"},
+                        "style": "primary",
+                        "action_id": "create_deal_submit",
+                        "value": confirm_value,
+                    },
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Cancel"},
+                        "style": "danger",
+                        "action_id": "create_deal_cancel",
+                        "value": cancel_value,
+                    },
+                ],
+            },
+        ]
+
+        bot_service = SlackBotService()
+        sent = await bot_service.send_block_kit_message(
+            team_id=team_id,
+            channel_id=channel_id,
+            blocks=slack_blocks,
+            text_fallback=f"Deal creation preview for {name}",
+        )
+    else:
+        card_payload = {
+            "text": " ",
+            "attachments": [
+                {
+                    "contentType": "application/vnd.microsoft.card.adaptive",
+                    "content": {
+                        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                        "type": "AdaptiveCard",
+                        "version": "1.4",
+                        "body": body,
+                        "actions": actions,
+                    },
+                }
+            ],
+        }
+
+        # Send the card
+        bot_service = TeamsBotService()
+        sent = await bot_service.send_proactive_payload(
+            service_url=service_url,
+            conversation_id=conversation_id,
+            payload=card_payload,
+            text_fallback="Deal creation preview",
+        )
 
     if sent:
         return {
             "status": "preview_sent",
             "message": (
                 "I've sent a deal creation preview to your chat. "
-                "Please review the details and click **Confirm** to create it, "
-                "**Edit** to modify the details, or **Cancel** to discard."
+                "Please review the details and click **Confirm** to create it"
+                + (", **Edit** to modify the details," if channel != "slack" else "")
+                + " or **Cancel** to discard."
             ),
         }
     else:
@@ -315,6 +422,9 @@ def create_create_deal(
         Use this tool when the user wants to create a new deal. Extract deal
         details from the conversation and pass them as pre-filled values.
         A confirmation preview will be sent for the user to review and confirm.
+        If only the deal name is known, still call this tool immediately.
+        Do not ask follow-up questions for optional fields like account/company
+        before sending the preview.
 
         name is REQUIRED. If the user says "create a deal" without providing a
         name, ask them for the deal name first before calling this tool.

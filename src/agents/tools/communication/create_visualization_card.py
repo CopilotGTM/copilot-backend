@@ -1,9 +1,10 @@
-"""Create and send a Teams visualization summary card.
+"""Create and send a visualization summary card.
 
-This is a Teams-only tool that mirrors the existing form tool pattern:
+Supports Teams (native Adaptive Card charts) and Slack (text-based tables).
+Mirrors the existing form tool pattern:
 - Build a channel-agnostic visualization definition
 - Render via channel card builder
-- Send via proactive payload using Bot Framework context metadata
+- Send via proactive payload using platform context metadata
 
 The tool is intended for:
 - Explicit user requests for charts/visualizations
@@ -240,10 +241,10 @@ async def create_visualization_card(
     subtitle: str | None = None,
     insight_text: str | None = None,
 ) -> dict[str, Any] | None:
-    """Create and send a visualization summary card in Teams.
+    """Create and send a visualization summary card (Teams or Slack).
 
     Args:
-        context: Agent context containing org and Teams metadata.
+        context: Agent context containing org and channel metadata.
         title: Card/chart title.
         chart_type: Chart type (bar, horizontal_bar, line, pie, donut, grouped_bar,
             stacked_bar, stacked_horizontal_bar). Common aliases
@@ -257,19 +258,7 @@ async def create_visualization_card(
         logger.warning("create_visualization_card: missing organisation_id in context")
         return None
 
-    service_url = context.metadata.get("service_url", "")
-    conversation_id = context.metadata.get("conversation_id", "")
-    if not service_url or not conversation_id:
-        logger.warning(
-            "create_visualization_card: missing service_url or conversation_id in context metadata"
-        )
-        return {
-            "status": "error",
-            "message": (
-                "Cannot send visualization card: missing Teams channel context. "
-                "This tool is only available in Teams chat."
-            ),
-        }
+    channel = getattr(context, "channel", "teams") or "teams"
 
     normalized_chart_type = _normalize_chart_type(chart_type)
 
@@ -293,18 +282,12 @@ async def create_visualization_card(
             "chart_type": normalized_chart_type,
         }
 
-    # Teams-only mode: render in Teams Adaptive Card with chart element.
-    interactive_url = None
-    card_builder = get_visualization_card_builder("teams")
-    chart_payload = card_builder.build_visualization(
-        VisualizationDefinition(
-            title=title,
-            chart_type=normalized_chart_type,
-            subtitle=subtitle,
-            insight_text=insight_text,
-            series=normalized_series,
-            interactive_url=interactive_url,
-        )
+    viz_def = VisualizationDefinition(
+        title=title,
+        chart_type=normalized_chart_type,
+        subtitle=subtitle,
+        insight_text=insight_text,
+        series=normalized_series,
     )
 
     summary_text = _build_visualization_summary_text(
@@ -314,6 +297,33 @@ async def create_visualization_card(
         insight_text=insight_text,
         series=normalized_series,
     )
+
+    if channel == "slack":
+        return await _send_slack_visualization(
+            context, viz_def, summary_text, normalized_chart_type
+        )
+
+    return await _send_teams_visualization(context, viz_def, summary_text, normalized_chart_type)
+
+
+async def _send_teams_visualization(
+    context: AgentContext,
+    viz_def: VisualizationDefinition,
+    summary_text: str,
+    chart_type: str,
+) -> dict[str, Any]:
+    """Send visualization via Teams Adaptive Card."""
+    service_url = context.metadata.get("service_url", "")
+    conversation_id = context.metadata.get("conversation_id", "")
+    if not service_url or not conversation_id:
+        logger.warning("create_visualization_card: missing Teams context metadata")
+        return {
+            "status": "error",
+            "message": "Cannot send visualization card: missing Teams channel context.",
+        }
+
+    card_builder = get_visualization_card_builder("teams")
+    chart_payload = card_builder.build_visualization(viz_def)
 
     from src.service.bots.teams_bot_service import TeamsBotService
 
@@ -325,18 +335,59 @@ async def create_visualization_card(
         text_fallback=summary_text,
     )
     if not sent:
-        logger.error("create_visualization_card: failed to send proactive payload")
+        logger.error("create_visualization_card: failed to send Teams payload")
         return {
             "status": "error",
             "message": "Failed to send visualization card. Please try again.",
         }
 
-    return {
-        "status": "sent",
-        "message": "I sent a Teams chart card.",
-        "interactive_url": interactive_url,
-        "chart_type": normalized_chart_type,
-    }
+    return {"status": "sent", "message": "I sent a Teams chart card.", "chart_type": chart_type}
+
+
+async def _send_slack_visualization(
+    context: AgentContext,
+    viz_def: VisualizationDefinition,
+    summary_text: str,
+    chart_type: str,
+) -> dict[str, Any]:
+    """Send visualization via Slack Block Kit."""
+    channel_id = context.metadata.get("channel_id", "")
+    team_id = context.metadata.get("team_id", "")
+
+    if not channel_id:
+        logger.warning("create_visualization_card: missing Slack channel_id in context metadata")
+        return {
+            "status": "error",
+            "message": "Cannot send visualization card: missing Slack channel context.",
+        }
+
+    card_builder = get_visualization_card_builder("slack")
+    chart_payload = card_builder.build_visualization(viz_def)
+
+    from src.service.bots.slack_bot_service import SlackBotService
+
+    bot_service = SlackBotService()
+    blocks = chart_payload.get("blocks", [])
+    if blocks and team_id:
+        sent = await bot_service.send_block_kit_message(
+            team_id=team_id,
+            channel_id=channel_id,
+            blocks=blocks,
+            text_fallback=summary_text,
+        )
+    else:
+        sent = (
+            await bot_service._send_message(team_id, channel_id, summary_text) if team_id else False
+        )
+
+    if not sent:
+        logger.error("create_visualization_card: failed to send Slack payload")
+        return {
+            "status": "error",
+            "message": "Failed to send visualization card. Please try again.",
+        }
+
+    return {"status": "sent", "message": "I sent a Slack visualization.", "chart_type": chart_type}
 
 
 def create_create_visualization_card(
@@ -352,7 +403,7 @@ def create_create_visualization_card(
         subtitle: str | None = None,
         insight_text: str | None = None,
     ) -> dict[str, Any] | None:
-        """Send a Teams visualization summary card.
+        """Send a visualization summary card (Teams chart or Slack text table).
 
         Use this tool only when you have actual chart datapoints in `series`.
         If `series` is missing or empty, this tool returns `status=no_data`

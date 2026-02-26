@@ -11,6 +11,7 @@ from uuid import UUID
 
 from src.infra.utils.logger import get_logger
 from src.service.bots.form_handlers.base import BaseFormHandler, FormHandlerResult
+from src.service.bots.form_handlers.identity import resolve_user_from_activity
 from src.service.bots.form_handlers.nonce import validate_and_consume_nonce
 
 logger = get_logger(__name__)
@@ -67,34 +68,11 @@ class AddDealNoteFormHandler(BaseFormHandler):
                 message="Invalid deal information. Please try again.",
             )
 
-        # Resolve the submitting user
-        from_user = activity.get("from", {})
-        teams_user_id = from_user.get("id", "")
-        channel_data = activity.get("channelData", {})
-        teams_tenant_id = channel_data.get("tenant", {}).get("id", "")
-
         try:
-            from src.domain.models.master_tables.external_identity_models import (
-                ExternalIdentityProvider,
-            )
-            from src.infra.database.sessions import (
-                acquire_master_async_session,
-                acquire_org_async_session,
-            )
-            from src.service.bots.identity_service import ExternalIdentityService
-
-            identity_service = ExternalIdentityService()
+            from src.infra.database.sessions import acquire_org_async_session
 
             # Look up user
-            user = None
-            async for master_session in acquire_master_async_session():
-                user, _ = await identity_service.get_user_for_external_identity(
-                    master_session,
-                    ExternalIdentityProvider.TEAMS,
-                    teams_user_id,
-                    teams_tenant_id,
-                )
-                break
+            user, _ = await resolve_user_from_activity(activity)
 
             if not user:
                 return FormHandlerResult(
