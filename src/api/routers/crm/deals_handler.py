@@ -771,12 +771,14 @@ async def get_deal(
         company_industry = None
         company_website = None
         company_linkedin_url = None
+        company_country = None
         if deal.company_external_id:
             company = await service.get_company_by_external_id(deal.company_external_id)
             if company:
                 company_industry = company.industry
                 company_website = company.website
                 company_linkedin_url = company.linkedin_url
+                company_country = company.country
 
         # Check for active deal-level jobs (for SSE reconnection)
         active_deal_jobs = None
@@ -889,6 +891,7 @@ async def get_deal(
             company_industry=company_industry,
             company_website=company_website,
             company_linkedin_url=company_linkedin_url,
+            company_country=company_country,
             primary_contact_external_id=deal.primary_contact_external_id,
             primary_contact_name=deal.primary_contact_name,
             primary_contact_email=deal.primary_contact_email,

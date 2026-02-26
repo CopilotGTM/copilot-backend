@@ -147,9 +147,9 @@ class DealsAccessService:
             stmt = stmt.where(c.close_date <= max_close_date)
 
         if q:
-            # Case-insensitive search on deal name
+            # Case-insensitive search on deal name and company name
             like_expr = f"%{q.lower()}%"
-            stmt = stmt.where(c.name.ilike(like_expr))
+            stmt = stmt.where(or_(c.name.ilike(like_expr), c.company_name.ilike(like_expr)))
 
         if page < 1:
             raise DealsAccessServiceError("Page must be >= 1", status_code=400)
@@ -187,7 +187,9 @@ class DealsAccessService:
 
         if q:
             like_expr = f"%{q.lower()}%"
-            count_stmt = count_stmt.where(c.name.ilike(like_expr))
+            count_stmt = count_stmt.where(
+                or_(c.name.ilike(like_expr), c.company_name.ilike(like_expr))
+            )
 
         count_res = await self.org_session.execute(count_stmt)
         total_count = count_res.scalar() or 0
