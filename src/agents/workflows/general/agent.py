@@ -2,10 +2,12 @@
 
 import uuid
 from collections.abc import AsyncIterator, Callable, Sequence
+from pathlib import Path
 from typing import Any
 
 from agno.agent import Agent as AgnoAgent
 from agno.models.azure.openai_chat import AzureOpenAI
+from agno.skills import LocalSkills, Skills
 from dotenv import load_dotenv
 from src.agents.base import Agent as BaseAgent
 from src.agents.common.agent_tasks_extractor import AgentTasksExtractor
@@ -19,7 +21,7 @@ from src.agents.utils import prepare_messages
 from src.agents.workflows.general.prompts.general_prompt import get_general_prompt
 from src.domain.models.organisation_tables import ChatMessage
 from src.infra.config.agent_config import agent_config
-from src.infra.messaging.chat_stream_models import AnswerDelta, Finalize, Frame
+from src.infra.messaging.chat_stream_models import AnswerDelta, Finalize, Frame, ToolUsage
 from src.infra.utils.logger import get_logger
 
 load_dotenv()
@@ -48,6 +50,10 @@ class GeneralAgent(BaseAgent):
         # Generate prompt with org_name from context (falls back to "Our Organization" if None)
         system_prompt = get_general_prompt(context.org_name)
 
+        # Load skills from src/agents/skills using Agno progressive discovery.
+        skills_path = Path(__file__).parent.parent.parent / "skills"
+        skills = Skills(loaders=[LocalSkills(str(skills_path))])
+
         # Get model config
         config = agent_config.get_config("general_agent")
 
@@ -57,7 +63,8 @@ class GeneralAgent(BaseAgent):
             structured_outputs=False,
             debug_mode=config.debug_mode,
             markdown=True,
-            tools=self._tools,  # type: ignore[arg-type]
+            tools=self._tools,
+            skills=skills,
         )
 
     def run_stream(
@@ -65,7 +72,7 @@ class GeneralAgent(BaseAgent):
     ) -> AsyncIterator[Frame]:
         """Run with enhanced JSON streaming and transparency support."""
 
-        async def _run():
+        async def _run() -> AsyncIterator[Frame]:
             processed_messages = prepare_messages(message_list)
             message_id = str(uuid.uuid4())
 
@@ -120,6 +127,17 @@ class GeneralAgent(BaseAgent):
             # Handle different chunk types
             if kind == "tick":
                 # Just a signal to drain the queue, no content to emit
+                continue
+            elif kind == "skill_tool":
+                # Skill tool event detected by StreamingAnswerBuffer.
+                # Emit a ToolUsage frame so skill calls appear alongside regular tools.
+                yield ToolUsage(
+                    assistant_message_id=self.capabilities.message_id if self.capabilities else "",
+                    tool_name=content["tool_name"],
+                    tool_description=f"Skill: {content['tool_args'].get('skill_name', '')}",
+                    status=content["status"],
+                    parameters=content["tool_args"],
+                )
                 continue
             elif kind == "answer" and content:
                 # Extract AGENT_TASKS blocks from answer content
