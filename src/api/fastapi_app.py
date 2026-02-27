@@ -60,6 +60,7 @@ from src.api.routers.knowledge_base.access_handler import (
 from src.api.routers.knowledge_base.upload_handler import (
     upload_router as knowledge_upload_router,
 )
+from src.api.routers.reminders import reminders_router
 from src.api.routers.users.auth_handler import router as user_auth_router
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -168,6 +169,9 @@ def create_fastapi_app():
     fastapp.include_router(
         attachment_access_router, prefix="/users/chats/upload", tags=["downloads"]
     )
+
+    # Reminders
+    fastapp.include_router(reminders_router, prefix="/users/reminders", tags=["reminders"])
 
     # Integration routers
     fastapp.include_router(integrations_router, prefix="/users/integrations", tags=["integrations"])

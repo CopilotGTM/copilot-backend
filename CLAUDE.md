@@ -299,6 +299,7 @@ When adding/modifying endpoints, update the relevant file in `docs/API Documenta
 - `chat-api.md`, `chat-attachments-api.md`
 - `knowledge-base-api.md`
 - `integrations-api.md`
+- `reminders-api.md`
 - `users-auth-api.md`
 - `deals/` (deal-related endpoints)
 - `admin/` (admin endpoints)

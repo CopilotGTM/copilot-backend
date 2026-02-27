@@ -39,6 +39,7 @@ class ReminderStatus(str, Enum):
 
     PENDING_CONFIRMATION = "pending_confirmation"
     ACTIVE = "active"
+    PAUSED = "paused"
     TRIGGERED = "triggered"
     COMPLETED = "completed"
     FAILED = "failed"
