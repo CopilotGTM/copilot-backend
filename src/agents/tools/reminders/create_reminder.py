@@ -42,11 +42,21 @@ def _strip_recurrence_prefix(expr: str) -> str:
 
     "every day at 10 AM" → "at 10 AM"
     "daily at 10 AM IST" → "at 10 AM IST"
+    "Every Monday at 9pm IST" → "at 9pm IST"
+    "weekly at 3 PM" → "at 3 PM"
     """
     import re
 
+    # Day names pattern for "every Monday", "every Tuesday", etc.
+    days = r"(?:mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)"
+
     return re.sub(
-        r"^(every\s+day\s+|daily\s+|each\s+day\s+|every\s+morning\s+|every\s+evening\s+)",
+        rf"^(?:"
+        rf"every\s+(?:other\s+)?(?:day|week|month|{days})\s+"
+        rf"|daily\s+|weekly\s+|biweekly\s+|monthly\s+"
+        rf"|each\s+(?:day|week|{days})\s+"
+        rf"|every\s+(?:morning|evening|weekday)\s+"
+        rf")",
         "",
         expr.strip(),
         flags=re.IGNORECASE,

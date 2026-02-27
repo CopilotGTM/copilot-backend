@@ -94,7 +94,7 @@ knowledge = [
     "transformers~=4.55.4",
     "huggingface-hub[hf_xet]==0.35.3",
     "openai~=2.15.0",
-    "agno==2.4.3",
+    "agno==2.5.5",
     
     # Document Processing
     "pypdf==5.9.0",
@@ -122,7 +122,7 @@ knowledge = [
 workers-light = [
     # AI/ML for agents (GeneralAgent, DealSummaryAgent, etc.)
     "openai~=2.15.0",
-    "agno==2.4.3",
+    "agno==2.5.5",
 
     # Search tools used by GeneralAgent
     "duckduckgo-search~=8.1.1",
@@ -190,7 +190,7 @@ full = [
     "transformers~=4.55.4",
     "huggingface-hub[hf_xet]==0.35.3",
     "openai~=2.15.0",
-    "agno==2.4.3",
+    "agno==2.5.5",
     "pypdf==5.9.0",
     "PyPDF2==3.0.1",
     "PyMuPDF==1.26.3",

@@ -16,6 +16,17 @@ TOOL_COMPLETION_EVENTS = frozenset(
     }
 )
 
+# Agno skill tools registered via Skills.get_tools().
+# These are called by the LLM just like regular tools but don't go through
+# AgentCapabilities, so we surface them explicitly in the streaming pipeline.
+SKILL_TOOL_NAMES = frozenset(
+    {
+        "get_skill_instructions",
+        "get_skill_reference",
+        "get_skill_script",
+    }
+)
+
 
 def _get_chunk_attr(chunk: Any, attr: str, default: Any = None) -> Any:
     """Get attribute from chunk, handling both dict and object formats.
@@ -35,7 +46,7 @@ class StreamingAnswerBuffer:
         self.logger = logger or get_logger()
         self.max_sep_len = max((len(s) for s in separators), default=0)
 
-    async def stream(self, chat_response) -> AsyncIterator[tuple[str, str, bool]]:
+    async def stream(self, chat_response) -> AsyncIterator[tuple[str, Any, bool]]:
         state = {
             "buffer": "",
             "json_part_started": False,
@@ -43,6 +54,11 @@ class StreamingAnswerBuffer:
         }
 
         async for chunk in chat_response:
+            # Surface skill tool events so the caller can emit ToolUsage frames.
+            skill_event = self._extract_skill_tool_event(chunk)
+            if skill_event:
+                yield ("skill_tool", skill_event, False)
+
             if not self._is_valid_chunk(chunk):
                 # Yield a "tick" to allow caller to process queued frames (e.g., tool.usage)
                 # This happens when we filter tool completion events
@@ -62,6 +78,36 @@ class StreamingAnswerBuffer:
         buffer_content = str(state["buffer"])
         json_started = bool(state["json_part_started"])
         yield ("final", buffer_content, json_started)
+
+    def _extract_skill_tool_event(self, chunk) -> dict[str, Any] | None:
+        """Extract skill tool call data from Agno tool events.
+
+        Returns a dict with tool_name, tool_args, and status when the chunk
+        is a ToolCallStarted or ToolCallCompleted event for a skill tool.
+        Returns None for non-skill or non-tool events.
+        """
+        chunk_event = _get_chunk_attr(chunk, "event")
+        if not chunk_event or chunk_event not in TOOL_COMPLETION_EVENTS:
+            return None
+
+        tool = _get_chunk_attr(chunk, "tool")
+        if not tool:
+            return None
+
+        tool_name = _get_chunk_attr(tool, "tool_name")
+        if not tool_name or tool_name not in SKILL_TOOL_NAMES:
+            return None
+
+        tool_args = _get_chunk_attr(tool, "tool_args") or {}
+        if chunk_event == "ToolCallStarted":
+            status = "starting"
+        elif chunk_event == "ToolCallCompleted":
+            status = "completed"
+        else:
+            status = "in_progress"
+
+        self.logger.info("Skill tool %s: %s(%s)", status, tool_name, tool_args)
+        return {"tool_name": tool_name, "tool_args": tool_args, "status": status}
 
     def _is_valid_chunk(self, chunk) -> bool:
         """Check if chunk should be processed.

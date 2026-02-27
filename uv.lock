@@ -29,7 +29,7 @@ wheels = [
 
 [[package]]
 name = "agno"
-version = "2.4.3"
+version = "2.5.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "docstring-parser" },
@@ -46,9 +46,9 @@ dependencies = [
     { name = "typer" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/61/21/a50b0cd8e42e99766c8e29bba8e85b4e19f4458ee84e9624ac95b28f1099/agno-2.4.3.tar.gz", hash = "sha256:24cb5ada8261f0c54d9f74e7feb4db8a7e0c8969400df9b61e6853e65f16c761", size = 1518390, upload-time = "2026-01-23T15:40:41.303Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c9/99/e68c98ae203e79828bbba055687384b967ae9751d52e85d37170f5ed66de/agno-2.5.5.tar.gz", hash = "sha256:93ed056986bf4af4d908f3b3430ae00916cc7a6b65c5b2426235c8a6c9e028cd", size = 1723462, upload-time = "2026-02-25T17:27:32.38Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/db/fe/403f18c91ef10213715542542f0762acaf41523aecb93711bc1540868880/agno-2.4.3-py3-none-any.whl", hash = "sha256:0c3c09ee14f5aa822e1265720711fb758ca733e9c75867ea981925b4a6ca45b1", size = 1819618, upload-time = "2026-01-23T15:40:38.455Z" },
+    { url = "https://files.pythonhosted.org/packages/15/7d/9d9f080ccd0d30da47ac80b3c84ff7d2b8bfa0eec0e29b3ac429dc1e90ab/agno-2.5.5-py3-none-any.whl", hash = "sha256:cbaa0135b63e0e77b091daefe6a9583f5fffb16051c894acfcd456e369ac9756", size = 2061779, upload-time = "2026-02-25T17:27:29.828Z" },
 ]
 
 [[package]]
@@ -746,9 +746,9 @@ quality = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agno", marker = "extra == 'full'", specifier = "==2.4.3" },
-    { name = "agno", marker = "extra == 'knowledge'", specifier = "==2.4.3" },
-    { name = "agno", marker = "extra == 'workers-light'", specifier = "==2.4.3" },
+    { name = "agno", marker = "extra == 'full'", specifier = "==2.5.5" },
+    { name = "agno", marker = "extra == 'knowledge'", specifier = "==2.5.5" },
+    { name = "agno", marker = "extra == 'workers-light'", specifier = "==2.5.5" },
     { name = "aiohttp", marker = "extra == 'api'", specifier = ">=3.9.1" },
     { name = "aiohttp", marker = "extra == 'full'", specifier = "==3.9.1" },
     { name = "aiohttp", marker = "extra == 'integrations'", specifier = "==3.9.1" },
