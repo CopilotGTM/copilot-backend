@@ -226,7 +226,7 @@ Create a new reminder or scheduled AI alert. The reminder goes directly to `acti
 ### Endpoint (Create Reminder)
 
 ```http
-POST /
+POST /users/reminders
 ```
 
 ### Request Body
@@ -332,7 +332,7 @@ POST /
 ### Example cURL (Create Reminder)
 
 ```bash
-curl -X POST "$BASE_URL/" \
+curl -X POST "$BASE_URL" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -355,7 +355,7 @@ Get a paginated list of the current user's reminders. Supports filtering by stat
 ### Endpoint (List Reminders)
 
 ```http
-GET /
+GET /users/reminders
 ```
 
 ### Query Parameters (List Reminders)
@@ -436,11 +436,11 @@ GET /
 
 ```bash
 # List active reminders
-curl -X GET "$BASE_URL/?status=active&sort=asc" \
+curl -X GET "$BASE_URL?status=active&sort=asc" \
   -H "Authorization: Bearer $TOKEN"
 
 # List all agentic reminders including paused
-curl -X GET "$BASE_URL/?status=active,paused&reminder_type=agentic&limit=50" \
+curl -X GET "$BASE_URL?status=active,paused&reminder_type=agentic&limit=50" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
