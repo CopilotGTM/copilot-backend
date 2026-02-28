@@ -16,12 +16,15 @@ from sqlmodel import col
 from src.api.schemas.reminder_models import (
     ReminderDetail,
     ReminderListItem,
+    ReminderRunListItem,
 )
 from src.domain.models.organisation_tables.reminder_models import (
     ReminderRecurrence,
+    ReminderRunStatus,
     ReminderStatus,
     ReminderType,
     UserReminder,
+    UserReminderRun,
 )
 from src.infra.messaging.reminder_schedule import schedule_reminder, unschedule_reminder
 from src.infra.utils.logger import get_logger
@@ -32,7 +35,6 @@ logger = get_logger("reminder_service")
 _CANCELLABLE_STATES = {
     ReminderStatus.ACTIVE,
     ReminderStatus.PAUSED,
-    ReminderStatus.TRIGGERED,
     ReminderStatus.PENDING_CONFIRMATION,
 }
 
@@ -149,15 +151,15 @@ class ReminderService:
     ) -> tuple[list[ReminderListItem], int]:
         """Return paginated list of reminders for the current user."""
         base = select(UserReminder).where(
-            UserReminder.organisation_id == self.organisation_id,
-            UserReminder.user_id == self.user_id,
+            col(UserReminder.organisation_id) == self.organisation_id,
+            col(UserReminder.user_id) == self.user_id,
         )
 
         if statuses:
             base = base.where(col(UserReminder.status).in_([s.value for s in statuses]))
 
         if reminder_type:
-            base = base.where(UserReminder.reminder_type == reminder_type.value)
+            base = base.where(col(UserReminder.reminder_type) == reminder_type.value)
 
         # Count
         count_q = select(func.count()).select_from(base.subquery())
@@ -181,6 +183,34 @@ class ReminderService:
         """Get a single reminder by ID. Verifies ownership."""
         reminder = await self._fetch_owned(reminder_id)
         return self._to_detail(reminder)
+
+    async def list_history(
+        self,
+        reminder_id: UUID,
+        *,
+        limit: int = 20,
+        page: int = 1,
+    ) -> tuple[list[ReminderRunListItem], int]:
+        """Return paginated execution history for a reminder owned by the user."""
+        await self._fetch_owned(reminder_id)
+
+        base = select(UserReminderRun).where(
+            col(UserReminderRun.organisation_id) == self.organisation_id,
+            col(UserReminderRun.user_id) == self.user_id,
+            col(UserReminderRun.reminder_id) == reminder_id,
+        )
+
+        count_q = select(func.count()).select_from(base.subquery())
+        total_count = (await self.session.execute(count_q)).scalar_one()
+
+        offset = (page - 1) * limit
+        base = base.order_by(col(UserReminderRun.started_at).desc()).offset(offset).limit(limit)
+
+        result = await self.session.execute(base)
+        runs = result.scalars().all()
+
+        items = [self._to_run_item(r) for r in runs]
+        return items, total_count
 
     # ── UPDATE ──────────────────────────────────────────────────────────
 
@@ -295,6 +325,8 @@ class ReminderService:
         """Cancel a reminder. Terminal state — cannot be undone."""
         reminder = await self._fetch_owned(reminder_id)
 
+        self._ensure_not_running(reminder, action="cancel")
+
         if reminder.status not in _CANCELLABLE_STATES:
             raise InvalidStatusTransitionError(reminder.status, ReminderStatus.CANCELLED.value)
 
@@ -311,6 +343,7 @@ class ReminderService:
     async def delete(self, reminder_id: UUID) -> None:
         """Hard-delete a reminder and remove from Redis."""
         reminder = await self._fetch_owned(reminder_id)
+        self._ensure_not_running(reminder, action="delete")
         rid = reminder.reminder_id
 
         await self.session.delete(reminder)
@@ -339,9 +372,9 @@ class ReminderService:
     async def _fetch_owned(self, reminder_id: UUID) -> UserReminder:
         """Fetch a reminder ensuring org + user ownership."""
         stmt = select(UserReminder).where(
-            UserReminder.reminder_id == reminder_id,
-            UserReminder.organisation_id == self.organisation_id,
-            UserReminder.user_id == self.user_id,
+            col(UserReminder.reminder_id) == reminder_id,
+            col(UserReminder.organisation_id) == self.organisation_id,
+            col(UserReminder.user_id) == self.user_id,
         )
         result = await self.session.execute(stmt)
         reminder = result.scalar_one_or_none()
@@ -350,6 +383,15 @@ class ReminderService:
             raise ReminderNotFoundError(reminder_id)
 
         return reminder
+
+    @staticmethod
+    def _ensure_not_running(reminder: UserReminder, *, action: str) -> None:
+        """Block destructive actions while a reminder execution is in progress."""
+        if reminder.status == ReminderStatus.TRIGGERED:
+            raise ReminderServiceError(
+                f"Cannot {action} a reminder while execution is in progress",
+                status_code=409,
+            )
 
     @staticmethod
     def _validate_timezone(tz: str) -> None:
@@ -368,6 +410,13 @@ class ReminderService:
             if raw_deal_id:
                 deal_id = UUID(raw_deal_id)
 
+        local_next_trigger, schedule_summary = ReminderService._describe_schedule(
+            r.next_trigger_at,
+            r.user_timezone,
+            ReminderRecurrence(r.recurrence),
+        )
+        is_running = ReminderService._is_running(r)
+
         return ReminderDetail(
             reminder_id=r.reminder_id,
             title=r.title,
@@ -377,10 +426,17 @@ class ReminderService:
             agent_prompt=agent_prompt,
             deal_id=deal_id,
             next_trigger_at=r.next_trigger_at,
+            next_trigger_local_at=local_next_trigger,
+            schedule_summary=schedule_summary,
             timezone=r.user_timezone,
             recurrence=ReminderRecurrence(r.recurrence),
             recurrence_end_at=r.recurrence_end_at,
             delivery_channel=r.delivery_channel,
+            is_running=is_running,
+            current_run_status=ReminderRunStatus.IN_PROGRESS if is_running else None,
+            can_pause=ReminderService._can_pause(r),
+            can_cancel=ReminderService._can_cancel(r),
+            can_delete=ReminderService._can_delete(r),
             last_triggered_at=r.last_triggered_at,
             trigger_count=r.trigger_count,
             consecutive_failures=r.consecutive_failures,
@@ -391,16 +447,92 @@ class ReminderService:
 
     @staticmethod
     def _to_list_item(r: UserReminder) -> ReminderListItem:
+        local_next_trigger, schedule_summary = ReminderService._describe_schedule(
+            r.next_trigger_at,
+            r.user_timezone,
+            ReminderRecurrence(r.recurrence),
+        )
+        is_running = ReminderService._is_running(r)
+
         return ReminderListItem(
             reminder_id=r.reminder_id,
             title=r.title,
             reminder_type=ReminderType(r.reminder_type),
             status=ReminderStatus(r.status),
             next_trigger_at=r.next_trigger_at,
+            next_trigger_local_at=local_next_trigger,
+            schedule_summary=schedule_summary,
             timezone=r.user_timezone,
             recurrence=ReminderRecurrence(r.recurrence),
             delivery_channel=r.delivery_channel,
+            is_running=is_running,
+            current_run_status=ReminderRunStatus.IN_PROGRESS if is_running else None,
+            can_pause=ReminderService._can_pause(r),
+            can_cancel=ReminderService._can_cancel(r),
+            can_delete=ReminderService._can_delete(r),
             last_triggered_at=r.last_triggered_at,
             trigger_count=r.trigger_count,
             created_at=r.created_at,
         )
+
+    @staticmethod
+    def _to_run_item(r: UserReminderRun) -> ReminderRunListItem:
+        return ReminderRunListItem(
+            run_id=r.run_id,
+            attempt_number=r.attempt_number,
+            status=ReminderRunStatus(r.status),
+            triggered_for_at=r.triggered_for_at,
+            started_at=r.started_at,
+            completed_at=r.completed_at,
+            input_snapshot=r.input_snapshot,
+            result_text=r.result_text,
+            error_message=r.error_message,
+        )
+
+    @staticmethod
+    def _is_running(reminder: UserReminder) -> bool:
+        return ReminderStatus(reminder.status) == ReminderStatus.TRIGGERED
+
+    @staticmethod
+    def _can_pause(reminder: UserReminder) -> bool:
+        return ReminderStatus(reminder.status) == ReminderStatus.ACTIVE
+
+    @staticmethod
+    def _can_cancel(reminder: UserReminder) -> bool:
+        return ReminderStatus(reminder.status) in _CANCELLABLE_STATES
+
+    @staticmethod
+    def _can_delete(reminder: UserReminder) -> bool:
+        return not ReminderService._is_running(reminder)
+
+    @staticmethod
+    def _describe_schedule(
+        next_trigger_at: datetime,
+        timezone_name: str,
+        recurrence: ReminderRecurrence,
+    ) -> tuple[datetime, str]:
+        """Return the next trigger in local time plus a UI-friendly recurrence label."""
+        try:
+            tz = ZoneInfo(timezone_name)
+        except (ZoneInfoNotFoundError, KeyError):
+            tz = ZoneInfo("UTC")
+
+        local_time = next_trigger_at.astimezone(tz)
+        time_label = local_time.strftime("%I:%M %p %Z").lstrip("0")
+        short_date = local_time.strftime("%a, %b %d")
+        weekday = local_time.strftime("%A")
+
+        if recurrence == ReminderRecurrence.NONE:
+            summary = f"One-time on {short_date} at {time_label}"
+        elif recurrence == ReminderRecurrence.DAILY:
+            summary = f"Daily at {time_label} (next: {short_date})"
+        elif recurrence == ReminderRecurrence.WEEKDAYS:
+            summary = f"Weekdays at {time_label} (next: {weekday}, {short_date})"
+        elif recurrence == ReminderRecurrence.WEEKLY:
+            summary = f"Weekly on {weekday} at {time_label} (next: {short_date})"
+        elif recurrence == ReminderRecurrence.BIWEEKLY:
+            summary = f"Every 2 weeks on {weekday} at {time_label} (next: {short_date})"
+        else:
+            summary = f"Monthly on day {local_time.day} at {time_label} (next: {short_date})"
+
+        return local_time, summary

@@ -17,6 +17,8 @@ from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.reminder_models import (
     ReminderCreateRequest,
     ReminderDetail,
+    ReminderHistoryQueryParams,
+    ReminderHistoryResponse,
     ReminderListQueryParams,
     ReminderListResponse,
     ReminderUpdateRequest,
@@ -55,9 +57,6 @@ async def get_reminder_service(
             await service.close()
         except Exception:
             logger.debug("ReminderService close failed", exc_info=True)
-
-
-# ── CREATE ──────────────────────────────────────────────────────────────
 
 
 @reminders_router.post(
@@ -102,9 +101,6 @@ async def create_reminder(
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
         )
-
-
-# ── LIST ────────────────────────────────────────────────────────────────
 
 
 @reminders_router.get(
@@ -165,7 +161,53 @@ async def list_reminders(
         )
 
 
-# ── GET ─────────────────────────────────────────────────────────────────
+@reminders_router.get(
+    "/{reminder_id}/history",
+    response_model=GenericResponse[ReminderHistoryResponse],
+    summary="Get reminder execution history",
+    description="Get paginated execution history for a specific reminder.",
+    dependencies=[Depends(rate_limit_user_read)],
+)
+async def get_reminder_history(
+    reminder_id: UUID,
+    response: FastAPIResponse,
+    service: ReminderService = Depends(get_reminder_service),
+    query: ReminderHistoryQueryParams = Depends(),
+) -> GenericResponse[ReminderHistoryResponse]:
+    try:
+        items, total_count = await service.list_history(
+            reminder_id,
+            limit=query.limit,
+            page=query.page,
+        )
+
+        total_pages = (total_count + query.limit - 1) // query.limit if query.limit else 0
+
+        return Response.success_response(
+            message="Reminder history retrieved successfully",
+            data=ReminderHistoryResponse(
+                items=items,
+                page=query.page,
+                limit=query.limit,
+                total_count=total_count,
+                total_pages=total_pages,
+            ),
+        )
+
+    except ReminderNotFoundError:
+        return Response.error_response(
+            message="Reminder not found", status_code=404, response=response
+        )
+    except ReminderServiceError as e:
+        logger.warning("Reminder service error: %s", e.message)
+        return Response.error_response(
+            message=e.message, status_code=e.status_code, response=response
+        )
+    except Exception:
+        logger.exception("Failed to get reminder history")
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
 
 
 @reminders_router.get(
@@ -197,9 +239,6 @@ async def get_reminder(
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
         )
-
-
-# ── UPDATE ──────────────────────────────────────────────────────────────
 
 
 @reminders_router.patch(
@@ -246,9 +285,6 @@ async def update_reminder(
         )
 
 
-# ── PAUSE ───────────────────────────────────────────────────────────────
-
-
 @reminders_router.post(
     "/{reminder_id}/pause",
     response_model=GenericResponse[ReminderDetail],
@@ -285,9 +321,6 @@ async def pause_reminder(
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
         )
-
-
-# ── RESUME ──────────────────────────────────────────────────────────────
 
 
 @reminders_router.post(
@@ -328,9 +361,6 @@ async def resume_reminder(
         )
 
 
-# ── CANCEL ──────────────────────────────────────────────────────────────
-
-
 @reminders_router.post(
     "/{reminder_id}/cancel",
     response_model=GenericResponse[ReminderDetail],
@@ -367,9 +397,6 @@ async def cancel_reminder(
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
         )
-
-
-# ── DELETE ──────────────────────────────────────────────────────────────
 
 
 @reminders_router.delete(

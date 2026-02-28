@@ -95,14 +95,17 @@ All endpoints return the shared `GenericResponse` envelope.
                    │  │                                   │
                    │  └──[Pause]──→ PAUSED ──[Resume]──→──┘
                    │
-          [Cancel from any non-terminal state] ──→ CANCELLED
+          [Cancel from active/paused/pending_confirmation
+           when not running] ──→ CANCELLED
           [3 consecutive failures] ──→ FAILED
 ```
 
 **Allowed transitions via API:**
+
 - **Pause**: `active` → `paused`
 - **Resume**: `paused` → `active` (trigger time must be in the future)
-- **Cancel**: `active` | `paused` | `triggered` | `pending_confirmation` → `cancelled`
+- **Cancel**: `active` | `paused` | `pending_confirmation` → `cancelled`
+- **Cancel while `triggered`**: blocked with `409 Conflict`
 - **Update**: Only allowed when status is `active` or `paused`
 
 ### Response Models (TypeScript)
@@ -120,9 +123,16 @@ export interface ReminderListItem {
   reminder_type: "static" | "agentic";
   status: ReminderStatus;
   next_trigger_at: string;           // ISO8601
+  next_trigger_local_at: string;     // ISO8601 in user's timezone
+  schedule_summary: string;          // e.g. "Weekly on Monday at 12:00 AM IST (next: Mon, Mar 03)"
   timezone: string;                  // IANA timezone
   recurrence: ReminderRecurrence;
   delivery_channel: "email" | "teams" | "slack";
+  is_running: boolean;
+  current_run_status: "in_progress" | null;
+  can_pause: boolean;
+  can_cancel: boolean;
+  can_delete: boolean;
   last_triggered_at: string | null;  // ISO8601
   trigger_count: number;
   created_at: string;                // ISO8601
@@ -144,6 +154,8 @@ export interface ReminderDetail {
 
   // Schedule
   next_trigger_at: string;           // ISO8601
+  next_trigger_local_at: string;     // ISO8601 in user's timezone
+  schedule_summary: string;          // Human-friendly recurrence summary
   timezone: string;                  // IANA timezone
   recurrence: ReminderRecurrence;
   recurrence_end_at: string | null;  // ISO8601
@@ -152,6 +164,11 @@ export interface ReminderDetail {
   delivery_channel: "email" | "teams" | "slack";
 
   // Tracking
+  is_running: boolean;
+  current_run_status: "in_progress" | null;
+  can_pause: boolean;
+  can_cancel: boolean;
+  can_delete: boolean;
   last_triggered_at: string | null;  // ISO8601
   trigger_count: number;
   consecutive_failures: number;
@@ -167,6 +184,32 @@ export interface ReminderDetail {
  */
 export interface ReminderListResponse {
   items: ReminderListItem[];
+  page: number;
+  limit: number;
+  total_count: number;
+  total_pages: number;
+}
+
+/**
+ * Single execution history row for a reminder.
+ */
+export interface ReminderRunListItem {
+  run_id: UUID;
+  attempt_number: number;
+  status: "in_progress" | "succeeded" | "delivery_failed" | "failed";
+  triggered_for_at: string;         // ISO8601
+  started_at: string;               // ISO8601
+  completed_at: string | null;      // ISO8601
+  input_snapshot: string;           // Static message or agent prompt executed for that run
+  result_text: string | null;
+  error_message: string | null;
+}
+
+/**
+ * Paginated reminder history response.
+ */
+export interface ReminderHistoryResponse {
+  items: ReminderRunListItem[];
   page: number;
   limit: number;
   total_count: number;
@@ -242,10 +285,17 @@ POST /
     "agent_prompt": "Analyze the current state of this deal. Summarize recent activity, flag any risks, and suggest next steps.",
     "deal_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
     "next_trigger_at": "2026-03-03T03:30:00Z",
+    "next_trigger_local_at": "2026-03-03T09:00:00+05:30",
+    "schedule_summary": "Weekly on Tuesday at 9:00 AM IST (next: Tue, Mar 03)",
     "timezone": "Asia/Kolkata",
     "recurrence": "weekly",
     "recurrence_end_at": null,
     "delivery_channel": "teams",
+    "is_running": false,
+    "current_run_status": null,
+    "can_pause": true,
+    "can_cancel": true,
+    "can_delete": true,
     "last_triggered_at": null,
     "trigger_count": 0,
     "consecutive_failures": 0,
@@ -332,9 +382,16 @@ GET /
         "reminder_type": "agentic",
         "status": "active",
         "next_trigger_at": "2026-03-03T03:30:00Z",
+        "next_trigger_local_at": "2026-03-03T09:00:00+05:30",
+        "schedule_summary": "Weekly on Tuesday at 9:00 AM IST (next: Tue, Mar 03)",
         "timezone": "Asia/Kolkata",
         "recurrence": "weekly",
         "delivery_channel": "teams",
+        "is_running": false,
+        "current_run_status": null,
+        "can_pause": true,
+        "can_cancel": true,
+        "can_delete": true,
         "last_triggered_at": null,
         "trigger_count": 0,
         "created_at": "2026-02-28T10:00:00Z"
@@ -345,9 +402,16 @@ GET /
         "reminder_type": "static",
         "status": "active",
         "next_trigger_at": "2026-03-01T10:30:00Z",
+        "next_trigger_local_at": "2026-03-01T16:00:00+05:30",
+        "schedule_summary": "One-time on Sun, Mar 01 at 4:00 PM IST",
         "timezone": "Asia/Kolkata",
         "recurrence": "none",
         "delivery_channel": "slack",
+        "is_running": false,
+        "current_run_status": null,
+        "can_pause": true,
+        "can_cancel": true,
+        "can_delete": true,
         "last_triggered_at": null,
         "trigger_count": 0,
         "created_at": "2026-02-28T09:00:00Z"
@@ -413,10 +477,17 @@ GET /{reminder_id}
     "agent_prompt": "Analyze the current state of this deal. Summarize recent activity, flag any risks, and suggest next steps.",
     "deal_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
     "next_trigger_at": "2026-03-03T03:30:00Z",
+    "next_trigger_local_at": "2026-03-03T09:00:00+05:30",
+    "schedule_summary": "Weekly on Tuesday at 9:00 AM IST (next: Tue, Mar 03)",
     "timezone": "Asia/Kolkata",
     "recurrence": "weekly",
     "recurrence_end_at": null,
     "delivery_channel": "teams",
+    "is_running": false,
+    "current_run_status": null,
+    "can_pause": true,
+    "can_cancel": true,
+    "can_delete": true,
     "last_triggered_at": "2026-02-24T03:30:00Z",
     "trigger_count": 3,
     "consecutive_failures": 0,
@@ -441,6 +512,59 @@ GET /{reminder_id}
 curl -X GET "$BASE_URL/a1b2c3d4-e5f6-7890-abcd-ef1234567890" \
   -H "Authorization: Bearer $TOKEN"
 ```
+
+---
+
+## 3A. Get Reminder History
+
+Get paginated execution history for a reminder. Each row represents one run attempt and includes the exact content that was sent (or attempted), whether it succeeded, and any error captured during execution.
+
+### Endpoint (Get Reminder History)
+
+```http
+GET /{reminder_id}/history
+```
+
+### Query Parameters (Get Reminder History)
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `limit` | integer | No | `20` | Items per page (`1-100`) |
+| `page` | integer | No | `1` | Page number (`1`-indexed) |
+
+### Success Response (200) (Get Reminder History)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Reminder history retrieved successfully",
+  "data": {
+    "items": [
+      {
+        "run_id": "c6f4d0be-4a22-4f11-8a37-a14be65fb2c0",
+        "attempt_number": 4,
+        "status": "succeeded",
+        "triggered_for_at": "2026-03-03T03:30:00Z",
+        "started_at": "2026-03-03T03:30:02Z",
+        "completed_at": "2026-03-03T03:30:08Z",
+        "input_snapshot": "Analyze the current state of this deal.",
+        "result_text": "The deal remains on track with one procurement risk to monitor.",
+        "error_message": null
+      }
+    ],
+    "page": 1,
+    "limit": 20,
+    "total_count": 4,
+    "total_pages": 1
+  }
+}
+```
+
+### Notes (Get Reminder History)
+
+- `attempt_number` increments for every execution attempt, including failed runs
+- `trigger_count` on the reminder record still counts only successful runs
+- Use this endpoint for frontend comparison views and past-run drilldowns
 
 ---
 
@@ -493,12 +617,15 @@ Updates are only allowed when the reminder status is `active` or `paused`. Attem
 ### Auto-Reschedule
 
 When `trigger_time` or `recurrence` changes and the reminder is `active`, the system automatically:
+
 1. Removes the old schedule from the execution queue
 2. Adds the new schedule
 
 If the reminder is `paused`, the new time is saved but not scheduled until the user resumes.
 
 ### Success Response (200) (Update Reminder)
+
+This endpoint returns the full `ReminderDetail` shape. The example below highlights the most relevant changed fields.
 
 ```json
 {
@@ -580,6 +707,8 @@ Only reminders with status `active` can be paused.
 
 ### Success Response (200) (Pause Reminder)
 
+This endpoint returns the full `ReminderDetail` shape. The example below highlights the state change.
+
 ```json
 {
   "status": "SUCCESS",
@@ -634,6 +763,8 @@ Only reminders with status `paused` can be resumed. The `next_trigger_at` must b
 
 ### Success Response (200) (Resume Reminder)
 
+This endpoint returns the full `ReminderDetail` shape. The example below highlights the state change.
+
 ```json
 {
   "status": "SUCCESS",
@@ -686,9 +817,10 @@ POST /{reminder_id}/cancel
 
 ### Allowed Transition
 
-Cancellation is allowed from: `active`, `paused`, `triggered`, `pending_confirmation`.
+Cancellation is allowed from: `active`, `paused`, `pending_confirmation`.
 
 Not allowed from terminal states: `completed`, `failed`, `cancelled`.
+Also not allowed while a reminder is actively executing (`triggered` / `is_running=true`).
 
 ### Difference from Delete
 
@@ -698,6 +830,8 @@ Not allowed from terminal states: `completed`, `failed`, `cancelled`.
 | **Delete** | Removes record entirely | No | No |
 
 ### Success Response (200) (Cancel Reminder)
+
+This endpoint returns the full `ReminderDetail` shape. The example below highlights the terminal state change.
 
 ```json
 {
@@ -717,6 +851,7 @@ Not allowed from terminal states: `completed`, `failed`, `cancelled`.
 | Code | Description |
 |------|-------------|
 | `400` | Reminder is already in a terminal state |
+| `409` | Reminder is currently executing and cannot be cancelled |
 | `401` | Missing or invalid authentication token |
 | `404` | Reminder not found |
 | `500` | Internal server error |
@@ -760,6 +895,7 @@ DELETE /{reminder_id}
 
 | Code | Description |
 |------|-------------|
+| `409` | Reminder is currently executing and cannot be deleted |
 | `401` | Missing or invalid authentication token |
 | `404` | Reminder not found |
 | `500` | Internal server error |
@@ -778,6 +914,7 @@ curl -X DELETE "$BASE_URL/a1b2c3d4-e5f6-7890-abcd-ef1234567890" \
 | HTTP Code | Reason | Suggested Action |
 |-----------|--------|------------------|
 | 400 | Invalid status transition, validation failure | Check current status and request body |
+| 409 | Reminder execution is currently in progress | Disable destructive actions until the run completes |
 | 401 | Missing/invalid token | Ensure valid bearer token |
 | 404 | Reminder not found or belongs to another user | Verify reminder ID |
 | 422 | Request body validation failure | Fix request parameters |
@@ -820,6 +957,7 @@ For agentic reminders, the `agent_prompt` is the most important field — it det
 ### Delivery Channel Selection
 
 Only show channels the user has connected:
+
 - **Teams**: Show if the user's workspace has the Teams bot installed
 - **Slack**: Show if the user's workspace has the Slack bot installed
 - **Email**: Always available (uses the user's account email)

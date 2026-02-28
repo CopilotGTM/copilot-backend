@@ -9,6 +9,7 @@ from fastapi import Query
 from pydantic import BaseModel, Field, model_validator
 from src.domain.models.organisation_tables.reminder_models import (
     ReminderRecurrence,
+    ReminderRunStatus,
     ReminderStatus,
     ReminderType,
 )
@@ -77,17 +78,49 @@ class ReminderUpdateRequest(BaseModel):
 class ReminderListItem(BaseModel):
     """Response model for a reminder in list view."""
 
-    reminder_id: UUID
-    title: str
-    reminder_type: ReminderType
-    status: ReminderStatus
-    next_trigger_at: datetime
-    timezone: str
-    recurrence: ReminderRecurrence
-    delivery_channel: str
-    last_triggered_at: datetime | None = None
-    trigger_count: int = 0
-    created_at: datetime
+    reminder_id: UUID = Field(description="Unique identifier for the reminder.")
+    title: str = Field(description="Short user-facing label for the reminder.")
+    reminder_type: ReminderType = Field(description="Whether the reminder is static or agentic.")
+    status: ReminderStatus = Field(description="Current lifecycle state of the reminder.")
+    next_trigger_at: datetime = Field(description="Next scheduled trigger in UTC.")
+    next_trigger_local_at: datetime = Field(
+        description="Next scheduled trigger converted to the user's timezone."
+    )
+    schedule_summary: str = Field(
+        description="Human-friendly schedule label for cards and list rows."
+    )
+    timezone: str = Field(description="IANA timezone used for schedule calculations.")
+    recurrence: ReminderRecurrence = Field(description="Recurrence cadence for the reminder.")
+    delivery_channel: str = Field(description="Channel the reminder will be delivered to.")
+    is_running: bool = Field(
+        default=False,
+        description="True while an execution attempt is currently in progress.",
+    )
+    current_run_status: ReminderRunStatus | None = Field(
+        default=None,
+        description="Current execution status when a run is active.",
+    )
+    can_pause: bool = Field(
+        default=False,
+        description="Whether the UI should allow a pause action right now.",
+    )
+    can_cancel: bool = Field(
+        default=False,
+        description="Whether the UI should allow a cancel action right now.",
+    )
+    can_delete: bool = Field(
+        default=False,
+        description="Whether the UI should allow a delete action right now.",
+    )
+    last_triggered_at: datetime | None = Field(
+        default=None,
+        description="Timestamp of the last successful execution.",
+    )
+    trigger_count: int = Field(
+        default=0,
+        description="Number of successful executions.",
+    )
+    created_at: datetime = Field(description="When the reminder was created.")
 
     model_config = {"from_attributes": True}
 
@@ -95,36 +128,119 @@ class ReminderListItem(BaseModel):
 class ReminderDetail(BaseModel):
     """Full reminder detail response."""
 
-    reminder_id: UUID
-    title: str
-    reminder_type: ReminderType
-    status: ReminderStatus
+    reminder_id: UUID = Field(description="Unique identifier for the reminder.")
+    title: str = Field(description="Short user-facing label for the reminder.")
+    reminder_type: ReminderType = Field(description="Whether the reminder is static or agentic.")
+    status: ReminderStatus = Field(description="Current lifecycle state of the reminder.")
 
     # Content
-    message_content: str | None = None
-    agent_prompt: str | None = None
-    deal_id: UUID | None = None
+    message_content: str | None = Field(
+        default=None,
+        description="Static reminder message content, when applicable.",
+    )
+    agent_prompt: str | None = Field(
+        default=None,
+        description="Agent prompt used for agentic reminders, when applicable.",
+    )
+    deal_id: UUID | None = Field(
+        default=None,
+        description="Optional deal scope for agentic reminders.",
+    )
 
     # Schedule
-    next_trigger_at: datetime
-    timezone: str
-    recurrence: ReminderRecurrence
-    recurrence_end_at: datetime | None = None
+    next_trigger_at: datetime = Field(description="Next scheduled trigger in UTC.")
+    next_trigger_local_at: datetime = Field(
+        description="Next scheduled trigger converted to the user's timezone."
+    )
+    schedule_summary: str = Field(description="Human-friendly schedule label for detail views.")
+    timezone: str = Field(description="IANA timezone used for schedule calculations.")
+    recurrence: ReminderRecurrence = Field(description="Recurrence cadence for the reminder.")
+    recurrence_end_at: datetime | None = Field(
+        default=None,
+        description="Last allowed recurrence time in UTC, if set.",
+    )
 
     # Delivery
-    delivery_channel: str
+    delivery_channel: str = Field(description="Channel the reminder will be delivered to.")
 
     # Tracking
-    last_triggered_at: datetime | None = None
-    trigger_count: int = 0
-    consecutive_failures: int = 0
-    last_error: str | None = None
+    is_running: bool = Field(
+        default=False,
+        description="True while an execution attempt is currently in progress.",
+    )
+    current_run_status: ReminderRunStatus | None = Field(
+        default=None,
+        description="Current execution status when a run is active.",
+    )
+    can_pause: bool = Field(
+        default=False,
+        description="Whether the UI should allow a pause action right now.",
+    )
+    can_cancel: bool = Field(
+        default=False,
+        description="Whether the UI should allow a cancel action right now.",
+    )
+    can_delete: bool = Field(
+        default=False,
+        description="Whether the UI should allow a delete action right now.",
+    )
+    last_triggered_at: datetime | None = Field(
+        default=None,
+        description="Timestamp of the last successful execution.",
+    )
+    trigger_count: int = Field(
+        default=0,
+        description="Number of successful executions.",
+    )
+    consecutive_failures: int = Field(
+        default=0,
+        description="Number of back-to-back failed attempts since the last success.",
+    )
+    last_error: str | None = Field(
+        default=None,
+        description="Most recent execution error message, if any.",
+    )
 
     # Timestamps
-    created_at: datetime
-    updated_at: datetime
+    created_at: datetime = Field(description="When the reminder was created.")
+    updated_at: datetime = Field(description="When the reminder was last updated.")
 
     model_config = {"from_attributes": True}
+
+
+class ReminderRunListItem(BaseModel):
+    """Single execution history row for a reminder."""
+
+    run_id: UUID = Field(description="Unique identifier for this execution attempt.")
+    attempt_number: int = Field(description="Sequential attempt number for this reminder.")
+    status: ReminderRunStatus = Field(description="Outcome of this execution attempt.")
+    triggered_for_at: datetime = Field(description="Scheduled time this run was executing for.")
+    started_at: datetime = Field(description="When the execution attempt started.")
+    completed_at: datetime | None = Field(
+        default=None,
+        description="When the execution attempt finished, if completed.",
+    )
+    input_snapshot: str = Field(
+        description="Exact reminder input executed for this run: static message or agent prompt."
+    )
+    result_text: str | None = Field(
+        default=None,
+        description="Human-readable output produced by the run, if any.",
+    )
+    error_message: str | None = Field(
+        default=None,
+        description="Failure reason captured for this run, if any.",
+    )
+
+
+class ReminderHistoryResponse(BaseModel):
+    """Paginated reminder execution history."""
+
+    items: list[ReminderRunListItem]
+    page: int
+    limit: int
+    total_count: int
+    total_pages: int
 
 
 class ReminderListResponse(BaseModel):
@@ -147,3 +263,10 @@ class ReminderListQueryParams(BaseModel):
     )
     reminder_type: ReminderType | None = Query(None, description="Filter by static or agentic")
     sort: str = Query("desc", pattern="^(asc|desc)$", description="Sort by next_trigger_at")
+
+
+class ReminderHistoryQueryParams(BaseModel):
+    """Query parameters for reminder execution history."""
+
+    limit: int = Query(20, ge=1, le=100, description="Items per page")
+    page: int = Query(1, ge=1, description="Page number (1-indexed)")
