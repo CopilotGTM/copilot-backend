@@ -202,6 +202,15 @@ class ReminderExecutionService:
             user_stmt = select(col(User.email)).where(col(User.user_id) == data["user_id"])
             user_email = (await session.execute(user_stmt)).scalar_one_or_none()
 
+        metadata = dict(data["delivery_context"])
+        metadata["source"] = "scheduled_alert"
+        if (
+            metadata.get("conversation_type") == "groupChat"
+            and not metadata.get("teams_conversation_id")
+            and conversation_id
+        ):
+            metadata["teams_conversation_id"] = conversation_id
+
         # Build AgentContext (no session held — tools acquire on demand)
         context = AgentContext(
             organisation_id=self.organisation_id,
@@ -210,14 +219,19 @@ class ReminderExecutionService:
             user_id=data["user_id"],
             user_email=user_email,
             channel="teams",
-            metadata={
-                "service_url": service_url,
-                "conversation_id": conversation_id,
-                "source": "scheduled_alert",
-            },
+            metadata=metadata,
         )
 
-        messages = [{"role": "user", "content": prompt}]
+        messages = [
+            {
+                "role": "user",
+                "content": (
+                    "This is a trigger that has been given by the user.\n"
+                    "This is the prompt from the trigger, so that you understand this is a "
+                    f"reminder.\n\n{prompt}"
+                ),
+            }
+        ]
 
         # Run agent (no DB session held during this)
         frames = []
