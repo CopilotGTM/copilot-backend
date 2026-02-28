@@ -74,34 +74,14 @@ Keep references one level deep from `SKILL.md`. Avoid nested reference trees.
 | `competitive-analysis` | Competitor comparison using KB, deal signals, and external context | Hardcoded competitive positioning guidance |
 | `stakeholder-mapping` | Stakeholder power mapping and coverage gap detection | Hardcoded stakeholder analysis guidance |
 | `pipeline-review` | Forecast-integrity pipeline intelligence and risk prioritization | Hardcoded pipeline review guidance |
+| `close-plan` | Backward-planned deal acceleration and target-date feasibility | Hardcoded close plan guidance |
 | `reminders` | Create, list, cancel reminders and agentic alerts | Hardcoded reminder type/recurrence instructions |
 
 ---
 
 ## Proposed Skills (Roadmap)
 
-### 1. Close Plan / Deal Acceleration
-
-**Trigger phrases**: "What do we need to close this by March?", "Create a close plan", "Accelerate this deal"
-
-**Why**: Works backward from a target close date to identify remaining steps, gaps, and blockers. Combines deal health, stakeholder coverage, paper process status, and timeline into an action-oriented plan.
-
-**Workflow**:
-1. Get deal details, stage, and target close date.
-2. Identify remaining stages and typical duration for each.
-3. Map stakeholder readiness for each remaining gate.
-4. Check paper process status — procurement, legal, security review.
-5. Produce timeline with milestones, owners, and risk flags.
-
-**References**:
-- `stage-duration-benchmarks.md` — typical time per stage
-- `close-checklist.md` — common pre-close requirements
-
-**Value**: Medium — valuable when asked, but may not be frequent enough to prioritize early.
-
----
-
-### 2. Visualization Guide
+### 1. Visualization Guide
 
 **Trigger phrases**: "Show me a chart", "Visualize this data", "Create a graph of..."
 

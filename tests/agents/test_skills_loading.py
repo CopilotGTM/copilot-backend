@@ -316,6 +316,54 @@ def test_pipeline_review_skill_uses_data_first_tool_guidance() -> None:
     assert "[ListDeals, GetPipelineDetails]" in skill.instructions
 
 
+def test_close_plan_skill_loads() -> None:
+    """The close-plan skill must load without validation errors."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill_names = [skill.name for skill in skills]
+    assert "close-plan" in skill_names
+
+
+def test_close_plan_skill_has_description() -> None:
+    """The close-plan skill must have a non-empty description."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "close-plan")
+    assert skill.description
+    assert len(skill.description) <= 1024
+
+
+def test_close_plan_skill_has_instructions() -> None:
+    """The close-plan skill must have non-empty instructions."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "close-plan")
+    assert skill.instructions
+    assert "Close Plan" in skill.instructions
+    assert "Start from the target close date and work backward." in skill.instructions
+
+
+def test_close_plan_skill_has_core_references() -> None:
+    """The close-plan skill must include required reference files."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "close-plan")
+    assert "stage-duration-benchmarks.md" in skill.references
+    assert "close-checklist.md" in skill.references
+    assert "acceleration-playbook.md" in skill.references
+    assert "output-guidelines.md" in skill.references
+
+
+def test_close_plan_skill_uses_data_first_tool_guidance() -> None:
+    """The skill should use data-first guidance and optional bracket tool hints."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "close-plan")
+    assert "Use the best available tools for each data signal." in skill.instructions
+    assert "Bracket hints are examples, not hard constraints." in skill.instructions
+    assert "[GetDealDetails, GetDealChangeHistory, GetPipelineDetails]" in skill.instructions
+
+
 def test_reminders_skill_loads() -> None:
     """The reminders skill must load without validation errors."""
     loader = LocalSkills(str(SKILLS_DIR))
@@ -391,6 +439,13 @@ def test_skills_system_prompt_snippet_mentions_pipeline_review() -> None:
     skills = Skills(loaders=[LocalSkills(str(SKILLS_DIR))])
     snippet = skills.get_system_prompt_snippet()
     assert "pipeline-review" in snippet
+
+
+def test_skills_system_prompt_snippet_mentions_close_plan() -> None:
+    """Skills prompt snippet should include close-plan."""
+    skills = Skills(loaders=[LocalSkills(str(SKILLS_DIR))])
+    snippet = skills.get_system_prompt_snippet()
+    assert "close-plan" in snippet
 
 
 def test_skills_system_prompt_snippet_mentions_reminders() -> None:
