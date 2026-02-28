@@ -49,6 +49,11 @@ class GeneralAgent(BaseAgent):
 
         # Generate prompt with org_name from context (falls back to "Our Organization" if None)
         system_prompt = get_general_prompt(context.org_name)
+        if context.metadata.get("source") == "scheduled_alert":
+            system_prompt += (
+                "\n\nYou are executing a reminder that has already been created. "
+                "Do not create, list, or cancel reminders during this run."
+            )
 
         # Load skills from src/agents/skills using Agno progressive discovery.
         skills_path = Path(__file__).parent.parent.parent / "skills"

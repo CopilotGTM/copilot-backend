@@ -341,9 +341,13 @@ async def create_reminder(
         if deal_id:
             agent_cfg["deal_id"] = deal_id
 
+    conversation_type = context.metadata.get("conversation_type", "")
+    teams_conversation_id = context.metadata.get("teams_conversation_id") or conversation_id
     delivery_context = {
         "service_url": service_url,
         "conversation_id": conversation_id,
+        "conversation_type": conversation_type,
+        "teams_conversation_id": teams_conversation_id,
     }
 
     # Create reminder in pending_confirmation — not active, not in ZSET

@@ -28,9 +28,11 @@ from .job_models import (
 from .knowledge_models import OrganisationDocument, OrganisationSource
 from .reminder_models import (
     ReminderRecurrence,
+    ReminderRunStatus,
     ReminderStatus,
     ReminderType,
     UserReminder,
+    UserReminderRun,
 )
 from .sync import (
     CalendarAttendee,
@@ -114,7 +116,9 @@ __all__ = [
     "DealJobType",
     # Reminder Models
     "UserReminder",
+    "UserReminderRun",
     "ReminderType",
     "ReminderRecurrence",
     "ReminderStatus",
+    "ReminderRunStatus",
 ]

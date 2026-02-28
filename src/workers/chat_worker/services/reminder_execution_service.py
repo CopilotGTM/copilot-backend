@@ -13,17 +13,22 @@ and never held during LLM calls or external API calls.
 
 from __future__ import annotations
 
+import calendar
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
+from sqlmodel import col
+
 from src.domain.models.organisation_tables.reminder_models import (
     ReminderRecurrence,
+    ReminderRunStatus,
     ReminderStatus,
     ReminderType,
     UserReminder,
+    UserReminderRun,
 )
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.utils.async_runner import run_async
@@ -59,20 +64,27 @@ class ReminderExecutionService:
 
         reminder_type = reminder_data["reminder_type"]
         title = reminder_data["title"]
+        run_id = await self._create_run_record(reminder_data)
 
         try:
             # Step 2: Execute based on type (no DB session held)
             if reminder_type == ReminderType.STATIC:
-                success = await self._execute_static(reminder_data)
+                success, result_text = await self._execute_static(reminder_data)
             else:
-                success = await self._execute_agentic(reminder_data)
+                success, result_text = await self._execute_agentic(reminder_data)
 
             # Step 3: Update status
             if success:
-                await self._mark_success(reminder_id, reminder_data)
+                await self._mark_success(reminder_id, run_id, reminder_data, result_text)
                 return {"status": "success", "title": title}
             else:
-                await self._mark_failure(reminder_id, "Delivery failed")
+                await self._mark_failure(
+                    reminder_id,
+                    run_id,
+                    "Delivery failed",
+                    run_status=ReminderRunStatus.DELIVERY_FAILED,
+                    result_text=result_text,
+                )
                 return {"status": "delivery_failed", "title": title}
 
         except Exception as exc:
@@ -82,7 +94,12 @@ class ReminderExecutionService:
                 reminder_id,
                 exc,
             )
-            await self._mark_failure(reminder_id, str(exc)[:500])
+            await self._mark_failure(
+                reminder_id,
+                run_id,
+                str(exc)[:500],
+                run_status=ReminderRunStatus.FAILED,
+            )
             return {"status": "error", "title": title, "error": str(exc)[:200]}
 
     async def _load_and_lock(self, reminder_id: UUID) -> dict[str, Any] | None:
@@ -131,6 +148,7 @@ class ReminderExecutionService:
                 "message_content": reminder.message_content,
                 "agent_config": reminder.agent_config or {},
                 "delivery_context": reminder.delivery_context or {},
+                "next_trigger_at": reminder.next_trigger_at,
                 "user_timezone": reminder.user_timezone,
                 "recurrence": ReminderRecurrence(reminder.recurrence),
                 "recurrence_end_at": reminder.recurrence_end_at,
@@ -138,7 +156,42 @@ class ReminderExecutionService:
                 "consecutive_failures": reminder.consecutive_failures,
             }
 
-    async def _execute_static(self, data: dict[str, Any]) -> bool:
+        return None
+
+    async def _create_run_record(self, data: dict[str, Any]) -> UUID:
+        """Create an in-progress reminder run row before external work begins."""
+        from sqlalchemy import func, select
+
+        agent_prompt = data["agent_config"].get("prompt")
+        input_snapshot = data.get("message_content") or agent_prompt or ""
+
+        async for session in acquire_org_async_session(self.organisation_id):
+            attempt_number_stmt = (
+                select(func.count())
+                .select_from(UserReminderRun)
+                .where(
+                    col(UserReminderRun.organisation_id) == self.organisation_id,
+                    col(UserReminderRun.reminder_id) == data["reminder_id"],
+                )
+            )
+            existing_runs = (await session.execute(attempt_number_stmt)).scalar_one()
+
+            run = UserReminderRun(
+                organisation_id=self.organisation_id,
+                reminder_id=data["reminder_id"],
+                user_id=data["user_id"],
+                attempt_number=existing_runs + 1,
+                triggered_for_at=data["next_trigger_at"],
+                input_snapshot=input_snapshot,
+            )
+            session.add(run)
+            await session.commit()
+            return run.run_id
+
+        msg = f"Failed to create reminder run record for reminder {data['reminder_id']}"
+        raise RuntimeError(msg)
+
+    async def _execute_static(self, data: dict[str, Any]) -> tuple[bool, str | None]:
         """Send a static reminder message via Teams proactive messaging."""
         from src.service.bots.teams_bot_service import TeamsBotService
 
@@ -147,20 +200,21 @@ class ReminderExecutionService:
 
         if not service_url or not conversation_id:
             logger.error("Static reminder missing delivery context: %s", data["reminder_id"])
-            return False
+            return False, None
 
         text = f"**Reminder:** {data['title']}"
         if data.get("message_content"):
             text += f"\n\n{data['message_content']}"
 
         bot_service = TeamsBotService()
-        return await bot_service.send_proactive_message(
+        sent = await bot_service.send_proactive_message(
             service_url=service_url,
             conversation_id=conversation_id,
             message=text,
         )
+        return sent, text
 
-    async def _execute_agentic(self, data: dict[str, Any]) -> bool:
+    async def _execute_agentic(self, data: dict[str, Any]) -> tuple[bool, str | None]:
         """Run GeneralAgent with the stored prompt and send the result."""
         from src.adapters import AgentResponse, get_adapter
         from src.agents.context import AgentContext
@@ -173,12 +227,12 @@ class ReminderExecutionService:
 
         if not service_url or not conversation_id:
             logger.error("Agentic reminder missing delivery context: %s", data["reminder_id"])
-            return False
+            return False, None
 
         prompt = data["agent_config"].get("prompt", "")
         if not prompt:
             logger.error("Agentic reminder has no prompt: %s", data["reminder_id"])
-            return False
+            return False, None
 
         deal_id_str = data["agent_config"].get("deal_id")
         deal_id = UUID(deal_id_str) if deal_id_str else None
@@ -202,6 +256,15 @@ class ReminderExecutionService:
             user_stmt = select(col(User.email)).where(col(User.user_id) == data["user_id"])
             user_email = (await session.execute(user_stmt)).scalar_one_or_none()
 
+        metadata = dict(data["delivery_context"])
+        metadata["source"] = "scheduled_alert"
+        if (
+            metadata.get("conversation_type") == "groupChat"
+            and not metadata.get("teams_conversation_id")
+            and conversation_id
+        ):
+            metadata["teams_conversation_id"] = conversation_id
+
         # Build AgentContext (no session held — tools acquire on demand)
         context = AgentContext(
             organisation_id=self.organisation_id,
@@ -210,14 +273,19 @@ class ReminderExecutionService:
             user_id=data["user_id"],
             user_email=user_email,
             channel="teams",
-            metadata={
-                "service_url": service_url,
-                "conversation_id": conversation_id,
-                "source": "scheduled_alert",
-            },
+            metadata=metadata,
         )
 
-        messages = [{"role": "user", "content": prompt}]
+        messages = [
+            {
+                "role": "user",
+                "content": (
+                    "This is a trigger that has been given by the user.\n"
+                    "This is the prompt from the trigger, so that you understand this is a "
+                    f"reminder.\n\n{prompt}"
+                ),
+            }
+        ]
 
         # Run agent (no DB session held during this)
         frames = []
@@ -230,11 +298,11 @@ class ReminderExecutionService:
                 frames.append(frame)
         except Exception as e:
             logger.exception("Agent execution failed for reminder %s: %s", data["reminder_id"], e)
-            return False
+            raise
 
         if not frames:
             logger.warning("Agent returned no frames for reminder %s", data["reminder_id"])
-            return False
+            return False, None
 
         # Render response via adapter
         adapter = get_adapter("teams")
@@ -253,9 +321,15 @@ class ReminderExecutionService:
             text_fallback=title_header + (response.text[:200] if response.text else ""),
         )
 
-        return sent
+        return sent, response.text or None
 
-    async def _mark_success(self, reminder_id: UUID, data: dict[str, Any]) -> None:
+    async def _mark_success(
+        self,
+        reminder_id: UUID,
+        run_id: UUID,
+        data: dict[str, Any],
+        result_text: str | None,
+    ) -> None:
         """Update reminder after successful execution."""
         async for session in acquire_org_async_session(self.organisation_id):
             from sqlalchemy import select
@@ -270,10 +344,25 @@ class ReminderExecutionService:
             if not reminder:
                 return
 
-            reminder.last_triggered_at = datetime.now(UTC)
+            run_stmt = select(UserReminderRun).where(
+                col(UserReminderRun.run_id) == run_id,
+                col(UserReminderRun.organisation_id) == self.organisation_id,
+            )
+            run = (await session.execute(run_stmt)).scalars().first()
+
+            completed_at = datetime.now(UTC)
+
+            reminder.last_triggered_at = completed_at
             reminder.trigger_count = data["trigger_count"] + 1
             reminder.consecutive_failures = 0
             reminder.last_error = None
+
+            if run:
+                run.status = ReminderRunStatus.SUCCEEDED
+                run.completed_at = completed_at
+                run.result_text = result_text
+                run.error_message = None
+                session.add(run)
 
             recurrence = data["recurrence"]
             if recurrence == ReminderRecurrence.NONE:
@@ -303,7 +392,15 @@ class ReminderExecutionService:
                     reminder.next_trigger_at.timestamp(),
                 )
 
-    async def _mark_failure(self, reminder_id: UUID, error_msg: str) -> None:
+    async def _mark_failure(
+        self,
+        reminder_id: UUID,
+        run_id: UUID,
+        error_msg: str,
+        *,
+        run_status: ReminderRunStatus,
+        result_text: str | None = None,
+    ) -> None:
         """Update reminder after failed execution."""
         next_trigger_ts: float | None = None
 
@@ -320,8 +417,21 @@ class ReminderExecutionService:
             if not reminder:
                 return
 
+            run_stmt = select(UserReminderRun).where(
+                col(UserReminderRun.run_id) == run_id,
+                col(UserReminderRun.organisation_id) == self.organisation_id,
+            )
+            run = (await session.execute(run_stmt)).scalars().first()
+
             reminder.consecutive_failures += 1
             reminder.last_error = error_msg
+
+            if run:
+                run.status = run_status
+                run.completed_at = datetime.now(UTC)
+                run.result_text = result_text
+                run.error_message = error_msg
+                session.add(run)
 
             if reminder.consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                 reminder.status = ReminderStatus.FAILED
@@ -375,9 +485,20 @@ class ReminderExecutionService:
         elif recurrence == ReminderRecurrence.BIWEEKLY:
             local_time += timedelta(weeks=2)
         elif recurrence == ReminderRecurrence.MONTHLY:
-            # Use relativedelta for month arithmetic
-            from dateutil.relativedelta import relativedelta
-
-            local_time += relativedelta(months=1)
+            local_time = ReminderExecutionService._add_one_month(local_time)
 
         return local_time.astimezone(UTC)
+
+    @staticmethod
+    def _add_one_month(local_time: datetime) -> datetime:
+        """Advance one calendar month while preserving time-of-day when possible."""
+        if local_time.month == 12:
+            next_year = local_time.year + 1
+            next_month = 1
+        else:
+            next_year = local_time.year
+            next_month = local_time.month + 1
+
+        last_day = calendar.monthrange(next_year, next_month)[1]
+        next_day = min(local_time.day, last_day)
+        return local_time.replace(year=next_year, month=next_month, day=next_day)

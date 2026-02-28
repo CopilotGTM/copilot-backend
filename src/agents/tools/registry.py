@@ -142,6 +142,13 @@ class ToolName(str, Enum):
     CANCEL_REMINDER = "cancel_reminder"
 
 
+REMINDER_MANAGEMENT_TOOLS = {
+    ToolName.CREATE_REMINDER,
+    ToolName.LIST_REMINDERS,
+    ToolName.CANCEL_REMINDER,
+}
+
+
 # =============================================================================
 # CHANNEL-SPECIFIC TOOLS
 # =============================================================================
@@ -655,9 +662,14 @@ class ToolRegistry:
             List of tool functions the agent can use
         """
         allowed_tools = AGENT_TOOLS.get(agent_name, set())
+        excluded_tools = get_excluded_tools_for_context(self.context)
         tools: list[Callable] = []
 
         for tool_name in allowed_tools:
+            if tool_name in excluded_tools:
+                logger.debug(f"Skipping tool {tool_name} for {agent_name} due to context")
+                continue
+
             # Skip tools restricted to other channels
             allowed_channels = CHANNEL_ONLY_TOOLS.get(tool_name)
             if allowed_channels and channel not in allowed_channels:
@@ -723,6 +735,14 @@ class ToolRegistry:
         return AGENT_TOOLS.get(agent_name, set())
 
 
+def get_excluded_tools_for_context(context: AgentContext) -> set[ToolName]:
+    """Return tools that must be hidden for the current execution context."""
+    if context.metadata.get("source") == "scheduled_alert":
+        return REMINDER_MANAGEMENT_TOOLS
+
+    return set()
+
+
 def get_tools_for_agent(
     agent_name: str,
     context: AgentContext,
@@ -750,5 +770,7 @@ __all__ = [
     "ToolRegistry",
     "AGENT_TOOLS",
     "TOOL_CATEGORIES",
+    "REMINDER_MANAGEMENT_TOOLS",
+    "get_excluded_tools_for_context",
     "get_tools_for_agent",
 ]

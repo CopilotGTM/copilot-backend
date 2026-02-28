@@ -42,6 +42,14 @@ All endpoints return a consistent envelope:
 
 - For a unified flow with uploads and SSE, see: `docs/API Documentation/chat-apis-integration-diagram.md`
 
+### Agent Execution Notes
+
+- User-initiated `GENERAL_CHAT` requests use the standard chat flow documented here.
+- Scheduled reminder executions reuse the same general chat agent internally, but they are background jobs and are not initiated via `/users/chats` endpoints.
+- For scheduled reminder executions, the backend sends a single synthesized user message built from the reminder trigger prompt. Prior chat history is not injected into that run.
+- If the agent needs more context during a scheduled reminder execution, it must read from the underlying channel context (for example, Teams conversation metadata) rather than rely on passed message history.
+- Reminder-management tools remain available in normal chat on supported channels, but during a scheduled reminder execution the backend excludes reminder-management tools (`CreateReminder`, `ListReminders`, `CancelReminder`) so the reminder cannot recursively create or manage reminders.
+
 ---
 
 ## Production Conventions
@@ -82,16 +90,19 @@ All endpoints return a consistent envelope:
 ### SSE Guidance
 
 **Message Events Stream:**
+
 - Transport: Server-Sent Events; events: `ready`, `frame`, `ping`, `complete`, `timeout`, `error`.
 - Timeouts/Heartbeats: timeout ~15 minutes; heartbeats ~25s. Reconnect with backoff on `timeout` or transient `error`.
 - Resume: Provide `Last-Event-ID` header to resume (legacy replay mode supported).
 
 **Attachment Status Stream:**
+
 - Events: `status` (array of attachments), `ping`, `complete`, `timeout`, `error`.
 - Scope: If `attachment_ids` omitted, server streams all non-terminal attachments for the user.
 - Timeouts/Heartbeats: default timeout ~30 minutes; heartbeats ~25s.
 
 **Auth caveat:** Native `EventSource` cannot attach headers. Options:
+
 - Use an SSE polyfill that supports headers
 - Have a reverse proxy inject the header based on a secure cookie
 - Implement an app bridge that exchanges a cookie/session for an auth header
@@ -108,20 +119,24 @@ All endpoints return a consistent envelope:
 ## Security & Compliance (SOC 2 Alignment)
 
 ### Transport Security
+
 - Enforce TLS 1.2+; recommend HSTS at the edge. All API access over HTTPS only.
 - CORS: restrict in production to trusted origins. Never serve over plaintext HTTP.
 
 ### Storage Security
+
 - Attachments stored in private containers with server-side encryption at rest (cloud-managed keys by default; CMK/KMS recommended for higher assurance).
 - No public ACLs; access only via time-bound SAS URLs.
 - SAS URLs are path-scoped and short-lived (upload ~15m; download 30–120m). Clients must not persist SAS URLs in logs or databases.
 
 ### Authentication & Authorization
+
 - Bearer JWT on every call. Endpoints enforce user/org scoping for all reads/writes.
 - Follow least privilege: presign grants write to a single blob; download grants read to a single blob.
 - Prefer role-based authorization at the gateway (future extension) for admin vs user scopes.
 
 ### Input Validation & Content Controls
+
 - Pydantic validation rejects empty content and invalid roles/types.
 - MIME type allowlist and strict max size enforced server-side; reject on violation.
 - Finalize enforces valid state transitions (e.g., cannot download before `completed`).
@@ -130,24 +145,29 @@ All endpoints return a consistent envelope:
 - SSE consumer groups provide exactly-once delivery semantics in consume-once mode for message jobs.
 
 ### Secrets & Key Management
+
 - Service credentials are loaded from a secret manager; keys are never embedded in code or responses.
 - Rotate credentials regularly; restrict access via least privilege.
 
 ### Logging & Auditability
+
 - Log request outcomes and resource IDs (session_id, message_id, job_id, attachment_id) without storing content or tokens.
 - Do not log raw SAS URLs, tokens, or user content. Redact potentially sensitive fields; apply log retention and access controls.
 - Emit audit events for presign/finalize/download (who, what, when, org/user, outcome).
 
 ### Data Retention & Deletion
+
 - Attachment model includes `retention_policy`, `is_deleted`, `deleted_at`. Enforce org policy for retention and secure deletion. Avoid indefinite retention of failed uploads.
 - Message content is application data; treat as confidential. Support future purge/retention policies at the org level.
 
 ### Availability & Resilience
+
 - Per-user rate limiting (read/write budgets) with `429` + `Retry-After`.
 - SSE heartbeats and reconnect guidance provide graceful degradation on network interruptions.
 - Dependencies: Redis (pub/sub) and Cloud Storage. Operate with health checks/alerts; document incident response paths outside this spec.
 
 ### Change Management & Versioning
+
 - Document non-breaking additions; coordinate breaking changes. Maintain compatibility for event frames and payloads.
 
 ---
@@ -370,6 +390,7 @@ export interface TaskListFrame {
 ### SSE Event Frames
 
 **Message Events Stream:**
+
 - Events: `ready`, `frame`, `ping`, `complete`, `timeout`, `error`
 - `frame.data` examples:
 
@@ -388,6 +409,7 @@ export interface TaskListFrame {
 ```
 
 **Attachment Status Stream:**
+
 - Events: `status`, `ping`, `complete`, `timeout`, `error`
 - `status.data` payload:
 
@@ -677,6 +699,7 @@ Persists a user message (with optional attachments) and enqueues a background jo
 ```
 
 Notes:
+
 - `role` must be `user`.
 - `attachments` are IDs from the Attachment endpoints once uploaded/finalized.
 
@@ -695,6 +718,7 @@ Notes:
 ```
 
 Notes:
+
 - `job_id`: Use this to connect to the SSE stream at `/message_events`
 - `user_message_id`: The persisted ID of the user's message
 - `assistant_message_id`: Pre-generated ID for the assistant's response (message will be created by worker)
@@ -761,10 +785,12 @@ Streams Server-Sent Events for a specific message job. Includes reconnection sup
 ### SSE Semantics (Worker, Delta, Ordering)
 
 **Producer and delivery:**
+
 - Frames originate from the chat worker processing the job. The worker publishes structured frames to a per-job Redis Stream; the API's SSE endpoint relays those frames to the client.
 - Delivery uses Redis consumer groups for consume-once semantics by default, minimizing duplicates. Legacy replay mode is used when consumer groups are unavailable.
 
 **Base frame schema (always included):**
+
 - `job_id`: the job identifier (string) for SSE stream correlation
 - `assistant_message_id`: the pre-generated ID for the assistant message being created
 - `version`: frame schema version (e.g., "1.0")
@@ -773,16 +799,19 @@ Streams Server-Sent Events for a specific message job. Includes reconnection sup
 - `type`: one of the known frame types listed above
 
 **Ordering and resume:**
+
 - Ordering: frames are emitted in order; use `sequence` (preferred) or the SSE `id` to ensure monotonic processing.
 - Resume: pass `Last-Event-ID` on reconnect. In consume-once mode, the server tracks position; in legacy mode, the server replays from the provided ID.
 - Heartbeats/Timeouts: you will receive `ping` heartbeats ~25s. After ~15 minutes idle, a `timeout` with `{ "reconnect": true }` is sent — reconnect with backoff.
 
 **Content streaming contract (delta vs replace):**
+
 - `answer.delta`: append-only partial content. Render incrementally by concatenating `content` chunks in order.
 - `answer.replace`: full current answer. If received, treat this as the canonical text and replace the accumulated buffer.
 - Finalization: a `finalize` frame is followed by an `event: complete`. After `complete`, close the stream and optionally refresh with `GET /messages/list` to show the persisted assistant message.
 
 **Diagnostics / "autopsy" frames:**
+
 - `answer.metrics`: confidence signal for the answer (e.g., `low|medium|high|neutral`). May also include `citations` in some cases.
 - `sources.replace`: full replacement list of sources/citations to display alongside the answer.
 - `suggestions.replace`: full replacement list of suggested follow-ups.
@@ -793,6 +822,7 @@ Streams Server-Sent Events for a specific message job. Includes reconnection sup
 - `agent.switch` and `question.prompt`: advanced flows for agent handoff or asking the user for more info.
 
 **Frontend handling:**
+
 - Stream only from `answer.delta` (append) and apply `answer.replace` when present to ensure the UI shows the canonical answer.
 - Merge diagnostics frames live: update confidence, sources, suggestions, progress bars, tool/thinking panes, and task lists as frames arrive.
 - For `task_list` frames: maintain task state in a fixed UI position (sidebar, banner, or floating card).
@@ -862,6 +892,7 @@ Allows users to provide feedback (thumbs up/down) on chat messages.
 ```
 
 Notes:
+
 - `feedback_score` must be one of: `1` (thumbs up), `-1` (thumbs down), or `0` (clear/remove feedback)
 - Users can only provide feedback on messages from their own chat sessions
 - Feedback can be updated multiple times for the same message
@@ -921,6 +952,7 @@ GET /users/chats/messages/list?session_id=<UUID>&limit=20&cursor=<opaque>&role=<
 Returns chat messages for a session with lightweight enrichment (attachments, sources, suggestions, confidence, and feedback).
 
 Notes:
+
 - Each message includes a `feedback_score` field showing user feedback: `1` (thumbs up), `-1` (thumbs down), or `null` (no feedback)
 - Feedback scores are set via the `POST /messages/feedback` endpoint
 
@@ -1000,6 +1032,7 @@ Creates an attachment record and returns a short-lived SAS URL for direct browse
 ```
 
 Validation:
+
 - Allowed types are configured via environment `ALLOWED_MIMETYPES`.
 - Max size is configured via `MAX_UPLOAD_FILE_SIZE_BYTES` (default: 52428800 ~ 50MB).
 
@@ -1633,6 +1666,7 @@ flowchart TD
     B -->|Yes| C[Demo]
     B -->|No| D[Nurture]
 ```
+
 ```
 
 ### Frontend Markdown Library Recommendations
