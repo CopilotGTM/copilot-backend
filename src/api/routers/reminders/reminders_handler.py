@@ -60,7 +60,7 @@ async def get_reminder_service(
 
 
 @reminders_router.post(
-    "/",
+    "",
     response_model=GenericResponse[ReminderDetail],
     summary="Create a reminder",
     description="Create a new reminder or scheduled alert. Goes directly to ACTIVE status.",
@@ -104,7 +104,7 @@ async def create_reminder(
 
 
 @reminders_router.get(
-    "/",
+    "",
     response_model=GenericResponse[ReminderListResponse],
     summary="List reminders",
     description="Get paginated list of reminders for the current user.",
