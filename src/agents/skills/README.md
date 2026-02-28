@@ -71,34 +71,14 @@ Keep references one level deep from `SKILL.md`. Avoid nested reference trees.
 | `medpic-assessment` | MEDPIC qualification scoring with evidence-based framework | Hardcoded MEDDIC playbook |
 | `deal-health-check` | Traffic-light deal health across 5 dimensions | Hardcoded Deal Health Check playbook |
 | `call-analysis` | Call/meeting analysis — rep performance, signals, momentum | Hardcoded Call/Meeting Analysis playbook |
+| `competitive-analysis` | Competitor comparison using KB, deal signals, and external context | Hardcoded competitive positioning guidance |
 | `reminders` | Create, list, cancel reminders and agentic alerts | Hardcoded reminder type/recurrence instructions |
 
 ---
 
 ## Proposed Skills (Roadmap)
 
-### 1. Competitive Analysis
-
-**Trigger phrases**: "Compare us vs X", "What's our positioning against Y", "Competitive landscape for this deal"
-
-**Why**: Multi-source workflow — internal KB battlecards + web search for competitor news/financials + deal-specific competitive signals from transcripts and emails. Without a skill, the model does inconsistent analysis. A skill standardizes the framework.
-
-**Workflow**:
-1. Search internal KB for existing battlecards, competitive intel, and win/loss data.
-2. Web search for competitor's recent news, funding, product launches, pricing changes.
-3. If deal context exists, pull meeting transcripts and emails for competitor mentions.
-4. Produce structured output: feature comparison matrix, positioning strengths/weaknesses, recommended talk tracks, risk areas.
-
-**References**:
-- `comparison-framework.md` — feature, pricing, support, market position dimensions
-- `win-themes-guide.md` — how to identify and articulate differentiators
-- `output-format.md` — comparison table format, Mermaid quadrant chart guidance
-
-**Value**: High — competitive questions are frequent and the quality gap between a good and bad competitive analysis is large.
-
----
-
-### 2. Stakeholder Mapping
+### 1. Stakeholder Mapping
 
 **Trigger phrases**: "Map the stakeholders", "Who are the key players?", "Show me the org chart", "Who's the decision maker?"
 
@@ -120,7 +100,7 @@ Keep references one level deep from `SKILL.md`. Avoid nested reference trees.
 
 ---
 
-### 3. Pipeline Review
+### 2. Pipeline Review
 
 **Trigger phrases**: "How's my pipeline?", "What deals need attention?", "Pipeline risk report", "Show me stale deals"
 
@@ -141,7 +121,7 @@ Keep references one level deep from `SKILL.md`. Avoid nested reference trees.
 
 ---
 
-### 4. Close Plan / Deal Acceleration
+### 3. Close Plan / Deal Acceleration
 
 **Trigger phrases**: "What do we need to close this by March?", "Create a close plan", "Accelerate this deal"
 
@@ -162,7 +142,7 @@ Keep references one level deep from `SKILL.md`. Avoid nested reference trees.
 
 ---
 
-### 5. Visualization Guide
+### 4. Visualization Guide
 
 **Trigger phrases**: "Show me a chart", "Visualize this data", "Create a graph of..."
 

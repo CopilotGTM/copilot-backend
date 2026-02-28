@@ -174,6 +174,53 @@ def test_skills_system_prompt_snippet_mentions_deal_health_check() -> None:
     assert "deal-health-check" in snippet
 
 
+def test_competitive_analysis_skill_loads() -> None:
+    """The competitive-analysis skill must load without validation errors."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill_names = [skill.name for skill in skills]
+    assert "competitive-analysis" in skill_names
+
+
+def test_competitive_analysis_skill_has_description() -> None:
+    """The competitive-analysis skill must have a non-empty description."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "competitive-analysis")
+    assert skill.description
+    assert len(skill.description) <= 1024
+
+
+def test_competitive_analysis_skill_has_instructions() -> None:
+    """The competitive-analysis skill must have non-empty instructions."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "competitive-analysis")
+    assert skill.instructions
+    assert "Competitive Analysis" in skill.instructions
+    assert "Real threat" in skill.instructions
+
+
+def test_competitive_analysis_skill_has_core_references() -> None:
+    """The competitive-analysis skill must include required reference files."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "competitive-analysis")
+    assert "comparison-framework.md" in skill.references
+    assert "win-themes-guide.md" in skill.references
+    assert "output-format.md" in skill.references
+
+
+def test_competitive_analysis_skill_uses_data_first_tool_guidance() -> None:
+    """The skill should use data-first guidance and optional bracket tool hints."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "competitive-analysis")
+    assert "Use the best available tools for each data signal." in skill.instructions
+    assert "Bracket hints are examples, not hard constraints." in skill.instructions
+    assert "[SearchInternalKnowledge, ListDealNotes]" in skill.instructions
+
+
 def test_reminders_skill_loads() -> None:
     """The reminders skill must load without validation errors."""
     loader = LocalSkills(str(SKILLS_DIR))
@@ -228,6 +275,13 @@ def test_skills_system_prompt_snippet_mentions_call_analysis() -> None:
     skills = Skills(loaders=[LocalSkills(str(SKILLS_DIR))])
     snippet = skills.get_system_prompt_snippet()
     assert "call-analysis" in snippet
+
+
+def test_skills_system_prompt_snippet_mentions_competitive_analysis() -> None:
+    """Skills prompt snippet should include competitive-analysis."""
+    skills = Skills(loaders=[LocalSkills(str(SKILLS_DIR))])
+    snippet = skills.get_system_prompt_snippet()
+    assert "competitive-analysis" in snippet
 
 
 def test_skills_system_prompt_snippet_mentions_reminders() -> None:
