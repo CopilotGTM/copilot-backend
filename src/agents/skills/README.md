@@ -72,35 +72,14 @@ Keep references one level deep from `SKILL.md`. Avoid nested reference trees.
 | `deal-health-check` | Traffic-light deal health across 5 dimensions | Hardcoded Deal Health Check playbook |
 | `call-analysis` | Call/meeting analysis — rep performance, signals, momentum | Hardcoded Call/Meeting Analysis playbook |
 | `competitive-analysis` | Competitor comparison using KB, deal signals, and external context | Hardcoded competitive positioning guidance |
+| `stakeholder-mapping` | Stakeholder power mapping and coverage gap detection | Hardcoded stakeholder analysis guidance |
 | `reminders` | Create, list, cancel reminders and agentic alerts | Hardcoded reminder type/recurrence instructions |
 
 ---
 
 ## Proposed Skills (Roadmap)
 
-### 1. Stakeholder Mapping
-
-**Trigger phrases**: "Map the stakeholders", "Who are the key players?", "Show me the org chart", "Who's the decision maker?"
-
-**Why**: Currently loose guidance in "Sales Intelligence Mindset" about classifying by Influence/Role/Engagement, but not a structured workflow. A skill standardizes stakeholder analysis with coverage gap detection and power mapping.
-
-**Workflow**:
-1. Pull all deal stakeholders with details and insights.
-2. Classify each: Role (Economic Buyer, Technical Evaluator, End User, Coach, Blocker), Influence (High/Medium/Low), Engagement (Active/Passive/Disengaged).
-3. Identify coverage gaps — missing EB? No champion? No technical evaluator?
-4. Pull recent interactions per stakeholder to assess engagement recency.
-5. Produce power map table + gap analysis + recommended engagement actions.
-
-**References**:
-- `classification-rubric.md` — role/influence/engagement definitions with examples
-- `coverage-gaps-guide.md` — what gaps look like and why they matter
-- `engagement-scoring.md` — how to rate engagement from activity data
-
-**Value**: High — stakeholder questions are very common in sales, and structured classification improves deal strategy.
-
----
-
-### 2. Pipeline Review
+### 1. Pipeline Review
 
 **Trigger phrases**: "How's my pipeline?", "What deals need attention?", "Pipeline risk report", "Show me stale deals"
 
@@ -121,7 +100,7 @@ Keep references one level deep from `SKILL.md`. Avoid nested reference trees.
 
 ---
 
-### 3. Close Plan / Deal Acceleration
+### 2. Close Plan / Deal Acceleration
 
 **Trigger phrases**: "What do we need to close this by March?", "Create a close plan", "Accelerate this deal"
 
@@ -142,7 +121,7 @@ Keep references one level deep from `SKILL.md`. Avoid nested reference trees.
 
 ---
 
-### 4. Visualization Guide
+### 3. Visualization Guide
 
 **Trigger phrases**: "Show me a chart", "Visualize this data", "Create a graph of..."
 

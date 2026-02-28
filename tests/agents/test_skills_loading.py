@@ -221,6 +221,53 @@ def test_competitive_analysis_skill_uses_data_first_tool_guidance() -> None:
     assert "[SearchInternalKnowledge, ListDealNotes]" in skill.instructions
 
 
+def test_stakeholder_mapping_skill_loads() -> None:
+    """The stakeholder-mapping skill must load without validation errors."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill_names = [skill.name for skill in skills]
+    assert "stakeholder-mapping" in skill_names
+
+
+def test_stakeholder_mapping_skill_has_description() -> None:
+    """The stakeholder-mapping skill must have a non-empty description."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "stakeholder-mapping")
+    assert skill.description
+    assert len(skill.description) <= 1024
+
+
+def test_stakeholder_mapping_skill_has_instructions() -> None:
+    """The stakeholder-mapping skill must have non-empty instructions."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "stakeholder-mapping")
+    assert skill.instructions
+    assert "Stakeholder Mapping" in skill.instructions
+    assert "Economic Buyer" in skill.instructions
+
+
+def test_stakeholder_mapping_skill_has_core_references() -> None:
+    """The stakeholder-mapping skill must include required reference files."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "stakeholder-mapping")
+    assert "classification-rubric.md" in skill.references
+    assert "coverage-gaps-guide.md" in skill.references
+    assert "engagement-scoring.md" in skill.references
+
+
+def test_stakeholder_mapping_skill_uses_data_first_tool_guidance() -> None:
+    """The skill should use data-first guidance and optional bracket tool hints."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "stakeholder-mapping")
+    assert "Use the best available tools for each data signal." in skill.instructions
+    assert "Bracket hints are examples, not hard constraints." in skill.instructions
+    assert "[ListDealStakeholders, GetStakeholderDetails]" in skill.instructions
+
+
 def test_reminders_skill_loads() -> None:
     """The reminders skill must load without validation errors."""
     loader = LocalSkills(str(SKILLS_DIR))
@@ -282,6 +329,13 @@ def test_skills_system_prompt_snippet_mentions_competitive_analysis() -> None:
     skills = Skills(loaders=[LocalSkills(str(SKILLS_DIR))])
     snippet = skills.get_system_prompt_snippet()
     assert "competitive-analysis" in snippet
+
+
+def test_skills_system_prompt_snippet_mentions_stakeholder_mapping() -> None:
+    """Skills prompt snippet should include stakeholder-mapping."""
+    skills = Skills(loaders=[LocalSkills(str(SKILLS_DIR))])
+    snippet = skills.get_system_prompt_snippet()
+    assert "stakeholder-mapping" in snippet
 
 
 def test_skills_system_prompt_snippet_mentions_reminders() -> None:
