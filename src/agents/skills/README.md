@@ -73,34 +73,14 @@ Keep references one level deep from `SKILL.md`. Avoid nested reference trees.
 | `call-analysis` | Call/meeting analysis — rep performance, signals, momentum | Hardcoded Call/Meeting Analysis playbook |
 | `competitive-analysis` | Competitor comparison using KB, deal signals, and external context | Hardcoded competitive positioning guidance |
 | `stakeholder-mapping` | Stakeholder power mapping and coverage gap detection | Hardcoded stakeholder analysis guidance |
+| `pipeline-review` | Forecast-integrity pipeline intelligence and risk prioritization | Hardcoded pipeline review guidance |
 | `reminders` | Create, list, cancel reminders and agentic alerts | Hardcoded reminder type/recurrence instructions |
 
 ---
 
 ## Proposed Skills (Roadmap)
 
-### 1. Pipeline Review
-
-**Trigger phrases**: "How's my pipeline?", "What deals need attention?", "Pipeline risk report", "Show me stale deals"
-
-**Why**: Cross-deal analysis is fundamentally different from single-deal tools. Without a skill, the model either goes too shallow (just listing deals) or too deep (analyzing each deal fully). A skill balances breadth vs depth.
-
-**Workflow**:
-1. List all active deals with stage, amount, close date, owner, last activity.
-2. Flag stale deals (no activity in 7+ days).
-3. Identify stage distribution and bottlenecks.
-4. Surface top 3-5 risks across the portfolio.
-5. Produce pipeline summary table + risk highlights + recommended actions.
-
-**References**:
-- `staleness-thresholds.md` — what counts as stale by stage
-- `pipeline-health-signals.md` — stage distribution, velocity, coverage ratio
-
-**Value**: Medium-High — useful for managers and reps doing weekly reviews.
-
----
-
-### 2. Close Plan / Deal Acceleration
+### 1. Close Plan / Deal Acceleration
 
 **Trigger phrases**: "What do we need to close this by March?", "Create a close plan", "Accelerate this deal"
 
@@ -121,7 +101,7 @@ Keep references one level deep from `SKILL.md`. Avoid nested reference trees.
 
 ---
 
-### 3. Visualization Guide
+### 2. Visualization Guide
 
 **Trigger phrases**: "Show me a chart", "Visualize this data", "Create a graph of..."
 
