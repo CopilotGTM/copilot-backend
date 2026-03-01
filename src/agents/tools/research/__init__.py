@@ -13,9 +13,6 @@ from .arxiv_search import arxiv_search, create_search_arxiv
 from .linkedin_enrichment import (
     create_enrich_linkedin_profile,
     enrich_linkedin_profile,
-    get_linkedin_contact_info,
-    get_linkedin_profile,
-    scrape_linkedin_profile,
 )
 from .news_article import create_extract_news_article, extract_news_article
 from .research_linkedin_profile import (
@@ -51,9 +48,6 @@ __all__ = [
     "create_extract_news_article",
     # LinkedIn Enrichment (for stakeholder workflows)
     "enrich_linkedin_profile",
-    "get_linkedin_profile",
-    "scrape_linkedin_profile",
-    "get_linkedin_contact_info",
     "create_enrich_linkedin_profile",
     # LinkedIn Research (for general chat)
     "research_linkedin_profile",
