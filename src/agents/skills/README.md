@@ -71,98 +71,17 @@ Keep references one level deep from `SKILL.md`. Avoid nested reference trees.
 | `medpic-assessment` | MEDPIC qualification scoring with evidence-based framework | Hardcoded MEDDIC playbook |
 | `deal-health-check` | Traffic-light deal health across 5 dimensions | Hardcoded Deal Health Check playbook |
 | `call-analysis` | Call/meeting analysis — rep performance, signals, momentum | Hardcoded Call/Meeting Analysis playbook |
+| `competitive-analysis` | Competitor comparison using KB, deal signals, and external context | Hardcoded competitive positioning guidance |
+| `stakeholder-mapping` | Stakeholder power mapping and coverage gap detection | Hardcoded stakeholder analysis guidance |
+| `pipeline-review` | Forecast-integrity pipeline intelligence and risk prioritization | Hardcoded pipeline review guidance |
+| `close-plan` | Backward-planned deal acceleration and target-date feasibility | Hardcoded close plan guidance |
 | `reminders` | Create, list, cancel reminders and agentic alerts | Hardcoded reminder type/recurrence instructions |
 
 ---
 
 ## Proposed Skills (Roadmap)
 
-### 1. Competitive Analysis
-
-**Trigger phrases**: "Compare us vs X", "What's our positioning against Y", "Competitive landscape for this deal"
-
-**Why**: Multi-source workflow — internal KB battlecards + web search for competitor news/financials + deal-specific competitive signals from transcripts and emails. Without a skill, the model does inconsistent analysis. A skill standardizes the framework.
-
-**Workflow**:
-1. Search internal KB for existing battlecards, competitive intel, and win/loss data.
-2. Web search for competitor's recent news, funding, product launches, pricing changes.
-3. If deal context exists, pull meeting transcripts and emails for competitor mentions.
-4. Produce structured output: feature comparison matrix, positioning strengths/weaknesses, recommended talk tracks, risk areas.
-
-**References**:
-- `comparison-framework.md` — feature, pricing, support, market position dimensions
-- `win-themes-guide.md` — how to identify and articulate differentiators
-- `output-format.md` — comparison table format, Mermaid quadrant chart guidance
-
-**Value**: High — competitive questions are frequent and the quality gap between a good and bad competitive analysis is large.
-
----
-
-### 2. Stakeholder Mapping
-
-**Trigger phrases**: "Map the stakeholders", "Who are the key players?", "Show me the org chart", "Who's the decision maker?"
-
-**Why**: Currently loose guidance in "Sales Intelligence Mindset" about classifying by Influence/Role/Engagement, but not a structured workflow. A skill standardizes stakeholder analysis with coverage gap detection and power mapping.
-
-**Workflow**:
-1. Pull all deal stakeholders with details and insights.
-2. Classify each: Role (Economic Buyer, Technical Evaluator, End User, Coach, Blocker), Influence (High/Medium/Low), Engagement (Active/Passive/Disengaged).
-3. Identify coverage gaps — missing EB? No champion? No technical evaluator?
-4. Pull recent interactions per stakeholder to assess engagement recency.
-5. Produce power map table + gap analysis + recommended engagement actions.
-
-**References**:
-- `classification-rubric.md` — role/influence/engagement definitions with examples
-- `coverage-gaps-guide.md` — what gaps look like and why they matter
-- `engagement-scoring.md` — how to rate engagement from activity data
-
-**Value**: High — stakeholder questions are very common in sales, and structured classification improves deal strategy.
-
----
-
-### 3. Pipeline Review
-
-**Trigger phrases**: "How's my pipeline?", "What deals need attention?", "Pipeline risk report", "Show me stale deals"
-
-**Why**: Cross-deal analysis is fundamentally different from single-deal tools. Without a skill, the model either goes too shallow (just listing deals) or too deep (analyzing each deal fully). A skill balances breadth vs depth.
-
-**Workflow**:
-1. List all active deals with stage, amount, close date, owner, last activity.
-2. Flag stale deals (no activity in 7+ days).
-3. Identify stage distribution and bottlenecks.
-4. Surface top 3-5 risks across the portfolio.
-5. Produce pipeline summary table + risk highlights + recommended actions.
-
-**References**:
-- `staleness-thresholds.md` — what counts as stale by stage
-- `pipeline-health-signals.md` — stage distribution, velocity, coverage ratio
-
-**Value**: Medium-High — useful for managers and reps doing weekly reviews.
-
----
-
-### 4. Close Plan / Deal Acceleration
-
-**Trigger phrases**: "What do we need to close this by March?", "Create a close plan", "Accelerate this deal"
-
-**Why**: Works backward from a target close date to identify remaining steps, gaps, and blockers. Combines deal health, stakeholder coverage, paper process status, and timeline into an action-oriented plan.
-
-**Workflow**:
-1. Get deal details, stage, and target close date.
-2. Identify remaining stages and typical duration for each.
-3. Map stakeholder readiness for each remaining gate.
-4. Check paper process status — procurement, legal, security review.
-5. Produce timeline with milestones, owners, and risk flags.
-
-**References**:
-- `stage-duration-benchmarks.md` — typical time per stage
-- `close-checklist.md` — common pre-close requirements
-
-**Value**: Medium — valuable when asked, but may not be frequent enough to prioritize early.
-
----
-
-### 5. Visualization Guide
+### 1. Visualization Guide
 
 **Trigger phrases**: "Show me a chart", "Visualize this data", "Create a graph of..."
 

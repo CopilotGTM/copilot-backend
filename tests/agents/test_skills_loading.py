@@ -174,6 +174,196 @@ def test_skills_system_prompt_snippet_mentions_deal_health_check() -> None:
     assert "deal-health-check" in snippet
 
 
+def test_competitive_analysis_skill_loads() -> None:
+    """The competitive-analysis skill must load without validation errors."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill_names = [skill.name for skill in skills]
+    assert "competitive-analysis" in skill_names
+
+
+def test_competitive_analysis_skill_has_description() -> None:
+    """The competitive-analysis skill must have a non-empty description."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "competitive-analysis")
+    assert skill.description
+    assert len(skill.description) <= 1024
+
+
+def test_competitive_analysis_skill_has_instructions() -> None:
+    """The competitive-analysis skill must have non-empty instructions."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "competitive-analysis")
+    assert skill.instructions
+    assert "Competitive Analysis" in skill.instructions
+    assert "Real threat" in skill.instructions
+
+
+def test_competitive_analysis_skill_has_core_references() -> None:
+    """The competitive-analysis skill must include required reference files."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "competitive-analysis")
+    assert "comparison-framework.md" in skill.references
+    assert "win-themes-guide.md" in skill.references
+    assert "output-format.md" in skill.references
+
+
+def test_competitive_analysis_skill_uses_data_first_tool_guidance() -> None:
+    """The skill should use data-first guidance and optional bracket tool hints."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "competitive-analysis")
+    assert "Use the best available tools for each data signal." in skill.instructions
+    assert "Bracket hints are examples, not hard constraints." in skill.instructions
+    assert "[SearchInternalKnowledge, ListDealNotes]" in skill.instructions
+
+
+def test_stakeholder_mapping_skill_loads() -> None:
+    """The stakeholder-mapping skill must load without validation errors."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill_names = [skill.name for skill in skills]
+    assert "stakeholder-mapping" in skill_names
+
+
+def test_stakeholder_mapping_skill_has_description() -> None:
+    """The stakeholder-mapping skill must have a non-empty description."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "stakeholder-mapping")
+    assert skill.description
+    assert len(skill.description) <= 1024
+
+
+def test_stakeholder_mapping_skill_has_instructions() -> None:
+    """The stakeholder-mapping skill must have non-empty instructions."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "stakeholder-mapping")
+    assert skill.instructions
+    assert "Stakeholder Mapping" in skill.instructions
+    assert "Economic Buyer" in skill.instructions
+
+
+def test_stakeholder_mapping_skill_has_core_references() -> None:
+    """The stakeholder-mapping skill must include required reference files."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "stakeholder-mapping")
+    assert "classification-rubric.md" in skill.references
+    assert "coverage-gaps-guide.md" in skill.references
+    assert "engagement-scoring.md" in skill.references
+
+
+def test_stakeholder_mapping_skill_uses_data_first_tool_guidance() -> None:
+    """The skill should use data-first guidance and optional bracket tool hints."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "stakeholder-mapping")
+    assert "Use the best available tools for each data signal." in skill.instructions
+    assert "Bracket hints are examples, not hard constraints." in skill.instructions
+    assert "[ListDealStakeholders, GetStakeholderDetails]" in skill.instructions
+
+
+def test_pipeline_review_skill_loads() -> None:
+    """The pipeline-review skill must load without validation errors."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill_names = [skill.name for skill in skills]
+    assert "pipeline-review" in skill_names
+
+
+def test_pipeline_review_skill_has_description() -> None:
+    """The pipeline-review skill must have a non-empty description."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "pipeline-review")
+    assert skill.description
+    assert len(skill.description) <= 1024
+
+
+def test_pipeline_review_skill_has_instructions() -> None:
+    """The pipeline-review skill must have non-empty instructions."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "pipeline-review")
+    assert skill.instructions
+    assert "Pipeline Review" in skill.instructions
+    assert "Default to breadth over depth." in skill.instructions
+
+
+def test_pipeline_review_skill_has_core_references() -> None:
+    """The pipeline-review skill must include required reference files."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "pipeline-review")
+    assert "staleness-thresholds.md" in skill.references
+    assert "pipeline-health-signals.md" in skill.references
+    assert "risk-ranking-rules.md" in skill.references
+    assert "output-guidelines.md" in skill.references
+
+
+def test_pipeline_review_skill_uses_data_first_tool_guidance() -> None:
+    """The skill should use data-first guidance and optional bracket tool hints."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "pipeline-review")
+    assert "Use the best available tools for each data signal." in skill.instructions
+    assert "Bracket hints are examples, not hard constraints." in skill.instructions
+    assert "[ListDeals, GetPipelineDetails]" in skill.instructions
+
+
+def test_close_plan_skill_loads() -> None:
+    """The close-plan skill must load without validation errors."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill_names = [skill.name for skill in skills]
+    assert "close-plan" in skill_names
+
+
+def test_close_plan_skill_has_description() -> None:
+    """The close-plan skill must have a non-empty description."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "close-plan")
+    assert skill.description
+    assert len(skill.description) <= 1024
+
+
+def test_close_plan_skill_has_instructions() -> None:
+    """The close-plan skill must have non-empty instructions."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "close-plan")
+    assert skill.instructions
+    assert "Close Plan" in skill.instructions
+    assert "Start from the target close date and work backward." in skill.instructions
+
+
+def test_close_plan_skill_has_core_references() -> None:
+    """The close-plan skill must include required reference files."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "close-plan")
+    assert "stage-duration-benchmarks.md" in skill.references
+    assert "close-checklist.md" in skill.references
+    assert "acceleration-playbook.md" in skill.references
+    assert "output-guidelines.md" in skill.references
+
+
+def test_close_plan_skill_uses_data_first_tool_guidance() -> None:
+    """The skill should use data-first guidance and optional bracket tool hints."""
+    loader = LocalSkills(str(SKILLS_DIR))
+    skills = loader.load()
+    skill = next(s for s in skills if s.name == "close-plan")
+    assert "Use the best available tools for each data signal." in skill.instructions
+    assert "Bracket hints are examples, not hard constraints." in skill.instructions
+    assert "[GetDealDetails, GetDealChangeHistory, GetPipelineDetails]" in skill.instructions
+
+
 def test_reminders_skill_loads() -> None:
     """The reminders skill must load without validation errors."""
     loader = LocalSkills(str(SKILLS_DIR))
@@ -228,6 +418,34 @@ def test_skills_system_prompt_snippet_mentions_call_analysis() -> None:
     skills = Skills(loaders=[LocalSkills(str(SKILLS_DIR))])
     snippet = skills.get_system_prompt_snippet()
     assert "call-analysis" in snippet
+
+
+def test_skills_system_prompt_snippet_mentions_competitive_analysis() -> None:
+    """Skills prompt snippet should include competitive-analysis."""
+    skills = Skills(loaders=[LocalSkills(str(SKILLS_DIR))])
+    snippet = skills.get_system_prompt_snippet()
+    assert "competitive-analysis" in snippet
+
+
+def test_skills_system_prompt_snippet_mentions_stakeholder_mapping() -> None:
+    """Skills prompt snippet should include stakeholder-mapping."""
+    skills = Skills(loaders=[LocalSkills(str(SKILLS_DIR))])
+    snippet = skills.get_system_prompt_snippet()
+    assert "stakeholder-mapping" in snippet
+
+
+def test_skills_system_prompt_snippet_mentions_pipeline_review() -> None:
+    """Skills prompt snippet should include pipeline-review."""
+    skills = Skills(loaders=[LocalSkills(str(SKILLS_DIR))])
+    snippet = skills.get_system_prompt_snippet()
+    assert "pipeline-review" in snippet
+
+
+def test_skills_system_prompt_snippet_mentions_close_plan() -> None:
+    """Skills prompt snippet should include close-plan."""
+    skills = Skills(loaders=[LocalSkills(str(SKILLS_DIR))])
+    snippet = skills.get_system_prompt_snippet()
+    assert "close-plan" in snippet
 
 
 def test_skills_system_prompt_snippet_mentions_reminders() -> None:
