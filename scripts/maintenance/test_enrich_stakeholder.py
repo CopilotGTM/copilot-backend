@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Test script for enrich_stakeholder tool (Clado API integration).
+"""Test script for enrich_stakeholder tool (Apollo.io API integration).
 
 This script tests the LinkedIn enrichment functionality:
-1. API key configuration
-2. Clado API connectivity (search, profile, contacts)
+1. API key configuration (Apollo via Key Vault or env var)
+2. Apollo API connectivity (people/match endpoint)
 3. Stakeholder lookup and enrichment workflow
 4. Security boundary verification (organisation_id from context)
 
@@ -35,59 +35,62 @@ def load_env() -> None:
     load_dotenv()
 
 
-def test_api_key_config() -> bool:
-    """Test that the Clado API key is configured."""
+async def test_api_key_config() -> bool:
+    """Test that the Apollo API key is configured."""
     print("\n[TEST] API Key Configuration")
     print("-" * 40)
 
-    from src.infra.config.configs import linkedin_enrichment_config
+    from src.infra.config.configs import apollo_config
 
-    api_key = linkedin_enrichment_config.LINKEDIN_CLADO_API_KEY
-    base_url = linkedin_enrichment_config.CLADO_BASE_URL
+    api_key = await apollo_config.get_api_key()
 
     if not api_key:
-        print("  FAILED: LINKEDIN_CLADO_API_KEY not set in environment")
-        print("  Hint: Add LINKEDIN_CLADO_API_KEY=<your-key> to .env file")
+        print("  FAILED: Apollo API key not configured")
+        print("  Hint: Add APOLLO_API_KEY=<your-key> to .env file")
+        print("        Or add secret 'apollo-api-key' to Azure Key Vault")
         return False
 
     print(f"  OK: API key configured (length: {len(api_key)})")
-    print(f"  OK: Base URL: {base_url}")
+    print(f"  OK: Base URL: {apollo_config.APOLLO_BASE_URL}")
     return True
 
 
-async def test_clado_api_search(name: str, company: str | None = None) -> dict | None:
-    """Test Clado search API."""
-    print("\n[TEST] Step 1 - Clado Search API (Find LinkedIn URL)")
+async def test_apollo_search(name: str, company: str | None = None) -> dict | None:
+    """Test Apollo people/match API with name search."""
+    print("\n[TEST] Apollo People Match - Name Search")
     print("-" * 40)
 
-    from src.agents.tools.crm.enrich_stakeholder import _clado_search_person, _get_api_key
-
-    api_key = _get_api_key()
-    if not api_key:
-        print("  FAILED: No API key")
-        return None
+    from src.agents.tools.research.apollo_client import apollo_enrich_person
 
     print(f"  Searching for: {name}" + (f" at {company}" if company else ""))
 
     try:
-        result = await _clado_search_person(
-            api_key,
+        result = await apollo_enrich_person(
             name=name,
-            company=company,
+            organization_name=company,
         )
 
-        if result:
-            linkedin_url = result.get("linkedin_url", result.get("linkedin_profile_url", "N/A"))
-            print(f"  OK: Found match")
+        if result.get("success"):
+            print("  OK: Found match")
             print(f"      Name: {result.get('name', 'N/A')}")
-            print(f"      Title: {result.get('title', result.get('headline', 'N/A'))}")
+            print(f"      Title: {result.get('title', 'N/A')}")
             print(f"      Location: {result.get('location', 'N/A')}")
+            print(f"      Organization: {result.get('organization_name', 'N/A')}")
             print(f"")
-            print(f"  >>> LinkedIn URL found: {linkedin_url}")
+            print(f"  >>> LinkedIn URL: {result.get('linkedin_url', 'N/A')}")
             print(f"")
+
+            # Show employment history
+            history = result.get("employment_history", [])
+            if history:
+                print(f"  Employment History ({len(history)} entries):")
+                for entry in history[:3]:
+                    current = " (current)" if entry.get("current") else ""
+                    print(f"      - {entry.get('title', 'N/A')} at {entry.get('company', 'N/A')}{current}")
+
             return result
         else:
-            print("  WARN: No results found")
+            print(f"  WARN: {result.get('error', 'No results found')}")
             return None
 
     except Exception as e:
@@ -95,94 +98,35 @@ async def test_clado_api_search(name: str, company: str | None = None) -> dict |
         return None
 
 
-async def test_clado_api_profile(linkedin_url: str) -> dict | None:
-    """Test Clado profile enrichment API."""
-    print("\n[TEST] Step 2 - Clado Profile API (Get Full Profile)")
+async def test_apollo_profile(linkedin_url: str) -> dict | None:
+    """Test Apollo people/match API with LinkedIn URL."""
+    print("\n[TEST] Apollo People Match - LinkedIn URL Enrichment")
     print("-" * 40)
 
-    from src.agents.tools.crm.enrich_stakeholder import _clado_get_profile, _get_api_key
+    from src.agents.tools.research.apollo_client import apollo_enrich_person
 
-    api_key = _get_api_key()
-    if not api_key:
-        print("  FAILED: No API key")
-        return None
-
-    print(f"  Fetching profile: {linkedin_url}")
+    print(f"  Enriching profile: {linkedin_url}")
 
     try:
-        result = await _clado_get_profile(api_key, linkedin_url)
+        result = await apollo_enrich_person(linkedin_url=linkedin_url)
 
-        if result:
-            print(f"  OK: Profile retrieved")
+        if result.get("success"):
+            print("  OK: Profile retrieved")
             print(f"      Name: {result.get('name', 'N/A')}")
-            print(f"      Title: {result.get('title', result.get('headline', 'N/A'))}")
+            print(f"      Title: {result.get('title', 'N/A')}")
+            print(f"      Headline: {result.get('headline', 'N/A')}")
             print(f"      Location: {result.get('location', 'N/A')}")
+            print(f"      Organization: {result.get('organization_name', 'N/A')}")
 
-            # Show skills if available
-            skills = result.get("skills", [])
-            if skills:
-                print(f"      Skills: {', '.join(skills[:5])}...")
-
-            # Show experience if available
-            experience = result.get("experience", [])
-            if experience and isinstance(experience, list) and len(experience) > 0:
-                latest = experience[0]
-                # Handle different field names in experience
-                title = latest.get("title") or latest.get("position") or "N/A"
-                company = latest.get("company") or latest.get("company_name") or latest.get("org") or "N/A"
-                print(f"      Latest Role: {title} at {company}")
-
-            # Show if decision maker
-            if result.get("is_decision_maker"):
-                print(f"      Decision Maker: Yes")
+            history = result.get("employment_history", [])
+            if history:
+                latest = history[0]
+                current = " (current)" if latest.get("current") else ""
+                print(f"      Latest Role: {latest.get('title', 'N/A')} at {latest.get('company', 'N/A')}{current}")
 
             return result
         else:
-            print("  WARN: No profile data returned")
-            return None
-
-    except Exception as e:
-        print(f"  FAILED: {e}")
-        return None
-
-
-async def test_clado_api_contact(email: str) -> dict | None:
-    """Test Clado contact lookup API."""
-    print("\n[TEST] Clado Contact API")
-    print("-" * 40)
-
-    from src.agents.tools.crm.enrich_stakeholder import _clado_get_contact_by_email, _get_api_key
-
-    api_key = _get_api_key()
-    if not api_key:
-        print("  FAILED: No API key")
-        return None
-
-    print(f"  Looking up contact: {email}")
-
-    try:
-        result = await _clado_get_contact_by_email(api_key, email)
-
-        if result:
-            print(f"  OK: Contact found")
-            print(f"      Name: {result.get('name', result.get('full_name', 'N/A'))}")
-
-            # Check for LinkedIn URL in social links
-            social_links = result.get("socialLinks", [])
-            linkedin_url = None
-            for link in social_links:
-                if "linkedin.com" in link.get("url", ""):
-                    linkedin_url = link.get("url")
-                    break
-
-            if linkedin_url:
-                print(f"      LinkedIn: {linkedin_url}")
-            else:
-                print("      LinkedIn: Not found in social links")
-
-            return result
-        else:
-            print("  WARN: No contact found")
+            print(f"  WARN: {result.get('error', 'No profile data returned')}")
             return None
 
     except Exception as e:
@@ -224,14 +168,12 @@ async def test_stakeholder_enrichment_db(org_id: UUID, email: str) -> None:
     print(f"  Looking for stakeholder with email: {email}")
 
     try:
-        # Create engine with schema search path
         engine = create_async_engine(
             async_db_url,
             connect_args={"server_settings": {"search_path": f"{schema_name},public"}},
         )
 
         async with AsyncSession(engine) as session:
-            # Find stakeholder
             result = await session.execute(
                 text("""
                     SELECT stakeholder_id, name, email, job_title, department,
@@ -258,7 +200,6 @@ async def test_stakeholder_enrichment_db(org_id: UUID, email: str) -> None:
             print(f"      Job Title: {row[3] or 'N/A'}")
             print(f"      Department: {row[4] or 'N/A'}")
 
-            # Check existing enrichment
             stakeholder_data = row[6] or {}
             enrichment = stakeholder_data.get("enrichment", {})
             if enrichment:
@@ -268,7 +209,6 @@ async def test_stakeholder_enrichment_db(org_id: UUID, email: str) -> None:
                 print(f"      Credits used: {enrichment.get('credits_used', 'N/A')}")
                 print(f"      LinkedIn: {enrichment.get('linkedin_url', 'N/A')}")
 
-            # Check external links
             external_links = row[5] or []
             linkedin_url = None
             for link in external_links:
@@ -293,7 +233,6 @@ def test_security_boundaries() -> None:
     print("\n[TEST] Security Boundaries")
     print("-" * 40)
 
-    # Check that enrich_stakeholder requires context
     from src.agents.tools.crm.enrich_stakeholder import create_enrich_stakeholder
 
     print("  Checking tool factory signature...")
@@ -309,11 +248,8 @@ def test_security_boundaries() -> None:
         print("  FAILED: Factory missing 'context' parameter")
         return
 
-    # Check the tool function signature
-    # The tool function should NOT have organisation_id or deal_id as parameters
     print("\n  Checking tool function parameters...")
 
-    # Create a mock context to get the tool function
     from unittest.mock import MagicMock
 
     mock_context = MagicMock()
@@ -336,7 +272,6 @@ def test_security_boundaries() -> None:
         if "deal_id" in tool_params:
             print("      -> deal_id can be changed by agent")
 
-    # Verify context is captured in closure
     print("\n  Verifying context is captured in closure...")
     print("  OK: Context is bound at factory creation time (closure)")
     print("      -> Even if agent tries to pass different IDs, they are ignored")
@@ -379,7 +314,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--test-api",
         action="store_true",
-        help="Test Clado API endpoints directly",
+        help="Test Apollo API endpoints directly",
     )
     parser.add_argument(
         "--search-name",
@@ -394,12 +329,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--linkedin-url",
         type=str,
-        help="LinkedIn URL to test profile fetch",
+        help="LinkedIn URL to test profile enrichment",
     )
     parser.add_argument(
         "--email",
         type=str,
-        help="Email to test contact lookup or stakeholder search",
+        help="Email for stakeholder search in database",
     )
     parser.add_argument(
         "--org-id",
@@ -415,63 +350,40 @@ def parse_args() -> argparse.Namespace:
 
 
 async def test_full_enrichment_workflow(name: str, company: str | None = None) -> None:
-    """Test the complete enrichment workflow: Search → Profile Fetch."""
+    """Test the complete enrichment workflow: Apollo people/match."""
     print("\n" + "=" * 60)
     print("FULL ENRICHMENT WORKFLOW TEST")
     print("=" * 60)
 
-    # Step 1: Search for LinkedIn URL
-    search_result = await test_clado_api_search(name, company)
+    # Single Apollo call handles both search and profile enrichment
+    result = await test_apollo_search(name, company)
 
-    if not search_result:
-        print("\n  WORKFLOW STOPPED: No LinkedIn URL found in Step 1")
-        return
-
-    linkedin_url = search_result.get("linkedin_url")
-    if not linkedin_url:
-        print("\n  WORKFLOW STOPPED: Search result missing LinkedIn URL")
-        return
-
-    # Step 2: Fetch full profile
-    profile_result = await test_clado_api_profile(linkedin_url)
-
-    if profile_result:
+    if result:
         print("\n" + "-" * 40)
         print("WORKFLOW COMPLETE - Data that would be saved:")
         print("-" * 40)
-        print(f"  Name: {profile_result.get('name', 'N/A')}")
-        print(f"  Job Title: {profile_result.get('title', 'N/A')}")
-        print(f"  LinkedIn URL: {linkedin_url}")
+        print(f"  Name: {result.get('name', 'N/A')}")
+        print(f"  Job Title: {result.get('title', 'N/A')}")
+        print(f"  LinkedIn URL: {result.get('linkedin_url', 'N/A')}")
 
-        # Infer department
         from src.agents.tools.crm.enrich_stakeholder import _infer_department
 
-        title = profile_result.get("title")
+        title = result.get("title")
         department = _infer_department(title)
         print(f"  Department (inferred): {department or 'N/A'}")
-
-        skills = profile_result.get("skills", [])
-        if skills:
-            print(f"  Skills: {', '.join(skills[:10])}")
 
 
 async def main_async(args: argparse.Namespace) -> None:
     """Async main entry point."""
-    # Test API endpoints if requested
     if args.test_api:
-        # If both search name provided, run full workflow
         if args.search_name and not args.linkedin_url:
             await test_full_enrichment_workflow(args.search_name, args.search_company)
         else:
-            # Individual tests
             if args.search_name:
-                await test_clado_api_search(args.search_name, args.search_company)
+                await test_apollo_search(args.search_name, args.search_company)
 
             if args.linkedin_url:
-                await test_clado_api_profile(args.linkedin_url)
-
-        if args.email and not args.org_id:
-            await test_clado_api_contact(args.email)
+                await test_apollo_profile(args.linkedin_url)
 
     # Test full workflow with database
     if args.org_id and args.email and not args.skip_db:
@@ -482,14 +394,14 @@ def main() -> None:
     args = parse_args()
 
     print("=" * 60)
-    print("ENRICH STAKEHOLDER TOOL - TEST SCRIPT")
+    print("ENRICH STAKEHOLDER TOOL - TEST SCRIPT (Apollo API)")
     print("=" * 60)
 
     # Load environment
     load_env()
 
-    # Test 1: API Key configuration
-    has_api_key = test_api_key_config()
+    # Test 1: API Key configuration (async since it may hit Key Vault)
+    has_api_key = asyncio.run(test_api_key_config())
 
     # Test 2: Security boundaries
     test_security_boundaries()
@@ -508,14 +420,11 @@ def main() -> None:
     print("=" * 60)
 
     print("\nUsage examples:")
-    print("  # Test API search:")
+    print("  # Test Apollo API search:")
     print('  python -m scripts.maintenance.test_enrich_stakeholder --test-api --search-name "John Smith" --search-company "Acme"')
     print("")
-    print("  # Test profile fetch:")
+    print("  # Test profile enrichment by LinkedIn URL:")
     print("  python -m scripts.maintenance.test_enrich_stakeholder --test-api --linkedin-url https://linkedin.com/in/someone")
-    print("")
-    print("  # Test contact lookup:")
-    print("  python -m scripts.maintenance.test_enrich_stakeholder --test-api --email john@example.com")
     print("")
     print("  # Test full workflow with database:")
     print("  python -m scripts.maintenance.test_enrich_stakeholder --org-id <UUID> --email john@example.com")

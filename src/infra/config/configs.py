@@ -120,26 +120,72 @@ class SuperAdminConfig:
 
 
 class ApolloConfig:
-    """Configuration for Apollo.io B2B data enrichment.
+    """Configuration for Apollo.io people enrichment.
 
-    Apollo.io provides people and company enrichment, search,
-    and sales intelligence capabilities.
+    API key is stored in Azure Key Vault (master vault) and cached
+    with a configurable TTL (default 6 hours). The first call to
+    ``get_api_key()`` fetches from Key Vault; subsequent calls return
+    from memory until the TTL expires.
+
+    The key can also be set via env var (APOLLO_API_KEY) for local
+    development — when present, Key Vault is skipped entirely.
+
     API Docs: https://docs.apollo.io/reference/introduction
     """
 
-    APOLLO_API_KEY: str | None = os.getenv("APOLLO_API_KEY")
     APOLLO_BASE_URL: str = os.getenv("APOLLO_BASE_URL", "https://api.apollo.io/api/v1")
 
-    # Rate limit tracking (credits per operation)
-    # Get profile: 1 credit, Scrape profile: 2 credits
-    # Email enrichment: 4 credits (if found), Phone: 10 credits (if found)
+    # Key Vault secret name
+    SECRET_NAME_API_KEY: str = "apollo-api-key"
 
+    # Cached API key (populated by get_api_key)
+    _api_key: str | None = os.getenv("APOLLO_API_KEY")
 
-class LinkedInEnrichmentConfig:
-    """Configuration for LinkedIn profile enrichment via Clado API."""
+    # TTL for cached key (hours)
+    _credentials_ttl_hours: float = float(os.getenv("APOLLO_CREDENTIALS_TTL_HOURS", "6"))
+    _credentials_loaded_at: float | None = None
+    _credentials_from_env: bool = bool(os.getenv("APOLLO_API_KEY"))
+    _refresh_lock: asyncio.Lock | None = None
 
-    LINKEDIN_CLADO_API_KEY: str | None = os.getenv("LINKEDIN_CLADO_API_KEY")
-    CLADO_BASE_URL: str = os.getenv("CLADO_BASE_URL", "https://api.clado.ai")
+    async def get_api_key(self) -> str | None:
+        """Return cached API key, refreshing from Key Vault if TTL expired."""
+        if self._credentials_from_env:
+            return self._api_key
+
+        if not self._is_expired():
+            return self._api_key
+
+        if self._refresh_lock is None:
+            self._refresh_lock = asyncio.Lock()
+
+        async with self._refresh_lock:
+            if not self._is_expired():
+                return self._api_key
+            await self._load_from_vault()
+
+        return self._api_key
+
+    def _is_expired(self) -> bool:
+        if self._credentials_loaded_at is None:
+            return True
+        import time
+
+        elapsed_hours = (time.time() - self._credentials_loaded_at) / 3600
+        return elapsed_hours >= self._credentials_ttl_hours
+
+    async def _load_from_vault(self) -> None:
+        import time
+
+        from src.infra.secrets.manager import master_secrets_manager
+
+        logger.info("Loading Apollo API key from Key Vault (TTL refresh)")
+        self._api_key = await master_secrets_manager.get(self.SECRET_NAME_API_KEY)
+        self._credentials_loaded_at = time.time()
+
+        if self._api_key:
+            logger.info("Apollo API key cached (TTL=%.1fh)", self._credentials_ttl_hours)
+        else:
+            logger.error("Apollo API key missing from Key Vault")
 
 
 class TeamsConfig:
@@ -516,7 +562,6 @@ knowledge_file_upload_config = KnowledgeFileUploadConfig()
 rate_limit_config = RateLimitConfig()
 nango_integration_config = NangoIntegrationConfig()
 apollo_config = ApolloConfig()
-linkedin_enrichment_config = LinkedInEnrichmentConfig()
 teams_config = TeamsConfig()
 
 

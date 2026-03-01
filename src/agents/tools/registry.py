@@ -223,6 +223,9 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.SEARCH_ARXIV,
         ToolName.EXTRACT_NEWS_ARTICLE,
         ToolName.RESEARCH_LINKEDIN_PROFILE,  # LinkedIn research for general queries
+        ToolName.ENRICH_LINKEDIN_PROFILE,  # LinkedIn profile enrichment
+        # Stakeholder tools (write)
+        ToolName.ENRICH_STAKEHOLDER,  # Enrich stakeholder with LinkedIn data
         # Teams tools
         ToolName.FETCH_TEAMS_CHAT_MESSAGES,  # Fetch group chat history when @mentioned
         # CRM write tools (channel-only)
@@ -341,6 +344,8 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.LIST_DEAL_STAKEHOLDERS,
         ToolName.GET_STAKEHOLDER_DETAILS,
         ToolName.ENRICH_STAKEHOLDER,  # LinkedIn enrichment for stakeholders
+        ToolName.ENRICH_LINKEDIN_PROFILE,  # LinkedIn profile enrichment
+        ToolName.RESEARCH_LINKEDIN_PROFILE,  # LinkedIn research by name/URL
         # Meeting tools (for context)
         ToolName.LIST_DEAL_MEETINGS,
         ToolName.GET_MEETING_TRANSCRIPT,
