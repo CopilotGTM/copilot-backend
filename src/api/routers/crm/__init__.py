@@ -2,6 +2,7 @@
 
 from .custom_fields_handler import custom_fields_router
 from .deal_import_handler import deal_import_router
+from .deal_memory_handler import deal_memory_router
 from .deal_notes_handler import deal_notes_router
 from .deal_participants_handler import deal_participants_router
 from .deal_timeline_handler import deal_timeline_router
@@ -16,6 +17,7 @@ from .tasks_handler import tasks_router
 from .users_handler import crm_users_router
 
 __all__ = [
+    "deal_memory_router",
     "deal_notes_router",
     "deal_participants_router",
     "deal_import_router",

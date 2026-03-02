@@ -6,6 +6,11 @@ Tasks for deal-level AI/agent workflows:
 - Risk/blocker extraction: AI extraction of risks and blockers from deal communications
 """
 
+from src.workers.deal_worker.tasks.deal_insight_tasks.deal_memory_tasks import (
+    build_deal_memory_org,
+    process_deal_memory_job,
+    trigger_deal_memory_backfill_all_orgs,
+)
 from src.workers.deal_worker.tasks.deal_insight_tasks.deal_summary_task import (
     process_deal_summary_job,
 )
@@ -29,4 +34,8 @@ __all__ = [
     # Risk/blocker extraction
     "extract_deal_risks_blockers_task",
     "trigger_extraction_all_orgs",
+    # Deal memory
+    "process_deal_memory_job",
+    "build_deal_memory_org",
+    "trigger_deal_memory_backfill_all_orgs",
 ]

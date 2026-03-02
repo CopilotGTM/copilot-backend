@@ -72,6 +72,9 @@ class DealWorkerConfig(BaseWorkerConfig):
             # Stale job cleanup tasks
             "deal.cleanup_stale_jobs_all_orgs",
             "deal.cleanup_stale_jobs_org",
+            # Deal memory backfill
+            "deal_memory.backfill_org",
+            "deal_memory.trigger_backfill_all_orgs",
         )
 
         deal_jobs_queue_tasks = (
@@ -85,6 +88,8 @@ class DealWorkerConfig(BaseWorkerConfig):
             "stakeholder.analyze_org_stakeholders_task",
             # Risk/Blocker extraction tasks
             "risk_blocker.extract_deal_risks_blockers_task",
+            # Deal memory tasks
+            "deal_memory.process_job",
         )
 
         self.task_routes = {
@@ -122,6 +127,12 @@ class DealWorkerConfig(BaseWorkerConfig):
                 "schedule": crontab(minute=45),
                 "options": {"queue": "deal", "routing_key": "deal"},
             },
+            # # Hourly: Deal memory backfill — build memory for deals that have data but no memory
+            # "deal-memory-backfill": {
+            #     "task": "deal_memory.trigger_backfill_all_orgs",
+            #     "schedule": crontab(minute=10),
+            #     "options": {"queue": "deal", "routing_key": "deal"},
+            # },
         }
 
     @staticmethod

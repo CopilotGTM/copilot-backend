@@ -11,6 +11,10 @@ Each service follows fresh session pattern:
 - Phase 3: Save result (fresh session)
 """
 
+from src.workers.deal_worker.services.deal_insight_services.deal_memory_service import (
+    DealMemoryError,
+    DealMemoryService,
+)
 from src.workers.deal_worker.services.deal_insight_services.deal_summary_service import (
     DealNotFoundError,
     DealSummaryError,
@@ -36,4 +40,7 @@ __all__ = [
     "NoContentError",
     "RiskBlockerExtractionError",
     "RiskBlockerExtractionService",
+    # Deal memory
+    "DealMemoryError",
+    "DealMemoryService",
 ]
