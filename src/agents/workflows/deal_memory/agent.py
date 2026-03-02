@@ -33,11 +33,12 @@ class DealMemoryAgent:
         self.organisation_id = organisation_id
         self.deal_id = deal_id
         self.publisher = publisher
+        self.org_name = org_name or "Our Organization"
 
         self.context = AgentContext(
             organisation_id=organisation_id,
             deal_id=deal_id,
-            org_name=org_name or "Our Organization",
+            org_name=self.org_name,
         )
 
         tools = get_tools_for_agent("DealMemoryAgent", self.context, lambda: None)
@@ -64,6 +65,7 @@ class DealMemoryAgent:
         Returns the complete markdown string.
         """
         system_prompt = get_deal_memory_system_prompt(
+            self.org_name,
             is_initial=is_initial_build,
             trigger_type=trigger_type,
             trigger_source_id=trigger_source_id,
@@ -72,15 +74,15 @@ class DealMemoryAgent:
         if is_initial_build:
             user_prompt = (
                 "Build the initial deal memory for this deal. "
-                "Use your tools to gather all available data, then produce "
-                "the complete markdown document."
+                "Gather all available data, then produce the complete "
+                "markdown document following the output structure."
             )
         else:
             user_prompt = (
                 f"Update this deal memory with the new {trigger_type or 'data'}.\n\n"
                 f"## Existing Memory\n\n```markdown\n{existing_memory}\n```\n\n"
-                "Use your tools to read the new data, then produce "
-                "the complete updated markdown document."
+                "Gather the new information, then produce the complete "
+                "updated markdown document."
             )
 
         logger.info(
