@@ -150,6 +150,9 @@ class DealJobType(str, Enum):
     EMAIL_DRAFT = "email_draft"  # Draft follow-up email
     DEAL_IMPORT = "deal_import"  # Bulk import deals from CSV
 
+    # Deal memory
+    DEAL_MEMORY_BUILD = "deal_memory_build"  # Build or update deal memory document
+
 
 class DealJobs(TimestampMixin, table=True):
     """

@@ -350,6 +350,38 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.LIST_DEAL_MEETINGS,
         ToolName.GET_MEETING_TRANSCRIPT,
     },
+    # -------------------------------------------------------------------------
+    # DealMemoryAgent - Deal Memory Agent
+    # Location: src/agents/workflows/deal_memory/agent.py
+    # Purpose: Builds and updates persistent deal memory documents.
+    # -------------------------------------------------------------------------
+    "DealMemoryAgent": {
+        # Search tools
+        ToolName.SEARCH_INTERNAL_KNOWLEDGE,  # Internal knowledge base
+        ToolName.SEARCH_INTERNET,  # Company news, recent events
+        # Deal tools
+        ToolName.GET_DEAL_CHANGE_HISTORY,
+        ToolName.GET_PIPELINE_DETAILS,
+        ToolName.GET_EXISTING_RISKS_BLOCKERS,
+        # Stakeholder tools
+        ToolName.LIST_DEAL_STAKEHOLDERS,
+        ToolName.GET_STAKEHOLDER_DETAILS,
+        ToolName.LIST_DEAL_STAKEHOLDER_INSIGHTS,  # Stance, decision power, sentiment
+        # Meeting tools
+        ToolName.LIST_DEAL_MEETINGS,
+        ToolName.GET_MEETING_DETAILS,
+        ToolName.GET_MEETING_TRANSCRIPT,
+        ToolName.GET_MEETING_SUMMARY,
+        # Communication tools
+        ToolName.LIST_DEAL_EMAILS,
+        ToolName.GET_EMAIL_DETAILS,
+        ToolName.LIST_DEAL_NOTES,
+        ToolName.LIST_DEAL_CHANNEL_MESSAGES,  # Slack/Teams channel messages
+        # Account research tools
+        ToolName.SEARCH_WIKIPEDIA,  # Company/industry background
+        ToolName.GET_COMPANY_FINANCIALS,  # Prospect financial context
+        ToolName.CRAWL_WEBPAGE,  # Company website research
+    },
 }
 
 # Tool category mapping for documentation/grouping

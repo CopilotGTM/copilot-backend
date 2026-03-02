@@ -84,6 +84,11 @@ class AgentConfig:
     STAKEHOLDER_DEBUG: bool = os.getenv("AGENT_STAKEHOLDER_DEBUG", "false").lower() == "true"
     STAKEHOLDER_TIMEOUT: int = int(os.getenv("AGENT_STAKEHOLDER_TIMEOUT", "180"))
 
+    # Deal Memory Agent - builds/updates persistent deal memory documents
+    DEAL_MEMORY_MODEL: str = os.getenv("AGENT_DEAL_MEMORY_MODEL", "gpt-5.2")
+    DEAL_MEMORY_DEBUG: bool = os.getenv("AGENT_DEAL_MEMORY_DEBUG", "false").lower() == "true"
+    DEAL_MEMORY_TIMEOUT: int = int(os.getenv("AGENT_DEAL_MEMORY_TIMEOUT", "300"))
+
     # ==========================================================================
     # CHAT AGENTS
     # ==========================================================================
@@ -119,6 +124,11 @@ class AgentConfig:
         ),
         "general_agent": ("GENERAL_MODEL", "GENERAL_DEBUG", "GENERAL_TIMEOUT"),
         "router_agent": ("ROUTER_MODEL", "ROUTER_DEBUG", "ROUTER_TIMEOUT"),
+        "deal_memory_agent": (
+            "DEAL_MEMORY_MODEL",
+            "DEAL_MEMORY_DEBUG",
+            "DEAL_MEMORY_TIMEOUT",
+        ),
     }
 
     @classmethod
