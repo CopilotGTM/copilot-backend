@@ -17,15 +17,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
-from celery import Task, chain, signature
+from celery import Task
 from sqlalchemy import select
 from sqlalchemy.orm import attributes
-from sqlmodel import col
 
-from src.domain.models.organisation_tables.job_models import DealJobs, DealJobType, JobStatus
 from src.domain.models.organisation_tables.sync import IntegrationType, KnowledgeIntegration
 from src.domain.models.organisation_tables.sync.integration_models import (
     IntegrationSyncHistory,
@@ -38,11 +36,12 @@ from src.infra.utils.logger import get_logger
 from src.service.integrations import NangoClient
 from src.service.integrations.crm.enrichment import CRMEnrichmentOrchestrator
 from src.service.integrations.crm.entities import DealTaskSyncService
+from src.workers.deal_worker.utils.pipeline_dispatch import (
+    dispatch_deal_insight_chord,
+    get_or_create_deal_memory_job,
+)
 from src.workers.integrations_worker.celery_app import app
 from src.workers.integrations_worker.providers.registry import get_fetcher
-
-# System user UUID for automated pipeline jobs
-AUTOMATED_PIPELINE_USER_ID = UUID("00000000-0000-0000-0000-000000000001")
 
 from ..utils import (
     CRM_INTEGRATION_TYPES,
@@ -110,10 +109,11 @@ def sync_crm_activities_org_task(
         integration_fetch_list: list[IntegrationFetchData] = []
 
         async for session in acquire_org_async_session(org_id):
+            c = cast(Any, KnowledgeIntegration).__table__.c
             stmt = select(KnowledgeIntegration).where(
-                KnowledgeIntegration.integration_type.in_(CRM_INTEGRATION_TYPES),
-                KnowledgeIntegration.is_active.is_(True),
-                KnowledgeIntegration.connection_id.isnot(None),
+                c.integration_type.in_(CRM_INTEGRATION_TYPES),
+                c.is_active.is_(True),
+                c.connection_id.isnot(None),
             )
             result = await session.execute(stmt)
             integrations = result.scalars().all()
@@ -141,6 +141,10 @@ def sync_crm_activities_org_task(
 
                 provider = get_provider_from_integration_type(int_type)
                 provider_config_key = to_nango_provider_key(int_type)
+                connection_id = integration.connection_id
+                if connection_id is None:
+                    # Defensive guard for type safety; query above already filters this out.
+                    continue
 
                 sync_strategy = await get_sync_strategy(
                     session=session,
@@ -151,7 +155,7 @@ def sync_crm_activities_org_task(
                 integration_fetch_list.append(
                     IntegrationFetchData(
                         integration_id=integration.integration_id,
-                        connection_id=integration.connection_id,
+                        connection_id=connection_id,
                         integration_type=int_type,
                         integration_type_value=int_type.value,
                         provider=provider,
@@ -206,8 +210,9 @@ def sync_crm_activities_org_task(
                     failed += 1
                     # Update integration status with fresh session
                     async for session in acquire_org_async_session(org_id):
+                        c = cast(Any, KnowledgeIntegration).__table__.c
                         stmt = select(KnowledgeIntegration).where(
-                            KnowledgeIntegration.integration_id == fetch_data.integration_id,
+                            c.integration_id == fetch_data.integration_id,
                         )
                         result = await session.execute(stmt)
                         integration = result.scalar_one_or_none()
@@ -250,66 +255,26 @@ def sync_crm_activities_org_task(
             async for session in acquire_org_async_session(org_id):
                 for deal_uuid in all_deals_with_new_notes:
                     try:
-                        deal_summary_job_id: UUID | None = None
-
-                        # Check for existing active deal summary job
-                        stmt = select(DealJobs).where(
-                            col(DealJobs.organisation_id) == org_id,
-                            col(DealJobs.deal_id) == deal_uuid,
-                            col(DealJobs.event_id).is_(None),
-                            col(DealJobs.job_type) == DealJobType.DEAL_SUMMARY,
-                            col(DealJobs.status).in_([JobStatus.PENDING, JobStatus.IN_PROGRESS]),
+                        deal_memory_job_id, created = await get_or_create_deal_memory_job(
+                            session,
+                            org_id,
+                            deal_uuid,
+                            "crm_notes_sync",
+                            "new_notes_synced",
                         )
-                        result = await session.execute(stmt)
-                        existing_job = result.scalars().first()
-
-                        if existing_job:
-                            deal_summary_job_id = existing_job.job_id
-                            jobs_skipped += 1
-                        else:
-                            # Create new job
-                            job = DealJobs(
-                                organisation_id=org_id,
-                                user_id=AUTOMATED_PIPELINE_USER_ID,
-                                job_type=DealJobType.DEAL_SUMMARY,
-                                deal_id=deal_uuid,
-                                event_id=None,
-                                status=JobStatus.PENDING,
-                                job_metadata={
-                                    "source": "crm_notes_sync",
-                                    "trigger": "new_notes_synced",
-                                },
-                            )
-                            session.add(job)
-                            await session.flush()
-                            await session.refresh(job)
-                            deal_summary_job_id = job.job_id
+                        if created:
                             jobs_created += 1
+                        else:
+                            jobs_skipped += 1
 
                         await session.commit()
 
-                        # Trigger the pipeline chain: risk_blocker → stakeholder → deal_summary
-                        if deal_summary_job_id:
-                            risk_blocker_sig = signature(
-                                "risk_blocker.extract_deal_risks_blockers_task",
-                                args=[organisation_id, str(deal_uuid)],
-                                queue="deal_jobs",
-                                immutable=True,
+                        if deal_memory_job_id:
+                            dispatch_deal_insight_chord(
+                                organisation_id,
+                                str(deal_uuid),
+                                str(deal_memory_job_id),
                             )
-                            stakeholder_sig = signature(
-                                "stakeholder.analyze_deal_stakeholders_task",
-                                args=[organisation_id, str(deal_uuid)],
-                                queue="deal_jobs",
-                                immutable=True,
-                            )
-                            deal_summary_sig = signature(
-                                "deal_summary_task.process",
-                                args=[organisation_id, str(deal_summary_job_id)],
-                                queue="deal_jobs",
-                                immutable=True,
-                            )
-                            task_chain = chain(risk_blocker_sig, stakeholder_sig, deal_summary_sig)
-                            task_chain.apply_async()
                             pipelines_triggered += 1
 
                     except Exception as e:
@@ -451,8 +416,9 @@ async def _sync_activities_for_integration_fresh(
 
     async for session in acquire_org_async_session(organisation_id):
         # Reload integration for this session
+        c = cast(Any, KnowledgeIntegration).__table__.c
         stmt = select(KnowledgeIntegration).where(
-            KnowledgeIntegration.integration_id == fetch_data.integration_id,
+            c.integration_id == fetch_data.integration_id,
         )
         result = await session.execute(stmt)
         integration = result.scalar_one_or_none()

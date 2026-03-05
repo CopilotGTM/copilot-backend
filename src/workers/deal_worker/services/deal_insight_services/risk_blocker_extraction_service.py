@@ -1,15 +1,12 @@
 """Risk/Blocker extraction service for processing deal content.
 
 This service handles the business logic for risk/blocker extraction:
-- Loading minimal deal context (counts, date ranges)
-- Passing context to the RiskBlockerExtractionAgent which uses tools
+- Validating deal existence and checking content availability
+- Passing context to the RiskBlockerExtractionAgent which uses tools to gather ALL data
 - Creating AI-suggested risk/blocker records
 
-The agent uses tools to gather meeting transcripts, emails, and existing
-risks/blockers as needed.
-
 Follows fresh session pattern:
-- Phase 1: Load context (fresh session, release before LLM)
+- Phase 1: Validate deal, check content exists (fresh session, release before LLM)
 - Phase 2: Call agent (agent manages its own sessions via tools)
 - Phase 3: Save result (fresh session)
 
@@ -25,7 +22,6 @@ from uuid import UUID
 from src.agents.workflows.risk_blocker_extraction import (
     ExtractedRiskBlocker,
     RiskBlockerExtractionAgent,
-    RiskBlockerExtractionInput,
     RiskBlockerExtractionResult,
 )
 from src.domain.models.organisation_tables.sync.risk_blocker_models import (
@@ -44,9 +40,7 @@ from src.workers.deal_worker.services.deal_job_publisher import DealJobRedisPubl
 from src.workers.deal_worker.utils.deal_job_utils import (
     count_deal_emails,
     count_deal_meetings,
-    count_deal_risks_blockers,
     get_deal,
-    get_deal_meeting_date_range,
     get_organisation_name,
 )
 
@@ -89,17 +83,12 @@ class RiskBlockerExtractionService:
     """Service for extracting risks and blockers from deal content.
 
     This service orchestrates the extraction process:
-    1. Loads minimal deal context (counts, date ranges)
-    2. Passes context to the RiskBlockerExtractionAgent (which uses tools)
+    1. Validates deal exists, checks content availability
+    2. Creates RiskBlockerExtractionAgent with org_id + deal_id (agent gathers all data via tools)
     3. Creates AI-suggested risk/blocker records from extracted items
 
-    The agent uses tools to gather:
-    - Existing risks/blockers for deduplication
-    - Meeting transcripts for analysis
-    - Email content for analysis
-
     Follows fresh session pattern:
-    - Phase 1: Load context (fresh session, release before LLM)
+    - Phase 1: Validate deal, check content (fresh session, release before LLM)
     - Phase 2: Call agent (agent manages its own sessions via tools)
     - Phase 3: Save result (fresh session)
 
@@ -208,11 +197,8 @@ class RiskBlockerExtractionService:
     ) -> RiskBlockerExtractionResult:
         """Run the full extraction process for a deal.
 
-        The agent uses tools to gather data about meetings, emails, and
-        existing risks/blockers, then identifies new items.
-
         Follows fresh session pattern:
-        - Phase 1: Load context (fresh session, release before LLM)
+        - Phase 1: Validate deal, check content (fresh session, release before LLM)
         - Phase 2: Call agent (agent manages its own sessions via tools)
         - Phase 3: Save result (fresh session)
 
@@ -229,91 +215,37 @@ class RiskBlockerExtractionService:
         """
         _ = force  # Reserved for future use
 
-        # Phase 1: Load context (fresh session, release before LLM)
+        # Phase 1: Validate deal, check content exists (release before LLM)
         self._publish_progress("Loading deal context...", "context", 0.1)
 
-        # Variables to hold context after session is released
-        deal_name: str = ""
-        company_name: str | None = None
-        deal_stage: str | None = None
+        org_name: str | None = None
         meeting_count: int = 0
         email_count: int = 0
-        risks_count: int = 0
-        blockers_count: int = 0
-        first_date: str | None = None
-        last_date: str | None = None
-        org_name: str | None = None
 
         async for session in acquire_org_async_session(self.organisation_id):
-            # 1. Load deal
             deal = await get_deal(session, self.organisation_id, deal_id)
-            org_name = await get_organisation_name(session, self.organisation_id)
             if not deal:
                 raise DealNotFoundError(deal_id)
+            org_name = await get_organisation_name(session, self.organisation_id)
 
-            self._publish_progress("Checking deal data...", "checking", 0.15)
-
-            # 2. Get counts for agent planning
+            # Lightweight guard — no point wasting an LLM call with zero content
             meeting_count = await count_deal_meetings(session, self.organisation_id, deal_id)
             email_count = await count_deal_emails(session, self.organisation_id, deal_id)
-
             if meeting_count == 0 and email_count == 0:
                 raise NoContentError(deal_id)
-
-            # 3. Get existing risks/blockers count
-            risks_blockers = await count_deal_risks_blockers(session, self.organisation_id, deal_id)
-            risks_count = risks_blockers["risks"]
-            blockers_count = risks_blockers["blockers"]
-
-            # 4. Get meeting date range
-            first_date, last_date = await get_deal_meeting_date_range(
-                session, self.organisation_id, deal_id
-            )
-
-            # Extract values before session is released
-            deal_name = deal.name or "Unnamed Deal"
-            company_name = deal.company_name
-            deal_stage = deal.stage_label or deal.stage_name
         # Session released
 
-        self._publish_progress(
-            f"Found {meeting_count} meetings, {email_count} emails. Starting AI analysis...",
-            "preparing",
-            0.2,
-        )
-
-        # 5. Build minimal input for the agent
-        input_data = RiskBlockerExtractionInput(
-            deal_id=str(deal_id),
-            deal_name=deal_name,
-            company_name=company_name,
-            deal_stage=deal_stage,
-            meeting_count=meeting_count,
-            email_count=email_count,
-            existing_risks_count=risks_count,
-            existing_blockers_count=blockers_count,
-            first_meeting_date=first_date,
-            last_meeting_date=last_date,
-        )
-
-        logger.info(
-            "Starting risk/blocker extraction for deal %s: %d meetings, %d emails, %d existing",
-            deal_id,
-            meeting_count,
-            email_count,
-            risks_count + blockers_count,
-        )
+        logger.info("Starting risk/blocker extraction for deal %s", deal_id)
+        self._publish_progress("Starting AI analysis...", "preparing", 0.2)
 
         # Phase 2: Call agent (tools acquire sessions on-demand)
-        # Agent doesn't hold sessions - tools acquire on-demand via context.acquire_session()
-        # SECURITY: Both organisation_id and deal_id are baked into agent context (immutable)
         agent = RiskBlockerExtractionAgent(
             organisation_id=self.organisation_id,
             deal_id=deal_id,
             publisher=self.publisher,
             org_name=org_name,
         )
-        result = await agent.extract(input_data)
+        result = await agent.extract()
 
         # Phase 3: Save result (fresh session)
         self._publish_progress("Creating risk/blocker records...", "saving", 0.9)

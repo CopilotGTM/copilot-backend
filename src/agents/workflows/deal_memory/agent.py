@@ -13,7 +13,10 @@ from agno.models.azure.openai_chat import AzureOpenAI
 
 from src.agents.context import AgentContext
 from src.agents.tools.registry import get_tools_for_agent
-from src.agents.workflows.deal_memory.prompts import get_deal_memory_system_prompt
+from src.agents.workflows.deal_memory.prompts import (
+    get_deal_memory_system_prompt,
+    get_expected_output_format,
+)
 from src.infra.config.agent_config import agent_config
 from src.infra.utils.logger import get_logger
 
@@ -45,11 +48,18 @@ class DealMemoryAgent:
         config = agent_config.get_config("deal_memory_agent")
 
         self.agent = Agent(
-            model=AzureOpenAI(id=config.model, api_version=config.api_version),
+            model=AzureOpenAI(
+                id=config.model,
+                api_version=config.api_version,
+                reasoning_effort="high",
+            ),
             description="Deal Memory Agent",
             tools=tools,
+            tool_call_limit=100,
             markdown=True,
             debug_mode=config.debug_mode,
+            expected_output=get_expected_output_format(),
+            system_message=get_deal_memory_system_prompt(self.org_name),
         )
 
     async def generate(
@@ -64,25 +74,15 @@ class DealMemoryAgent:
 
         Returns the complete markdown string.
         """
-        system_prompt = get_deal_memory_system_prompt(
-            self.org_name,
-            is_initial=is_initial_build,
-            trigger_type=trigger_type,
-            trigger_source_id=trigger_source_id,
-        )
+        _ = existing_memory  # For now we don't pass this to the agent, but it could be used in future iterations
+        system_prompt = get_deal_memory_system_prompt(self.org_name)
+        logger.info("Generated system prompt for DealMemoryAgent:\n%s", system_prompt)
+        user_prompt = f"Work On deal memory for deal {self.deal_id} based on new information..\n\n"
 
-        if is_initial_build:
-            user_prompt = (
-                "Build the initial deal memory for this deal. "
-                "Gather all available data, then produce the complete "
-                "markdown document following the output structure."
-            )
-        else:
-            user_prompt = (
-                f"Update this deal memory with the new {trigger_type or 'data'}.\n\n"
-                f"## Existing Memory\n\n```markdown\n{existing_memory}\n```\n\n"
-                "Gather the new information, then produce the complete "
-                "updated markdown document."
+        # Include trigger info for incremental updates, to help the agent understand what new information it should focus on
+        if not is_initial_build:
+            user_prompt += (
+                f"Trigger Type: {trigger_type}\nTrigger Source ID: {trigger_source_id}\n\n"
             )
 
         logger.info(
@@ -91,7 +91,7 @@ class DealMemoryAgent:
             self.deal_id,
         )
 
-        response = await self.agent.arun(user_prompt, system_prompt=system_prompt)
+        response = await self.agent.arun(user_prompt)
 
         content = response.content
         if isinstance(content, str):

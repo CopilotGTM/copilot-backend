@@ -58,6 +58,7 @@ class ToolName(str, Enum):
     GET_DEAL_DETAILS = "get_deal_details"  # Full deal info with stakeholders/risks
     GET_DEAL_SUMMARY = "get_deal_summary"  # AI-generated deal summary
     GET_DEAL_CHANGE_HISTORY = "get_deal_change_history"  # Stage transition history
+    GET_DEAL_MEMORY = "get_deal_memory"  # Persistent deal memory document
     GET_PIPELINE_DETAILS = "get_pipeline_details"  # Pipeline and stage information
     CREATE_DEAL = "create_deal"  # Send interactive deal creation form to chat
     ADD_DEAL_NOTE = "add_deal_note"  # Send interactive note form for existing deal
@@ -193,6 +194,7 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.LIST_DEALS,
         ToolName.GET_DEAL_DETAILS,
         ToolName.GET_DEAL_SUMMARY,
+        ToolName.GET_DEAL_MEMORY,
         ToolName.GET_DEAL_CHANGE_HISTORY,
         ToolName.GET_PIPELINE_DETAILS,
         # Stakeholder tools
@@ -248,6 +250,7 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.SEARCH_INTERNAL_KNOWLEDGE,
         ToolName.SEARCH_INTERNET,
         # Deal tools (for understanding deal context)
+        ToolName.GET_DEAL_MEMORY,  # Pre-built deal context for meeting prep
         ToolName.GET_DEAL_CHANGE_HISTORY,
         ToolName.GET_PIPELINE_DETAILS,
         ToolName.GET_EXISTING_RISKS_BLOCKERS,  # Know active risks/blockers before meeting
@@ -292,6 +295,7 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
     # -------------------------------------------------------------------------
     "DealSummaryAgent": {
         # Deal tools
+        ToolName.GET_DEAL_MEMORY,  # Pre-built deal context as starting point
         ToolName.GET_DEAL_CHANGE_HISTORY,
         ToolName.GET_PIPELINE_DETAILS,
         ToolName.LIST_DEAL_NOTES,
@@ -319,6 +323,7 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         # Risk/blocker tools
         ToolName.GET_EXISTING_RISKS_BLOCKERS,
         # Deal tools (for understanding deal progression context)
+        ToolName.GET_DEAL_MEMORY,  # Pre-built deal context for risk analysis
         ToolName.GET_DEAL_CHANGE_HISTORY,
         ToolName.GET_PIPELINE_DETAILS,
         # Stakeholder tools (for risk attribution)
@@ -340,15 +345,25 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
     # Purpose: Analyzes stakeholders and enriches their profiles with LinkedIn data.
     # -------------------------------------------------------------------------
     "StakeholderAnalysisAgent": {
+        # Deal tools
+        ToolName.GET_DEAL_MEMORY,  # Pre-built deal context as starting point
         # Stakeholder tools
         ToolName.LIST_DEAL_STAKEHOLDERS,
         ToolName.GET_STAKEHOLDER_DETAILS,
+        ToolName.LIST_DEAL_STAKEHOLDER_INSIGHTS,
         ToolName.ENRICH_STAKEHOLDER,  # LinkedIn enrichment for stakeholders
         ToolName.ENRICH_LINKEDIN_PROFILE,  # LinkedIn profile enrichment
         ToolName.RESEARCH_LINKEDIN_PROFILE,  # LinkedIn research by name/URL
-        # Meeting tools (for context)
+        # Meeting tools
         ToolName.LIST_DEAL_MEETINGS,
+        ToolName.GET_MEETING_DETAILS,
+        ToolName.GET_MEETING_SUMMARY,
         ToolName.GET_MEETING_TRANSCRIPT,
+        # Communication tools
+        ToolName.LIST_DEAL_EMAILS,
+        ToolName.GET_EMAIL_DETAILS,
+        ToolName.LIST_DEAL_NOTES,
+        ToolName.LIST_DEAL_CHANNEL_MESSAGES,
     },
     # -------------------------------------------------------------------------
     # DealMemoryAgent - Deal Memory Agent
@@ -360,9 +375,11 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.SEARCH_INTERNAL_KNOWLEDGE,  # Internal knowledge base
         ToolName.SEARCH_INTERNET,  # Company news, recent events
         # Deal tools
+        ToolName.GET_DEAL_DETAILS,  # Current deal details for memory building
         ToolName.GET_DEAL_CHANGE_HISTORY,
         ToolName.GET_PIPELINE_DETAILS,
         ToolName.GET_EXISTING_RISKS_BLOCKERS,
+        ToolName.GET_DEAL_MEMORY,  # Retrieve existing deal memory for updates
         # Stakeholder tools
         ToolName.LIST_DEAL_STAKEHOLDERS,
         ToolName.GET_STAKEHOLDER_DETAILS,
@@ -377,12 +394,9 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.GET_EMAIL_DETAILS,
         ToolName.LIST_DEAL_NOTES,
         ToolName.LIST_DEAL_CHANNEL_MESSAGES,  # Slack/Teams channel messages
-        # Account research tools
-        ToolName.SEARCH_WIKIPEDIA,  # Company/industry background
-        ToolName.GET_COMPANY_FINANCIALS,  # Prospect financial context
-        ToolName.CRAWL_WEBPAGE,  # Company website research
     },
 }
+
 
 # Tool category mapping for documentation/grouping
 TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
@@ -395,6 +409,7 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     ToolName.GET_DEAL_DETAILS: ToolCategory.CRM,
     ToolName.GET_DEAL_SUMMARY: ToolCategory.CRM,
     ToolName.GET_DEAL_CHANGE_HISTORY: ToolCategory.CRM,
+    ToolName.GET_DEAL_MEMORY: ToolCategory.CRM,
     ToolName.GET_PIPELINE_DETAILS: ToolCategory.CRM,
     ToolName.CREATE_DEAL: ToolCategory.CRM,
     ToolName.ADD_DEAL_NOTE: ToolCategory.CRM,
@@ -485,6 +500,7 @@ class ToolRegistry:
             create_enrich_stakeholder,
             create_get_deal_change_history,
             create_get_deal_details,
+            create_get_deal_memory,
             create_get_deal_summary,
             create_get_existing_risks_blockers,
             create_get_pipeline_details,
@@ -542,6 +558,9 @@ class ToolRegistry:
             self.context, self.capabilities_getter
         )
         self._tool_factories[ToolName.GET_DEAL_DETAILS] = lambda: create_get_deal_details(
+            self.context, self.capabilities_getter
+        )
+        self._tool_factories[ToolName.GET_DEAL_MEMORY] = lambda: create_get_deal_memory(
             self.context, self.capabilities_getter
         )
         self._tool_factories[ToolName.GET_DEAL_SUMMARY] = lambda: create_get_deal_summary(

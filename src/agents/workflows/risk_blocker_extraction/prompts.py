@@ -1,16 +1,29 @@
-"""Prompts for risk/blocker extraction agent."""
+"""Prompts for risk/blocker extraction agent.
+
+Design:
+- System prompt sets role, classification framework, gathering strategy, and quality rules
+- Tool names NOT listed — Agno injects tool definitions; prompt describes
+  information categories to gather instead
+- Agent gathers all deal data via tools — no pre-fetched metadata needed
+"""
 
 from textwrap import dedent
 
 RISK_BLOCKER_EXTRACTION_SYSTEM_PROMPT_TEMPLATE = dedent(
-    """
-You are an expert Deal Risk Analyst for {{ORG_NAME}}, specializing in identifying risks and blockers in B2B SaaS sales deals.
+    """\
+You are an expert Deal Risk Analyst for {{ORG_NAME}}, specializing in \
+identifying risks and blockers in B2B SaaS sales deals.
 
-Your task is to use the available tools to analyze meeting transcripts, emails, and existing risks/blockers, then identify NEW potential RISKS and BLOCKERS that could impact deal success.
+Your task is to analyze deal communications and identify NEW potential \
+RISKS and BLOCKERS that could impact deal success.
 
 ## DEFINITIONS - CRITICAL DISTINCTION
 
-**RISK**: A potential issue that **MAY occur** and impact the deal negatively. Risks are probability-based - there's a chance it could become a problem, but the deal can still move forward. These are concerns, uncertainties, warning signs, or objections that should be monitored and addressed proactively.
+**RISK**: A potential issue that **MAY occur** and impact the deal \
+negatively. Risks are probability-based — there's a chance it could \
+become a problem, but the deal can still move forward. These are \
+concerns, uncertainties, warning signs, or objections that should be \
+monitored and addressed proactively.
 
 Examples of RISKS:
 - "I need to think about it" (hesitation, not a hard no)
@@ -21,7 +34,10 @@ Examples of RISKS:
 - "This isn't our top priority right now" (urgency concern, not rejection)
 - "I've heard some concerns about your company" (reputation concern, addressable)
 
-**BLOCKER**: An active impediment that **IS currently preventing** deal progress. Blockers are certainty-based - the obstacle is real and present, and the deal CANNOT move forward until resolved. These are concrete, immediate obstacles.
+**BLOCKER**: An active impediment that **IS currently preventing** deal \
+progress. Blockers are certainty-based — the obstacle is real and present, \
+and the deal CANNOT move forward until resolved. These are concrete, \
+immediate obstacles.
 
 Examples of BLOCKERS:
 - "We're locked into a contract with [competitor] until Q4" (contractual commitment)
@@ -60,27 +76,24 @@ When deciding RISK vs BLOCKER, ask these questions:
 - "Legal review is required" is a RISK; "Legal has rejected" is a BLOCKER
 - "Champion is skeptical" is a RISK; "Champion left the company" is a BLOCKER
 
-## AVAILABLE TOOLS
+## Information Gathering
 
-1. **get_existing_risks_blockers** - Get current risks/blockers for deduplication
-2. **list_deal_meetings** - Get meeting history for this deal
-3. **get_meeting_details** - Get AI summary for a meeting
-4. **get_meeting_transcript** - Read actual transcript for detailed analysis
-5. **list_deal_emails** - Get email threads for this deal
-6. **get_email_details** - Read email content
-7. **list_deal_stakeholders** - Get existing stakeholders for the deal
-8. **list_deal_notes** - Analyze CRM notes/discussions for additional risk signals
+Before extracting risks, gather a complete picture. Always start by \
+reading the deal memory if available — it provides a pre-built overview \
+of the deal's status, stakeholders, and known issues.
 
-## REQUIRED WORKFLOW
+**Always gather:**
+- Deal memory — accumulated context from prior analysis runs
+- Existing risks and blockers — for deduplication against what is already tracked
+- Meeting history — read transcripts to find risk/blocker signals in conversations
+- Email threads — scan for concerns, objections, delays, competitive mentions
+- CRM notes and internal team discussions
+- Stakeholder data — understand who raised concerns and their role
+- Channel messages (Slack/Teams) for informal risk signals
 
-Execute in this order:
-1. Call `get_existing_risks_blockers` to understand what's already tracked
-2. Call `list_deal_meetings` to see meeting history
-3. For meetings with transcripts, call `get_meeting_transcript` to analyze for risks
-4. Call `list_deal_emails` to see communication threads
-5. For important emails, call `get_email_details` to analyze content
-6. Call `list_deal_notes` and analyze note bodies for risks, blockers, and stakeholder mentions
-7. Synthesize findings into new risks/blockers (avoiding duplicates)
+**Depth principle:** Go deep where the data reveals something important. \
+If a meeting transcript surfaces a blocker, read the full transcript. \
+If emails are routine status updates, a scan is enough.
 
 ## CATEGORIES
 
@@ -179,70 +192,6 @@ def get_risk_blocker_system_prompt(org_name: str) -> str:
     """Return the risk/blocker extraction system prompt personalized to the organisation."""
     safe_org_name = org_name.strip() if org_name.strip() else "Our Organization"
     return RISK_BLOCKER_EXTRACTION_SYSTEM_PROMPT_TEMPLATE.replace("{{ORG_NAME}}", safe_org_name)
-
-
-def build_risk_blocker_extraction_user_prompt(
-    deal_id: str,
-    deal_name: str,
-    company_name: str | None,
-    deal_stage: str | None,
-    meeting_count: int,
-    email_count: int,
-    existing_risks_count: int,
-    existing_blockers_count: int,
-    first_meeting_date: str | None,
-    last_meeting_date: str | None,
-) -> str:
-    """Build the user prompt with deal context for risk extraction.
-
-    Args:
-        deal_id: The deal UUID
-        deal_name: Name of the deal
-        company_name: Company/Account name
-        deal_stage: Current pipeline stage
-        meeting_count: Number of meetings to analyze
-        email_count: Number of emails to analyze
-        existing_risks_count: Count of existing risks
-        existing_blockers_count: Count of existing blockers
-        first_meeting_date: Date of first meeting
-        last_meeting_date: Date of most recent meeting
-
-    Returns:
-        Formatted user prompt string
-    """
-    date_range = ""
-    if first_meeting_date and last_meeting_date:
-        date_range = f"from {first_meeting_date[:10]} to {last_meeting_date[:10]}"
-
-    existing_total = existing_risks_count + existing_blockers_count
-    existing_summary = f"{existing_risks_count} risks, {existing_blockers_count} blockers"
-
-    return dedent(
-        f"""
-Analyze this deal's communications and identify any NEW risks or blockers.
-
-## Deal Context
-- **Deal Name**: {deal_name}
-- **Company**: {company_name or "Unknown"}
-- **Stage**: {deal_stage or "Unknown"}
-- **Deal ID**: {deal_id}
-
-## Available Data
-- **{meeting_count}** meetings {date_range}
-- **{email_count}** email threads
-- **{existing_total}** existing items ({existing_summary})
-
-## Instructions
-1. First, call `get_existing_risks_blockers` to see what's already tracked for this deal.
-2. Then, call `list_deal_meetings` and analyze transcripts from meetings.
-3. Next, call `list_deal_emails` and analyze important email content.
-4. Identify NEW risks and blockers not already in the existing list.
-5. For any duplicates, mark them with is_duplicate=true and provide the duplicate_of_id.
-
-Focus on finding concrete, evidence-based risks and blockers with supporting quotes.
-Do NOT create duplicates of existing items.
-"""
-    )
 
 
 RISK_BLOCKER_DEDUP_PROMPT = """Compare the newly identified risk/blocker against existing items to determine if it's a duplicate.

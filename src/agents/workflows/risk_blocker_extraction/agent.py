@@ -25,14 +25,8 @@ from agno.models.azure.openai_chat import AzureOpenAI
 
 from src.agents.context import AgentContext
 from src.agents.tools.registry import get_tools_for_agent
-from src.agents.workflows.risk_blocker_extraction.models import (
-    RiskBlockerExtractionInput,
-    RiskBlockerExtractionResult,
-)
-from src.agents.workflows.risk_blocker_extraction.prompts import (
-    build_risk_blocker_extraction_user_prompt,
-    get_risk_blocker_system_prompt,
-)
+from src.agents.workflows.risk_blocker_extraction.models import RiskBlockerExtractionResult
+from src.agents.workflows.risk_blocker_extraction.prompts import get_risk_blocker_system_prompt
 from src.infra.config.agent_config import agent_config
 from src.infra.utils.logger import get_logger
 
@@ -118,46 +112,23 @@ class RiskBlockerExtractionAgent:
         if self.publisher:
             self.publisher.publish_progress(message, step, progress)
 
-    async def extract(self, input_data: RiskBlockerExtractionInput) -> RiskBlockerExtractionResult:
+    async def extract(self) -> RiskBlockerExtractionResult:
         """Extract risks and blockers from deal communications.
 
-        The agent will use tools to:
-        1. Get existing risks/blockers for deduplication
-        2. List and read meeting transcripts
-        3. List and read email content
-        4. Identify new risks/blockers from the communications
-
-        SECURITY: deal_id is already baked into context (immutable).
-        Tools use context.deal_id and cannot query other deals.
-
-        Args:
-            input_data: Minimal deal context with counts and date ranges
+        The agent will use tools to gather meetings, emails, existing
+        risks/blockers, and other deal data, then identify new items.
 
         Returns:
             RiskBlockerExtractionResult with extracted items
         """
-        logger.info(
-            "RiskBlockerExtractionAgent extracting for deal %s (%d meetings, %d emails, %d existing)",
-            self.deal_id,
-            input_data.meeting_count,
-            input_data.email_count,
-            input_data.existing_risks_count + input_data.existing_blockers_count,
-        )
+        logger.info("RiskBlockerExtractionAgent extracting for deal %s", self.deal_id)
 
         self._publish_progress("Analyzing deal communications for risks...", "analysis", 0.2)
 
-        # Build user prompt with deal context
-        user_prompt = build_risk_blocker_extraction_user_prompt(
-            deal_id=input_data.deal_id,
-            deal_name=input_data.deal_name,
-            company_name=input_data.company_name,
-            deal_stage=input_data.deal_stage,
-            meeting_count=input_data.meeting_count,
-            email_count=input_data.email_count,
-            existing_risks_count=input_data.existing_risks_count,
-            existing_blockers_count=input_data.existing_blockers_count,
-            first_meeting_date=input_data.first_meeting_date,
-            last_meeting_date=input_data.last_meeting_date,
+        user_prompt = (
+            f"Analyze deal {self.deal_id} communications and identify risks and blockers. "
+            "Gather all available data, check existing items for deduplication, "
+            "then extract new findings."
         )
 
         self._publish_progress("AI is analyzing meetings and emails...", "tools", 0.4)

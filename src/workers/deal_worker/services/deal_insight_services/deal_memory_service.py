@@ -25,7 +25,7 @@ from src.domain.models.organisation_tables.sync.crm.activities import CRMActivit
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal, CRMDealStatus
 from src.domain.models.organisation_tables.sync.deal_memory_models import DealMemory
 from src.domain.models.organisation_tables.sync.email_models import Email
-from src.infra.database.sessions import acquire_org_async_session
+from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.workers.deal_worker.services.deal_job_publisher import DealJobRedisPublisher
 from src.workers.deal_worker.utils.deal_job_utils import get_deal, get_organisation_name
@@ -131,8 +131,6 @@ class DealMemoryService:
                     retryable=False,
                 )
 
-            org_name = await get_organisation_name(session, self.organisation_id)
-
             memory_row = (
                 (
                     await session.execute(
@@ -149,7 +147,11 @@ class DealMemoryService:
             if memory_row:
                 existing_memory = memory_row.content
                 is_initial = False
-        # Session released
+        # Org session released
+
+        # Org name lives in public schema — use a master session
+        async for master_session in acquire_master_async_session():
+            org_name = await get_organisation_name(master_session, self.organisation_id)
 
         # Phase 2: Call agent (agent uses tools to gather data, no session held here)
         self._publish_progress("AI is building deal memory...", "generation", 0.3)

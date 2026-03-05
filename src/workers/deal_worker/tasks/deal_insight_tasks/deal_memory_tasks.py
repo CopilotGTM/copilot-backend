@@ -48,7 +48,14 @@ from src.workers.deal_worker.services.deal_job_publisher import DealJobRedisPubl
 logger = get_logger(__name__)
 
 
-@app.task(bind=True, name="deal_memory.process_job", acks_late=True, max_retries=3)
+@app.task(
+    bind=True,
+    name="deal_memory.process_job",
+    acks_late=True,
+    max_retries=3,
+    soft_time_limit=600,  # 10 min — reasoning model + many tool calls
+    time_limit=660,  # 11 min hard limit
+)
 def process_deal_memory_job(self: Task, organisation_id: str, job_id: str):
     """Process a deal memory build/update job.
 
@@ -63,6 +70,12 @@ def process_deal_memory_job(self: Task, organisation_id: str, job_id: str):
         Dictionary with job completion status
     """
     logger.info("Processing deal memory job org=%s job=%s", organisation_id, job_id)
+
+    # Prevent concurrent execution for the same job (retries can stack)
+    lock_key = f"task_lock:deal_memory_job:{job_id}"
+    if not acquire_task_lock(lock_key, ttl=700):
+        logger.info("Deal memory job %s already running, skipping", job_id)
+        return {"status": "skipped", "reason": "already_running"}
 
     async def _run():
         org_uuid = UUID(organisation_id)
@@ -137,6 +150,8 @@ def process_deal_memory_job(self: Task, organisation_id: str, job_id: str):
         logger.error("Deal memory task failed %s: %s", job_id, e, exc_info=True)
         # Exponential backoff: 60, 120, 240 seconds
         raise self.retry(exc=e, countdown=60 * (2**self.request.retries)) from e
+    finally:
+        release_task_lock(lock_key)
 
 
 @app.task(bind=True, name="deal_memory.backfill_org", acks_late=True, max_retries=2)

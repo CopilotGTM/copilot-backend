@@ -63,7 +63,6 @@ class TestDealInsightServiceImports:
             DealSummaryError,
             DealSummaryService,
             NoContentError,
-            NoMeetingsError,
             RiskBlockerExtractionError,
             RiskBlockerExtractionService,
             StakeholderAnalysisService,
@@ -77,7 +76,6 @@ class TestDealInsightServiceImports:
         # Verify exceptions
         assert issubclass(DealNotFoundError, Exception)
         assert issubclass(DealSummaryError, Exception)
-        assert issubclass(NoMeetingsError, Exception)
         assert issubclass(NoContentError, Exception)
         assert issubclass(RiskBlockerExtractionError, Exception)
 
@@ -150,13 +148,22 @@ class TestAgentInstantiation:
         assert agent.context.deal_id == deal_id
 
     def test_stakeholder_analysis_agent_instantiation(self):
-        """StakeholderAnalysisAgent has no special context (simple agent)."""
+        """StakeholderAnalysisAgent takes organisation_id and deal_id (no session)."""
         from src.agents.workflows.stakeholder_analysis import StakeholderAnalysisAgent
 
-        # Simple agent with no parameters
-        agent = StakeholderAnalysisAgent()
+        org_id = uuid4()
+        deal_id = uuid4()
 
-        assert agent.agent is not None
+        # Should instantiate with organisation_id and deal_id (no session)
+        agent = StakeholderAnalysisAgent(
+            organisation_id=org_id,
+            deal_id=deal_id,
+        )
+
+        assert agent.organisation_id == org_id
+        assert agent.deal_id == deal_id
+        assert agent.context.organisation_id == org_id
+        assert agent.context.deal_id == deal_id
 
     def test_deal_summary_agent_instantiation(self):
         """DealSummaryAgent takes organisation_id and deal_id (no session)."""

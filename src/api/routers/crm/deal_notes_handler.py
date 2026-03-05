@@ -201,12 +201,12 @@ async def create_deal_note(
         )
 
         if create_result.created_new:
-            # Trigger deal insight pipeline after note creation
-            # Chain: risk_blocker → stakeholder → deal_summary (with job)
+            # Trigger deal memory update after note creation
             await service.trigger_deal_insight_pipeline(
                 deal_id=deal_id,
                 user_id=user_ids.user_id,
                 trigger_source="note_creation",
+                trigger_source_id=create_result.note.activity_id,
             )
 
             return Response.created_response(

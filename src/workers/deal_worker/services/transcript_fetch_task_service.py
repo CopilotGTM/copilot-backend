@@ -52,7 +52,7 @@ class DealTranscriptFetchResult:
     transcripts_failed: int = 0
     pipeline_triggered: bool = False
     pipeline_meetings_processed: int = 0
-    pipeline_deal_summary_triggered: bool = False  # Deal summary added to chain
+    pipeline_deal_memory_triggered: bool = False  # Deal memory added to pipeline
     pipeline_risk_blocker_triggered: bool = False  # Risk blocker extraction added to chain
     pipeline_stakeholder_triggered: bool = False  # Stakeholder analysis added to chain
     # Meeting prep (briefing) for upcoming meetings
@@ -72,7 +72,7 @@ class TranscriptFetchResult:
     transcripts_not_available: int = 0  # Permanently failed
     transcripts_failed: int = 0  # Error during fetch
     pipelines_triggered: int = 0
-    deal_summaries_triggered: int = 0  # Deal summary tasks added to chains
+    deal_memories_triggered: int = 0  # Deal memory tasks added to pipelines
     risk_blockers_triggered: int = 0  # Risk blocker extraction tasks added to chains
     stakeholder_analyses_triggered: int = 0  # Stakeholder analysis tasks added to chains
     fetching_reset: int = 0  # Meetings reset from FETCHING to PENDING
@@ -337,7 +337,7 @@ class TranscriptFetchTaskService:
         Deal-centric processing:
         1. Fetch transcripts for this deal's meetings
         2. Immediately trigger meeting summary pipeline for this deal
-        3. Pipeline generates meeting summaries → deal summary
+        3. Pipeline generates meeting summaries -> risk + stakeholder -> deal memory
 
         Uses fresh session pattern throughout.
 
@@ -396,24 +396,24 @@ class TranscriptFetchTaskService:
         # The pipeline has its own query (_get_events_needing_summary) that finds
         # READY transcripts needing summaries - independent of transcript fetch results.
         # This ensures summaries are generated even if transcripts were fetched in previous runs.
-        # Chain: meeting summaries (oldest first) → deal summary → risk blocker → stakeholder
+        # Pipeline: meeting summaries (oldest first) -> parallel risk+stakeholder -> deal memory
         logger.info("  Triggering meeting summary pipeline for deal %s", deal_id)
         result.pipeline_triggered = True
         summary_service = MeetingSummaryService(self.organisation_id)
         pipeline_result = await summary_service.process_deal_pipeline(deal_id)
         result.pipeline_meetings_processed = pipeline_result.meetings_processed
-        result.pipeline_deal_summary_triggered = pipeline_result.deal_summary_triggered
+        result.pipeline_deal_memory_triggered = pipeline_result.deal_memory_triggered
         result.pipeline_risk_blocker_triggered = pipeline_result.risk_blocker_triggered
         result.pipeline_stakeholder_triggered = pipeline_result.stakeholder_analysis_triggered
 
         logger.info(
             "  Pipeline result for deal %s: jobs_created=%d, jobs_skipped=%d, "
-            "tasks_triggered=%d, deal_summary=%s, risk_blocker=%s, stakeholder=%s",
+            "tasks_triggered=%d, deal_memory=%s, risk_blocker=%s, stakeholder=%s",
             deal_id,
             pipeline_result.jobs_created,
             pipeline_result.jobs_skipped,
             pipeline_result.tasks_triggered,
-            pipeline_result.deal_summary_triggered,
+            pipeline_result.deal_memory_triggered,
             pipeline_result.risk_blocker_triggered,
             pipeline_result.stakeholder_analysis_triggered,
         )
@@ -489,7 +489,7 @@ class TranscriptFetchTaskService:
         Deal-centric approach:
         - For each deal with meetings needing transcript fetch:
           1. Fetch transcripts for that deal's meetings
-          2. Immediately trigger pipeline (meeting summaries → deal summary)
+          2. Immediately trigger pipeline (meeting summaries -> risk + stakeholder -> deal memory)
           3. Move to next deal
 
         This is simpler and more intuitive than fetching all transcripts first
@@ -546,8 +546,8 @@ class TranscriptFetchTaskService:
             result.transcripts_failed += deal_result.transcripts_failed
             if deal_result.pipeline_triggered:
                 result.pipelines_triggered += 1
-            if deal_result.pipeline_deal_summary_triggered:
-                result.deal_summaries_triggered += 1
+            if deal_result.pipeline_deal_memory_triggered:
+                result.deal_memories_triggered += 1
             if deal_result.pipeline_risk_blocker_triggered:
                 result.risk_blockers_triggered += 1
             if deal_result.pipeline_stakeholder_triggered:
@@ -568,7 +568,7 @@ class TranscriptFetchTaskService:
 
         logger.info(
             "Transcript fetch complete for org %s: deals=%d, meetings=%d, fetched=%d, "
-            "pending=%d, not_available=%d, failed=%d, pipelines=%d, deal_summaries=%d, "
+            "pending=%d, not_available=%d, failed=%d, pipelines=%d, deal_memories=%d, "
             "risk_blockers=%d, stakeholder_analyses=%d, fetching_reset=%d, "
             "prep_created=%d, prep_skipped=%d, prep_waiting=%d",
             self.organisation_id,
@@ -579,7 +579,7 @@ class TranscriptFetchTaskService:
             result.transcripts_not_available,
             result.transcripts_failed,
             result.pipelines_triggered,
-            result.deal_summaries_triggered,
+            result.deal_memories_triggered,
             result.risk_blockers_triggered,
             result.stakeholder_analyses_triggered,
             result.fetching_reset,

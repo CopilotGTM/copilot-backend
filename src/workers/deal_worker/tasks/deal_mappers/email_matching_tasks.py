@@ -27,12 +27,11 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from celery import Task, chain, signature
+from celery import Task
 from sqlalchemy import select
 from sqlmodel import col
 
 from src.domain.models.master_tables import Organisation, OrganisationStatus
-from src.domain.models.organisation_tables.job_models import DealJobs, DealJobType, JobStatus
 from src.infra.database.sessions import (
     acquire_master_async_session,
     acquire_org_async_session,
@@ -44,9 +43,10 @@ from src.workers.deal_worker.celery_app import app
 from src.workers.deal_worker.services.deal_mapper_services.deal_email_matcher import (
     DealEmailMatcher,
 )
-
-# System user UUID for automated pipeline jobs
-AUTOMATED_PIPELINE_USER_ID = UUID("00000000-0000-0000-0000-000000000001")
+from src.workers.deal_worker.utils.pipeline_dispatch import (
+    dispatch_deal_insight_chord,
+    get_or_create_deal_memory_job,
+)
 
 logger = get_logger(__name__)
 
@@ -127,84 +127,46 @@ def match_email_to_deals_org_task(
 
         for deal_uuid in deals_matched_ids:
             try:
-                # Create jobs for deal summary (with deduplication)
-                deal_summary_job_id: UUID | None = None
+                # Create deal memory job (with deduplication)
+                deal_memory_job_id: UUID | None = None
                 async for session in acquire_org_async_session(org_uuid):
-                    # Check for existing active deal summary job
-                    stmt = select(DealJobs).where(
-                        col(DealJobs.organisation_id) == org_uuid,
-                        col(DealJobs.deal_id) == deal_uuid,
-                        col(DealJobs.event_id).is_(None),
-                        col(DealJobs.job_type) == DealJobType.DEAL_SUMMARY,
-                        col(DealJobs.status).in_([JobStatus.PENDING, JobStatus.IN_PROGRESS]),
+                    deal_memory_job_id, created = await get_or_create_deal_memory_job(
+                        session,
+                        org_uuid,
+                        deal_uuid,
+                        "email_matching",
+                        "new_emails_matched",
                     )
-                    result = await session.execute(stmt)
-                    existing_job = result.scalars().first()
-
-                    if existing_job:
-                        deal_summary_job_id = existing_job.job_id
-                        jobs_skipped += 1
-                        logger.debug(
-                            "Using existing deal summary job for deal %s: %s",
-                            deal_uuid,
-                            deal_summary_job_id,
-                        )
-                    else:
-                        # Create new job
-                        job = DealJobs(
-                            organisation_id=org_uuid,
-                            user_id=AUTOMATED_PIPELINE_USER_ID,
-                            job_type=DealJobType.DEAL_SUMMARY,
-                            deal_id=deal_uuid,
-                            event_id=None,
-                            status=JobStatus.PENDING,
-                            job_metadata={
-                                "source": "email_matching",
-                                "trigger": "new_emails_matched",
-                            },
-                        )
-                        session.add(job)
-                        await session.flush()
-                        await session.refresh(job)
-                        deal_summary_job_id = job.job_id
+                    if created:
                         jobs_created += 1
                         logger.debug(
-                            "Created deal summary job for deal %s: %s",
+                            "Created deal memory job for deal %s: %s",
                             deal_uuid,
-                            deal_summary_job_id,
+                            deal_memory_job_id,
+                        )
+                    else:
+                        jobs_skipped += 1
+                        logger.debug(
+                            "Using existing deal memory job for deal %s: %s",
+                            deal_uuid,
+                            deal_memory_job_id,
                         )
 
                     await session.commit()
 
-                # Trigger the pipeline chain: risk_blocker → stakeholder → deal_summary (with job)
-                if deal_summary_job_id:
-                    risk_blocker_sig = signature(
-                        "risk_blocker.extract_deal_risks_blockers_task",
-                        args=[organisation_id, str(deal_uuid)],
-                        queue="deal_jobs",
-                        immutable=True,
+                if deal_memory_job_id:
+                    dispatch_deal_insight_chord(
+                        organisation_id,
+                        str(deal_uuid),
+                        str(deal_memory_job_id),
                     )
-                    stakeholder_sig = signature(
-                        "stakeholder.analyze_deal_stakeholders_task",
-                        args=[organisation_id, str(deal_uuid)],
-                        queue="deal_jobs",
-                        immutable=True,
-                    )
-                    deal_summary_sig = signature(
-                        "deal_summary_task.process",
-                        args=[organisation_id, str(deal_summary_job_id)],
-                        queue="deal_jobs",
-                        immutable=True,
-                    )
-                    task_chain = chain(risk_blocker_sig, stakeholder_sig, deal_summary_sig)
-                    task_chain.apply_async()
                     pipelines_triggered += 1
 
                     logger.debug(
-                        "Triggered risk blocker + stakeholder + deal summary chain for deal %s "
+                        "Triggered parallel risk + stakeholder -> deal memory pipeline for deal %s "
                         "(job=%s) after email match",
                         deal_uuid,
-                        deal_summary_job_id,
+                        deal_memory_job_id,
                     )
 
             except Exception as e:
