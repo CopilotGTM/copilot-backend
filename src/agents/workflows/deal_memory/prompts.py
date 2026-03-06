@@ -44,7 +44,6 @@ You have access to tools that can retrieve all relevant information about the de
 
   #### b Synthesized Insights
   - Stakeholder maps and engagement analyses
-  - Identified Risk and Blocker
 
 ### Steps
 - Check if previous memory exists. If exists you have to build on top of it. Otherwise you will build it from scratch.
@@ -52,7 +51,7 @@ You have access to tools that can retrieve all relevant information about the de
   - Read CRM data of deal. Basic Deal record and its stages. It will help you create most of the snapshot.
   - Then list different meetings, notes, emails and summarise chats. and arrange them in order.
   - Please go through the events based on occurrence order. This will help you understand how the events have unfolded.
-  - Read all the stakeholders and Risk & blockers.
+  - Read all the stakeholders.
   - Now you have captured all the dataset and then try to read all the collected information and process to create the output.
 - Memory Exists (Incremental Build):
   - Read the existing deal memory to understand what information is already captured.
@@ -119,7 +118,7 @@ Example Output you need to follow:
 Example Output:
 ```md
 - Stakeholder Table:
-  | Name | Job Title | LinkedIn Link | Associated Year with Organisation| Role in Deal | Stance | Engagement Level | Last Contact | Key Evidence |
+  | Name | Job Title | LinkedIn Link | Associated Year with Organisation| Role in Deal | Stance | Engagement Level | Last Contact
 - Economic Buyer:
   | Name | Job Title | LinkedIn Link |
 - Champion:
@@ -155,12 +154,39 @@ Keep a list of records for the all the Email already analysed. Extract overview 
 
     **Note**: Do not include meeting invites in emails. discard them.
 
-### 7. Risk and Blocker Landscape
-  - List of identified Risks & Blockers with description, evidence, severity, and potential mitigation strategies
-  - IMPORTANT: Read the risks and blockers already identified by the dedicated Risk & Blocker Extraction agent using the risk/blocker tool. Do NOT independently identify risks from scratch when that dedicated output is available.
-  - Only include the Risks & Blockers which are important.
-  - Bifercate the Risks & Blockers which are approvaed by user and which are not approved by user.
-  - Also check which Risks & Blockers are resolved
+### 7. Signals
+Capture factual observations from conversations, emails, and notes that a dedicated Risk & Blocker agent (which runs after deal memory) will later analyze and classify.
+  Do NOT classify these as risks or blockers yourself — just record the facts.
+
+For each signal, capture:
+- **What was said or observed** — the factual statement or event
+- **Who said it** — the person who made the statement (name and role if known)
+- **Where it came from** — the source (e.g., "Discovery Call - Jan 15", "Email from CFO - Feb 3")
+
+**What counts as a signal:**
+- Concerns, objections, or hesitations expressed by any stakeholder
+- Budget, timeline, or resource constraints mentioned
+- Competitor mentions or alternative solutions being evaluated
+- Requirements or technical constraints that could affect the deal
+- Positive signals too — champion endorsements, budget approvals, executive buy-in
+- Any statement about decision-making process, timelines, or next steps that affects deal progression
+
+**What does NOT count as a signal:**
+- Your own inferences or interpretations (e.g., "they seemed hesitant")
+- Generic pleasantries or small talk
+- Information already fully captured in other sections (e.g., technical requirements belong in Section 3)
+
+**Temporal rule:** If a signal from an earlier conversation was explicitly addressed or resolved in a later conversation, mark it as resolved and note where it was resolved.
+                   Only unresolved signals matter for downstream analysis.
+
+Example:
+```md
+| Signal | Who | Source | Status |
+| "We need to get this approved by the board before March" | Sarah Kim, VP Sales | Discovery Call - Jan 15 | Unresolved |
+| "Our budget for new tools this year is capped at $80K" | James Chen, CFO | Email - Feb 3 | Unresolved |
+| "I'll champion this internally with the leadership team" | Mike Ross, Dir. Ops | Demo Call - Feb 10 | Active (positive) |
+| "Concerned about SSO integration with our Okta setup" | Raj Patel, CTO | Technical Review - Jan 22 | Resolved in Demo Call - Feb 10 |
+```
 
 ### 8. Open Ended Questions
   - List of question the must be clerified from the client for the Deal Progression and Completion. This is a section which requires deep thinking and focused mind

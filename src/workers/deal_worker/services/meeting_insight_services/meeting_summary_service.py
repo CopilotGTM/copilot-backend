@@ -37,7 +37,7 @@ from src.workers.deal_worker.utils.deal_job_utils import (
     get_organisation_name,
 )
 from src.workers.deal_worker.utils.pipeline_dispatch import (
-    dispatch_deal_insight_chord,
+    dispatch_deal_insight_pipeline,
     get_or_create_deal_memory_job,
 )
 
@@ -376,7 +376,7 @@ class MeetingSummaryService:
 
         if deal_memory_job_id:
             try:
-                dispatch_deal_insight_chord(
+                dispatch_deal_insight_pipeline(
                     str(self.organisation_id),
                     str(deal_id),
                     str(deal_memory_job_id),
@@ -571,7 +571,7 @@ class MeetingSummaryService:
             task_signatures.append(sig)
 
         try:
-            dispatch_deal_insight_chord(
+            dispatch_deal_insight_pipeline(
                 str(self.organisation_id),
                 str(deal_id),
                 str(deal_memory_job_id),

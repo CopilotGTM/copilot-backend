@@ -75,6 +75,9 @@ class ToolName(str, Enum):
     UPSERT_STAKEHOLDER = "upsert_stakeholder"  # Create-or-update stakeholder by email
     ENRICH_STAKEHOLDER = "enrich_stakeholder"  # Enrich stakeholder with LinkedIn data
     GET_EXISTING_RISKS_BLOCKERS = "get_existing_risks_blockers"
+    UPDATE_RISK_BLOCKER = "update_risk_blocker"
+    DISMISS_RISK_BLOCKER = "dismiss_risk_blocker"
+    RESOLVE_RISK_BLOCKER = "resolve_risk_blocker"
 
     # -------------------------------------------------------------------------
     # MEETING TOOLS - For meeting details, transcripts, summaries
@@ -85,6 +88,7 @@ class ToolName(str, Enum):
     GET_MEETING_DETAILS = "get_meeting_details"  # Full meeting info
     GET_MEETING_SUMMARY = "get_meeting_summary"  # AI-generated meeting summary
     GET_MEETING_TRANSCRIPT = "get_meeting_transcript"
+    GET_COMPRESSED_TRANSCRIPT = "get_compressed_transcript"
     GET_MEETING_DEAL_CONTEXT = "get_meeting_deal_context"
 
     # -------------------------------------------------------------------------
@@ -320,24 +324,29 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
     # Purpose: Extracts risks and blockers from meetings, emails, and notes.
     # -------------------------------------------------------------------------
     "RiskBlockerExtractionAgent": {
-        # Risk/blocker tools
+        # Risk/blocker read + write tools
         ToolName.GET_EXISTING_RISKS_BLOCKERS,
-        # Deal tools (for understanding deal progression context)
-        ToolName.GET_DEAL_MEMORY,  # Pre-built deal context for risk analysis
+        ToolName.UPDATE_RISK_BLOCKER,
+        ToolName.DISMISS_RISK_BLOCKER,
+        ToolName.RESOLVE_RISK_BLOCKER,
+        # Deal context — deal memory is the primary input
+        ToolName.GET_DEAL_MEMORY,
         ToolName.GET_DEAL_CHANGE_HISTORY,
         ToolName.GET_PIPELINE_DETAILS,
-        # Stakeholder tools (for risk attribution)
-        ToolName.LIST_DEAL_STAKEHOLDERS,  # Stakeholders can be source of blockers
-        ToolName.GET_STAKEHOLDER_DETAILS,  # Context for risk attribution
-        # Meeting tools
+        # Stakeholder context (for risk attribution)
+        ToolName.LIST_DEAL_STAKEHOLDERS,
+        ToolName.GET_STAKEHOLDER_DETAILS,
+        # Meeting tools (targeted drill-down for quotes/evidence)
         ToolName.LIST_DEAL_MEETINGS,
         ToolName.GET_MEETING_DETAILS,
         ToolName.GET_MEETING_TRANSCRIPT,
-        # Communication tools
+        # Communication tools (targeted drill-down for quotes/evidence)
         ToolName.LIST_DEAL_EMAILS,
         ToolName.GET_EMAIL_DETAILS,
         ToolName.LIST_DEAL_CHANNEL_MESSAGES,
-        ToolName.LIST_DEAL_NOTES,  # Notes contain risk/blocker information
+        ToolName.LIST_DEAL_NOTES,
+        # Knowledge base — verify technical risks against actual capabilities
+        ToolName.SEARCH_INTERNAL_KNOWLEDGE,
     },
     # -------------------------------------------------------------------------
     # StakeholderAnalysisAgent - Stakeholder Analysis Agent
@@ -378,17 +387,14 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.GET_DEAL_DETAILS,  # Current deal details for memory building
         ToolName.GET_DEAL_CHANGE_HISTORY,
         ToolName.GET_PIPELINE_DETAILS,
-        ToolName.GET_EXISTING_RISKS_BLOCKERS,
         ToolName.GET_DEAL_MEMORY,  # Retrieve existing deal memory for updates
         # Stakeholder tools
         ToolName.LIST_DEAL_STAKEHOLDERS,
         ToolName.GET_STAKEHOLDER_DETAILS,
-        ToolName.LIST_DEAL_STAKEHOLDER_INSIGHTS,  # Stance, decision power, sentiment
         # Meeting tools
         ToolName.LIST_DEAL_MEETINGS,
         ToolName.GET_MEETING_DETAILS,
-        ToolName.GET_MEETING_TRANSCRIPT,
-        ToolName.GET_MEETING_SUMMARY,
+        ToolName.GET_COMPRESSED_TRANSCRIPT,
         # Communication tools
         ToolName.LIST_DEAL_EMAILS,
         ToolName.GET_EMAIL_DETAILS,
@@ -421,6 +427,9 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     ToolName.UPSERT_STAKEHOLDER: ToolCategory.CRM,
     ToolName.ENRICH_STAKEHOLDER: ToolCategory.CRM,
     ToolName.GET_EXISTING_RISKS_BLOCKERS: ToolCategory.CRM,
+    ToolName.UPDATE_RISK_BLOCKER: ToolCategory.CRM,
+    ToolName.DISMISS_RISK_BLOCKER: ToolCategory.CRM,
+    ToolName.RESOLVE_RISK_BLOCKER: ToolCategory.CRM,
     ToolName.LIST_DEAL_NOTES: ToolCategory.CRM,
     ToolName.LIST_DEAL_STAKEHOLDER_INSIGHTS: ToolCategory.CRM,
     # Meeting Intelligence
@@ -428,6 +437,7 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     ToolName.LIST_MEETINGS_BY_DATE: ToolCategory.INTELLIGENCE,
     ToolName.GET_MEETING_DETAILS: ToolCategory.INTELLIGENCE,
     ToolName.GET_MEETING_TRANSCRIPT: ToolCategory.INTELLIGENCE,
+    ToolName.GET_COMPRESSED_TRANSCRIPT: ToolCategory.INTELLIGENCE,
     ToolName.GET_MEETING_DEAL_CONTEXT: ToolCategory.INTELLIGENCE,
     ToolName.GET_MEETING_SUMMARY: ToolCategory.INTELLIGENCE,
     # Contacts
@@ -497,6 +507,7 @@ class ToolRegistry:
             create_add_deal_note,
             create_add_stakeholder,
             create_create_deal,
+            create_dismiss_risk_blocker,
             create_enrich_stakeholder,
             create_get_deal_change_history,
             create_get_deal_details,
@@ -509,12 +520,15 @@ class ToolRegistry:
             create_list_deal_stakeholder_insights,
             create_list_deal_stakeholders,
             create_list_deals,
+            create_resolve_risk_blocker,
             create_search_contacts,
             create_search_deals,
             create_update_deal_stage,
+            create_update_risk_blocker,
             create_upsert_stakeholder,
         )
         from src.agents.tools.intelligence import (
+            create_get_compressed_transcript,
             create_get_meeting_deal_context,
             create_get_meeting_details,
             create_get_meeting_summary,
@@ -595,6 +609,15 @@ class ToolRegistry:
         self._tool_factories[ToolName.GET_EXISTING_RISKS_BLOCKERS] = (
             lambda: create_get_existing_risks_blockers(self.context, self.capabilities_getter)
         )
+        self._tool_factories[ToolName.UPDATE_RISK_BLOCKER] = lambda: create_update_risk_blocker(
+            self.context, self.capabilities_getter
+        )
+        self._tool_factories[ToolName.DISMISS_RISK_BLOCKER] = lambda: create_dismiss_risk_blocker(
+            self.context, self.capabilities_getter
+        )
+        self._tool_factories[ToolName.RESOLVE_RISK_BLOCKER] = lambda: create_resolve_risk_blocker(
+            self.context, self.capabilities_getter
+        )
         self._tool_factories[ToolName.LIST_DEAL_NOTES] = lambda: create_list_deal_notes(
             self.context, self.capabilities_getter
         )
@@ -628,6 +651,9 @@ class ToolRegistry:
         )
         self._tool_factories[ToolName.GET_MEETING_TRANSCRIPT] = (
             lambda: create_get_meeting_transcript(self.context, self.capabilities_getter)
+        )
+        self._tool_factories[ToolName.GET_COMPRESSED_TRANSCRIPT] = (
+            lambda: create_get_compressed_transcript(self.context, self.capabilities_getter)
         )
         self._tool_factories[ToolName.GET_MEETING_DEAL_CONTEXT] = (
             lambda: create_get_meeting_deal_context(self.context, self.capabilities_getter)

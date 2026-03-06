@@ -60,6 +60,7 @@ class DealMemoryAgent:
             debug_mode=config.debug_mode,
             expected_output=get_expected_output_format(),
             system_message=get_deal_memory_system_prompt(self.org_name),
+            telemetry=False,
         )
 
     async def generate(

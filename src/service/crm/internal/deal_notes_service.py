@@ -16,7 +16,7 @@ from src.domain.models.organisation_tables.sync.crm.stakeholders import DealStak
 from src.infra.utils.cursor import decode_cursor, encode_cursor
 from src.infra.utils.logger import get_logger
 from src.workers.deal_worker.utils.pipeline_dispatch import (
-    dispatch_deal_insight_chord,
+    dispatch_deal_insight_pipeline,
     get_or_create_deal_memory_job,
 )
 
@@ -392,7 +392,7 @@ class DealNotesService:
             )
             await self.org_session.commit()
 
-            dispatch_deal_insight_chord(org_id_str, str(deal_id), str(job_id))
+            dispatch_deal_insight_pipeline(org_id_str, str(deal_id), str(job_id))
 
             logger.info(
                 "Triggered deal insight pipeline after %s: deal=%s job=%s",

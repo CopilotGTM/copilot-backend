@@ -4,8 +4,9 @@ This module centralizes the async dispatch pattern used by note, email,
 meeting, and CRM-sync triggers:
 
 1. Reuse or create a single active ``DEAL_MEMORY_BUILD`` job per deal.
-2. Run Risk/Blocker extraction and Stakeholder analysis in parallel.
-3. Run Deal Memory only after both specialist tasks complete.
+2. Run Deal Memory first — it builds the foundational deal narrative.
+3. Run Risk/Blocker extraction and Stakeholder analysis in parallel
+   after Deal Memory completes (they read deal memory as context).
 
 Keeping this orchestration in one place prevents trigger-specific code paths
 from drifting into slightly different queueing behavior.
@@ -16,7 +17,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from uuid import UUID
 
-from celery import chain, chord, group
+from celery import chain, group
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
@@ -118,28 +119,38 @@ async def get_or_create_deal_memory_job(
     return job.job_id, True
 
 
-def build_deal_insight_chord(
+def build_deal_insight_pipeline(
     organisation_id: str,
     deal_id: str,
     job_id: str,
 ):
-    """Build the parallel risk+stakeholder -> deal memory canvas.
+    """Build the deal memory -> parallel risk+stakeholder pipeline.
 
-    The callback signature is immutable so the chord header results are not
-    injected into the deal-memory task arguments. Deal Memory reads specialist
-    outputs from the database instead of consuming raw Celery return payloads.
+    Deal Memory runs first to build the foundational deal narrative.
+    Risk/Blocker extraction and Stakeholder analysis then run in parallel,
+    using the deal memory as their primary context.
+
+    All signatures are immutable — downstream tasks read from the database,
+    not from Celery return payloads.
 
     Args:
         organisation_id: Organisation ID serialized for Celery transport.
         deal_id: Deal ID serialized for Celery transport.
-        job_id: Existing ``DEAL_MEMORY_BUILD`` job to complete in the callback.
+        job_id: Existing ``DEAL_MEMORY_BUILD`` job to complete first.
 
     Returns:
-        A Celery canvas representing ``chord(group(risk, stakeholder), deal_memory)``.
+        A Celery canvas representing ``chain(deal_memory, group(risk, stakeholder))``.
     """
     celery_app = get_deal_celery_client()
 
-    # Both specialist tasks are deal-scoped and run independently.
+    # Deal Memory runs first — builds the foundational deal narrative.
+    deal_memory_sig = celery_app.signature(
+        "deal_memory.process_job",
+        kwargs={"organisation_id": organisation_id, "job_id": job_id},
+        queue="deal_jobs",
+        immutable=True,
+    )
+    # Risk and Stakeholder run in parallel after deal memory completes.
     risk_blocker_sig = celery_app.signature(
         "risk_blocker.extract_deal_risks_blockers_task",
         args=[organisation_id, deal_id],
@@ -152,18 +163,11 @@ def build_deal_insight_chord(
         queue="deal_jobs",
         immutable=True,
     )
-    # Deal Memory runs only after both upstream tasks finish successfully.
-    deal_memory_sig = celery_app.signature(
-        "deal_memory.process_job",
-        kwargs={"organisation_id": organisation_id, "job_id": job_id},
-        queue="deal_jobs",
-        immutable=True,
-    )
 
-    return chord(group(risk_blocker_sig, stakeholder_sig), deal_memory_sig)
+    return chain(deal_memory_sig, group(risk_blocker_sig, stakeholder_sig))
 
 
-def dispatch_deal_insight_chord(
+def dispatch_deal_insight_pipeline(
     organisation_id: str,
     deal_id: str,
     job_id: str,
@@ -172,22 +176,20 @@ def dispatch_deal_insight_chord(
 ) -> None:
     """Dispatch the deal insight pipeline.
 
-    When ``prefix_signatures`` are provided, they run first and the chord is
-    attached at the end of the chain. This is used by the meeting-summary
-    pipeline so all pending meeting summaries finish before the parallel
-    specialist stage starts.
+    Pipeline order: deal_memory -> group(risk, stakeholder)
+
+    When ``prefix_signatures`` are provided (e.g. meeting summaries), they run
+    first in sequence before the deal insight pipeline starts.
 
     Args:
         organisation_id: Organisation ID serialized for Celery transport.
         deal_id: Deal ID serialized for Celery transport.
-        job_id: Existing ``DEAL_MEMORY_BUILD`` job to complete in the callback.
+        job_id: Existing ``DEAL_MEMORY_BUILD`` job to run first.
         prefix_signatures: Optional sequential Celery signatures to run before
-            the parallel risk/stakeholder stage.
+            the deal insight pipeline (e.g. meeting summary tasks).
     """
-    pipeline = build_deal_insight_chord(organisation_id, deal_id, job_id)
+    pipeline = build_deal_insight_pipeline(organisation_id, deal_id, job_id)
     if prefix_signatures:
-        # Meeting summary tasks must stay sequential, so we chain them first and
-        # then attach the parallel risk/stakeholder -> deal-memory stage.
         pipeline = chain(*prefix_signatures, pipeline)
 
     pipeline.apply_async()

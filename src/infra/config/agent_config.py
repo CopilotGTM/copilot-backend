@@ -85,9 +85,24 @@ class AgentConfig:
     STAKEHOLDER_TIMEOUT: int = int(os.getenv("AGENT_STAKEHOLDER_TIMEOUT", "180"))
 
     # Deal Memory Agent - builds/updates persistent deal memory documents
-    DEAL_MEMORY_MODEL: str = os.getenv("AGENT_DEAL_MEMORY_MODEL", "gpt-5.2")
+    DEAL_MEMORY_MODEL: str = os.getenv("AGENT_DEAL_MEMORY_MODEL", "gpt-5.4")
     DEAL_MEMORY_DEBUG: bool = os.getenv("AGENT_DEAL_MEMORY_DEBUG", "false").lower() == "true"
-    DEAL_MEMORY_TIMEOUT: int = int(os.getenv("AGENT_DEAL_MEMORY_TIMEOUT", "300"))
+    DEAL_MEMORY_TIMEOUT: int = int(os.getenv("AGENT_DEAL_MEMORY_TIMEOUT", "600"))
+
+    # ==========================================================================
+    # SUB-AGENTS
+    # ==========================================================================
+
+    # Transcript Compression Sub-Agent - condenses transcripts for deal memory
+    TRANSCRIPT_COMPRESSION_MODEL: str = os.getenv(
+        "AGENT_TRANSCRIPT_COMPRESSION_MODEL", "gpt-5-mini"
+    )
+    TRANSCRIPT_COMPRESSION_DEBUG: bool = (
+        os.getenv("AGENT_TRANSCRIPT_COMPRESSION_DEBUG", "false").lower() == "true"
+    )
+    TRANSCRIPT_COMPRESSION_TIMEOUT: int = int(
+        os.getenv("AGENT_TRANSCRIPT_COMPRESSION_TIMEOUT", "60")
+    )
 
     # ==========================================================================
     # CHAT AGENTS
@@ -128,6 +143,11 @@ class AgentConfig:
             "DEAL_MEMORY_MODEL",
             "DEAL_MEMORY_DEBUG",
             "DEAL_MEMORY_TIMEOUT",
+        ),
+        "transcript_compression_agent": (
+            "TRANSCRIPT_COMPRESSION_MODEL",
+            "TRANSCRIPT_COMPRESSION_DEBUG",
+            "TRANSCRIPT_COMPRESSION_TIMEOUT",
         ),
     }
 

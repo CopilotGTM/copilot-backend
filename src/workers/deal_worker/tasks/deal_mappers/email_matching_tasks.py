@@ -44,7 +44,7 @@ from src.workers.deal_worker.services.deal_mapper_services.deal_email_matcher im
     DealEmailMatcher,
 )
 from src.workers.deal_worker.utils.pipeline_dispatch import (
-    dispatch_deal_insight_chord,
+    dispatch_deal_insight_pipeline,
     get_or_create_deal_memory_job,
 )
 
@@ -155,7 +155,7 @@ def match_email_to_deals_org_task(
                     await session.commit()
 
                 if deal_memory_job_id:
-                    dispatch_deal_insight_chord(
+                    dispatch_deal_insight_pipeline(
                         organisation_id,
                         str(deal_uuid),
                         str(deal_memory_job_id),

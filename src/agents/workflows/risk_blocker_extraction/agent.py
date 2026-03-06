@@ -93,10 +93,12 @@ class RiskBlockerExtractionAgent:
         self.agent = Agent(
             model=AzureOpenAI(id=config.model, api_version=config.api_version),
             output_schema=RiskBlockerExtractionResult,
-            description=get_risk_blocker_system_prompt(self.context.org_name),
+            description="Risk and Blocker Extraction Agent for analyzing deal communications",
             tools=tools,
-            markdown=True,
+            tool_call_limit=100,
             debug_mode=config.debug_mode,
+            system_message=get_risk_blocker_system_prompt(self.context.org_name),
+            telemetry=False,
         )
 
     def _get_tools(self) -> list[Callable]:
@@ -126,10 +128,16 @@ class RiskBlockerExtractionAgent:
         self._publish_progress("Analyzing deal communications for risks...", "analysis", 0.2)
 
         user_prompt = (
-            f"Analyze deal {self.deal_id} communications and identify risks and blockers. "
-            "Gather all available data, check existing items for deduplication, "
-            "then extract new findings."
+            f"Analyze deal {self.deal_id} for risks and blockers. Follow the steps exactly:\n"
+            "1. Read the deal memory first — this is your primary context.\n"
+            "2. Read ALL existing risks/blockers (include dismissed). For each: decide whether to update, resolve, dismiss, or leave as-is. Take action via tools.\n"
+            "3. For any technical concerns, search internal knowledge to verify if they are actual gaps.\n"
+            "4. Only drill into specific transcripts/emails if you need a direct quote or to verify an ambiguous signal.\n"
+            "5. After managing existing items, identify genuinely NEW risks/blockers that pass all quality tests.\n"
+            "Return only new items in your structured output. Existing item management is done via tools."
         )
+
+        logger.info("RiskBlockerExtractionAgent running agent for deal %s", self.deal_id)
 
         self._publish_progress("AI is analyzing meetings and emails...", "tools", 0.4)
 

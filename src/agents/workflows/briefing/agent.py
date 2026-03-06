@@ -98,6 +98,7 @@ class BriefingAgent:
             tools=tools,
             markdown=True,
             debug_mode=config.debug_mode,
+            telemetry=False,
         )
 
     def _get_tools(self) -> list[Callable]:

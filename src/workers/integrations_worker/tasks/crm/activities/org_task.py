@@ -37,7 +37,7 @@ from src.service.integrations import NangoClient
 from src.service.integrations.crm.enrichment import CRMEnrichmentOrchestrator
 from src.service.integrations.crm.entities import DealTaskSyncService
 from src.workers.deal_worker.utils.pipeline_dispatch import (
-    dispatch_deal_insight_chord,
+    dispatch_deal_insight_pipeline,
     get_or_create_deal_memory_job,
 )
 from src.workers.integrations_worker.celery_app import app
@@ -270,7 +270,7 @@ def sync_crm_activities_org_task(
                         await session.commit()
 
                         if deal_memory_job_id:
-                            dispatch_deal_insight_chord(
+                            dispatch_deal_insight_pipeline(
                                 organisation_id,
                                 str(deal_uuid),
                                 str(deal_memory_job_id),
