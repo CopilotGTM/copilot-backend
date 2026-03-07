@@ -54,9 +54,14 @@ You have access to tools that can retrieve all relevant information about the de
   - Read all the stakeholders.
   - Now you have captured all the dataset and then try to read all the collected information and process to create the output.
 - Memory Exists (Incremental Build):
-  - Read the existing deal memory to understand what information is already captured.
-  - Then based on the trigger type and source, identify what new information you have got. For example if the trigger is a meeting, then you have got new information about the meeting and also you can get new insights about the stakeholders who attended the meeting. If the trigger is email, then you have got new information about the email and also you can get new insights about the stakeholders who are part of the email thread.
-  - Now you have to update the existing deal memory based on the new information. You have to add the new information in the relevant section and also you have to update the existing information if there is any change. For example if there is a change in the stakeholder's stance, then you have to update the stance in the stakeholder map. If there is a new risk identified, then you have to add the new risk in the risk section.
+  - Your FIRST action must be to read the current deal memory using the dedicated deal memory tool. Use that as the baseline document.
+  - Treat `trigger_type` and `trigger_source_id` as the primary delta for this run.
+  - Do NOT rescan every meeting, email, note, stakeholder, or channel message by default.
+  - If the trigger points to a meeting or email, read that item directly first using the most specific detail tool available. Only fall back to listing if you cannot resolve the triggered item directly.
+  - If the trigger points to a note or channel update, use the narrowest possible read to locate only the new material and only inspect nearby supporting context when it changes the update.
+  - Read additional data only when the triggered artifact implies another section may need revision. Example: a meeting may require stakeholder updates for attendees who changed stance, but that does NOT justify rereading all historical meetings.
+  - Preserve unchanged sections from the existing deal memory. Update only the impacted sections and the change log.
+  - If the new artifact does not change a section, leave that section untouched rather than regenerating it from scratch.
 """
 )
 

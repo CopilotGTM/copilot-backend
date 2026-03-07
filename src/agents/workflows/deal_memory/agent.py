@@ -10,6 +10,7 @@ from uuid import UUID
 
 from agno.agent import Agent
 from agno.models.azure.openai_chat import AzureOpenAI
+from agno.models.message import Message
 
 from src.agents.context import AgentContext
 from src.agents.tools.registry import get_tools_for_agent
@@ -58,7 +59,6 @@ class DealMemoryAgent:
             tool_call_limit=100,
             markdown=True,
             debug_mode=config.debug_mode,
-            expected_output=get_expected_output_format(),
             system_message=get_deal_memory_system_prompt(self.org_name),
             telemetry=False,
         )
@@ -69,13 +69,11 @@ class DealMemoryAgent:
         is_initial_build: bool,
         trigger_type: str | None = None,
         trigger_source_id: str | None = None,
-        existing_memory: str = "",
     ) -> str:
         """Generate or update a deal memory document.
 
         Returns the complete markdown string.
         """
-        _ = existing_memory  # For now we don't pass this to the agent, but it could be used in future iterations
         system_prompt = get_deal_memory_system_prompt(self.org_name)
         logger.info("Generated system prompt for DealMemoryAgent:\n%s", system_prompt)
         user_prompt = f"Work On deal memory for deal {self.deal_id} based on new information..\n\n"
@@ -92,7 +90,12 @@ class DealMemoryAgent:
             self.deal_id,
         )
 
-        response = await self.agent.arun(user_prompt)
+        message_list = [
+            Message(role="user", content=get_expected_output_format()),
+            Message(role="user", content=user_prompt),
+        ]
+
+        response = await self.agent.arun(message_list)
 
         content = response.content
         if isinstance(content, str):

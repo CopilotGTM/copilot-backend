@@ -118,7 +118,6 @@ class DealMemoryService:
         # Phase 1: Load existing memory + basic deal validation (fresh session)
         self._publish_progress("Loading deal context...", "context", 0.1)
 
-        existing_memory = ""
         is_initial = True
         org_name: str | None = None
 
@@ -145,7 +144,6 @@ class DealMemoryService:
             )
 
             if memory_row:
-                existing_memory = memory_row.content
                 is_initial = False
         # Org session released
 
@@ -168,7 +166,6 @@ class DealMemoryService:
                 is_initial_build=is_initial,
                 trigger_type=trigger_type,
                 trigger_source_id=(str(trigger_source_id) if trigger_source_id else None),
-                existing_memory=existing_memory,
             )
         except Exception as exc:
             raise DealMemoryError(
