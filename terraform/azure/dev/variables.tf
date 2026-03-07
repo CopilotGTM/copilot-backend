@@ -876,13 +876,13 @@ variable "demo_pipeline_branch" {
 variable "demo_frontend_dns_a_record_name" {
   description = "The name of the DNS record for the demo frontend app service."
   type        = string
-  default     = "demo"
+  default     = "demoapp"
 }
 
 variable "demo_frontend_dns_zone_name" {
   description = "DNS zone for the demo frontend hostname."
   type        = string
-  default     = "appcopilotgtm.com"
+  default     = "copilotgtm.com"
 }
 
 variable "demo_frontend_dns_zone_resource_group" {
@@ -890,6 +890,7 @@ variable "demo_frontend_dns_zone_resource_group" {
   type        = string
   default     = null
 }
+
 
 
 

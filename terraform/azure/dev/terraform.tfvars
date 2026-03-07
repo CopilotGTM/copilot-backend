@@ -194,13 +194,14 @@ resend_email      = "noreply@team.copilotgtm.com" # Override from default
 # Demo Frontend & Demo Pipeline (Dev only)
 # -----------------------------------------------------------------
 demo_frontend_sku_name                = "B1"
-demo_frontend_dns_a_record_name       = "demo"
-demo_frontend_dns_zone_name           = "appcopilotgtm.com"
+demo_frontend_dns_a_record_name       = "demoapp"
+demo_frontend_dns_zone_name           = "copilotgtm.com"
 demo_frontend_dns_zone_resource_group = "master-resources"
 
 demo_pipeline_name     = "demo pipeline"
 demo_pipeline_yml_path = "pipelines/.azure-pipelines/azure-pipelines-demo.yml"
 # Default branch for the pipeline definition. The repo YAML must still include demo/* triggers.
 demo_pipeline_branch = "dev"
+
 
 
