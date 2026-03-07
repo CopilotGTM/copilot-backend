@@ -31,7 +31,7 @@ from src.domain.models.organisation_tables.sync.risk_blocker_models import (
     RiskBlockerType,
 )
 from src.domain.models.organisation_tables.sync.timeline_models import TimelineEventType
-from src.infra.database.sessions import acquire_org_async_session
+from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.service.crm.timeline.deal_timeline_sync_service import (
     build_risk_blocker_timeline_event,
@@ -226,7 +226,6 @@ class RiskBlockerExtractionService:
             deal = await get_deal(session, self.organisation_id, deal_id)
             if not deal:
                 raise DealNotFoundError(deal_id)
-            org_name = await get_organisation_name(session, self.organisation_id)
 
             # Lightweight guard — no point wasting an LLM call with zero content
             meeting_count = await count_deal_meetings(session, self.organisation_id, deal_id)
@@ -234,6 +233,10 @@ class RiskBlockerExtractionService:
             if meeting_count == 0 and email_count == 0:
                 raise NoContentError(deal_id)
         # Session released
+
+        # Org name lives in public schema — use a master session
+        async for master_session in acquire_master_async_session():
+            org_name = await get_organisation_name(master_session, self.organisation_id)
 
         logger.info("Starting risk/blocker extraction for deal %s", deal_id)
         self._publish_progress("Starting AI analysis...", "preparing", 0.2)

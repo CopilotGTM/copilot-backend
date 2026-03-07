@@ -339,7 +339,7 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         # Meeting tools (targeted drill-down for quotes/evidence)
         ToolName.LIST_DEAL_MEETINGS,
         ToolName.GET_MEETING_DETAILS,
-        ToolName.GET_MEETING_TRANSCRIPT,
+        ToolName.GET_COMPRESSED_TRANSCRIPT,
         # Communication tools (targeted drill-down for quotes/evidence)
         ToolName.LIST_DEAL_EMAILS,
         ToolName.GET_EMAIL_DETAILS,

@@ -34,6 +34,7 @@ class RiskBlockerListItem(BaseModel):
 
     # Source (for source column with icon)
     source_type: RiskBlockerSource
+    source_record_id: str | None = None
     source_context: str | None = None  # e.g., "Discovery Call - Dec 15"
 
     # Assignment (for owner column)
@@ -149,6 +150,7 @@ class RiskBlockerCreateRequest(BaseModel):
 class RiskBlockerUpdateRequest(BaseModel):
     """Request model for updating a risk/blocker."""
 
+    item_type: RiskBlockerType | None = None
     title: str | None = Field(None, max_length=500)
     description: str | None = None
     category: RiskBlockerCategory | None = None

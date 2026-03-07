@@ -38,7 +38,7 @@ from src.domain.models.organisation_tables.sync.stakeholder_insight_models impor
     StakeholderInsightType,
     create_insight_action,
 )
-from src.infra.database.sessions import acquire_org_async_session
+from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.workers.deal_worker.utils.deal_job_utils import (
     get_deal,
@@ -165,8 +165,11 @@ class StakeholderAnalysisService:
             if not deal:
                 logger.warning("Deal %s not found in org %s", deal_id, self.organisation_id)
                 return {}
-            org_name = await get_organisation_name(session, self.organisation_id)
         # Session released
+
+        # Org name lives in public schema — use a master session
+        async for master_session in acquire_master_async_session():
+            org_name = await get_organisation_name(master_session, self.organisation_id)
 
         stakeholders = await self.get_stakeholders_for_deal(deal_id)
         if not stakeholders:

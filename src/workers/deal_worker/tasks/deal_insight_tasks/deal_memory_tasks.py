@@ -44,6 +44,7 @@ from src.workers.deal_worker.services.deal_insight_services import (
     DealMemoryService,
 )
 from src.workers.deal_worker.services.deal_job_publisher import DealJobRedisPublisher
+from src.workers.deal_worker.utils.pipeline_dispatch import dispatch_deal_insight_pipeline
 
 logger = get_logger(__name__)
 
@@ -177,9 +178,9 @@ def build_deal_memory_org(self: Task, organisation_id: str):
         service = DealMemoryService(UUID(organisation_id))
         result = run_async(service.backfill_org())
 
-        # Dispatch process jobs for each created job
-        for org_id_str, job_id_str in result["jobs_to_dispatch"]:
-            process_deal_memory_job.delay(organisation_id=org_id_str, job_id=job_id_str)
+        # Dispatch full insight pipeline (deal_memory → risk + stakeholder)
+        for org_id_str, job_id_str, deal_id_str in result["jobs_to_dispatch"]:
+            dispatch_deal_insight_pipeline(org_id_str, deal_id_str, job_id_str)
 
         logger.info(
             "Deal memory backfill org=%s dispatched=%d skipped=%d",

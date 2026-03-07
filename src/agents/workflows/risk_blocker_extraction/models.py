@@ -73,6 +73,10 @@ class ExtractedRiskBlocker(BaseModel):
         ...,
         description="Brief context about where this was identified (e.g., 'Q3 Planning Call', 'Email from CTO')",
     )
+    source_record_id: str | None = Field(
+        None,
+        description="Exact source record identifier from tool output, such as event_id or internet_message_id",
+    )
     # Enum field - no description (OpenAI $ref limitation)
     source_type: RiskBlockerSource
 

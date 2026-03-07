@@ -127,10 +127,10 @@ class DealWorkerConfig(BaseWorkerConfig):
                 "schedule": crontab(minute=45),
                 "options": {"queue": "deal", "routing_key": "deal"},
             },
-            # Hourly: Deal memory backfill — build memory for deals that have data but no memory
+            # Every 3 hours: Deal memory backfill — build memory for deals that have data but no memory
             "deal-memory-backfill": {
                 "task": "deal_memory.trigger_backfill_all_orgs",
-                "schedule": crontab(minute=10),
+                "schedule": crontab(minute=10, hour="*/3"),
                 "options": {"queue": "deal", "routing_key": "deal"},
             },
         }

@@ -28,6 +28,7 @@ from src.domain.models.organisation_tables.sync.risk_blocker_models import (
     DealRiskBlocker,
     RiskBlockerSeverity,
     RiskBlockerStatus,
+    RiskBlockerType,
 )
 from src.domain.models.organisation_tables.sync.timeline_models import TimelineEventType
 from src.service.crm.timeline.deal_timeline_sync_service import (
@@ -50,6 +51,7 @@ async def update_risk_blocker_impl(
     *,
     context: AgentContext,
     risk_blocker_id: str,
+    item_type: str | None = None,
     severity: str | None = None,
     description: str | None = None,
     reasoning: str | None = None,
@@ -84,6 +86,20 @@ async def update_risk_blocker_impl(
 
         changes: dict[str, dict[str, str]] = {}
 
+        if item_type:
+            try:
+                new_item_type = RiskBlockerType(item_type)
+                old_val = (
+                    item.item_type.value
+                    if hasattr(item.item_type, "value")
+                    else str(item.item_type)
+                )
+                if old_val != new_item_type.value:
+                    changes["item_type"] = {"old": old_val, "new": new_item_type.value}
+                    item.item_type = new_item_type
+            except ValueError:
+                pass
+
         if severity:
             try:
                 new_severity = RiskBlockerSeverity(severity)
@@ -106,18 +122,34 @@ async def update_risk_blocker_impl(
                 item.description = description
 
         if reasoning:
-            item.ai_reasoning = reasoning
+            old_reasoning = item.ai_reasoning or ""
+            if old_reasoning != reasoning:
+                changes["ai_reasoning"] = {
+                    "old": old_reasoning[:100] + "..."
+                    if len(old_reasoning) > 100
+                    else old_reasoning,
+                    "new": reasoning[:100] + "..." if len(reasoning) > 100 else reasoning,
+                }
+                item.ai_reasoning = reasoning
 
+        data = item.risk_blocker_data or {}
         if recommended_next_step:
-            data = item.risk_blocker_data or {}
-            data["recommended_next_step"] = recommended_next_step
-            item.risk_blocker_data = data
+            old_next_step = str(data.get("recommended_next_step") or "")
+            if old_next_step != recommended_next_step:
+                changes["recommended_next_step"] = {
+                    "old": old_next_step[:100] + "..."
+                    if len(old_next_step) > 100
+                    else old_next_step,
+                    "new": recommended_next_step[:100] + "..."
+                    if len(recommended_next_step) > 100
+                    else recommended_next_step,
+                }
+                data["recommended_next_step"] = recommended_next_step
 
-        if not changes and not reasoning and not recommended_next_step:
+        if not changes:
             return {"status": "no_changes", "message": "No fields changed"}
 
         # Audit trail
-        data = item.risk_blocker_data or {}
         trail = data.get("audit_trail", [])
         trail.append(
             {
@@ -125,9 +157,10 @@ async def update_risk_blocker_impl(
                 "timestamp": datetime.now(UTC).isoformat(),
                 "actor_type": "system",
                 "actor_id": "risk_blocker_extraction_agent",
-                "details": {"fields_changed": list(changes.keys())}
-                if changes
-                else {"note": "reasoning/next_step updated"},
+                "details": {
+                    "fields_changed": list(changes.keys()),
+                    "changes": changes,
+                },
             }
         )
         data["audit_trail"] = trail
@@ -193,7 +226,8 @@ async def dismiss_risk_blocker_impl(
             }
 
         previous_status = current_status
-        item.status = RiskBlockerStatus.AI_DISMISSED
+        new_status = RiskBlockerStatus.AI_DISMISSED
+        item.status = new_status
         item.updated_at = datetime.now(UTC)
 
         # Audit trail
@@ -207,6 +241,7 @@ async def dismiss_risk_blocker_impl(
                 "actor_id": "risk_blocker_extraction_agent",
                 "details": {
                     "previous_status": previous_status,
+                    "new_status": new_status.value,
                     "reason": reason,
                 },
             }
@@ -222,6 +257,7 @@ async def dismiss_risk_blocker_impl(
             "status": "dismissed",
             "risk_blocker_id": risk_blocker_id,
             "previous_status": previous_status,
+            "new_status": new_status.value,
             "reason": reason,
         }
 
@@ -326,6 +362,7 @@ def create_update_risk_blocker(
 
     async def update_risk_blocker_tool(
         risk_blocker_id: str,
+        item_type: str | None = None,
         severity: str | None = None,
         description: str | None = None,
         reasoning: str | None = None,
@@ -333,15 +370,19 @@ def create_update_risk_blocker(
     ) -> dict[str, Any]:
         """Update an existing risk or blocker when new evidence changes the assessment.
 
-        This tool updates content and severity — it does NOT change the status.
+        This tool updates classification, content, and severity — it does NOT change the status.
         To change status, use dismiss_risk_blocker or resolve_risk_blocker instead.
 
         When to use: a risk/blocker already exists but new deal evidence changes
-        how severe it is, what the description should say, or what the next step is.
-        Example: a MEDIUM budget risk escalates to HIGH after CFO said "cutting all discretionary spend."
+        whether it should be a risk vs blocker, how severe it is, what the
+        description should say, or what the next step is.
+        Example: a stalled legal review that was previously tracked as a risk
+        should be updated to BLOCKER once the buyer says the deal cannot proceed
+        until legal signs off.
 
         Args:
             risk_blocker_id: UUID of the item to update (from get_existing_risks_blockers)
+            item_type: New classification if changed: RISK | BLOCKER
             severity: New severity level if changed: CRITICAL | HIGH | MEDIUM | LOW
             description: Updated description incorporating new evidence
             reasoning: Updated reasoning explaining the changed assessment
@@ -356,6 +397,7 @@ def create_update_risk_blocker(
             parameters={
                 "context": context,
                 "risk_blocker_id": risk_blocker_id,
+                "item_type": item_type,
                 "severity": severity,
                 "description": description,
                 "reasoning": reasoning,

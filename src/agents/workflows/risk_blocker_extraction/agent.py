@@ -130,11 +130,12 @@ class RiskBlockerExtractionAgent:
         user_prompt = (
             f"Analyze deal {self.deal_id} for risks and blockers. Follow the steps exactly:\n"
             "1. Read the deal memory first — this is your primary context.\n"
-            "2. Read ALL existing risks/blockers (include dismissed). For each: decide whether to update, resolve, dismiss, or leave as-is. Take action via tools.\n"
+            "2. Read ALL existing risks/blockers (include dismissed). For each: leave it as-is if still valid, update it if the assessment changed but it is still active, resolve it if the issue was real and later got addressed, and dismiss it if current evidence shows it should no longer be tracked as an active issue. Take action via tools.\n"
             "3. For any technical concerns, search internal knowledge to verify if they are actual gaps.\n"
             "4. Only drill into specific transcripts/emails if you need a direct quote or to verify an ambiguous signal.\n"
+            "4a. When a tool returns source_record_id, copy that exact value into the new item.\n"
             "5. After managing existing items, identify genuinely NEW risks/blockers that pass all quality tests.\n"
-            "Return only new items in your structured output. Existing item management is done via tools."
+            "Return only new items in your structured output. Existing item management is done via tools. It is acceptable to return zero new items."
         )
 
         logger.info("RiskBlockerExtractionAgent running agent for deal %s", self.deal_id)

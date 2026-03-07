@@ -6,17 +6,14 @@ and building context for job handlers.
 
 from __future__ import annotations
 
-import contextlib
 from datetime import datetime
 from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy import select
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlmodel import col
-from src.domain.models.master_tables.organisation_models import Organisation
 from src.domain.models.organisation_tables.sync.calendar import (
     CalendarEvent,
     CalendarEventDealAssociation,
@@ -24,27 +21,10 @@ from src.domain.models.organisation_tables.sync.calendar import (
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
 from src.domain.models.organisation_tables.sync.crm.stakeholders import DealStakeholder
 
+# Re-export from shared module so existing imports keep working
+from src.workers.base.worker_utils import get_organisation_name
 
-async def get_organisation_name(session: AsyncSession, org_id: UUID) -> str | None:
-    """Load the organisation display name (best-effort).
-
-    Note: Depending on tenant DB configuration, master tables may or may not be
-    available through the provided session. Callers should treat failures as
-    non-fatal and fall back to a default name.
-    """
-
-    stmt = select(col(Organisation.organisation_name)).where(
-        col(Organisation.organisation_id) == org_id,
-    )
-    try:
-        result = await session.execute(stmt)
-        return result.scalar_one_or_none()
-    except SQLAlchemyError:
-        # Best-effort: some tenant connections don't have access to master tables.
-        # Ensure the surrounding session isn't left in a failed transaction.
-        with contextlib.suppress(Exception):
-            await session.rollback()
-        return None
+__all__ = ["get_organisation_name"]
 
 
 async def get_deal(session: AsyncSession, org_id: UUID, deal_id: UUID) -> CRMDeal | None:

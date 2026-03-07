@@ -228,7 +228,7 @@ class DealMemoryService:
         Called by the Tier 2 backfill task (build_deal_memory_org).
 
         Returns:
-            Dict with 'jobs_to_dispatch' (list of (org_id, job_id) tuples),
+            Dict with 'jobs_to_dispatch' (list of (org_id, job_id, deal_id) tuples),
             'dispatched' count, and optionally 'skipped' count.
         """
         org_id = self.organisation_id
@@ -252,13 +252,13 @@ class DealMemoryService:
         # Session released
 
         if not candidate_ids:
-            return {"jobs_to_dispatch": [], "dispatched": 0}
+            return {"jobs_to_dispatch": [], "dispatched": 0, "skipped": 0}
 
         # Phase 2: Filter to only deals that have data (single bulk query)
         eligible_ids = await self._deals_with_data(candidate_ids)
 
         if not eligible_ids:
-            return {"jobs_to_dispatch": [], "dispatched": 0}
+            return {"jobs_to_dispatch": [], "dispatched": 0, "skipped": len(candidate_ids)}
 
         # Phase 3: Create jobs for eligible deals (single session, one commit)
         jobs: list[DealJobs] = []
@@ -282,8 +282,9 @@ class DealMemoryService:
             # Session released
 
         return {
-            "jobs_to_dispatch": [(str(org_id), str(j.job_id)) for j in jobs],
+            "jobs_to_dispatch": [(str(org_id), str(j.job_id), str(j.deal_id)) for j in jobs],
             "dispatched": len(jobs),
+            "skipped": len(candidate_ids) - len(eligible_ids),
         }
 
     async def _deals_with_data(self, deal_ids: list[UUID]) -> list[UUID]:
