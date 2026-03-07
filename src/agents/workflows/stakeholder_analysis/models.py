@@ -34,11 +34,19 @@ class StakeholderAnalysisData(BaseModel):
     )
     motivation: str = Field(
         ...,
-        description="Primary motivations driving this stakeholder's interest in the solution",
+        description=(
+            "One concise seller-facing statement describing the strongest outcome, pressure, "
+            "or personal win this stakeholder cares about"
+        ),
     )
     pain_points: list[str] = Field(
         ...,
-        description="List of pain points or challenges mentioned by this stakeholder",
+        min_length=2,
+        max_length=3,
+        description=(
+            "Exactly 2 or 3 stakeholder-specific problems, blockers, or frustrations that "
+            "would materially increase this person's interest if solved"
+        ),
     )
     keywords: list[str] = Field(
         ...,
@@ -46,7 +54,10 @@ class StakeholderAnalysisData(BaseModel):
     )
     analysis_summary: str = Field(
         ...,
-        description="A comprehensive narrative analysis of the stakeholder's role, influence, and engagement patterns",
+        description=(
+            "A concise seller-ready analysis of the stakeholder's role, influence, engagement "
+            "pattern, and how to work with them"
+        ),
     )
 
 

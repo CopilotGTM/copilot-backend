@@ -365,8 +365,7 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         # Meeting tools
         ToolName.LIST_DEAL_MEETINGS,
         ToolName.GET_MEETING_DETAILS,
-        ToolName.GET_MEETING_SUMMARY,
-        ToolName.GET_MEETING_TRANSCRIPT,
+        ToolName.GET_COMPRESSED_TRANSCRIPT,
         # Communication tools
         ToolName.LIST_DEAL_EMAILS,
         ToolName.GET_EMAIL_DETAILS,
