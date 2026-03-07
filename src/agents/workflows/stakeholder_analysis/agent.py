@@ -98,9 +98,10 @@ class StakeholderAnalysisAgent:
 
         user_prompt = (
             f"Analyze all stakeholders for deal {self.deal_id}. "
-            "Gather all available data including stakeholder profiles, meetings, "
-            "emails, and notes, then produce the structured analysis for each "
-            "stakeholder."
+            "Follow the required working sequence in the system prompt: read "
+            "deal memory first for orientation, inspect current stakeholder "
+            "records, gather recent direct evidence, drill deeper only where "
+            "needed"
         )
 
         response = await self.agent.arun(user_prompt)
