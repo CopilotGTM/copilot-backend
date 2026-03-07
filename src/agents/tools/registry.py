@@ -359,7 +359,6 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         # Stakeholder tools
         ToolName.LIST_DEAL_STAKEHOLDERS,
         ToolName.GET_STAKEHOLDER_DETAILS,
-        ToolName.LIST_DEAL_STAKEHOLDER_INSIGHTS,
         ToolName.ENRICH_STAKEHOLDER,  # LinkedIn enrichment for stakeholders
         ToolName.ENRICH_LINKEDIN_PROFILE,  # LinkedIn profile enrichment
         ToolName.RESEARCH_LINKEDIN_PROFILE,  # LinkedIn research by name/URL

@@ -1,4 +1,4 @@
-"""Stakeholder analysis agent for extracting insights from deal data.
+"""Stakeholder analysis agent for enriching stakeholder records from deal data.
 
 This agent uses tools to gather meetings, emails, stakeholder data, and
 deal memory, then produces structured DealStakeholdersAnalysisData output
@@ -36,7 +36,7 @@ logger = get_logger(__name__)
 
 
 class StakeholderAnalysisAgent:
-    """Agent for analyzing all stakeholder insights using tools.
+    """Agent for analyzing stakeholder attributes using tools.
 
     Uses Agno with tools to gather meetings, emails, and stakeholder data,
     then produces a structured DealStakeholdersAnalysisData response.
@@ -100,7 +100,7 @@ class StakeholderAnalysisAgent:
             f"Analyze all stakeholders for deal {self.deal_id}. "
             "Gather all available data including stakeholder profiles, meetings, "
             "emails, and notes, then produce the structured analysis for each "
-            "stakeholder and generate actionable insights."
+            "stakeholder."
         )
 
         response = await self.agent.arun(user_prompt)
