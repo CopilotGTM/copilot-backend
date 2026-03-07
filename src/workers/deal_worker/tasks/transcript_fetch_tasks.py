@@ -17,7 +17,7 @@ Architecture (Deal-Centric):
                     1. Fetch transcripts for that deal's meetings (parallel)
                     2. Immediately trigger pipeline:
                         - Generate meeting summaries (sequential, oldest first)
-                        - Generate deal summary after all meetings done
+                        - Run risk + stakeholder in parallel, then generate deal memory
                     3. Move to next deal
 
     This is simpler than fetching all transcripts first, then triggering pipelines.
@@ -98,7 +98,7 @@ def fetch_meeting_transcripts_org_task(
         org_uuid = UUID(organisation_id)
 
         # Deal-centric processing:
-        # For each deal: fetch transcripts → trigger pipeline (meeting summaries → deal summary)
+        # For each deal: fetch transcripts -> trigger pipeline (meeting summaries -> deal memory)
         # Pipeline is triggered immediately after each deal's transcripts are fetched
         service = TranscriptFetchTaskService(org_uuid)
         result = await service.process_all()
@@ -115,7 +115,7 @@ def fetch_meeting_transcripts_org_task(
             "transcripts_not_available": result.transcripts_not_available,
             "transcripts_failed": result.transcripts_failed,
             "pipelines_triggered": result.pipelines_triggered,
-            "deal_summaries_triggered": result.deal_summaries_triggered,
+            "deal_memories_triggered": result.deal_memories_triggered,
             "fetching_reset": result.fetching_reset,
             "prep_jobs_created": result.prep_jobs_created,
             "prep_jobs_skipped": result.prep_jobs_skipped,

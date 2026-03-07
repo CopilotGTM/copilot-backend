@@ -58,12 +58,12 @@ class AgentConfig:
     # Summary Agent - generates meeting summaries from transcripts
     SUMMARY_MODEL: str = os.getenv("AGENT_SUMMARY_MODEL", "gpt-5.2")
     SUMMARY_DEBUG: bool = os.getenv("AGENT_SUMMARY_DEBUG", "false").lower() == "true"
-    SUMMARY_TIMEOUT: int = int(os.getenv("AGENT_SUMMARY_TIMEOUT", "120"))
+    SUMMARY_TIMEOUT: int = int(os.getenv("AGENT_SUMMARY_TIMEOUT", "600"))
 
     # Briefing Agent - generates meeting preparation briefings
     BRIEFING_MODEL: str = os.getenv("AGENT_BRIEFING_MODEL", "gpt-5.2")
     BRIEFING_DEBUG: bool = os.getenv("AGENT_BRIEFING_DEBUG", "false").lower() == "true"
-    BRIEFING_TIMEOUT: int = int(os.getenv("AGENT_BRIEFING_TIMEOUT", "180"))
+    BRIEFING_TIMEOUT: int = int(os.getenv("AGENT_BRIEFING_TIMEOUT", "600"))
 
     # ==========================================================================
     # DEAL-LEVEL AGENTS
@@ -72,31 +72,46 @@ class AgentConfig:
     # Deal Summary Agent - generates comprehensive deal summaries
     DEAL_SUMMARY_MODEL: str = os.getenv("AGENT_DEAL_SUMMARY_MODEL", "gpt-5.2")
     DEAL_SUMMARY_DEBUG: bool = os.getenv("AGENT_DEAL_SUMMARY_DEBUG", "false").lower() == "true"
-    DEAL_SUMMARY_TIMEOUT: int = int(os.getenv("AGENT_DEAL_SUMMARY_TIMEOUT", "300"))
+    DEAL_SUMMARY_TIMEOUT: int = int(os.getenv("AGENT_DEAL_SUMMARY_TIMEOUT", "600"))
 
     # Risk Blocker Extraction Agent - extracts risks and blockers from deal communications
     RISK_BLOCKER_MODEL: str = os.getenv("AGENT_RISK_BLOCKER_MODEL", "gpt-5.2")
     RISK_BLOCKER_DEBUG: bool = os.getenv("AGENT_RISK_BLOCKER_DEBUG", "false").lower() == "true"
-    RISK_BLOCKER_TIMEOUT: int = int(os.getenv("AGENT_RISK_BLOCKER_TIMEOUT", "300"))
+    RISK_BLOCKER_TIMEOUT: int = int(os.getenv("AGENT_RISK_BLOCKER_TIMEOUT", "600"))
 
     # Stakeholder Analysis Agent - analyzes stakeholder insights from transcripts
-    STAKEHOLDER_MODEL: str = os.getenv("AGENT_STAKEHOLDER_MODEL", "gpt-5.2")
+    STAKEHOLDER_MODEL: str = os.getenv("AGENT_STAKEHOLDER_MODEL", "gpt-5.4")
     STAKEHOLDER_DEBUG: bool = os.getenv("AGENT_STAKEHOLDER_DEBUG", "false").lower() == "true"
-    STAKEHOLDER_TIMEOUT: int = int(os.getenv("AGENT_STAKEHOLDER_TIMEOUT", "180"))
+    STAKEHOLDER_TIMEOUT: int = int(os.getenv("AGENT_STAKEHOLDER_TIMEOUT", "600"))
 
     # Deal Memory Agent - builds/updates persistent deal memory documents
-    DEAL_MEMORY_MODEL: str = os.getenv("AGENT_DEAL_MEMORY_MODEL", "gpt-5.2")
+    DEAL_MEMORY_MODEL: str = os.getenv("AGENT_DEAL_MEMORY_MODEL", "gpt-5.4")
     DEAL_MEMORY_DEBUG: bool = os.getenv("AGENT_DEAL_MEMORY_DEBUG", "false").lower() == "true"
-    DEAL_MEMORY_TIMEOUT: int = int(os.getenv("AGENT_DEAL_MEMORY_TIMEOUT", "300"))
+    DEAL_MEMORY_TIMEOUT: int = int(os.getenv("AGENT_DEAL_MEMORY_TIMEOUT", "600"))
+
+    # ==========================================================================
+    # SUB-AGENTS
+    # ==========================================================================
+
+    # Transcript Compression Sub-Agent - condenses transcripts for deal memory
+    TRANSCRIPT_COMPRESSION_MODEL: str = os.getenv(
+        "AGENT_TRANSCRIPT_COMPRESSION_MODEL", "gpt-5-mini"
+    )
+    TRANSCRIPT_COMPRESSION_DEBUG: bool = (
+        os.getenv("AGENT_TRANSCRIPT_COMPRESSION_DEBUG", "false").lower() == "true"
+    )
+    TRANSCRIPT_COMPRESSION_TIMEOUT: int = int(
+        os.getenv("AGENT_TRANSCRIPT_COMPRESSION_TIMEOUT", "300")
+    )
 
     # ==========================================================================
     # CHAT AGENTS
     # ==========================================================================
 
     # General Agent - handles user queries with search and deal context tools
-    GENERAL_MODEL: str = os.getenv("AGENT_GENERAL_MODEL", "gpt-5.2")
+    GENERAL_MODEL: str = os.getenv("AGENT_GENERAL_MODEL", "gpt-5.4")
     GENERAL_DEBUG: bool = os.getenv("AGENT_GENERAL_DEBUG", "false").lower() == "true"
-    GENERAL_TIMEOUT: int = int(os.getenv("AGENT_GENERAL_TIMEOUT", "60"))
+    GENERAL_TIMEOUT: int = int(os.getenv("AGENT_GENERAL_TIMEOUT", "600"))
 
     # Router Agent - routes queries to appropriate agents
     ROUTER_MODEL: str = os.getenv("AGENT_ROUTER_MODEL", "gpt-5.2")
@@ -128,6 +143,11 @@ class AgentConfig:
             "DEAL_MEMORY_MODEL",
             "DEAL_MEMORY_DEBUG",
             "DEAL_MEMORY_TIMEOUT",
+        ),
+        "transcript_compression_agent": (
+            "TRANSCRIPT_COMPRESSION_MODEL",
+            "TRANSCRIPT_COMPRESSION_DEBUG",
+            "TRANSCRIPT_COMPRESSION_TIMEOUT",
         ),
     }
 

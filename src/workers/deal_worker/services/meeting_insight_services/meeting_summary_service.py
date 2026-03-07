@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID
 
-from celery import chain, signature
+from celery import signature
 from sqlalchemy import or_, select
 from sqlalchemy.sql.expression import cast
 from sqlalchemy.types import String
@@ -26,7 +26,7 @@ from src.domain.models.organisation_tables.sync.calendar import (
     GenerationStatus,
 )
 from src.domain.models.organisation_tables.sync.meeting_intelligence import Meeting, MeetingStatus
-from src.infra.database.sessions import acquire_org_async_session
+from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.service.integrations.transcripts import TranscriptService
 from src.workers.deal_worker.services.deal_job_publisher import DealJobRedisPublisher
@@ -35,6 +35,10 @@ from src.workers.deal_worker.utils.deal_job_utils import (
     get_deal,
     get_event,
     get_organisation_name,
+)
+from src.workers.deal_worker.utils.pipeline_dispatch import (
+    dispatch_deal_insight_pipeline,
+    get_or_create_deal_memory_job,
 )
 
 logger = get_logger(__name__)
@@ -88,7 +92,7 @@ class PipelineResult:
     jobs_skipped: int = 0  # Already had active job
     tasks_triggered: int = 0
     meetings_processed: int = 0  # For backwards compatibility
-    deal_summary_triggered: bool = False  # Whether deal summary was added to chain
+    deal_memory_triggered: bool = False  # Whether deal memory was added to chain
     risk_blocker_triggered: bool = False  # Whether risk blocker extraction was added to chain
     stakeholder_analysis_triggered: bool = False  # Whether stakeholder analysis was added to chain
 
@@ -159,8 +163,10 @@ class MeetingSummaryService:
         online_meeting_id: str | None = None
         online_meeting_provider: str | None = None
 
+        async for master_session in acquire_master_async_session():
+            org_name = await get_organisation_name(master_session, self.organisation_id)
+
         async for session in acquire_org_async_session(self.organisation_id):
-            org_name = await get_organisation_name(session, self.organisation_id)
             deal = await get_deal(session, self.organisation_id, self.deal_id)
             event = await get_event(session, self.organisation_id, self.event_id)
 
@@ -343,131 +349,68 @@ class MeetingSummaryService:
         await session.refresh(job)
         return job
 
-    async def _get_or_create_deal_summary_job(
-        self, session, deal_id: UUID
-    ) -> tuple[DealJobs, bool]:
-        """Get or create a deal summary job for chaining after meeting summaries.
-
-        Returns:
-            Tuple of (job, created) where created is True if a new job was created.
-        """
-        # Check for existing active deal summary job
-        stmt = select(DealJobs).where(
-            col(DealJobs.organisation_id) == self.organisation_id,
-            col(DealJobs.deal_id) == deal_id,
-            col(DealJobs.event_id).is_(None),  # Deal summary has no event_id
-            col(DealJobs.job_type) == DealJobType.DEAL_SUMMARY,
-            col(DealJobs.status).in_([JobStatus.PENDING, JobStatus.IN_PROGRESS]),
-        )
-        result = await session.execute(stmt)
-        existing_job = result.scalars().first()
-
-        if existing_job:
-            return existing_job, False
-
-        # Create new job
-        job = DealJobs(
-            organisation_id=self.organisation_id,
-            user_id=AUTOMATED_PIPELINE_USER_ID,
-            job_type=DealJobType.DEAL_SUMMARY,
-            deal_id=deal_id,
-            event_id=None,  # Deal summary has no event_id
-            status=JobStatus.PENDING,
-            job_metadata={"source": "automated_pipeline", "chained_from": "meeting_summaries"},
-        )
-        session.add(job)
-        await session.flush()
-        await session.refresh(job)
-        return job, True
-
-    async def _trigger_deal_summary_only(self, deal_id: UUID, result: PipelineResult) -> None:
-        """Trigger deal summary directly without meeting summary chain.
-
-        Used when all meeting summaries are done but deal summary is missing.
-        Chains: deal_summary → risk_blocker_extraction → stakeholder_analysis
-        """
-        deal_summary_job_id: UUID | None = None
+    async def _trigger_deal_insight_pipeline(self, deal_id: UUID, result: PipelineResult) -> None:
+        """Trigger the parallel risk+stakeholder -> deal memory pipeline."""
+        deal_memory_job_id: UUID | None = None
 
         async for session in acquire_org_async_session(self.organisation_id):
-            deal_summary_job, created = await self._get_or_create_deal_summary_job(session, deal_id)
-            deal_summary_job_id = deal_summary_job.job_id
+            deal_memory_job_id, created = await get_or_create_deal_memory_job(
+                session,
+                self.organisation_id,
+                deal_id,
+                "automated_pipeline",
+                "meeting_summaries_completed",
+                chained_from="meeting_summaries",
+            )
             if created:
                 logger.debug(
-                    "Created deal summary job for deal=%s job=%s",
+                    "Created deal memory job for deal=%s job=%s",
                     deal_id,
-                    deal_summary_job_id,
+                    deal_memory_job_id,
                 )
             else:
                 logger.debug(
-                    "Using existing deal summary job for deal=%s job=%s",
+                    "Using existing deal memory job for deal=%s job=%s",
                     deal_id,
-                    deal_summary_job_id,
+                    deal_memory_job_id,
                 )
             await session.commit()
 
-        if deal_summary_job_id:
+        if deal_memory_job_id:
             try:
-                # Build chain: deal_summary → risk_blocker → stakeholder_analysis
-                task_signatures = []
-
-                # Deal summary task
-                deal_summary_sig = signature(
-                    "deal_summary_task.process",
-                    args=[str(self.organisation_id), str(deal_summary_job_id)],
-                    queue="deal_jobs",
-                    immutable=True,
+                dispatch_deal_insight_pipeline(
+                    str(self.organisation_id),
+                    str(deal_id),
+                    str(deal_memory_job_id),
                 )
-                task_signatures.append(deal_summary_sig)
-                result.deal_summary_triggered = True
-
-                # Risk blocker extraction task
-                risk_blocker_sig = signature(
-                    "risk_blocker.extract_deal_risks_blockers_task",
-                    args=[str(self.organisation_id), str(deal_id)],
-                    queue="deal_jobs",
-                    immutable=True,
-                )
-                task_signatures.append(risk_blocker_sig)
+                result.deal_memory_triggered = True
                 result.risk_blocker_triggered = True
-
-                # Stakeholder analysis task
-                stakeholder_sig = signature(
-                    "stakeholder.analyze_deal_stakeholders_task",
-                    args=[str(self.organisation_id), str(deal_id)],
-                    queue="deal_jobs",
-                    immutable=True,
-                )
-                task_signatures.append(stakeholder_sig)
                 result.stakeholder_analysis_triggered = True
-
-                # Chain tasks: deal_summary → risk_blocker → stakeholder
-                task_chain = chain(*task_signatures)
-                task_chain.apply_async()
-                result.tasks_triggered = len(task_signatures)
+                result.tasks_triggered = 3
 
                 logger.info(
-                    "Triggered chain for deal %s: deal_summary=%s → risk_blocker → stakeholder",
+                    "Triggered parallel insight pipeline for deal %s: risk_blocker + stakeholder -> deal_memory=%s",
                     deal_id,
-                    deal_summary_job_id,
+                    deal_memory_job_id,
                 )
             except Exception as e:
                 logger.error(
-                    "Failed to trigger deal summary chain: deal=%s error=%s",
+                    "Failed to trigger deal insight pipeline: deal=%s error=%s",
                     deal_id,
                     str(e),
                 )
 
-    async def _deal_needs_summary(self, deal_id: UUID) -> bool:
-        """Check if deal needs a summary (has meeting summaries but no deal summary).
+    async def _deal_needs_memory(self, deal_id: UUID) -> bool:
+        """Check if deal needs memory (has meeting summaries but no deal memory).
 
         Returns True if:
         - Deal has at least 1 completed meeting summary (READY transcript + summary data)
-        - AND deal summary is missing (NULL or JSON null)
+        - AND deal memory is missing
 
         This catches cases where meeting summaries were done in previous runs
-        but deal summary wasn't generated yet.
+        but deal memory wasn't generated yet.
         """
-        from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
+        from src.domain.models.organisation_tables.sync.deal_memory_models import DealMemory
 
         now = datetime.now(UTC)
 
@@ -501,27 +444,30 @@ class MeetingSummaryService:
             if not has_meeting_summaries:
                 return False
 
-            # Check if deal summary is missing
-            deal = await session.get(CRMDeal, deal_id)
-            if not deal:
-                return False
-
-            deal_summary = deal.deal_summary_data
-            if not deal_summary:
-                return True
-            # Check for JSON null string
-            return isinstance(deal_summary, str) and deal_summary == "null"
+            memory_exists = (
+                (
+                    await session.execute(
+                        select(DealMemory).where(
+                            col(DealMemory.organisation_id) == self.organisation_id,
+                            col(DealMemory.deal_id) == deal_id,
+                        )
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            return memory_exists is None
 
         return False
 
     async def process_deal_pipeline(self, deal_id: UUID) -> PipelineResult:
         """Create jobs and trigger meeting summary tasks for a deal's events.
 
-        Sequential execution pattern:
+        Pipeline execution pattern:
         1. Find events: ended, transcript READY, no summary yet (oldest first)
         2. Create DealJobs record for each (skip if active job exists)
-        3. Chain tasks together so they run sequentially
-        4. Add deal summary task at the end of the chain
+        3. Chain meeting summary tasks so they run sequentially
+        4. Add the parallel risk+stakeholder -> deal memory pipeline at the end
         5. Return immediately (fire-and-forget)
 
         Args:
@@ -537,16 +483,15 @@ class MeetingSummaryService:
         result.meetings_found = len(events)
 
         if not events:
-            # No new meeting summaries needed, but check if deal summary is missing
+            # No new meeting summaries needed, but check if deal memory is missing
             # This handles cases where meeting summaries were done in previous runs
-            if await self._deal_needs_summary(deal_id):
+            if await self._deal_needs_memory(deal_id):
                 logger.info(
-                    "No pending meeting summaries for deal %s, but deal summary is missing. "
-                    "Triggering deal summary directly.",
+                    "No pending meeting summaries for deal %s, but deal memory is missing. "
+                    "Triggering deal insight pipeline directly.",
                     deal_id,
                 )
-                # Trigger deal summary directly (no chain needed)
-                await self._trigger_deal_summary_only(deal_id, result)
+                await self._trigger_deal_insight_pipeline(deal_id, result)
             else:
                 logger.debug("No events need summary for deal %s", deal_id)
             return result
@@ -559,7 +504,7 @@ class MeetingSummaryService:
 
         # Create jobs and collect job IDs for task chain
         job_ids: list[UUID] = []
-        deal_summary_job_id: UUID | None = None
+        deal_memory_job_id: UUID | None = None
 
         async for session in acquire_org_async_session(self.organisation_id):
             for event_id, _association_id, event_deal_id in events:
@@ -588,20 +533,26 @@ class MeetingSummaryService:
                     job.job_id,
                 )
 
-            # Create or get deal summary job (to add at end of chain)
-            deal_summary_job, created = await self._get_or_create_deal_summary_job(session, deal_id)
-            deal_summary_job_id = deal_summary_job.job_id
+            # Create or get deal memory job (to add at the end of the pipeline)
+            deal_memory_job_id, created = await get_or_create_deal_memory_job(
+                session,
+                self.organisation_id,
+                deal_id,
+                "automated_pipeline",
+                "meeting_summaries_completed",
+                chained_from="meeting_summaries",
+            )
             if created:
                 logger.debug(
-                    "Created deal summary job for deal=%s job=%s",
+                    "Created deal memory job for deal=%s job=%s",
                     deal_id,
-                    deal_summary_job_id,
+                    deal_memory_job_id,
                 )
             else:
                 logger.debug(
-                    "Using existing deal summary job for deal=%s job=%s",
+                    "Using existing deal memory job for deal=%s job=%s",
                     deal_id,
-                    deal_summary_job_id,
+                    deal_memory_job_id,
                 )
 
             await session.commit()
@@ -621,49 +572,24 @@ class MeetingSummaryService:
             )
             task_signatures.append(sig)
 
-        # Add deal summary task at the end of meeting summaries
-        if deal_summary_job_id:
-            deal_summary_sig = signature(
-                "deal_summary_task.process",
-                args=[str(self.organisation_id), str(deal_summary_job_id)],
-                queue="deal_jobs",
-                immutable=True,
-            )
-            task_signatures.append(deal_summary_sig)
-            result.deal_summary_triggered = True
-
-        # Add risk blocker extraction task after deal summary
-        risk_blocker_sig = signature(
-            "risk_blocker.extract_deal_risks_blockers_task",
-            args=[str(self.organisation_id), str(deal_id)],
-            queue="deal_jobs",
-            immutable=True,
-        )
-        task_signatures.append(risk_blocker_sig)
-        result.risk_blocker_triggered = True
-
-        # Add stakeholder analysis task after risk blocker
-        stakeholder_sig = signature(
-            "stakeholder.analyze_deal_stakeholders_task",
-            args=[str(self.organisation_id), str(deal_id)],
-            queue="deal_jobs",
-            immutable=True,
-        )
-        task_signatures.append(stakeholder_sig)
-        result.stakeholder_analysis_triggered = True
-
-        # Chain tasks: meeting_summaries → deal_summary → risk_blocker → stakeholder
         try:
-            task_chain = chain(*task_signatures)
-            task_chain.apply_async()
-            result.tasks_triggered = len(task_signatures)
+            dispatch_deal_insight_pipeline(
+                str(self.organisation_id),
+                str(deal_id),
+                str(deal_memory_job_id),
+                prefix_signatures=task_signatures,
+            )
+            result.tasks_triggered = len(task_signatures) + 3
+            result.deal_memory_triggered = True
+            result.risk_blocker_triggered = True
+            result.stakeholder_analysis_triggered = True
             logger.info(
                 "Triggered chain of %d tasks for deal %s (meeting_summaries=%d, "
-                "deal_summary=%s, risk_blocker=%s, stakeholder=%s, created=%d, skipped=%d)",
-                len(task_signatures),
+                "deal_memory=%s, risk_blocker=%s, stakeholder=%s, created=%d, skipped=%d)",
+                result.tasks_triggered,
                 deal_id,
                 len(job_ids),
-                result.deal_summary_triggered,
+                result.deal_memory_triggered,
                 result.risk_blocker_triggered,
                 result.stakeholder_analysis_triggered,
                 result.jobs_created,

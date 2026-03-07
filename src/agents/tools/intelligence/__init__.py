@@ -3,6 +3,9 @@
 Tools for listing and retrieving meeting information for deals.
 """
 
+from src.agents.tools.intelligence.get_compressed_transcript import (
+    create_get_compressed_transcript,
+)
 from src.agents.tools.intelligence.get_meeting_deal_context import create_get_meeting_deal_context
 from src.agents.tools.intelligence.get_meeting_details import create_get_meeting_details
 from src.agents.tools.intelligence.get_meeting_summary import create_get_meeting_summary
@@ -16,5 +19,6 @@ __all__ = [
     "create_get_meeting_summary",
     "create_get_meeting_deal_context",
     "create_get_meeting_transcript",
+    "create_get_compressed_transcript",
     "create_list_meetings_by_date",
 ]

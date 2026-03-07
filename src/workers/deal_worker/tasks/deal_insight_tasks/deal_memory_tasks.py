@@ -44,11 +44,19 @@ from src.workers.deal_worker.services.deal_insight_services import (
     DealMemoryService,
 )
 from src.workers.deal_worker.services.deal_job_publisher import DealJobRedisPublisher
+from src.workers.deal_worker.utils.pipeline_dispatch import dispatch_deal_insight_pipeline
 
 logger = get_logger(__name__)
 
 
-@app.task(bind=True, name="deal_memory.process_job", acks_late=True, max_retries=3)
+@app.task(
+    bind=True,
+    name="deal_memory.process_job",
+    acks_late=True,
+    max_retries=3,
+    soft_time_limit=600,  # 10 min — reasoning model + many tool calls
+    time_limit=660,  # 11 min hard limit
+)
 def process_deal_memory_job(self: Task, organisation_id: str, job_id: str):
     """Process a deal memory build/update job.
 
@@ -63,6 +71,12 @@ def process_deal_memory_job(self: Task, organisation_id: str, job_id: str):
         Dictionary with job completion status
     """
     logger.info("Processing deal memory job org=%s job=%s", organisation_id, job_id)
+
+    # Prevent concurrent execution for the same job (retries can stack)
+    lock_key = f"task_lock:deal_memory_job:{job_id}"
+    if not acquire_task_lock(lock_key, ttl=700):
+        logger.info("Deal memory job %s already running, skipping", job_id)
+        return {"status": "skipped", "reason": "already_running"}
 
     async def _run():
         org_uuid = UUID(organisation_id)
@@ -137,6 +151,8 @@ def process_deal_memory_job(self: Task, organisation_id: str, job_id: str):
         logger.error("Deal memory task failed %s: %s", job_id, e, exc_info=True)
         # Exponential backoff: 60, 120, 240 seconds
         raise self.retry(exc=e, countdown=60 * (2**self.request.retries)) from e
+    finally:
+        release_task_lock(lock_key)
 
 
 @app.task(bind=True, name="deal_memory.backfill_org", acks_late=True, max_retries=2)
@@ -162,9 +178,9 @@ def build_deal_memory_org(self: Task, organisation_id: str):
         service = DealMemoryService(UUID(organisation_id))
         result = run_async(service.backfill_org())
 
-        # Dispatch process jobs for each created job
-        for org_id_str, job_id_str in result["jobs_to_dispatch"]:
-            process_deal_memory_job.delay(organisation_id=org_id_str, job_id=job_id_str)
+        # Dispatch full insight pipeline (deal_memory → risk + stakeholder)
+        for org_id_str, job_id_str, deal_id_str in result["jobs_to_dispatch"]:
+            dispatch_deal_insight_pipeline(org_id_str, deal_id_str, job_id_str)
 
         logger.info(
             "Deal memory backfill org=%s dispatched=%d skipped=%d",

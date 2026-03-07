@@ -25,7 +25,7 @@ from src.domain.models.organisation_tables.sync.crm.activities import CRMActivit
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal, CRMDealStatus
 from src.domain.models.organisation_tables.sync.deal_memory_models import DealMemory
 from src.domain.models.organisation_tables.sync.email_models import Email
-from src.infra.database.sessions import acquire_org_async_session
+from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.workers.deal_worker.services.deal_job_publisher import DealJobRedisPublisher
 from src.workers.deal_worker.utils.deal_job_utils import get_deal, get_organisation_name
@@ -118,7 +118,6 @@ class DealMemoryService:
         # Phase 1: Load existing memory + basic deal validation (fresh session)
         self._publish_progress("Loading deal context...", "context", 0.1)
 
-        existing_memory = ""
         is_initial = True
         org_name: str | None = None
 
@@ -130,8 +129,6 @@ class DealMemoryService:
                     error_code="deal_not_found",
                     retryable=False,
                 )
-
-            org_name = await get_organisation_name(session, self.organisation_id)
 
             memory_row = (
                 (
@@ -147,9 +144,12 @@ class DealMemoryService:
             )
 
             if memory_row:
-                existing_memory = memory_row.content
                 is_initial = False
-        # Session released
+        # Org session released
+
+        # Org name lives in public schema — use a master session
+        async for master_session in acquire_master_async_session():
+            org_name = await get_organisation_name(master_session, self.organisation_id)
 
         # Phase 2: Call agent (agent uses tools to gather data, no session held here)
         self._publish_progress("AI is building deal memory...", "generation", 0.3)
@@ -166,7 +166,6 @@ class DealMemoryService:
                 is_initial_build=is_initial,
                 trigger_type=trigger_type,
                 trigger_source_id=(str(trigger_source_id) if trigger_source_id else None),
-                existing_memory=existing_memory,
             )
         except Exception as exc:
             raise DealMemoryError(
@@ -229,7 +228,7 @@ class DealMemoryService:
         Called by the Tier 2 backfill task (build_deal_memory_org).
 
         Returns:
-            Dict with 'jobs_to_dispatch' (list of (org_id, job_id) tuples),
+            Dict with 'jobs_to_dispatch' (list of (org_id, job_id, deal_id) tuples),
             'dispatched' count, and optionally 'skipped' count.
         """
         org_id = self.organisation_id
@@ -253,13 +252,13 @@ class DealMemoryService:
         # Session released
 
         if not candidate_ids:
-            return {"jobs_to_dispatch": [], "dispatched": 0}
+            return {"jobs_to_dispatch": [], "dispatched": 0, "skipped": 0}
 
         # Phase 2: Filter to only deals that have data (single bulk query)
         eligible_ids = await self._deals_with_data(candidate_ids)
 
         if not eligible_ids:
-            return {"jobs_to_dispatch": [], "dispatched": 0}
+            return {"jobs_to_dispatch": [], "dispatched": 0, "skipped": len(candidate_ids)}
 
         # Phase 3: Create jobs for eligible deals (single session, one commit)
         jobs: list[DealJobs] = []
@@ -283,8 +282,9 @@ class DealMemoryService:
             # Session released
 
         return {
-            "jobs_to_dispatch": [(str(org_id), str(j.job_id)) for j in jobs],
+            "jobs_to_dispatch": [(str(org_id), str(j.job_id), str(j.deal_id)) for j in jobs],
             "dispatched": len(jobs),
+            "skipped": len(candidate_ids) - len(eligible_ids),
         }
 
     async def _deals_with_data(self, deal_ids: list[UUID]) -> list[UUID]:

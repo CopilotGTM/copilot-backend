@@ -9,13 +9,11 @@ from src.agents.workflows.risk_blocker_extraction.agent import (
 )
 from src.agents.workflows.risk_blocker_extraction.models import (
     ExtractedRiskBlocker,
-    RiskBlockerExtractionInput,
     RiskBlockerExtractionResult,
 )
 
 __all__ = [
     "RiskBlockerExtractionAgent",
-    "RiskBlockerExtractionInput",
     "ExtractedRiskBlocker",
     "RiskBlockerExtractionResult",
 ]

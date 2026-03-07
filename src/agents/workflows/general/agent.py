@@ -70,6 +70,7 @@ class GeneralAgent(BaseAgent):
             markdown=True,
             tools=self._tools,
             skills=skills,
+            telemetry=False,
         )
 
     def run_stream(

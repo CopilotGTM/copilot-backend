@@ -112,6 +112,8 @@ async def get_meeting_details(
             assoc_c.event_id == parsed_event_id,
             assoc_c.status == AssociationStatus.ACTIVE,
         )
+        if context.deal_id:
+            assoc_stmt = assoc_stmt.where(assoc_c.deal_id == context.deal_id)
 
         try:
             assoc_result = await session.execute(assoc_stmt)
@@ -153,6 +155,8 @@ async def get_meeting_details(
 
         # Build output (while session is active)
         output: dict[str, Any] = {
+            "association_id": str(association.association_id) if association else None,
+            "source_record_id": str(association.association_id) if association else None,
             "event_id": str(event.event_id),
             "title": event.title,
             "description": event.description,

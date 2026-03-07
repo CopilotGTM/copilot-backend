@@ -64,7 +64,7 @@ async def internal_knowledge_base(
     if context:
         organisation_id = context.organisation_id
         user_id = user_id or context.user_id
-        deal_id = deal_id or context.deal_id
+        deal_id = deal_id or (str(context.deal_id) if context.deal_id else None)
         # Use context's acquire_session if no explicit session provided
         if session is None:
             use_context_session = True

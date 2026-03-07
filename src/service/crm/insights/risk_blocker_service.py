@@ -582,6 +582,7 @@ class RiskBlockerService:
             title=item.title,
             quote=item.quote,
             source_type=item.source_type,
+            source_record_id=item.source_record_id,
             source_context=item.source_context,
             is_ai_generated=item.is_ai_generated,
             owner_name=item.owner_name,

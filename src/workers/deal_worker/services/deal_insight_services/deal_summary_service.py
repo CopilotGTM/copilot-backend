@@ -1,16 +1,16 @@
 """Service for generating deal summaries.
 
 This service handles the business logic for deal summary generation:
-- Loading minimal deal context (counts, date ranges)
-- Passing context to the DealSummaryAgent which uses tools
+- Validating deal existence and fetching org name
+- Passing context to the DealSummaryAgent which uses tools to gather ALL data
 - Saving results to CRMDeal
 
 The agent uses tools to gather stakeholder, meeting, and email data as needed.
 The Celery task delegates to this service for the actual work.
 
 Follows fresh session pattern:
-- Phase 1: Load context (fresh session, release before LLM)
-- Phase 2: Call agent (agent manages its own session)
+- Phase 1: Validate deal exists, get org_name (fresh session, release before LLM)
+- Phase 2: Call agent (agent manages its own session via tools)
 - Phase 3: Save result (fresh session)
 """
 
@@ -20,15 +20,11 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
-from src.infra.database.sessions import acquire_org_async_session
+from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.workers.deal_worker.services.deal_job_publisher import DealJobRedisPublisher
 from src.workers.deal_worker.utils.deal_job_utils import (
-    count_deal_emails,
-    count_deal_meetings,
-    count_deal_stakeholders,
     get_deal,
-    get_deal_meeting_date_range,
     get_organisation_name,
 )
 
@@ -79,14 +75,13 @@ class DealSummaryService:
     """Service for generating comprehensive deal summaries.
 
     This service orchestrates the deal summary generation process:
-    1. Loads deal and stakeholder context
-    2. Fetches all meetings and their transcripts
-    3. Passes context to the DealSummaryAgent (which uses tools)
-    4. Saves results to the CRMDeal
+    1. Validates deal exists and fetches org name
+    2. Creates DealSummaryAgent with org_id + deal_id (agent gathers all data via tools)
+    3. Saves results to the CRMDeal
 
     Follows fresh session pattern:
-    - Phase 1: Load context (fresh session, release before LLM)
-    - Phase 2: Call agent (agent manages its own session)
+    - Phase 1: Validate deal, get org_name (fresh session, release before LLM)
+    - Phase 2: Call agent (agent manages its own sessions via tools)
     - Phase 3: Save result (fresh session)
 
     Usage:
@@ -120,8 +115,8 @@ class DealSummaryService:
         and emails, then synthesizes into a comprehensive summary.
 
         Follows fresh session pattern:
-        - Phase 1: Load context (fresh session, release before LLM)
-        - Phase 2: Call agent (agent manages its own session)
+        - Phase 1: Validate deal, get org_name (fresh session, release before LLM)
+        - Phase 2: Call agent (agent manages its own sessions via tools)
         - Phase 3: Save result (fresh session)
 
         Args:
@@ -133,92 +128,28 @@ class DealSummaryService:
         Raises:
             DealNotFoundError: If deal doesn't exist
         """
-        # Import here to avoid circular imports
-        from src.agents.workflows.deal_summary import DealSummaryAgent, DealSummaryInput
+        from src.agents.workflows.deal_summary import DealSummaryAgent
 
-        # Phase 1: Load context (fresh session, release before agent call)
+        # Phase 1: Validate deal exists, get org_name (release before LLM)
         self._publish_progress("Loading deal context...", "context", 0.1)
 
-        # Variables to hold context after session is released
-        deal_name: str = ""
-        company_name: str | None = None
-        deal_stage: str | None = None
-        deal_amount: float | None = None
-        currency: str | None = None
-        close_date: str | None = None
-        deal_status: str = "open"
-        meeting_count: int = 0
-        stakeholder_count: int = 0
-        email_count: int = 0
-        first_date: str | None = None
-        last_date: str | None = None
         org_name: str | None = None
 
         async for session in acquire_org_async_session(self.organisation_id):
-            # 1. Load deal
             deal = await get_deal(session, self.organisation_id, deal_id)
-            org_name = await get_organisation_name(session, self.organisation_id)
             if not deal:
                 raise DealNotFoundError(deal_id)
-
-            self._publish_progress("Checking deal data...", "checking", 0.15)
-
-            # 2. Get counts for agent planning
-            meeting_count = await count_deal_meetings(session, self.organisation_id, deal_id)
-            stakeholder_count = await count_deal_stakeholders(
-                session, self.organisation_id, deal_id
-            )
-            email_count = await count_deal_emails(session, self.organisation_id, deal_id)
-
-            # 3. Get meeting date range
-            first_date, last_date = await get_deal_meeting_date_range(
-                session, self.organisation_id, deal_id
-            )
-
-            # Extract values before session is released
-            deal_name = deal.name or "Unnamed Deal"
-            company_name = deal.company_name
-            deal_stage = deal.stage_label or deal.stage_name
-            deal_amount = float(deal.amount) if deal.amount else None
-            currency = deal.currency
-            close_date = str(deal.close_date) if deal.close_date else None
-            deal_status = str(deal.deal_status) if deal.deal_status else "open"
         # Session released
 
-        self._publish_progress(
-            f"Found {meeting_count} meetings, {stakeholder_count} stakeholders. Starting AI analysis...",
-            "preparing",
-            0.2,
-        )
+        # Org name lives in public schema — use a master session
+        async for master_session in acquire_master_async_session():
+            org_name = await get_organisation_name(master_session, self.organisation_id)
 
-        # 4. Build minimal input for the agent
-        input_data = DealSummaryInput(
-            deal_id=str(deal_id),
-            deal_name=deal_name,
-            company_name=company_name,
-            deal_stage=deal_stage,
-            deal_amount=deal_amount,
-            currency=currency,
-            close_date=close_date,
-            deal_status=deal_status,
-            meeting_count=meeting_count,
-            stakeholder_count=stakeholder_count,
-            email_count=email_count,
-            first_meeting_date=first_date,
-            last_meeting_date=last_date,
-        )
+        logger.info("Starting deal summary generation for deal %s", deal_id)
 
-        logger.info(
-            "Starting deal summary generation for deal %s: %d meetings, %d stakeholders, %d emails",
-            deal_id,
-            meeting_count,
-            stakeholder_count,
-            email_count,
-        )
+        self._publish_progress("Starting AI analysis...", "preparing", 0.2)
 
         # Phase 2: Call agent (tools acquire sessions on-demand)
-        # Agent doesn't hold sessions - tools acquire on-demand via context.acquire_session()
-        # SECURITY: Both organisation_id and deal_id are baked into agent context (immutable)
         agent = DealSummaryAgent(
             organisation_id=self.organisation_id,
             deal_id=deal_id,
@@ -226,7 +157,7 @@ class DealSummaryService:
             org_name=org_name,
         )
         try:
-            summary_data = await agent.generate(input_data)
+            summary_data = await agent.generate()
         except DealSummaryError:
             raise
         except Exception as exc:
@@ -238,7 +169,6 @@ class DealSummaryService:
 
         self._publish_progress("Saving results...", "saving", 0.95)
 
-        # 6. Wrap result with metadata
         if isinstance(summary_data, dict):
             summary_dict = summary_data
         elif hasattr(summary_data, "model_dump"):

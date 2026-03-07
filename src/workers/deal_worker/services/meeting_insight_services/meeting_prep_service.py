@@ -25,7 +25,7 @@ from src.domain.models.organisation_tables.sync.calendar import (
     CalendarEventDealAssociation,
     GenerationStatus,
 )
-from src.infra.database.sessions import acquire_org_async_session
+from src.infra.database.sessions import acquire_master_async_session, acquire_org_async_session
 from src.infra.utils.logger import get_logger
 from src.workers.deal_worker.services.deal_job_publisher import DealJobRedisPublisher
 from src.workers.deal_worker.services.meeting_insight_services.meeting_summary_service import (
@@ -127,8 +127,10 @@ class MeetingPrepService:
         emails_exchanged_count: int | None = None
         association_id: UUID | None = None
 
+        async for master_session in acquire_master_async_session():
+            org_name = await get_organisation_name(master_session, self.organisation_id)
+
         async for session in acquire_org_async_session(self.organisation_id):
-            org_name = await get_organisation_name(session, self.organisation_id)
             deal = await get_deal(session, self.organisation_id, self.deal_id)
             event = await get_event(session, self.organisation_id, self.event_id)
             association = await get_association(

@@ -1,4 +1,4 @@
-"""Models for risk/blocker extraction agent input and output.
+"""Models for risk/blocker extraction agent output.
 
 Contains structured schemas used by the extraction agent for LLM responses.
 """
@@ -11,29 +11,6 @@ from src.domain.models.organisation_tables.sync.risk_blocker_models import (
     RiskBlockerSource,
     RiskBlockerType,
 )
-
-
-class RiskBlockerExtractionInput(BaseModel):
-    """Minimal input data for RiskBlockerExtractionAgent.
-
-    Instead of passing all content pre-loaded, we pass minimal context
-    and let the agent use tools to gather what it needs.
-    """
-
-    deal_id: str = Field(..., description="UUID of the deal")
-    deal_name: str = Field(..., description="Name of the deal")
-    company_name: str | None = Field(None, description="Company name")
-    deal_stage: str | None = Field(None, description="Current deal stage")
-
-    # Counts to help agent plan its data gathering
-    meeting_count: int = Field(0, description="Number of meetings for this deal")
-    email_count: int = Field(0, description="Number of linked email threads")
-    existing_risks_count: int = Field(0, description="Number of existing risks")
-    existing_blockers_count: int = Field(0, description="Number of existing blockers")
-
-    # Date range to help agent understand timeline
-    first_meeting_date: str | None = Field(None, description="Date of first meeting")
-    last_meeting_date: str | None = Field(None, description="Date of most recent meeting")
 
 
 class ExtractedRiskBlocker(BaseModel):
@@ -95,6 +72,10 @@ class ExtractedRiskBlocker(BaseModel):
     source_context: str = Field(
         ...,
         description="Brief context about where this was identified (e.g., 'Q3 Planning Call', 'Email from CTO')",
+    )
+    source_record_id: str | None = Field(
+        None,
+        description="Exact source record identifier from tool output, such as event_id or internet_message_id",
     )
     # Enum field - no description (OpenAI $ref limitation)
     source_type: RiskBlockerSource

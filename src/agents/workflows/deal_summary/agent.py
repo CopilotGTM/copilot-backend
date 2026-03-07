@@ -23,11 +23,8 @@ from agno.models.azure.openai_chat import AzureOpenAI
 
 from src.agents.context import AgentContext
 from src.agents.tools.registry import get_tools_for_agent
-from src.agents.workflows.deal_summary.models import DealSummaryData, DealSummaryInput
-from src.agents.workflows.deal_summary.prompts import (
-    build_deal_summary_user_prompt,
-    get_deal_summary_system_prompt,
-)
+from src.agents.workflows.deal_summary.models import DealSummaryData
+from src.agents.workflows.deal_summary.prompts import get_deal_summary_system_prompt
 from src.infra.config.agent_config import agent_config
 from src.infra.utils.logger import get_logger
 
@@ -98,6 +95,7 @@ class DealSummaryAgent:
             tools=tools,
             markdown=True,
             debug_mode=config.debug_mode,
+            telemetry=False,
         )
 
     def _get_tools(self) -> list[Callable]:
@@ -113,52 +111,28 @@ class DealSummaryAgent:
         if self.publisher:
             self.publisher.publish_progress(message, step, progress)
 
-    async def generate(self, input_data: DealSummaryInput) -> DealSummaryData:
+    async def generate(self) -> DealSummaryData:
         """Generate a comprehensive deal summary.
 
         The agent will use tools to gather data about stakeholders, meetings,
         and communications, then synthesize into a summary.
 
-        Args:
-            input_data: Minimal deal context with counts and date ranges
-
         Returns:
             DealSummaryData with comprehensive deal summary
         """
-        logger.info(
-            "DealSummaryAgent generating summary for deal %s (%d meetings, %d stakeholders)",
-            input_data.deal_id,
-            input_data.meeting_count,
-            input_data.stakeholder_count,
-        )
+        logger.info("DealSummaryAgent generating summary for deal %s", self.deal_id)
 
         self._publish_progress("Analyzing deal data with AI...", "analysis", 0.3)
 
-        # Build user prompt with deal context
-        user_prompt = build_deal_summary_user_prompt(
-            deal_name=input_data.deal_name,
-            company_name=input_data.company_name,
-            deal_stage=input_data.deal_stage,
-            deal_amount=input_data.deal_amount,
-            currency=input_data.currency,
-            close_date=input_data.close_date,
-            deal_status=input_data.deal_status,
-            meeting_count=input_data.meeting_count,
-            stakeholder_count=input_data.stakeholder_count,
-            email_count=input_data.email_count,
-            first_meeting_date=input_data.first_meeting_date,
-            last_meeting_date=input_data.last_meeting_date,
-            deal_id=input_data.deal_id,
-        )
+        user_prompt = f"Input Deal Id {self.deal_id}. "
 
         self._publish_progress("AI is gathering information...", "tools", 0.5)
 
-        # Run agent - it will use tools to gather data
         response = await self.agent.arun(user_prompt)
 
         self._publish_progress("Finalizing summary...", "finalizing", 0.9)
 
-        logger.info("DealSummaryAgent completed summary generation for deal %s", input_data.deal_id)
+        logger.info("DealSummaryAgent completed summary generation for deal %s", self.deal_id)
 
         return self._normalize_summary_output(response.content)
 

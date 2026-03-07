@@ -7,16 +7,18 @@ from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID, uuid4
 
-from celery import chain
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
-from src.domain.models.organisation_tables.job_models import DealJobs, DealJobType, JobStatus
 from src.domain.models.organisation_tables.sync.crm import CRMActivity, CRMActivityType
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
 from src.domain.models.organisation_tables.sync.crm.stakeholders import DealStakeholder
 from src.infra.utils.cursor import decode_cursor, encode_cursor
 from src.infra.utils.logger import get_logger
+from src.workers.deal_worker.utils.pipeline_dispatch import (
+    dispatch_deal_insight_pipeline,
+    get_or_create_deal_memory_job,
+)
 
 logger = get_logger("deal_notes_service")
 
@@ -359,96 +361,50 @@ class DealNotesService:
         deal_id: UUID,
         user_id: UUID,
         trigger_source: str = "note_creation",
+        trigger_source_id: UUID | None = None,
     ) -> UUID | None:
-        """Trigger the deal insight pipeline after note creation.
+        """Trigger deal memory update after note creation.
 
-        Creates a job for deal summary (with deduplication) and triggers:
-        risk_blocker → stakeholder → deal_summary chain.
+        Creates a DealJob for deal memory and dispatches it. Deal memory
+        is the single source of truth — other insights (summary, risks,
+        stakeholders) are derived from it separately.
 
         Args:
             deal_id: The deal UUID to process
             user_id: User ID for job attribution
             trigger_source: Source of the trigger for metadata
+            trigger_source_id: Optional source record ID that triggered the pipeline
 
         Returns:
-            The job ID if created/found, None if trigger failed
+            The job ID if created, None if trigger failed
         """
         try:
             org_id_str = str(self.organisation_id)
-            deal_id_str = str(deal_id)
 
-            # Check for existing active deal summary job
-            stmt = select(DealJobs).where(
-                col(DealJobs.organisation_id) == self.organisation_id,
-                col(DealJobs.deal_id) == deal_id,
-                col(DealJobs.event_id).is_(None),
-                col(DealJobs.job_type) == DealJobType.DEAL_SUMMARY,
-                col(DealJobs.status).in_([JobStatus.PENDING, JobStatus.IN_PROGRESS]),
+            job_id, _ = await get_or_create_deal_memory_job(
+                self.org_session,
+                self.organisation_id,
+                deal_id,
+                trigger_source,
+                "new_note",
+                user_id=user_id,
+                trigger_source_id=trigger_source_id,
             )
-            result = await self.org_session.execute(stmt)
-            existing_job = result.scalars().first()
+            await self.org_session.commit()
 
-            if existing_job:
-                deal_summary_job_id = existing_job.job_id
-            else:
-                # Create new job for deal summary
-                job = DealJobs(
-                    organisation_id=self.organisation_id,
-                    user_id=user_id,
-                    job_type=DealJobType.DEAL_SUMMARY,
-                    deal_id=deal_id,
-                    event_id=None,
-                    status=JobStatus.PENDING,
-                    job_metadata={
-                        "source": trigger_source,
-                        "trigger": "user_created_note",
-                    },
-                )
-                self.org_session.add(job)
-                await self.org_session.flush()
-                await self.org_session.refresh(job)
-                deal_summary_job_id = job.job_id
-                await self.org_session.commit()
-
-            # Build chain: risk_blocker → stakeholder → deal_summary (with job)
-            # Use the configured Celery client for proper broker connection
-            from src.workers.deal_worker.client import get_deal_celery_client
-
-            celery_app = get_deal_celery_client()
-            queue = "deal_jobs"
-
-            risk_blocker_sig = celery_app.signature(
-                "risk_blocker.extract_deal_risks_blockers_task",
-                args=[org_id_str, deal_id_str],
-                queue=queue,
-                immutable=True,
-            )
-            stakeholder_sig = celery_app.signature(
-                "stakeholder.analyze_deal_stakeholders_task",
-                args=[org_id_str, deal_id_str],
-                queue=queue,
-                immutable=True,
-            )
-            deal_summary_sig = celery_app.signature(
-                "deal_summary_task.process",
-                args=[org_id_str, str(deal_summary_job_id)],
-                queue=queue,
-                immutable=True,
-            )
-            task_chain = chain(risk_blocker_sig, stakeholder_sig, deal_summary_sig)
-            task_chain.apply_async()
+            dispatch_deal_insight_pipeline(org_id_str, str(deal_id), str(job_id))
 
             logger.info(
                 "Triggered deal insight pipeline after %s: deal=%s job=%s",
                 trigger_source,
                 deal_id,
-                deal_summary_job_id,
+                job_id,
             )
-            return deal_summary_job_id
+            return job_id
 
         except Exception as exc:
             logger.warning(
-                "Failed to trigger deal insight pipeline: deal=%s error=%s",
+                "Failed to trigger deal memory pipeline: deal=%s error=%s",
                 deal_id,
                 str(exc),
             )
