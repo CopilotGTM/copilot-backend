@@ -307,6 +307,13 @@ module "azure_openai" {
       capacity        = 100
       version         = "2025-12-11"
     }
+    gpt5_4 = {
+      deployment_name = "gpt-5.4"
+      model_name      = "gpt-5.4"
+      sku             = "GlobalStandard"
+      capacity        = 1000
+      version         = "2026-03-05"
+    }
     transcribe = {
       deployment_name = "gpt-4o-transcribe-diarize"
       model_name      = "gpt-4o-transcribe-diarize"

@@ -478,6 +478,13 @@ module "azure_openai" {
       capacity        = 100
       version         = "2025-12-11"
     }
+    gpt5_4 = {
+      deployment_name = "gpt-5.4"
+      model_name      = "gpt-5.4"
+      sku             = "GlobalStandard"
+      capacity        = 3500
+      version         = "2026-03-05"
+    }
     embedder = {
       deployment_name = "text-embedding-3-large"
       model_name      = "text-embedding-3-large"
