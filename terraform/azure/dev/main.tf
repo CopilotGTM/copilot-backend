@@ -187,6 +187,7 @@ module "master_storage_account" {
   allowed_blob_cors_origins = [
     "https://${var.frontend_dns_a_record_name}.copilotgtm.com",
     "https://${var.frontend_admin_dns_a_record_name}.copilotgtm.com",
+    "https://${var.demo_frontend_dns_a_record_name}.${var.demo_frontend_dns_zone_name}",
     "http://localhost:3000"
   ]
   tags = {
@@ -213,6 +214,7 @@ module "org_storage_account" {
   allowed_blob_cors_origins = [
     "https://${var.frontend_dns_a_record_name}.copilotgtm.com",
     "https://${var.frontend_admin_dns_a_record_name}.copilotgtm.com",
+    "https://${var.demo_frontend_dns_a_record_name}.${var.demo_frontend_dns_zone_name}",
     "http://localhost:3000"
   ]
   tags = {
@@ -275,8 +277,6 @@ module "aks" {
     module.waf
   ]
 }
-
-
 
 # -----------------------------------------------------------------
 # Role Assignment: Allow AKS kubelet to pull images from ACR
@@ -555,7 +555,6 @@ module "application_database" {
 #   ttl                 = 300
 #   record              = module.frontend_app_service.app_service_default_hostname
 # }
-
 
 resource "azuredevops_variable_group" "secrets" {
   project_id  = data.azuredevops_project.project.id
@@ -1067,3 +1066,4 @@ output "teams_bot_name" {
   description = "Azure Bot resource name"
   value       = module.teams_bot.bot_name
 }
+

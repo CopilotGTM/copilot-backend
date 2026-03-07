@@ -510,8 +510,6 @@ variable "admin_username" {
   default     = "azureuser"
 }
 
-
-
 # -----------------------------------------------------------------
 # DNS
 # -----------------------------------------------------------------
@@ -535,8 +533,6 @@ variable "frontend_dns_a_record_name" {
 # -----------------------------------------------------------------
 # Secrets & Certificates
 # -----------------------------------------------------------------
-
-
 
 variable "db_location" {
   description = "The Azure region for the Database."
@@ -804,4 +800,97 @@ variable "teams_bot_messaging_endpoint" {
   type        = string
   default     = "https://caitlyn-nonarmigerous-uninstructively.ngrok-free.dev/api/teams/messages"
 }
+
+# -----------------------------------------------------------------
+# Demo Frontend App Service
+# -----------------------------------------------------------------
+
+variable "demo_frontend_app_service_plan_name" {
+  description = "The name of the App Service Plan for the demo frontend app."
+  type        = string
+  default     = "copilot-gtm-demo-asp"
+}
+
+variable "demo_frontend_app_service_name" {
+  description = "The name of the demo Frontend App Service."
+  type        = string
+  default     = "copilot-gtm-demo-app"
+}
+
+variable "demo_frontend_docker_image_name" {
+  description = "The name of the Docker image for the demo frontend app."
+  type        = string
+  default     = "copilotgtm-frontend-app"
+}
+
+variable "demo_frontend_docker_image_tag" {
+  description = "The tag of the Docker image for the demo frontend app."
+  type        = string
+  default     = "latest"
+}
+
+variable "demo_frontend_sku_name" {
+  description = "The SKU of the App Service Plan for the demo frontend. Use B1 for the low-cost plan."
+  type        = string
+  default     = "B1"
+}
+
+variable "demo_frontend_os_type" {
+  description = "The OS type of the App Service Plan for the demo frontend."
+  type        = string
+  default     = "Linux"
+}
+
+variable "demo_frontend_https_only" {
+  description = "Whether to enable HTTPS only on the App Service for the demo frontend."
+  type        = bool
+  default     = true
+}
+
+# -----------------------------------------------------------------
+# Demo Frontend Pipeline
+# -----------------------------------------------------------------
+
+variable "demo_pipeline_name" {
+  description = "Name of the Azure DevOps pipeline resource for demo frontend deployments."
+  type        = string
+  default     = "demo pipeline"
+}
+
+variable "demo_pipeline_yml_path" {
+  description = "Relative path to the dedicated YAML definition used by the demo frontend pipeline. This file should trigger only on demo/* branches in the frontend repo."
+  type        = string
+  default     = "pipelines/.azure-pipelines/azure-pipelines-demo.yml"
+}
+
+variable "demo_pipeline_branch" {
+  description = "Default branch for the demo pipeline definition. The referenced YAML must still declare trigger rules for demo/* branches."
+  type        = string
+  default     = "dev"
+}
+
+# -----------------------------------------------------------------
+# Demo Frontend DNS
+# -----------------------------------------------------------------
+
+variable "demo_frontend_dns_a_record_name" {
+  description = "The name of the DNS record for the demo frontend app service."
+  type        = string
+  default     = "demoapp"
+}
+
+variable "demo_frontend_dns_zone_name" {
+  description = "DNS zone for the demo frontend hostname."
+  type        = string
+  default     = "copilotgtm.com"
+}
+
+variable "demo_frontend_dns_zone_resource_group" {
+  description = "Optional resource group override for the demo frontend DNS zone. Defaults to dns_zone_resource_group when null."
+  type        = string
+  default     = null
+}
+
+
+
 

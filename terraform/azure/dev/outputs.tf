@@ -82,7 +82,6 @@ output "acr_id" {
   value       = module.acr.acr_id
 }
 
-
 # -----------------------------------------------------------------
 # AKS Outputs
 # -----------------------------------------------------------------
@@ -130,7 +129,6 @@ output "aks_principal_id" {
   value       = module.aks.aks_principal_id
 }
 
-
 # -----------------------------------------------------------------
 # Redis Outputs
 # -----------------------------------------------------------------
@@ -150,7 +148,6 @@ output "redis_port" {
   description = "The SSL port for the Redis cache."
   value       = module.redis.port
 }
-
 
 # # -----------------------------------------------------------------
 # # Service Connection Outputs
@@ -194,7 +191,6 @@ output "workload_identity_workers_object_id" {
   value       = module.workload_identity_workers.object_id
 }
 
-
 # -----------------------------------------------------------------
 # Workload Identity / Tenant Diagnostics
 # -----------------------------------------------------------------
@@ -203,7 +199,6 @@ output "aks_oidc_issuer_url" {
   description = "OIDC issuer URL for the AKS cluster (contains tenant ID)."
   value       = module.aks.oidc_issuer_url
 }
-
 
 output "azuread_provider_tenant_id" {
   description = "Tenant ID used by the AzureAD provider (validate matches AKS OIDC issuer tenant)."
@@ -223,7 +218,6 @@ output "master_key_vault_uri" {
   description = "URI of the master Key Vault (should belong to active tenant)."
   value       = module.master_key_vault.key_vault_uri
 }
-
 
 # -----------------------------------------------------------------
 # DevOps Agent VM Outputs
@@ -247,3 +241,17 @@ output "devops_agent_name" {
   description = "Name of the registered Azure DevOps agent."
   value       = module.devops_agent.agent_name
 }
+
+# -----------------------------------------------------------------
+# Demo Frontend Outputs
+# -----------------------------------------------------------------
+output "demo_frontend_app_service_name" {
+  description = "Name of the demo frontend App Service."
+  value       = module.demo_frontend_app_service.app_service_name
+}
+
+output "demo_frontend_app_url" {
+  description = "Custom URL for the demo frontend."
+  value       = module.demo_frontend_app_service.custom_domain_url
+}
+
