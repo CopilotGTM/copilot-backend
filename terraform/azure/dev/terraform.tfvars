@@ -26,8 +26,8 @@ db_sku_name = "GP_Standard_D2s_v3"
 
 # PgBouncer - Connection pooling to share DB connections across all workers
 pgbouncer_enabled           = true
-pgbouncer_default_pool_size = 200 # Actual PostgreSQL connections (max 859 on GP_D2s_v3)
-pgbouncer_max_client_conn   = 500 # Max client connections from workers/API to PgBouncer
+pgbouncer_default_pool_size = 200           # Actual PostgreSQL connections (max 859 on GP_D2s_v3)
+pgbouncer_max_client_conn   = 500           # Max client connections from workers/API to PgBouncer
 pgbouncer_pool_mode         = "transaction" # Release connection after transaction
 
 # -----------------------------------------------------------------
@@ -50,7 +50,7 @@ enable_storage_private_endpoints   = false
 # aks_name           = "copilot-gtm-aks"     # Default
 # aks_dns_prefix     = "aks"                 # Default
 # aks_node_count     = 2                     # Default (ignored when autoscaling enabled)
-aks_vm_size = "Standard_D2as_v6"
+aks_vm_size             = "Standard_D2as_v6"
 aks_enable_auto_scaling = true
 aks_min_node_count      = 3
 aks_max_node_count      = 6
@@ -189,3 +189,18 @@ resend_email      = "noreply@team.copilotgtm.com" # Override from default
 # TF_VAR_supabase_jwt_secret       - Supabase JWT Secret
 # TF_VAR_resend_api_key            - Resend Email API Key
 # TF_VAR_nango_secret              - Nango Integration Secret
+
+# -----------------------------------------------------------------
+# Demo Frontend & Demo Pipeline (Dev only)
+# -----------------------------------------------------------------
+demo_frontend_sku_name                = "B1"
+demo_frontend_dns_a_record_name       = "demo"
+demo_frontend_dns_zone_name           = "appcopilotgtm.com"
+demo_frontend_dns_zone_resource_group = "master-resources"
+
+demo_pipeline_name     = "demo pipeline"
+demo_pipeline_yml_path = "pipelines/.azure-pipelines/azure-pipelines-demo.yml"
+# Default branch for the pipeline definition. The repo YAML must still include demo/* triggers.
+demo_pipeline_branch = "dev"
+
+

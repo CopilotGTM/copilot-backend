@@ -98,7 +98,6 @@ module "pipeline" {
   }
 }
 
-
 # -----------------------------------------------------------------
 # Azure DevOps Secure File for Kubeconfig
 # -----------------------------------------------------------------
@@ -114,7 +113,6 @@ module "secure_file" {
     module.aks
   ]
 }
-
 
 # =================================================================
 # Frontend App & Pipeline
@@ -151,7 +149,6 @@ module "frontend_app_service" {
   ]
 }
 
-
 # -----------------------------------------------------------------
 # Azure DevOps Pipeline (CI/CD) for Frontend (Shared - handles both Dev and Prod)
 # -----------------------------------------------------------------
@@ -173,7 +170,6 @@ module "frontend_pipeline" {
     # Pipeline variables are set per stage in the YAML
   }
 }
-
 
 # =================================================================
 # Frontend Admin App & Pipeline
@@ -210,7 +206,6 @@ module "frontend_admin_app_service" {
   ]
 }
 
-
 # -----------------------------------------------------------------
 # Azure DevOps Pipeline (CI/CD) for Admin Frontend (Shared - handles both Dev and Prod)
 # -----------------------------------------------------------------
@@ -230,6 +225,50 @@ module "frontend_admin_pipeline" {
   variable_group_ids = [azuredevops_variable_group.secrets.id]
   pipeline_variables = {
     # Pipeline variables are set per stage in the YAML
+  }
+}
+
+# =================================================================
+# Demo Frontend App & Pipeline (Dev only)
+# =================================================================
+
+module "demo_frontend_app_service" {
+  source                = "../modules/app_service"
+  app_service_plan_name = "${var.demo_frontend_app_service_plan_name}-${var.env}"
+  app_service_name      = "${var.demo_frontend_app_service_name}-${var.env}"
+  resource_group_name   = module.resource_group.resource_group_name
+  location              = var.location
+  docker_image_name     = var.demo_frontend_docker_image_name
+  docker_image_tag      = var.demo_frontend_docker_image_tag
+  docker_registry_url   = module.acr.acr_login_server
+  acr_id                = module.acr.acr_id
+  app_settings          = {}
+  sku_name              = var.demo_frontend_sku_name
+  os_type               = var.demo_frontend_os_type
+  https_only            = var.demo_frontend_https_only
+
+  custom_domain_name      = "${var.demo_frontend_dns_a_record_name}.${var.demo_frontend_dns_zone_name}"
+  dns_zone_name           = var.demo_frontend_dns_zone_name
+  dns_zone_resource_group = coalesce(var.demo_frontend_dns_zone_resource_group, var.dns_zone_resource_group)
+  create_dns_records      = true
+
+  depends_on = [
+    module.resource_group,
+    module.acr
+  ]
+}
+
+module "demo_pipeline" {
+  source             = "../modules/pipeline"
+  devops_project_id  = data.azuredevops_project.project.id
+  pipeline_name      = var.demo_pipeline_name
+  repo_id            = data.azuredevops_git_repository.frontend_repo.id
+  branch_name        = var.demo_pipeline_branch
+  yml_path           = var.demo_pipeline_yml_path
+  variable_group_ids = [azuredevops_variable_group.secrets.id]
+  pipeline_variables = {
+    APP_URL      = module.demo_frontend_app_service.custom_domain_url
+    WEB_APP_NAME = module.demo_frontend_app_service.app_service_name
   }
 }
 
