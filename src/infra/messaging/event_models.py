@@ -38,7 +38,21 @@ class AttachmentEventUpdate(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class DealAssetEventUpdate(BaseModel):
+    """SSE event model for deal asset status updates."""
+
+    asset_id: str
+    deal_id: str
+    status: str
+    updated_at: str | None = None
+    error_message: str | None = None
+    thumbnail_small_url: str | None = None
+
+    model_config = {"from_attributes": True}
+
+
 __all__ = [
     "KnowledgeSourceEventUpdate",
     "AttachmentEventUpdate",
+    "DealAssetEventUpdate",
 ]

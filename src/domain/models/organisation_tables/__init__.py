@@ -18,6 +18,13 @@ Each model is a SQLModel class that also serves as a Pydantic model for API vali
 from .base_mixins import CreatedAtMixin, TimestampMixin
 from .chat_message_models import Attachment, ChatMessage, ChatMessageAttachmentLink
 from .chat_session_models import ChatSession
+from .deal_asset_models import (
+    DealAsset,
+    DealAssetDirection,
+    DealAssetLinkStatus,
+    DealAssetSourceType,
+    DealAssetStatus,
+)
 from .job_models import (
     ChatMessageJob,
     DealJobs,
@@ -108,6 +115,12 @@ __all__ = [
     "CRMDealStatus",
     "CRMStageState",
     "DealStakeholder",
+    # Deal Asset Models
+    "DealAsset",
+    "DealAssetStatus",
+    "DealAssetDirection",
+    "DealAssetSourceType",
+    "DealAssetLinkStatus",
     # Job Models
     "JobStatus",
     "ChatMessageJob",

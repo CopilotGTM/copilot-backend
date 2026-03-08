@@ -75,6 +75,8 @@ class DealWorkerConfig(BaseWorkerConfig):
             # Deal memory backfill
             "deal_memory.backfill_org",
             "deal_memory.trigger_backfill_all_orgs",
+            # Deal asset post-upload processing
+            "deal_asset.post_upload",
         )
 
         deal_jobs_queue_tasks = (
