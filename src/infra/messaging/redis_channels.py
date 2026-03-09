@@ -13,6 +13,7 @@ _CHAT_JOB_TEMPLATE = "chat:{org_id}:job:{job_id}"
 _KNOWLEDGE_TEMPLATE = "kb:{org_id}:sources"
 _ATTACHMENT_TEMPLATE = "att:{org_id}:attachments"
 _DEAL_JOB_TEMPLATE = "deal:{org_id}:job:{job_id}"
+_DEAL_ASSET_TEMPLATE = "deal_asset:{org_id}:assets"
 _ORG_JOB_TEMPLATE = "org:job:{job_id}"
 
 
@@ -26,6 +27,10 @@ def channel_for_knowledge_update_status(organisation_id: UUID | str) -> str:
 
 def channel_for_attachment_update_status(organisation_id: UUID | str) -> str:
     return _ATTACHMENT_TEMPLATE.format(org_id=organisation_id)
+
+
+def channel_for_deal_asset_status(organisation_id: UUID | str) -> str:
+    return _DEAL_ASSET_TEMPLATE.format(org_id=organisation_id)
 
 
 def channel_for_deal_job(organisation_id: UUID | str, job_id: UUID | str) -> str:

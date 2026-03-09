@@ -2,6 +2,7 @@
 Tasks for the deal worker.
 """
 
+from .deal_asset_post_upload_task import deal_asset_post_upload
 from .deal_import_tasks import process_deal_import_job
 from .deal_insight_tasks import (
     analyze_deal_stakeholders_task,
@@ -70,4 +71,6 @@ __all__ = [
     # Stale job cleanup tasks
     "cleanup_stale_deal_jobs_all_orgs_task",
     "cleanup_stale_deal_jobs_org_task",
+    # Deal asset tasks
+    "deal_asset_post_upload",
 ]
