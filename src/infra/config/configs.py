@@ -107,10 +107,64 @@ class CloudStorageConfig:
 
 
 class ResendConfig:
-    """Configuration for Resend email service"""
+    """Configuration for Resend email service.
 
-    RESEND_API_KEY: str | None = os.getenv("RESEND_API_KEY")
+    API key is stored in Azure Key Vault (master vault) and cached
+    with a configurable TTL (default 6 hours). Can be overridden via env var
+    (RESEND_API_KEY) for local development.
+    """
+
+    # Key Vault secret name
+    SECRET_NAME_API_KEY: str = "resend-api-key"
+
+    # Cached API key (populated by get_api_key)
+    _api_key: str | None = os.getenv("RESEND_API_KEY")
+    _credentials_ttl_hours: float = float(os.getenv("RESEND_CREDENTIALS_TTL_HOURS", "6"))
+    _credentials_loaded_at: float | None = None
+    _credentials_from_env: bool = bool(os.getenv("RESEND_API_KEY"))
+    _refresh_lock: asyncio.Lock | None = None
+
     FROM_EMAIL: str | None = os.getenv("FROM_EMAIL")
+
+    async def get_api_key(self) -> str | None:
+        """Return cached API key, refreshing from Key Vault if TTL expired."""
+        if self._credentials_from_env:
+            return self._api_key
+
+        if not self._is_expired():
+            return self._api_key
+
+        if self._refresh_lock is None:
+            self._refresh_lock = asyncio.Lock()
+
+        async with self._refresh_lock:
+            if not self._is_expired():
+                return self._api_key
+            await self._load_from_vault()
+
+        return self._api_key
+
+    def _is_expired(self) -> bool:
+        if self._credentials_loaded_at is None:
+            return True
+        import time
+
+        elapsed_hours = (time.time() - self._credentials_loaded_at) / 3600
+        return elapsed_hours >= self._credentials_ttl_hours
+
+    async def _load_from_vault(self) -> None:
+        import time
+
+        from src.infra.secrets.manager import master_secrets_manager
+
+        logger.info("Loading Resend API key from Key Vault (TTL refresh)")
+        self._api_key = await master_secrets_manager.get(self.SECRET_NAME_API_KEY)
+        self._credentials_loaded_at = time.time()
+
+        if self._api_key:
+            logger.info("Resend API key cached (TTL=%.1fh)", self._credentials_ttl_hours)
+        else:
+            logger.error("Resend API key missing from Key Vault")
 
 
 class SuperAdminConfig:
