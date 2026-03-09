@@ -342,7 +342,7 @@ async def forgot_password(
             )
         logger.info(f"Password reset link generated for user: {user.email}")
 
-        email_sent = email_service.send_password_reset_email(
+        email_sent = await email_service.send_password_reset_email(
             to_email=user.email,
             first_name=user.first_name,
             reset_url=password_reset_link,

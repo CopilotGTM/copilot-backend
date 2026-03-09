@@ -115,7 +115,7 @@ async def create_user(
         # Release DB session before the email API call
         await service.close()
 
-        email_sent = email_service.send_user_creation_email(
+        email_sent = await email_service.send_user_creation_email(
             to_email=result.email,
             first_name=result.first_name,
             temp_password=result.temp_password,
