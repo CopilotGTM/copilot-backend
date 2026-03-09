@@ -3,29 +3,46 @@ import os
 from html import escape as html_escape
 
 import resend
+from src.infra.config.configs import resend_config
 from src.infra.utils.logger import get_logger
 
 logger = get_logger()
 
 
 class EmailService:
-    """Email service using Resend for sending notifications to admins"""
+    """Email service using Resend for sending notifications to admins.
+
+    API key is resolved lazily on first use: env var first, then Key Vault.
+    """
 
     def __init__(self):
-        self.resend_api_key = os.getenv("RESEND_API_KEY")
         self.from_email = os.getenv("FROM_EMAIL", "noreply@copilotgtm.com")
         self.app_name = os.getenv("APP_NAME", "CopilotGTM")
         self.app_url = os.getenv("APP_URL", "https://app.copilotgtm.com")
         self.admin_app_url = os.getenv("ADMIN_APP_URL", "https://admin.copilotgtm.com")
         self.web_app_url = os.getenv("WEB_APP_URL", "https://www.copilotgtm.com")
+        self._configured: bool | None = None  # None = not yet attempted
 
-        # Initialize Resend client
-        if self.resend_api_key:
-            resend.api_key = self.resend_api_key
-            self.is_configured = True
+    async def _ensure_configured(self) -> bool:
+        """Lazily resolve Resend API key from env var or Key Vault."""
+        if self._configured is not None:
+            return self._configured
+
+        api_key = await resend_config.get_api_key()
+        if api_key:
+            resend.api_key = api_key
+            self._configured = True
+            logger.info("Resend API key configured successfully")
         else:
-            self.is_configured = False
+            self._configured = False
             logger.warning("Resend API key not configured. Email functionality will be disabled.")
+
+        return self._configured
+
+    @property
+    def is_configured(self) -> bool:
+        """Backward-compatible sync check. Returns False if not yet resolved."""
+        return self._configured is True
 
     def _create_styled_html(self, title: str, preheader: str, content: str) -> str:
         """Creates a styled HTML email body."""
@@ -70,17 +87,15 @@ class EmailService:
         </html>
         """
 
-    def send_email(
+    async def send_email(
         self,
         to_email: str,
         subject: str,
         html_content: str,
         text_content: str | None = None,
     ) -> bool:
-        """
-        Send an email using Resend
-        """
-        if not self.is_configured:
+        """Send an email using Resend."""
+        if not await self._ensure_configured():
             logger.error("Email service not configured. Cannot send email.")
             return False
 
@@ -101,7 +116,7 @@ class EmailService:
             logger.error(f"Failed to send email to {to_email}: {str(e)}")
             return False
 
-    def send_super_admin_creation_email(
+    async def send_super_admin_creation_email(
         self, to_email: str, first_name: str, temp_password: str
     ) -> bool:
         """Send email to newly created super admin with temporary password"""
@@ -150,9 +165,11 @@ class EmailService:
         You will be required to change your password upon first login.
         """
 
-        return self.send_email(to_email, subject, html_content, text_content)
+        return await self.send_email(to_email, subject, html_content, text_content)
 
-    def send_user_creation_email(self, to_email: str, first_name: str, temp_password: str) -> bool:
+    async def send_user_creation_email(
+        self, to_email: str, first_name: str, temp_password: str
+    ) -> bool:
         """Send email to newly created user with temporary password"""
         subject = f"Welcome to {self.app_name} - Your Account is Ready"
         preheader = "Your new account has been successfully created."
@@ -198,9 +215,11 @@ class EmailService:
         You will be required to change your password upon first login.
         """
 
-        return self.send_email(to_email, subject, html_content, text_content)
+        return await self.send_email(to_email, subject, html_content, text_content)
 
-    def send_password_reset_email(self, to_email: str, first_name: str, reset_url: str) -> bool:
+    async def send_password_reset_email(
+        self, to_email: str, first_name: str, reset_url: str
+    ) -> bool:
         """Send password reset email to a user."""
         subject = f"{self.app_name} - Password Reset Request"
         preheader = "A request to reset your password was received."
@@ -236,7 +255,7 @@ class EmailService:
         If you did not request this, please ignore this email. The link will expire in 24 hours.
         """
 
-        return self.send_email(to_email, subject, html_content, text_content)
+        return await self.send_email(to_email, subject, html_content, text_content)
 
 
 # Create global instance

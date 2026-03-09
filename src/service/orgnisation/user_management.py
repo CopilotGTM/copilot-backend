@@ -77,7 +77,7 @@ class UserManagementService:
         await session.refresh(new_user)
 
         # Send the temporary password to the user
-        email_sent = email_service.send_user_creation_email(
+        email_sent = await email_service.send_user_creation_email(
             to_email=new_user.email,
             first_name=new_user.first_name,
             temp_password=temp_password,

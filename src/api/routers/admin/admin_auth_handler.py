@@ -235,7 +235,7 @@ async def forgot_password(
         await service.close()
 
         if result.reset_link and result.admin_email:
-            email_service.send_password_reset_email(
+            await email_service.send_password_reset_email(
                 to_email=result.admin_email,
                 first_name=result.admin_first_name or "",
                 reset_url=result.reset_link,
