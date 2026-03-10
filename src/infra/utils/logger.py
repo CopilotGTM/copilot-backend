@@ -69,7 +69,7 @@ _CONTEXT_FIELDS: list[tuple[str, str]] = [
 
 
 class _JsonFormatter(logging.Formatter):
-    """Structured formatter for both API and worker processes."""
+    """Structured JSON formatter for production / log aggregators."""
 
     def __init__(self, *, component: str | None = None):
         super().__init__()
@@ -106,6 +106,46 @@ class _JsonFormatter(logging.Formatter):
             payload["exception"] = self.formatException(record.exc_info)
 
         return json_dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str)
+
+
+_LEVEL_COLORS = {
+    "DEBUG": "\033[36m",  # cyan
+    "INFO": "\033[32m",  # green
+    "WARNING": "\033[33m",  # yellow
+    "ERROR": "\033[31m",  # red
+    "CRITICAL": "\033[1;31m",  # bold red
+}
+_RESET = "\033[0m"
+
+
+class _ConsoleFormatter(logging.Formatter):
+    """Human-readable colored formatter for local development."""
+
+    def __init__(self, *, component: str | None = None):
+        super().__init__()
+        self._component = component
+
+    def format(self, record: logging.LogRecord) -> str:  # noqa: A003 - matches logging API
+        color = _LEVEL_COLORS.get(record.levelname, "")
+        ts = datetime.fromtimestamp(record.created, tz=UTC).strftime("%H:%M:%S.%f")[:-3]
+        level = f"{color}{record.levelname:<7}{_RESET}"
+
+        # Short logger name: last segment only
+        short_name = record.name.rsplit(".", 1)[-1]
+
+        # request_id helps follow a single request across log lines;
+        # process name distinguishes concurrent uvicorn workers
+        req_id = getattr(record, "ctx_request_id", "")
+        pid_tag = f"P{record.process}" if record.process else ""
+        prefix = " ".join(filter(None, [pid_tag, req_id[:8] if req_id else ""]))
+        prefix_str = f" ({prefix})" if prefix else ""
+
+        parts = [f"{ts} {level} [{short_name}]{prefix_str} {record.getMessage()}"]
+
+        if record.exc_info:
+            parts.append(self.formatException(record.exc_info))
+
+        return "\n".join(parts)
 
 
 def _resolve_log_level(log_level: int | None) -> int:
@@ -199,7 +239,12 @@ def configure_logging(
 
     if should_reconfigure:
         _remove_managed_root_handlers(root_logger)
-        formatter = _JsonFormatter(component=component)
+        env = os.getenv("ENV", "dev")
+        formatter: logging.Formatter = (
+            _ConsoleFormatter(component=component)
+            if env == "local"
+            else _JsonFormatter(component=component)
+        )
 
         console_handler = _build_handler(formatter=formatter)
         setattr(console_handler, _ROOT_HANDLER_MARKER, True)
