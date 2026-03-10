@@ -19,9 +19,11 @@ from celery.signals import (
 
 # Redis connection pool management
 from src.infra.messaging.redis_client import close_redis_pool, initialize_redis_pool
-from src.infra.utils.logger import get_logger
+from src.infra.utils.logger import configure_logging, get_logger, resolve_celery_component
 from src.workers.base.celery_base import create_celery_app
 from src.workers.knowledge_worker.config import KnowledgeWorkerConfig
+
+configure_logging(component=resolve_celery_component("knowledge_worker"))
 
 logger = get_logger("knowledge_worker")
 

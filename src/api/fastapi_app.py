@@ -8,6 +8,7 @@ This module creates and configures the FastAPI application with:
 """
 
 import gc
+import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -24,9 +25,13 @@ gc.set_threshold(50000, 500, 100)
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 load_dotenv(BASE_DIR / ".env", override=True)
 
+from src.infra.observability.otel import init_otel, instrument_fastapi_app
 from src.infra.observability.sentry import init_sentry
+from src.infra.utils.logger import configure_logging
 
+configure_logging(component="api")
 init_sentry()
+init_otel(service_name_suffix="-api")
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -81,6 +86,9 @@ from ..infra.utils.logger import get_logger
 # Secret maintenance removed; no background task required
 
 logger = get_logger()
+
+# Suppress uvicorn's plain-text access log — replaced by our structured middleware
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 
 
 @asynccontextmanager
@@ -220,5 +228,7 @@ def create_fastapi_app():
     #   - POST /users/bots/teams/messages - Teams webhook
     #   - GET  /users/bots/teams/health - Teams health check
     fastapp.include_router(bots_router, prefix="/users/bots", tags=["bots"])
+
+    instrument_fastapi_app(fastapp)
 
     return fastapp

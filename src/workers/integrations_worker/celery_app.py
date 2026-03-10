@@ -1,6 +1,13 @@
 from celery.signals import worker_ready, worker_shutdown
 from dotenv import load_dotenv
 
+# Load environment variables first
+load_dotenv(override=True)
+
+from src.infra.utils.logger import configure_logging, resolve_celery_component
+
+configure_logging(component=resolve_celery_component("integrations_worker"))
+
 # Redis connection pool management
 from src.infra.messaging.redis_client import close_redis_pool, initialize_redis_pool
 from src.infra.utils.logger import get_logger
@@ -8,9 +15,6 @@ from src.workers.base.celery_base import create_celery_app
 from src.workers.integrations_worker.config import IntegrationsWorkerConfig
 
 logger = get_logger("integrations_worker")
-
-# Load environment variables first
-load_dotenv(override=True)
 
 # Initialize the configuration for the Integrations Worker
 config = IntegrationsWorkerConfig()
