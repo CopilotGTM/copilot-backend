@@ -26,12 +26,16 @@ def init_sentry() -> None:
         return
 
     import sentry_sdk
+    from sentry_sdk.integrations.httpx import HttpxIntegration
 
     sentry_sdk.init(
         dsn=dsn,
         environment=sentry_config.SENTRY_ENVIRONMENT,
         traces_sample_rate=sentry_config.SENTRY_TRACES_SAMPLE_RATE,
         send_default_pii=sentry_config.SENTRY_SEND_DEFAULT_PII,
+        # Sentry's httpx patching breaks supabase-py auth calls in our API runtime.
+        # Keep Sentry enabled, but leave outbound httpx transport behavior untouched.
+        disabled_integrations=[HttpxIntegration()],
         # Attach server name so Sentry distinguishes API vs worker instances
         server_name=os.getenv("SENTRY_SERVER_NAME"),
     )

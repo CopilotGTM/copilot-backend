@@ -4,11 +4,12 @@ from dataclasses import dataclass
 from importlib import reload
 
 import src.api.fastapi_app as fastapi_app
+import src.infra.observability.sentry as sentry_runtime
 import src.infra.utils.app_state as app_state
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from src.api.middleware.request_context import RequestContextMiddleware
-from src.infra.config.configs import otel_config
+from src.infra.config.configs import otel_config, sentry_config
 from src.infra.utils.logger import configure_logging, get_logger, resolve_celery_component
 from src.workers.base import celery_base
 
@@ -147,3 +148,18 @@ def test_resolve_celery_component_distinguishes_beat_from_worker(mocker):
 
     mocker.patch("src.infra.utils.logger.sys.argv", ["celery", "-A", "x", "worker"])
     assert resolve_celery_component("chat_worker") == "chat_worker"
+
+
+def test_init_sentry_disables_httpx_integration(mocker):
+    mocker.patch.object(sentry_runtime, "_sentry_initialized", False)
+    mocker.patch.object(sentry_config, "SENTRY_DSN", "https://example@sentry.io/123")
+    mocker.patch.object(sentry_config, "SENTRY_ENVIRONMENT", "dev")
+    mocker.patch.object(sentry_config, "SENTRY_TRACES_SAMPLE_RATE", 0.2)
+    mocker.patch.object(sentry_config, "SENTRY_SEND_DEFAULT_PII", True)
+
+    init_mock = mocker.patch("sentry_sdk.init")
+
+    sentry_runtime.init_sentry()
+
+    disabled = init_mock.call_args.kwargs["disabled_integrations"]
+    assert any(type(integration).__name__ == "HttpxIntegration" for integration in disabled)
