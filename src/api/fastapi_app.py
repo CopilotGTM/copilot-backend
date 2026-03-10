@@ -24,6 +24,10 @@ gc.set_threshold(50000, 500, 100)
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 load_dotenv(BASE_DIR / ".env", override=True)
 
+from src.infra.observability.sentry import init_sentry
+
+init_sentry()
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from src.api.routers.admin.admin_auth_handler import router as admin_auth_router

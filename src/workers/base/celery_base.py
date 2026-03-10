@@ -6,7 +6,10 @@ from celery import Celery
 from celery.signals import task_failure, task_postrun, task_prerun, worker_process_init
 
 from src.infra.observability.context import load_from_headers, reset_context, set_celery_context
+from src.infra.observability.sentry import init_sentry
 from src.infra.utils.logger import get_logger
+
+init_sentry()
 
 _signals_registered = False
 

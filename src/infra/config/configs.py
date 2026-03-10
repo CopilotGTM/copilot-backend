@@ -12,6 +12,19 @@ from .constant import CONFIG_MAP
 logger = get_logger()
 
 
+class SentryConfig:
+    """Configuration for Sentry error tracking.
+
+    DSN is safe to expose (it only identifies where to send events, not a secret).
+    Disable in local dev by leaving SENTRY_DSN empty.
+    """
+
+    SENTRY_DSN: str = os.getenv("SENTRY_DSN", "")
+    SENTRY_ENVIRONMENT: str = os.getenv("ENV", "dev")
+    SENTRY_TRACES_SAMPLE_RATE: float = float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.2"))
+    SENTRY_SEND_DEFAULT_PII: bool = os.getenv("SENTRY_SEND_DEFAULT_PII", "true").lower() == "true"
+
+
 class SupabaseConfig:
     """Configuration for Supabase authentication"""
 
@@ -710,6 +723,7 @@ class SlackConfig:
 
 
 slack_config = SlackConfig()
+sentry_config = SentryConfig()
 
 
 class Config:
