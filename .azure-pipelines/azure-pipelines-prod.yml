@@ -688,6 +688,10 @@ stages:
                       --set api.secrets.APP_NAME="$(APP_NAME)" \
                       --set api.secrets.APP_URL="$(APP_URL)" \
                       --set api.secrets.ADMIN_APP_URL="$(ADMIN_APP_URL)" \
+                      --set api.secrets.SENTRY_DSN="$(SENTRY_DSN)" \
+                      --set api.secrets.SENTRY_TRACES_SAMPLE_RATE="$(SENTRY_TRACES_SAMPLE_RATE)" \
+                      --set api.secrets.OTEL_EXPORTER_OTLP_ENDPOINT="$(OTEL_EXPORTER_OTLP_ENDPOINT)" \
+                      --set api.secrets.OTEL_EXPORTER_OTLP_HEADERS="$(OTEL_EXPORTER_OTLP_HEADERS)" \
                       --set api.secrets.NANGO_SECRET_KEY="$(NANGO_SECRET_KEY)" \
                       --set api.secrets.NANGO_BASE_URL="https://api.nango.dev" \
                       --set knowledge-extract-worker.workloadIdentity.clientId="$(WORKLOAD_IDENTITY_WORKERS_CLIENT_ID)" \
@@ -751,6 +755,10 @@ stages:
                     APP_NAME: $(APP_NAME)
                     APP_URL: $(APP_URL)
                     ADMIN_APP_URL: $(ADMIN_APP_URL)
+                    SENTRY_DSN: $(SENTRY_DSN)
+                    SENTRY_TRACES_SAMPLE_RATE: $(SENTRY_TRACES_SAMPLE_RATE)
+                    OTEL_EXPORTER_OTLP_ENDPOINT: $(OTEL_EXPORTER_OTLP_ENDPOINT)
+                    OTEL_EXPORTER_OTLP_HEADERS: $(OTEL_EXPORTER_OTLP_HEADERS)
                     NANGO_SECRET_KEY: $(NANGO_SECRET_KEY)
                     NANGO_BASE_URL: $(NANGO_BASE_URL)
                     WORKLOAD_IDENTITY_API_TENANT_ID: $(WORKLOAD_IDENTITY_API_TENANT_ID)
