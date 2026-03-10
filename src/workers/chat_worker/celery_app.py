@@ -4,6 +4,13 @@ from celery.signals import (
 )
 from dotenv import load_dotenv
 
+# Load environment variables first
+load_dotenv(override=True)
+
+from src.infra.utils.logger import configure_logging, resolve_celery_component
+
+configure_logging(component=resolve_celery_component("chat_worker"))
+
 # Redis connection pool management
 from src.infra.messaging.redis_client import close_redis_pool, initialize_redis_pool
 from src.infra.utils.logger import get_logger
@@ -11,9 +18,6 @@ from src.workers.base.celery_base import create_celery_app
 from src.workers.chat_worker.config import ChatWorkerConfig
 
 logger = get_logger("chat_worker")
-
-# Load environment variables first
-load_dotenv(override=True)
 
 # Initialize the configuration for the Chat Worker
 config = ChatWorkerConfig()

@@ -4,15 +4,19 @@ from celery.signals import (
 )
 from dotenv import load_dotenv
 
+# Load environment variables
+load_dotenv(override=True)
+
+from src.infra.utils.logger import configure_logging, resolve_celery_component
+
+configure_logging(component=resolve_celery_component("deal_worker"))
+
 from src.infra.messaging.redis_client import close_redis_pool, initialize_redis_pool
 from src.infra.utils.logger import get_logger
 from src.workers.base.celery_base import create_celery_app
 from src.workers.deal_worker.config import DealWorkerConfig
 
 logger = get_logger("deal_worker")
-
-# Load environment variables
-load_dotenv(override=True)
 
 # Initialize configuration
 config = DealWorkerConfig()

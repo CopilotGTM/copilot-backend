@@ -12,6 +12,21 @@ from .constant import CONFIG_MAP
 logger = get_logger()
 
 
+class OTelConfig:
+    """Configuration for OpenTelemetry tracing and log export.
+
+    Active when OTEL_EXPORTER_OTLP_ENDPOINT is set. No endpoint = no export.
+    Grafana Cloud OTLP endpoint example:
+        https://otlp-gateway-prod-us-central-0.grafana.net/otlp
+    Auth is via OTEL_EXPORTER_OTLP_HEADERS (e.g. "Authorization=Basic <base64>").
+    """
+
+    OTEL_SERVICE_NAME: str = os.getenv("OTEL_SERVICE_NAME", "copilotgtm-backend")
+    OTEL_EXPORTER_OTLP_ENDPOINT: str = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+    OTEL_EXPORTER_OTLP_HEADERS: str = os.getenv("OTEL_EXPORTER_OTLP_HEADERS", "")
+    OTEL_TRACES_SAMPLE_RATE: float = float(os.getenv("OTEL_TRACES_SAMPLE_RATE", "0.2"))
+
+
 class SentryConfig:
     """Configuration for Sentry error tracking.
 
@@ -724,6 +739,7 @@ class SlackConfig:
 
 slack_config = SlackConfig()
 sentry_config = SentryConfig()
+otel_config = OTelConfig()
 
 
 class Config:

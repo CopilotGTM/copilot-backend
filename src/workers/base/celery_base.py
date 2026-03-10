@@ -1,9 +1,14 @@
 import logging
-from json import dumps as json_dumps
 from typing import Any
 
 from celery import Celery
-from celery.signals import task_failure, task_postrun, task_prerun, worker_process_init
+from celery.signals import (
+    task_failure,
+    task_postrun,
+    task_prerun,
+    worker_process_init,
+    worker_ready,
+)
 
 from src.infra.observability.context import load_from_headers, reset_context, set_celery_context
 from src.infra.observability.sentry import init_sentry
@@ -12,6 +17,7 @@ from src.infra.utils.logger import get_logger
 init_sentry()
 
 _signals_registered = False
+_otel_service_name_suffix = ""
 
 
 def _register_observability_signals() -> None:
@@ -37,6 +43,18 @@ def _register_observability_signals() -> None:
 
         _clear_async_db_provider_cache()
         _clear_sync_db_provider_cache()
+
+    @worker_process_init.connect(weak=False)
+    def _init_otel_after_fork(**kwargs):  # noqa: ARG001
+        from src.infra.observability.otel import init_otel
+
+        init_otel(service_name_suffix=_otel_service_name_suffix)
+
+    @worker_ready.connect(weak=False)
+    def _init_otel_in_main_process(**kwargs):  # noqa: ARG001
+        from src.infra.observability.otel import init_otel
+
+        init_otel(service_name_suffix=_otel_service_name_suffix)
 
     @task_prerun.connect(weak=False)
     def _task_prerun_handler(task_id=None, task=None, **kwargs):  # noqa: ARG001
@@ -81,27 +99,23 @@ def _register_observability_signals() -> None:
             "event": "celery_task_failed",
             "task_id": str(task_id) if task_id else None,
             "task_name": getattr(task, "name", None),
-            "args": args,
-            "kwargs": kwargs,
-            "exception": repr(exception) if exception else None,
-            "traceback": traceback,
+            "task_args": args,
+            "task_kwargs": kwargs,
+            "task_exception": repr(exception) if exception else None,
+            "task_traceback": traceback,
             "signal_extra": extra or None,
         }
-        try:
-            message = json_dumps(payload, ensure_ascii=False, default=str)
-        except Exception:
-            message = (
-                f"celery_task_failed task_id={task_id} task_name={getattr(task, 'name', None)}"
-            )
-
-        if einfo:
-            logger.error(message)
-        else:
-            logger.error(message)
+        logger.error(
+            "Celery task failed",
+            exc_info=einfo if einfo else None,
+            extra=payload,
+        )
 
 
 def create_celery_app(worker_name, config, tasks_module):
     """Factory function to create a Celery app for a specific worker."""
+    global _otel_service_name_suffix
+    _otel_service_name_suffix = f"-{worker_name}"
 
     _register_observability_signals()
 
