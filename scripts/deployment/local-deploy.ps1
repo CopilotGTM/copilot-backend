@@ -17,7 +17,6 @@
 param(
     [string]$DeployEnvironment = "dev",
     [bool]$EnableFlower = $true,
-    [bool]$EnableObservability = $true,
     [bool]$UseSeparatedImages = $true,
     [bool]$UseFullImageForWorkers = $false,
     [bool]$UseFullImageForApi = $false,
@@ -26,12 +25,11 @@ param(
 
 # Show usage if help is requested
 if ($Help) {
-    Write-Host "Usage: .\local-deploy.ps1 [-DeployEnvironment <env>] [-EnableFlower <bool>] [-EnableObservability <bool>] [-UseSeparatedImages <bool>] [-Help]"
+    Write-Host "Usage: .\local-deploy.ps1 [-DeployEnvironment <env>] [-EnableFlower <bool>] [-UseSeparatedImages <bool>] [-Help]"
     Write-Host ""
     Write-Host "Parameters:"
     Write-Host "  -DeployEnvironment    Target environment (default: dev)"
     Write-Host "  -EnableFlower         Deploy Flower UI and enable Celery events (default: true)"
-    Write-Host "  -EnableObservability  Deploy Loki + Promtail + Grafana for log observability (default: true)"
     Write-Host "  -UseSeparatedImages   Build separate images per component (default: true, matches pipeline)"
     Write-Host "  -UseFullImageForWorkers Build worker images using the 'full' target to include API deps (default: false)"
     Write-Host "  -UseFullImageForApi   Build API image using the 'full' target (default: false)"
@@ -40,7 +38,6 @@ if ($Help) {
     Write-Host "Example:"
     Write-Host "  .\local-deploy.ps1                              # Deploy with all features enabled"
     Write-Host "  .\local-deploy.ps1 -EnableFlower `$false         # Deploy without Flower UI"
-    Write-Host "  .\local-deploy.ps1 -EnableObservability `$false  # Deploy without observability stack"
     Write-Host "  .\local-deploy.ps1 -UseSeparatedImages `$false   # Use legacy single image"
     exit 0
 }
@@ -485,15 +482,6 @@ function Deploy-WithHelm {
         )
     }
 
-    if ($EnableObservability) {
-        Write-Host "Observability enabled: deploying Loki + Promtail + Grafana..."
-        $helmArgs += @(
-            "--set", "loki.enabled=true",
-            "--set", "promtail.enabled=true",
-            "--set", "grafana.enabled=true"
-        )
-    }
-
     # Execute Helm command and check for errors
     $helmResult = & helm @helmArgs
     $helmExitCode = $LASTEXITCODE
@@ -533,17 +521,6 @@ function Deploy-WithHelm {
     kubectl rollout status deployment copilot-backend-deal-beat -n $NAMESPACE --timeout=300s
     
     Write-Success "Worker restarts completed"
-
-    if ($EnableObservability) {
-        Write-Host "Restarting observability components to apply latest values..."
-        kubectl rollout restart deployment copilot-backend-grafana -n $NAMESPACE
-        kubectl rollout restart statefulset copilot-backend-loki -n $NAMESPACE
-        kubectl rollout restart daemonset copilot-backend-promtail -n $NAMESPACE
-
-        Write-Host "Waiting for observability rollouts to complete..."
-        kubectl rollout status deployment copilot-backend-grafana -n $NAMESPACE --timeout=300s
-        kubectl rollout status statefulset copilot-backend-loki -n $NAMESPACE --timeout=300s
-    }
     
     # Verify GPU configuration was applied
     Write-Host "Verifying GPU configuration..."
@@ -614,12 +591,6 @@ function Main {
         Write-Host "Flower UI is deployed (internal). Access it from your machine with:"
         Write-Host "  kubectl port-forward -n $NAMESPACE svc/$HELM_RELEASE_NAME-flower 5555:5555"
         Write-Host "  Then open: http://localhost:5555"
-    }
-    if ($EnableObservability) {
-        Write-Host ""
-        Write-Host "Observability Stack is deployed. Access Grafana from your machine with:"
-        Write-Host "  kubectl port-forward -n $NAMESPACE svc/$HELM_RELEASE_NAME-grafana 3001:3000"
-        Write-Host "  Then open: http://localhost:3001 (admin/admin)"
     }
     Write-Host ""
     Write-Host "🚀 Your application should now be running with the latest changes."
