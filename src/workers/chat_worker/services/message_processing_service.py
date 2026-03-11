@@ -15,6 +15,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass, field
+from typing import Any
 from uuid import UUID
 
 from sqlmodel import col
@@ -46,7 +47,6 @@ FRAME_TYPE_ANSWER_REPLACE = "answer.replace"
 FRAME_TYPE_ANSWER_METRICS = "answer.metrics"
 FRAME_TYPE_SUGGESTIONS_REPLACE = "suggestions.replace"
 FRAME_TYPE_SOURCES_REPLACE = "sources.replace"
-FRAME_TYPE_AGENT_SWITCH = "agent.switch"
 FRAME_TYPE_QUESTION_PROMPT = "question.prompt"
 FRAME_TYPE_PROGRESS_UPDATE = "progress.update"
 FRAME_TYPE_TOOL_USAGE = "tool.usage"
@@ -82,7 +82,6 @@ class AgentResult:
     confidence: float | None = None
     suggestions: list[str] | None = None
     sources: list[dict] | None = None
-    agent_switch_request: dict | None = None
     user_questions: list[dict] = field(default_factory=list)
     progress_updates: list[dict] = field(default_factory=list)
     tool_usage: list[dict] = field(default_factory=list)
@@ -298,7 +297,6 @@ class MessageProcessingService:
                 confidence=result_summary.get("confidence"),
                 suggestions=result_summary.get("suggestions"),
                 sources=result_summary.get("sources"),
-                agent_switch_request=result_summary.get("agent_switch_request"),
                 user_questions=result_summary.get("user_questions") or [],
                 progress_updates=result_summary.get("progress_updates") or [],
                 tool_usage=result_summary.get("tool_usage") or [],
@@ -321,13 +319,12 @@ class MessageProcessingService:
         from src.agents.context import AgentContext
         from src.agents.orchestrator import run_agent_for_chat
 
-        result_summary = {
+        result_summary: dict[str, Any] = {
             "answer_parts": [],
             "final_answer": None,
             "confidence": None,
             "suggestions": None,
             "sources": None,
-            "agent_switch_request": None,
             "user_questions": [],
             "progress_updates": [],
             "tool_usage": [],
@@ -355,7 +352,7 @@ class MessageProcessingService:
 
         async for frame in run_agent_for_chat(
             chat_type=data.chat_type,
-            messages=data.history,  # type: ignore[arg-type]
+            messages=data.history,
             context=context,
         ):
             try:
@@ -392,7 +389,6 @@ class MessageProcessingService:
             "confidence": result_summary["confidence"],
             "suggestions": result_summary["suggestions"],
             "sources": result_summary["sources"],
-            "agent_switch_request": result_summary["agent_switch_request"],
             "user_questions": result_summary["user_questions"],
             "progress_updates": result_summary["progress_updates"],
             "tool_usage": result_summary["tool_usage"],
@@ -428,13 +424,6 @@ class MessageProcessingService:
             result_summary["suggestions"] = suggestions or None
         elif ftype == FRAME_TYPE_SOURCES_REPLACE:
             result_summary["sources"] = data.get("sources")
-        elif ftype == FRAME_TYPE_AGENT_SWITCH:
-            result_summary["agent_switch_request"] = {
-                "to_agent": data.get("to_agent"),
-                "from_agent": data.get("from_agent"),
-                "reason": data.get("reason"),
-                "confidence": data.get("confidence"),
-            }
         elif ftype == FRAME_TYPE_QUESTION_PROMPT:
             result_summary["user_questions"].append(
                 {
@@ -515,7 +504,6 @@ class MessageProcessingService:
                 extra={
                     "confidence_score": result.confidence,
                     "has_user_questions": bool(result.user_questions),
-                    "agent_switch_requested": bool(result.agent_switch_request),
                     "progress_tracked": bool(result.progress_updates),
                     "tool_usage_count": len(result.tool_usage),
                     "thinking_updates_count": len(result.thinking_updates),
@@ -526,7 +514,6 @@ class MessageProcessingService:
                 agent_data={
                     "sources": result.sources,
                     "suggested_questions": result.suggestions or [],
-                    "agent_switch_request": result.agent_switch_request,
                     "user_questions": result.user_questions,
                     "progress_updates": result.progress_updates,
                     "tool_usage": result.tool_usage,
@@ -547,7 +534,6 @@ class MessageProcessingService:
                     "sources": result.sources,
                     "suggested_questions": result.suggestions,
                     "assistant_message_id": str(data.assistant_message_id),
-                    "agent_switch_request": result.agent_switch_request,
                     "user_questions_count": len(result.user_questions),
                     "progress_updates_count": len(result.progress_updates),
                     "tool_usage_count": len(result.tool_usage),

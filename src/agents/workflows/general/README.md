@@ -142,7 +142,6 @@ The `StreamingAnswerBuffer` detects the `⟦AEP:1⟧` sentinel and splits the st
 | `suggested_questions` | No | Up to 2 follow-up questions |
 | `citations` / `sources` | No | References with label, URL, and optional snippet |
 | `ask` | No | Clarifying question with fields (used sparingly) |
-| `switch_agent` | No | Signal to hand off (e.g., `{"to": "RFP_SHEET", "reason": "..."}`) |
 
 ---
 

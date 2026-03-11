@@ -4,7 +4,7 @@ from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
 from src.agents.context import AgentContext
-from src.agents.registry import resolve_agent
+from src.agents.workflows.general.agent import GeneralAgent
 from src.domain.models.organisation_tables.chat_message_models import ChatMessage
 from src.domain.models.organisation_tables.chat_session_models import ChatType
 from src.infra.messaging.chat_stream_models import Frame
@@ -24,14 +24,15 @@ async def run_agent_for_chat(
     database connections during long-running LLM calls.
 
     Args:
-        chat_type: Type of chat/agent to run
+        chat_type: Type of chat/agent to run. Kept for API stability even though
+            all current interactive chat flows use GeneralAgent.
         messages: Conversation history (can be ChatMessage objects or dicts)
         context: AgentContext object with immutable security boundaries
 
     Yields:
         Frame objects representing agent output
     """
-    agent_cls = resolve_agent(chat_type)
-    agent = agent_cls(context=context)
+    _ = chat_type
+    agent = GeneralAgent(context=context)
     async for frame in agent.run_stream(messages):
         yield frame

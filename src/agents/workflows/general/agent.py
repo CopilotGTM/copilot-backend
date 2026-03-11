@@ -31,6 +31,7 @@ logger = get_logger()
 
 # Sentinel object to signal the Agno stream has finished producing frames
 _AGNO_DONE = object()
+_TOOLS_DONE = object()
 
 
 class GeneralAgent(BaseAgent):
@@ -43,6 +44,7 @@ class GeneralAgent(BaseAgent):
     ):
         super().__init__(context=context)
         self.capabilities: AgentCapabilities | None = None
+        self._frame_message_id: str | None = context.message_id
         self.json_extractor = JsonExtractor()
         self.metadata_parser = MetadataParser(self.json_extractor)
         self.separators = ["⟦AEP:1⟧"]
@@ -85,12 +87,12 @@ class GeneralAgent(BaseAgent):
 
         async def _run() -> AsyncIterator[Frame]:
             processed_messages = prepare_messages(message_list)
-            message_id = str(uuid.uuid4())
+            frame_message_id = self._get_frame_message_id()
 
             # Use an asyncio.Queue so tool frames are available immediately,
             # even while Agno is blocked executing a tool function.
             frame_queue: asyncio.Queue[Frame | object] = asyncio.Queue()
-            self.capabilities = self._setup_capabilities(message_id, frame_queue)
+            self.capabilities = self._setup_capabilities(frame_message_id, frame_queue)
 
             try:
                 # Agno V2: arun(stream=True) returns async generator directly (no await)
@@ -110,6 +112,12 @@ class GeneralAgent(BaseAgent):
 
         return _run()
 
+    def _get_frame_message_id(self) -> str:
+        """Use the worker-provided assistant message id when available."""
+        if not self._frame_message_id:
+            self._frame_message_id = self.context.message_id or str(uuid.uuid4())
+        return self._frame_message_id
+
     def _setup_capabilities(self, message_id: str, frame_queue: asyncio.Queue):
         capabilities = AgentCapabilities(message_id)
 
@@ -127,64 +135,20 @@ class GeneralAgent(BaseAgent):
         buffer: StreamingAnswerBuffer,
         frame_queue: asyncio.Queue,
     ):
-        # Extractor for inline AGENT_TASKS blocks
+        """Merge Agno output and transparent tool frames into one stream."""
         tasks_extractor = AgentTasksExtractor()
-
-        # Merged output queue: both Agno stream frames and tool frames go here
         output_queue: asyncio.Queue[Frame | object] = asyncio.Queue()
-
-        async def _agno_producer():
-            """Consume the Agno stream and push processed frames to output_queue."""
-            try:
-                async for kind, content, json_started in buffer.stream(chat_response):
-                    if kind == "tick":
-                        continue
-                    elif kind == "skill_tool":
-                        await output_queue.put(
-                            ToolUsage(
-                                assistant_message_id=(
-                                    self.capabilities.message_id if self.capabilities else ""
-                                ),
-                                tool_name=content["tool_name"],
-                                tool_description=f"Skill: {content['tool_args'].get('skill_name', '')}",
-                                status=content["status"],
-                                parameters=content["tool_args"],
-                            )
-                        )
-                    elif kind == "answer" and content:
-                        result = tasks_extractor.process(content)
-                        for task_frame in result.frames:
-                            await output_queue.put(task_frame)
-                        if result.clean_content:
-                            await output_queue.put(AnswerDelta(content=result.clean_content))
-                    elif kind == "final":
-                        flush_result = tasks_extractor.flush()
-                        for task_frame in flush_result.frames:
-                            await output_queue.put(task_frame)
-                        if flush_result.clean_content:
-                            await output_queue.put(AnswerDelta(content=flush_result.clean_content))
-
-                        if not json_started and content:
-                            await output_queue.put(AnswerDelta(content=content))
-                        elif json_started and content:
-                            for frame in self.metadata_parser.parse(content):
-                                await output_queue.put(frame)
-            except Exception as exc:
-                logger.exception("Agno producer error: %s", exc)
-            finally:
-                await output_queue.put(_AGNO_DONE)
-
-        async def _tool_forwarder():
-            """Forward tool frames from frame_queue to output_queue in real-time."""
-            while True:
-                frame = await frame_queue.get()
-                if frame is _AGNO_DONE:
-                    break
-                await output_queue.put(frame)
-
-        # Run both producers concurrently
-        agno_task = asyncio.create_task(_agno_producer())
-        tool_task = asyncio.create_task(_tool_forwarder())
+        agno_task = asyncio.create_task(
+            self._produce_agno_frames(
+                chat_response=chat_response,
+                buffer=buffer,
+                tasks_extractor=tasks_extractor,
+                output_queue=output_queue,
+            )
+        )
+        tool_task = asyncio.create_task(
+            self._forward_tool_frames(frame_queue=frame_queue, output_queue=output_queue)
+        )
 
         agno_done = False
         tool_done = False
@@ -196,6 +160,9 @@ class GeneralAgent(BaseAgent):
                     agno_done = True
                     # Signal tool forwarder to stop
                     await frame_queue.put(_AGNO_DONE)
+                    continue
+                if item is _TOOLS_DONE:
+                    tool_done = True
                     continue
                 yield item
         finally:
@@ -212,13 +179,131 @@ class GeneralAgent(BaseAgent):
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await task
 
-    async def _handle_final_content(self, buffer: str, json_part_started: bool):
-        if not json_part_started and buffer:
-            yield AnswerDelta(content=buffer)
+    async def _produce_agno_frames(
+        self,
+        *,
+        chat_response,
+        buffer: StreamingAnswerBuffer,
+        tasks_extractor: AgentTasksExtractor,
+        output_queue: asyncio.Queue[Frame | object],
+    ) -> None:
+        """Consume Agno events and normalize them into chat frames."""
+        try:
+            async for kind, content, json_started in buffer.stream(chat_response):
+                await self._handle_stream_chunk(
+                    kind=kind,
+                    content=content,
+                    json_started=json_started,
+                    tasks_extractor=tasks_extractor,
+                    output_queue=output_queue,
+                )
+        except Exception as exc:
+            logger.exception("Agno producer error: %s", exc)
+        finally:
+            await output_queue.put(_AGNO_DONE)
 
-        if json_part_started and buffer:
-            for frame in self.metadata_parser.parse(buffer):
-                yield frame
+    async def _handle_stream_chunk(
+        self,
+        *,
+        kind: str,
+        content: Any,
+        json_started: bool,
+        tasks_extractor: AgentTasksExtractor,
+        output_queue: asyncio.Queue[Frame | object],
+    ) -> None:
+        """Translate one buffered Agno event into one or more frames."""
+        if kind == "tick":
+            return
+
+        if kind == "skill_tool":
+            await output_queue.put(self._build_skill_tool_frame(content))
+            return
+
+        if kind == "answer" and content:
+            await self._enqueue_answer_content(
+                content=content,
+                tasks_extractor=tasks_extractor,
+                output_queue=output_queue,
+            )
+            return
+
+        if kind == "final":
+            await self._enqueue_flush_frames(
+                tasks_extractor=tasks_extractor, output_queue=output_queue
+            )
+            await self._enqueue_final_metadata(
+                content=content,
+                json_started=json_started,
+                output_queue=output_queue,
+            )
+
+    def _build_skill_tool_frame(self, content: dict[str, Any]) -> ToolUsage:
+        skill_name = content["tool_args"].get("skill_name", "")
+        return ToolUsage(
+            assistant_message_id=self._get_frame_message_id(),
+            tool_name=content["tool_name"],
+            tool_description=f"Skill: {skill_name}",
+            status=content["status"],
+            parameters=content["tool_args"],
+        )
+
+    async def _enqueue_answer_content(
+        self,
+        *,
+        content: str,
+        tasks_extractor: AgentTasksExtractor,
+        output_queue: asyncio.Queue[Frame | object],
+    ) -> None:
+        result = tasks_extractor.process(content)
+        for task_frame in result.frames:
+            await output_queue.put(task_frame)
+        if result.clean_content:
+            await output_queue.put(AnswerDelta(content=result.clean_content))
+
+    async def _enqueue_flush_frames(
+        self,
+        *,
+        tasks_extractor: AgentTasksExtractor,
+        output_queue: asyncio.Queue[Frame | object],
+    ) -> None:
+        flush_result = tasks_extractor.flush()
+        for task_frame in flush_result.frames:
+            await output_queue.put(task_frame)
+        if flush_result.clean_content:
+            await output_queue.put(AnswerDelta(content=flush_result.clean_content))
+
+    async def _enqueue_final_metadata(
+        self,
+        *,
+        content: str,
+        json_started: bool,
+        output_queue: asyncio.Queue[Frame | object],
+    ) -> None:
+        if not content:
+            return
+
+        if not json_started:
+            await output_queue.put(AnswerDelta(content=content))
+            return
+
+        for frame in self.metadata_parser.parse(content):
+            await output_queue.put(frame)
+
+    async def _forward_tool_frames(
+        self,
+        *,
+        frame_queue: asyncio.Queue[Frame | object],
+        output_queue: asyncio.Queue[Frame | object],
+    ) -> None:
+        """Forward tool frames from frame_queue to output_queue in real-time."""
+        try:
+            while True:
+                frame = await frame_queue.get()
+                if frame is _AGNO_DONE:
+                    break
+                await output_queue.put(frame)
+        finally:
+            await output_queue.put(_TOOLS_DONE)
 
     def _finalize_stream(self, frame_queue: asyncio.Queue):
         # Drain any remaining frames (sync drain after async loop is done)
