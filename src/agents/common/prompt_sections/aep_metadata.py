@@ -35,13 +35,11 @@ AEP_METADATA_GUIDANCE = dedent(
        - Only use ask when: (a) true ambiguity among equally valid directions; (b) sensitive/critical information you must not assume; (c) explicitly asked to gather specific information
        - Structure: {prompt: string, fields?: [{name, kind, options?, required?}]}
        - Field kinds: "text", "single_select", "number", "date"
-    5. switch_agent (use when another agent is better suited): object with to, reason, confidence
-       - Common agents: "RFP_SHEET" (for RFP assistance), "TECHNICAL_DEEP_DIVE", etc.
-    6. citations or sources (use when referencing information): array of objects
+    5. citations or sources (use when referencing information): array of objects
        - Structure: [{label: string, url: string, snippet?: string}]
        - For internal documents: use internal links with page numbers when available
        - For web sources: provide full URLs
-    7. message_id (optional): string identifier for correlation tracking
+    6. message_id (optional): string identifier for correlation tracking
 
     Important rules:
     - Prefer giving comprehensive answers over asking questions. Cover multiple angles and interpretations rather than asking for clarification.
@@ -54,8 +52,6 @@ AEP_METADATA_GUIDANCE = dedent(
     - When citing sources, rewrite key points in your own words; never copy phrases verbatim from references.
     - Refer to tool outcomes when relevant, but do not dwell on tool names or internal process details.
     - Highlight residual risks or decision gates when applicable, and note any tech/customer dependencies explicitly.
-    - Use switch_agent when you're confident another agent is more appropriate.
-
     Handling greetings:
     - If the user sends a greeting, respond warmly with a greeting.
     - Offer 2-3 next-step questions the user could ask, tailored to the conversation context.

@@ -6,7 +6,6 @@ from typing import Literal
 
 from src.agents.common.json_extractor import JsonExtractor
 from src.infra.messaging.chat_stream_models import (
-    AgentSwitch,
     AnswerMetrics,
     FieldSingleSelect,
     QuestionPrompt,
@@ -41,7 +40,6 @@ class MetadataParser:
             yield from self._yield_suggestions_frame(response_data)
             yield from self._yield_sources_frame(response_data)
             yield from self._yield_question_frame(response_data)
-            yield from self._yield_agent_switch_frame(response_data)
             # Note: visualizations and structured_data removed - markdown handles these naturally
             # Note: task_list is handled inline via AGENT_TASKS blocks, not in AEP metadata
 
@@ -112,26 +110,6 @@ class MetadataParser:
             options=[str(option) for option in options],
             required=required,
         )
-
-    def _yield_agent_switch_frame(self, response_data: dict):
-        switch = (
-            response_data.get("switch_agent")
-            or response_data.get("agent_switch")
-            or response_data.get("switch")
-        )
-
-        if isinstance(switch, dict) and switch.get("to"):
-            yield AgentSwitch(
-                from_agent="GENERAL_CHAT",
-                to_agent=switch.get("to"),  # type: ignore
-                reason=switch.get("reason") or "Agent switch requested",
-            )
-        elif isinstance(switch, str) and switch.strip():
-            yield AgentSwitch(
-                from_agent="GENERAL_CHAT",
-                to_agent=switch.strip(),
-                reason="Agent switch requested",
-            )
 
     def _convert_confidence_score(self, confidence_value) -> ConfidenceLevel | None:
         if confidence_value is None:

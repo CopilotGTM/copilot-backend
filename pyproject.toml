@@ -26,16 +26,16 @@ dependencies = [
     "pydantic[email]",
     # Caching and Task Queue (All workers need Celery/Redis)
     "redis==6.2.0",
-    "celery~=5.5.3",
+    "celery~=5.6.2",
     # HTTP Clients (Shared infrastructure)
     "requests>=2.32.4",
     "httpx>=0.28.1",
     # Database and ORM (All components access DB)
-    "sqlmodel==0.0.24",
+    "sqlmodel==0.0.37",
     "SQLAlchemy==2.0.45",
     "psycopg2-binary==2.9.10",
     "asyncpg==0.30.0",
-    "alembic==1.16.4",
+    "alembic==1.18.4",
     "pgvector==0.4.2",
     # Azure Core Services (KeyVault for secrets, Identity for auth)
     "azure-identity==1.25.1",
@@ -45,7 +45,7 @@ dependencies = [
     "packaging==25.0",
     "dateparser>=1.3.0",
     # Observability
-    "sentry-sdk[fastapi,celery]>=2.0.0",
+    "sentry-sdk[fastapi,celery]>=2.54.0",
     "opentelemetry-api>=1.20.0",
     "opentelemetry-sdk>=1.20.0",
     "opentelemetry-exporter-otlp-proto-http>=1.20.0",
@@ -105,7 +105,7 @@ knowledge = [
     "transformers~=4.55.4",
     "huggingface-hub[hf_xet]==0.35.3",
     "openai~=2.15.0",
-    "agno==2.5.5",
+    "agno==2.5.9",
     
     # Document Processing
     "pypdf==5.9.0",
@@ -133,7 +133,7 @@ knowledge = [
 workers-light = [
     # AI/ML for agents (GeneralAgent, DealSummaryAgent, etc.)
     "openai~=2.15.0",
-    "agno==2.5.5",
+    "agno==2.5.9",
 
     # Search tools used by GeneralAgent
     "duckduckgo-search~=8.1.1",
@@ -201,7 +201,7 @@ full = [
     "transformers~=4.55.4",
     "huggingface-hub[hf_xet]==0.35.3",
     "openai~=2.15.0",
-    "agno==2.5.5",
+    "agno==2.5.9",
     "pypdf==5.9.0",
     "PyPDF2==3.0.1",
     "PyMuPDF==1.26.3",
