@@ -12,6 +12,10 @@ from src.api.dependencies.organisation_dependencies import UserIDs, get_current_
 from src.api.routers.integrations.deal_integration_routes import (
     get_integration_service as get_deal_integration_service,
 )
+from src.api.routers.integrations.copilot_oauth_routes import (
+    get_copilot_callback_service,
+    get_copilot_oauth_service,
+)
 from src.api.routers.integrations.integration_routes import (
     get_integration_service as get_list_integration_service,
 )
@@ -264,6 +268,49 @@ class FakeNangoWebhookService:
         return self.auth_webhook_response
 
 
+class FakeCopilotOAuthService:
+    """Fake CopilotOAuthService for testing."""
+
+    def __init__(self):
+        self.should_raise_unavailable = False
+        self.should_raise_value_error = False
+
+    async def initiate_oauth_flow(
+        self,
+        user_ids: UserIDs,
+        integration_type: IntegrationType,
+    ) -> str:
+        """Return a fake auth URL or raise configured errors."""
+        if self.should_raise_unavailable:
+            from src.service.integrations.copilot_oauth_service import (
+                CopilotOAuthIntegrationUnavailableError,
+            )
+
+            raise CopilotOAuthIntegrationUnavailableError(status="coming_soon")
+
+        if self.should_raise_value_error:
+            raise ValueError("No custom integration provider found for type: unsupported")
+
+        return f"https://accounts.example.com/oauth/{integration_type.value}"
+
+
+class FakeCopilotCallbackService:
+    """Fake CopilotCallbackService for testing."""
+
+    def __init__(self):
+        self.should_raise_value_error = False
+
+    async def handle_oauth_callback(self, code: str, state: str) -> dict[str, str]:
+        """Return a fake callback payload."""
+        if self.should_raise_value_error:
+            raise ValueError("Invalid or expired state parameter")
+        return {
+            "integration_id": "test-integration",
+            "connection_id": "test-connection",
+            "integration_type": "gmail",
+        }
+
+
 class FakeUser:
     """Fake User model for testing."""
 
@@ -308,12 +355,26 @@ def fake_webhook_service():
 
 
 @pytest.fixture(scope="function")
+def fake_copilot_oauth_service():
+    """Create a FakeCopilotOAuthService instance."""
+    return FakeCopilotOAuthService()
+
+
+@pytest.fixture(scope="function")
+def fake_copilot_callback_service():
+    """Create a FakeCopilotCallbackService instance."""
+    return FakeCopilotCallbackService()
+
+
+@pytest.fixture(scope="function")
 def integrations_dependency_overrides(
     client,
     integration_test_ids,
     fake_integration_service,
     fake_oauth_service,
     fake_webhook_service,
+    fake_copilot_oauth_service,
+    fake_copilot_callback_service,
 ):
     """
     Fixture to override dependencies for integrations tests.
@@ -348,6 +409,12 @@ def integrations_dependency_overrides(
     async def _override_webhook_service():
         yield fake_webhook_service
 
+    async def _override_copilot_oauth_service():
+        yield fake_copilot_oauth_service
+
+    async def _override_copilot_callback_service():
+        yield fake_copilot_callback_service
+
     from src.infra.utils.app_state import fastapp as app
 
     # Override all the dependencies
@@ -358,12 +425,16 @@ def integrations_dependency_overrides(
     app.dependency_overrides[get_deal_integration_service] = _override_integration_service
     app.dependency_overrides[get_oauth_service] = _override_oauth_service
     app.dependency_overrides[get_webhook_service] = _override_webhook_service
+    app.dependency_overrides[get_copilot_oauth_service] = _override_copilot_oauth_service
+    app.dependency_overrides[get_copilot_callback_service] = _override_copilot_callback_service
 
     yield {
         "user_ids": user_ids,
         "integration_service": fake_integration_service,
         "oauth_service": fake_oauth_service,
         "webhook_service": fake_webhook_service,
+        "copilot_oauth_service": fake_copilot_oauth_service,
+        "copilot_callback_service": fake_copilot_callback_service,
     }
 
     from src.infra.utils.app_state import fastapp as app

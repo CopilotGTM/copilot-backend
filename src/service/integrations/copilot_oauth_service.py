@@ -1,0 +1,104 @@
+import datetime
+from typing import Any
+from uuid import uuid4
+
+import jwt
+from src.domain.models.organisation_tables.sync import IntegrationType
+from src.infra.auth.user_context import UserIDs
+from src.infra.config.configs import app_config
+from src.infra.config.integrations_metadata import (
+    AvailabilityStatus,
+    IntegrationMetadata,
+    get_integration_metadata,
+)
+from src.infra.utils.logger import get_logger
+from src.service.integrations.providers.provider_factory import ProviderFactory
+
+logger = get_logger(__name__)
+
+
+class CopilotOAuthIntegrationUnavailableError(Exception):
+    """Raised when a custom OAuth integration is not available for connection."""
+
+    def __init__(self, status: str) -> None:
+        super().__init__(status)
+        self.status = status
+
+
+class CopilotOAuthService:
+    """Service for custom OAuth initiation without Nango."""
+
+    _ALLOWED_AVAILABILITY_STATUSES = {AvailabilityStatus.AVAILABLE, AvailabilityStatus.BETA}
+
+    @staticmethod
+    def _get_validated_metadata(integration_type: IntegrationType) -> IntegrationMetadata:
+        metadata = get_integration_metadata(integration_type)
+        if not metadata:
+            raise ValueError(f"Unknown integration type: {integration_type}")
+        return metadata
+
+    @classmethod
+    def _ensure_integration_available(cls, integration_type: IntegrationType) -> None:
+        metadata = cls._get_validated_metadata(integration_type)
+        if metadata.availability_status not in cls._ALLOWED_AVAILABILITY_STATUSES:
+            raise CopilotOAuthIntegrationUnavailableError(metadata.availability_status)
+
+    @staticmethod
+    def generate_oauth_state(user_ids: UserIDs, integration_type: IntegrationType) -> str:
+        """
+        Generates a signed JWT containing minimal user context for the OAuth `state` parameter.
+        """
+        payload = {
+            "sub": str(user_ids.user_id),
+            "org": str(user_ids.organisation_id),
+            "type": integration_type.value,
+            "jti": str(uuid4()),
+            "exp": datetime.datetime.now(datetime.UTC) + datetime.timedelta(minutes=15),
+            "iat": datetime.datetime.now(datetime.UTC),
+        }
+        encoded_jwt = jwt.encode(
+            payload,
+            app_config.SECRET_KEY,
+            algorithm="HS256",
+        )
+        return encoded_jwt
+
+    @staticmethod
+    def decode_oauth_state(state_token: str) -> dict[str, Any]:
+        """
+        Decodes and verifies returning the payload. Raises exceptions if invalid or expired.
+        """
+        decoded = jwt.decode(
+            state_token,
+            app_config.SECRET_KEY,
+            algorithms=["HS256"],
+        )
+        if isinstance(decoded, dict):
+            return dict(decoded)
+        return {}
+
+    async def initiate_oauth_flow(
+        self,
+        *,
+        user_ids: UserIDs,
+        integration_type: IntegrationType,
+    ) -> str:
+        """
+        Create the authorization URL and state token.
+        """
+        self._ensure_integration_available(integration_type)
+        provider = ProviderFactory.get_provider(integration_type)
+        state_token = self.generate_oauth_state(user_ids, integration_type)
+
+        auth_url = await provider.get_authorization_url(state_token)
+
+        logger.info(
+            "Initiated Custom OAuth flow for user %s, org %s, provider %s",
+            user_ids.user_id,
+            user_ids.organisation_id,
+            integration_type.value,
+        )
+        return auth_url
+
+
+copilot_oauth_service = CopilotOAuthService()

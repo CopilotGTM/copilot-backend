@@ -9,6 +9,7 @@ This package contains all API endpoints for integration management:
 
 from fastapi import APIRouter
 
+from .copilot_oauth_routes import router as copilot_oauth_router
 from .deal_integration_routes import router as deal_integration_router
 from .integration_routes import router as integration_router
 from .oauth_routes import router as oauth_router
@@ -18,7 +19,8 @@ integrations_router = APIRouter(tags=["integrations"])
 
 # Include sub-routers
 integrations_router.include_router(oauth_router)
+integrations_router.include_router(copilot_oauth_router)
 integrations_router.include_router(integration_router)
 integrations_router.include_router(deal_integration_router)
 
-__all__ = ["integrations_router", "oauth_router", "integration_router"]
+__all__ = ["integrations_router", "oauth_router", "copilot_oauth_router", "integration_router"]

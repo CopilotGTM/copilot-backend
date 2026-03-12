@@ -444,6 +444,34 @@ class NangoIntegrationConfig:
     OAUTH_CALLBACK_BASE_URL: str | None = os.getenv("APP_URL")
 
 
+class GoogleIntegrationConfig:
+    """Configuration for custom Google OAuth flows."""
+
+    GOOGLE_CLIENT_ID: str = os.getenv("GOOGLE_CLIENT_ID", "")
+    GOOGLE_CLIENT_SECRET: str = os.getenv("GOOGLE_CLIENT_SECRET", "")
+    REDIRECT_URI: str = os.getenv("REDIRECT_URI", "")
+    GOOGLE_HTTP_TIMEOUT_SEC: float = float(os.getenv("GOOGLE_HTTP_TIMEOUT_SEC", "10"))
+
+    def validate(self, *, enabled: bool = True) -> None:
+        """Fail fast when Google custom OAuth is enabled without core credentials."""
+        if not enabled:
+            return
+
+        missing = [
+            name
+            for name, value in {
+                "GOOGLE_CLIENT_ID": self.GOOGLE_CLIENT_ID,
+                "GOOGLE_CLIENT_SECRET": self.GOOGLE_CLIENT_SECRET,
+                "REDIRECT_URI": self.REDIRECT_URI,
+            }.items()
+            if not value
+        ]
+        if missing:
+            raise RuntimeError(
+                "Missing Google custom OAuth configuration: " + ", ".join(sorted(missing))
+            )
+
+
 class SecretManagerConfig:
     """Configuration for Cloud Secret Manager"""
 
@@ -692,6 +720,7 @@ knowledge_file_upload_config = KnowledgeFileUploadConfig()
 # NOTE: thumbnail_config now sourced from thumbnail_config.py for modularity.
 rate_limit_config = RateLimitConfig()
 nango_integration_config = NangoIntegrationConfig()
+google_integration_config = GoogleIntegrationConfig()
 apollo_config = ApolloConfig()
 teams_config = TeamsConfig()
 
