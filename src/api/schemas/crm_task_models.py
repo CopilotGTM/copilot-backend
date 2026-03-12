@@ -10,9 +10,30 @@ from fastapi import Query
 from pydantic import BaseModel, Field, field_validator, model_validator
 from src.domain.models.organisation_tables.sync.crm import (
     CRMActivityPriority,
+    CRMActivitySource,
     CRMActivityStatus,
     CRMActivityType,
 )
+
+
+class ReminderConfig(BaseModel):
+    """Nested reminder configuration for task create/update."""
+
+    enabled: bool = Field(description="Whether to create/keep a reminder for this task.")
+    trigger_time: datetime | None = Field(
+        default=None, description="When to trigger the reminder (UTC). Required if enabled."
+    )
+    recurrence: str = Field(
+        default="NONE",
+        description="Recurrence: NONE, DAILY, WEEKDAYS, WEEKLY, BIWEEKLY, MONTHLY.",
+    )
+
+    @model_validator(mode="after")
+    def _validate_trigger_time(self) -> ReminderConfig:
+        if self.enabled and not self.trigger_time:
+            msg = "trigger_time is required when reminder is enabled"
+            raise ValueError(msg)
+        return self
 
 
 class DealTimelineQueryParams(BaseModel):
@@ -42,15 +63,23 @@ class TaskListItem(BaseModel):
     due_date: datetime | None
     completed_date: datetime | None
     reminder_date: datetime | None
+    # Assigned to (owner)
     owner_external_id: str | None
     owner_name: str | None
     owner_email: str | None
+    # Deal linkage
     deal_id: UUID | None
     deal_external_id: str | None
+    deal_name: str | None = Field(default=None, description="Denormalized deal name.")
+    # Source and creator
+    source: str | None = None
+    created_by_user_id: UUID | None = None
+    # Computed
     is_overdue: bool = Field(
         default=False,
         description="Computed flag: due_date < now and status != COMPLETED",
     )
+    has_reminder: bool = Field(default=False, description="Whether a reminder is linked.")
     created_at: datetime
     updated_at: datetime
     synced_at: datetime
@@ -78,6 +107,7 @@ class TaskDetail(BaseModel):
     # Deal linkage
     deal_id: UUID | None
     deal_external_id: str | None
+    deal_name: str | None = None
 
     # Core task fields
     subject: str | None
@@ -86,10 +116,14 @@ class TaskDetail(BaseModel):
     task_type: str | None
     priority: str | None
 
-    # Assignment
+    # Assignment (owner = who is assigned to do it)
     owner_external_id: str | None
     owner_name: str | None
     owner_email: str | None
+
+    # Source and creator
+    source: str | None = None
+    created_by_user_id: UUID | None = None
 
     # Timing
     due_date: datetime | None
@@ -101,6 +135,13 @@ class TaskDetail(BaseModel):
     # Flags
     is_deleted_remote: bool
     is_overdue: bool = False
+    has_reminder: bool = False
+
+    # Reminder detail (populated from linked UserReminder)
+    reminder: dict | None = Field(
+        default=None,
+        description="Linked reminder: {reminder_id, status, trigger_time, recurrence}",
+    )
 
     # Payloads
     properties: dict[str, Any] | None = None
@@ -159,6 +200,14 @@ class CreateTaskRequest(BaseModel):
     owner_user_id: UUID | None = Field(
         default=None,
         description="Assign the task to a user (UUID from public.users).",
+    )
+    deal_id: UUID | None = Field(
+        default=None,
+        description="Link task to a deal. If null, creates a standalone task.",
+    )
+    reminder: ReminderConfig | None = Field(
+        default=None,
+        description="Optional reminder configuration.",
     )
 
     @field_validator("subject", "body")
@@ -226,7 +275,15 @@ class UpdateTaskRequest(BaseModel):
     )
     owner_user_id: UUID | None = Field(
         default=None,
-        description="Assign the task to a user (UUID from public.users).",
+        description="Reassign the task to a user (UUID from public.users).",
+    )
+    deal_id: UUID | None = Field(
+        default=None,
+        description="Link or unlink task from a deal. Pass null to remove.",
+    )
+    reminder: ReminderConfig | None = Field(
+        default=None,
+        description="Create, update, or remove reminder. Set enabled=false to remove.",
     )
 
     @field_validator("subject", "body")
@@ -246,3 +303,25 @@ class UpdateTaskRequest(BaseModel):
             msg = "task_type must be TASK or TODO"
             raise ValueError(msg)
         return value
+
+
+class GlobalTaskListParams(BaseModel):
+    """Query parameters for global task listing."""
+
+    deal_id: UUID | None = Field(default=None, description="Filter by deal")
+    statuses: list[str] | None = Field(default=None, description="Filter by statuses")
+    priorities: list[str] | None = Field(default=None, description="Filter by priorities")
+    source: list[str] | None = Field(default=None, description="Filter by source")
+    owner_user_id: UUID | None = Field(default=None, description="Filter by assignee")
+    created_by_user_id: UUID | None = Field(default=None, description="Filter by creator")
+    due_from: datetime | None = Field(default=None, description="Due date range start")
+    due_to: datetime | None = Field(default=None, description="Due date range end")
+    is_overdue: bool | None = Field(default=None, description="Filter overdue tasks only")
+    has_due_date: bool | None = Field(default=None, description="Filter by has/no due date")
+    include_completed: bool = Field(default=False, description="Include completed tasks")
+    sort_by: str = Field(default="due_date", description="Sort field")
+    sort_order: str = Field(
+        default="asc", pattern="^(asc|desc)$", description="Sort direction"
+    )
+    page: int = Field(default=1, ge=1, description="Page number")
+    limit: int = Field(default=50, ge=1, le=100, description="Page size")

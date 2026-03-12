@@ -7,7 +7,9 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
 from fastapi import Response as FastAPIResponse
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import col
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
     get_current_user,
@@ -23,6 +25,10 @@ from src.api.schemas.crm_task_models import (
     UpdateTaskRequest,
 )
 from src.api.utils.http_response import Response
+from src.domain.models.organisation_tables.reminder_models import (
+    ReminderStatus,
+    UserReminder,
+)
 from src.infra.utils.logger import get_logger
 from src.service.crm.access.tasks_access_service import (
     TasksAccessService,
@@ -41,9 +47,9 @@ tasks_router = APIRouter()
 
 
 def _compute_is_overdue(due_date: datetime | None, status: str | None) -> bool:
-    """Return True when a task is past due and not completed."""
+    """Return True when a task is past due and not in a terminal state."""
 
-    if not due_date or status == "COMPLETED":
+    if not due_date or status in ("COMPLETED", "CANCELLED"):
         return False
 
     reference = datetime.now(UTC)
@@ -83,6 +89,156 @@ async def get_tasks_write_service(
             logger.debug("Tasks write service close failed", exc_info=True)
 
 
+async def _enrich_task_list_item(
+    task, session: AsyncSession
+) -> TaskListItem:
+    """Build a TaskListItem with computed fields (is_overdue, has_reminder, deal_name)."""
+    item = TaskListItem.model_validate(task, from_attributes=True)
+
+    has_reminder = await _has_active_reminder(session, task.activity_id)
+    deal_name = task.related_name if task.deal_id else None
+
+    return item.model_copy(
+        update={
+            "is_overdue": _compute_is_overdue(task.due_date, task.status),
+            "has_reminder": has_reminder,
+            "deal_name": deal_name,
+        }
+    )
+
+
+async def _enrich_task_detail(
+    task, session: AsyncSession
+) -> TaskDetail:
+    """Build a TaskDetail with computed fields."""
+    detail = TaskDetail.model_validate(task, from_attributes=True)
+
+    has_reminder = await _has_active_reminder(session, task.activity_id)
+    deal_name = task.related_name if task.deal_id else None
+    reminder_dict = await _get_reminder_dict(session, task.activity_id)
+
+    return detail.model_copy(
+        update={
+            "is_overdue": _compute_is_overdue(task.due_date, task.status),
+            "has_reminder": has_reminder,
+            "deal_name": deal_name,
+            "reminder": reminder_dict,
+        }
+    )
+
+
+async def _has_active_reminder(session: AsyncSession, activity_id: UUID) -> bool:
+    """Check if at least one active reminder is linked to this activity."""
+    stmt = select(func.count()).select_from(UserReminder).where(
+        col(UserReminder.activity_id) == activity_id,
+        col(UserReminder.status) == ReminderStatus.ACTIVE.value,
+    )
+    count = await session.scalar(stmt) or 0
+    return count > 0
+
+
+async def _get_reminder_dict(
+    session: AsyncSession, activity_id: UUID
+) -> dict | None:
+    """Get linked reminder details for task detail view."""
+    stmt = select(UserReminder).where(
+        col(UserReminder.activity_id) == activity_id,
+        col(UserReminder.status).in_([
+            ReminderStatus.ACTIVE.value,
+            ReminderStatus.PAUSED.value,
+        ]),
+    ).limit(1)
+    result = await session.execute(stmt)
+    reminder = result.scalar_one_or_none()
+    if not reminder:
+        return None
+    return {
+        "reminder_id": str(reminder.reminder_id),
+        "status": reminder.status,
+        "trigger_time": reminder.next_trigger_at.isoformat() if reminder.next_trigger_at else None,
+        "recurrence": reminder.recurrence,
+    }
+
+
+# ── Global task list ─────────────────────────────────────────────
+
+@tasks_router.get(
+    "/tasks",
+    response_model=GenericResponse[TasksPage],
+    tags=["crm", "tasks"],
+    summary="List tasks across all deals or standalone",
+    description="Global task listing with rich filtering for the Tasks page.",
+)
+async def list_tasks(
+    response: FastAPIResponse,
+    deal_id: UUID | None = Query(None, description="Filter by deal"),
+    statuses: list[str] | None = Query(None, description="Filter by statuses"),
+    priorities: list[str] | None = Query(None, description="Filter by priorities"),
+    source: list[str] | None = Query(None, description="Filter by source"),
+    owner_user_id: UUID | None = Query(None, description="Filter by assignee"),
+    created_by_user_id: UUID | None = Query(None, description="Filter by creator"),
+    due_from: datetime | None = Query(None, description="Due date range start"),
+    due_to: datetime | None = Query(None, description="Due date range end"),
+    is_overdue: bool | None = Query(None, description="Filter overdue tasks only"),
+    has_due_date: bool | None = Query(None, description="Filter by has/no due date"),
+    include_completed: bool = Query(False, description="Include completed tasks"),
+    sort_by: str = Query("due_date", description="Sort field"),
+    sort_order: str = Query("asc", pattern="^(asc|desc)$", description="Sort direction"),
+    page: int = Query(1, ge=1, description="Page number"),
+    limit: int = Query(50, ge=1, le=100, description="Page size"),
+    service: TasksAccessService = Depends(get_tasks_access_service),
+    _rl_read: None = Depends(rate_limit_user_read),
+) -> GenericResponse[TasksPage]:
+    """Global task listing with rich filtering."""
+
+    try:
+        tasks, total_count = await service.list_tasks(
+            deal_id=deal_id,
+            statuses=statuses,
+            priorities=priorities,
+            source=source,
+            owner_user_id=owner_user_id,
+            created_by_user_id=created_by_user_id,
+            due_from=due_from,
+            due_to=due_to,
+            is_overdue=is_overdue,
+            has_due_date=has_due_date,
+            include_completed=include_completed,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            page=page,
+            limit=limit,
+        )
+
+        items = [
+            await _enrich_task_list_item(task, service.session)
+            for task in tasks
+        ]
+
+        total_pages = (total_count + limit - 1) // limit if limit else 0
+        payload = TasksPage(
+            items=items,
+            page=page,
+            limit=limit,
+            total_count=total_count,
+            total_pages=total_pages,
+        )
+        return Response.success_response(message="Tasks retrieved successfully", data=payload)
+
+    except TasksAccessServiceError as exc:
+        logger.warning("Tasks access error: %s", exc.message, exc_info=True)
+        return Response.error_response(
+            message=exc.message, status_code=exc.status_code, response=response
+        )
+    except Exception as exc:
+        logger.error("Unexpected error listing tasks: %s", exc, exc_info=True)
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
+
+
+# ── Deal-scoped task list (existing) ─────────────────────────────
+
 @tasks_router.get(
     "/deals/{deal_id}/tasks",
     response_model=GenericResponse[TasksPage],
@@ -99,7 +255,7 @@ async def list_deal_tasks(
     priorities: list[str] | None = Query(None, description="Filter by task priorities"),
     task_types: list[str] | None = Query(
         None,
-        description="Filter by task types (TASK/TODO only). Non-task activity types are not returned.",
+        description="Filter by task types (TASK/TODO only).",
     ),
     service: TasksAccessService = Depends(get_tasks_access_service),
     _rl_read: None = Depends(rate_limit_user_read),
@@ -116,13 +272,10 @@ async def list_deal_tasks(
             task_types=task_types,
         )
 
-        items = []
-        for task in tasks:
-            item = TaskListItem.model_validate(task, from_attributes=True)
-            item = item.model_copy(
-                update={"is_overdue": _compute_is_overdue(task.due_date, task.status)}
-            )
-            items.append(item)
+        items = [
+            await _enrich_task_list_item(task, service.session)
+            for task in tasks
+        ]
 
         total_pages = (total_count + limit - 1) // limit if limit else 0
         payload = TasksPage(
@@ -169,11 +322,7 @@ async def get_task(
                 message="Task not found", status_code=404, response=response
             )
 
-        detail = TaskDetail.model_validate(task, from_attributes=True)
-        detail = detail.model_copy(
-            update={"is_overdue": _compute_is_overdue(task.due_date, task.status)}
-        )
-
+        detail = await _enrich_task_detail(task, service.session)
         return Response.success_response(message="Task retrieved successfully", data=detail)
 
     except TasksAccessServiceError as exc:
@@ -189,6 +338,47 @@ async def get_task(
 
 
 @tasks_router.post(
+    "/tasks",
+    response_model=GenericResponse[TaskDetail],
+    status_code=201,
+    tags=["crm", "tasks"],
+    summary="Create a task",
+    description="Create a task. Optionally link to a deal via deal_id in the body.",
+)
+async def create_task(
+    request: CreateTaskRequest,
+    response: FastAPIResponse,
+    service: TasksWriteService = Depends(get_tasks_write_service),
+    _rl_write: None = Depends(rate_limit_user_write),
+) -> GenericResponse[TaskDetail]:
+    """Create a new task, optionally linked to a deal."""
+
+    try:
+        payload = request.model_dump(exclude_unset=True)
+        deal_id = payload.pop("deal_id", None)
+        task = await service.create_task(payload, deal_id=deal_id)
+        await service.session.commit()
+        detail = await _enrich_task_detail(task, service.session)
+        return Response.created_response(
+            message="Task created successfully",
+            data=detail,
+            response=response,
+        )
+    except TasksWriteServiceError as exc:
+        await service.session.rollback()
+        logger.warning("Task write error: %s", exc.message, exc_info=True)
+        return Response.error_response(
+            message=exc.message, status_code=exc.status_code, response=response
+        )
+    except Exception as exc:
+        await service.session.rollback()
+        logger.error("Unexpected error creating task: %s", exc, exc_info=True)
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
+
+
+@tasks_router.post(
     "/deals/{deal_id}/tasks",
     response_model=GenericResponse[TaskDetail],
     status_code=201,
@@ -196,22 +386,21 @@ async def get_task(
     summary="Create a task for a deal",
     description="Create a user-generated task associated with the specified deal.",
 )
-async def create_task(
+async def create_deal_task(
     deal_id: UUID,
     request: CreateTaskRequest,
     response: FastAPIResponse,
     service: TasksWriteService = Depends(get_tasks_write_service),
     _rl_write: None = Depends(rate_limit_user_write),
 ) -> GenericResponse[TaskDetail]:
-    """Create a new task associated with a deal."""
+    """Create a new task associated with a deal (backwards-compatible endpoint)."""
 
     try:
-        task = await service.create_task(deal_id, request.model_dump(exclude_unset=True))
+        payload = request.model_dump(exclude_unset=True)
+        payload.pop("deal_id", None)
+        task = await service.create_task(payload, deal_id=deal_id)
         await service.session.commit()
-        detail = TaskDetail.model_validate(task, from_attributes=True)
-        detail = detail.model_copy(
-            update={"is_overdue": _compute_is_overdue(task.due_date, task.status)}
-        )
+        detail = await _enrich_task_detail(task, service.session)
         return Response.created_response(
             message="Task created successfully",
             data=detail,
@@ -250,10 +439,7 @@ async def update_task(
     try:
         task = await service.update_task(task_id, request.model_dump(exclude_unset=True))
         await service.session.commit()
-        detail = TaskDetail.model_validate(task, from_attributes=True)
-        detail = detail.model_copy(
-            update={"is_overdue": _compute_is_overdue(task.due_date, task.status)}
-        )
+        detail = await _enrich_task_detail(task, service.session)
         return Response.success_response(message="Task updated successfully", data=detail)
     except TasksWriteServiceError as exc:
         await service.session.rollback()
@@ -287,10 +473,7 @@ async def delete_task(
     try:
         task = await service.delete_task(task_id)
         await service.session.commit()
-        detail = TaskDetail.model_validate(task, from_attributes=True)
-        detail = detail.model_copy(
-            update={"is_overdue": _compute_is_overdue(task.due_date, task.status)}
-        )
+        detail = await _enrich_task_detail(task, service.session)
         return Response.success_response(message="Task deleted successfully", data=detail)
     except TasksWriteServiceError as exc:
         await service.session.rollback()

@@ -10,7 +10,11 @@ from uuid import UUID, uuid4
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
-from src.domain.models.organisation_tables.sync.crm import CRMActivity, CRMActivityType
+from src.domain.models.organisation_tables.sync.crm import (
+    CRMActivity,
+    CRMActivitySource,
+    CRMActivityType,
+)
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
 from src.domain.models.organisation_tables.sync.crm.stakeholders import DealStakeholder
 from src.infra.utils.cursor import decode_cursor, encode_cursor
@@ -278,6 +282,8 @@ class DealNotesService:
             owner_external_id=str(user_id),  # Store user_id as string
             owner_name=user_name,
             owner_email=user_email,
+            source=CRMActivitySource.MANUAL.value,
+            created_by_user_id=user_id,
             source_created_at=now,
             synced_at=now,
             last_seen_at=now,

@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from src.domain.models.organisation_tables.sync.crm import CRMActivity
+from src.domain.models.organisation_tables.sync.crm import CRMActivity, CRMActivityStatus
 from src.infra.utils.logger import get_logger
 
 logger = get_logger("tasks_access_service")
@@ -87,6 +88,114 @@ class TasksAccessService:
 
         offset = (page - 1) * limit
         stmt = stmt.order_by(c.created_at.desc(), c.activity_id.desc()).offset(offset).limit(limit)
+
+        res = await self.org_session.execute(stmt)
+        rows: list[CRMActivity] = list(res.scalars().all())
+
+        return rows, total_count
+
+    async def list_tasks(
+        self,
+        *,
+        deal_id: UUID | None = None,
+        statuses: Iterable[str] | None = None,
+        priorities: Iterable[str] | None = None,
+        source: Iterable[str] | None = None,
+        owner_user_id: UUID | None = None,
+        created_by_user_id: UUID | None = None,
+        due_from: datetime | None = None,
+        due_to: datetime | None = None,
+        is_overdue: bool | None = None,
+        has_due_date: bool | None = None,
+        include_completed: bool = False,
+        sort_by: str = "due_date",
+        sort_order: str = "asc",
+        page: int = 1,
+        limit: int = 50,
+    ) -> tuple[list[CRMActivity], int]:
+        """Global task listing with rich filtering for the Tasks page."""
+
+        c = cast(Any, CRMActivity).__table__.c
+        stmt = select(CRMActivity).where(
+            c.organisation_id == self.organisation_id,
+            c.activity_type.in_(list(_TASK_ACTIVITY_TYPES)),
+            or_(c.is_deleted.is_(False), c.is_deleted.is_(None)),
+        )
+
+        if deal_id is not None:
+            stmt = stmt.where(c.deal_id == deal_id)
+
+        if statuses:
+            stmt = stmt.where(c.status.in_(list(statuses)))
+        elif not include_completed:
+            # Exclude both terminal states by default
+            stmt = stmt.where(
+                c.status.notin_([
+                    CRMActivityStatus.COMPLETED.value,
+                    CRMActivityStatus.CANCELLED.value,
+                ])
+            )
+
+        if priorities:
+            stmt = stmt.where(c.priority.in_(list(priorities)))
+
+        if source:
+            stmt = stmt.where(c.source.in_(list(source)))
+
+        if owner_user_id is not None:
+            stmt = stmt.where(c.owner_external_id == str(owner_user_id))
+
+        if created_by_user_id is not None:
+            stmt = stmt.where(c.created_by_user_id == created_by_user_id)
+
+        if due_from is not None:
+            stmt = stmt.where(c.due_date >= due_from)
+
+        if due_to is not None:
+            stmt = stmt.where(c.due_date <= due_to)
+
+        if has_due_date is True:
+            stmt = stmt.where(c.due_date.isnot(None))
+        elif has_due_date is False:
+            stmt = stmt.where(c.due_date.is_(None))
+
+        now = datetime.now(UTC)
+        if is_overdue is True:
+            stmt = stmt.where(
+                c.due_date < now,
+                c.status != CRMActivityStatus.COMPLETED.value,
+            )
+        elif is_overdue is False:
+            stmt = stmt.where(
+                or_(c.due_date.is_(None), c.due_date >= now)
+            )
+
+        if page < 1:
+            raise TasksAccessServiceError("Page must be >= 1", status_code=400)
+
+        count_stmt = select(func.count()).select_from(stmt.subquery())
+        total_count = await self.org_session.scalar(count_stmt) or 0
+
+        # Sorting
+        sort_col_map = {
+            "due_date": c.due_date,
+            "created_at": c.created_at,
+            "updated_at": c.updated_at,
+            "priority": c.priority,
+            "status": c.status,
+            "subject": c.subject,
+        }
+        sort_col = sort_col_map.get(sort_by, c.due_date)
+        # Nulls last for due_date ascending (tasks without due dates go to end)
+        if sort_by == "due_date" and sort_order == "asc":
+            stmt = stmt.order_by(sort_col.asc().nullslast(), c.created_at.desc())
+        elif sort_order == "desc":
+            stmt = stmt.order_by(sort_col.desc().nullsfirst(), c.created_at.desc())
+        else:
+            stmt = stmt.order_by(sort_col.asc(), c.created_at.desc())
+
+        offset = (page - 1) * limit
+        stmt = stmt.offset(offset).limit(limit)
 
         res = await self.org_session.execute(stmt)
         rows: list[CRMActivity] = list(res.scalars().all())
