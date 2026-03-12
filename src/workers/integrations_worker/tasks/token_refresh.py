@@ -26,7 +26,8 @@ from src.infra.database.sessions import acquire_master_async_session
 from src.infra.observability.context import correlation_headers
 from src.infra.utils.async_runner import run_async
 from src.infra.utils.logger import get_logger
-from src.service.integrations.token_refresh_service import TokenRefreshService
+# from src.service.integrations.token_refresh_service import TokenRefreshService
+from src.service.integrations.custom_token_refresh_service import CustomTokenRefreshService
 from src.workers.integrations_worker.celery_app import app
 
 logger = get_logger(__name__)
@@ -135,7 +136,7 @@ def refresh_tokens_org_task(
     Refreshes tokens that have no expiry set (NULL) or are expiring soon.
 
     Triggered by: refresh_tokens_task (Tier 1)
-    Calls: TokenRefreshService which manages its own sessions (fresh session pattern)
+    Calls: CustomTokenRefreshService which manages its own sessions (fresh session pattern)
     """
     started_at = datetime.now(UTC).isoformat()
     org_id = UUID(organisation_id)
@@ -145,8 +146,9 @@ def refresh_tokens_org_task(
             "Starting token refresh for organization (Tier 2): %s, buffer=%dh", org_id, buffer_hours
         )
 
-        # Org-level: TokenRefreshService manages its own sessions (fresh session pattern)
-        service = TokenRefreshService(organisation_id=org_id)
+        # Org-level: CustomTokenRefreshService manages its own sessions (fresh session pattern)
+        # service = TokenRefreshService(organisation_id=org_id)
+        service = CustomTokenRefreshService(organisation_id=org_id)
         result = await service.refresh_org_tokens_async(buffer_hours=buffer_hours)
 
         return {
@@ -204,7 +206,8 @@ def refresh_token_task(
         logger.info("Starting manual token refresh (Tier 3): org=%s integration=%s", org_id, int_id)
 
         # Service manages its own session (fresh session pattern)
-        service = TokenRefreshService(organisation_id=org_id)
+        # service = TokenRefreshService(organisation_id=org_id)
+        service = CustomTokenRefreshService(organisation_id=org_id)
         result = await service.refresh_single_token_async(integration_id=int_id)
 
         return {
