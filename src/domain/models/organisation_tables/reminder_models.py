@@ -5,6 +5,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import Column, DateTime, Index, Integer, String, Text, func, text
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlmodel import Field, SQLModel
 
 from .base_mixins import TimestampMixin
@@ -135,6 +136,13 @@ class UserReminder(TimestampMixin, table=True):
         sa_column=Column(JSONB, server_default=_DEFAULT_EMPTY_JSONB, nullable=False),
         default_factory=dict,
         description="Channel-specific delivery info: {service_url, conversation_id, ...}.",
+    )
+
+    # Activity linkage (tasks, notes, etc.)
+    activity_id: UUID | None = Field(
+        default=None,
+        sa_column=Column(PG_UUID(as_uuid=True), nullable=True, index=True),
+        description="Linked CRM activity ID (crm_activities.activity_id).",
     )
 
     # Status & tracking

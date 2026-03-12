@@ -83,6 +83,15 @@ class CRMActivityObjectType(str, Enum):
     OPPORTUNITY = "OPPORTUNITY"  # Alias for DEAL (Salesforce)
 
 
+class CRMActivitySource(str, Enum):
+    """Origin of the activity record."""
+
+    MANUAL = "MANUAL"  # User-created via UI/API
+    CRM_SYNC = "CRM_SYNC"  # Synced from HubSpot/Pipedrive
+    AI_MEETING = "AI_MEETING"  # Extracted from meeting transcript
+    AI_INSIGHT = "AI_INSIGHT"  # Suggested by deal analysis
+
+
 # Backwards compatibility aliases
 CRMTaskStatus = CRMActivityStatus
 CRMTaskType = CRMActivityType
@@ -146,6 +155,9 @@ class CRMActivity(FlexibleSyncedRecordMixin, table=True):
         # Contact/company specific lookups
         Index("ix_crm_activity_contact", "contact_id"),
         Index("ix_crm_activity_company", "company_id"),
+        # Source and creator tracking
+        Index("ix_crm_activity_source", "organisation_id", "source"),
+        Index("ix_crm_activity_created_by", "organisation_id", "created_by_user_id"),
     )
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -281,6 +293,27 @@ class CRMActivity(FlexibleSyncedRecordMixin, table=True):
         default=None,
         foreign_key="crm_users.user_id",
         description="Resolved internal user ID for the activity owner (FK to crm_users).",
+    )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Source tracking
+    # ─────────────────────────────────────────────────────────────────────────
+    source: str | None = Field(
+        default=None,
+        sa_column=Column(
+            String(50),
+            nullable=True,
+            comment="Origin of the task: MANUAL, CRM_SYNC, AI_MEETING, AI_INSIGHT",
+        ),
+        description="How this task was created.",
+    )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Creator tracking (distinct from owner/assignee)
+    # ─────────────────────────────────────────────────────────────────────────
+    created_by_user_id: UUID | None = Field(
+        default=None,
+        description="The public.users ID of who created this task. Immutable after creation.",
     )
 
     # ─────────────────────────────────────────────────────────────────────────

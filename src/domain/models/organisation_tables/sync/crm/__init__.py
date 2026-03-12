@@ -2,6 +2,7 @@ from .activities import (
     CRMActivity,
     CRMActivityObjectType,
     CRMActivityPriority,
+    CRMActivitySource,
     CRMActivityStatus,
     CRMActivityType,
     # Backwards compatibility aliases
@@ -41,6 +42,7 @@ __all__ = [
     "CRMActivityType",
     "CRMActivityPriority",
     "CRMActivityObjectType",
+    "CRMActivitySource",
     # Backwards compatibility aliases for Tasks
     "CRMDealTask",
     "CRMTaskStatus",
