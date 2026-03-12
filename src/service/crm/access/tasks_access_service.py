@@ -130,10 +130,12 @@ class TasksAccessService:
         elif not include_completed:
             # Exclude both terminal states by default
             stmt = stmt.where(
-                c.status.notin_([
-                    CRMActivityStatus.COMPLETED.value,
-                    CRMActivityStatus.CANCELLED.value,
-                ])
+                c.status.notin_(
+                    [
+                        CRMActivityStatus.COMPLETED.value,
+                        CRMActivityStatus.CANCELLED.value,
+                    ]
+                )
             )
 
         if priorities:
@@ -166,9 +168,7 @@ class TasksAccessService:
                 c.status != CRMActivityStatus.COMPLETED.value,
             )
         elif is_overdue is False:
-            stmt = stmt.where(
-                or_(c.due_date.is_(None), c.due_date >= now)
-            )
+            stmt = stmt.where(or_(c.due_date.is_(None), c.due_date >= now))
 
         if page < 1:
             raise TasksAccessServiceError("Page must be >= 1", status_code=400)
