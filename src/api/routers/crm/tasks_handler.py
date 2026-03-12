@@ -89,9 +89,7 @@ async def get_tasks_write_service(
             logger.debug("Tasks write service close failed", exc_info=True)
 
 
-async def _enrich_task_list_item(
-    task, session: AsyncSession
-) -> TaskListItem:
+async def _enrich_task_list_item(task, session: AsyncSession) -> TaskListItem:
     """Build a TaskListItem with computed fields (is_overdue, has_reminder, deal_name)."""
     item = TaskListItem.model_validate(task, from_attributes=True)
 
@@ -107,9 +105,7 @@ async def _enrich_task_list_item(
     )
 
 
-async def _enrich_task_detail(
-    task, session: AsyncSession
-) -> TaskDetail:
+async def _enrich_task_detail(task, session: AsyncSession) -> TaskDetail:
     """Build a TaskDetail with computed fields."""
     detail = TaskDetail.model_validate(task, from_attributes=True)
 
@@ -129,25 +125,33 @@ async def _enrich_task_detail(
 
 async def _has_active_reminder(session: AsyncSession, activity_id: UUID) -> bool:
     """Check if at least one active reminder is linked to this activity."""
-    stmt = select(func.count()).select_from(UserReminder).where(
-        col(UserReminder.activity_id) == activity_id,
-        col(UserReminder.status) == ReminderStatus.ACTIVE.value,
+    stmt = (
+        select(func.count())
+        .select_from(UserReminder)
+        .where(
+            col(UserReminder.activity_id) == activity_id,
+            col(UserReminder.status) == ReminderStatus.ACTIVE.value,
+        )
     )
     count = await session.scalar(stmt) or 0
     return count > 0
 
 
-async def _get_reminder_dict(
-    session: AsyncSession, activity_id: UUID
-) -> dict | None:
+async def _get_reminder_dict(session: AsyncSession, activity_id: UUID) -> dict | None:
     """Get linked reminder details for task detail view."""
-    stmt = select(UserReminder).where(
-        col(UserReminder.activity_id) == activity_id,
-        col(UserReminder.status).in_([
-            ReminderStatus.ACTIVE.value,
-            ReminderStatus.PAUSED.value,
-        ]),
-    ).limit(1)
+    stmt = (
+        select(UserReminder)
+        .where(
+            col(UserReminder.activity_id) == activity_id,
+            col(UserReminder.status).in_(
+                [
+                    ReminderStatus.ACTIVE.value,
+                    ReminderStatus.PAUSED.value,
+                ]
+            ),
+        )
+        .limit(1)
+    )
     result = await session.execute(stmt)
     reminder = result.scalar_one_or_none()
     if not reminder:
@@ -161,6 +165,7 @@ async def _get_reminder_dict(
 
 
 # ── Global task list ─────────────────────────────────────────────
+
 
 @tasks_router.get(
     "/tasks",
@@ -210,10 +215,7 @@ async def list_tasks(
             limit=limit,
         )
 
-        items = [
-            await _enrich_task_list_item(task, service.session)
-            for task in tasks
-        ]
+        items = [await _enrich_task_list_item(task, service.session) for task in tasks]
 
         total_pages = (total_count + limit - 1) // limit if limit else 0
         payload = TasksPage(
@@ -238,6 +240,7 @@ async def list_tasks(
 
 
 # ── Deal-scoped task list (existing) ─────────────────────────────
+
 
 @tasks_router.get(
     "/deals/{deal_id}/tasks",
@@ -272,10 +275,7 @@ async def list_deal_tasks(
             task_types=task_types,
         )
 
-        items = [
-            await _enrich_task_list_item(task, service.session)
-            for task in tasks
-        ]
+        items = [await _enrich_task_list_item(task, service.session) for task in tasks]
 
         total_pages = (total_count + limit - 1) // limit if limit else 0
         payload = TasksPage(

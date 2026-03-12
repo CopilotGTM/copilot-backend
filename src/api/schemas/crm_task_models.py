@@ -10,7 +10,6 @@ from fastapi import Query
 from pydantic import BaseModel, Field, field_validator, model_validator
 from src.domain.models.organisation_tables.sync.crm import (
     CRMActivityPriority,
-    CRMActivitySource,
     CRMActivityStatus,
     CRMActivityType,
 )
@@ -320,8 +319,6 @@ class GlobalTaskListParams(BaseModel):
     has_due_date: bool | None = Field(default=None, description="Filter by has/no due date")
     include_completed: bool = Field(default=False, description="Include completed tasks")
     sort_by: str = Field(default="due_date", description="Sort field")
-    sort_order: str = Field(
-        default="asc", pattern="^(asc|desc)$", description="Sort direction"
-    )
+    sort_order: str = Field(default="asc", pattern="^(asc|desc)$", description="Sort direction")
     page: int = Field(default=1, ge=1, description="Page number")
     limit: int = Field(default=50, ge=1, le=100, description="Page size")

@@ -294,9 +294,7 @@ class TasksWriteService:
 
     # ── Reminder lifecycle ───────────────────────────────────────────
 
-    async def _create_task_reminder(
-        self, task: CRMActivity, cfg: dict[str, Any]
-    ) -> UserReminder:
+    async def _create_task_reminder(self, task: CRMActivity, cfg: dict[str, Any]) -> UserReminder:
         """Create a static reminder linked to a task via activity_id."""
         trigger_time = cfg["trigger_time"]
         recurrence_str = cfg.get("recurrence", "NONE").lower()
@@ -328,9 +326,7 @@ class TasksWriteService:
 
         return reminder
 
-    async def _update_task_reminder(
-        self, reminder: UserReminder, cfg: dict[str, Any]
-    ) -> None:
+    async def _update_task_reminder(self, reminder: UserReminder, cfg: dict[str, Any]) -> None:
         """Update trigger time and recurrence on an existing task reminder."""
         trigger_time = cfg.get("trigger_time")
         if trigger_time:
@@ -343,9 +339,7 @@ class TasksWriteService:
 
         # Reschedule in Redis
         self._safe_unschedule(reminder.reminder_id)
-        self._safe_schedule(
-            reminder.reminder_id, reminder.next_trigger_at.timestamp()
-        )
+        self._safe_schedule(reminder.reminder_id, reminder.next_trigger_at.timestamp())
 
     async def _cancel_task_reminders(self, activity_id: UUID) -> None:
         """Cancel all active/paused reminders linked to a task."""
@@ -367,11 +361,15 @@ class TasksWriteService:
 
     async def _get_active_reminder(self, activity_id: UUID) -> UserReminder | None:
         """Get the first active reminder linked to a task."""
-        stmt = select(UserReminder).where(
-            col(UserReminder.activity_id) == activity_id,
-            col(UserReminder.organisation_id) == self.organisation_id,
-            col(UserReminder.status) == ReminderStatus.ACTIVE.value,
-        ).limit(1)
+        stmt = (
+            select(UserReminder)
+            .where(
+                col(UserReminder.activity_id) == activity_id,
+                col(UserReminder.organisation_id) == self.organisation_id,
+                col(UserReminder.status) == ReminderStatus.ACTIVE.value,
+            )
+            .limit(1)
+        )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
@@ -379,9 +377,7 @@ class TasksWriteService:
         try:
             schedule_reminder(self.organisation_id, reminder_id, trigger_epoch)
         except Exception:
-            logger.warning(
-                "Failed to schedule reminder %s in Redis", reminder_id, exc_info=True
-            )
+            logger.warning("Failed to schedule reminder %s in Redis", reminder_id, exc_info=True)
 
     def _safe_unschedule(self, reminder_id: UUID) -> None:
         try:
