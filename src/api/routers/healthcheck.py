@@ -17,12 +17,6 @@ healthcheck_router = APIRouter(prefix="/internal")
 public_health_router = APIRouter()
 
 
-@public_health_router.get("/sentry-debug")
-async def trigger_error():
-    """Temporary endpoint to verify Sentry integration. Remove after confirming."""
-    division_by_zero = 1 / 0  # noqa: F841
-
-
 @public_health_router.get("/health")
 async def public_health():
     """

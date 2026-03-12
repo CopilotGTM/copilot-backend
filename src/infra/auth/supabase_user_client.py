@@ -1,7 +1,6 @@
 import re
 from typing import Any, TypedDict, cast
 
-import httpx
 from src.infra.config.configs import supabase_config
 from src.infra.config.constant import SupabaseErrors
 from src.infra.utils.logger import get_logger
@@ -55,23 +54,7 @@ class SupabaseUserClient:
         self.client: Client = create_client(self.supabase_url, self.supabase_anon_key)
         self.admin_client: Client = create_client(self.supabase_url, self.supabase_service_role_key)
 
-        # sentry-sdk patches the runtime in a way that breaks httpx HTTP/2 framing,
-        # causing "illegal request line" on every Supabase auth call.
-        # Force HTTP/1.1 on the auth clients to avoid this.
-        self._downgrade_auth_to_http1(self.client)
-        self._downgrade_auth_to_http1(self.admin_client)
-
         logger.info("Supabase User client initialized")
-
-    @staticmethod
-    def _downgrade_auth_to_http1(client: Client) -> None:
-        """Replace the auth client's httpx transport with HTTP/1.1 only."""
-        auth_client = client.auth
-        auth_client._http_client = httpx.Client(
-            http2=False,
-            follow_redirects=True,
-            headers=dict(auth_client._http_client.headers),
-        )
 
     def _validate_config(self) -> None:
         """
