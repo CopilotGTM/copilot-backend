@@ -12,11 +12,12 @@ SECURITY BOUNDARIES (immutable, from context):
 - organisation_id: Prevents cross-org data access
 - user_id: Scopes reminder ownership
 
-This is a Teams-channel-only tool.
+This tool supports Teams and Slack chats.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -35,6 +36,24 @@ if TYPE_CHECKING:
     from src.agents.tools.transparent_tools import AgentCapabilities
 
 logger = logging.getLogger(__name__)
+
+
+def _escape_slack_mrkdwn(value: str) -> str:
+    """Escape special characters for Slack mrkdwn."""
+    return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _slack_field(label: str, value: Any) -> dict[str, str]:
+    """Build a Slack section field with label + value."""
+    text = _escape_slack_mrkdwn(str(value))
+    return {"type": "mrkdwn", "text": f"*{label}*\n{text}"}
+
+
+def _slack_quote(value: str) -> str:
+    """Render multi-line text as a Slack blockquote."""
+    escaped = _escape_slack_mrkdwn(value)
+    lines = escaped.splitlines() or [escaped]
+    return "\n".join(f"> {line}" if line else ">" for line in lines)
 
 
 def _strip_recurrence_prefix(expr: str) -> str:
@@ -325,13 +344,30 @@ async def create_reminder(
     if r_type == ReminderType.AGENTIC and not agent_prompt:
         return {"status": "error", "message": "Agentic alerts require an agent_prompt."}
 
+    channel = (context.channel or "teams").lower()
+
     # Extract delivery context from bot metadata
     service_url = context.metadata.get("service_url", "")
     conversation_id = context.metadata.get("conversation_id", "")
-    if not service_url or not conversation_id:
+    team_id = context.metadata.get("team_id", "")
+    channel_id = context.metadata.get("channel_id", "")
+    if channel == "slack":
+        if not team_id or not channel_id:
+            return {
+                "status": "error",
+                "message": (
+                    "I couldn’t create the reminder because delivery context isn’t "
+                    "available in this chat right now, so the system can’t send the "
+                    "confirmation card."
+                ),
+            }
+    elif not service_url or not conversation_id:
         return {
             "status": "error",
-            "message": "Cannot create reminder: missing Teams delivery context.",
+            "message": (
+                "I couldn’t create the reminder because delivery context isn’t available "
+                "in this chat right now, so the system can’t send the confirmation card."
+            ),
         }
 
     # Build agent_config for agentic reminders
@@ -342,13 +378,20 @@ async def create_reminder(
             agent_cfg["deal_id"] = deal_id
 
     conversation_type = context.metadata.get("conversation_type", "")
-    teams_conversation_id = context.metadata.get("teams_conversation_id") or conversation_id
-    delivery_context = {
-        "service_url": service_url,
-        "conversation_id": conversation_id,
-        "conversation_type": conversation_type,
-        "teams_conversation_id": teams_conversation_id,
-    }
+    if channel == "slack":
+        delivery_context = {
+            "team_id": team_id,
+            "channel_id": channel_id,
+            "conversation_type": conversation_type or "personal",
+        }
+    else:
+        teams_conversation_id = context.metadata.get("teams_conversation_id") or conversation_id
+        delivery_context = {
+            "service_url": service_url,
+            "conversation_id": conversation_id,
+            "conversation_type": conversation_type,
+            "teams_conversation_id": teams_conversation_id,
+        }
 
     # Create reminder in pending_confirmation — not active, not in ZSET
     reminder = UserReminder(
@@ -361,7 +404,7 @@ async def create_reminder(
         next_trigger_at=trigger_dt,
         user_timezone=timezone_name,
         recurrence=r_recurrence,
-        delivery_channel="teams",
+        delivery_channel=channel,
         delivery_context=delivery_context,
         status=ReminderStatus.PENDING_CONFIRMATION,
     )
@@ -384,15 +427,103 @@ async def create_reminder(
         agent_prompt=agent_prompt,
     )
 
-    from src.service.bots.teams_bot_service import TeamsBotService
+    if channel == "slack":
+        from zoneinfo import ZoneInfo
 
-    bot_service = TeamsBotService()
-    sent = await bot_service.send_proactive_payload(
-        service_url=service_url,
-        conversation_id=conversation_id,
-        payload=card_payload,
-        text_fallback=f"Reminder preview: {title}",
-    )
+        from src.service.bots.slack_bot_service import SlackBotService
+
+        try:
+            local_dt = trigger_dt.astimezone(ZoneInfo(timezone_name))
+        except Exception:
+            local_dt = trigger_dt
+
+        type_label = "Reminder" if r_type == ReminderType.STATIC else "Scheduled Alert"
+        recurrence_display = r_recurrence.value if r_recurrence.value != "none" else "One-time"
+        content_label = "Message" if r_type == ReminderType.STATIC else "AI Prompt"
+        content_value = message if r_type == ReminderType.STATIC else agent_prompt
+        action_value = json.dumps(
+            {
+                "reminder_id": str(reminder.reminder_id),
+                "organisation_id": str(organisation_id),
+            },
+            separators=(",", ":"),
+        )
+
+        slack_blocks: list[dict[str, Any]] = [
+            {
+                "type": "header",
+                "text": {"type": "plain_text", "text": f"{type_label} Preview"},
+            },
+            {
+                "type": "section",
+                "fields": [
+                    _slack_field("Title", title),
+                    _slack_field("When", local_dt.strftime("%b %d, %Y at %I:%M %p %Z")),
+                    _slack_field("Repeats", recurrence_display),
+                    _slack_field("Type", type_label),
+                ],
+            },
+        ]
+        if content_value:
+            slack_blocks.append(
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"*{content_label}*\n{_slack_quote(content_value)}",
+                    },
+                }
+            )
+        slack_blocks.extend(
+            [
+                {
+                    "type": "context",
+                    "elements": [
+                        {
+                            "type": "mrkdwn",
+                            "text": "Please confirm or cancel this reminder.",
+                        }
+                    ],
+                },
+                {
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "Confirm"},
+                            "style": "primary",
+                            "action_id": "confirm_reminder_submit",
+                            "value": action_value,
+                        },
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "Cancel"},
+                            "style": "danger",
+                            "action_id": "confirm_reminder_cancel",
+                            "value": action_value,
+                        },
+                    ],
+                },
+            ]
+        )
+
+        bot_service = SlackBotService()
+        sent = await bot_service.send_block_kit_message(
+            team_id=team_id,
+            channel_id=channel_id,
+            blocks=slack_blocks,
+            text_fallback=f"Reminder preview: {title}",
+        )
+    else:
+        from src.service.bots.teams_bot_service import TeamsBotService
+
+        bot_service = TeamsBotService()
+        sent = await bot_service.send_proactive_payload(
+            service_url=service_url,
+            conversation_id=conversation_id,
+            payload=card_payload,
+            text_fallback=f"Reminder preview: {title}",
+        )
 
     if not sent:
         logger.error("Failed to send reminder preview card for reminder %s", reminder.reminder_id)

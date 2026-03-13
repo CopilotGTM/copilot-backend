@@ -589,6 +589,13 @@ class SlackBotService:
             logger.warning("Failed to send thinking indicator", exc_info=True)
         return None
 
+    @staticmethod
+    def _fallback_text(text: str, limit: int = 3000) -> str:
+        """Slack fallback text is for notifications/accessibility, not full rendering."""
+        if len(text) <= limit:
+            return text
+        return text[: limit - 1].rstrip() + "…"
+
     async def _update_message(
         self, team_id: str, channel_id: str, message_ts: str, text: str
     ) -> bool:
@@ -602,7 +609,7 @@ class SlackBotService:
         payload = {
             "channel": channel_id,
             "ts": message_ts,
-            "text": text,
+            "text": self._fallback_text(text),
         }
         try:
             async with (
@@ -647,7 +654,7 @@ class SlackBotService:
         payload: dict[str, Any] = {
             "channel": channel_id,
             "ts": message_ts,
-            "text": text_fallback,
+            "text": self._fallback_text(text_fallback),
             "blocks": blocks,
         }
         try:
@@ -693,7 +700,7 @@ class SlackBotService:
         }
         payload = {
             "channel": channel_id,
-            "text": text,
+            "text": self._fallback_text(text),
         }
 
         try:
@@ -734,7 +741,7 @@ class SlackBotService:
         payload: dict[str, Any] = {
             "channel": channel_id,
             "blocks": blocks,
-            "text": text_fallback,
+            "text": self._fallback_text(text_fallback),
         }
 
         try:

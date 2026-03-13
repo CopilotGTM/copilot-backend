@@ -53,6 +53,42 @@ _CHANNEL_TO_PROVIDER = {
     "slack": ExternalIdentityProvider.SLACK,
 }
 
+_REQUIRED_DELIVERY_CONTEXT_KEYS = {
+    "teams": ("service_url", "conversation_id"),
+    "slack": ("team_id", "channel_id"),
+}
+
+
+def _provider_name(provider: ExternalIdentityProvider | str) -> str:
+    """Normalize provider values returned by SQLModel/SQLAlchemy queries."""
+    return provider.value if isinstance(provider, ExternalIdentityProvider) else str(provider)
+
+
+def _normalize_delivery_context(
+    delivery_channel: str,
+    conversation_context: dict | None,
+    external_tenant_id: str | None = None,
+) -> dict:
+    """Normalize provider-specific mapping context into reminder delivery context."""
+    normalized = dict(conversation_context or {})
+
+    # Slack auth stores the workspace in external_tenant_id rather than
+    # conversation_context, but reminder delivery needs it at execution time.
+    if delivery_channel == "slack" and external_tenant_id and not normalized.get("team_id"):
+        normalized["team_id"] = external_tenant_id
+
+    return normalized
+
+
+def _delivery_context_is_ready(delivery_channel: str, delivery_context: dict | None) -> bool:
+    """Return whether the channel has the fields required for proactive delivery."""
+    required_keys = _REQUIRED_DELIVERY_CONTEXT_KEYS.get(delivery_channel)
+    if not required_keys:
+        return False
+
+    context = delivery_context or {}
+    return all(bool(str(context.get(key, "")).strip()) for key in required_keys)
+
 
 async def _resolve_delivery_context(
     master_session: AsyncSession,
@@ -61,15 +97,17 @@ async def _resolve_delivery_context(
 ) -> dict | None:
     """Look up the user's active identity mapping for the given channel.
 
-    Returns the conversation_context dict (may be empty if the bot hasn't
-    captured proactive messaging details yet), or None if no active mapping
+    Returns a normalized delivery_context dict, or None if no active mapping
     exists for this user+channel.
     """
     provider = _CHANNEL_TO_PROVIDER.get(delivery_channel)
     if not provider:
         return None
 
-    stmt = select(ExternalIdentityMapping.conversation_context).where(
+    stmt = select(
+        ExternalIdentityMapping.conversation_context,
+        ExternalIdentityMapping.external_tenant_id,
+    ).where(
         and_(
             ExternalIdentityMapping.user_id == user_id,
             ExternalIdentityMapping.provider == provider,
@@ -82,8 +120,11 @@ async def _resolve_delivery_context(
     if row is None:
         return None
 
-    # Return whatever context exists — may be empty/partial
-    return row[0] or {}
+    return _normalize_delivery_context(
+        delivery_channel=delivery_channel,
+        conversation_context=row[0],
+        external_tenant_id=row[1],
+    )
 
 
 async def get_reminder_service(
@@ -121,6 +162,8 @@ async def get_available_channels(
         stmt = select(
             ExternalIdentityMapping.provider,
             ExternalIdentityMapping.mapping_id,
+            ExternalIdentityMapping.conversation_context,
+            ExternalIdentityMapping.external_tenant_id,
         ).where(
             and_(
                 ExternalIdentityMapping.user_id == user.user_id,
@@ -130,23 +173,39 @@ async def get_available_channels(
         result = await master_session.execute(stmt)
         rows = result.all()
 
-        # Active mapping = channel is available
-        provider_map: dict[ExternalIdentityProvider, UUID] = {
-            row.provider: row.mapping_id for row in rows
+        provider_map: dict[str, dict[str, UUID | bool | str | None]] = {
+            "teams": {"mapping_id": None, "available": False},
+            "slack": {"mapping_id": None, "available": False},
         }
+        for row in rows:
+            provider = _provider_name(row.provider)
+            provider_info = provider_map.setdefault(
+                provider,
+                {"mapping_id": None, "available": False},
+            )
+            if provider_info["mapping_id"] is None:
+                provider_info["mapping_id"] = row.mapping_id
+
+            normalized_context = _normalize_delivery_context(
+                delivery_channel=provider,
+                conversation_context=row.conversation_context,
+                external_tenant_id=row.external_tenant_id,
+            )
+            if _delivery_context_is_ready(provider, normalized_context):
+                provider_info["available"] = True
 
         channels = [
             DeliveryChannelInfo(
                 channel="teams",
-                available=ExternalIdentityProvider.TEAMS in provider_map,
+                available=bool(provider_map["teams"]["available"]),
                 label="Microsoft Teams",
-                mapping_id=provider_map.get(ExternalIdentityProvider.TEAMS),
+                mapping_id=provider_map["teams"]["mapping_id"],
             ),
             DeliveryChannelInfo(
                 channel="slack",
-                available=ExternalIdentityProvider.SLACK in provider_map,
+                available=bool(provider_map["slack"]["available"]),
                 label="Slack",
-                mapping_id=provider_map.get(ExternalIdentityProvider.SLACK),
+                mapping_id=provider_map["slack"]["mapping_id"],
             ),
         ]
 
@@ -179,7 +238,9 @@ async def create_reminder(
         delivery_context = await _resolve_delivery_context(
             master_session, user.user_id, body.delivery_channel
         )
-        if delivery_context is None:
+        if delivery_context is None or not _delivery_context_is_ready(
+            body.delivery_channel, delivery_context
+        ):
             return Response.error_response(
                 message=(
                     f"Channel '{body.delivery_channel}' is not set up. "
@@ -387,7 +448,9 @@ async def update_reminder(
             delivery_context = await _resolve_delivery_context(
                 master_session, user.user_id, updates["delivery_channel"]
             )
-            if delivery_context is None:
+            if delivery_context is None or not _delivery_context_is_ready(
+                updates["delivery_channel"], delivery_context
+            ):
                 return Response.error_response(
                     message=(
                         f"Channel '{updates['delivery_channel']}' is not set up. "

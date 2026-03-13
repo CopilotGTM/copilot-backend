@@ -3,9 +3,9 @@
 Handles both static (fixed-message) and agentic (AI-powered) reminders.
 Called by the Tier 3 Celery task (execute_reminder).
 
-Static reminders: Send the stored message_content via Teams proactive messaging.
+Static reminders: Send the stored message_content via the configured bot channel.
 Agentic reminders: Run GeneralAgent with the stored prompt, render the response
-via TeamsAdapter, and send the result via proactive messaging.
+with the matching channel adapter, and send the result via proactive messaging.
 
 Follows the fresh session pattern: DB sessions are acquired/released quickly
 and never held during LLM calls or external API calls.
@@ -147,6 +147,7 @@ class ReminderExecutionService:
                 "title": reminder.title,
                 "message_content": reminder.message_content,
                 "agent_config": reminder.agent_config or {},
+                "delivery_channel": reminder.delivery_channel,
                 "delivery_context": reminder.delivery_context or {},
                 "next_trigger_at": reminder.next_trigger_at,
                 "user_timezone": reminder.user_timezone,
@@ -192,25 +193,15 @@ class ReminderExecutionService:
         raise RuntimeError(msg)
 
     async def _execute_static(self, data: dict[str, Any]) -> tuple[bool, str | None]:
-        """Send a static reminder message via Teams proactive messaging."""
-        from src.service.bots.teams_bot_service import TeamsBotService
-
-        service_url = data["delivery_context"].get("service_url", "")
-        conversation_id = data["delivery_context"].get("conversation_id", "")
-
-        if not service_url or not conversation_id:
-            logger.error("Static reminder missing delivery context: %s", data["reminder_id"])
-            return False, None
-
+        """Send a static reminder message via the configured delivery channel."""
         text = f"**Reminder:** {data['title']}"
         if data.get("message_content"):
             text += f"\n\n{data['message_content']}"
 
-        bot_service = TeamsBotService()
-        sent = await bot_service.send_proactive_message(
-            service_url=service_url,
-            conversation_id=conversation_id,
-            message=text,
+        sent = await self._send_text(
+            delivery_channel=data["delivery_channel"],
+            delivery_context=data["delivery_context"],
+            text=text,
         )
         return sent, text
 
@@ -220,13 +211,16 @@ class ReminderExecutionService:
         from src.agents.context import AgentContext
         from src.agents.orchestrator import run_agent_for_chat
         from src.infra.database.sessions import acquire_master_async_session
-        from src.service.bots.teams_bot_service import TeamsBotService
 
-        service_url = data["delivery_context"].get("service_url", "")
-        conversation_id = data["delivery_context"].get("conversation_id", "")
+        delivery_channel = data["delivery_channel"]
+        delivery_context = data["delivery_context"]
 
-        if not service_url or not conversation_id:
-            logger.error("Agentic reminder missing delivery context: %s", data["reminder_id"])
+        if not self._delivery_context_is_ready(delivery_channel, delivery_context):
+            logger.error(
+                "Agentic reminder missing delivery context: %s channel=%s",
+                data["reminder_id"],
+                delivery_channel,
+            )
             return False, None
 
         prompt = data["agent_config"].get("prompt", "")
@@ -256,14 +250,20 @@ class ReminderExecutionService:
             user_stmt = select(col(User.email)).where(col(User.user_id) == data["user_id"])
             user_email = (await session.execute(user_stmt)).scalar_one_or_none()
 
-        metadata = dict(data["delivery_context"])
+        metadata = dict(delivery_context)
         metadata["source"] = "scheduled_alert"
+        if (
+            delivery_channel == "teams"
+            and delivery_context.get("conversation_id")
+            and not metadata.get("conversation_id")
+        ):
+            metadata["conversation_id"] = delivery_context["conversation_id"]
         if (
             metadata.get("conversation_type") == "groupChat"
             and not metadata.get("teams_conversation_id")
-            and conversation_id
+            and delivery_context.get("conversation_id")
         ):
-            metadata["teams_conversation_id"] = conversation_id
+            metadata["teams_conversation_id"] = delivery_context["conversation_id"]
 
         # Build AgentContext (no session held — tools acquire on demand)
         context = AgentContext(
@@ -272,7 +272,7 @@ class ReminderExecutionService:
             org_name=org_name,
             user_id=data["user_id"],
             user_email=user_email,
-            channel="teams",
+            channel=delivery_channel,
             metadata=metadata,
         )
 
@@ -305,23 +305,123 @@ class ReminderExecutionService:
             return False, None
 
         # Render response via adapter
-        adapter = get_adapter("teams")
+        adapter = get_adapter(delivery_channel)
         response = AgentResponse.from_frames(frames)
         payload = adapter.render(response)
 
-        # Send to Teams
-        bot_service = TeamsBotService()
-        title_header = f"**Scheduled Alert: {data['title']}**\n\n"
-
-        # For rich payloads (adaptive cards), send as-is
-        sent = await bot_service.send_proactive_payload(
-            service_url=service_url,
-            conversation_id=conversation_id,
-            payload=payload.content,
-            text_fallback=title_header + (response.text[:200] if response.text else ""),
+        sent = await self._send_payload(
+            delivery_channel=delivery_channel,
+            delivery_context=delivery_context,
+            payload=payload,
+            title=data["title"],
+            response_text=response.text,
         )
 
         return sent, response.text or None
+
+    @staticmethod
+    def _delivery_context_is_ready(delivery_channel: str, delivery_context: dict[str, Any]) -> bool:
+        """Validate the minimum delivery context required for reminder execution."""
+        required_keys = {
+            "teams": ("service_url", "conversation_id"),
+            "slack": ("team_id", "channel_id"),
+        }.get(delivery_channel)
+        if not required_keys:
+            return False
+
+        return all(bool(str(delivery_context.get(key, "")).strip()) for key in required_keys)
+
+    async def _send_text(
+        self,
+        *,
+        delivery_channel: str,
+        delivery_context: dict[str, Any],
+        text: str,
+    ) -> bool:
+        """Send a plain text reminder through the configured bot provider."""
+        if delivery_channel == "teams":
+            from src.service.bots.teams_bot_service import TeamsBotService
+
+            service_url = delivery_context.get("service_url", "")
+            conversation_id = delivery_context.get("conversation_id", "")
+            if not service_url or not conversation_id:
+                logger.error("Teams reminder missing delivery context")
+                return False
+
+            bot_service = TeamsBotService()
+            return await bot_service.send_proactive_message(
+                service_url=service_url,
+                conversation_id=conversation_id,
+                message=text,
+            )
+
+        if delivery_channel == "slack":
+            from src.service.bots.slack_bot_service import SlackBotService
+
+            team_id = delivery_context.get("team_id", "")
+            channel_id = delivery_context.get("channel_id", "")
+            if not team_id or not channel_id:
+                logger.error("Slack reminder missing delivery context")
+                return False
+
+            bot_service = SlackBotService()
+            return await bot_service._send_message(team_id, channel_id, text)
+
+        logger.error("Unsupported reminder delivery channel: %s", delivery_channel)
+        return False
+
+    async def _send_payload(
+        self,
+        *,
+        delivery_channel: str,
+        delivery_context: dict[str, Any],
+        payload: Any,
+        title: str,
+        response_text: str | None,
+    ) -> bool:
+        """Send a rendered agent response through the configured bot provider."""
+        if delivery_channel == "teams":
+            from src.service.bots.teams_bot_service import TeamsBotService
+
+            service_url = delivery_context.get("service_url", "")
+            conversation_id = delivery_context.get("conversation_id", "")
+            if not service_url or not conversation_id:
+                logger.error("Teams reminder missing delivery context")
+                return False
+
+            bot_service = TeamsBotService()
+            title_header = f"**Scheduled Alert: {title}**\n\n"
+            return await bot_service.send_proactive_payload(
+                service_url=service_url,
+                conversation_id=conversation_id,
+                payload=payload.content,
+                text_fallback=title_header + (response_text[:200] if response_text else ""),
+            )
+
+        if delivery_channel == "slack":
+            from src.service.bots.slack_bot_service import SlackBotService
+
+            team_id = delivery_context.get("team_id", "")
+            channel_id = delivery_context.get("channel_id", "")
+            if not team_id or not channel_id:
+                logger.error("Slack reminder missing delivery context")
+                return False
+
+            bot_service = SlackBotService()
+            blocks = payload.content.get("blocks")
+            text = payload.content.get("text") or payload.text_fallback or response_text or title
+            if blocks:
+                return await bot_service.send_block_kit_message(
+                    team_id=team_id,
+                    channel_id=channel_id,
+                    blocks=blocks,
+                    text_fallback=text,
+                )
+
+            return await bot_service._send_message(team_id, channel_id, text)
+
+        logger.error("Unsupported reminder delivery channel: %s", delivery_channel)
+        return False
 
     async def _mark_success(
         self,
