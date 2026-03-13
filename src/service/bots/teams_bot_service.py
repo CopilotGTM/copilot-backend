@@ -11,6 +11,7 @@ Identity Flow:
 3. If not linked -> Generate login URL with secure state token
 """
 
+import re
 from typing import Any
 
 import aiohttp
@@ -732,6 +733,18 @@ class TeamsBotService:
 
         if payload:
             activity.update(payload)
+
+        # Bot Framework rejects activities with empty text and no attachments.
+        # This can happen when the AI response is truncated and all content
+        # gets stripped by the streaming buffer's marker extraction.
+        if not activity.get("text", "").strip() and "attachments" not in activity:
+            activity["text"] = "I wasn't able to generate a complete response. Please try again."
+
+        # Escape markdown reference link definitions (e.g. "[^1]: text", "[label]: url")
+        # at the start of lines. Bot Framework strips these, leaving empty content
+        # → BadSyntax error. Only targets "[x]: " patterns, not normal "[link](url)".
+        if "attachments" not in activity and activity.get("text"):
+            activity["text"] = re.sub(r"(?m)^(\[[^\]]*\]):\s", r"\\\1: ", activity["text"])
 
         headers = {
             "Authorization": f"Bearer {access_token}",

@@ -14,7 +14,7 @@ from src.domain.models.organisation_tables.reminder_models import (
     ReminderType,
 )
 
-VALID_DELIVERY_CHANNELS = {"email", "teams", "slack"}
+VALID_DELIVERY_CHANNELS = {"teams", "slack"}
 
 
 class ReminderCreateRequest(BaseModel):
@@ -37,7 +37,7 @@ class ReminderCreateRequest(BaseModel):
     recurrence_end_at: datetime | None = Field(
         None, description="Stop recurring after this UTC datetime"
     )
-    delivery_channel: str = Field(..., description="Where to deliver: 'email', 'teams', or 'slack'")
+    delivery_channel: str = Field(..., description="Where to deliver: 'teams' or 'slack'")
 
     @model_validator(mode="after")
     def validate_type_content(self) -> ReminderCreateRequest:
@@ -270,3 +270,21 @@ class ReminderHistoryQueryParams(BaseModel):
 
     limit: int = Query(20, ge=1, le=100, description="Items per page")
     page: int = Query(1, ge=1, description="Page number (1-indexed)")
+
+
+class DeliveryChannelInfo(BaseModel):
+    """Information about a single delivery channel."""
+
+    channel: str = Field(description="Channel identifier: 'teams' or 'slack'")
+    available: bool = Field(description="Whether the user has this channel set up and ready to use")
+    label: str = Field(description="Human-readable label for the channel")
+    mapping_id: UUID | None = Field(
+        default=None,
+        description="Identity mapping ID to send back when creating a reminder with this channel.",
+    )
+
+
+class AvailableChannelsResponse(BaseModel):
+    """Response listing delivery channels and their availability for the current user."""
+
+    channels: list[DeliveryChannelInfo]

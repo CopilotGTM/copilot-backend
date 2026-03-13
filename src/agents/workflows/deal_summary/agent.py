@@ -15,7 +15,7 @@ SECURITY BOUNDARIES (immutable, baked into context):
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from agno.agent import Agent
@@ -23,7 +23,7 @@ from agno.models.azure.openai_chat import AzureOpenAI
 
 from src.agents.context import AgentContext
 from src.agents.tools.registry import get_tools_for_agent
-from src.agents.workflows.deal_summary.models import DealSummaryData
+from src.agents.workflows.deal_summary.models import DealHealthStatus, DealSummaryData
 from src.agents.workflows.deal_summary.prompts import get_deal_summary_system_prompt
 from src.infra.config.agent_config import agent_config
 from src.infra.utils.logger import get_logger
@@ -89,7 +89,13 @@ class DealSummaryAgent:
 
         # Create agent with tools
         self.agent = Agent(
-            model=AzureOpenAI(id=config.model, api_version=config.api_version),
+            model=AzureOpenAI(
+                id=config.model,
+                api_version=config.api_version,
+                retries=config.retries,
+                delay_between_retries=1,
+                exponential_backoff=True,
+            ),
             output_schema=DealSummaryData,
             description=get_deal_summary_system_prompt(self.context.org_name),
             tools=tools,
@@ -134,25 +140,28 @@ class DealSummaryAgent:
 
         logger.info("DealSummaryAgent completed summary generation for deal %s", self.deal_id)
 
-        return self._normalize_summary_output(response.content)
+        content = response.content
 
-    def _normalize_summary_output(self, content: Any) -> DealSummaryData:
-        """Normalize model output into DealSummaryData or raise a clear error."""
         if isinstance(content, DealSummaryData):
             return content
 
         if isinstance(content, dict):
             try:
                 return DealSummaryData.model_validate(content)
-            except Exception as exc:  # pragma: no cover - defensive guard
-                raise ValueError(
-                    f"Deal summary agent returned schema payload that failed validation: {exc}"
-                ) from exc
+            except Exception:
+                logger.warning(
+                    "DealSummaryAgent returned dict that failed validation for deal %s",
+                    self.deal_id,
+                )
 
-        if isinstance(content, str):
-            text = content.strip() or "Empty response"
-            raise ValueError(f"Deal summary agent returned plain text instead of schema: {text}")
-
-        raise ValueError(
-            f"Deal summary agent returned unsupported content type: {type(content).__name__}"
+        # Azure outage or content filter — return empty so caller doesn't crash
+        logger.warning(
+            "DealSummaryAgent returned non-structured response for deal %s: %.200s",
+            self.deal_id,
+            str(content),
+        )
+        return DealSummaryData(
+            deal_summary="",
+            deal_health=DealHealthStatus.UNVALIDATED,
+            deal_health_reason="",
         )

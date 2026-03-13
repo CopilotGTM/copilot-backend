@@ -74,8 +74,8 @@ class DatabaseConfig:
     DATABASE_SSL_ROOT_CERT: str | None = os.getenv("DATABASE_SSL_ROOT_CERT")
 
     # App-side pool settings (caches TCP connections to pgbouncer)
-    DATABASE_POOL_SIZE: int = int(os.getenv("DATABASE_POOL_SIZE", "5"))
-    DATABASE_MAX_OVERFLOW: int = int(os.getenv("DATABASE_MAX_OVERFLOW", "10"))
+    DATABASE_POOL_SIZE: int = int(os.getenv("DATABASE_POOL_SIZE", "10"))
+    DATABASE_MAX_OVERFLOW: int = int(os.getenv("DATABASE_MAX_OVERFLOW", "20"))
     POOL_RECYCLE_SEC: int = int(os.getenv("POOL_RECYCLE_SEC", "1800"))
 
     # Guard against hangs when DB/pgbouncer unavailable

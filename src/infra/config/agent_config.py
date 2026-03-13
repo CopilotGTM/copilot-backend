@@ -27,12 +27,14 @@ class AgentModelConfig:
         api_version: Azure OpenAI API version
         debug_mode: Whether to enable debug logging for agent
         timeout_seconds: Maximum time to wait for agent response
+        retries: Number of retries before giving up
     """
 
     model: str
     api_version: str
     debug_mode: bool
     timeout_seconds: int
+    retries: int = 2
 
 
 class AgentConfig:

@@ -17,7 +17,7 @@ SECURITY BOUNDARIES (immutable, baked into context):
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from agno.agent import Agent
@@ -91,7 +91,13 @@ class RiskBlockerExtractionAgent:
 
         # Create agent with tools
         self.agent = Agent(
-            model=AzureOpenAI(id=config.model, api_version=config.api_version),
+            model=AzureOpenAI(
+                id=config.model,
+                api_version=config.api_version,
+                retries=config.retries,
+                delay_between_retries=1,
+                exponential_backoff=True,
+            ),
             output_schema=RiskBlockerExtractionResult,
             description="Risk and Blocker Extraction Agent for analyzing deal communications",
             tools=tools,
@@ -147,7 +153,17 @@ class RiskBlockerExtractionAgent:
 
         self._publish_progress("Processing identified risks and blockers...", "processing", 0.8)
 
-        result = cast(RiskBlockerExtractionResult, response.content)
+        content = response.content
+        if not isinstance(content, RiskBlockerExtractionResult):
+            # Azure outage or content filter — return empty so caller doesn't crash
+            logger.warning(
+                "RiskBlockerExtractionAgent returned non-structured response for deal %s: %.200s",
+                self.deal_id,
+                str(content),
+            )
+            return RiskBlockerExtractionResult()
+
+        result = content
 
         # Update counts
         result.total_risks = sum(1 for i in result.items if i.item_type.value == "RISK")

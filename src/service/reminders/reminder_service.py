@@ -100,6 +100,7 @@ class ReminderService:
         recurrence: ReminderRecurrence,
         recurrence_end_at: datetime | None,
         delivery_channel: str,
+        delivery_context: dict | None = None,
     ) -> ReminderDetail:
         """Create a reminder and schedule it immediately as ACTIVE."""
         self._validate_timezone(timezone)
@@ -125,7 +126,7 @@ class ReminderService:
             recurrence=recurrence,
             recurrence_end_at=recurrence_end_at,
             delivery_channel=delivery_channel,
-            delivery_context={},
+            delivery_context=delivery_context or {},
             status=ReminderStatus.ACTIVE,
         )
 
@@ -274,6 +275,9 @@ class ReminderService:
 
         if "delivery_channel" in updates:
             reminder.delivery_channel = updates["delivery_channel"]
+
+        if "delivery_context" in updates:
+            reminder.delivery_context = updates["delivery_context"]
 
         await self.session.commit()
         await self.session.refresh(reminder)

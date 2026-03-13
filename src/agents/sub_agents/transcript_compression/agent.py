@@ -32,6 +32,9 @@ class TranscriptCompressionAgent:
             model=AzureOpenAI(
                 id=config.model,
                 api_version=config.api_version,
+                retries=config.retries,
+                delay_between_retries=1,
+                exponential_backoff=True,
             ),
             description=get_compression_system_prompt(org_name),
             markdown=True,

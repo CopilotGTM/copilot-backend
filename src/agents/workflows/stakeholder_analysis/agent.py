@@ -16,7 +16,7 @@ SECURITY BOUNDARIES (immutable, baked into context):
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from agno.agent import Agent
@@ -69,7 +69,13 @@ class StakeholderAnalysisAgent:
         config = agent_config.get_config("stakeholder_analysis_agent")
 
         self.agent = Agent(
-            model=AzureOpenAI(id=config.model, api_version=config.api_version),
+            model=AzureOpenAI(
+                id=config.model,
+                api_version=config.api_version,
+                retries=config.retries,
+                delay_between_retries=1,
+                exponential_backoff=True,
+            ),
             output_schema=DealStakeholdersAnalysisData,
             description=get_stakeholder_system_prompt(self.context.org_name),
             tools=tools,
@@ -105,7 +111,17 @@ class StakeholderAnalysisAgent:
         )
 
         response = await self.agent.arun(user_prompt)
+        content = response.content
 
         logger.info("StakeholderAnalysisAgent completed analysis for deal %s", self.deal_id)
 
-        return cast(DealStakeholdersAnalysisData, response.content)
+        if isinstance(content, DealStakeholdersAnalysisData):
+            return content
+
+        # Azure outage or content filter — return empty so caller doesn't crash
+        logger.warning(
+            "StakeholderAnalysisAgent returned non-structured response for deal %s: %.200s",
+            self.deal_id,
+            str(content),
+        )
+        return DealStakeholdersAnalysisData(stakeholders=[])

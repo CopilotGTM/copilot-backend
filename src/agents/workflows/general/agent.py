@@ -70,7 +70,13 @@ class GeneralAgent(BaseAgent):
         config = agent_config.get_config("general_agent")
 
         self.general_agent = AgnoAgent(
-            model=AzureOpenAI(id=config.model, api_version=config.api_version),
+            model=AzureOpenAI(
+                id=config.model,
+                api_version=config.api_version,
+                retries=config.retries,
+                delay_between_retries=1,
+                exponential_backoff=True,
+            ),
             description=system_prompt,
             structured_outputs=False,
             debug_mode=config.debug_mode,

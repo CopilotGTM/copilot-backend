@@ -6,7 +6,9 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends
 from fastapi import Response as FastAPIResponse
+from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from src.api.dependencies.master_dependencies import get_master_async_session
 from src.api.dependencies.organisation_dependencies import (
     UserIDs,
     get_current_user,
@@ -15,6 +17,8 @@ from src.api.dependencies.organisation_dependencies import (
 from src.api.dependencies.rate_limit import rate_limit_user_read, rate_limit_user_write
 from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.reminder_models import (
+    AvailableChannelsResponse,
+    DeliveryChannelInfo,
     ReminderCreateRequest,
     ReminderDetail,
     ReminderHistoryQueryParams,
@@ -24,6 +28,10 @@ from src.api.schemas.reminder_models import (
     ReminderUpdateRequest,
 )
 from src.api.utils.http_response import Response
+from src.domain.models.master_tables.external_identity_models import (
+    ExternalIdentityMapping,
+    ExternalIdentityProvider,
+)
 from src.domain.models.organisation_tables.reminder_models import ReminderStatus
 from src.infra.utils.logger import get_logger
 from src.service.reminders.reminder_service import (
@@ -38,6 +46,44 @@ logger = get_logger("reminders_handler")
 _UNEXPECTED_ERR_MSG = "An unexpected error occurred while processing your request"
 
 reminders_router = APIRouter()
+
+# Maps delivery_channel string → ExternalIdentityProvider for lookup
+_CHANNEL_TO_PROVIDER = {
+    "teams": ExternalIdentityProvider.TEAMS,
+    "slack": ExternalIdentityProvider.SLACK,
+}
+
+
+async def _resolve_delivery_context(
+    master_session: AsyncSession,
+    user_id: UUID,
+    delivery_channel: str,
+) -> dict | None:
+    """Look up the user's active identity mapping for the given channel.
+
+    Returns the conversation_context dict (may be empty if the bot hasn't
+    captured proactive messaging details yet), or None if no active mapping
+    exists for this user+channel.
+    """
+    provider = _CHANNEL_TO_PROVIDER.get(delivery_channel)
+    if not provider:
+        return None
+
+    stmt = select(ExternalIdentityMapping.conversation_context).where(
+        and_(
+            ExternalIdentityMapping.user_id == user_id,
+            ExternalIdentityMapping.provider == provider,
+            ExternalIdentityMapping.is_active == True,  # noqa: E712
+        )
+    )
+    result = await master_session.execute(stmt)
+    row = result.first()
+
+    if row is None:
+        return None
+
+    # Return whatever context exists — may be empty/partial
+    return row[0] or {}
 
 
 async def get_reminder_service(
@@ -59,6 +105,62 @@ async def get_reminder_service(
             logger.debug("ReminderService close failed", exc_info=True)
 
 
+@reminders_router.get(
+    "/channels",
+    response_model=GenericResponse[AvailableChannelsResponse],
+    summary="Get available delivery channels",
+    description="Returns which delivery channels the current user has set up and can receive reminders on.",
+    dependencies=[Depends(rate_limit_user_read)],
+)
+async def get_available_channels(
+    response: FastAPIResponse,
+    user: UserIDs = Depends(get_current_user),
+    master_session: AsyncSession = Depends(get_master_async_session),
+) -> GenericResponse[AvailableChannelsResponse]:
+    try:
+        stmt = select(
+            ExternalIdentityMapping.provider,
+            ExternalIdentityMapping.mapping_id,
+        ).where(
+            and_(
+                ExternalIdentityMapping.user_id == user.user_id,
+                ExternalIdentityMapping.is_active == True,  # noqa: E712
+            )
+        )
+        result = await master_session.execute(stmt)
+        rows = result.all()
+
+        # Active mapping = channel is available
+        provider_map: dict[ExternalIdentityProvider, UUID] = {
+            row.provider: row.mapping_id for row in rows
+        }
+
+        channels = [
+            DeliveryChannelInfo(
+                channel="teams",
+                available=ExternalIdentityProvider.TEAMS in provider_map,
+                label="Microsoft Teams",
+                mapping_id=provider_map.get(ExternalIdentityProvider.TEAMS),
+            ),
+            DeliveryChannelInfo(
+                channel="slack",
+                available=ExternalIdentityProvider.SLACK in provider_map,
+                label="Slack",
+                mapping_id=provider_map.get(ExternalIdentityProvider.SLACK),
+            ),
+        ]
+
+        return Response.success_response(
+            message="Available channels retrieved successfully",
+            data=AvailableChannelsResponse(channels=channels),
+        )
+    except Exception:
+        logger.exception("Failed to get available channels")
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
+
+
 @reminders_router.post(
     "",
     response_model=GenericResponse[ReminderDetail],
@@ -69,9 +171,24 @@ async def get_reminder_service(
 async def create_reminder(
     body: ReminderCreateRequest,
     response: FastAPIResponse,
+    user: UserIDs = Depends(get_current_user),
+    master_session: AsyncSession = Depends(get_master_async_session),
     service: ReminderService = Depends(get_reminder_service),
 ) -> GenericResponse[ReminderDetail]:
     try:
+        delivery_context = await _resolve_delivery_context(
+            master_session, user.user_id, body.delivery_channel
+        )
+        if delivery_context is None:
+            return Response.error_response(
+                message=(
+                    f"Channel '{body.delivery_channel}' is not set up. "
+                    "Please connect it first via the bot before creating a reminder."
+                ),
+                status_code=400,
+                response=response,
+            )
+
         item = await service.create(
             title=body.title,
             reminder_type=body.reminder_type,
@@ -83,6 +200,7 @@ async def create_reminder(
             recurrence=body.recurrence,
             recurrence_end_at=body.recurrence_end_at,
             delivery_channel=body.delivery_channel,
+            delivery_context=delivery_context,
         )
 
         return Response.created_response(
@@ -252,6 +370,8 @@ async def update_reminder(
     reminder_id: UUID,
     body: ReminderUpdateRequest,
     response: FastAPIResponse,
+    user: UserIDs = Depends(get_current_user),
+    master_session: AsyncSession = Depends(get_master_async_session),
     service: ReminderService = Depends(get_reminder_service),
 ) -> GenericResponse[ReminderDetail]:
     try:
@@ -261,6 +381,22 @@ async def update_reminder(
             return Response.error_response(
                 message="No fields to update", status_code=400, response=response
             )
+
+        # When delivery_channel changes, resolve new delivery_context
+        if "delivery_channel" in updates:
+            delivery_context = await _resolve_delivery_context(
+                master_session, user.user_id, updates["delivery_channel"]
+            )
+            if delivery_context is None:
+                return Response.error_response(
+                    message=(
+                        f"Channel '{updates['delivery_channel']}' is not set up. "
+                        "Please connect it first via the bot."
+                    ),
+                    status_code=400,
+                    response=response,
+                )
+            updates["delivery_context"] = delivery_context
 
         item = await service.update(reminder_id, updates)
 
