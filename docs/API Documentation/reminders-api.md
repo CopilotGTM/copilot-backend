@@ -76,9 +76,10 @@ All endpoints return the shared `GenericResponse` envelope.
 
 | Value | Description | Prerequisite |
 |-------|-------------|--------------|
-| `email` | Deliver via email | User email available |
-| `teams` | Deliver via Microsoft Teams | Teams bot installed for workspace |
-| `slack` | Deliver via Slack | Slack bot installed for workspace |
+| `teams` | Deliver via Microsoft Teams | User has logged into the Teams bot |
+| `slack` | Deliver via Slack | User has logged into the Slack bot |
+
+> **Note**: Use `GET /users/reminders/channels` to check which channels are available for the current user before creating a reminder.
 
 ### State Machine
 
@@ -127,7 +128,7 @@ export interface ReminderListItem {
   schedule_summary: string;          // e.g. "Weekly on Monday at 12:00 AM IST (next: Mon, Mar 03)"
   timezone: string;                  // IANA timezone
   recurrence: ReminderRecurrence;
-  delivery_channel: "email" | "teams" | "slack";
+  delivery_channel: "teams" | "slack";
   is_running: boolean;
   current_run_status: "in_progress" | null;
   can_pause: boolean;
@@ -161,7 +162,7 @@ export interface ReminderDetail {
   recurrence_end_at: string | null;  // ISO8601
 
   // Delivery
-  delivery_channel: "email" | "teams" | "slack";
+  delivery_channel: "teams" | "slack";
 
   // Tracking
   is_running: boolean;
@@ -219,6 +220,90 @@ export interface ReminderHistoryResponse {
 
 ---
 
+## 0. Get Available Delivery Channels
+
+Check which delivery channels the current user has set up and can receive reminders on. Call this when the reminders page loads or before showing the create/edit form.
+
+### Endpoint (Get Available Channels)
+
+```http
+GET /users/reminders/channels
+```
+
+### Success Response (200) (Get Available Channels)
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Available channels retrieved successfully",
+  "data": {
+    "channels": [
+      {
+        "channel": "teams",
+        "available": true,
+        "label": "Microsoft Teams",
+        "mapping_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+      },
+      {
+        "channel": "slack",
+        "available": false,
+        "label": "Slack",
+        "mapping_id": null
+      }
+    ]
+  }
+}
+```
+
+### Response Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `channel` | string | Channel identifier: `teams` or `slack` |
+| `available` | boolean | `true` if the user has logged into the bot AND the bot has the necessary conversation context for proactive messaging |
+| `label` | string | Human-readable display name |
+| `mapping_id` | UUID \| null | Identity mapping ID (present if the user has an active mapping, regardless of availability) |
+
+### Availability Logic
+
+A channel is `available: true` only when **both** conditions are met:
+
+1. The user has an active `ExternalIdentityMapping` for that provider
+2. The mapping's `conversation_context` contains valid `service_url` and `conversation_id` (needed for proactive messaging)
+
+A channel can have a `mapping_id` but `available: false` if the user logged in but the bot hasn't captured the conversation context yet.
+
+### Error Responses (Get Available Channels)
+
+| Code | Description |
+|------|-------------|
+| `401` | Missing or invalid authentication token |
+| `500` | Internal server error |
+
+### Example cURL (Get Available Channels)
+
+```bash
+curl -X GET "$BASE_URL/channels" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### TypeScript Response Model
+
+```ts
+interface DeliveryChannelInfo {
+  channel: "teams" | "slack";
+  available: boolean;
+  label: string;
+  mapping_id: string | null;  // UUID
+}
+
+interface AvailableChannelsResponse {
+  channels: DeliveryChannelInfo[];
+}
+```
+
+---
+
 ## 1. Create Reminder
 
 Create a new reminder or scheduled AI alert. The reminder goes directly to `active` status and is scheduled for execution.
@@ -258,7 +343,7 @@ POST /users/reminders
 | `timezone` | string | Yes | - | IANA timezone (e.g., `Asia/Kolkata`, `America/New_York`) |
 | `recurrence` | enum | No | `none` | Recurrence pattern |
 | `recurrence_end_at` | datetime | No | null | Stop recurring after this UTC datetime |
-| `delivery_channel` | string | Yes | - | `email`, `teams`, or `slack` |
+| `delivery_channel` | string | Yes | - | `teams` or `slack` (use `GET /channels` to check availability) |
 
 ### Validation Rules
 
@@ -268,7 +353,8 @@ POST /users/reminders
 | Agentic requires prompt | `agent_prompt` is required when `reminder_type` is `agentic` |
 | Future trigger time | `trigger_time` must be in the future |
 | Valid timezone | Must be a valid IANA timezone string |
-| Valid channel | `delivery_channel` must be `email`, `teams`, or `slack` |
+| Valid channel | `delivery_channel` must be `teams` or `slack` |
+| Channel must be set up | The user must have an active identity mapping with conversation context for the chosen channel. Returns `400` if not set up. |
 
 ### Success Response (201) (Create Reminder)
 
@@ -608,7 +694,7 @@ Only include fields you want to change. Send `null` explicitly to clear an optio
 | `timezone` | string | Valid IANA timezone |
 | `recurrence` | enum | Changes schedule pattern |
 | `recurrence_end_at` | datetime \| null | Send `null` to remove end date |
-| `delivery_channel` | string | `email`, `teams`, or `slack` |
+| `delivery_channel` | string | `teams` or `slack` (channel must be set up; returns `400` if not) |
 
 ### Status Restrictions
 
@@ -929,11 +1015,12 @@ curl -X DELETE "$BASE_URL/a1b2c3d4-e5f6-7890-abcd-ef1234567890" \
 
 1. **View Reminders**: Call `GET /` to display the reminders list
 2. **Create Reminder**:
+   - Call `GET /channels` to check which delivery channels are available
    - User clicks "New Reminder" button
    - Show form with type selector (Static / Agentic)
    - Based on type, show message field or prompt editor
-   - User picks schedule (one-time or recurring) and delivery channel
-   - Call `POST /` to create
+   - User picks schedule (one-time or recurring) and delivery channel (only show available channels)
+   - Call `POST /` to create — backend auto-resolves delivery context from the user's identity mapping
 3. **Edit Reminder**:
    - User clicks edit on a reminder card
    - Show pre-filled form with current values
@@ -956,13 +1043,12 @@ For agentic reminders, the `agent_prompt` is the most important field — it det
 
 ### Delivery Channel Selection
 
-Only show channels the user has connected:
+Call `GET /channels` on page load to get the list of channels and their availability:
 
-- **Teams**: Show if the user's workspace has the Teams bot installed
-- **Slack**: Show if the user's workspace has the Slack bot installed
-- **Email**: Always available (uses the user's account email)
-
-If no bot channels are connected, only show Email and suggest connecting Teams/Slack.
+- Only enable channels where `available: true`
+- Show disabled channels with a tooltip explaining why (e.g., "Connect Teams bot to enable")
+- If no channels are available, show a message prompting the user to set up a bot first
+- The backend automatically resolves the delivery context (service_url, conversation_id) when creating/updating a reminder — the frontend only needs to send `delivery_channel`
 
 ### Reminder Cards UI
 
@@ -971,7 +1057,7 @@ If no bot channels are connected, only show Email and suggest connecting Teams/S
 | `reminder_type` | Badge: "Static" (blue) or "AI Alert" (purple) |
 | `status` | Color-coded: Active (green), Paused (yellow), Completed (gray), Failed (red), Cancelled (gray) |
 | `recurrence` | Icon + label: "One-time", "Daily", "Weekdays", "Weekly", "Biweekly", "Monthly" |
-| `delivery_channel` | Channel icon (Teams/Slack/Email) |
+| `delivery_channel` | Channel icon (Teams/Slack) |
 | `next_trigger_at` | Display in user's timezone using the `timezone` field |
 | `trigger_count` | "Fired X times" for recurring reminders |
 | `last_error` | Show error banner on failed reminders |

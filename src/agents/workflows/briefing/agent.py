@@ -15,7 +15,7 @@ SECURITY BOUNDARIES (immutable, baked into context):
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from agno.agent import Agent
@@ -92,7 +92,13 @@ class BriefingAgent:
 
         # Create agent with tools
         self.agent = Agent(
-            model=AzureOpenAI(id=config.model, api_version=config.api_version),
+            model=AzureOpenAI(
+                id=config.model,
+                api_version=config.api_version,
+                retries=config.retries,
+                delay_between_retries=1,
+                exponential_backoff=True,
+            ),
             output_schema=BriefingData,
             description=get_briefing_system_prompt(self.context.org_name),
             tools=tools,
@@ -144,4 +150,13 @@ class BriefingAgent:
             input_data.event_id,
         )
 
-        return cast(BriefingData, response.content)
+        content = response.content
+        if isinstance(content, BriefingData):
+            return content
+
+        logger.warning(
+            "BriefingAgent returned non-structured response for meeting %s: %.200s",
+            input_data.event_id,
+            str(content),
+        )
+        return BriefingData(briefing_overview="")

@@ -14,7 +14,7 @@ Tools cannot accept organisation_id as a parameter, preventing cross-org access.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from agno.agent import Agent
@@ -92,7 +92,13 @@ class SummaryAgent:
 
         # Create agent with tools
         self.agent = Agent(
-            model=AzureOpenAI(id=config.model, api_version=config.api_version),
+            model=AzureOpenAI(
+                id=config.model,
+                api_version=config.api_version,
+                retries=config.retries,
+                delay_between_retries=1,
+                exponential_backoff=True,
+            ),
             output_schema=SummaryData,
             description=get_summary_system_prompt(self.context.org_name),
             tools=tools,
@@ -148,4 +154,13 @@ class SummaryAgent:
             input_data.event_id,
         )
 
-        return cast(SummaryData, response.content)
+        content = response.content
+        if isinstance(content, SummaryData):
+            return content
+
+        logger.warning(
+            "SummaryAgent returned non-structured response for meeting %s: %.200s",
+            input_data.event_id,
+            str(content),
+        )
+        return SummaryData(meeting_summary="")

@@ -1,13 +1,12 @@
 import secrets
 import string
 
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import HTTPException, Request, status
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-from src.api.dependencies.master_dependencies import get_master_async_session
 from src.domain.models.master_tables import AdminUserStatus, SupabaseUserStatus, User
 from src.infra.auth.supabase_user_client import supabase_user_client
 from src.infra.config.constant import UserAuthErrors
+from src.infra.database.sessions import master_async_session_scope
 from src.infra.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -79,13 +78,16 @@ class UserAuth:
             logger.error(f"Failed to create user in Supabase for email {email}: {e}")
             return None
 
-    async def get_current_user(self, request: Request, session: AsyncSession) -> User:
+    async def get_current_user(self, request: Request) -> User:
         """
         Get the current authenticated user.
 
+        Acquires and releases a master DB session internally so the connection
+        is returned to the pool immediately after the user lookup — not held
+        for the entire request lifetime.
+
         Args:
             request: FastAPI request object
-            session: Database session
 
         Returns:
             User object
@@ -104,7 +106,7 @@ class UserAuth:
 
             token = auth_header.split(" ")[1]
 
-            # Verify token with Supabase
+            # Verify token with Supabase (external call — no DB session held)
             user_data = self.supabase_user_client.verify_token(token)
 
             # Get user ID from token
@@ -115,10 +117,13 @@ class UserAuth:
                     detail=UserAuthErrors.INVALID_TOKEN_NO_ID,
                 )
 
-            # Find user in database
-            statement = select(User).where(User.supabase_user_id == user_id)
-            result = await session.execute(statement)
-            user = result.scalars().first()
+            # Acquire master session, look up user, detach, release
+            async with master_async_session_scope() as session:
+                statement = select(User).where(User.supabase_user_id == user_id)
+                result = await session.execute(statement)
+                user = result.scalars().first()
+                if user:
+                    session.expunge(user)
 
             if not user:
                 raise HTTPException(
@@ -147,25 +152,9 @@ class UserAuth:
                 detail=UserAuthErrors.AUTHENTICATION_FAILED,
             ) from e
 
-    async def __call__(
-        self,
-        request: Request,
-        session: AsyncSession = Depends(get_master_async_session),
-    ) -> User:
-        """
-        FastAPI dependency to get current authenticated user from Supabase token
-
-        Args:
-            request: The request object
-            session: Database session
-
-        Returns:
-            User object
-
-        Raises:
-            HTTPException: If not authenticated
-        """
-        return await self.get_current_user(request, session)
+    async def __call__(self, request: Request) -> User:
+        """FastAPI dependency to get current authenticated user from Supabase token."""
+        return await self.get_current_user(request)
 
 
 # Create a global instance

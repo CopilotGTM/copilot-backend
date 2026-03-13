@@ -4,8 +4,6 @@ from typing import TYPE_CHECKING, cast
 from fastapi import APIRouter, Depends
 from fastapi import Response as FastAPIResponse
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-from src.api.dependencies.master_dependencies import get_master_async_session
 from src.api.dependencies.rate_limit import rate_limit_login, rate_limit_password_reset
 from src.api.schemas.base_models import GenericResponse
 from src.api.utils.http_response import Response
@@ -25,6 +23,7 @@ from src.infra.auth.email_service import email_service
 from src.infra.auth.supabase_user_client import SupabaseAuthError, supabase_user_client
 from src.infra.auth.user_auth import user_auth
 from src.infra.config.constant import UserAuthErrors
+from src.infra.database.sessions import master_async_session_scope
 from src.infra.utils.logger import get_logger
 
 logger = get_logger("user_auth_handler")
@@ -43,24 +42,36 @@ UserTable = cast("Table", _user_table)
 async def user_login(
     login_request: UserLoginRequest,
     response: FastAPIResponse,
-    master_session: AsyncSession = Depends(get_master_async_session),
     _rl_login: None = Depends(rate_limit_login),
 ) -> GenericResponse[UserLoginResponse]:
     """
     User login endpoint.
     """
     try:
-        statement = select(User).where(UserTable.c.email == login_request.email)
-        result = await master_session.execute(statement)
-        user = result.scalars().first()
-        logger.info(f"User found in database: {user.email if user else 'None'}")
+        # Look up user and extract fields, then release the session
+        async with master_async_session_scope() as session:
+            statement = select(User).where(UserTable.c.email == login_request.email)
+            result = await session.execute(statement)
+            user = result.scalars().first()
+            if user:
+                user_email = user.email
+                user_first_name = user.first_name
+                user_last_name = user.last_name
+                user_role = user.user_role
+                user_created_at = user.created_at
+                user_id = user.user_id
+            else:
+                user_email = None
 
-        if not user:
+        if not user_email:
             logger.warning(f"User not found for email: {login_request.email}")
             return Response.unauthorized_error_response(
                 UserAuthErrors.USER_NOT_FOUND, response=response
             )
 
+        logger.info(f"User found in database: {user_email}")
+
+        # External call to Supabase — no DB session held
         try:
             supabase_response = supabase_user_client.sign_in_with_password(
                 email=login_request.email, password=login_request.password
@@ -89,6 +100,7 @@ async def user_login(
         email_verified = user_data.get("user_metadata", {}).get("email_verified", False)
 
         if requires_password_change:
+            # External call to Supabase — no DB session held
             try:
                 password_reset_link = supabase_user_client.generate_password_reset_link(
                     email=login_request.email
@@ -103,27 +115,33 @@ async def user_login(
                     data=response_data,
                 )
             except Exception as e:
-                logger.error(f"Failed to generate recovery token for user {user.email}: {str(e)}")
+                logger.error(f"Failed to generate recovery token for user {user_email}: {str(e)}")
                 return Response.internal_server_error_response(
                     message=UserAuthErrors.PASSWORD_CHANGE_TOKEN_FAILED,
                     data=None,
                     response=response,
                 )
         else:
-            # Use timezone-aware UTC timestamp (Sonar rule S6903)
-            user.last_login_at = datetime.now(UTC)
-            master_session.add(user)
-            await master_session.commit()
-            await master_session.refresh(user)
+            # Re-acquire session briefly to update last_login_at
+            last_login_at = datetime.now(UTC)
+            async with master_async_session_scope() as session:
+                statement = select(User).where(UserTable.c.user_id == user_id)
+                result = await session.execute(statement)
+                user_obj = result.scalars().first()
+                if user_obj:
+                    user_obj.last_login_at = last_login_at
+                    session.add(user_obj)
+                    await session.commit()
+
             response_data = UserLoginResponse(
-                email=user.email,
-                first_name=user.first_name,
-                last_name=user.last_name,
-                role=user.user_role,
+                email=user_email,
+                first_name=user_first_name,
+                last_name=user_last_name,
+                role=user_role,
                 state=UserLoginState.ACTIVE,
-                created_at=user.created_at,
+                created_at=user_created_at,
                 email_verified=email_verified,
-                last_login_at=user.last_login_at,
+                last_login_at=last_login_at,
                 tokens={
                     "access_token": access_token,
                     "refresh_token": refresh_token,
@@ -147,7 +165,6 @@ async def user_login(
 async def reset_password(
     password_request: UserResetPasswordRequest,
     response: FastAPIResponse,
-    master_session: AsyncSession = Depends(get_master_async_session),
 ) -> GenericResponse[None]:
     try:
         if not password_request.token_hash:
@@ -176,6 +193,7 @@ async def reset_password(
                 UserAuthErrors.INVALID_ACTION, response=response
             )
 
+        # External call to Supabase — no DB session held
         try:
             user_id = supabase_user_client.reset_password_with_token(
                 token_hash=password_request.token_hash,
@@ -196,34 +214,45 @@ async def reset_password(
                 message="Password changed successfully. You can now log in with your new password."
             )
 
-        statement = select(User).where(UserTable.c.supabase_user_id == user_id)
-        result = await master_session.execute(statement)
-        current_user = result.scalars().first()
+        # Look up user and extract fields needed for Supabase metadata update
+        async with master_async_session_scope() as session:
+            statement = select(User).where(UserTable.c.supabase_user_id == user_id)
+            result = await session.execute(statement)
+            current_user = result.scalars().first()
+            if current_user:
+                cu_email = current_user.email
+                cu_first_name = current_user.first_name
+                cu_last_name = current_user.last_name
+                cu_user_role = current_user.user_role
+                cu_supabase_user_id = current_user.supabase_user_id
+                cu_id = current_user.user_id
+            else:
+                cu_email = None
 
-        if not current_user:
+        if not cu_email:
             logger.warning(f"User not found for user_id: {user_id}")
             return Response.unauthorized_error_response(
                 UserAuthErrors.UNAUTHORIZED, response=response
             )
 
-        updated_metadata = {
-            "requires_password_change": False,
-            "email_verified": True,
-            "first_name": current_user.first_name,
-            "last_name": current_user.last_name,
-            "role": current_user.user_role,
-        }
-
-        if current_user.supabase_user_id:
+        # External call to Supabase — no DB session held
+        if cu_supabase_user_id:
+            updated_metadata = {
+                "requires_password_change": False,
+                "email_verified": True,
+                "first_name": cu_first_name,
+                "last_name": cu_last_name,
+                "role": cu_user_role,
+            }
             try:
                 supabase_user_client.update_user_metadata(
-                    user_id=current_user.supabase_user_id,
+                    user_id=cu_supabase_user_id,
                     metadata=updated_metadata,
                 )
             except Exception:
                 logger.error(
                     "Failed to update user metadata in Supabase for user: %s",
-                    current_user.email,
+                    cu_email,
                 )
                 return Response.internal_server_error_response(
                     message=UserAuthErrors.UPDATE_METADATA_FAILED,
@@ -231,14 +260,18 @@ async def reset_password(
                     response=response,
                 )
 
+        # Re-acquire session briefly to update local DB
         logger.info(f"Updating local DB for user_id: {user_id}")
-        current_user.email_verified = True
-        current_user.status = SupabaseUserStatus.ACTIVE
-        # Use timezone-aware UTC timestamp (Sonar rule S6903)
-        current_user.last_login_at = datetime.now(UTC)
-        master_session.add(current_user)
-        await master_session.commit()
-        await master_session.refresh(current_user)
+        async with master_async_session_scope() as session:
+            statement = select(User).where(UserTable.c.user_id == cu_id)
+            result = await session.execute(statement)
+            user_obj = result.scalars().first()
+            if user_obj:
+                user_obj.email_verified = True
+                user_obj.status = SupabaseUserStatus.ACTIVE
+                user_obj.last_login_at = datetime.now(UTC)
+                session.add(user_obj)
+                await session.commit()
         logger.info(f"Local DB updated for user_id: {user_id}")
 
         return Response.success_response(
@@ -311,7 +344,6 @@ async def refresh_token(
 async def forgot_password(
     forgot_password_request: UserForgotPasswordRequest,
     response: FastAPIResponse,
-    master_session: AsyncSession = Depends(get_master_async_session),
     _rl_password_reset: None = Depends(rate_limit_password_reset),
 ) -> GenericResponse[None]:
     """
@@ -319,11 +351,18 @@ async def forgot_password(
     Rate limited to 3 requests per 15 minutes, 10 per hour.
     """
     try:
-        statement = select(User).where(UserTable.c.email == forgot_password_request.email)
-        result = await master_session.execute(statement)
-        user = result.scalars().first()
+        # Look up user email and name, then release the session
+        async with master_async_session_scope() as session:
+            statement = select(User).where(UserTable.c.email == forgot_password_request.email)
+            result = await session.execute(statement)
+            user = result.scalars().first()
+            if user:
+                user_email = user.email
+                user_first_name = user.first_name
+            else:
+                user_email = None
 
-        if not user:
+        if not user_email:
             logger.warning(
                 f"Password reset requested for non-existent user: {forgot_password_request.email}"
             )
@@ -331,7 +370,8 @@ async def forgot_password(
                 message="If an account with this email exists, a password reset link has been sent."
             )
 
-        password_reset_link = supabase_user_client.generate_password_reset_link(email=user.email)
+        # External call to Supabase — no DB session held
+        password_reset_link = supabase_user_client.generate_password_reset_link(email=user_email)
         logger.info(f"Generated password reset link for: {forgot_password_request.email}")
         if not password_reset_link:
             logger.error(
@@ -340,11 +380,12 @@ async def forgot_password(
             return Response.internal_server_error_response(
                 message=UserAuthErrors.RESET_LINK_FAILED, data=None, response=response
             )
-        logger.info(f"Password reset link generated for user: {user.email}")
+        logger.info(f"Password reset link generated for user: {user_email}")
 
+        # External call to email service — no DB session held
         email_sent = await email_service.send_password_reset_email(
-            to_email=user.email,
-            first_name=user.first_name,
+            to_email=user_email,
+            first_name=user_first_name,
             reset_url=password_reset_link,
         )
 

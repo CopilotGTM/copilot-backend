@@ -134,15 +134,15 @@ async def list_deal_meetings(
     if not include_upcoming:
         stmt = stmt.where(event_c.start_at < now)
 
-    # Optional attendee filter
+    # Optional attendee filter — use aliased() so SQLAlchemy doesn't
+    # confuse this join with the selectinload on the same table.
     if attendee_email or attendee_name:
-        attendee_filter = aliased(CalendarAttendee)
-        filter_c = cast(Any, attendee_filter).__table__.c
-        stmt = stmt.join(attendee_filter, filter_c.event_id == event_c.event_id)
+        att_alias = aliased(CalendarAttendee)
+        stmt = stmt.join(att_alias, att_alias.event_id == event_c.event_id)
         if attendee_email:
-            stmt = stmt.where(func.lower(filter_c.email) == attendee_email.lower())
+            stmt = stmt.where(func.lower(att_alias.email) == attendee_email.lower())
         if attendee_name:
-            stmt = stmt.where(filter_c.display_name.ilike(f"%{attendee_name}%"))
+            stmt = stmt.where(att_alias.display_name.ilike(f"%{attendee_name}%"))
 
     # Order by start time (most recent first for past, soonest first for upcoming)
     stmt = stmt.order_by(event_c.start_at.desc()).limit(effective_limit)
