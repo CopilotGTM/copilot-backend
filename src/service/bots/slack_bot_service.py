@@ -643,6 +643,7 @@ class SlackBotService:
         message_ts: str,
         blocks: list[dict[str, Any]],
         text_fallback: str,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> bool:
         """Update an existing Slack message with Block Kit blocks."""
         bot_token = await self._get_workspace_token(team_id)
@@ -657,6 +658,8 @@ class SlackBotService:
             "text": self._fallback_text(text_fallback),
             "blocks": blocks,
         }
+        if attachments:
+            payload["attachments"] = attachments
         try:
             async with (
                 aiohttp.ClientSession() as http_session,
@@ -722,7 +725,12 @@ class SlackBotService:
             return False
 
     async def send_block_kit_message(
-        self, team_id: str, channel_id: str, blocks: list[dict[str, Any]], text_fallback: str
+        self,
+        team_id: str,
+        channel_id: str,
+        blocks: list[dict[str, Any]],
+        text_fallback: str,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> bool:
         """Send a Block Kit message to a Slack channel.
 
@@ -743,6 +751,8 @@ class SlackBotService:
             "blocks": blocks,
             "text": self._fallback_text(text_fallback),
         }
+        if attachments:
+            payload["attachments"] = attachments
 
         try:
             async with (
@@ -765,6 +775,82 @@ class SlackBotService:
         except Exception as e:
             logger.error("Failed to send Slack Block Kit message: %s", e, exc_info=True)
             return False
+
+    async def _post_message_raw(
+        self,
+        team_id: str,
+        channel_id: str,
+        payload: dict[str, Any],
+    ) -> tuple[bool, str]:
+        """Low-level message post that returns (success, error_code).
+
+        Used by the fallback logic to detect specific Slack API errors
+        (e.g. invalid_blocks when markdown block type is unsupported).
+        Caller provides blocks/text/attachments; this method adds channel.
+        """
+        bot_token = await self._get_workspace_token(team_id)
+        if not bot_token:
+            return False, "no_token"
+
+        url = f"{SLACK_API_BASE}/chat.postMessage"
+        api_payload = {**payload, "channel": channel_id}
+        headers = {
+            "Authorization": f"Bearer {bot_token}",
+            "Content-Type": "application/json",
+        }
+
+        try:
+            async with (
+                aiohttp.ClientSession() as http_session,
+                http_session.post(url, json=api_payload, headers=headers) as response,
+            ):
+                result = await response.json()
+                if result.get("ok"):
+                    return True, ""
+                error = result.get("error", "unknown")
+                logger.warning("Slack API error: %s (team=%s)", error, team_id)
+                return False, error
+        except Exception as e:
+            logger.error("Slack API call failed: %s", e, exc_info=True)
+            return False, "exception"
+
+    async def _update_message_raw(
+        self,
+        team_id: str,
+        channel_id: str,
+        message_ts: str,
+        payload: dict[str, Any],
+    ) -> tuple[bool, str]:
+        """Low-level message update that returns (success, error_code).
+
+        Caller provides the payload dict with blocks/text/attachments.
+        This method adds channel + ts and sends to chat.update.
+        """
+        bot_token = await self._get_workspace_token(team_id)
+        if not bot_token:
+            return False, "no_token"
+
+        url = f"{SLACK_API_BASE}/chat.update"
+        api_payload = {**payload, "channel": channel_id, "ts": message_ts}
+        headers = {
+            "Authorization": f"Bearer {bot_token}",
+            "Content-Type": "application/json",
+        }
+
+        try:
+            async with (
+                aiohttp.ClientSession() as http_session,
+                http_session.post(url, json=api_payload, headers=headers) as response,
+            ):
+                result = await response.json()
+                if result.get("ok"):
+                    return True, ""
+                error = result.get("error", "unknown")
+                logger.warning("Slack chat.update error: %s (team=%s)", error, team_id)
+                return False, error
+        except Exception as e:
+            logger.error("Slack chat.update failed: %s", e, exc_info=True)
+            return False, "exception"
 
     @staticmethod
     def _strip_bot_mention(text: str) -> str:

@@ -20,6 +20,13 @@ _SECTION_TEXT_LIMIT = 3000
 # Body cells wider than this trigger card-style layout instead of code block
 _MAX_NARROW_CELL_WIDTH = 60
 
+# Safe per-block limit for Slack markdown blocks (cumulative payload limit is 12000)
+_MARKDOWN_BLOCK_LIMIT = 4000
+
+# Slack table block limits
+_TABLE_MAX_ROWS = 100
+_TABLE_MAX_COLS = 20
+
 
 def _strip_md_formatting(text: str) -> str:
     """Strip Markdown bold/italic/strike markers for code block display."""
@@ -277,14 +284,15 @@ class SlackAdapter(ChannelAdapter):
     def render(self, response: AgentResponse) -> ChannelPayload:
         """Render an AgentResponse into a Slack Block Kit payload.
 
-        Converts standard Markdown in response text to Slack mrkdwn before
-        rendering, since the LLM agent produces standard Markdown.
+        Text responses use Slack's native markdown block (no conversion needed).
+        Interactive responses (questions, forms, confirmations) still use mrkdwn
+        since input/action blocks require it.
         """
-        text = markdown_to_mrkdwn(response.text) if response.text else response.text
-
         if response.type == ResponseType.QUESTION:
+            text = markdown_to_mrkdwn(response.text) if response.text else response.text
             return self.render_question(text, response.data.get("fields"), response.data)
         elif response.type == ResponseType.FORM:
+            text = markdown_to_mrkdwn(response.text) if response.text else response.text
             return self.render_form(text, response.data.get("fields", []))
         elif response.type in (ResponseType.TABLE, ResponseType.LIST):
             return self.render_table(
@@ -294,24 +302,45 @@ class SlackAdapter(ChannelAdapter):
                 response.data.get("items"),
             )
         elif response.type == ResponseType.ERROR:
+            text = markdown_to_mrkdwn(response.text) if response.text else response.text
             return self.render_error(text)
         elif response.type == ResponseType.CONFIRMATION:
+            text = markdown_to_mrkdwn(response.text) if response.text else response.text
             return self.render_confirmation(text)
         else:
-            return self.render_text(text)
+            # TEXT responses use native markdown blocks — no mrkdwn conversion
+            return self.render_text(response.text)
 
     def render_text(self, text: str) -> ChannelPayload:
-        """Render plain text response as Block Kit.
+        """Render plain text response using Slack's native markdown blocks.
 
-        Splits long text across multiple section blocks to respect
-        Slack's 3000-char limit per section text field.
+        Uses the 'markdown' block type which renders standard markdown natively.
+        The text fallback (for notifications) is still mrkdwn-converted.
+        source_text stores the original markdown for fallback re-rendering.
         """
-        blocks = self._text_to_section_blocks(text)
+        blocks = self._text_to_markdown_blocks(text)
+        fallback = markdown_to_mrkdwn(text)
 
         return ChannelPayload(
             type="message",
-            content={"blocks": blocks, "text": text},
-            text_fallback=text,
+            content={"blocks": blocks, "text": fallback},
+            text_fallback=fallback,
+            source_text=text,
+        )
+
+    def render_text_fallback(self, text: str) -> ChannelPayload:
+        """Render text using legacy mrkdwn section blocks.
+
+        Used as fallback when the workspace doesn't support the 'markdown' block type.
+        Expects the original markdown text (not already-converted mrkdwn).
+        """
+        converted = markdown_to_mrkdwn(text)
+        blocks = self._text_to_section_blocks(converted)
+
+        return ChannelPayload(
+            type="message",
+            content={"blocks": blocks, "text": converted},
+            text_fallback=converted,
         )
 
     @staticmethod
@@ -515,6 +544,60 @@ class SlackAdapter(ChannelAdapter):
             {"type": "section", "text": {"type": "mrkdwn", "text": text[:_SECTION_TEXT_LIMIT]}}
         ]
 
+    @staticmethod
+    def _text_to_markdown_blocks(text: str) -> list[dict[str, Any]]:
+        """Split text into Slack markdown blocks preserving paragraph boundaries.
+
+        Uses Slack's native 'markdown' block type which renders standard
+        markdown (bold, italic, tables, code, lists) without manual conversion.
+        Groups short paragraphs into a single block to reduce block count.
+        """
+        blocks: list[dict[str, Any]] = []
+        paragraphs = text.split("\n\n")
+
+        current_chunk: list[str] = []
+        current_len = 0
+
+        def flush() -> None:
+            nonlocal current_chunk, current_len
+            if current_chunk:
+                block_text = "\n\n".join(current_chunk)
+                blocks.append({"type": "markdown", "text": block_text})
+                current_chunk = []
+                current_len = 0
+
+        for para in paragraphs:
+            stripped = para.strip()
+            if not stripped:
+                continue
+
+            para_len = len(stripped)
+
+            # Single paragraph exceeds limit — flush current, then chunk it
+            if para_len > _MARKDOWN_BLOCK_LIMIT:
+                flush()
+                start = 0
+                while start < para_len:
+                    blocks.append(
+                        {
+                            "type": "markdown",
+                            "text": stripped[start : start + _MARKDOWN_BLOCK_LIMIT],
+                        }
+                    )
+                    start += _MARKDOWN_BLOCK_LIMIT
+                continue
+
+            # Adding this paragraph would exceed the limit — flush first
+            if current_len + para_len + 2 > _MARKDOWN_BLOCK_LIMIT and current_chunk:
+                flush()
+
+            current_chunk.append(stripped)
+            current_len += para_len + 2  # +2 for the \n\n separator
+
+        flush()
+
+        return blocks or [{"type": "markdown", "text": text[:_MARKDOWN_BLOCK_LIMIT]}]
+
     def render_question(
         self,
         prompt: str,
@@ -601,8 +684,13 @@ class SlackAdapter(ChannelAdapter):
         rows: list[dict[str, Any]] | None,
         items: list[dict[str, Any]] | None,
     ) -> ChannelPayload:
-        """Render structured data as Block Kit sections."""
+        """Render structured data using Slack's native table block.
+
+        Tabular data (columns + rows) uses the Slack table block in attachments.
+        Key-value items still use section fields in blocks.
+        """
         blocks: list[dict[str, Any]] = []
+        attachments: list[dict[str, Any]] | None = None
 
         if title:
             blocks.append(
@@ -612,40 +700,37 @@ class SlackAdapter(ChannelAdapter):
                 }
             )
 
-        # Render key-value items as fields
+        # Key-value items as section fields (unchanged)
         if items:
             fields = []
             for item in items:
                 if isinstance(item, dict):
                     for key, value in item.items():
                         fields.append({"type": "mrkdwn", "text": f"*{key}*\n{value}"})
-
-            # Slack allows max 10 fields per section
             for i in range(0, len(fields), 10):
-                blocks.append(
-                    {
-                        "type": "section",
-                        "fields": fields[i : i + 10],
-                    }
+                blocks.append({"type": "section", "fields": fields[i : i + 10]})
+
+        # Tabular data as Slack table block
+        if rows and columns:
+            cols = columns[:_TABLE_MAX_COLS]
+
+            header_row = {"cells": [{"type": "raw_text", "text": col} for col in cols]}
+
+            # Data rows (Slack max 100 total rows including header)
+            max_data_rows = _TABLE_MAX_ROWS - 1
+            data_rows = []
+            for row in rows[:max_data_rows]:
+                data_rows.append(
+                    {"cells": [{"type": "raw_text", "text": str(row.get(col, ""))} for col in cols]}
                 )
 
-        # Render tabular data as formatted text
-        if rows and columns:
-            # Header row
-            header_line = " | ".join(f"*{col}*" for col in columns)
-            table_lines = [header_line]
+            table_block = {
+                "type": "table",
+                "rows": [header_row] + data_rows,
+                "column_settings": [{"align": "left"} for _ in cols],
+            }
 
-            for row in rows[:20]:  # Limit to 20 rows to avoid message size limits
-                row_values = [str(row.get(col, "")) for col in columns]
-                table_lines.append(" | ".join(row_values))
-
-            table_text = "\n".join(table_lines)
-            blocks.append(
-                {
-                    "type": "section",
-                    "text": {"type": "mrkdwn", "text": table_text},
-                }
-            )
+            attachments = [{"blocks": [table_block]}]
 
         fallback = title or "Here are the results"
 
@@ -653,6 +738,7 @@ class SlackAdapter(ChannelAdapter):
             type="message",
             content={"blocks": blocks, "text": fallback},
             text_fallback=fallback,
+            attachments=attachments,
         )
 
     def render_confirmation(self, prompt: str) -> ChannelPayload:

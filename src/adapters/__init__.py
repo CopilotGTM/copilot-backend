@@ -57,6 +57,8 @@ class ChannelPayload:
     type: str  # "message", "invoke", etc.
     content: dict[str, Any]
     text_fallback: str | None = None  # Fallback text for channels that don't support rich UI
+    attachments: list[dict[str, Any]] | None = None  # Slack attachments (e.g. table blocks)
+    source_text: str | None = None  # Original markdown text for fallback re-rendering
 
 
 @dataclass
