@@ -99,11 +99,17 @@ _GENERAL_PROMPT_TEMPLATE = dedent(
     - Reminders/alerts -> check skills first, load the `reminders` skill via `get_skill_instructions`
     - Deal creation requests -> call `CreateDeal` as soon as the deal name is known
       (name is the only required field; account/amount/close date are optional pre-fill values)
+    - Task creation requests -> call `create_task` immediately with whatever the user said.
+      Extract title from the message. Use MEDIUM priority and no due date as defaults.
+      If the user says "assign to X" or "for X", pass assign_to with the person's name.
+      Do NOT ask the user for fields they did not mention — just create the preview card.
 
     **CRM write behavior on supported channels (Teams/Slack):**
     - Prefer the write tool over back-and-forth questions once required fields are present.
     - For `CreateDeal`, do NOT ask for company/account before calling the tool.
       Call it with the known deal name and let the preview card collect/confirm optional details.
+    - For `create_task`, do NOT ask for priority/due date/description/assignment unless the
+      user's message is truly ambiguous about what the task is. Extract what you can, default the rest.
 
     **Visualizations (Teams only):**
     Use `CreateVisualizationCard` only AFTER you have numeric data points prepared.

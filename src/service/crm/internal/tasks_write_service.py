@@ -300,6 +300,11 @@ class TasksWriteService:
         recurrence_str = cfg.get("recurrence", "NONE").lower()
         recurrence = ReminderRecurrence(recurrence_str)
 
+        # Delivery channel defaults to Teams for backwards compatibility with
+        # web UI-created tasks. Chat-created tasks pass the channel explicitly.
+        delivery_channel = cfg.get("delivery_channel", "teams")
+        delivery_context = cfg.get("delivery_context", {})
+
         reminder = UserReminder(
             organisation_id=self.organisation_id,
             user_id=self.actor_user_id,
@@ -309,8 +314,8 @@ class TasksWriteService:
             next_trigger_at=trigger_time,
             user_timezone="UTC",
             recurrence=recurrence,
-            delivery_channel="teams",
-            delivery_context={},
+            delivery_channel=delivery_channel,
+            delivery_context=delivery_context,
             status=ReminderStatus.ACTIVE,
             activity_id=task.activity_id,
         )
