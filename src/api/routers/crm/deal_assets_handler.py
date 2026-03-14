@@ -92,6 +92,45 @@ async def _map_asset_to_item(asset: DealAsset, service: DealAssetsService) -> De
 
 
 @deal_assets_router.get(
+    "/assets",
+    response_model=GenericResponse[DealAssetsPage],
+    summary="List all assets",
+    description="Retrieve all assets across all deals for the organisation",
+    dependencies=[Depends(rate_limit_user_read)],
+)
+async def list_all_assets(
+    response: FastAPIResponse,
+    limit: int = 50,
+    offset: int = 0,
+    q: str | None = None,
+    service: DealAssetsService = Depends(get_deal_assets_service),
+) -> GenericResponse[DealAssetsPage]:
+    """List all non-deleted assets across all deals, with optional search."""
+    try:
+        assets, total_count = await service.list_all_assets(
+            limit=limit,
+            offset=offset,
+            q=q,
+        )
+        items = [await _map_asset_to_item(asset, service) for asset in assets]
+
+        return Response.success_response(
+            message="Assets retrieved successfully",
+            data=DealAssetsPage(items=items, total_count=total_count),
+        )
+    except DealAssetsServiceError as exc:
+        logger.warning("All assets access error: %s", exc.message, exc_info=True)
+        return Response.error_response(
+            message=exc.message, status_code=exc.status_code, response=response
+        )
+    except Exception as exc:
+        logger.error("Unexpected error listing all assets: %s", exc, exc_info=True)
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
+
+
+@deal_assets_router.get(
     "/{deal_id}/assets",
     response_model=GenericResponse[DealAssetsPage],
     summary="List deal assets",

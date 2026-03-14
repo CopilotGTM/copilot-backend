@@ -76,6 +76,43 @@ class DealAssetsService:
 
         return assets, total
 
+    async def list_all_assets(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        q: str | None = None,
+    ) -> tuple[list[DealAsset], int]:
+        """Return all non-deleted, non-failed assets across all deals for the org."""
+        c = cast(Any, DealAsset).__table__.c
+
+        base_where = and_(
+            c.organisation_id == self.organisation_id,
+            c.is_deleted.is_(False),
+            c.status != DealAssetStatus.FAILED.value,
+        )
+
+        if q:
+            base_where = and_(
+                base_where,
+                (c.name.ilike(f"%{q}%") | c.filename.ilike(f"%{q}%")),
+            )
+
+        count_stmt = select(func.count()).select_from(DealAsset).where(base_where)
+        count_result = await self.org_session.execute(count_stmt)
+        total = count_result.scalar() or 0
+
+        stmt = (
+            select(DealAsset)
+            .where(base_where)
+            .order_by(c.created_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        result = await self.org_session.execute(stmt)
+        assets: list[DealAsset] = list(result.scalars().all())
+
+        return assets, total
+
     async def get_asset(self, deal_id: UUID, asset_id: UUID) -> DealAsset:
         """Fetch a single asset, verifying org and deal ownership."""
         c = cast(Any, DealAsset).__table__.c
