@@ -725,6 +725,7 @@ class MeetingJobsStatus(BaseModel):
     meeting_briefing: DealJobResponse | None = None
     meeting_summary: DealJobResponse | None = None
     meeting_followup: DealJobResponse | None = None
+    transcript_upload: DealJobResponse | None = None
 
 
 class DealSummaryJobsStatus(BaseModel):
@@ -779,6 +780,29 @@ class UpdateMeetingStatusRequest(BaseModel):
     """Request model for updating meeting association status."""
 
     status: str  # AssociationStatus value
+
+
+class TranscriptPresignRequest(BaseModel):
+    """Request a presigned URL to upload a transcript file."""
+
+    filename: str = Field(..., min_length=1, max_length=255)
+    mimetype: str = Field(..., max_length=255)
+    size_bytes: int = Field(..., gt=0)
+
+
+class TranscriptPresignResponse(BaseModel):
+    """Presigned upload URL for a transcript file."""
+
+    job_id: UUID
+    upload_url: str = Field(description="SAS URL for direct upload (empty if job already exists)")
+    expires_in_seconds: int = Field(description="Seconds until the upload URL expires")
+    status: str
+
+
+class TranscriptFinalizeRequest(BaseModel):
+    """Confirm that a transcript file upload has completed."""
+
+    job_id: UUID = Field(..., description="The job ID returned by the presign endpoint")
 
 
 class ContactListItem(BaseModel):

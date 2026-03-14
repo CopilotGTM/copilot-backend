@@ -19,6 +19,7 @@ logger = get_logger(__name__)
 JOB_TYPE_TO_TASK: dict[DealJobType, str] = {
     DealJobType.MEETING_BRIEFING: "meeting_prep_task.process",
     DealJobType.MEETING_SUMMARY: "meeting_summary_task.process",
+    DealJobType.TRANSCRIPT_UPLOAD: "transcript_upload_task.process",
 }
 
 

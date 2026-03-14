@@ -56,6 +56,13 @@ The API supports three AI generation job types for meetings:
 2. **POST** `/deals/{deal_id}/meetings/{event_id}/jobs/{job_type}` - Start a job
 3. **GET** `/deals/{deal_id}/meetings/{event_id}/jobs/{job_id}/stream` - Stream job updates via SSE
 
+### Transcript Upload Workflow
+
+1. **POST** `/deals/{deal_id}/meetings/{event_id}/transcript/presign` - Get presigned upload URL
+2. Client uploads file directly to the returned SAS URL (PUT request to Azure Blob)
+3. **POST** `/deals/{deal_id}/meetings/{event_id}/transcript/finalize` - Confirm upload and trigger extraction
+4. **GET** `/deals/{deal_id}/meetings/{event_id}/jobs/{job_id}/stream` - Stream extraction + summary progress
+
 ---
 
 ## 1. Get Deal Meetings
@@ -141,6 +148,7 @@ Retrieve all meetings associated with a specific deal, including generation stat
 | `meeting_briefing` | object \| null | Active briefing job (if running) |
 | `meeting_summary` | object \| null | Active summary job (if running) |
 | `meeting_followup` | object \| null | Active follow-up job (if running) |
+| `transcript_upload` | object \| null | Active transcript upload/extraction job (if running) |
 
 Each active job contains:
 
@@ -484,6 +492,133 @@ Update the status of a meeting-deal association (e.g., hide a meeting from the t
 
 ---
 
+## 5. Presign Transcript Upload
+
+Generate a presigned SAS URL for direct transcript file upload to Azure Blob Storage.
+
+- **Endpoint**: `POST /{deal_id}/meetings/{event_id}/transcript/presign`
+- **Method**: `POST`
+- **Tags**: `crm`, `meetings`, `transcript`
+
+**Path Parameters:**
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `deal_id` | UUID | The unique identifier of the deal |
+| `event_id` | UUID | The unique identifier of the meeting event |
+
+**Request Body:**
+
+```json
+{
+  "filename": "meeting-notes.pdf",
+  "mimetype": "application/pdf",
+  "size_bytes": 2048000
+}
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `filename` | string | Original filename (1-255 chars) |
+| `mimetype` | string | `application/pdf` or `application/vnd.openxmlformats-officedocument.wordprocessingml.document` |
+| `size_bytes` | int | File size in bytes (max 25 MB) |
+
+### Response Codes
+
+| Status | Condition | Frontend Action |
+| --- | --- | --- |
+| **201** | Presign created, upload URL returned | Upload file to `upload_url` via PUT, then call finalize |
+| **202** | Upload already in progress (idempotent) | Connect to existing job's SSE stream |
+| **400** | Invalid mimetype or file too large | Show error message |
+| **404** | Event not found or not associated with deal | Show error message |
+| **409** | Meeting removed/cancelled, transcript already exists, or being processed | Show error message |
+
+**Success Response (201):**
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Transcript upload presigned",
+  "data": {
+    "job_id": "7a85f64-5717-4562-b3fc-2c963f66afa6",
+    "upload_url": "https://storageaccount.blob.core.windows.net/org-container/transcripts/deal-id/event-id/meeting-notes.pdf?sv=...",
+    "expires_in_seconds": 900,
+    "status": "JobStatus.PENDING"
+  }
+}
+```
+
+**Idempotent Response (202 — job already exists):**
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Transcript upload already in progress",
+  "data": {
+    "job_id": "7a85f64-5717-4562-b3fc-2c963f66afa6",
+    "upload_url": "",
+    "expires_in_seconds": 0,
+    "status": "JobStatus.IN_PROGRESS"
+  }
+}
+```
+
+---
+
+## 6. Finalize Transcript Upload
+
+Confirm that the transcript file has been uploaded to blob storage. Triggers extraction and summary generation.
+
+- **Endpoint**: `POST /{deal_id}/meetings/{event_id}/transcript/finalize`
+- **Method**: `POST`
+- **Tags**: `crm`, `meetings`, `transcript`
+
+**Path Parameters:**
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `deal_id` | UUID | The unique identifier of the deal |
+| `event_id` | UUID | The unique identifier of the meeting event |
+
+**Request Body:**
+
+```json
+{
+  "job_id": "7a85f64-5717-4562-b3fc-2c963f66afa6"
+}
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `job_id` | UUID | The job ID returned by the presign endpoint |
+
+### Response Codes
+
+| Status | Condition | Frontend Action |
+| --- | --- | --- |
+| **202** | Finalized — extraction worker enqueued | Connect to SSE stream using `job_id` |
+| **400** | Job does not match this meeting | Show error message |
+| **404** | Job not found | Show error message |
+| **409** | Job not in pending state | Show error message |
+
+**Success Response (202):**
+
+```json
+{
+  "status": "SUCCESS",
+  "message": "Transcript upload finalized — extraction started",
+  "data": {
+    "job_id": "7a85f64-5717-4562-b3fc-2c963f66afa6",
+    "job_type": "DealJobType.TRANSCRIPT_UPLOAD",
+    "status": "JobStatus.IN_PROGRESS"
+  }
+}
+```
+
+> After finalize, subscribe to the SSE stream at `GET /{deal_id}/meetings/{event_id}/jobs/{job_id}/stream` to track extraction progress and receive the generated summary.
+
+---
+
 ## Generated Content Schemas
 
 All generated content is wrapped in a metadata envelope for versioning and tracking:
@@ -668,6 +803,62 @@ function connectToSSE(dealId: string, eventId: string, jobId: string) {
     // SSE disconnected — can reconnect using Last-Event-ID header
     // or poll GET /meetings to check active_jobs
   };
+}
+```
+
+// =========================================================================
+// 4. Transcript upload — presign → upload → finalize → stream
+// =========================================================================
+async function uploadTranscript(dealId: string, eventId: string, file: File) {
+  // Step 1: Presign
+  const presignRes = await fetch(
+    `${baseUrl}/${dealId}/meetings/${eventId}/transcript/presign`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        filename: file.name,
+        mimetype: file.type,
+        size_bytes: file.size,
+      }),
+    }
+  );
+
+  if (presignRes.status === 202) {
+    // Upload already in progress — reconnect to SSE
+    connectToSSE(dealId, eventId, presignRes.data.job_id);
+    return;
+  }
+  if (presignRes.status !== 201) {
+    showError(presignRes.message);
+    return;
+  }
+
+  const { job_id, upload_url } = presignRes.data;
+
+  // Step 2: Upload file directly to Azure Blob via SAS URL
+  await fetch(upload_url, {
+    method: "PUT",
+    headers: {
+      "x-ms-blob-type": "BlockBlob",
+      "Content-Type": file.type,
+    },
+    body: file,
+  });
+
+  // Step 3: Finalize
+  const finalizeRes = await fetch(
+    `${baseUrl}/${dealId}/meetings/${eventId}/transcript/finalize`,
+    {
+      method: "POST",
+      body: JSON.stringify({ job_id }),
+    }
+  );
+
+  if (finalizeRes.status === 202) {
+    connectToSSE(dealId, eventId, job_id);
+  } else {
+    showError(finalizeRes.message);
+  }
 }
 ```
 

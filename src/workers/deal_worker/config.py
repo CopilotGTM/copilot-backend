@@ -88,6 +88,8 @@ class DealWorkerConfig(BaseWorkerConfig):
             # Stakeholder analysis tasks (LLM heavy)
             "stakeholder.analyze_deal_stakeholders_task",
             "stakeholder.analyze_org_stakeholders_task",
+            # Transcript upload tasks
+            "transcript_upload_task.process",
             # Risk/Blocker extraction tasks
             "risk_blocker.extract_deal_risks_blockers_task",
             # Deal memory tasks

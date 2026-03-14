@@ -612,6 +612,7 @@ dependencies = [
     { name = "pgvector" },
     { name = "psycopg2-binary" },
     { name = "pydantic", extra = ["email"] },
+    { name = "pypdf" },
     { name = "python-dotenv" },
     { name = "redis" },
     { name = "requests" },
@@ -733,6 +734,8 @@ workers-light = [
     { name = "openai" },
     { name = "pillow" },
     { name = "pymupdf" },
+    { name = "pypdf" },
+    { name = "python-docx" },
     { name = "supabase" },
     { name = "wikipedia" },
     { name = "yfinance" },
@@ -845,8 +848,10 @@ requires-dist = [
     { name = "pymupdf", marker = "extra == 'full'", specifier = "==1.26.3" },
     { name = "pymupdf", marker = "extra == 'knowledge'", specifier = "==1.26.3" },
     { name = "pymupdf", marker = "extra == 'workers-light'", specifier = "==1.26.3" },
+    { name = "pypdf", specifier = ">=5.9.0" },
     { name = "pypdf", marker = "extra == 'full'", specifier = "==5.9.0" },
     { name = "pypdf", marker = "extra == 'knowledge'", specifier = "==5.9.0" },
+    { name = "pypdf", marker = "extra == 'workers-light'", specifier = ">=5.9.0" },
     { name = "pypdf2", marker = "extra == 'full'", specifier = "==3.0.1" },
     { name = "pypdf2", marker = "extra == 'knowledge'", specifier = "==3.0.1" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0.0" },
@@ -855,6 +860,7 @@ requires-dist = [
     { name = "pytest-mock", marker = "extra == 'test'", specifier = ">=3.12.0" },
     { name = "python-docx", marker = "extra == 'full'", specifier = "~=1.2.0" },
     { name = "python-docx", marker = "extra == 'knowledge'", specifier = "~=1.2.0" },
+    { name = "python-docx", marker = "extra == 'workers-light'", specifier = ">=1.2.0" },
     { name = "python-dotenv", specifier = "==1.2.1" },
     { name = "python-jose", extras = ["cryptography"], marker = "extra == 'api'", specifier = "==3.5.0" },
     { name = "python-jose", extras = ["cryptography"], marker = "extra == 'full'", specifier = "==3.5.0" },
@@ -4325,8 +4331,8 @@ dependencies = [
     { name = "torch", version = "2.5.1", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or sys_platform == 'darwin'" },
 ]
 wheels = [
-    { url = "https://download.pytorch.org/whl/cpu/torchaudio-2.5.1-cp311-cp311-linux_aarch64.whl", hash = "sha256:4ba24769a72bd686903feaf1040c895d710af2ffbcd25ee7a9794ee285561b26" },
-    { url = "https://download.pytorch.org/whl/cpu/torchaudio-2.5.1-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:7005354aa7dda9ef908e13c2566ee1fe0bd6d7f5bae0583b5e53016cd229fc34" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torchaudio-2.5.1-cp311-cp311-linux_aarch64.whl", hash = "sha256:4ba24769a72bd686903feaf1040c895d710af2ffbcd25ee7a9794ee285561b26" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torchaudio-2.5.1-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:7005354aa7dda9ef908e13c2566ee1fe0bd6d7f5bae0583b5e53016cd229fc34" },
 ]
 
 [[package]]
@@ -4341,8 +4347,8 @@ dependencies = [
     { name = "torch", version = "2.5.1+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(platform_machine != 'aarch64' and sys_platform == 'linux') or (platform_python_implementation != 'CPython' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
 ]
 wheels = [
-    { url = "https://download.pytorch.org/whl/cpu/torchaudio-2.5.1%2Bcpu-cp311-cp311-linux_x86_64.whl", hash = "sha256:209f8e7efff818d2066f49c27c8097f2246f8bf6fd743c69bcf8dce80c63ee80" },
-    { url = "https://download.pytorch.org/whl/cpu/torchaudio-2.5.1%2Bcpu-cp311-cp311-win_amd64.whl", hash = "sha256:e08047b9f1997bd303ea6528e5b8009719665a55516a49b6acc359dac20c474d" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torchaudio-2.5.1%2Bcpu-cp311-cp311-linux_x86_64.whl", hash = "sha256:209f8e7efff818d2066f49c27c8097f2246f8bf6fd743c69bcf8dce80c63ee80" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torchaudio-2.5.1%2Bcpu-cp311-cp311-win_amd64.whl", hash = "sha256:e08047b9f1997bd303ea6528e5b8009719665a55516a49b6acc359dac20c474d" },
 ]
 
 [[package]]

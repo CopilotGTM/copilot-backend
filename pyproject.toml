@@ -55,6 +55,7 @@ dependencies = [
     "opentelemetry-instrumentation-requests>=0.41b0",
     "opentelemetry-instrumentation-sqlalchemy>=0.41b0",
     "opentelemetry-instrumentation-redis>=0.41b0",
+    "pypdf>=5.9.0",
 ]
 
 [project.optional-dependencies]
@@ -155,6 +156,10 @@ workers-light = [
     # Thumbnail generation for chat attachments
     "Pillow==10.4.0",
     "PyMuPDF==1.26.3",
+
+    # Transcript upload: extract text from PDF/Word files
+    "pypdf>=5.9.0",
+    "python-docx>=1.2.0",
 
     # Async HTTP (required for Azure Key Vault async client)
     "aiohttp>=3.9.1",

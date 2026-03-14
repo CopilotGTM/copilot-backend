@@ -14,6 +14,9 @@ from src.api.schemas.base_models import GenericResponse
 from src.api.schemas.crm_models import (
     DealJobResponse,
     DealMeetingResponse,
+    TranscriptFinalizeRequest,
+    TranscriptPresignRequest,
+    TranscriptPresignResponse,
     UpdateMeetingStatusRequest,
 )
 from src.api.utils.http_response import Response
@@ -30,6 +33,13 @@ from src.service.crm.meetings.meetings_service import (
     MeetingsServiceError,
 )
 from sse_starlette.sse import EventSourceResponse
+
+_ALLOWED_MIMETYPES = {
+    "application/pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+}
+
+_MAX_TRANSCRIPT_SIZE = 25 * 1024 * 1024
 
 meetings_router = APIRouter()
 logger = get_logger(__name__)
@@ -247,4 +257,129 @@ async def update_meeting_status(
         logger.exception("Failed to update meeting status for deal %s event %s", deal_id, event_id)
         return Response.error_response(
             message="Failed to update meeting status", status_code=500, response=response
+        )
+
+
+@meetings_router.post(
+    "/{deal_id}/meetings/{event_id}/transcript/presign",
+    response_model=GenericResponse[TranscriptPresignResponse],
+    status_code=201,
+    summary="Presign transcript upload",
+)
+async def presign_transcript_upload(
+    deal_id: UUID,
+    event_id: UUID,
+    request: TranscriptPresignRequest,
+    response: FastAPIResponse,
+    user_ids: UserIDs = Depends(get_current_user),
+    service: MeetingsService = Depends(get_meetings_service),
+) -> GenericResponse[TranscriptPresignResponse]:
+    """Generate a presigned SAS URL for direct transcript file upload.
+
+    Validates the meeting association, checks for duplicates, creates a
+    PENDING job, and returns a time-limited write URL. The client uploads
+    the file directly to Azure Blob Storage using this URL, then calls
+    the finalize endpoint.
+    """
+    if request.mimetype not in _ALLOWED_MIMETYPES:
+        return Response.error_response(
+            message="Invalid file type. Only PDF and Word (.docx) files are accepted.",
+            status_code=400,
+            response=response,
+        )
+    if request.size_bytes > _MAX_TRANSCRIPT_SIZE:
+        return Response.error_response(
+            message="File too large. Maximum size is 25 MB.",
+            status_code=400,
+            response=response,
+        )
+
+    try:
+        job, upload_url, expires_in = await service.presign_transcript_upload(
+            deal_id=deal_id,
+            event_id=event_id,
+            user_id=user_ids.user_id,
+            filename=request.filename,
+            mimetype=request.mimetype,
+            size_bytes=request.size_bytes,
+        )
+
+        # Idempotent — existing job has no new URL
+        if not upload_url:
+            return Response.accepted_response(
+                "Transcript upload already in progress",
+                TranscriptPresignResponse(
+                    job_id=job.job_id,
+                    upload_url="",
+                    expires_in_seconds=0,
+                    status=str(job.status),
+                ),
+                response=response,
+            )
+
+        return Response.created_response(
+            "Transcript upload presigned",
+            TranscriptPresignResponse(
+                job_id=job.job_id,
+                upload_url=upload_url,
+                expires_in_seconds=expires_in,
+                status=str(job.status),
+            ),
+            response=response,
+        )
+    except MeetingsServiceError as e:
+        logger.warning("Transcript presign error: %s", e.message)
+        return Response.error_response(
+            message=e.message, status_code=e.status_code, response=response
+        )
+    except Exception:
+        logger.exception("Failed to presign transcript for deal %s event %s", deal_id, event_id)
+        return Response.error_response(
+            message="Failed to presign transcript upload", status_code=500, response=response
+        )
+
+
+@meetings_router.post(
+    "/{deal_id}/meetings/{event_id}/transcript/finalize",
+    response_model=GenericResponse[DealJobResponse],
+    summary="Finalize transcript upload",
+)
+async def finalize_transcript_upload(
+    deal_id: UUID,
+    event_id: UUID,
+    request: TranscriptFinalizeRequest,
+    response: FastAPIResponse,
+    service: MeetingsService = Depends(get_meetings_service),
+) -> GenericResponse[DealJobResponse]:
+    """Confirm that the transcript file has been uploaded to blob storage.
+
+    Marks the job as IN_PROGRESS and enqueues the extraction worker which
+    parses the file, creates a Meeting record, and triggers summary generation.
+    Subscribe to the SSE stream using the returned job_id.
+    """
+    try:
+        job = await service.finalize_transcript_upload(
+            deal_id=deal_id,
+            event_id=event_id,
+            job_id=request.job_id,
+        )
+
+        return Response.accepted_response(
+            "Transcript upload finalized — extraction started",
+            DealJobResponse(
+                job_id=job.job_id,
+                job_type=str(job.job_type),
+                status=str(job.status),
+            ),
+            response=response,
+        )
+    except MeetingsServiceError as e:
+        logger.warning("Transcript finalize error: %s", e.message)
+        return Response.error_response(
+            message=e.message, status_code=e.status_code, response=response
+        )
+    except Exception:
+        logger.exception("Failed to finalize transcript for deal %s event %s", deal_id, event_id)
+        return Response.error_response(
+            message="Failed to finalize transcript upload", status_code=500, response=response
         )
