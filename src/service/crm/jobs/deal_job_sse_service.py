@@ -87,24 +87,13 @@ class DealJobSSEService:
             return
 
         if job_status == JobStatus.COMPLETED:
-            # Job finished before or during disconnect - send cached result
+            # Job already done — send complete so frontend stops reconnecting.
+            # Frontend fetches fresh data from meetings list query anyway.
             logger.info(
                 "Deal job SSE: job already completed org=%s job=%s",
                 self.organisation_id,
                 self.job_id,
             )
-            yield {"event": "ready", "data": json.dumps({"job_id": self.job_id})}
-            if result_data:
-                yield {
-                    "event": "frame",
-                    "data": json.dumps(
-                        {
-                            "type": "answer.replace",
-                            "job_id": self.job_id,
-                            "content": result_data,
-                        }
-                    ),
-                }
             yield {"event": "complete", "data": json.dumps({"job_id": self.job_id})}
             return
 
@@ -114,7 +103,6 @@ class DealJobSSEService:
                 self.organisation_id,
                 self.job_id,
             )
-            yield {"event": "ready", "data": json.dumps({"job_id": self.job_id})}
             yield {
                 "event": "error",
                 "data": json.dumps(
@@ -125,6 +113,7 @@ class DealJobSSEService:
                     }
                 ),
             }
+            yield {"event": "complete", "data": json.dumps({"job_id": self.job_id})}
             return
 
         # Job is pending or in progress - stream from Redis

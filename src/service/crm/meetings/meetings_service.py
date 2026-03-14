@@ -21,7 +21,10 @@ from src.domain.models.organisation_tables.sync.calendar import (
     CalendarEvent,
     CalendarEventDealAssociation,
 )
+from src.domain.models.organisation_tables.sync.meeting_intelligence import Meeting, MeetingStatus
+from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
 from src.infra.utils.logger import get_logger
+from src.workers.deal_worker.client import send_deal_task_async
 
 logger = get_logger("meetings_service")
 
@@ -109,6 +112,7 @@ class MeetingsService:
         DealJobType.MEETING_BRIEFING,
         DealJobType.MEETING_SUMMARY,
         DealJobType.MEETING_FOLLOWUP,
+        DealJobType.TRANSCRIPT_UPLOAD,
     }
 
     async def _get_active_meeting_jobs(
@@ -152,6 +156,8 @@ class MeetingsService:
                 jobs_by_event[job.event_id].meeting_summary = job_response
             elif job.job_type == DealJobType.MEETING_FOLLOWUP:
                 jobs_by_event[job.event_id].meeting_followup = job_response
+            elif job.job_type == DealJobType.TRANSCRIPT_UPLOAD:
+                jobs_by_event[job.event_id].transcript_upload = job_response
 
         return jobs_by_event
 
@@ -181,6 +187,151 @@ class MeetingsService:
 
         association.status = status
         await self.session.commit()
+
+    async def _validate_transcript_upload(self, deal_id: UUID, event_id: UUID) -> None:
+        """Shared validation for presign and finalize transcript upload.
+
+        Checks event association, removed/cancelled status, existing transcript,
+        and in-progress processing.
+        """
+        # Verify event belongs to this deal and is not removed/cancelled
+        assoc_stmt = select(CalendarEventDealAssociation).where(
+            col(CalendarEventDealAssociation.event_id) == event_id,
+            col(CalendarEventDealAssociation.deal_id) == deal_id,
+        )
+        assoc = (await self.session.execute(assoc_stmt)).scalars().first()
+        if not assoc:
+            raise MeetingsServiceError(
+                "Calendar event not found or not associated with this deal.",
+                status_code=404,
+            )
+        if assoc.status in (AssociationStatus.REMOVED, AssociationStatus.CANCELLED):
+            raise MeetingsServiceError(
+                "Cannot upload transcript for a removed or cancelled meeting.",
+                status_code=409,
+            )
+
+        # Reject if meeting already has a transcript or is being processed
+        meeting_stmt = select(Meeting).where(
+            col(Meeting.calendar_event_id) == event_id,
+            col(Meeting.organisation_id) == self.organisation_id,
+        )
+        existing_meeting = (await self.session.execute(meeting_stmt)).scalars().first()
+        if existing_meeting:
+            if existing_meeting.status == MeetingStatus.READY:
+                raise MeetingsServiceError(
+                    "A transcript already exists for this meeting.",
+                    status_code=409,
+                )
+            if existing_meeting.status in (MeetingStatus.FETCHING, MeetingStatus.PROCESSING):
+                raise MeetingsServiceError(
+                    "Transcript is currently being processed. Please try again shortly.",
+                    status_code=409,
+                )
+
+    async def presign_transcript_upload(
+        self,
+        deal_id: UUID,
+        event_id: UUID,
+        user_id: UUID,
+        filename: str,
+        mimetype: str,
+        size_bytes: int,
+    ) -> tuple[DealJobs, str, int]:
+        """Validate meeting, create a PENDING job, and return a write SAS URL.
+
+        Returns (job, upload_url, expires_in_seconds).
+        If an upload job is already in progress, returns that job with no URL.
+        """
+        await self._validate_transcript_upload(deal_id, event_id)
+
+        # Idempotent — return existing job if one is already in progress
+        active_stmt = select(DealJobs).where(
+            col(DealJobs.organisation_id) == self.organisation_id,
+            col(DealJobs.deal_id) == deal_id,
+            col(DealJobs.event_id) == event_id,
+            col(DealJobs.job_type) == DealJobType.TRANSCRIPT_UPLOAD,
+            col(DealJobs.status).in_([JobStatus.PENDING, JobStatus.IN_PROGRESS]),
+        )
+        active_job = (await self.session.execute(active_stmt)).scalars().first()
+        if active_job:
+            return active_job, "", 0
+
+        storage_path = f"transcripts/{deal_id}/{event_id}/{filename}"
+
+        job = DealJobs(
+            organisation_id=self.organisation_id,
+            user_id=user_id,
+            job_type=DealJobType.TRANSCRIPT_UPLOAD,
+            deal_id=deal_id,
+            event_id=event_id,
+            status=JobStatus.PENDING,
+            job_metadata={
+                "storage_path": storage_path,
+                "mimetype": mimetype,
+                "filename": filename,
+                "size_bytes": size_bytes,
+            },
+        )
+        self.session.add(job)
+        await self.session.flush()
+        await self.session.refresh(job)
+
+        expires_minutes = 15
+        storage = AzureOrganisationBlobStorage(self.organisation_id)
+        try:
+            upload_url = await storage.generate_write_sas(storage_path, minutes=expires_minutes)
+        finally:
+            await storage.close()
+
+        await self.session.commit()
+
+        logger.info(
+            "Transcript presign created: org=%s deal=%s event=%s job=%s",
+            self.organisation_id,
+            deal_id,
+            event_id,
+            job.job_id,
+        )
+        return job, upload_url, expires_minutes * 60
+
+    async def finalize_transcript_upload(
+        self, deal_id: UUID, event_id: UUID, job_id: UUID
+    ) -> DealJobs:
+        """Mark upload as in-progress and enqueue the extraction worker.
+
+        Called after the client has uploaded the file to the SAS URL.
+        """
+        job = await self.session.get(DealJobs, job_id)
+        if not job:
+            raise MeetingsServiceError("Upload job not found.", status_code=404)
+        if job.deal_id != deal_id or job.event_id != event_id:
+            raise MeetingsServiceError("Job does not match this meeting.", status_code=400)
+        if job.organisation_id != self.organisation_id:
+            raise MeetingsServiceError("Upload job not found.", status_code=404)
+        if job.status != JobStatus.PENDING:
+            raise MeetingsServiceError("Job is not in pending state.", status_code=409)
+
+        job.status = JobStatus.IN_PROGRESS
+        await self.session.flush()
+
+        await send_deal_task_async(
+            "transcript_upload_task.process",
+            args=[str(self.organisation_id), str(job.job_id)],
+            queue="deal_jobs",
+            routing_key="deal_jobs",
+        )
+
+        await self.session.commit()
+
+        logger.info(
+            "Transcript upload finalized: org=%s deal=%s event=%s job=%s",
+            self.organisation_id,
+            deal_id,
+            event_id,
+            job.job_id,
+        )
+        return job
 
     async def close(self):
         """Dispose the underlying session when the service is released."""

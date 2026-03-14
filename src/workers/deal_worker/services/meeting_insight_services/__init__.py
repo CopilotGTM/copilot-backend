@@ -20,6 +20,10 @@ from src.workers.deal_worker.services.meeting_insight_services.meeting_summary_s
     PipelineResult,
     wrap_generated_content,
 )
+from src.workers.deal_worker.services.meeting_insight_services.transcript_upload_service import (
+    TranscriptUploadError,
+    TranscriptUploadService,
+)
 
 __all__ = [
     "MeetingPrepService",
@@ -27,5 +31,7 @@ __all__ = [
     "NonRetryableJobError",
     "PipelineResult",
     "PrepPipelineResult",
+    "TranscriptUploadError",
+    "TranscriptUploadService",
     "wrap_generated_content",
 ]
