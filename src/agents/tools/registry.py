@@ -139,6 +139,12 @@ class ToolName(str, Enum):
     GET_ACTION_ITEMS = "get_action_items"
 
     # -------------------------------------------------------------------------
+    # TASK TOOLS - For creating tasks via chat
+    # Used by: Chat Agent (Teams + Slack channel-only)
+    # -------------------------------------------------------------------------
+    CREATE_TASK = "create_task"
+
+    # -------------------------------------------------------------------------
     # REMINDER TOOLS - For scheduled reminders and agentic alerts
     # Used by: Chat Agent (Teams-channel-only)
     # -------------------------------------------------------------------------
@@ -168,6 +174,7 @@ CHANNEL_ONLY_TOOLS: dict[ToolName, set[str]] = {
     ToolName.ADD_DEAL_NOTE: {"teams", "slack"},
     ToolName.ADD_STAKEHOLDER: {"teams", "slack"},
     ToolName.UPDATE_DEAL_STAGE: {"teams", "slack"},
+    ToolName.CREATE_TASK: {"teams", "slack"},
     ToolName.CREATE_REMINDER: {"teams", "slack"},
     ToolName.LIST_REMINDERS: {"teams", "slack"},
     ToolName.CANCEL_REMINDER: {"teams", "slack"},
@@ -239,7 +246,9 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.ADD_DEAL_NOTE,  # Send interactive note form for existing deal
         ToolName.ADD_STAKEHOLDER,  # Send interactive stakeholder form
         ToolName.UPDATE_DEAL_STAGE,  # Send interactive stage update form
-        # Reminder tools (Teams-only)
+        # Task tools (channel-only)
+        ToolName.CREATE_TASK,  # Create a CRM task from chat
+        # Reminder tools (channel-only)
         ToolName.CREATE_REMINDER,  # Create scheduled reminder or agentic alert
         ToolName.LIST_REMINDERS,  # List active reminders
         ToolName.CANCEL_REMINDER,  # Cancel a reminder
@@ -461,6 +470,8 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     ToolName.EXTRACT_NEWS_ARTICLE: ToolCategory.SEARCH,
     ToolName.ENRICH_LINKEDIN_PROFILE: ToolCategory.SEARCH,
     ToolName.RESEARCH_LINKEDIN_PROFILE: ToolCategory.SEARCH,
+    # Tasks
+    ToolName.CREATE_TASK: ToolCategory.CRM,
     # Reminders
     ToolName.CREATE_REMINDER: ToolCategory.REMINDERS,
     ToolName.LIST_REMINDERS: ToolCategory.REMINDERS,
@@ -553,6 +564,7 @@ class ToolRegistry:
             create_search_internal_knowledge,
             create_search_internet,
         )
+        from src.agents.tools.tasks import create_create_task
 
         # Search tools
         self._tool_factories[ToolName.SEARCH_INTERNAL_KNOWLEDGE] = (
@@ -698,6 +710,11 @@ class ToolRegistry:
         )
         self._tool_factories[ToolName.RESEARCH_LINKEDIN_PROFILE] = (
             lambda: create_research_linkedin_profile(self.capabilities_getter)
+        )
+
+        # Task tools
+        self._tool_factories[ToolName.CREATE_TASK] = lambda: create_create_task(
+            self.context, self.capabilities_getter
         )
 
         # Reminder tools
