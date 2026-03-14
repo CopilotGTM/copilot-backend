@@ -135,7 +135,7 @@ def _convert_wide_table_to_cards(headers: list[str], body: list[list[str]]) -> s
         parts.append("  ·  ".join(f"_{h}_" for h in short_headers))
 
     for row in body:
-        short_cells: list[str] = []
+        short_cells: list[tuple[int, str]] = []
         long_cells: list[str] = []
 
         for i in range(min(len(row), col_count)):
@@ -145,11 +145,20 @@ def _convert_wide_table_to_cards(headers: list[str], body: list[list[str]]) -> s
             if i in long_col_indices:
                 long_cells.append(cell)
             else:
-                short_cells.append(cell)
+                short_cells.append((i, cell))
 
         row_lines: list[str] = []
         if short_cells:
-            row_lines.append("  ·  ".join(short_cells))
+            short_parts: list[str] = []
+            for pos, (idx, cell) in enumerate(short_cells):
+                header = headers[idx] if idx < len(headers) else ""
+                if pos == 0:
+                    short_parts.append(f"*{cell}*")
+                elif header:
+                    short_parts.append(f"_{header}:_ {cell}")
+                else:
+                    short_parts.append(cell)
+            row_lines.append("  ·  ".join(short_parts))
         for long_text in long_cells:
             row_lines.append(long_text)
 
@@ -306,18 +315,160 @@ class SlackAdapter(ChannelAdapter):
         )
 
     @staticmethod
+    def _is_scorecard_column_header(paragraph: str) -> bool:
+        """Return whether a paragraph is just the scorecard column header row."""
+        normalized = re.sub(r"[_*\s]+", "", paragraph).lower()
+        return normalized in {
+            "dimension·rating·confidence",
+            "dimension.rating.confidence",
+            "dimension-rating-confidence",
+            "component·score·confidence",
+            "component.score.confidence",
+            "component-score-confidence",
+        }
+
+    @staticmethod
+    def _scorecard_value(text: str, label: str | None = None) -> str:
+        """Normalize scorecard values extracted from converted mrkdwn."""
+        value = text.strip().strip('"').strip("'").strip("“”")
+        value = re.sub(r"^[*_`]+|[*_`]+$", "", value).strip()
+        if label:
+            value = re.sub(
+                rf"^[*_`\s]*{re.escape(label)}[*_`\s]*:\s*",
+                "",
+                value,
+                flags=re.IGNORECASE,
+            ).strip()
+        return re.sub(r"^[*_`]+|[*_`]+$", "", value).strip()
+
+    @staticmethod
+    def _scorecard_labeled_value(text: str) -> tuple[str, str] | None:
+        """Extract a label/value pair from converted scorecard metadata."""
+        normalized = text.strip().strip('"').strip("'").strip("“”")
+        match = re.match(
+            r"^[*_`\s]*(?P<label>[A-Za-z ]+?)[*_`\s]*:\s*(?P<value>.+)$",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            return None
+
+        label = match.group("label").strip()
+        value = SlackAdapter._scorecard_value(match.group("value"))
+        if not label or not value:
+            return None
+        return label, value
+
+    @staticmethod
+    def _scorecard_meta_from_line(line: str) -> tuple[str, str, str, str, str] | None:
+        """Parse a scorecard metadata row from a single converted line."""
+        normalized = line.strip().strip('"').strip("'").strip("“”")
+        if not normalized or SlackAdapter._is_scorecard_column_header(normalized):
+            return None
+
+        raw_parts = [
+            part.strip() for part in re.split(r"\s*(?:·|•|\|)\s*", normalized) if part.strip()
+        ]
+        if len(raw_parts) < 3:
+            return None
+
+        component = SlackAdapter._scorecard_value(raw_parts[0])
+        middle = SlackAdapter._scorecard_labeled_value(raw_parts[1])
+        trailing = SlackAdapter._scorecard_labeled_value(" · ".join(raw_parts[2:]))
+
+        if not component or not middle or not trailing:
+            return None
+
+        middle_label, middle_value = middle
+        trailing_label, trailing_value = trailing
+
+        return component, middle_label, middle_value, trailing_label, trailing_value
+
+    @staticmethod
+    def _scorecard_blocks_from_paragraph(paragraph: str) -> list[dict[str, Any]] | None:
+        """Convert scorecard text into cleaner Slack section blocks."""
+        lines = [line.strip() for line in paragraph.splitlines() if line.strip()]
+        if not lines:
+            return None
+
+        start_idx = 0
+        while start_idx < len(lines) and SlackAdapter._is_scorecard_column_header(lines[start_idx]):
+            start_idx += 1
+        if start_idx >= len(lines):
+            return None
+
+        if not SlackAdapter._scorecard_meta_from_line(lines[start_idx]):
+            return None
+
+        blocks: list[dict[str, Any]] = []
+        index = start_idx
+        while index < len(lines):
+            if SlackAdapter._is_scorecard_column_header(lines[index]):
+                index += 1
+                continue
+
+            meta = SlackAdapter._scorecard_meta_from_line(lines[index])
+            if not meta:
+                return None
+
+            component, middle_label, middle_value, trailing_label, trailing_value = meta
+            body_lines: list[str] = []
+            index += 1
+            while index < len(lines):
+                next_line = lines[index]
+                if SlackAdapter._is_scorecard_column_header(next_line):
+                    break
+                if SlackAdapter._scorecard_meta_from_line(next_line):
+                    break
+                body_lines.append(next_line)
+                index += 1
+
+            section_lines = [
+                f"*{component}*",
+                f"_{middle_label}:_ {middle_value}  ·  _{trailing_label}:_ {trailing_value}",
+            ]
+            if body_lines:
+                section_lines.append("\n".join(body_lines).strip())
+
+            blocks.append(
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": "\n".join(section_lines)},
+                }
+            )
+
+        return blocks
+
+    @staticmethod
+    def _is_heading_paragraph(paragraph: str) -> bool:
+        """Return whether a paragraph should be promoted to a Slack header block."""
+        stripped = paragraph.strip()
+        if not stripped or "\n" in stripped:
+            return False
+        if len(stripped) > 120:
+            return False
+        if stripped.startswith(("•", "-", ">", "```", "`")):
+            return False
+        return not stripped.endswith((".", "!", "?", ":", ";"))
+
+    @staticmethod
+    def _heading_plain_text(paragraph: str) -> str:
+        """Convert a short mrkdwn heading into plain text for Slack header blocks."""
+        text = paragraph.strip()
+        text = re.sub(r"^\*(.+)\*$", r"\1", text)
+        text = re.sub(r"^_(.+)_$", r"\1", text)
+        return text[:150]
+
+    @staticmethod
     def _text_to_section_blocks(text: str) -> list[dict[str, Any]]:
         """Split text into section blocks respecting the 3000-char limit.
 
         Splits on paragraph boundaries (double newline) to keep blocks
-        semantically coherent.
+        semantically coherent. Short heading-like paragraphs are promoted to
+        header blocks so long answers scan better in Slack.
         """
-        if len(text) <= _SECTION_TEXT_LIMIT:
-            return [{"type": "section", "text": {"type": "mrkdwn", "text": text}}]
-
         blocks: list[dict[str, Any]] = []
         paragraphs = text.split("\n\n")
-        chunk = ""
 
         def _append_block(block_text: str) -> None:
             if block_text.strip():
@@ -326,25 +477,39 @@ class SlackAdapter(ChannelAdapter):
                 )
 
         for para in paragraphs:
+            stripped = para.strip()
+            if not stripped:
+                continue
+
+            if SlackAdapter._is_scorecard_column_header(stripped):
+                continue
+
+            scorecard_blocks = SlackAdapter._scorecard_blocks_from_paragraph(stripped)
+            if scorecard_blocks:
+                blocks.extend(scorecard_blocks)
+                continue
+
+            if SlackAdapter._is_heading_paragraph(stripped):
+                blocks.append(
+                    {
+                        "type": "header",
+                        "text": {
+                            "type": "plain_text",
+                            "text": SlackAdapter._heading_plain_text(stripped),
+                        },
+                    }
+                )
+                continue
+
             # If a single paragraph exceeds Slack's hard limit, split it deterministically.
-            if len(para) > _SECTION_TEXT_LIMIT:
-                if chunk:
-                    _append_block(chunk)
-                    chunk = ""
+            if len(stripped) > _SECTION_TEXT_LIMIT:
                 start = 0
-                while start < len(para):
-                    _append_block(para[start : start + _SECTION_TEXT_LIMIT])
+                while start < len(stripped):
+                    _append_block(stripped[start : start + _SECTION_TEXT_LIMIT])
                     start += _SECTION_TEXT_LIMIT
                 continue
 
-            candidate = f"{chunk}\n\n{para}" if chunk else para
-            if len(candidate) > _SECTION_TEXT_LIMIT and chunk:
-                _append_block(chunk)
-                chunk = para
-            else:
-                chunk = candidate
-
-        _append_block(chunk)
+            _append_block(stripped)
 
         return blocks or [
             {"type": "section", "text": {"type": "mrkdwn", "text": text[:_SECTION_TEXT_LIMIT]}}
