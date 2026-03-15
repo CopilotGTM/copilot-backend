@@ -207,7 +207,7 @@ def create_list_deal_stakeholder_insights(
                 "limit": limit,
                 "include_expired": include_expired,
             },
-            description=f"Listing stakeholder insights for deal: {effective_deal_id}",
+            description="Analyzing stakeholder insights",
             fallback_value=[],
         )
 

@@ -336,7 +336,7 @@ def create_update_deal_stage(
                 "deal_id": deal_id,
                 "deal_name": deal_name,
             },
-            description="Sending deal stage update form",
+            description="Updating deal stage",
             fallback_value=None,
         )
 

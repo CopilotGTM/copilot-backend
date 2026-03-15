@@ -196,7 +196,7 @@ def create_get_meeting_summary(
                 "event_id": event_id,
                 "context": context,
             },
-            description=f"Getting meeting summary for event: {event_id}",
+            description="Reviewing meeting summary",
             fallback_value=None,
         )
 

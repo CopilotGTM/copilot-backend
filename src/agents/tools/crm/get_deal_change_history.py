@@ -281,7 +281,7 @@ def create_get_deal_change_history(
                 "context": context,
                 "limit": limit,
             },
-            description=f"Getting stage change history for deal: {deal_id}",
+            description="Checking deal stage history",
             fallback_value=None,
         )
 

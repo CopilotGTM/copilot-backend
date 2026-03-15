@@ -186,7 +186,7 @@ def create_list_deal_stakeholders(
                 "deal_id": effective_deal_id,
                 "limit": limit,
             },
-            description=f"Listing stakeholders for deal: {effective_deal_id}",
+            description="Looking up stakeholders",
             fallback_value=[],
         )
 

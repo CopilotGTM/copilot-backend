@@ -286,7 +286,7 @@ def create_list_deal_meetings(
                 "attendee_email": attendee_email,
                 "attendee_name": attendee_name,
             },
-            description=f"Listing meetings for deal: {effective_deal_id}",
+            description="Finding deal meetings",
             fallback_value=[],
         )
 

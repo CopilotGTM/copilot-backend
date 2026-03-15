@@ -236,7 +236,7 @@ def create_list_deal_emails(
                     "sender_name": sender_name,
                     "include_body_preview": include_body_preview,
                 },
-                description="Listing deal emails",
+                description="Finding emails",
                 fallback_value=[],
             )
 

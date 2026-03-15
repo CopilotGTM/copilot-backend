@@ -301,7 +301,7 @@ def create_add_stakeholder(
                 "stance": stance,
                 "decision_power": decision_power,
             },
-            description="Sending stakeholder form",
+            description="Adding stakeholder",
             fallback_value=None,
         )
 

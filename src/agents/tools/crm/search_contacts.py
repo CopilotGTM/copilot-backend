@@ -245,7 +245,7 @@ def create_search_contacts(
                 "company_name": company_name,
                 "limit": limit,
             },
-            description=f"Searching contacts: query={query}, company={company_name}",
+            description="Searching contacts",
             fallback_value=[],
         )
 

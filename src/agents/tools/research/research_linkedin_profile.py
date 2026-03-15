@@ -145,7 +145,7 @@ def create_research_linkedin_profile(
             tool_name="ResearchLinkedInProfile",
             tool_func=research_linkedin_profile,
             parameters={"query": query, "company": company},
-            description=f"Researching LinkedIn profile: {query}",
+            description="Researching LinkedIn profile",
             fallback_value={"success": False, "error": "Tool execution failed"},
         )
 

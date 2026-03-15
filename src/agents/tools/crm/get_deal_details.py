@@ -277,7 +277,7 @@ def create_get_deal_details(
                 "include_stakeholders": include_stakeholders,
                 "include_risks": include_risks,
             },
-            description=f"Getting details for deal: {deal_id}",
+            description="Looking up deal details",
             fallback_value=None,
         )
 

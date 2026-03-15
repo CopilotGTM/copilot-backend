@@ -165,7 +165,7 @@ def create_get_stakeholder_details(
                 "stakeholder_id": stakeholder_id,
                 "context": context,
             },
-            description=f"Getting details for stakeholder: {stakeholder_id}",
+            description="Checking stakeholder details",
             fallback_value=None,
         )
 

@@ -284,8 +284,27 @@ class TeamsBotService:
                 "Please try again in a moment."
             )
 
-        # Send typing indicator instead of a permanent placeholder message
-        await self._send_typing(service_url, conversation_id)
+        # Send a thinking placeholder message (can be updated with tool status)
+        thinking_activity_id = await self.send_thinking_message(
+            service_url, conversation_id, "Thinking..."
+        )
+        if thinking_activity_id:
+            # Store activity ID so the worker can update it with tool status
+            # and finally replace it with the answer
+            try:
+                from src.infra.messaging.redis_client import get_redis_client
+
+                redis = get_redis_client()
+                redis.set(
+                    f"teams_thinking_conv:{conversation_id}",
+                    thinking_activity_id,
+                    ex=300,  # 5 min TTL
+                )
+            except Exception:
+                logger.debug("Failed to cache Teams thinking activity ID", exc_info=True)
+        else:
+            # Fall back to typing indicator if thinking message fails
+            await self._send_typing(service_url, conversation_id)
         return None
 
     async def _handle_conversation_update(self, activity: dict[str, Any]) -> None:
@@ -769,6 +788,106 @@ class TeamsBotService:
                     return False
         except Exception as e:
             logger.error("Error sending proactive payload: %s", e, exc_info=True)
+            return False
+
+    async def send_thinking_message(
+        self,
+        service_url: str,
+        conversation_id: str,
+        text: str = "Thinking...",
+    ) -> str | None:
+        """Send a thinking placeholder message and return its activity ID.
+
+        The activity ID can be used to update this message with tool status
+        and finally replace it with the full answer.
+        """
+        if not await self._ensure_credentials():
+            return None
+
+        access_token = await self._get_access_token()
+        if not access_token:
+            return None
+
+        url = f"{service_url.rstrip('/')}/v3/conversations/{conversation_id}/activities"
+        activity = {
+            "type": "message",
+            "text": f"⏳ _{text}_",
+        }
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        }
+
+        try:
+            async with (
+                aiohttp.ClientSession() as session,
+                session.post(url, json=activity, headers=headers) as response,
+            ):
+                if response.status in (200, 201):
+                    result = await response.json()
+                    return result.get("id")
+                else:
+                    response_text = await response.text()
+                    logger.warning(
+                        "Failed to send Teams thinking message: status=%s, response=%s",
+                        response.status,
+                        response_text[:200],
+                    )
+        except Exception:
+            logger.debug("Failed to send Teams thinking message", exc_info=True)
+        return None
+
+    async def update_activity(
+        self,
+        service_url: str,
+        conversation_id: str,
+        activity_id: str,
+        text: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> bool:
+        """Update an existing Teams message by activity ID.
+
+        Used to update the thinking placeholder with tool status
+        or replace it with the final answer.
+        """
+        if not await self._ensure_credentials():
+            return False
+
+        access_token = await self._get_access_token()
+        if not access_token:
+            return False
+
+        url = (
+            f"{service_url.rstrip('/')}/v3/conversations/{conversation_id}/activities/{activity_id}"
+        )
+        activity: dict[str, Any] = {"type": "message"}
+        if payload:
+            activity.update(payload)
+        if text:
+            activity["text"] = text
+
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        }
+
+        try:
+            async with (
+                aiohttp.ClientSession() as session,
+                session.put(url, json=activity, headers=headers) as response,
+            ):
+                if response.status in (200, 201):
+                    return True
+                else:
+                    response_text = await response.text()
+                    logger.warning(
+                        "Failed to update Teams activity: status=%s, response=%s",
+                        response.status,
+                        response_text[:200],
+                    )
+                    return False
+        except Exception:
+            logger.debug("Failed to update Teams activity", exc_info=True)
             return False
 
     async def close(self) -> None:

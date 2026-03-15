@@ -413,7 +413,7 @@ def create_upsert_stakeholder(
             tool_name="UpsertStakeholder",
             tool_func=upsert_stakeholder,
             parameters={"context": context, "deal_id": effective_deal_id, "input_data": input_data},
-            description=f"Upserting stakeholder: {email}",
+            description="Updating stakeholder",
             fallback_value=None,
         )
 
