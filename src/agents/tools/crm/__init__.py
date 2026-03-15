@@ -16,7 +16,6 @@ from src.agents.tools.crm.get_risks_blockers import create_get_existing_risks_bl
 from src.agents.tools.crm.get_stakeholder_details import create_get_stakeholder_details
 from src.agents.tools.crm.list_deal_notes import create_list_deal_notes
 from src.agents.tools.crm.list_deals import create_list_deals
-from src.agents.tools.crm.list_stakeholder_insights import create_list_deal_stakeholder_insights
 from src.agents.tools.crm.list_stakeholders import create_list_deal_stakeholders
 from src.agents.tools.crm.manage_risks_blockers import (
     create_dismiss_risk_blocker,
@@ -55,5 +54,4 @@ __all__ = [
     "create_resolve_risk_blocker",
     # Notes and insights
     "create_list_deal_notes",
-    "create_list_deal_stakeholder_insights",
 ]

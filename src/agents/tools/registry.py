@@ -71,7 +71,6 @@ class ToolName(str, Enum):
     # -------------------------------------------------------------------------
     LIST_DEAL_STAKEHOLDERS = "list_deal_stakeholders"
     GET_STAKEHOLDER_DETAILS = "get_stakeholder_details"
-    LIST_DEAL_STAKEHOLDER_INSIGHTS = "list_deal_stakeholder_insights"
     UPSERT_STAKEHOLDER = "upsert_stakeholder"  # Create-or-update stakeholder by email
     ENRICH_STAKEHOLDER = "enrich_stakeholder"  # Enrich stakeholder with LinkedIn data
     GET_EXISTING_RISKS_BLOCKERS = "get_existing_risks_blockers"
@@ -211,7 +210,6 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         # Stakeholder tools
         ToolName.LIST_DEAL_STAKEHOLDERS,
         ToolName.GET_STAKEHOLDER_DETAILS,
-        ToolName.LIST_DEAL_STAKEHOLDER_INSIGHTS,
         ToolName.GET_EXISTING_RISKS_BLOCKERS,
         # Meeting tools
         ToolName.LIST_DEAL_MEETINGS,
@@ -275,7 +273,6 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         # Stakeholder tools
         ToolName.LIST_DEAL_STAKEHOLDERS,
         ToolName.GET_STAKEHOLDER_DETAILS,
-        ToolName.LIST_DEAL_STAKEHOLDER_INSIGHTS,  # Understand attendee dynamics
         # Communication tools
         ToolName.LIST_DEAL_EMAILS,
         ToolName.GET_EMAIL_DETAILS,
@@ -296,7 +293,6 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         # Stakeholder tools
         ToolName.LIST_DEAL_STAKEHOLDERS,
         ToolName.GET_STAKEHOLDER_DETAILS,
-        ToolName.LIST_DEAL_STAKEHOLDER_INSIGHTS,  # Understand stakeholder roles/concerns
         # Risk context
         ToolName.GET_EXISTING_RISKS_BLOCKERS,  # Identify if discussed items are known risks
         ToolName.LIST_DEAL_NOTES,  # Notes may contain additional stakeholder mentions
@@ -316,7 +312,6 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         # Stakeholder tools
         ToolName.LIST_DEAL_STAKEHOLDERS,
         ToolName.GET_STAKEHOLDER_DETAILS,
-        ToolName.LIST_DEAL_STAKEHOLDER_INSIGHTS,  # Crucial for deal analysis
         # Meeting tools
         ToolName.LIST_DEAL_MEETINGS,
         ToolName.GET_MEETING_DETAILS,
@@ -438,7 +433,6 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     ToolName.DISMISS_RISK_BLOCKER: ToolCategory.CRM,
     ToolName.RESOLVE_RISK_BLOCKER: ToolCategory.CRM,
     ToolName.LIST_DEAL_NOTES: ToolCategory.CRM,
-    ToolName.LIST_DEAL_STAKEHOLDER_INSIGHTS: ToolCategory.CRM,
     # Meeting Intelligence
     ToolName.LIST_DEAL_MEETINGS: ToolCategory.INTELLIGENCE,
     ToolName.LIST_MEETINGS_BY_DATE: ToolCategory.INTELLIGENCE,
@@ -526,7 +520,6 @@ class ToolRegistry:
             create_get_pipeline_details,
             create_get_stakeholder_details,
             create_list_deal_notes,
-            create_list_deal_stakeholder_insights,
             create_list_deal_stakeholders,
             create_list_deals,
             create_resolve_risk_blocker,
@@ -630,9 +623,6 @@ class ToolRegistry:
         )
         self._tool_factories[ToolName.LIST_DEAL_NOTES] = lambda: create_list_deal_notes(
             self.context, self.capabilities_getter
-        )
-        self._tool_factories[ToolName.LIST_DEAL_STAKEHOLDER_INSIGHTS] = (
-            lambda: create_list_deal_stakeholder_insights(self.context, self.capabilities_getter)
         )
         self._tool_factories[ToolName.UPSERT_STAKEHOLDER] = lambda: create_upsert_stakeholder(
             self.context, self.capabilities_getter

@@ -753,16 +753,23 @@ async def create_task(
             reminder_label=reminder_label,
         )
 
+        teams_service_url = context.metadata.get("service_url", "")
+        teams_conversation_id = context.metadata.get("conversation_id", "")
+        logger.info(
+            "Sending Teams task preview: service_url=%s, conversation_id=%s",
+            bool(teams_service_url),
+            bool(teams_conversation_id),
+        )
         bot_service = TeamsBotService()
         sent = await bot_service.send_proactive_payload(
-            service_url=context.metadata.get("service_url", ""),
-            conversation_id=context.metadata.get("conversation_id", ""),
+            service_url=teams_service_url,
+            conversation_id=teams_conversation_id,
             payload=card_payload,
             text_fallback=f"Task preview: {title}",
         )
 
     if not sent:
-        logger.error("Failed to send task preview card")
+        logger.error("Failed to send task preview card (channel=%s)", channel)
         return {"status": "error", "message": "Failed to send the preview card. Please try again."}
 
     return {
