@@ -313,6 +313,7 @@ class SlackBotService:
         slack_team_id = envelope.get("team_id", "")
         channel_id = event.get("channel", "")
         text = event.get("text", "")
+        thread_ts = event.get("thread_ts")
 
         # Strip the bot mention from the text (e.g., "<@U12345> what is...")
         text = self._strip_bot_mention(text)
@@ -329,6 +330,7 @@ class SlackBotService:
             slack_team_id=slack_team_id,
             channel_id=channel_id,
             conversation_type="channel",
+            thread_ts=thread_ts,
         )
 
     async def _handle_dm(self, event: dict[str, Any], envelope: dict[str, Any]) -> None:
@@ -337,6 +339,8 @@ class SlackBotService:
         slack_team_id = envelope.get("team_id", "")
         channel_id = event.get("channel", "")
         text = event.get("text", "")
+        # thread_ts is present when the user replies inside a thread
+        thread_ts = event.get("thread_ts")
 
         if not text.strip():
             await self._send_message(
@@ -350,6 +354,7 @@ class SlackBotService:
             slack_team_id=slack_team_id,
             channel_id=channel_id,
             conversation_type="personal",
+            thread_ts=thread_ts,
         )
 
     async def _route_message(
@@ -359,8 +364,14 @@ class SlackBotService:
         slack_team_id: str,
         channel_id: str,
         conversation_type: str,
+        thread_ts: str | None = None,
     ) -> None:
-        """Route message based on identity mapping."""
+        """Route message based on identity mapping.
+
+        Args:
+            thread_ts: If the user's message is inside a thread, this is the
+                parent message ts. Replies will be posted to the same thread.
+        """
         user, _ = await self._get_linked_user(slack_user_id, slack_team_id)
 
         if not user:
@@ -369,12 +380,14 @@ class SlackBotService:
                 slack_team_id=slack_team_id,
                 channel_id=channel_id,
             )
-            await self._send_message(slack_team_id, channel_id, login_message)
+            await self._send_message(slack_team_id, channel_id, login_message, thread_ts=thread_ts)
             return
 
         # Fetch user timezone and send thinking indicator in parallel
         user_info = await self._fetch_slack_user_info(slack_team_id, slack_user_id)
-        thinking_ts = await self._send_thinking_indicator(slack_team_id, channel_id)
+        thinking_ts = await self._send_thinking_indicator(
+            slack_team_id, channel_id, thread_ts=thread_ts
+        )
 
         response = await self._handle_authenticated_message(
             text=text,
@@ -386,6 +399,7 @@ class SlackBotService:
             external_tenant_id=slack_team_id,
             thinking_message_ts=thinking_ts,
             user_timezone=user_info.get("tz"),
+            thread_ts=thread_ts,
         )
 
         if response:
@@ -393,7 +407,7 @@ class SlackBotService:
             if thinking_ts:
                 await self._update_message(slack_team_id, channel_id, thinking_ts, response)
             else:
-                await self._send_message(slack_team_id, channel_id, response)
+                await self._send_message(slack_team_id, channel_id, response, thread_ts=thread_ts)
 
     async def _get_linked_user(
         self, slack_user_id: str, slack_team_id: str
@@ -426,6 +440,7 @@ class SlackBotService:
         external_tenant_id: str = "",
         thinking_message_ts: str | None = None,
         user_timezone: str | None = None,
+        thread_ts: str | None = None,
     ) -> str | None:
         """Handle a message from an authenticated user.
 
@@ -451,6 +466,8 @@ class SlackBotService:
         }
         if thinking_message_ts:
             reply_context["thinking_message_ts"] = thinking_message_ts
+        if thread_ts:
+            reply_context["thread_ts"] = thread_ts
 
         try:
             task_id = await send_chat_task_async(
@@ -559,17 +576,21 @@ class SlackBotService:
             "_This link expires in 5 minutes._"
         )
 
-    async def _send_thinking_indicator(self, team_id: str, channel_id: str) -> str | None:
+    async def _send_thinking_indicator(
+        self, team_id: str, channel_id: str, thread_ts: str | None = None
+    ) -> str | None:
         """Send a 'Thinking...' placeholder message and return its ts for later update."""
         bot_token = await self._get_workspace_token(team_id)
         if not bot_token:
             return None
 
         url = f"{SLACK_API_BASE}/chat.postMessage"
-        payload = {
+        payload: dict[str, Any] = {
             "channel": channel_id,
             "text": ":hourglass_flowing_sand: _Thinking..._",
         }
+        if thread_ts:
+            payload["thread_ts"] = thread_ts
         try:
             async with (
                 aiohttp.ClientSession() as http_session,
@@ -686,10 +707,13 @@ class SlackBotService:
             logger.warning("Failed to update Slack message with blocks", exc_info=True)
             return False
 
-    async def _send_message(self, team_id: str, channel_id: str, text: str) -> bool:
+    async def _send_message(
+        self, team_id: str, channel_id: str, text: str, thread_ts: str | None = None
+    ) -> bool:
         """Send a message to a Slack channel via Web API.
 
         Looks up the per-workspace bot token from bot_platform_installations.
+        If thread_ts is provided, the message is posted to that thread.
         """
         bot_token = await self._get_workspace_token(team_id)
         if not bot_token:
@@ -701,10 +725,12 @@ class SlackBotService:
             "Authorization": f"Bearer {bot_token}",
             "Content-Type": "application/json",
         }
-        payload = {
+        payload: dict[str, Any] = {
             "channel": channel_id,
             "text": self._fallback_text(text),
         }
+        if thread_ts:
+            payload["thread_ts"] = thread_ts
 
         try:
             async with (
@@ -731,10 +757,12 @@ class SlackBotService:
         blocks: list[dict[str, Any]],
         text_fallback: str,
         attachments: list[dict[str, Any]] | None = None,
+        thread_ts: str | None = None,
     ) -> bool:
         """Send a Block Kit message to a Slack channel.
 
         Looks up the per-workspace bot token from bot_platform_installations.
+        If thread_ts is provided, the message is posted to that thread.
         """
         bot_token = await self._get_workspace_token(team_id)
         if not bot_token:
@@ -753,6 +781,8 @@ class SlackBotService:
         }
         if attachments:
             payload["attachments"] = attachments
+        if thread_ts:
+            payload["thread_ts"] = thread_ts
 
         try:
             async with (

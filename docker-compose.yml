@@ -343,7 +343,7 @@ services:
       - REDIS_PASSWORD=
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
-      - AGENT_GENERAL_DEBUG=true
+      # - AGENT_GENERAL_DEBUG=true
     env_file:
       - .env
     volumes:
