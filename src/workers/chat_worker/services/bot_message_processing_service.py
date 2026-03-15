@@ -484,7 +484,13 @@ class BotMessageProcessingService:
 
         If reply_context contains a thinking_message_ts, the thinking placeholder
         is updated in-place via chat.update instead of posting a new message.
+
+        If the Slack workspace rejects 'markdown' blocks (invalid_blocks error),
+        automatically retries with legacy mrkdwn section blocks using the
+        original markdown text stored in payload.source_text.
         """
+        from typing import Any
+
         from src.service.bots.slack_bot_service import SlackBotService
 
         channel_id = reply_context.get("channel_id", "")
@@ -500,18 +506,88 @@ class BotMessageProcessingService:
             return False
 
         bot_service = SlackBotService()
-        blocks = payload.content.get("blocks")
+        blocks = payload.content.get("blocks") or []
         text = payload.content.get("text") or payload.text_fallback or ""
+        attachments = payload.attachments
 
-        # Update thinking placeholder in-place if we have a ts
-        if thinking_ts:
+        # Check if this payload uses markdown blocks (needs fallback capability)
+        has_markdown_blocks = any(b.get("type") == "markdown" for b in blocks)
+
+        # Send using raw methods (which return error codes) when we need fallback
+        if has_markdown_blocks:
+            # Build the API payload (channel/ts added by raw methods)
+            api_payload: dict[str, Any] = {
+                "text": bot_service._fallback_text(text),
+            }
             if blocks:
+                api_payload["blocks"] = blocks
+            if attachments:
+                api_payload["attachments"] = attachments
+
+            if thinking_ts:
+                success, error = await bot_service._update_message_raw(
+                    team_id,
+                    channel_id,
+                    thinking_ts,
+                    api_payload,
+                )
+            else:
+                success, error = await bot_service._post_message_raw(
+                    team_id,
+                    channel_id,
+                    api_payload,
+                )
+
+            if success:
+                return True
+
+            # Fallback: if markdown blocks were rejected, retry with legacy mrkdwn
+            if error in ("invalid_blocks", "invalid_block"):
+                logger.warning(
+                    "Slack rejected markdown blocks, retrying with mrkdwn fallback (team=%s)",
+                    team_id,
+                )
+                source_text = payload.source_text
+                if source_text:
+                    from src.adapters.slack_adapter import SlackAdapter
+
+                    adapter = SlackAdapter()
+                    fb_payload = adapter.render_text_fallback(source_text)
+                    fb_blocks = fb_payload.content.get("blocks") or []
+                    fb_text = fb_payload.content.get("text") or fb_payload.text_fallback or ""
+
+                    fb_api_payload: dict[str, Any] = {
+                        "text": bot_service._fallback_text(fb_text),
+                        "blocks": fb_blocks,
+                    }
+
+                    if thinking_ts:
+                        success, _ = await bot_service._update_message_raw(
+                            team_id,
+                            channel_id,
+                            thinking_ts,
+                            fb_api_payload,
+                        )
+                    else:
+                        success, _ = await bot_service._post_message_raw(
+                            team_id,
+                            channel_id,
+                            fb_api_payload,
+                        )
+                    return success
+
+            return False
+
+        # Non-markdown-block payloads: use existing methods (no fallback needed)
+        if thinking_ts:
+            if blocks or attachments:
                 updated = await bot_service._update_message_blocks(
                     team_id=team_id,
                     channel_id=channel_id,
                     message_ts=thinking_ts,
                     blocks=blocks,
                     text_fallback=text,
+                    attachments=attachments,
                 )
             else:
                 updated = await bot_service._update_message(
@@ -522,16 +598,15 @@ class BotMessageProcessingService:
                 )
             if updated:
                 return True
-            # Fallback: update failed, post as a new message instead
             logger.warning("chat.update failed, falling back to new message")
 
-        # Post a new message (or fallback from failed update)
-        if blocks:
+        if blocks or attachments:
             return await bot_service.send_block_kit_message(
                 team_id=team_id,
                 channel_id=channel_id,
                 blocks=blocks,
                 text_fallback=text,
+                attachments=attachments,
             )
         else:
             return await bot_service._send_message(team_id, channel_id, text)
