@@ -145,7 +145,7 @@ def create_crawl_webpage(
             tool_name="CrawlWebpage",
             tool_func=crawl_webpage,
             parameters={"url": url},
-            description=f"Crawling webpage: {url}",
+            description="Reading webpage",
             fallback_value={},
         )
 

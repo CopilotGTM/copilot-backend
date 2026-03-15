@@ -131,7 +131,7 @@ def create_search_arxiv(
             tool_name="ArxivSearch",
             tool_func=arxiv_search,
             parameters={"query": query, "max_results": max_results},
-            description=f"Searching Arxiv for: {query}",
+            description=f"Searching research papers: {query}",
             fallback_value=[],
         )
 

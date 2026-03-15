@@ -468,7 +468,7 @@ def create_create_deal(
                 "account_name": account_name,
                 "account_domain": account_domain,
             },
-            description="Sending deal creation confirmation preview",
+            description="Creating deal",
             fallback_value=None,
         )
 

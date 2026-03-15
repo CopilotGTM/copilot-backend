@@ -258,7 +258,7 @@ def create_get_meeting_transcript(
                 "output_format": output_format,
                 "max_length": max_length,
             },
-            description=f"Getting transcript for meeting: {event_id}",
+            description="Reading meeting transcript",
             fallback_value=None,
         )
 

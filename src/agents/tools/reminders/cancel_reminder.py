@@ -111,7 +111,7 @@ def create_cancel_reminder(
                 "context": context,
                 "reminder_id": reminder_id,
             },
-            description="Cancelling reminder",
+            description="Canceling reminder",
             fallback_value={"status": "error", "message": "Failed to cancel reminder."},
         )
 

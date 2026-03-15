@@ -203,7 +203,7 @@ def create_get_existing_risks_blockers(
                 "deal_id": effective_deal_id,
                 "include_dismissed": include_dismissed,
             },
-            description=f"Getting existing risks/blockers for deal: {effective_deal_id}",
+            description="Reviewing risks and blockers",
             fallback_value=[],
         )
 

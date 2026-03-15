@@ -159,7 +159,7 @@ def create_get_deal_summary(
                 "deal_id": deal_id,
                 "context": context,
             },
-            description=f"Getting deal summary for: {deal_id}",
+            description="Analyzing deal summary",
             fallback_value=None,
         )
 

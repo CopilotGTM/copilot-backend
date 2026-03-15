@@ -213,7 +213,7 @@ def create_fetch_teams_chat_messages(
                 "page_size": page_size,
                 "skip_token": skip_token,
             },
-            description="Fetching Teams group chat messages",
+            description="Reading group chat messages",
             fallback_value={
                 "messages": [],
                 "has_more": False,

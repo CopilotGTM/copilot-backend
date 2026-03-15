@@ -427,7 +427,7 @@ def create_create_visualization_card(
                 "subtitle": subtitle,
                 "insight_text": insight_text,
             },
-            description="Sending Teams visualization summary card",
+            description="Creating summary card",
             fallback_value=None,
         )
         return dict(result) if result else None

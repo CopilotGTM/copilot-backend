@@ -286,7 +286,7 @@ def create_list_deals(
                 "context": context,
                 "filters": filters,
             },
-            description="Listing deals with filters",
+            description="Searching deals",
             fallback_value=[],
         )
 

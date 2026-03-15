@@ -210,7 +210,7 @@ def create_search_internal_knowledge(
                     "query": query,
                     "limit": limit,
                 },
-                description=f"Searching internal documents for: {query}",
+                description=f"Searching knowledge base for: {query}",
                 fallback_value=[],
             )
 

@@ -387,7 +387,7 @@ def create_enrich_stakeholder(
                 "company_name": company_name,
                 "force_refresh": force_refresh,
             },
-            description=f"Enriching stakeholder: {stakeholder_id or email}",
+            description="Enriching stakeholder profile",
             fallback_value={"success": False, "error": "Tool execution failed"},
         )
 

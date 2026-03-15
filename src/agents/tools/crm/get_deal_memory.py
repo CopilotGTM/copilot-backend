@@ -145,7 +145,7 @@ def create_get_deal_memory(
             tool_name="GetDealMemory",
             tool_func=get_deal_memory,
             parameters={"context": context},
-            description="Getting deal memory",
+            description="Recalling deal context",
             fallback_value={"status": "NOT_AVAILABLE", "message": "Tool execution failed"},
         )
 
