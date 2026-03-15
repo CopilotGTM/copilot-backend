@@ -208,7 +208,7 @@ def create_get_stock_info(
             tool_name="GetStockInfo",
             tool_func=get_stock_info,
             parameters={"symbol": symbol},
-            description=f"Getting stock info for: {symbol}",
+            description=f"Looking up stock: {symbol}",
             fallback_value={},
         )
 
@@ -257,7 +257,7 @@ def create_get_company_financials(
             tool_name="GetCompanyFinancials",
             tool_func=get_company_financials,
             parameters={"symbol": symbol},
-            description=f"Getting financial data for: {symbol}",
+            description=f"Getting financials for: {symbol}",
             fallback_value={},
         )
 

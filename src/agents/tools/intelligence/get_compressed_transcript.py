@@ -248,7 +248,7 @@ def create_get_compressed_transcript(
                 "context": context,
                 "org_name": context.org_name,
             },
-            description=f"Compressing transcript for meeting: {event_id}",
+            description="Reading meeting transcript",
             fallback_value=None,
         )
 

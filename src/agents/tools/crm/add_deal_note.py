@@ -328,7 +328,7 @@ def create_add_deal_note(
                 "deal_name": deal_name,
                 "note_content": note_content,
             },
-            description="Sending deal note form",
+            description="Adding deal note",
             fallback_value=None,
         )
 

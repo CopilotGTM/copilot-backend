@@ -303,7 +303,7 @@ def create_get_pipeline_details(
                 "include_deal_counts": include_deal_counts,
                 "include_inactive": include_inactive,
             },
-            description="Getting pipeline and stage details",
+            description="Looking up pipeline details",
             fallback_value=None,
         )
 

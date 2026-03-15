@@ -136,7 +136,7 @@ def create_search_wikipedia(
             tool_name="WikipediaSearch",
             tool_func=wikipedia_search,
             parameters={"query": query, "limit": limit},
-            description=f"Searching Wikipedia for: {query}",
+            description=f"Searching Wikipedia: {query}",
             fallback_value=[],
         )
 

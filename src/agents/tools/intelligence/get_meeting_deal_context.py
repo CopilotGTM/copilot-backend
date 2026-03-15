@@ -146,7 +146,7 @@ def create_get_meeting_deal_context(
                 "event_id": event_id,
                 "context": context,
             },
-            description=f"Getting deal context for meeting: {event_id}",
+            description="Loading meeting deal context",
             fallback_value=None,
         )
 

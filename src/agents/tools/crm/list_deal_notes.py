@@ -193,7 +193,7 @@ def create_list_deal_notes(
                 "max_body_length": max_body_length,
                 "include_properties": include_properties,
             },
-            description=f"Listing notes for deal: {effective_deal_id}",
+            description="Reading deal notes",
             fallback_value=[],
         )
 

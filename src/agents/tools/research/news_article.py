@@ -155,7 +155,7 @@ def create_extract_news_article(
             tool_name="ExtractNewsArticle",
             tool_func=extract_news_article,
             parameters={"url": url},
-            description=f"Extracting news article from: {url}",
+            description="Reading news article",
             fallback_value={},
         )
 

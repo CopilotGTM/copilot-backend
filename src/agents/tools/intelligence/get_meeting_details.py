@@ -309,7 +309,7 @@ def create_get_meeting_details(
                 "include_prep": include_prep,
                 "include_followup": include_followup,
             },
-            description=f"Getting details for meeting: {event_id}",
+            description="Looking up meeting details",
             fallback_value=None,
         )
 

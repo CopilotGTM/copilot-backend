@@ -152,7 +152,7 @@ def create_search_deals(
                 "query": query,
                 "limit": limit,
             },
-            description=f"Searching deals for: {query}",
+            description=f"Searching deals: {query}",
             fallback_value=[],
         )
 

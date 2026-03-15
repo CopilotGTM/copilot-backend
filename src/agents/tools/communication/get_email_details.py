@@ -221,7 +221,7 @@ def create_get_email_details(
                     "include_html": include_html,
                     "max_body_length": max_body_length,
                 },
-                description=f"Getting email details: {internet_message_id[:50]}...",
+                description="Reading email",
                 fallback_value=None,
             )
 

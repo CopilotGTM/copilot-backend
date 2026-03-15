@@ -131,7 +131,7 @@ def create_list_reminders(
                 "include_completed": include_completed,
                 "limit": limit,
             },
-            description="Listing reminders",
+            description="Checking reminders",
             fallback_value=[],
         )
 

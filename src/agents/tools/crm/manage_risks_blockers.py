@@ -403,7 +403,7 @@ def create_update_risk_blocker(
                 "reasoning": reasoning,
                 "recommended_next_step": recommended_next_step,
             },
-            description="Updating risk/blocker",
+            description="Updating risk or blocker",
             fallback_value={"status": "error", "message": "Tool execution failed"},
         )
 
@@ -445,7 +445,7 @@ def create_dismiss_risk_blocker(
                 "risk_blocker_id": risk_blocker_id,
                 "reason": reason,
             },
-            description="Dismissing risk/blocker",
+            description="Dismissing risk or blocker",
             fallback_value={"status": "error", "message": "Tool execution failed"},
         )
 
@@ -487,7 +487,7 @@ def create_resolve_risk_blocker(
                 "risk_blocker_id": risk_blocker_id,
                 "resolution_notes": resolution_notes,
             },
-            description="Resolving risk/blocker",
+            description="Resolving risk or blocker",
             fallback_value={"status": "error", "message": "Tool execution failed"},
         )
 

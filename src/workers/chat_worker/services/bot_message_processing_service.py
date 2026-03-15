@@ -29,6 +29,9 @@ logger = get_logger("bot_message_processing_service")
 
 FRAME_TYPE_FINALIZE = "finalize"
 
+# Minimum interval between thinking-indicator updates (seconds)
+_STATUS_UPDATE_THROTTLE_SECONDS = 2.0
+
 
 @dataclass
 class BotAgentResult:
@@ -379,6 +382,10 @@ class BotMessageProcessingService:
             metadata=metadata,
         )
 
+        # For live status updates on the thinking indicator
+        last_status_time = 0.0
+        status_ctx = self._build_status_context(channel, reply_context or {})
+
         try:
             async for frame in run_agent_for_chat(
                 chat_type="GENERAL_CHAT",
@@ -387,11 +394,99 @@ class BotMessageProcessingService:
             ):
                 result.frames.append(frame)
 
+                # Update thinking indicator with tool status
+                if (
+                    status_ctx
+                    and getattr(frame, "type", "") == "tool.usage"
+                    and getattr(frame, "status", "") == "starting"
+                ):
+                    import time
+
+                    now = time.time()
+                    if now - last_status_time >= _STATUS_UPDATE_THROTTLE_SECONDS:
+                        description = getattr(frame, "tool_description", "") or ""
+                        if description:
+                            await self._update_thinking_status(status_ctx, description)
+                            last_status_time = now
+
         except Exception as e:
             logger.exception("Agent execution failed: %s", e)
             result.error_message = str(e)
 
         return result
+
+    def _build_status_context(self, channel: str, reply_context: dict) -> dict | None:
+        """Build platform-specific context for thinking-status updates."""
+        if channel == "slack":
+            thinking_ts = reply_context.get("thinking_message_ts")
+            team_id = reply_context.get("team_id")
+            channel_id = reply_context.get("channel_id")
+            if thinking_ts and team_id and channel_id:
+                return {
+                    "platform": "slack",
+                    "team_id": team_id,
+                    "channel_id": channel_id,
+                    "thinking_ts": thinking_ts,
+                }
+        elif channel == "teams":
+            service_url = reply_context.get("service_url")
+            conversation_id = reply_context.get("conversation_id")
+            if service_url and conversation_id:
+                # Look up the thinking activity ID from Redis
+                try:
+                    from src.infra.messaging.redis_client import get_redis_client
+
+                    redis = get_redis_client()
+                    # Find the thinking activity ID by scanning recent keys
+                    # The task ID isn't available here, so we use conversation_id
+                    thinking_key = f"teams_thinking_conv:{conversation_id}"
+                    activity_id = redis.get(thinking_key)
+                    if activity_id:
+                        return {
+                            "platform": "teams",
+                            "service_url": service_url,
+                            "conversation_id": conversation_id,
+                            "activity_id": activity_id.decode()
+                            if isinstance(activity_id, bytes)
+                            else activity_id,
+                        }
+                except Exception:
+                    logger.debug("Failed to get Teams thinking activity ID", exc_info=True)
+        return None
+
+    async def _update_thinking_status(
+        self,
+        status_ctx: dict,
+        status_text: str,
+    ) -> None:
+        """Update the thinking indicator with current tool status. Non-blocking."""
+        try:
+            platform = status_ctx["platform"]
+
+            if platform == "slack":
+                from src.service.bots.slack_bot_service import SlackBotService
+
+                bot_service = SlackBotService()
+                await bot_service._update_message(
+                    team_id=status_ctx["team_id"],
+                    channel_id=status_ctx["channel_id"],
+                    message_ts=status_ctx["thinking_ts"],
+                    text=f":hourglass_flowing_sand: _{status_text}..._",
+                )
+
+            elif platform == "teams":
+                from src.service.bots.teams_bot_service import TeamsBotService
+
+                bot_service = TeamsBotService()
+                await bot_service.update_activity(
+                    service_url=status_ctx["service_url"],
+                    conversation_id=status_ctx["conversation_id"],
+                    activity_id=status_ctx["activity_id"],
+                    text=f"⏳ _{status_text}..._",
+                )
+        except Exception:
+            # Non-critical — don't break agent flow if status update fails
+            logger.debug("Failed to update thinking status", exc_info=True)
 
     def _build_messages(
         self,
@@ -457,7 +552,11 @@ class BotMessageProcessingService:
             return False
 
     async def _send_teams_payload(self, reply_context: dict, payload: ChannelPayload) -> bool:
-        """Send rendered payload to Teams via proactive messaging."""
+        """Send rendered payload to Teams via proactive messaging.
+
+        If a thinking message was sent earlier, updates it in-place with the
+        final answer. Otherwise posts a new message.
+        """
         from src.service.bots.teams_bot_service import TeamsBotService
 
         service_url = reply_context.get("service_url", "")
@@ -472,12 +571,43 @@ class BotMessageProcessingService:
             return False
 
         bot_service = TeamsBotService()
+
+        # Try to update the thinking message in-place with the final answer
+        thinking_activity_id = self._get_teams_thinking_activity_id(conversation_id)
+        if thinking_activity_id:
+            updated = await bot_service.update_activity(
+                service_url=service_url,
+                conversation_id=conversation_id,
+                activity_id=thinking_activity_id,
+                payload=payload.content,
+                text=payload.text_fallback,
+            )
+            if updated:
+                return True
+            # Fallback: update failed, post as new message
+            logger.warning("Teams thinking message update failed, posting new message")
+
         return await bot_service.send_proactive_payload(
             service_url=service_url,
             conversation_id=conversation_id,
             payload=payload.content,
             text_fallback=payload.text_fallback,
         )
+
+    def _get_teams_thinking_activity_id(self, conversation_id: str) -> str | None:
+        """Look up the thinking message activity ID from Redis."""
+        try:
+            from src.infra.messaging.redis_client import get_redis_client
+
+            redis = get_redis_client()
+            key = f"teams_thinking_conv:{conversation_id}"
+            activity_id = redis.get(key)
+            if activity_id:
+                redis.delete(key)  # One-time use
+                return activity_id.decode() if isinstance(activity_id, bytes) else activity_id
+        except Exception:
+            logger.debug("Failed to get Teams thinking activity ID", exc_info=True)
+        return None
 
     async def _send_slack_payload(self, reply_context: dict, payload: ChannelPayload) -> bool:
         """Send rendered payload to Slack via Web API.
@@ -496,6 +626,7 @@ class BotMessageProcessingService:
         channel_id = reply_context.get("channel_id", "")
         team_id = reply_context.get("team_id", "")
         thinking_ts = reply_context.get("thinking_message_ts", "")
+        thread_ts = reply_context.get("thread_ts") or None
 
         if not channel_id or not team_id:
             logger.error(
@@ -523,6 +654,8 @@ class BotMessageProcessingService:
                 api_payload["blocks"] = blocks
             if attachments:
                 api_payload["attachments"] = attachments
+            if thread_ts:
+                api_payload["thread_ts"] = thread_ts
 
             if thinking_ts:
                 success, error = await bot_service._update_message_raw(
@@ -560,6 +693,8 @@ class BotMessageProcessingService:
                         "text": bot_service._fallback_text(fb_text),
                         "blocks": fb_blocks,
                     }
+                    if thread_ts:
+                        fb_api_payload["thread_ts"] = thread_ts
 
                     if thinking_ts:
                         success, _ = await bot_service._update_message_raw(
@@ -607,6 +742,7 @@ class BotMessageProcessingService:
                 blocks=blocks,
                 text_fallback=text,
                 attachments=attachments,
+                thread_ts=thread_ts,
             )
         else:
-            return await bot_service._send_message(team_id, channel_id, text)
+            return await bot_service._send_message(team_id, channel_id, text, thread_ts=thread_ts)

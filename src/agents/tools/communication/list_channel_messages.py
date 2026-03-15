@@ -378,7 +378,7 @@ def create_list_deal_channel_messages(
                     "sender_email": sender_email,
                     "sender_name": sender_name,
                 },
-                description="Listing deal channel messages",
+                description="Reading channel messages",
                 fallback_value={"channels": [], "total_messages": 0, "total_channels": 0},
             )
 

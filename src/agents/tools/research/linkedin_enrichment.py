@@ -111,7 +111,7 @@ def create_enrich_linkedin_profile(
             tool_name="EnrichLinkedInProfile",
             tool_func=enrich_linkedin_profile,
             parameters={"linkedin_url": linkedin_url},
-            description=f"Enriching LinkedIn profile: {linkedin_url}",
+            description="Enriching LinkedIn profile",
             fallback_value={"error": "Tool execution failed", "success": False},
         )
 

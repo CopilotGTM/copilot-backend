@@ -396,7 +396,7 @@ def create_list_meetings_by_date(
                 "attendee_name": attendee_name,
                 "limit": limit,
             },
-            description=f"Listing {filter_type} meetings",
+            description=f"Finding {filter_type} meetings",
             fallback_value=[],
         )
 
