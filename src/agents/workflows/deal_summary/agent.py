@@ -95,6 +95,7 @@ class DealSummaryAgent:
                 retries=config.retries,
                 delay_between_retries=1,
                 exponential_backoff=True,
+                request_params={"parallel_tool_calls": True},
             ),
             output_schema=DealSummaryData,
             description=get_deal_summary_system_prompt(self.context.org_name),
