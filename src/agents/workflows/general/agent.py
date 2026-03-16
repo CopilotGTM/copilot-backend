@@ -76,6 +76,7 @@ class GeneralAgent(BaseAgent):
                 retries=config.retries,
                 delay_between_retries=1,
                 exponential_backoff=True,
+                request_params={"parallel_tool_calls": True},
             ),
             description=system_prompt,
             structured_outputs=False,

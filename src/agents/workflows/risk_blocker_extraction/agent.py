@@ -97,6 +97,7 @@ class RiskBlockerExtractionAgent:
                 retries=config.retries,
                 delay_between_retries=1,
                 exponential_backoff=True,
+                request_params={"parallel_tool_calls": True},
             ),
             output_schema=RiskBlockerExtractionResult,
             description="Risk and Blocker Extraction Agent for analyzing deal communications",

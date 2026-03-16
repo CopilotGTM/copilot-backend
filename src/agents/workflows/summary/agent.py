@@ -98,6 +98,7 @@ class SummaryAgent:
                 retries=config.retries,
                 delay_between_retries=1,
                 exponential_backoff=True,
+                request_params={"parallel_tool_calls": True},
             ),
             output_schema=SummaryData,
             description=get_summary_system_prompt(self.context.org_name),
