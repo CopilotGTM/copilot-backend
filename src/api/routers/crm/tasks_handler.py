@@ -21,6 +21,8 @@ from src.api.schemas.crm_task_models import (
     CreateTaskRequest,
     TaskDetail,
     TaskListItem,
+    TaskOption,
+    TaskOptionsResponse,
     TasksPage,
     UpdateTaskRequest,
 )
@@ -28,6 +30,12 @@ from src.api.utils.http_response import Response
 from src.domain.models.organisation_tables.reminder_models import (
     ReminderStatus,
     UserReminder,
+)
+from src.domain.models.organisation_tables.sync.crm import (
+    CRMActivityPriority,
+    CRMActivitySource,
+    CRMActivityStatus,
+    CRMActivityType,
 )
 from src.infra.utils.logger import get_logger
 from src.service.crm.access.tasks_access_service import (
@@ -44,6 +52,32 @@ logger = get_logger("tasks_handler")
 _UNEXPECTED_ERR_MSG = "An unexpected error occurred while processing your request"
 
 tasks_router = APIRouter()
+
+_TASK_STATUS_OPTIONS = [
+    TaskOption(value=CRMActivityStatus.NOT_STARTED.value, label="To Do"),
+    TaskOption(value=CRMActivityStatus.IN_PROGRESS.value, label="In Progress"),
+    TaskOption(value=CRMActivityStatus.WAITING.value, label="Waiting"),
+    TaskOption(value=CRMActivityStatus.DEFERRED.value, label="Deferred"),
+    TaskOption(value=CRMActivityStatus.COMPLETED.value, label="Done"),
+    TaskOption(value=CRMActivityStatus.CANCELLED.value, label="Cancelled"),
+]
+_TASK_PRIORITY_OPTIONS = [
+    TaskOption(value=CRMActivityPriority.NONE.value, label="None"),
+    TaskOption(value=CRMActivityPriority.LOW.value, label="Low"),
+    TaskOption(value=CRMActivityPriority.MEDIUM.value, label="Medium"),
+    TaskOption(value=CRMActivityPriority.HIGH.value, label="High"),
+    TaskOption(value=CRMActivityPriority.URGENT.value, label="Urgent"),
+]
+_TASK_TYPE_OPTIONS = [
+    TaskOption(value=CRMActivityType.TASK.value, label="Task"),
+    TaskOption(value=CRMActivityType.TODO.value, label="To-do"),
+]
+_TASK_SOURCE_OPTIONS = [
+    TaskOption(value=CRMActivitySource.MANUAL.value, label="Manual"),
+    TaskOption(value=CRMActivitySource.CRM_SYNC.value, label="CRM"),
+    TaskOption(value=CRMActivitySource.AI_MEETING.value, label="AI Meeting"),
+    TaskOption(value=CRMActivitySource.AI_INSIGHT.value, label="AI Insight"),
+]
 
 
 def _compute_is_overdue(due_date: datetime | None, status: str | None) -> bool:
@@ -161,6 +195,7 @@ async def _get_reminder_dict(session: AsyncSession, activity_id: UUID) -> dict |
         "status": reminder.status,
         "trigger_time": reminder.next_trigger_at.isoformat() if reminder.next_trigger_at else None,
         "recurrence": reminder.recurrence,
+        "delivery_channel": reminder.delivery_channel,
     }
 
 
@@ -300,6 +335,31 @@ async def list_deal_tasks(
 
 
 @tasks_router.get(
+    "/tasks/options",
+    response_model=GenericResponse[TaskOptionsResponse],
+    tags=["crm", "tasks"],
+    summary="Get task option metadata",
+    description="Retrieve backend-defined statuses, priorities, task types, and sources for task UI.",
+)
+async def get_task_options(
+    _user_ids: UserIDs = Depends(get_current_user),
+    _rl_read: None = Depends(rate_limit_user_read),
+) -> GenericResponse[TaskOptionsResponse]:
+    """Return backend-defined task option metadata for frontend rendering."""
+
+    payload = TaskOptionsResponse(
+        statuses=_TASK_STATUS_OPTIONS,
+        priorities=_TASK_PRIORITY_OPTIONS,
+        task_types=_TASK_TYPE_OPTIONS,
+        sources=_TASK_SOURCE_OPTIONS,
+    )
+    return Response.success_response(
+        message="Task options retrieved successfully",
+        data=payload,
+    )
+
+
+@tasks_router.get(
     "/tasks/{task_id}",
     response_model=GenericResponse[TaskDetail],
     tags=["crm", "tasks"],
@@ -358,6 +418,7 @@ async def create_task(
         deal_id = payload.pop("deal_id", None)
         task = await service.create_task(payload, deal_id=deal_id)
         await service.session.commit()
+        await service.session.refresh(task)
         detail = await _enrich_task_detail(task, service.session)
         return Response.created_response(
             message="Task created successfully",
@@ -400,6 +461,7 @@ async def create_deal_task(
         payload.pop("deal_id", None)
         task = await service.create_task(payload, deal_id=deal_id)
         await service.session.commit()
+        await service.session.refresh(task)
         detail = await _enrich_task_detail(task, service.session)
         return Response.created_response(
             message="Task created successfully",
@@ -439,6 +501,7 @@ async def update_task(
     try:
         task = await service.update_task(task_id, request.model_dump(exclude_unset=True))
         await service.session.commit()
+        await service.session.refresh(task)
         detail = await _enrich_task_detail(task, service.session)
         return Response.success_response(message="Task updated successfully", data=detail)
     except TasksWriteServiceError as exc:
@@ -473,6 +536,7 @@ async def delete_task(
     try:
         task = await service.delete_task(task_id)
         await service.session.commit()
+        await service.session.refresh(task)
         detail = await _enrich_task_detail(task, service.session)
         return Response.success_response(message="Task deleted successfully", data=detail)
     except TasksWriteServiceError as exc:
