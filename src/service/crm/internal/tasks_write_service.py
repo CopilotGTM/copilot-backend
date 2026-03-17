@@ -11,6 +11,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.domain.models.master_tables import User
+from src.domain.models.master_tables.external_identity_models import (
+    ExternalIdentityMapping,
+    ExternalIdentityProvider,
+)
 from src.domain.models.organisation_tables.reminder_models import (
     ReminderRecurrence,
     ReminderStatus,
@@ -36,6 +40,14 @@ logger = get_logger(__name__)
 _ALLOWED_TASK_TYPES = {CRMActivityType.TASK.value, CRMActivityType.TODO.value}
 _ALLOWED_STATUSES = {status.value for status in CRMActivityStatus}
 _ALLOWED_PRIORITIES = {priority.value for priority in CRMActivityPriority}
+_CHANNEL_TO_PROVIDER = {
+    "teams": ExternalIdentityProvider.TEAMS,
+    "slack": ExternalIdentityProvider.SLACK,
+}
+_REQUIRED_DELIVERY_CONTEXT_KEYS = {
+    "teams": ("service_url", "conversation_id"),
+    "slack": ("team_id", "channel_id"),
+}
 
 
 class TasksWriteServiceError(Exception):
@@ -299,20 +311,22 @@ class TasksWriteService:
         trigger_time = cfg["trigger_time"]
         recurrence_str = cfg.get("recurrence", "NONE").lower()
         recurrence = ReminderRecurrence(recurrence_str)
+        delivery_channel, delivery_context = await self._resolve_task_reminder_target(
+            cfg.get("delivery_channel")
+        )
 
-        # Delivery channel defaults to Teams for backwards compatibility with
-        # web UI-created tasks. Chat-created tasks pass the channel explicitly.
-        delivery_channel = cfg.get("delivery_channel", "teams")
-        delivery_context = cfg.get("delivery_context", {})
+        reminder_message = f"Reminder for task: {task.subject or '(no subject)'}"
+        if task.body:
+            reminder_message = f"{reminder_message}\n\n{task.body}"
 
         reminder = UserReminder(
             organisation_id=self.organisation_id,
             user_id=self.actor_user_id,
             reminder_type=ReminderType.STATIC,
             title=task.subject or "Task reminder",
-            message_content=f"Reminder for task: {task.subject or '(no subject)'}",
+            message_content=reminder_message,
             next_trigger_at=trigger_time,
-            user_timezone="UTC",
+            user_timezone=cfg.get("timezone") or "UTC",
             recurrence=recurrence,
             delivery_channel=delivery_channel,
             delivery_context=delivery_context,
@@ -332,15 +346,29 @@ class TasksWriteService:
         return reminder
 
     async def _update_task_reminder(self, reminder: UserReminder, cfg: dict[str, Any]) -> None:
-        """Update trigger time and recurrence on an existing task reminder."""
+        """Update trigger time, delivery target, and recurrence on an existing task reminder."""
         trigger_time = cfg.get("trigger_time")
         if trigger_time:
             reminder.next_trigger_at = trigger_time
         recurrence_str = cfg.get("recurrence")
         if recurrence_str:
             reminder.recurrence = ReminderRecurrence(recurrence_str.lower())
+        if cfg.get("timezone"):
+            reminder.user_timezone = cfg["timezone"]
+        if cfg.get("delivery_channel"):
+            delivery_channel, delivery_context = await self._resolve_task_reminder_target(
+                cfg["delivery_channel"]
+            )
+            reminder.delivery_channel = delivery_channel
+            reminder.delivery_context = delivery_context
 
         await self.session.flush()
+
+        if reminder.activity_id:
+            task = await self.session.get(CRMActivity, reminder.activity_id)
+            if task:
+                task.reminder_date = reminder.next_trigger_at
+                await self.session.flush()
 
         # Reschedule in Redis
         self._safe_unschedule(reminder.reminder_id)
@@ -362,6 +390,9 @@ class TasksWriteService:
             self._safe_unschedule(reminder.reminder_id)
 
         if reminders:
+            task = await self.session.get(CRMActivity, activity_id)
+            if task:
+                task.reminder_date = None
             await self.session.flush()
 
     async def _get_active_reminder(self, activity_id: UUID) -> UserReminder | None:
@@ -377,6 +408,83 @@ class TasksWriteService:
         )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def _resolve_task_reminder_target(
+        self, requested_channel: str | None
+    ) -> tuple[str, dict[str, Any]]:
+        if requested_channel:
+            resolved = await self._resolve_delivery_target_for_channel(requested_channel)
+            if not resolved:
+                raise TasksWriteServiceError(
+                    f"Channel '{requested_channel}' is not set up. Please connect it first before enabling task reminders.",
+                    400,
+                )
+            return resolved
+
+        for fallback_channel in ("teams", "slack"):
+            resolved = await self._resolve_delivery_target_for_channel(fallback_channel)
+            if resolved:
+                return resolved
+
+        raise TasksWriteServiceError(
+            "No delivery channels available. Please connect Teams or Slack before enabling task reminders.",
+            400,
+        )
+
+    async def _resolve_delivery_target_for_channel(
+        self, delivery_channel: str
+    ) -> tuple[str, dict[str, Any]] | None:
+        provider = _CHANNEL_TO_PROVIDER.get(delivery_channel)
+        if not provider:
+            raise TasksWriteServiceError("Invalid reminder delivery channel", 400)
+
+        async with master_async_session_scope() as master_session:
+            stmt = select(
+                ExternalIdentityMapping.conversation_context,
+                ExternalIdentityMapping.external_tenant_id,
+            ).where(
+                col(ExternalIdentityMapping.user_id) == self.actor_user_id,
+                col(ExternalIdentityMapping.organisation_id) == self.organisation_id,
+                col(ExternalIdentityMapping.provider) == provider,
+                col(ExternalIdentityMapping.is_active) == True,  # noqa: E712
+            )
+            result = await master_session.execute(stmt)
+            row = result.first()
+
+        if row is None:
+            return None
+
+        delivery_context = self._normalize_delivery_context(
+            delivery_channel=delivery_channel,
+            conversation_context=row[0],
+            external_tenant_id=row[1],
+        )
+        if not self._delivery_context_is_ready(delivery_channel, delivery_context):
+            return None
+
+        return delivery_channel, delivery_context
+
+    @staticmethod
+    def _normalize_delivery_context(
+        delivery_channel: str,
+        conversation_context: dict[str, Any] | None,
+        external_tenant_id: str | None = None,
+    ) -> dict[str, Any]:
+        normalized = dict(conversation_context or {})
+        if delivery_channel == "slack" and external_tenant_id and not normalized.get("team_id"):
+            normalized["team_id"] = external_tenant_id
+        return normalized
+
+    @staticmethod
+    def _delivery_context_is_ready(
+        delivery_channel: str,
+        delivery_context: dict[str, Any] | None,
+    ) -> bool:
+        required_keys = _REQUIRED_DELIVERY_CONTEXT_KEYS.get(delivery_channel)
+        if not required_keys:
+            return False
+        context = delivery_context or {}
+        return all(bool(str(context.get(key, "")).strip()) for key in required_keys)
 
     def _safe_schedule(self, reminder_id: UUID, trigger_epoch: float) -> None:
         try:

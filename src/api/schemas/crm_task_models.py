@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -10,9 +10,12 @@ from fastapi import Query
 from pydantic import BaseModel, Field, field_validator, model_validator
 from src.domain.models.organisation_tables.sync.crm import (
     CRMActivityPriority,
+    CRMActivitySource,
     CRMActivityStatus,
     CRMActivityType,
 )
+
+VALID_REMINDER_DELIVERY_CHANNELS = {"teams", "slack"}
 
 
 class ReminderConfig(BaseModel):
@@ -26,11 +29,37 @@ class ReminderConfig(BaseModel):
         default="NONE",
         description="Recurrence: NONE, DAILY, WEEKDAYS, WEEKLY, BIWEEKLY, MONTHLY.",
     )
+    delivery_channel: str | None = Field(
+        default=None,
+        description="Reminder delivery channel: teams or slack.",
+    )
+    timezone: str | None = Field(
+        default=None,
+        description="IANA timezone for the reminder schedule, e.g. Asia/Kolkata.",
+    )
 
     @model_validator(mode="after")
     def _validate_trigger_time(self) -> ReminderConfig:
         if self.enabled and not self.trigger_time:
             msg = "trigger_time is required when reminder is enabled"
+            raise ValueError(msg)
+        if self.enabled and self.trigger_time:
+            trigger_time = (
+                self.trigger_time
+                if self.trigger_time.tzinfo
+                else self.trigger_time.replace(tzinfo=UTC)
+            )
+            if trigger_time <= datetime.now(UTC):
+                msg = "trigger_time must be in the future when reminder is enabled"
+                raise ValueError(msg)
+        if (
+            self.delivery_channel is not None
+            and self.delivery_channel not in VALID_REMINDER_DELIVERY_CHANNELS
+        ):
+            msg = (
+                "delivery_channel must be one of: "
+                f"{', '.join(sorted(VALID_REMINDER_DELIVERY_CHANNELS))}"
+            )
             raise ValueError(msg)
         return self
 
@@ -94,6 +123,27 @@ class TasksPage(BaseModel):
     limit: int
     total_count: int
     total_pages: int
+
+
+class TaskOption(BaseModel):
+    """User-facing option metadata for task forms and views."""
+
+    value: str = Field(..., description="""Stored canonical value.""")
+    label: str = Field(..., description="""Frontend display label.""")
+    description: str | None = Field(default=None, description="""Optional help text.""")
+
+
+class TaskOptionsResponse(BaseModel):
+    """Task option metadata returned by the backend."""
+
+    statuses: list[TaskOption]
+    priorities: list[TaskOption]
+    task_types: list[TaskOption]
+    sources: list[TaskOption]
+    default_status: CRMActivityStatus = Field(default=CRMActivityStatus.NOT_STARTED)
+    default_priority: CRMActivityPriority = Field(default=CRMActivityPriority.NONE)
+    default_task_type: CRMActivityType = Field(default=CRMActivityType.TASK)
+    default_source: CRMActivitySource = Field(default=CRMActivitySource.MANUAL)
 
 
 class TaskDetail(BaseModel):
