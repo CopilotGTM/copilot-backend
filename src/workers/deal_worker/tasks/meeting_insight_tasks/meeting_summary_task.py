@@ -28,11 +28,53 @@ from src.workers.deal_worker.services.meeting_insight_services import (
     MeetingSummaryService,
     NonRetryableJobError,
 )
+from src.workers.deal_worker.utils.pipeline_dispatch import (
+    dispatch_deal_insight_pipeline,
+    get_or_create_deal_memory_job,
+)
 
 logger = get_logger(__name__)
 
 # Sentinel user ID for automated pipeline jobs
 AUTOMATED_PIPELINE_USER_ID = UUID("00000000-0000-0000-0000-000000000001")
+
+
+async def _dispatch_insight_pipeline_for_manual_summary(
+    organisation_id: UUID, deal_id: UUID
+) -> None:
+    """Dispatch the deal insight pipeline after a manual meeting summary completes.
+
+    Creates (or reuses) a DEAL_MEMORY_BUILD job and fires the full insight chain:
+    deal_memory -> group(risk_blocker, stakeholder_analysis).
+    """
+    try:
+        deal_memory_job_id: UUID | None = None
+        async for session in acquire_org_async_session(organisation_id):
+            deal_memory_job_id, _ = await get_or_create_deal_memory_job(
+                session,
+                organisation_id,
+                deal_id,
+                source="transcript_upload",
+                trigger="meeting_summary_completed",
+            )
+            await session.commit()
+
+        if deal_memory_job_id:
+            dispatch_deal_insight_pipeline(
+                str(organisation_id),
+                str(deal_id),
+                str(deal_memory_job_id),
+            )
+            logger.info(
+                "Dispatched insight pipeline after manual summary: deal=%s memory_job=%s",
+                deal_id,
+                deal_memory_job_id,
+            )
+    except Exception:
+        logger.exception(
+            "Failed to dispatch insight pipeline after manual summary: deal=%s",
+            deal_id,
+        )
 
 
 @app.task(bind=True, name="meeting_summary_task.process", acks_late=True, max_retries=3)
@@ -168,6 +210,12 @@ def process_meeting_summary(self: Task, organisation_id: str, job_id: str):
         publisher.publish_finalize("done")
 
         logger.info("Meeting summary job completed: %s", job_id)
+
+        # Trigger insight pipeline for non-automated jobs (e.g. manual transcript uploads).
+        # Automated pipeline jobs already have the insight chain wired by process_deal_pipeline.
+        if not is_automated:
+            await _dispatch_insight_pipeline_for_manual_summary(org_uuid, deal_id)
+
         return {
             "status": "completed",
             "job_id": job_id,
