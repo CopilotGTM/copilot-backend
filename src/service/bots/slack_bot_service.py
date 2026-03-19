@@ -132,6 +132,11 @@ class SlackBotService:
             logger.debug("Ignoring message subtype=%s bot_id=%s", subtype, event.get("bot_id"))
             return
 
+        # Service-level dedupe using client_msg_id (survives container restarts
+        # where the webhook-level event_id dedupe key may have been lost).
+        if self._is_duplicate_event(event):
+            return
+
         if event_type == "app_mention":
             await self._handle_mention(event, event_payload)
         elif event_type == "message":
@@ -143,6 +148,33 @@ class SlackBotService:
                 logger.debug("Ignoring non-DM message event: channel_type=%s", channel_type)
         else:
             logger.debug("Unhandled Slack event type: %s", event_type)
+
+    def _is_duplicate_event(self, event: dict[str, Any]) -> bool:
+        """Check if this event was already processed using client_msg_id or ts+channel.
+
+        Slack assigns client_msg_id per user message. On retries, the same
+        client_msg_id is delivered again. This catches duplicates even when
+        the webhook-level event_id dedupe key was lost (e.g. container restart).
+        """
+        msg_id = event.get("client_msg_id") or ""
+        channel = event.get("channel") or ""
+        ts = event.get("ts") or ""
+
+        if not msg_id and not (channel and ts):
+            return False
+
+        dedupe_key = f"slack:msg:{msg_id}" if msg_id else f"slack:msg:{channel}:{ts}"
+        try:
+            from src.infra.messaging.redis_client import get_redis_client
+
+            redis = get_redis_client()
+            was_new = redis.set(dedupe_key, "1", nx=True, ex=600)
+            if not was_new:
+                logger.info("Duplicate Slack message ignored: key=%s", dedupe_key)
+                return True
+        except Exception:
+            logger.debug("Slack message dedupe check failed", exc_info=True)
+        return False
 
     async def process_interaction(self, payload: dict[str, Any]) -> None:
         """Process a Slack interactive component submission.

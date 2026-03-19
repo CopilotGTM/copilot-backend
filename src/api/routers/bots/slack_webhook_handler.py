@@ -163,16 +163,20 @@ async def handle_slack_event(request: Request) -> Response:
         except Exception:
             logger.debug("Slack webhook dedupe check failed", exc_info=True)
 
-    # Process the event
-    try:
-        await service.process_event(payload)
-        return Response(status_code=status.HTTP_200_OK)
-    except Exception as e:
-        logger.error("Error processing Slack event: %s", e, exc_info=True)
-        # Return 200 to prevent Slack retries
-        return Response(status_code=status.HTTP_200_OK)
-    finally:
-        await service.close()
+    # Process the event in the background — return 200 immediately so Slack
+    # doesn't retry (Slack retries if it doesn't get 200 within 3 seconds).
+    import asyncio
+
+    async def _process_and_close():
+        try:
+            await service.process_event(payload)
+        except Exception as e:
+            logger.error("Error processing Slack event: %s", e, exc_info=True)
+        finally:
+            await service.close()
+
+    asyncio.create_task(_process_and_close())
+    return Response(status_code=status.HTTP_200_OK)
 
 
 @router.post("/interactions")

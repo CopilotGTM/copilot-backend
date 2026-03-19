@@ -6,7 +6,9 @@ Authentication is validated using the Bot Framework JWT in the Authorization hea
 Endpoint: POST /bots/teams/messages
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+import contextlib
+
+from fastapi import APIRouter, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 from src.infra.config.configs import teams_config
 from src.infra.messaging.redis_client import get_redis_client
@@ -18,22 +20,9 @@ logger = get_logger(__name__)
 router = APIRouter(tags=["teams-bot"])
 
 
-async def get_teams_bot_service():
-    """Dependency that yields a TeamsBotService instance with cleanup."""
-    service = TeamsBotService()
-    try:
-        yield service
-    finally:
-        try:
-            await service.close()
-        except Exception:
-            logger.debug("TeamsBotService close failed", exc_info=True)
-
-
 @router.post("/messages")
 async def handle_teams_message(
     request: Request,
-    service: TeamsBotService = Depends(get_teams_bot_service),
 ) -> Response:
     """
     Webhook endpoint for Microsoft Teams messages.
@@ -60,6 +49,9 @@ async def handle_teams_message(
         logger.warning("Missing Authorization header in Teams webhook")
         return Response(status_code=status.HTTP_401_UNAUTHORIZED)
 
+    # Create service inline (not via Depends) so the background task owns its
+    # lifecycle — no race between FastAPI dependency cleanup and create_task.
+    service = TeamsBotService()
     auth_result = await service.validate_auth_header(auth_header)
     if not auth_result.is_valid:
         logger.warning("Teams webhook auth failed: %s", auth_result.error)
@@ -104,18 +96,29 @@ async def handle_teams_message(
         except Exception:
             logger.debug("Teams webhook dedupe check failed", exc_info=True)
 
-    try:
-        result = await service.process_activity(body)
+    # Invoke activities require a synchronous response body
+    if body.get("type") == "invoke":
+        try:
+            result = await service.process_activity(body)
+            if result:
+                return JSONResponse(content=result, status_code=status.HTTP_200_OK)
+            return Response(status_code=status.HTTP_200_OK)
+        except Exception as e:
+            logger.error("Error processing Teams invoke: %s", e, exc_info=True)
+            return Response(status_code=status.HTTP_200_OK)
 
-        # Invoke activities may return a response body that Teams expects
-        if body.get("type") == "invoke" and result:
-            return JSONResponse(content=result, status_code=status.HTTP_200_OK)
+    # For messages and other activities, process in the background and return
+    # 200 immediately to prevent Azure Bot Service retries under load.
+    import asyncio
 
-        # Bot Framework expects 200 OK for successful processing
-        return Response(status_code=status.HTTP_200_OK)
+    async def _process_and_close():
+        try:
+            await service.process_activity(body)
+        except Exception as e:
+            logger.error("Error processing Teams activity: %s", e, exc_info=True)
+        finally:
+            with contextlib.suppress(Exception):
+                await service.close()
 
-    except Exception as e:
-        logger.error("Error processing Teams activity: %s", e, exc_info=True)
-        # Still return 200 to avoid Azure Bot Service retries
-        # Log the error for investigation
-        return Response(status_code=status.HTTP_200_OK)
+    asyncio.create_task(_process_and_close())
+    return Response(status_code=status.HTTP_200_OK)

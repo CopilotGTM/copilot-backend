@@ -109,6 +109,8 @@ def downgrade() -> None:
     conn.execute(sa.text("ALTER TABLE chat_message_jobs DROP COLUMN IF EXISTS token_usage"))
     conn.execute(sa.text("ALTER TABLE chat_message_jobs DROP COLUMN IF EXISTS user_id"))
     conn.execute(sa.text("ALTER TABLE chat_message_jobs DROP COLUMN IF EXISTS chat_type"))
+    # Delete bot jobs with no message before restoring NOT NULL constraint
+    conn.execute(sa.text("DELETE FROM chat_message_jobs WHERE message_id IS NULL"))
     conn.execute(
         sa.text("ALTER TABLE chat_message_jobs ALTER COLUMN message_id SET NOT NULL")
     )
