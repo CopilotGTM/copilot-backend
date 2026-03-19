@@ -16,6 +16,7 @@ from src.agents.common.agent_tasks_extractor import AgentTasksExtractor
 from src.agents.common.json_extractor import JsonExtractor
 from src.agents.common.metadata_parser import MetadataParser
 from src.agents.common.stream_buffer import StreamingAnswerBuffer
+from src.agents.common.token_tracking import extract_token_usage
 from src.agents.context import AgentContext
 from src.agents.tools.registry import get_tools_for_agent
 from src.agents.tools.transparent_tools import AgentCapabilities
@@ -23,7 +24,13 @@ from src.agents.utils import prepare_messages
 from src.agents.workflows.general.prompts.general_prompt import get_general_prompt
 from src.domain.models.organisation_tables import ChatMessage
 from src.infra.config.agent_config import agent_config
-from src.infra.messaging.chat_stream_models import AnswerDelta, Finalize, Frame, ToolUsage
+from src.infra.messaging.chat_stream_models import (
+    AnswerDelta,
+    Finalize,
+    Frame,
+    TokenUsageFrame,
+    ToolUsage,
+)
 from src.infra.utils.logger import get_logger
 
 load_dotenv()
@@ -103,7 +110,10 @@ class GeneralAgent(BaseAgent):
 
             try:
                 # Agno V2: arun(stream=True) returns async generator directly (no await)
-                chat_response = self.general_agent.arun(input=processed_messages, stream=True)
+                # stream_events=True enables RunCompleted event for token metrics
+                chat_response = self.general_agent.arun(
+                    input=processed_messages, stream=True, stream_events=True
+                )
 
                 buffer = StreamingAnswerBuffer(self.separators, logger=logger)
                 async for frame in self._process_streaming_response(
@@ -224,6 +234,34 @@ class GeneralAgent(BaseAgent):
 
         if kind == "skill_tool":
             await output_queue.put(self._build_skill_tool_frame(content))
+            return
+
+        if kind == "run_completed":
+            logger.info("GeneralAgent received run_completed event, extracting token usage")
+            usage = extract_token_usage(content, agent_name="GeneralAgent")
+            if usage:
+                frame = TokenUsageFrame(
+                    assistant_message_id=self._get_frame_message_id(),
+                    input_tokens=usage.input_tokens,
+                    output_tokens=usage.output_tokens,
+                    total_tokens=usage.total_tokens,
+                    reasoning_tokens=usage.reasoning_tokens,
+                    cache_read_tokens=usage.cache_read_tokens,
+                    cache_write_tokens=usage.cache_write_tokens,
+                    cost=usage.cost,
+                    model_name=usage.model_name,
+                    duration_seconds=usage.duration_seconds,
+                    time_to_first_token=usage.time_to_first_token,
+                )
+                logger.info(
+                    "GeneralAgent emitting TokenUsageFrame: model=%s, total_tokens=%d, cost=%s",
+                    usage.model_name,
+                    usage.total_tokens,
+                    usage.cost,
+                )
+                await output_queue.put(frame)
+            else:
+                logger.warning("GeneralAgent run_completed but extract_token_usage returned None")
             return
 
         if kind == "answer" and content:

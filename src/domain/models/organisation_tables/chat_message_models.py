@@ -189,11 +189,6 @@ class ChatMessage(TimestampMixin, table=True):
         default=None,
         description="User feedback score for the message, e.g., +1 or -1.",
     )
-    token_usage: dict[str, int] | None = Field(
-        sa_column=Column(JSONB),
-        default=None,
-        description="Token usage for the message, e.g., {'prompt_tokens': 100, 'completion_tokens': 200}.",
-    )
     model_name: str | None = Field(
         default=None,
         max_length=100,

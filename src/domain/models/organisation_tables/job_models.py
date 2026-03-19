@@ -1,8 +1,9 @@
+from decimal import Decimal
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import Column, Index, String, text
+from sqlalchemy import Column, Index, Integer, Numeric, String, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, Relationship
 
@@ -68,6 +69,32 @@ class ChatMessageJob(TimestampMixin, table=True):
     error_message: str | None = Field(
         default=None,
         description="Error message if the job failed.",
+    )
+    user_id: UUID | None = Field(
+        default=None,
+        index=True,
+        description="User who initiated the job (for per-user cost tracking).",
+    )
+    # Token tracking
+    token_usage: dict[str, Any] | None = Field(
+        sa_column=Column(JSONB),
+        default=None,
+        description="Token usage metrics from the agent run.",
+    )
+    model_name: str | None = Field(
+        default=None,
+        max_length=100,
+        description="The model that processed this job.",
+    )
+    cost: Decimal | None = Field(
+        sa_column=Column(Numeric),
+        default=None,
+        description="Total USD cost of the LLM call.",
+    )
+    latency_ms: int | None = Field(
+        sa_column=Column(Integer),
+        default=None,
+        description="End-to-end LLM call duration in milliseconds.",
     )
 
     # Relationship to ChatMessage
@@ -238,6 +265,28 @@ class DealJobs(TimestampMixin, table=True):
     retry_count: int = Field(
         default=0,
         description="Number of retry attempts",
+    )
+
+    # Token tracking
+    token_usage: dict[str, Any] | None = Field(
+        sa_column=Column(JSONB),
+        default=None,
+        description="Token usage metrics from the agent run.",
+    )
+    model_name: str | None = Field(
+        default=None,
+        max_length=100,
+        description="The model that processed this job.",
+    )
+    cost: Decimal | None = Field(
+        sa_column=Column(Numeric),
+        default=None,
+        description="Total USD cost of the LLM call.",
+    )
+    latency_ms: int | None = Field(
+        sa_column=Column(Integer),
+        default=None,
+        description="End-to-end LLM call duration in milliseconds.",
     )
 
 

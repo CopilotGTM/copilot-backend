@@ -47,10 +47,11 @@ class StreamingAnswerBuffer:
         self.max_sep_len = max((len(s) for s in separators), default=0)
 
     async def stream(self, chat_response) -> AsyncIterator[tuple[str, Any, bool]]:
-        state = {
+        state: dict[str, Any] = {
             "buffer": "",
             "json_part_started": False,
             "log_buffer": "",
+            "run_completed_event": None,
         }
 
         async for chunk in chat_response:
@@ -58,6 +59,12 @@ class StreamingAnswerBuffer:
             skill_event = self._extract_skill_tool_event(chunk)
             if skill_event:
                 yield ("skill_tool", skill_event, False)
+
+            # Capture RunCompleted event for token metrics before filtering
+            chunk_event = _get_chunk_attr(chunk, "event")
+            if chunk_event == "RunCompleted":
+                state["run_completed_event"] = chunk
+                self.logger.info("StreamingAnswerBuffer captured RunCompleted event")
 
             if not self._is_valid_chunk(chunk):
                 # Yield a "tick" to allow caller to process queued frames (e.g., tool.usage)
@@ -78,6 +85,13 @@ class StreamingAnswerBuffer:
         buffer_content = str(state["buffer"])
         json_started = bool(state["json_part_started"])
         yield ("final", buffer_content, json_started)
+
+        # Yield the RunCompleted event (if captured) so callers can extract metrics
+        if state.get("run_completed_event") is not None:
+            self.logger.info("StreamingAnswerBuffer yielding run_completed event to caller")
+            yield ("run_completed", state["run_completed_event"], False)
+        else:
+            self.logger.warning("StreamingAnswerBuffer: no RunCompleted event captured from stream")
 
     def _extract_skill_tool_event(self, chunk) -> dict[str, Any] | None:
         """Extract skill tool call data from Agno tool events.
