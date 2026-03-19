@@ -1,10 +1,10 @@
-"""036 add token tracking columns to job tables.
+"""036 add token tracking columns to job tables and reminder runs.
 
 Add token_usage (JSONB), model_name (varchar), cost (numeric), and
-latency_ms (integer) to deal_jobs and chat_message_jobs for per-agent
-cost tracking and latency monitoring. Add user_id and chat_type to
-chat_message_jobs. Make message_id nullable (group/channel bot chats
-have no persisted message).
+latency_ms (integer) to deal_jobs, chat_message_jobs, and
+user_reminder_runs for per-agent cost tracking and latency monitoring.
+Add user_id and chat_type to chat_message_jobs. Make message_id
+nullable (group/channel bot chats have no persisted message).
 Drop token_usage from chat_messages (never populated, wrong entity).
 
 Revision ID: 3c7f79637764
@@ -86,6 +86,24 @@ def upgrade() -> None:
         "ix_chat_message_jobs_user_id", "chat_message_jobs", ["user_id"]
     )
 
+    # -- user_reminder_runs: add token tracking columns (agentic runs)
+    op.add_column(
+        "user_reminder_runs",
+        sa.Column("token_usage", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+    )
+    op.add_column(
+        "user_reminder_runs",
+        sa.Column("model_name", sa.String(100), nullable=True),
+    )
+    op.add_column(
+        "user_reminder_runs",
+        sa.Column("cost", sa.Numeric(), nullable=True),
+    )
+    op.add_column(
+        "user_reminder_runs",
+        sa.Column("latency_ms", sa.Integer(), nullable=True),
+    )
+
     # -- chat_messages: drop token_usage (never populated, metrics belong on jobs)
     op.drop_column("chat_messages", "token_usage")
 
@@ -114,6 +132,12 @@ def downgrade() -> None:
     conn.execute(
         sa.text("ALTER TABLE chat_message_jobs ALTER COLUMN message_id SET NOT NULL")
     )
+
+    # -- user_reminder_runs: remove token tracking columns
+    conn.execute(sa.text("ALTER TABLE user_reminder_runs DROP COLUMN IF EXISTS latency_ms"))
+    conn.execute(sa.text("ALTER TABLE user_reminder_runs DROP COLUMN IF EXISTS cost"))
+    conn.execute(sa.text("ALTER TABLE user_reminder_runs DROP COLUMN IF EXISTS model_name"))
+    conn.execute(sa.text("ALTER TABLE user_reminder_runs DROP COLUMN IF EXISTS token_usage"))
 
     # -- deal_jobs: remove added columns
     conn.execute(sa.text("ALTER TABLE deal_jobs DROP COLUMN IF EXISTS latency_ms"))

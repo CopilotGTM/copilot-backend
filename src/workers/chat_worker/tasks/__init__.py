@@ -4,6 +4,7 @@ from . import (
     message_processing,
     post_upload,
     reminder_tasks,
+    stale_job_cleanup_tasks,
     test_tasks,
 )
 
@@ -12,5 +13,6 @@ __all__ = [
     "message_processing",
     "post_upload",
     "reminder_tasks",
+    "stale_job_cleanup_tasks",
     "test_tasks",
 ]
