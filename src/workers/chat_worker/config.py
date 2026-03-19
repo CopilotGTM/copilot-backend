@@ -93,7 +93,7 @@ class ChatWorkerConfig(BaseWorkerConfig):
             },
             "cleanup-stale-chat-jobs": {
                 "task": "chat.cleanup_stale_jobs_all_orgs",
-                "schedule": crontab(minute="*"),
+                "schedule": crontab(minute="0,30"),
                 "options": {
                     "queue": "chat_processing",
                     "routing_key": "chat_processing",
