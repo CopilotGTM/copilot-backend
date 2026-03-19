@@ -73,6 +73,7 @@ class BotMessageProcessingService:
         chat_history: list[dict] | None = None,
         bot_context: dict | None = None,
         user_email: str | None = None,
+        job_id: UUID | None = None,
     ) -> bool:
         """Process a bot message and send reply.
 
@@ -84,6 +85,7 @@ class BotMessageProcessingService:
             chat_history: Optional previous conversation messages
             bot_context: Optional context for bot-specific features (e.g. group chat metadata)
             user_email: The email of the user who sent the message
+            job_id: Pre-created job (PENDING) from bot service dispatch site
 
         Returns:
             True if processing and reply succeeded, False otherwise
@@ -92,18 +94,22 @@ class BotMessageProcessingService:
         # If not, the finally block sends a static error so it never lingers.
         thinking_replaced = False
 
+        # Mark job as IN_PROGRESS
+        if job_id:
+            self._mark_job_in_progress(job_id)
+
         try:
             from src.adapters import AgentResponse, get_adapter
 
-            # For personal chat, persist user message and load history from DB
-            session_id: UUID | None = None
-            user_msg_id: UUID | None = None
             conversation_type = (bot_context or {}).get("conversation_type", "personal")
 
-            if conversation_type == "personal":
-                session_id = self._get_or_create_bot_session(user_id, provider)
-                user_msg_id = self._persist_user_message(session_id, message_text)
-                chat_history = self._load_history(session_id)
+            # For personal chats, session + user message were created at dispatch
+            # time by the bot service. Load history from that session.
+            session_id: UUID | None = None
+            if job_id and conversation_type == "personal":
+                session_id = self._get_session_from_job(job_id)
+                if session_id:
+                    chat_history = self._load_history(session_id)
 
             result = run_async(
                 self._run_agent_and_accumulate(
@@ -124,12 +130,19 @@ class BotMessageProcessingService:
                 payload = adapter.render(response)
 
                 # Persist assistant response for personal chat
-                if session_id and user_msg_id:
+                if session_id and job_id:
                     assistant_text = response.text
                     if assistant_text:
-                        self._persist_assistant_message(session_id, assistant_text, user_msg_id)
+                        user_msg_id = self._get_user_message_from_job(job_id)
+                        self._persist_assistant_message(
+                            session_id, assistant_text, user_msg_id or UUID(int=0)
+                        )
 
             success = run_async(self._send_payload(provider, reply_context, payload))
+
+            # Finalize job with token usage data
+            if job_id:
+                self._finalize_job(job_id, result.frames, success=not result.error_message)
 
             if success:
                 thinking_replaced = True
@@ -178,96 +191,13 @@ class BotMessageProcessingService:
     # Personal chat DB persistence
     # ------------------------------------------------------------------
 
-    def _get_or_create_bot_session(self, user_id: UUID, provider: str = "teams") -> UUID:
-        """Get or create a bot chat session for this user+org.
-
-        Each user gets one session per provider per org, reused across all
-        personal messages.  Uses try/except on IntegrityError for the race
-        condition where two concurrent messages try to create the session.
-        """
-        from sqlalchemy.exc import IntegrityError
-        from sqlmodel import col, select
-
-        from src.domain.models.organisation_tables.chat_session_models import (
-            ChatSession,
-            ChatType,
-        )
-        from src.infra.database.sessions import org_session_scope
-
-        chat_type = ChatType.SLACK_CHAT if provider == "slack" else ChatType.TEAMS_CHAT
-        session_title = "Slack Chat" if provider == "slack" else "Teams Chat"
-
-        with org_session_scope(self.organisation_id) as session:
-            stmt = select(ChatSession).where(
-                col(ChatSession.user_id) == user_id,
-                col(ChatSession.organisation_id) == self.organisation_id,
-                col(ChatSession.chat_type) == chat_type,
-                col(ChatSession.is_deleted).is_(False),
-            )
-            existing = session.execute(stmt).scalars().first()
-            if existing:
-                return existing.session_id
-
-        # Create outside the read session to avoid holding it
-        with org_session_scope(self.organisation_id) as session:
-            new_session = ChatSession(
-                user_id=user_id,
-                organisation_id=self.organisation_id,
-                chat_type=chat_type,
-                title=session_title,
-            )
-            session.add(new_session)
-            try:
-                session.commit()
-                logger.info(
-                    "Created %s session=%s for user=%s org=%s",
-                    chat_type.value,
-                    new_session.session_id,
-                    user_id,
-                    self.organisation_id,
-                )
-                return new_session.session_id
-            except IntegrityError:
-                session.rollback()
-                # Race condition: another request created it first, re-query
-                stmt = select(ChatSession).where(
-                    col(ChatSession.user_id) == user_id,
-                    col(ChatSession.organisation_id) == self.organisation_id,
-                    col(ChatSession.chat_type) == chat_type,
-                    col(ChatSession.is_deleted).is_(False),
-                )
-                existing = session.execute(stmt).scalars().first()
-                if existing:
-                    return existing.session_id
-                raise  # Unexpected error, re-raise
-
-    def _persist_user_message(self, session_id: UUID, text: str) -> UUID:
-        """Persist a user message to the DB and return its message_id."""
-        from src.domain.models.organisation_tables.chat_message_models import (
-            ChatMessage,
-            ChatMessageRole,
-            ChatMessageType,
-        )
-        from src.infra.database.sessions import org_session_scope
-
-        with org_session_scope(self.organisation_id) as session:
-            msg = ChatMessage(
-                session_id=session_id,
-                role=ChatMessageRole.USER,
-                message_type=ChatMessageType.GENERAL_MESSAGE,
-                content={"text": text},
-            )
-            session.add(msg)
-            session.commit()
-            return msg.message_id
-
     def _persist_assistant_message(
         self,
         session_id: UUID,
         text: str,
         parent_message_id: UUID,
-    ) -> None:
-        """Persist the assistant response to the DB."""
+    ) -> UUID:
+        """Persist the assistant response to the DB and return its message_id."""
         from src.domain.models.organisation_tables.chat_message_models import (
             ChatMessage,
             ChatMessageRole,
@@ -285,6 +215,7 @@ class BotMessageProcessingService:
             )
             session.add(msg)
             session.commit()
+            return msg.message_id
 
     def _load_history(self, session_id: UUID, limit: int = 20) -> list[dict] | None:
         """Load recent chat history from the DB for this session.
@@ -325,6 +256,81 @@ class BotMessageProcessingService:
         return [
             {"role": msg.role, "content": (msg.content or {}).get("text", "")} for msg in messages
         ]
+
+    # ------------------------------------------------------------------
+    # Job tracking (token usage / cost)
+    # ------------------------------------------------------------------
+
+    def _mark_job_in_progress(self, job_id: UUID) -> None:
+        """Mark a pre-created PENDING job as IN_PROGRESS."""
+        from src.domain.models.organisation_tables.job_models import ChatMessageJob, JobStatus
+        from src.infra.database.sessions import org_session_scope
+
+        with org_session_scope(self.organisation_id) as session:
+            job = session.get(ChatMessageJob, job_id)
+            if job:
+                job.status = JobStatus.IN_PROGRESS
+                session.add(job)
+                session.commit()
+
+    def _get_session_from_job(self, job_id: UUID) -> UUID | None:
+        """Extract session_id from job metadata."""
+        from src.domain.models.organisation_tables.job_models import ChatMessageJob
+        from src.infra.database.sessions import org_session_scope
+
+        with org_session_scope(self.organisation_id) as session:
+            job = session.get(ChatMessageJob, job_id)
+            if job and job.job_metadata:
+                sid = job.job_metadata.get("session_id")
+                return UUID(sid) if sid else None
+        return None
+
+    def _get_user_message_from_job(self, job_id: UUID) -> UUID | None:
+        """Get the user message_id that the job is linked to."""
+        from src.domain.models.organisation_tables.job_models import ChatMessageJob
+        from src.infra.database.sessions import org_session_scope
+
+        with org_session_scope(self.organisation_id) as session:
+            job = session.get(ChatMessageJob, job_id)
+            return job.message_id if job else None
+
+    def _finalize_job(self, job_id: UUID, frames: list, success: bool) -> None:
+        """Extract token usage from frames and persist to the job."""
+        from decimal import Decimal
+
+        from src.agents.common.token_tracking import extract_token_usage_from_frames
+        from src.domain.models.organisation_tables.job_models import ChatMessageJob, JobStatus
+        from src.infra.database.sessions import org_session_scope
+
+        token_usage, model_name, cost, duration = extract_token_usage_from_frames(frames)
+
+        with org_session_scope(self.organisation_id) as session:
+            job = session.get(ChatMessageJob, job_id)
+            if not job:
+                logger.warning("Bot job %s not found for finalization", job_id)
+                return
+
+            job.status = JobStatus.COMPLETED if success else JobStatus.FAILED
+            if token_usage:
+                job.token_usage = token_usage
+            if model_name:
+                job.model_name = model_name
+            if cost is not None:
+                job.cost = Decimal(str(cost))
+            if duration is not None:
+                job.latency_ms = int(duration * 1000)
+
+            session.add(job)
+            session.commit()
+
+            logger.info(
+                "Finalized bot job %s: status=%s, model=%s, cost=%s, latency_ms=%s",
+                job_id,
+                job.status,
+                job.model_name,
+                job.cost,
+                job.latency_ms,
+            )
 
     # ------------------------------------------------------------------
     # Agent execution
@@ -483,8 +489,8 @@ class BotMessageProcessingService:
             if platform == "slack":
                 from src.service.bots.slack_bot_service import SlackBotService
 
-                bot_service = SlackBotService()
-                await bot_service._update_message(
+                slack_bot = SlackBotService()
+                await slack_bot._update_message(
                     team_id=status_ctx["team_id"],
                     channel_id=status_ctx["channel_id"],
                     message_ts=status_ctx["thinking_ts"],
@@ -494,8 +500,8 @@ class BotMessageProcessingService:
             elif platform == "teams":
                 from src.service.bots.teams_bot_service import TeamsBotService
 
-                bot_service = TeamsBotService()
-                await bot_service.update_activity(
+                teams_bot = TeamsBotService()
+                await teams_bot.update_activity(
                     service_url=status_ctx["service_url"],
                     conversation_id=status_ctx["conversation_id"],
                     activity_id=status_ctx["activity_id"],
@@ -524,8 +530,8 @@ class BotMessageProcessingService:
                 if thinking_ts and team_id and channel_id:
                     from src.service.bots.slack_bot_service import SlackBotService
 
-                    bot = SlackBotService()
-                    updated = await bot._update_message(
+                    slack_bot = SlackBotService()
+                    updated = await slack_bot._update_message(
                         team_id=team_id,
                         channel_id=channel_id,
                         message_ts=thinking_ts,
@@ -534,7 +540,7 @@ class BotMessageProcessingService:
                     if updated:
                         return
                     # Update failed — post new message so user isn't left hanging
-                    await bot._send_message(
+                    await slack_bot._send_message(
                         team_id,
                         channel_id,
                         f":warning: {_STATIC_ERROR_MESSAGE}",
@@ -549,8 +555,8 @@ class BotMessageProcessingService:
                     if activity_id:
                         from src.service.bots.teams_bot_service import TeamsBotService
 
-                        bot = TeamsBotService()
-                        updated = await bot.update_activity(
+                        teams_bot = TeamsBotService()
+                        updated = await teams_bot.update_activity(
                             service_url=service_url,
                             conversation_id=conversation_id,
                             activity_id=activity_id,
@@ -561,8 +567,8 @@ class BotMessageProcessingService:
                     # Fallback: send new message
                     from src.service.bots.teams_bot_service import TeamsBotService
 
-                    bot = TeamsBotService()
-                    await bot.send_proactive_message(
+                    teams_fallback = TeamsBotService()
+                    await teams_fallback.send_proactive_message(
                         service_url=service_url,
                         conversation_id=conversation_id,
                         message=_STATIC_ERROR_MESSAGE,
@@ -688,7 +694,7 @@ class BotMessageProcessingService:
         Caches the result so cleanup can reuse it after the Redis key is deleted.
         """
         # Return cached value if we already retrieved it
-        cached = getattr(self, "_cached_teams_thinking_id", None)
+        cached: str | None = getattr(self, "_cached_teams_thinking_id", None)
         if cached:
             return cached
 
@@ -700,7 +706,9 @@ class BotMessageProcessingService:
             activity_id = redis.get(key)
             if activity_id:
                 redis.delete(key)
-                decoded = activity_id.decode() if isinstance(activity_id, bytes) else activity_id
+                decoded = (
+                    activity_id.decode() if isinstance(activity_id, bytes) else str(activity_id)
+                )
                 self._cached_teams_thinking_id = decoded
                 return decoded
         except Exception:

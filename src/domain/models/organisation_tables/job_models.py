@@ -42,14 +42,22 @@ class ChatMessageJob(TimestampMixin, table=True):
         primary_key=True,
         description="Primary key for the job.",
     )
-    message_id: UUID = Field(
+    message_id: UUID | None = Field(
+        default=None,
         foreign_key="chat_messages.message_id",
         index=True,
-        description="Foreign key linking to the chat message.",
+        description="Foreign key linking to the chat message. Nullable for group/channel bot chats.",
     )
     job_type: str = Field(
         max_length=100,
-        description="The type of job (e.g., 'technical_deck_generation', 'rfp_sheet_processing').",
+        description="The type of job (e.g., 'general_message', 'teams_chat_response').",
+    )
+    chat_type: str = Field(
+        default="GENERAL_CHAT",
+        sa_column=Column(
+            String(50), server_default=text("'GENERAL_CHAT'"), nullable=False, index=True
+        ),
+        description="Source channel: GENERAL_CHAT, TEAMS_CHAT, SLACK_CHAT (mirrors ChatType enum).",
     )
     status: JobStatus = Field(
         default=JobStatus.PENDING,
@@ -97,8 +105,11 @@ class ChatMessageJob(TimestampMixin, table=True):
         description="End-to-end LLM call duration in milliseconds.",
     )
 
-    # Relationship to ChatMessage
-    message: "ChatMessage" = Relationship(back_populates="jobs")
+    # Relationship to ChatMessage (optional — group/channel bot chats have no message)
+    message: "ChatMessage" = Relationship(
+        back_populates="jobs",
+        sa_relationship_kwargs={"foreign_keys": "[ChatMessageJob.message_id]"},
+    )
 
 
 ChatMessageJob.update_forward_refs()

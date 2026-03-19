@@ -2,8 +2,9 @@
 
 Add token_usage (JSONB), model_name (varchar), cost (numeric), and
 latency_ms (integer) to deal_jobs and chat_message_jobs for per-agent
-cost tracking and latency monitoring. Add user_id to chat_message_jobs
-for uniform per-user cost queries.
+cost tracking and latency monitoring. Add user_id and chat_type to
+chat_message_jobs. Make message_id nullable (group/channel bot chats
+have no persisted message).
 Drop token_usage from chat_messages (never populated, wrong entity).
 
 Revision ID: 3c7f79637764
@@ -42,7 +43,25 @@ def upgrade() -> None:
         sa.Column("latency_ms", sa.Integer(), nullable=True),
     )
 
-    # -- chat_message_jobs: add token tracking columns + user_id
+    # -- chat_message_jobs: make message_id nullable (group/channel bot chats)
+    op.alter_column(
+        "chat_message_jobs",
+        "message_id",
+        existing_type=sa.UUID(),
+        nullable=True,
+    )
+
+    # -- chat_message_jobs: add chat_type, user_id, token tracking columns
+    op.add_column(
+        "chat_message_jobs",
+        sa.Column(
+            "chat_type",
+            sa.String(50),
+            server_default=sa.text("'GENERAL_CHAT'"),
+            nullable=False,
+        ),
+    )
+    op.create_index("ix_chat_message_jobs_chat_type", "chat_message_jobs", ["chat_type"])
     op.add_column(
         "chat_message_jobs",
         sa.Column("user_id", sa.UUID(), nullable=True),
@@ -78,16 +97,24 @@ def downgrade() -> None:
         sa.Column("token_usage", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
     )
 
-    # -- chat_message_jobs: remove added columns
-    op.drop_index("ix_chat_message_jobs_user_id", table_name="chat_message_jobs")
-    op.drop_column("chat_message_jobs", "latency_ms")
-    op.drop_column("chat_message_jobs", "cost")
-    op.drop_column("chat_message_jobs", "model_name")
-    op.drop_column("chat_message_jobs", "token_usage")
-    op.drop_column("chat_message_jobs", "user_id")
+    # -- chat_message_jobs: remove added columns and revert message_id to NOT NULL
+    # Use raw SQL with IF EXISTS for columns that may not exist yet
+    # (handles the case where the old version of this migration was applied)
+    conn = op.get_bind()
+    conn.execute(sa.text("DROP INDEX IF EXISTS ix_chat_message_jobs_user_id"))
+    conn.execute(sa.text("DROP INDEX IF EXISTS ix_chat_message_jobs_chat_type"))
+    conn.execute(sa.text("ALTER TABLE chat_message_jobs DROP COLUMN IF EXISTS latency_ms"))
+    conn.execute(sa.text("ALTER TABLE chat_message_jobs DROP COLUMN IF EXISTS cost"))
+    conn.execute(sa.text("ALTER TABLE chat_message_jobs DROP COLUMN IF EXISTS model_name"))
+    conn.execute(sa.text("ALTER TABLE chat_message_jobs DROP COLUMN IF EXISTS token_usage"))
+    conn.execute(sa.text("ALTER TABLE chat_message_jobs DROP COLUMN IF EXISTS user_id"))
+    conn.execute(sa.text("ALTER TABLE chat_message_jobs DROP COLUMN IF EXISTS chat_type"))
+    conn.execute(
+        sa.text("ALTER TABLE chat_message_jobs ALTER COLUMN message_id SET NOT NULL")
+    )
 
     # -- deal_jobs: remove added columns
-    op.drop_column("deal_jobs", "latency_ms")
-    op.drop_column("deal_jobs", "cost")
-    op.drop_column("deal_jobs", "model_name")
-    op.drop_column("deal_jobs", "token_usage")
+    conn.execute(sa.text("ALTER TABLE deal_jobs DROP COLUMN IF EXISTS latency_ms"))
+    conn.execute(sa.text("ALTER TABLE deal_jobs DROP COLUMN IF EXISTS cost"))
+    conn.execute(sa.text("ALTER TABLE deal_jobs DROP COLUMN IF EXISTS model_name"))
+    conn.execute(sa.text("ALTER TABLE deal_jobs DROP COLUMN IF EXISTS token_usage"))

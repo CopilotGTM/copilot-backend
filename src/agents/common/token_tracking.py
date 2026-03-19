@@ -61,11 +61,11 @@ class TokenUsageData:
 
 def _extract_model_name(metrics: Any, response: Any) -> str | None:
     """Extract model name from RunMetrics.details or response-level field."""
-    details = getattr(metrics, "details", None)
+    details: dict | None = getattr(metrics, "details", None)
     if details:
         for _model_type, model_list in details.items():
             for m in model_list:
-                m_id = getattr(m, "id", None)
+                m_id: str | None = getattr(m, "id", None)
                 if m_id:
                     return str(m_id)
     model = getattr(response, "model", None)
