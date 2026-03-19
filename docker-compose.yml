@@ -359,40 +359,40 @@ services:
   # ---------------------------------------------------------------------------
   # Chat Beat Scheduler (Celery Beat for reminder polling)
   # ---------------------------------------------------------------------------
-  # chat-beat:
-  #   build:
-  #     context: .
-  #     dockerfile: Dockerfile.local
-  #     target: light-worker
-  #   container_name: copilot-chat-beat
-  #   <<: *worker-service
-  #   dns:
-  #     - 8.8.8.8
-  #     - 8.8.4.4
-  #   command: >
-  #     celery -A src.workers.chat_worker.celery_app beat
-  #     --loglevel=info
-  #     --schedule=/tmp/celerybeat-schedule
-  #   environment:
-  #     - ENV=local
-  #     - REDIS_HOST=redis
-  #     - REDIS_PORT=6379
-  #     - REDIS_SSL=false
-  #     - REDIS_SSL_CERT_REQS=none
-  #     - REDIS_PASSWORD=
-  #     - CELERY_BROKER_URL=redis://redis:6379/0
-  #     - CELERY_RESULT_BACKEND=redis://redis:6379/0
-  #   env_file:
-  #     - .env
-  #   volumes:
-  #     - azure-data:/home/appuser/.azure
-  #     - ./src:/app/src:ro
-  #   depends_on:
-  #     redis:
-  #       condition: service_healthy
-  #   networks:
-  #     - copilot-network
-  #   profiles: ["chat"]
+  chat-beat:
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+      target: light-worker
+    container_name: copilot-chat-beat
+    <<: *worker-service
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    command: >
+      celery -A src.workers.chat_worker.celery_app beat
+      --loglevel=info
+      --schedule=/tmp/celerybeat-schedule
+    environment:
+      - ENV=local
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_SSL=false
+      - REDIS_SSL_CERT_REQS=none
+      - REDIS_PASSWORD=
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    env_file:
+      - .env
+    volumes:
+      - azure-data:/home/appuser/.azure
+      - ./src:/app/src:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - copilot-network
+    profiles: ["chat"]
 
   # ---------------------------------------------------------------------------
   # Integrations Worker (handles CRM/third-party sync)

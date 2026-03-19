@@ -15,6 +15,7 @@ Identity Flow:
 
 import json
 from typing import Any
+from uuid import UUID
 
 import aiohttp
 from src.domain.models.master_tables import User
@@ -131,6 +132,11 @@ class SlackBotService:
             logger.debug("Ignoring message subtype=%s bot_id=%s", subtype, event.get("bot_id"))
             return
 
+        # Service-level dedupe using client_msg_id (survives container restarts
+        # where the webhook-level event_id dedupe key may have been lost).
+        if self._is_duplicate_event(event):
+            return
+
         if event_type == "app_mention":
             await self._handle_mention(event, event_payload)
         elif event_type == "message":
@@ -142,6 +148,33 @@ class SlackBotService:
                 logger.debug("Ignoring non-DM message event: channel_type=%s", channel_type)
         else:
             logger.debug("Unhandled Slack event type: %s", event_type)
+
+    def _is_duplicate_event(self, event: dict[str, Any]) -> bool:
+        """Check if this event was already processed using client_msg_id or ts+channel.
+
+        Slack assigns client_msg_id per user message. On retries, the same
+        client_msg_id is delivered again. This catches duplicates even when
+        the webhook-level event_id dedupe key was lost (e.g. container restart).
+        """
+        msg_id = event.get("client_msg_id") or ""
+        channel = event.get("channel") or ""
+        ts = event.get("ts") or ""
+
+        if not msg_id and not (channel and ts):
+            return False
+
+        dedupe_key = f"slack:msg:{msg_id}" if msg_id else f"slack:msg:{channel}:{ts}"
+        try:
+            from src.infra.messaging.redis_client import get_redis_client
+
+            redis = get_redis_client()
+            was_new = redis.set(dedupe_key, "1", nx=True, ex=600)
+            if not was_new:
+                logger.info("Duplicate Slack message ignored: key=%s", dedupe_key)
+                return True
+        except Exception:
+            logger.debug("Slack message dedupe check failed", exc_info=True)
+        return False
 
     async def process_interaction(self, payload: dict[str, Any]) -> None:
         """Process a Slack interactive component submission.
@@ -183,6 +216,7 @@ class SlackBotService:
         # Extract form data from the action value
         # For buttons, the value is a string; for other elements, it varies
         action_value = action.get("value", "")
+        form_data: dict[str, Any] = {}
         if isinstance(action_value, str):
             try:
                 form_data = json.loads(action_value)
@@ -301,7 +335,7 @@ class SlackBotService:
             ):
                 data = await resp.json()
                 if data.get("ok"):
-                    return data.get("channel", {}).get("id")
+                    return str(data.get("channel", {}).get("id", ""))
                 logger.warning("Failed to open DM: %s", data.get("error"))
         except Exception:
             logger.debug("Failed to open DM with user %s", user_id, exc_info=True)
@@ -469,6 +503,19 @@ class SlackBotService:
         if thread_ts:
             reply_context["thread_ts"] = thread_ts
 
+        # Create job BEFORE dispatching so it exists in PENDING state
+        job_id: str | None = None
+        try:
+            job_id = str(
+                await self._create_bot_job(
+                    user=user,
+                    message_text=text,
+                    conversation_type=conversation_type,
+                )
+            )
+        except Exception:
+            logger.exception("Failed to create bot chat job, dispatching without job_id")
+
         try:
             task_id = await send_chat_task_async(
                 "chat.process_bot_message",
@@ -482,12 +529,14 @@ class SlackBotService:
                 kwargs={
                     "user_email": user.email,
                     "bot_context": bot_context,
+                    "job_id": job_id,
                 },
                 queue="chat_messages",
             )
             logger.info(
-                "Enqueued Slack bot message task=%s for user=%s org=%s type=%s",
+                "Enqueued Slack bot message task=%s job=%s for user=%s org=%s type=%s",
                 task_id,
+                job_id,
                 user.email,
                 user.organisation_id,
                 conversation_type,
@@ -500,6 +549,106 @@ class SlackBotService:
             )
 
         return None
+
+    async def _create_bot_job(
+        self,
+        user: User,
+        message_text: str,
+        conversation_type: str,
+    ) -> UUID:
+        """Create a PENDING ChatMessageJob before dispatching the Celery task.
+
+        For personal chats: creates session + user message + job (message_id set).
+        For channel chats: creates job only (message_id=None).
+        """
+        from sqlalchemy.exc import IntegrityError
+        from sqlmodel import col, select
+        from src.domain.models.organisation_tables.chat_message_models import (
+            ChatMessage,
+            ChatMessageRole,
+            ChatMessageType,
+        )
+        from src.domain.models.organisation_tables.chat_session_models import (
+            ChatSession,
+            ChatType,
+        )
+        from src.domain.models.organisation_tables.job_models import ChatMessageJob, JobStatus
+        from src.infra.database.sessions import acquire_org_async_session
+
+        org_id = user.organisation_id
+        message_id: UUID | None = None
+        session_id: UUID | None = None
+
+        if conversation_type == "personal":
+            # Get or create bot session
+            async for db in acquire_org_async_session(org_id):
+                stmt = select(ChatSession).where(
+                    col(ChatSession.user_id) == user.user_id,
+                    col(ChatSession.organisation_id) == org_id,
+                    col(ChatSession.chat_type) == ChatType.SLACK_CHAT,
+                    col(ChatSession.is_deleted).is_(False),
+                )
+                result = await db.execute(stmt)
+                existing = result.scalars().first()
+                if existing:
+                    session_id = existing.session_id
+                else:
+                    new_session = ChatSession(
+                        user_id=user.user_id,
+                        organisation_id=org_id,
+                        chat_type=ChatType.SLACK_CHAT,
+                        title="Slack Chat",
+                    )
+                    db.add(new_session)
+                    try:
+                        await db.commit()
+                        session_id = new_session.session_id
+                    except IntegrityError:
+                        await db.rollback()
+                        result = await db.execute(stmt)
+                        existing = result.scalars().first()
+                        session_id = existing.session_id if existing else None
+
+            # Create user message
+            if session_id:
+                async for db in acquire_org_async_session(org_id):
+                    msg = ChatMessage(
+                        session_id=session_id,
+                        role=ChatMessageRole.USER,
+                        message_type=ChatMessageType.GENERAL_MESSAGE,
+                        content={"text": message_text},
+                    )
+                    db.add(msg)
+                    await db.commit()
+                    message_id = msg.message_id
+
+        # Create the job — works for both personal (with message_id) and channel (without)
+        async for db in acquire_org_async_session(org_id):
+            job = ChatMessageJob(
+                message_id=message_id,
+                job_type="slack_chat_response",
+                chat_type="SLACK_CHAT",
+                status=JobStatus.PENDING,
+                user_id=user.user_id,
+                job_metadata={
+                    "source": "bot",
+                    "provider": "slack",
+                    "conversation_type": conversation_type,
+                    **({"session_id": str(session_id)} if session_id else {}),
+                },
+            )
+            db.add(job)
+            await db.commit()
+            logger.info(
+                "Created Slack bot job=%s message=%s session=%s type=%s",
+                job.job_id,
+                message_id,
+                session_id,
+                conversation_type,
+            )
+            return job.job_id
+
+        raise RuntimeError("Failed to create Slack bot job")
 
     async def _fetch_slack_user_info(self, team_id: str, user_id: str) -> dict[str, str | None]:
         """Fetch display name and timezone for a Slack user via users.info API.
@@ -605,7 +754,7 @@ class SlackBotService:
             ):
                 data = await resp.json()
                 if data.get("ok"):
-                    return data.get("ts")
+                    return str(data["ts"])
         except Exception:
             logger.warning("Failed to send thinking indicator", exc_info=True)
         return None
@@ -652,7 +801,7 @@ class SlackBotService:
                         team_id,
                         message_ts,
                     )
-                return data.get("ok", False)
+                return bool(data.get("ok", False))
         except Exception:
             logger.warning("Failed to update Slack message", exc_info=True)
             return False
@@ -702,7 +851,7 @@ class SlackBotService:
                         message_ts,
                         len(blocks),
                     )
-                return data.get("ok", False)
+                return bool(data.get("ok", False))
         except Exception:
             logger.warning("Failed to update Slack message with blocks", exc_info=True)
             return False

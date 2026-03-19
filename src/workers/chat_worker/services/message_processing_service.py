@@ -55,6 +55,7 @@ FRAME_TYPE_FINALIZE = "finalize"
 FRAME_TYPE_VISUALIZATION = "visualization"
 FRAME_TYPE_STRUCTURED_DATA = "structured_data"
 FRAME_TYPE_TASK_LIST = "task_list"
+FRAME_TYPE_TOKEN_USAGE = "token.usage"
 
 
 @dataclass
@@ -89,6 +90,10 @@ class AgentResult:
     visualizations: list[dict] = field(default_factory=list)
     structured_data: list[dict] = field(default_factory=list)
     task_list: list[dict] = field(default_factory=list)
+    token_usage: dict[str, Any] | None = None
+    model_name: str | None = None
+    cost: float | None = None
+    duration_seconds: float | None = None
 
 
 class RedisPublisher:
@@ -304,6 +309,10 @@ class MessageProcessingService:
                 visualizations=result_summary.get("visualizations") or [],
                 structured_data=result_summary.get("structured_data") or [],
                 task_list=result_summary.get("task_list") or [],
+                token_usage=result_summary.get("token_usage"),
+                model_name=result_summary.get("model_name"),
+                cost=result_summary.get("cost"),
+                duration_seconds=result_summary.get("duration_seconds"),
             )
 
         except Exception as e:
@@ -332,6 +341,10 @@ class MessageProcessingService:
             "visualizations": [],
             "structured_data": [],
             "task_list": [],
+            "token_usage": None,
+            "model_name": None,
+            "cost": None,
+            "duration_seconds": None,
         }
 
         sequence_counter = 0
@@ -373,12 +386,12 @@ class MessageProcessingService:
 
             sequence_counter += 1
 
-            # Publish frame to Redis Stream
-            if self.publisher:
-                self.publisher.publish(production_frame)
-
-            # Process frame data for summary
+            # Process frame data for summary (before publish — captures internal-only frames)
             self._process_frame_data(frame_data, result_summary)
+
+            # Publish frame to Redis Stream (skip internal-only frames)
+            if self.publisher and frame_data.get("type") != FRAME_TYPE_TOKEN_USAGE:
+                self.publisher.publish(production_frame)
 
         return {
             "answer": (
@@ -396,6 +409,10 @@ class MessageProcessingService:
             "visualizations": result_summary["visualizations"],
             "structured_data": result_summary["structured_data"],
             "task_list": result_summary["task_list"],
+            "token_usage": result_summary["token_usage"],
+            "model_name": result_summary["model_name"],
+            "cost": result_summary["cost"],
+            "duration_seconds": result_summary["duration_seconds"],
         }
 
     def _process_frame_data(self, data: dict, result_summary: dict) -> None:
@@ -485,6 +502,25 @@ class MessageProcessingService:
                 for task in tasks
                 if isinstance(task, dict)
             ]
+        elif ftype == FRAME_TYPE_TOKEN_USAGE:
+            result_summary["token_usage"] = {
+                "input_tokens": data.get("input_tokens", 0),
+                "output_tokens": data.get("output_tokens", 0),
+                "total_tokens": data.get("total_tokens", 0),
+                "reasoning_tokens": data.get("reasoning_tokens", 0),
+                "cache_read_tokens": data.get("cache_read_tokens", 0),
+                "cache_write_tokens": data.get("cache_write_tokens", 0),
+            }
+            result_summary["model_name"] = data.get("model_name")
+            result_summary["cost"] = data.get("cost")
+            result_summary["duration_seconds"] = data.get("duration_seconds")
+            logger.info(
+                "Captured token.usage frame: model=%s total_tokens=%s cost=%s duration=%s",
+                result_summary["model_name"],
+                result_summary["token_usage"].get("total_tokens"),
+                result_summary["cost"],
+                result_summary["duration_seconds"],
+            )
 
     def _save_results(self, data: ConversationData, result: AgentResult) -> None:
         """Save agent results and finalize job.
@@ -501,6 +537,7 @@ class MessageProcessingService:
                 role=ChatMessageRole.ASSISTANT,
                 message_type=data.user_message_type,
                 content={"text": result.answer or ""},
+                model_name=result.model_name,
                 extra={
                     "confidence_score": result.confidence,
                     "has_user_questions": bool(result.user_questions),
@@ -541,7 +578,33 @@ class MessageProcessingService:
                     "visualizations_count": len(result.visualizations),
                     "structured_data_count": len(result.structured_data),
                     "task_list": result.task_list,
+                    "token_usage": result.token_usage,
+                    "model_name": result.model_name,
                 }
+                job.token_usage = result.token_usage
+                job.model_name = result.model_name
+                if result.cost is not None:
+                    from decimal import Decimal
+
+                    job.cost = Decimal(str(result.cost))
+                if result.duration_seconds is not None:
+                    job.latency_ms = int(result.duration_seconds * 1000)
+                if not result.token_usage:
+                    logger.warning(
+                        "No token_usage on AgentResult for job %s — columns will be NULL",
+                        data.job_id,
+                    )
+                if data.user_id:
+                    job.user_id = data.user_id
+                logger.info(
+                    "Saving job %s: token_usage=%s, model_name=%s, cost=%s, latency_ms=%s, user_id=%s",
+                    data.job_id,
+                    job.token_usage,
+                    job.model_name,
+                    job.cost,
+                    job.latency_ms,
+                    job.user_id,
+                )
                 job.status = JobStatus.COMPLETED
                 session.add(job)
 

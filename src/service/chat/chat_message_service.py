@@ -147,6 +147,7 @@ class ChatMessageService:
             message_id=message.message_id,
             job_type=job_type,
             status=JobStatus.PENDING,
+            user_id=self.user_id,
             job_metadata={
                 "session_id": str(session_id),
                 "user_message_id": str(message.message_id),

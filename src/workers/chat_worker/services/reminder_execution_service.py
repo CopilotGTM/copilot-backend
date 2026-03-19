@@ -68,14 +68,20 @@ class ReminderExecutionService:
 
         try:
             # Step 2: Execute based on type (no DB session held)
+            frames: list = []
             if reminder_type == ReminderType.STATIC:
                 success, result_text = await self._execute_static(reminder_data)
             else:
-                success, result_text = await self._execute_agentic(reminder_data)
+                success, result_text, frames = await self._execute_agentic(reminder_data)
+
+            # Extract token data from agent frames (agentic runs only)
+            token_data = self._extract_token_data(frames) if frames else None
 
             # Step 3: Update status
             if success:
-                await self._mark_success(reminder_id, run_id, reminder_data, result_text)
+                await self._mark_success(
+                    reminder_id, run_id, reminder_data, result_text, token_data
+                )
                 return {"status": "success", "title": title}
             else:
                 await self._mark_failure(
@@ -84,6 +90,7 @@ class ReminderExecutionService:
                     "Delivery failed",
                     run_status=ReminderRunStatus.DELIVERY_FAILED,
                     result_text=result_text,
+                    token_data=token_data,
                 )
                 return {"status": "delivery_failed", "title": title}
 
@@ -205,7 +212,7 @@ class ReminderExecutionService:
         )
         return sent, text
 
-    async def _execute_agentic(self, data: dict[str, Any]) -> tuple[bool, str | None]:
+    async def _execute_agentic(self, data: dict[str, Any]) -> tuple[bool, str | None, list]:
         """Run GeneralAgent with the stored prompt and send the result."""
         from src.adapters import AgentResponse, get_adapter
         from src.agents.context import AgentContext
@@ -221,7 +228,7 @@ class ReminderExecutionService:
                 data["reminder_id"],
                 delivery_channel,
             )
-            return False, None
+            return False, None, []
 
         prompt = data["agent_config"].get("prompt", "")
         if not prompt:
@@ -302,7 +309,7 @@ class ReminderExecutionService:
 
         if not frames:
             logger.warning("Agent returned no frames for reminder %s", data["reminder_id"])
-            return False, None
+            return False, None, []
 
         # Render response via adapter
         adapter = get_adapter(delivery_channel)
@@ -317,7 +324,39 @@ class ReminderExecutionService:
             response_text=response.text,
         )
 
-        return sent, response.text or None
+        return sent, response.text or None, frames
+
+    @staticmethod
+    def _extract_token_data(frames: list) -> dict[str, Any] | None:
+        """Extract token usage from agent frames into a dict for run persistence."""
+        from src.agents.common.token_tracking import extract_token_usage_from_frames
+
+        token_usage, model_name, cost, duration = extract_token_usage_from_frames(frames)
+        if not token_usage:
+            return None
+        return {
+            "token_usage": token_usage,
+            "model_name": model_name,
+            "cost": cost,
+            "latency_ms": int(duration * 1000) if duration is not None else None,
+        }
+
+    @staticmethod
+    def _apply_token_data(run: UserReminderRun, token_data: dict[str, Any] | None) -> None:
+        """Write token tracking fields onto a run record."""
+        if not token_data:
+            return
+        from decimal import Decimal
+
+        if token_data.get("token_usage"):
+            run.token_usage = token_data["token_usage"]
+        if token_data.get("model_name"):
+            run.model_name = token_data["model_name"]
+        cost = token_data.get("cost")
+        if cost is not None:
+            run.cost = Decimal(str(cost))
+        if token_data.get("latency_ms") is not None:
+            run.latency_ms = token_data["latency_ms"]
 
     @staticmethod
     def _delivery_context_is_ready(delivery_channel: str, delivery_context: dict[str, Any]) -> bool:
@@ -429,6 +468,7 @@ class ReminderExecutionService:
         run_id: UUID,
         data: dict[str, Any],
         result_text: str | None,
+        token_data: dict[str, Any] | None = None,
     ) -> None:
         """Update reminder after successful execution."""
         async for session in acquire_org_async_session(self.organisation_id):
@@ -462,6 +502,7 @@ class ReminderExecutionService:
                 run.completed_at = completed_at
                 run.result_text = result_text
                 run.error_message = None
+                self._apply_token_data(run, token_data)
                 session.add(run)
 
             recurrence = data["recurrence"]
@@ -500,6 +541,7 @@ class ReminderExecutionService:
         *,
         run_status: ReminderRunStatus,
         result_text: str | None = None,
+        token_data: dict[str, Any] | None = None,
     ) -> None:
         """Update reminder after failed execution."""
         next_trigger_ts: float | None = None
@@ -531,6 +573,7 @@ class ReminderExecutionService:
                 run.completed_at = datetime.now(UTC)
                 run.result_text = result_text
                 run.error_message = error_msg
+                self._apply_token_data(run, token_data)
                 session.add(run)
 
             if reminder.consecutive_failures >= MAX_CONSECUTIVE_FAILURES:

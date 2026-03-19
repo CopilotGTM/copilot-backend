@@ -3,7 +3,7 @@ from enum import Enum
 from typing import Any, ClassVar
 from uuid import UUID, uuid4
 
-from sqlalchemy import Column, DateTime, Index, Integer, String, Text, func, text
+from sqlalchemy import Column, DateTime, Index, Integer, Numeric, String, Text, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlmodel import Field, SQLModel
@@ -240,6 +240,28 @@ class UserReminderRun(SQLModel, table=True):
         default=None,
         sa_column=Column(Text, nullable=True),
         description="Failure reason captured for this run, if any.",
+    )
+
+    # Token tracking (populated for agentic runs, null for static)
+    token_usage: dict[str, Any] | None = Field(
+        sa_column=Column(JSONB, nullable=True),
+        default=None,
+        description="LLM token breakdown: input, output, total, reasoning, cache tokens.",
+    )
+    model_name: str | None = Field(
+        default=None,
+        max_length=100,
+        description="LLM model used for this agentic run.",
+    )
+    cost: Any | None = Field(
+        sa_column=Column(Numeric, nullable=True),
+        default=None,
+        description="Estimated LLM cost for this run in USD.",
+    )
+    latency_ms: int | None = Field(
+        sa_column=Column(Integer, nullable=True),
+        default=None,
+        description="Agent execution duration in milliseconds.",
     )
 
     started_at: datetime = Field(

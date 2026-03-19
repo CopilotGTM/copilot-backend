@@ -1,8 +1,9 @@
+from decimal import Decimal
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import Column, Index, String, text
+from sqlalchemy import Column, Index, Integer, Numeric, String, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, Relationship
 
@@ -41,14 +42,22 @@ class ChatMessageJob(TimestampMixin, table=True):
         primary_key=True,
         description="Primary key for the job.",
     )
-    message_id: UUID = Field(
+    message_id: UUID | None = Field(
+        default=None,
         foreign_key="chat_messages.message_id",
         index=True,
-        description="Foreign key linking to the chat message.",
+        description="Foreign key linking to the chat message. Nullable for group/channel bot chats.",
     )
     job_type: str = Field(
         max_length=100,
-        description="The type of job (e.g., 'technical_deck_generation', 'rfp_sheet_processing').",
+        description="The type of job (e.g., 'general_message', 'teams_chat_response').",
+    )
+    chat_type: str = Field(
+        default="GENERAL_CHAT",
+        sa_column=Column(
+            String(50), server_default=text("'GENERAL_CHAT'"), nullable=False, index=True
+        ),
+        description="Source channel: GENERAL_CHAT, TEAMS_CHAT, SLACK_CHAT (mirrors ChatType enum).",
     )
     status: JobStatus = Field(
         default=JobStatus.PENDING,
@@ -69,9 +78,38 @@ class ChatMessageJob(TimestampMixin, table=True):
         default=None,
         description="Error message if the job failed.",
     )
+    user_id: UUID | None = Field(
+        default=None,
+        index=True,
+        description="User who initiated the job (for per-user cost tracking).",
+    )
+    # Token tracking
+    token_usage: dict[str, Any] | None = Field(
+        sa_column=Column(JSONB),
+        default=None,
+        description="Token usage metrics from the agent run.",
+    )
+    model_name: str | None = Field(
+        default=None,
+        max_length=100,
+        description="The model that processed this job.",
+    )
+    cost: Decimal | None = Field(
+        sa_column=Column(Numeric),
+        default=None,
+        description="Total USD cost of the LLM call.",
+    )
+    latency_ms: int | None = Field(
+        sa_column=Column(Integer),
+        default=None,
+        description="End-to-end LLM call duration in milliseconds.",
+    )
 
-    # Relationship to ChatMessage
-    message: "ChatMessage" = Relationship(back_populates="jobs")
+    # Relationship to ChatMessage (optional — group/channel bot chats have no message)
+    message: "ChatMessage" = Relationship(
+        back_populates="jobs",
+        sa_relationship_kwargs={"foreign_keys": "[ChatMessageJob.message_id]"},
+    )
 
 
 ChatMessageJob.update_forward_refs()
@@ -238,6 +276,28 @@ class DealJobs(TimestampMixin, table=True):
     retry_count: int = Field(
         default=0,
         description="Number of retry attempts",
+    )
+
+    # Token tracking
+    token_usage: dict[str, Any] | None = Field(
+        sa_column=Column(JSONB),
+        default=None,
+        description="Token usage metrics from the agent run.",
+    )
+    model_name: str | None = Field(
+        default=None,
+        max_length=100,
+        description="The model that processed this job.",
+    )
+    cost: Decimal | None = Field(
+        sa_column=Column(Numeric),
+        default=None,
+        description="Total USD cost of the LLM call.",
+    )
+    latency_ms: int | None = Field(
+        sa_column=Column(Integer),
+        default=None,
+        description="End-to-end LLM call duration in milliseconds.",
     )
 
 

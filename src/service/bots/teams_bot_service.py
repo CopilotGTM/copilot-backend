@@ -13,6 +13,7 @@ Identity Flow:
 
 import re
 from typing import Any
+from uuid import UUID
 
 import aiohttp
 from src.domain.models.master_tables import User
@@ -254,6 +255,20 @@ class TeamsBotService:
         if local_timezone:
             bot_context["user_timezone"] = local_timezone
 
+        # Create job BEFORE dispatching so it exists in PENDING state
+        # even if the Celery worker never picks it up.
+        job_id: str | None = None
+        try:
+            job_id = str(
+                await self._create_bot_job(
+                    user=user,
+                    message_text=text,
+                    conversation_type=conversation_type,
+                )
+            )
+        except Exception:
+            logger.exception("Failed to create bot chat job, dispatching without job_id")
+
         try:
             task_id = await send_chat_task_async(
                 "chat.process_bot_message",
@@ -267,12 +282,14 @@ class TeamsBotService:
                 kwargs={
                     "user_email": user.email,
                     "bot_context": bot_context,
+                    "job_id": job_id,
                 },
                 queue="chat_messages",
             )
             logger.info(
-                "Enqueued bot message task=%s for user=%s org=%s type=%s",
+                "Enqueued bot message task=%s job=%s for user=%s org=%s type=%s",
                 task_id,
+                job_id,
                 user.email,
                 user.organisation_id,
                 conversation_type,
@@ -306,6 +323,106 @@ class TeamsBotService:
             # Fall back to typing indicator if thinking message fails
             await self._send_typing(service_url, conversation_id)
         return None
+
+    async def _create_bot_job(
+        self,
+        user: User,
+        message_text: str,
+        conversation_type: str,
+    ) -> UUID:
+        """Create a PENDING ChatMessageJob before dispatching the Celery task.
+
+        For personal chats: creates session + user message + job (message_id set).
+        For group/channel chats: creates job only (message_id=None).
+        """
+        from sqlalchemy.exc import IntegrityError
+        from sqlmodel import col, select
+        from src.domain.models.organisation_tables.chat_message_models import (
+            ChatMessage,
+            ChatMessageRole,
+            ChatMessageType,
+        )
+        from src.domain.models.organisation_tables.chat_session_models import (
+            ChatSession,
+            ChatType,
+        )
+        from src.domain.models.organisation_tables.job_models import ChatMessageJob, JobStatus
+        from src.infra.database.sessions import acquire_org_async_session
+
+        org_id = user.organisation_id
+        message_id: UUID | None = None
+        session_id: UUID | None = None
+
+        if conversation_type == "personal":
+            # Get or create bot session
+            async for db in acquire_org_async_session(org_id):
+                stmt = select(ChatSession).where(
+                    col(ChatSession.user_id) == user.user_id,
+                    col(ChatSession.organisation_id) == org_id,
+                    col(ChatSession.chat_type) == ChatType.TEAMS_CHAT,
+                    col(ChatSession.is_deleted).is_(False),
+                )
+                result = await db.execute(stmt)
+                existing = result.scalars().first()
+                if existing:
+                    session_id = existing.session_id
+                else:
+                    new_session = ChatSession(
+                        user_id=user.user_id,
+                        organisation_id=org_id,
+                        chat_type=ChatType.TEAMS_CHAT,
+                        title="Teams Chat",
+                    )
+                    db.add(new_session)
+                    try:
+                        await db.commit()
+                        session_id = new_session.session_id
+                    except IntegrityError:
+                        await db.rollback()
+                        result = await db.execute(stmt)
+                        existing = result.scalars().first()
+                        session_id = existing.session_id if existing else None
+
+            # Create user message
+            if session_id:
+                async for db in acquire_org_async_session(org_id):
+                    msg = ChatMessage(
+                        session_id=session_id,
+                        role=ChatMessageRole.USER,
+                        message_type=ChatMessageType.GENERAL_MESSAGE,
+                        content={"text": message_text},
+                    )
+                    db.add(msg)
+                    await db.commit()
+                    message_id = msg.message_id
+
+        # Create the job — works for both personal (with message_id) and group (without)
+        async for db in acquire_org_async_session(org_id):
+            job = ChatMessageJob(
+                message_id=message_id,
+                job_type="teams_chat_response",
+                chat_type="TEAMS_CHAT",
+                status=JobStatus.PENDING,
+                user_id=user.user_id,
+                job_metadata={
+                    "source": "bot",
+                    "provider": "teams",
+                    "conversation_type": conversation_type,
+                    **({"session_id": str(session_id)} if session_id else {}),
+                },
+            )
+            db.add(job)
+            await db.commit()
+            logger.info(
+                "Created Teams bot job=%s message=%s session=%s type=%s",
+                job.job_id,
+                message_id,
+                session_id,
+                conversation_type,
+            )
+            return job.job_id
+
+        raise RuntimeError("Failed to create Teams bot job")
 
     async def _handle_conversation_update(self, activity: dict[str, Any]) -> None:
         """Handle conversation update (user added/removed, bot installed)."""
@@ -825,7 +942,7 @@ class TeamsBotService:
             ):
                 if response.status in (200, 201):
                     result = await response.json()
-                    return result.get("id")
+                    return str(result.get("id", ""))
                 else:
                     response_text = await response.text()
                     logger.warning(

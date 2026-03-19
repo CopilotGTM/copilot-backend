@@ -138,6 +138,22 @@ class ActionResult(FrameBase):
     error: dict[str, Any] | None = None
 
 
+class TokenUsageFrame(FrameBase):
+    """Token usage metrics emitted at the end of an agent run."""
+
+    type: Literal["token.usage"] = "token.usage"
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    reasoning_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    cost: float | None = None
+    model_name: str | None = None
+    duration_seconds: float | None = None
+    time_to_first_token: float | None = None
+
+
 class Finalize(FrameBase):
     type: Literal["finalize"] = "finalize"
     reason: Literal["done", "aborted", "error"] | None = None
@@ -245,6 +261,7 @@ Frame = (
     | QuestionPrompt
     | ActionCall
     | ActionResult
+    | TokenUsageFrame
     | Finalize
     | ErrorFrame
     | LogFrame
@@ -272,6 +289,7 @@ __all__ = [
     "QuestionPrompt",
     "ActionCall",
     "ActionResult",
+    "TokenUsageFrame",
     "Finalize",
     "ErrorFrame",
     "LogFrame",

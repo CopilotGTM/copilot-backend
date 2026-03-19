@@ -1,3 +1,4 @@
+from celery.schedules import crontab
 from kombu import Exchange, Queue
 
 from src.workers.base.worker_config import BaseWorkerConfig
@@ -61,6 +62,15 @@ class ChatWorkerConfig(BaseWorkerConfig):
                 "queue": "chat_messages",
                 "routing_key": "chat_messages",
             },
+            # Stale job cleanup tasks
+            "chat.cleanup_stale_jobs_all_orgs": {
+                "queue": "chat_processing",
+                "routing_key": "chat_processing",
+            },
+            "chat.cleanup_stale_jobs_org": {
+                "queue": "chat_processing",
+                "routing_key": "chat_processing",
+            },
         }
 
         # Beat schedule — periodic tasks run by the scheduler
@@ -76,6 +86,14 @@ class ChatWorkerConfig(BaseWorkerConfig):
             "recovery-sweep-reminders": {
                 "task": "chat.recovery_sweep_reminders",
                 "schedule": 300.0,
+                "options": {
+                    "queue": "chat_processing",
+                    "routing_key": "chat_processing",
+                },
+            },
+            "cleanup-stale-chat-jobs": {
+                "task": "chat.cleanup_stale_jobs_all_orgs",
+                "schedule": crontab(minute="*"),
                 "options": {
                     "queue": "chat_processing",
                     "routing_key": "chat_processing",

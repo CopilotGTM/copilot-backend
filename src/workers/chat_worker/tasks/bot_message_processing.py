@@ -28,6 +28,7 @@ def process_bot_message(
     chat_history: list[dict] | None = None,
     bot_context: dict | None = None,
     user_email: str | None = None,
+    job_id: str | None = None,
 ):
     """Process a bot message through GeneralAgent and send reply.
 
@@ -40,12 +41,14 @@ def process_bot_message(
         chat_history: Optional previous conversation messages
         bot_context: Optional context for bot-specific features (e.g. group chat metadata)
         user_email: The email of the user who sent the message
+        job_id: Optional pre-created job UUID (created at dispatch time for personal chats)
     """
     logger.info(
-        "Processing bot message org=%s user=%s provider=%s bot_context=%s",
+        "Processing bot message org=%s user=%s provider=%s job=%s bot_context=%s",
         organisation_id,
         user_id,
         provider,
+        job_id,
         bool(bot_context),
     )
 
@@ -59,6 +62,7 @@ def process_bot_message(
             chat_history=chat_history,
             bot_context=bot_context,
             user_email=user_email,
+            job_id=UUID(job_id) if job_id else None,
         )
 
         if success:
