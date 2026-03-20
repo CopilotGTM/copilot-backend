@@ -87,6 +87,9 @@ async def list_available_integrations(
         total_connected = len(connected_integrations)
 
         for int_type, metadata in get_all_integration_metadata().items():
+            if int_type == IntegrationType.INTERNAL_CRM:
+                continue
+
             # Get connected instances for this type
             connected_instances = connected_by_type.get(int_type, [])
             is_connected = len(connected_instances) > 0
