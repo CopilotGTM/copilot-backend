@@ -78,6 +78,16 @@ def _create_knowledge_client() -> Celery:
         broker_connection_max_retries=5,
         # Connection timeout to prevent indefinite blocking
         broker_connection_timeout=10,
+        # Transport options: detect dead sockets from Azure Redis idle timeout.
+        # Without socket_timeout, send_task() on a stale connection blocks until
+        # the OS TCP timeout (~13-30 min). With it, Celery detects the dead
+        # socket in seconds and reconnects via broker_connection_retry.
+        broker_transport_options={
+            "socket_timeout": 10,
+            "socket_connect_timeout": 10,
+            "socket_keepalive": True,
+            "retry_on_timeout": True,
+        },
         # Don't hijack logging
         worker_hijack_root_logger=False,
     )

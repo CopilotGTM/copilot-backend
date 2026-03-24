@@ -71,6 +71,12 @@ def _create_integrations_client() -> Celery:
         broker_connection_retry=True,
         broker_connection_max_retries=5,
         broker_connection_timeout=10,
+        broker_transport_options={
+            "socket_timeout": 10,
+            "socket_connect_timeout": 10,
+            "socket_keepalive": True,
+            "retry_on_timeout": True,
+        },
         worker_hijack_root_logger=False,
     )
 
