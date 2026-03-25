@@ -195,7 +195,7 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
         #   2. Maintenance (token refresh, shared housekeeping)
         #   3. Communication/messaging workloads (US business-hour focus)
 
-        crm_schedule = {
+        _crm_schedule = {
             # Reference data — once daily
             "sync-crm-users-all-orgs": {
                 "task": "integrations.sync_crm_users_all_orgs",
@@ -237,7 +237,7 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
             },
         }
 
-        maintenance_schedule = {
+        _maintenance_schedule = {
             "refresh-tokens": {
                 "task": "integrations.refresh_tokens",
                 "schedule": crontab(minute=0, hour="*/4"),  # Every 4 hours
@@ -246,7 +246,7 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
             },
         }
 
-        communication_schedule = {
+        _communication_schedule = {
             # Channel sync: Once daily (Microsoft Graph polling limit)
             "sync-messaging-channels-all-orgs": {
                 "task": "integrations.sync_messaging_channels_all_orgs",
@@ -282,8 +282,10 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
             },
         }
 
+        # Migration freeze: disable all integrations worker beat-triggered runs.
+        # Manual task dispatch remains available; only scheduled runs are paused.
         self.beat_schedule = {
-            **crm_schedule,
-            **maintenance_schedule,
-            **communication_schedule,
+            # **_crm_schedule,
+            # **_maintenance_schedule,
+            # **_communication_schedule,
         }
