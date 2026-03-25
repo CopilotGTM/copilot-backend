@@ -95,6 +95,9 @@ class TaskListItem(BaseModel):
     owner_external_id: str | None
     owner_name: str | None
     owner_email: str | None
+    # External assignee (non-app user)
+    external_assignee_email: str | None = None
+    external_assignee_name: str | None = None
     # Deal linkage
     deal_id: UUID | None
     deal_external_id: str | None
@@ -169,6 +172,10 @@ class TaskDetail(BaseModel):
     owner_external_id: str | None
     owner_name: str | None
     owner_email: str | None
+
+    # External assignee (non-app user)
+    external_assignee_email: str | None = None
+    external_assignee_name: str | None = None
 
     # Source and creator
     source: str | None = None
@@ -250,6 +257,16 @@ class CreateTaskRequest(BaseModel):
         default=None,
         description="Assign the task to a user (UUID from public.users).",
     )
+    external_assignee_email: str | None = Field(
+        default=None,
+        max_length=255,
+        description="Email of an external (non-app) person to assign this task to.",
+    )
+    external_assignee_name: str | None = Field(
+        default=None,
+        max_length=255,
+        description="Display name of the external assignee.",
+    )
     deal_id: UUID | None = Field(
         default=None,
         description="Link task to a deal. If null, creates a standalone task.",
@@ -267,6 +284,19 @@ class CreateTaskRequest(BaseModel):
         trimmed = value.strip()
         return trimmed if trimmed else None
 
+    @field_validator("external_assignee_email")
+    @classmethod
+    def _validate_external_email(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        trimmed = value.strip().lower()
+        if not trimmed:
+            return None
+        if "@" not in trimmed or "." not in trimmed.split("@")[-1]:
+            msg = "Invalid email address"
+            raise ValueError(msg)
+        return trimmed
+
     @field_validator("task_type")
     @classmethod
     def _validate_task_type(cls, value: CRMActivityType | None) -> CRMActivityType | None:
@@ -281,6 +311,9 @@ class CreateTaskRequest(BaseModel):
     def _require_subject_or_body(self) -> CreateTaskRequest:
         if not self.subject and not self.body:
             msg = "subject or body is required"
+            raise ValueError(msg)
+        if self.owner_user_id and self.external_assignee_email:
+            msg = "Cannot assign to both an internal user and an external person. Choose one."
             raise ValueError(msg)
         return self
 
@@ -326,6 +359,16 @@ class UpdateTaskRequest(BaseModel):
         default=None,
         description="Reassign the task to a user (UUID from public.users).",
     )
+    external_assignee_email: str | None = Field(
+        default=None,
+        max_length=255,
+        description="Email of an external (non-app) person to assign this task to.",
+    )
+    external_assignee_name: str | None = Field(
+        default=None,
+        max_length=255,
+        description="Display name of the external assignee.",
+    )
     deal_id: UUID | None = Field(
         default=None,
         description="Link or unlink task from a deal. Pass null to remove.",
@@ -342,6 +385,19 @@ class UpdateTaskRequest(BaseModel):
             return None
         trimmed = value.strip()
         return trimmed if trimmed else None
+
+    @field_validator("external_assignee_email")
+    @classmethod
+    def _validate_external_email(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        trimmed = value.strip().lower()
+        if not trimmed:
+            return None
+        if "@" not in trimmed or "." not in trimmed.split("@")[-1]:
+            msg = "Invalid email address"
+            raise ValueError(msg)
+        return trimmed
 
     @field_validator("task_type")
     @classmethod

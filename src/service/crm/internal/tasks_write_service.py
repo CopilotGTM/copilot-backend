@@ -15,6 +15,7 @@ from src.domain.models.master_tables.external_identity_models import (
     ExternalIdentityMapping,
     ExternalIdentityProvider,
 )
+from src.domain.models.master_tables.organisation_models import Organisation
 from src.domain.models.organisation_tables.reminder_models import (
     ReminderRecurrence,
     ReminderStatus,
@@ -30,6 +31,7 @@ from src.domain.models.organisation_tables.sync.crm import (
     CRMActivityType,
 )
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal
+from src.infra.auth.email_service import email_service
 from src.infra.database.sessions import master_async_session_scope
 from src.infra.messaging.reminder_schedule import schedule_reminder, unschedule_reminder
 from src.infra.utils.logger import get_logger
@@ -102,6 +104,12 @@ class TasksWriteService:
         elif completed_date is None:
             completed_date = now
 
+        external_assignee_email = payload.get("external_assignee_email")
+        external_assignee_name = payload.get("external_assignee_name")
+
+        if external_assignee_email:
+            await self._validate_external_assignee_domain(external_assignee_email)
+
         task_id = uuid4()
         task = CRMActivity(
             activity_id=task_id,
@@ -125,6 +133,8 @@ class TasksWriteService:
             owner_external_id=owner_external_id,
             owner_name=owner_name,
             owner_email=owner_email,
+            external_assignee_email=external_assignee_email,
+            external_assignee_name=external_assignee_name,
             source=CRMActivitySource.MANUAL.value,
             created_by_user_id=self.actor_user_id,
             source_created_at=now,
@@ -145,6 +155,10 @@ class TasksWriteService:
         reminder_cfg = payload.get("reminder")
         if reminder_cfg and reminder_cfg.get("enabled"):
             await self._create_task_reminder(task, reminder_cfg)
+
+        # Send email to external assignee on creation
+        if external_assignee_email:
+            await self._send_external_assignment_email(task, deal, is_update=False)
 
         return task
 
@@ -196,6 +210,19 @@ class TasksWriteService:
             task.owner_external_id = owner_external_id
             task.owner_name = owner_name
             task.owner_email = owner_email
+            updated = True
+
+        # External assignee
+        external_assignee_changed = False
+        if "external_assignee_email" in payload:
+            new_ext_email = payload.get("external_assignee_email")
+            if new_ext_email:
+                await self._validate_external_assignee_domain(new_ext_email)
+            task.external_assignee_email = new_ext_email
+            external_assignee_changed = True
+            updated = True
+        if "external_assignee_name" in payload:
+            task.external_assignee_name = payload.get("external_assignee_name")
             updated = True
 
         # Deal reassociation
@@ -281,6 +308,17 @@ class TasksWriteService:
                     await self._create_task_reminder(task, reminder_cfg)
             else:
                 await self._cancel_task_reminders(task.activity_id)
+
+        # Send email to external assignee on relevant changes
+        if task.external_assignee_email:
+            if external_assignee_changed:
+                # New external assignee — send as new assignment
+                deal = await self._load_deal(task.deal_id) if task.deal_id else None
+                await self._send_external_assignment_email(task, deal, is_update=False)
+            elif updated:
+                # Task details changed — send update notification
+                deal = await self._load_deal(task.deal_id) if task.deal_id else None
+                await self._send_external_assignment_email(task, deal, is_update=True)
 
         return task
 
@@ -499,6 +537,70 @@ class TasksWriteService:
             logger.warning(
                 "Failed to unschedule reminder %s from Redis",
                 reminder_id,
+                exc_info=True,
+            )
+
+    # ── External assignment ────────────────────────────────────────
+
+    async def _validate_external_assignee_domain(self, email: str) -> None:
+        """Reject external assignee if org has domains set and email doesn't match any."""
+        async with master_async_session_scope() as master_session:
+            org = await master_session.get(Organisation, self.organisation_id)
+
+        if not org or not org.domain:
+            return
+
+        email_domain = email.rsplit("@", 1)[-1].lower().removeprefix("www.")
+        allowed_domains = [d.lower().removeprefix("www.") for d in org.domain]
+        if email_domain not in allowed_domains:
+            display = ", ".join(d.removeprefix("www.") for d in org.domain)
+            raise TasksWriteServiceError(
+                f"External assignee email must be from: {display}",
+                400,
+            )
+
+    async def _send_external_assignment_email(
+        self, task: CRMActivity, deal: CRMDeal | None, *, is_update: bool = False
+    ) -> None:
+        """Send task assignment or update email to external assignee, CC the assigner."""
+        if not task.external_assignee_email:
+            return
+
+        assigner_name = "Someone"
+        assigner_email: str | None = None
+        try:
+            async with master_async_session_scope() as master_session:
+                actor = await master_session.get(User, self.actor_user_id)
+            if actor:
+                assigner_name = build_user_display_name(actor) or str(actor.email)
+                assigner_email = str(actor.email)
+        except Exception:
+            logger.debug("Could not resolve assigner details", exc_info=True)
+
+        due_date_str = None
+        if task.due_date:
+            due_date_str = task.due_date.strftime("%B %d, %Y at %I:%M %p")
+
+        try:
+            await email_service.send_task_assignment_email(
+                to_email=task.external_assignee_email,
+                assignee_name=task.external_assignee_name,
+                assigner_name=assigner_name,
+                task_subject=task.subject or "(no subject)",
+                task_body=task.body,
+                task_priority=task.priority,
+                task_due_date=due_date_str,
+                task_status=task.status,
+                deal_name=deal.name if deal else None,
+                cc_email=assigner_email,
+                is_update=is_update,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to send external %s email for task %s to %s",
+                "update" if is_update else "assignment",
+                task.activity_id,
+                task.external_assignee_email,
                 exc_info=True,
             )
 
