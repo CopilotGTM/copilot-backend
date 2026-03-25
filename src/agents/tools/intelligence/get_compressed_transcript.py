@@ -102,6 +102,7 @@ async def get_compressed_transcript(
     event_c = cast(Any, CalendarEvent).__table__.c
 
     segments_data: list[dict[str, Any]] = []
+    full_transcript: str | None = None
     title: str | None = None
     meeting_date: str | None = None
 
@@ -138,6 +139,9 @@ async def get_compressed_transcript(
                 ),
             }
 
+        # Extract full_transcript — always available regardless of segments
+        full_transcript = meeting.full_transcript
+
         # Extract segments while session is active
         for seg in sorted(meeting.transcript_segments, key=lambda s: s.segment_index):
             segments_data.append(
@@ -161,17 +165,27 @@ async def get_compressed_transcript(
 
     # Session released — safe to call sub-agent
 
-    if not segments_data:
-        logger.info("get_compressed_transcript: no segments for event %s", event_id)
+    # Prefer structured segments for compression (speaker attribution), but
+    # fall back to full_transcript when segments are missing (e.g. unsupported
+    # note-taker format that couldn't be parsed into segments).
+    if segments_data:
+        formatted_text = _format_segments_for_compression(segments_data)
+    elif full_transcript:
+        logger.info(
+            "get_compressed_transcript: no segments for event %s, using full_transcript",
+            event_id,
+        )
+        formatted_text = full_transcript
+    else:
+        logger.info("get_compressed_transcript: no transcript data for event %s", event_id)
         return {
             "event_id": event_id,
             "title": title,
             "transcript_available": True,
-            "compressed_transcript": "(No transcript segments available)",
+            "compressed_transcript": "(No transcript content available)",
         }
 
     # Step 3: Format and compress
-    formatted_text = _format_segments_for_compression(segments_data)
     safe_title = title or "Untitled Meeting"
     safe_date = meeting_date or "Unknown Date"
 

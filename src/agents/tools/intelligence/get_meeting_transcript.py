@@ -110,23 +110,16 @@ async def get_meeting_transcript(
 
     # Acquire fresh session for database read
     async with context.acquire_session() as session:
-        # Fetch meeting with transcript segments if needed
-        if output_format == "segments":
-            meeting_stmt = (
-                select(Meeting)
-                .options(selectinload(cast(Any, Meeting).transcript_segments))
-                .where(
-                    meeting_c.organisation_id == organisation_id,
-                    meeting_c.calendar_event_id == parsed_event_id,
-                    meeting_c.is_deleted.is_(False),
-                )
-            )
-        else:
-            meeting_stmt = select(Meeting).where(
+        # Always eager-load segments — we fall back to full_transcript if empty
+        meeting_stmt = (
+            select(Meeting)
+            .options(selectinload(cast(Any, Meeting).transcript_segments))
+            .where(
                 meeting_c.organisation_id == organisation_id,
                 meeting_c.calendar_event_id == parsed_event_id,
                 meeting_c.is_deleted.is_(False),
             )
+        )
 
         try:
             meeting_result = await session.execute(meeting_stmt)
@@ -201,9 +194,25 @@ async def get_meeting_transcript(
                     }
                 )
 
-            output["segments"] = segments
-            output["segment_count"] = len(segments)
-            output["truncated"] = False
+            if segments:
+                output["segments"] = segments
+                output["segment_count"] = len(segments)
+                output["truncated"] = False
+            else:
+                # Segments missing (unsupported note-taker format) — fall back
+                # to full_transcript so the caller still gets usable data.
+                full_text = meeting.full_transcript or ""
+                total_length = len(full_text)
+                if max_length and total_length > max_length:
+                    output["full_text"] = full_text[:max_length]
+                    output["truncated"] = True
+                else:
+                    output["full_text"] = full_text
+                    output["truncated"] = False
+                output["total_length"] = total_length
+                output["segments"] = []
+                output["segment_count"] = 0
+                output["fell_back_to_full_transcript"] = True
     # Session released
 
     logger.info(f"get_meeting_transcript: returning transcript for event {event_id}")
