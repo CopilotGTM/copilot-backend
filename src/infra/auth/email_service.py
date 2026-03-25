@@ -93,6 +93,7 @@ class EmailService:
         subject: str,
         html_content: str,
         text_content: str | None = None,
+        cc: list[str] | None = None,
     ) -> bool:
         """Send an email using Resend."""
         if not await self._ensure_configured():
@@ -108,6 +109,8 @@ class EmailService:
             }
             if text_content:
                 email_data["text"] = text_content
+            if cc:
+                email_data["cc"] = cc
 
             resend.Emails.send(email_data)
             logger.info(f"Email sent successfully to {to_email} via Resend")
@@ -216,6 +219,110 @@ class EmailService:
         """
 
         return await self.send_email(to_email, subject, html_content, text_content)
+
+    async def send_task_assignment_email(
+        self,
+        to_email: str,
+        assignee_name: str | None,
+        assigner_name: str,
+        task_subject: str,
+        task_body: str | None = None,
+        task_priority: str | None = None,
+        task_due_date: str | None = None,
+        task_status: str | None = None,
+        deal_name: str | None = None,
+        cc_email: str | None = None,
+        is_update: bool = False,
+    ) -> bool:
+        """Send task assignment or update notification to an external person."""
+        action = "Updated" if is_update else "Assigned"
+        subject = f"{self.app_name} - Task {action}: {task_subject}"
+        preheader = f"{assigner_name} {'updated a task assigned to you' if is_update else 'assigned you a task'}"
+
+        safe_assignee = html_escape(assignee_name or "there")
+        safe_assigner = html_escape(assigner_name)
+        safe_subject = html_escape(task_subject)
+
+        # Build detail rows as a clean table
+        detail_rows_html = ""
+        details: list[tuple[str, str]] = []
+        if task_status:
+            label = task_status.replace("_", " ").title()
+            details.append(("Status", label))
+        if task_priority and task_priority != "NONE":
+            details.append(("Priority", task_priority.title()))
+        if task_due_date:
+            details.append(("Due Date", task_due_date))
+        if deal_name:
+            details.append(("Deal", deal_name))
+
+        if details:
+            rows = "".join(
+                f'<tr><td style="padding:6px 12px 6px 0;color:#888;font-size:13px;">'
+                f"{html_escape(label)}</td>"
+                f'<td style="padding:6px 0;font-size:13px;font-weight:500;">'
+                f"{html_escape(value)}</td></tr>"
+                for label, value in details
+            )
+            detail_rows_html = (
+                f'<table style="border-collapse:collapse;margin:12px 0 16px;">{rows}</table>'
+            )
+
+        body_section = ""
+        if task_body:
+            safe_body = html_escape(task_body).replace("\n", "<br>")
+            body_section = (
+                f'<div style="background-color:#f8f9fa;border-left:3px solid #007bff;'
+                f'padding:12px 16px;border-radius:4px;margin:12px 0;">'
+                f'<p style="margin:0 0 4px;font-size:12px;color:#888;font-weight:600;">'
+                f"DESCRIPTION</p>"
+                f'<p style="margin:0;font-size:14px;line-height:1.6;color:#333;">'
+                f"{safe_body}</p></div>"
+            )
+
+        heading = (
+            f"<strong>{safe_assigner}</strong> has updated a task assigned to you:"
+            if is_update
+            else f"<strong>{safe_assigner}</strong> has assigned you a task:"
+        )
+
+        main_content = f"""
+            <h2 style="margin-bottom:4px;">Hi {safe_assignee},</h2>
+            <p style="color:#555;">{heading}</p>
+
+            <div style="background-color:#f9f9f9;border:1px solid #eee;padding:16px;border-radius:6px;margin:16px 0;">
+                <h3 style="margin:0 0 8px;font-size:16px;">{safe_subject}</h3>
+                {detail_rows_html}
+            </div>
+
+            {body_section}
+
+            <p style="margin-top:20px;">If you have any questions, please reach out to <strong>{safe_assigner}</strong>.</p>
+            <p>Best regards,<br>The {self.app_name} Team</p>
+        """
+
+        html_content = self._create_styled_html(subject, preheader, main_content)
+
+        # Plain text fallback
+        status_text = f" | Status: {task_status}" if task_status else ""
+        priority_text = (
+            f" | Priority: {task_priority}" if task_priority and task_priority != "NONE" else ""
+        )
+        due_text = f" | Due: {task_due_date}" if task_due_date else ""
+        deal_text = f" | Deal: {deal_name}" if deal_name else ""
+        body_text = f"\n\nDescription:\n{task_body}" if task_body else ""
+
+        verb = "updated a task assigned to you" if is_update else "assigned you a task"
+        text_content = (
+            f"Hi {assignee_name or 'there'},\n\n"
+            f"{assigner_name} {verb}: {task_subject}"
+            f"{status_text}{priority_text}{due_text}{deal_text}"
+            f"{body_text}\n\n"
+            f"If you have any questions, please reach out to {assigner_name}."
+        )
+
+        cc = [cc_email] if cc_email else None
+        return await self.send_email(to_email, subject, html_content, text_content, cc=cc)
 
     async def send_password_reset_email(
         self, to_email: str, first_name: str, reset_url: str

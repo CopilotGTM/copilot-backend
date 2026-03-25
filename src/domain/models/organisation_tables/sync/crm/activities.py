@@ -296,6 +296,20 @@ class CRMActivity(FlexibleSyncedRecordMixin, table=True):
     )
 
     # ─────────────────────────────────────────────────────────────────────────
+    # External assignment (non-app users)
+    # ─────────────────────────────────────────────────────────────────────────
+    external_assignee_email: str | None = Field(
+        default=None,
+        sa_column=Column(String(255), nullable=True),
+        description="Email of an external (non-app) person this task is assigned to.",
+    )
+    external_assignee_name: str | None = Field(
+        default=None,
+        sa_column=Column(String(255), nullable=True),
+        description="Display name of the external assignee.",
+    )
+
+    # ─────────────────────────────────────────────────────────────────────────
     # Source tracking
     # ─────────────────────────────────────────────────────────────────────────
     source: str | None = Field(
