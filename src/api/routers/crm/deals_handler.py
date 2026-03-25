@@ -504,6 +504,7 @@ async def list_deals(
                 deal_status=deal.deal_status,
                 probability=deal.probability,
                 close_date=deal.close_date,
+                expected_close_date=deal.expected_close_date,
                 stage_name=deal.stage_name,
                 stage_label=deal.stage_label,
                 pipeline_name=deal.pipeline_name,

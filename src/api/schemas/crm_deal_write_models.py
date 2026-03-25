@@ -50,20 +50,73 @@ class DealTeamMemberInput(BaseModel):
 class DealCreateRequest(BaseModel):
     """Request payload to create an internal CRM deal."""
 
-    name: str = Field(min_length=1, max_length=500)
-    amount: float | None = Field(default=None, ge=0)
-    currency: str | None = Field(default=None, min_length=3, max_length=3)
-    pipeline_id: UUID | None = None
-    stage_id: UUID | None = None
-    owner_user_id: UUID | None = None
-    close_date: datetime | None = None
-    expected_close_date: datetime | None = None
-    description: str | None = None
-    deal_type: str | None = None
-    priority: str | None = None
-    lead_source: str | None = None
-    account: DealAccountInput | None = None
-    team_members: list[DealTeamMemberInput] | None = None
+    name: str = Field(
+        min_length=1,
+        max_length=500,
+        description="Display name for the deal (e.g. 'Acme Corp - Enterprise License').",
+    )
+    amount: float | None = Field(
+        default=None,
+        ge=0,
+        description="Monetary value of the deal. Must be zero or positive.",
+    )
+    currency: str | None = Field(
+        default=None,
+        min_length=3,
+        max_length=3,
+        description="Three-letter ISO 4217 currency code (e.g. USD, INR, EUR).",
+    )
+    pipeline_id: UUID | None = Field(
+        default=None,
+        description="Pipeline to place the deal in. Falls back to the organisation's default pipeline when omitted.",
+    )
+    stage_id: UUID | None = Field(
+        default=None,
+        description="Initial stage within the chosen pipeline. Defaults to the first stage if omitted.",
+    )
+    owner_user_id: UUID | None = Field(
+        default=None,
+        description="User UUID of the deal owner responsible for driving this deal to close.",
+    )
+    close_date: datetime | None = Field(
+        default=None,
+        description="Actual date the deal was closed (won or lost). "
+        "Only set when recording a historical close; leave empty for open deals.",
+    )
+    expected_close_date: datetime | None = Field(
+        default=None,
+        description="Projected date the deal is expected to close. "
+        "Used for forecasting and pipeline planning.",
+    )
+    description: str | None = Field(
+        default=None,
+        description="Free-text notes or context about the deal.",
+    )
+    deal_type: str | None = Field(
+        default=None,
+        description="Category of the deal — e.g. 'New Business', 'Renewal', 'Expansion', 'Upsell'.",
+    )
+    priority: str | None = Field(
+        default=None,
+        description="Urgency level — 'High', 'Medium', or 'Low'.",
+    )
+    lead_source: str | None = Field(
+        default=None,
+        description="How the deal originated — e.g. 'Inbound', 'Outbound', 'Referral', 'Event'.",
+    )
+    source_created_at: datetime | None = Field(
+        default=None,
+        description="Date the deal engagement originally started. "
+        "Shown as 'Start Date' in the UI. Defaults to the current timestamp when omitted.",
+    )
+    account: DealAccountInput | None = Field(
+        default=None,
+        description="Company or account details to associate with the deal at creation time.",
+    )
+    team_members: list[DealTeamMemberInput] | None = Field(
+        default=None,
+        description="Internal team members to attach as deal participants (e.g. SE, CSM).",
+    )
 
     @field_validator("name")
     @classmethod
@@ -104,6 +157,7 @@ class DealUpdateRequest(BaseModel):
     name: str | None = Field(default=None, max_length=500)
     amount: float | None = Field(default=None, ge=0)
     currency: str | None = Field(default=None, min_length=3, max_length=3)
+    source_created_at: datetime | None = None
     close_date: datetime | None = None
     expected_close_date: datetime | None = None
     description: str | None = None
