@@ -282,10 +282,8 @@ class IntegrationsWorkerConfig(BaseWorkerConfig):
             },
         }
 
-        # Migration freeze: disable all integrations worker beat-triggered runs.
-        # Manual task dispatch remains available; only scheduled runs are paused.
         self.beat_schedule = {
-            # **_crm_schedule,
-            # **_maintenance_schedule,
-            # **_communication_schedule,
+            **_crm_schedule,
+            **_maintenance_schedule,
+            **_communication_schedule,
         }
