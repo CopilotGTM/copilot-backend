@@ -110,11 +110,15 @@ def _resolve_provider_config_key(
     """
     metadata = connection_metadata or {}
     metadata_key = metadata.get("provider_config_key")
-    if isinstance(metadata_key, str) and metadata_key.strip():
-        return metadata_key.strip()
 
     if integration_type == IntegrationType.GOOGLE_CALENDAR:
+        normalized_metadata_key = metadata_key.strip() if isinstance(metadata_key, str) else ""
+        if normalized_metadata_key in {"google-calendar", "google_calendar"}:
+            return "google-calendar"
         return to_nango_connect_integration_key(integration_type)
+
+    if isinstance(metadata_key, str) and metadata_key.strip():
+        return metadata_key.strip()
 
     return to_nango_provider_key(integration_type)
 
@@ -333,13 +337,14 @@ def sync_calendar_integration_task(
                 }
 
             # Sync events to database
-            records_synced = await upsert_calendar_incremental(
+            sync_result = await upsert_calendar_incremental(
                 session=session,
                 organisation_id=org_id,
                 integration=integration_db,
                 provider=fetch_data.provider,
                 events=events,
             )
+            records_synced = sync_result.get("records_processed", 0)
 
             # Persist cursor after successful sync.
             updated_metadata = dict(integration_db.connection_metadata or {})
@@ -356,16 +361,27 @@ def sync_calendar_integration_task(
                 )
             integration_db.connection_metadata = updated_metadata
 
-            # Update last_synced_at
+            # Strip tzinfo — column is `timestamp without time zone`; asyncpg
+            # rejects tz-aware datetimes for tz-naive columns.
             integration_db.last_synced_at = datetime.now(UTC).replace(tzinfo=None)
             session.add(integration_db)
             await session.commit()
 
             logger.info(
-                "Manual calendar sync complete: org=%s integration=%s events_synced=%d",
+                "Manual calendar sync complete: org=%s integration=%s "
+                "events_synced=%d created=%d updated=%d unchanged=%d "
+                "cancelled=%d/%d deleted=%d/%d failed=%d",
                 org_id,
                 int_id,
                 records_synced,
+                sync_result.get("created", 0),
+                sync_result.get("updated", 0),
+                sync_result.get("skipped", 0),
+                sync_result.get("cancelled_existing", 0),
+                sync_result.get("cancelled_no_record", 0),
+                sync_result.get("deleted_processed", 0),
+                sync_result.get("deleted_no_state", 0),
+                sync_result.get("records_failed", 0),
             )
 
             return {
@@ -376,6 +392,7 @@ def sync_calendar_integration_task(
                 "started_at": started_at,
                 "completed_at": datetime.now(UTC).isoformat(),
                 "events_synced": records_synced,
+                "sync_breakdown": sync_result,
             }
         # Session released after this block
 

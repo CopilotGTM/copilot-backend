@@ -1,3 +1,9 @@
+"""Google Calendar provider — fetches events via direct Google API with syncToken support.
+
+OAuth tokens are managed by Nango (storage + refresh) but API calls bypass the
+Nango proxy to avoid proxy request quota limits that throttle high-volume orgs.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -20,14 +26,19 @@ logger = get_logger(__name__)
 
 @dataclass
 class FetchEventsResult:
-    """Result from fetch_events containing events and optional Google sync token."""
+    """Events fetched from Google Calendar with an optional syncToken for next delta."""
 
     events: list[dict[str, Any]]
     sync_token: str | None = None
 
 
 def _is_google_sync_token_expired_exception(exc: Exception) -> bool:
-    """Detect token-expiration style errors from raised exceptions."""
+    """Detect Google's "sync token expired" errors across response formats.
+
+    Google signals token expiry inconsistently — sometimes HTTP 410, sometimes
+    error messages with varying wording. This catches all known variants so
+    the caller can fall back to a full sync instead of crashing.
+    """
     if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 410:
         return True
     message = str(exc).lower()
@@ -50,22 +61,31 @@ async def fetch_events_with_cursor(
     data_type: str | None = None,
     provider_config_key: str | None = None,
 ) -> FetchEventsResult:
+    """Fetch Google Calendar events with syncToken-based incremental sync.
+
+    Called by calendar org_task (Tier 2) and integration_task (Tier 3) during
+    the "no session held" phase. Returns raw Google API event dicts for the
+    adapter layer to normalize.
+
+    Args:
+        nango: Client for retrieving OAuth tokens from Nango.
+        connection_id: Nango connection ID for the user's Google account.
+        is_initial: True on first-ever sync — uses bounded time window.
+        last_synced_at: Unused; kept for provider registry interface compatibility.
+        sync_token: Google syncToken from previous sync for delta fetching.
+        data_type: Unused; kept for provider registry signature compatibility.
+        provider_config_key: Nango provider config key override.
+
+    Returns:
+        FetchEventsResult with events and a new syncToken for next sync.
+
+    Raises:
+        httpx.HTTPStatusError: On non-recoverable Google API errors.
     """
-    Fetch Google Calendar events via direct Google API with syncToken incremental support.
-
-    OAuth tokens are managed by Nango (token storage + refresh) but API calls
-    bypass the Nango proxy to avoid proxy request quota limits.
-
-    Business rules:
-    - Initial/full sync: bounded window (90 days past to 365 days future).
-    - Incremental sync: use Google syncToken (equivalent to delta cursor).
-    - If syncToken is invalid/expired, fall back to a fresh bounded full sync.
-
-    API constraint:
-    - Requests with `syncToken` must NOT include timeMin/timeMax/updatedMin/orderBy.
-    """
-    _ = data_type  # intentionally unused; signature kept for registry compatibility
-    _ = last_synced_at  # retained in signature for call-site compatibility
+    # Do not remove unused params — registry.get_fetcher() calls all providers
+    # with the same kwargs; removing these breaks the shared interface.
+    _ = data_type
+    _ = last_synced_at
     provider = provider_config_key or to_nango_connect_integration_key(
         IntegrationType.GOOGLE_CALENDAR
     )
@@ -76,7 +96,8 @@ async def fetch_events_with_cursor(
             return dt.replace(tzinfo=UTC)
         return dt.astimezone(UTC)
 
-    # Force first sync to use bounded bootstrap window even if metadata still has a token.
+    # Force first sync to use bounded bootstrap window even if stale metadata
+    # still carries a token from a previously deleted integration.
     if is_initial and sync_token:
         logger.info(
             "Google Calendar initial sync ignoring stored syncToken for connection=%s",
@@ -86,7 +107,8 @@ async def fetch_events_with_cursor(
 
     using_sync_token = bool(sync_token)
     if using_sync_token:
-        # Incremental token query: only include parameters allowed with syncToken.
+        # Google API constraint: syncToken requests must NOT include
+        # timeMin/timeMax/updatedMin/orderBy — the API returns 400 otherwise.
         params: dict[str, Any] = {
             "syncToken": sync_token,
             "singleEvents": True,
@@ -94,17 +116,18 @@ async def fetch_events_with_cursor(
             "maxResults": 2500,
         }
     else:
-        # Full bootstrap query: bounded window to control ingestion cost.
-        time_min = now - timedelta(days=90)
-        time_max = now + timedelta(days=365)
-        time_min = _ensure_utc(time_min)
-        time_max = _ensure_utc(time_max)
+        # Bounded window controls ingestion cost on initial sync — 90 days
+        # past captures recent meeting history, 365 days future covers
+        # long-range scheduled events (QBRs, annual reviews).
+        time_min = _ensure_utc(now - timedelta(days=90))
+        time_max = _ensure_utc(now + timedelta(days=365))
 
         params = {
             "timeMin": time_min.isoformat(),
             "timeMax": time_max.isoformat(),
             "singleEvents": True,
-            # Keep cancelled events in snapshots so downstream status mapping is consistent.
+            # showDeleted=True so downstream status mapping sees cancellations
+            # instead of silently losing events that were cancelled externally.
             "showDeleted": True,
             "maxResults": 2500,
             "orderBy": "startTime",
@@ -117,10 +140,12 @@ async def fetch_events_with_cursor(
     all_items: list[dict[str, Any]] = []
     page_token: str | None = None
     next_sync_token: str | None = None
-    max_pages = 50  # Safety limit to prevent infinite loops
-
+    # Safety cap — Google pagination should terminate naturally via missing
+    # nextPageToken, but a malformed response could loop indefinitely.
+    max_pages = 50
+    headers = {"Authorization": f"Bearer {token}"}
     async with httpx.AsyncClient(
-        headers={"Authorization": f"Bearer {token}"},
+        headers=headers,
         timeout=30.0,
     ) as client:
         for page_index in range(max_pages):
@@ -132,7 +157,9 @@ async def fetch_events_with_cursor(
             try:
                 resp = await calendar_api_request(client, endpoint, params=params)
             except httpx.HTTPStatusError as exc:
-                # A stale sync token should not break calendar sync forever.
+                # Stale syncToken → fall back to full sync instead of failing
+                # permanently. Only on the first page — mid-pagination 410s
+                # indicate a real API problem, not token expiry.
                 if (
                     using_sync_token
                     and page_index == 0
@@ -154,6 +181,8 @@ async def fetch_events_with_cursor(
                     )
                 raise
             except Exception as exc:
+                # Same fallback for non-HTTP exceptions (e.g. JSON decode errors
+                # wrapping a 410 message from the Google client library).
                 if (
                     using_sync_token
                     and page_index == 0
@@ -178,9 +207,10 @@ async def fetch_events_with_cursor(
             if "items" in resp and isinstance(resp["items"], list):
                 all_items.extend(resp["items"])
 
-            # Check for next page
             page_token = resp.get("nextPageToken")
             if not page_token:
+                # Google returns nextSyncToken only on the final page — save it
+                # for the next incremental sync.
                 sync_token_candidate = resp.get("nextSyncToken")
                 if isinstance(sync_token_candidate, str) and sync_token_candidate:
                     next_sync_token = sync_token_candidate
@@ -205,7 +235,11 @@ async def fetch_events(
     data_type: str | None = None,
     provider_config_key: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Backward-compatible list-only fetcher used by registry-based code paths."""
+    """List-only wrapper for provider registry callers that don't need the syncToken.
+
+    Do not remove — the provider registry dispatches to this function by name.
+    Use fetch_events_with_cursor() directly when you need the returned syncToken.
+    """
     result = await fetch_events_with_cursor(
         nango=nango,
         connection_id=connection_id,

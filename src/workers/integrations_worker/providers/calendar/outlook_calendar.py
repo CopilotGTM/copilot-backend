@@ -14,6 +14,7 @@ Microsoft Graph API documentation:
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -42,16 +43,11 @@ class FetchEventsResult:
 
 
 def _mark_as_deleted(event: dict[str, Any]) -> dict[str, Any]:
-    """
-    Mark an event as deleted/cancelled for proper handling downstream.
-
-    Microsoft Graph delta sync returns deleted items with @removed annotation.
-    We translate this to isCancelled=true and add _sync_metadata for proper action tracking.
-    """
-    event["isCancelled"] = True
+    """Mark a delta-removed event as a mailbox-level deletion, not a global cancel."""
     event["_sync_metadata"] = {
         "sync_action": "DELETED",
         "sync_type": "INCREMENTAL",
+        "scope": "USER_STATE",
         "inferred": True,
         "source": "delta_removed",
     }
@@ -83,6 +79,113 @@ def _parse_event_datetime(event: dict[str, Any]) -> datetime | None:
             return datetime.fromisoformat(dt_str).replace(tzinfo=UTC)
     except (ValueError, TypeError):
         return None
+
+
+def _needs_identity_hydration(event: dict[str, Any]) -> bool:
+    if "@removed" in event or event.get("_sync_metadata", {}).get("sync_action") == "DELETED":
+        return False
+    if isinstance(event.get("iCalUId"), str) and event["iCalUId"]:
+        return False
+    return isinstance(event.get("id"), str) and bool(event["id"])
+
+
+async def _fetch_event_details(
+    client: httpx.AsyncClient,
+    event_id: str,
+) -> dict[str, Any] | None:
+    endpoints = (
+        f"/v1.0/me/events/{event_id}",
+        f"/v1.0/me/calendar/events/{event_id}",
+    )
+    for endpoint in endpoints:
+        for attempt in range(3):
+            try:
+                return await graph_api_request(client, endpoint)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 404:
+                    break
+                if exc.response.status_code == 429:
+                    retry_after = exc.response.headers.get("Retry-After")
+                    delay = (
+                        float(retry_after)
+                        if retry_after and retry_after.isdigit()
+                        else float(attempt + 1)
+                    )
+                    logger.warning(
+                        "Outlook Calendar hydration rate limited for %s; retrying in %.1fs (attempt %d/3)",
+                        endpoint,
+                        delay,
+                        attempt + 1,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                raise
+            except Exception:
+                raise
+        else:
+            continue
+    return None
+
+
+def _merge_event_details(
+    base_event: dict[str, Any], detailed_event: dict[str, Any]
+) -> dict[str, Any]:
+    merged = dict(detailed_event)
+    merged.update(
+        {
+            key: value
+            for key, value in base_event.items()
+            if key
+            in {
+                "id",
+                "seriesMasterId",
+                "type",
+                "start",
+                "end",
+                "originalStart",
+                "@removed",
+                "_sync_metadata",
+            }
+        }
+    )
+    if "_sync_metadata" in base_event:
+        merged["_sync_metadata"] = base_event["_sync_metadata"]
+    return merged
+
+
+async def _hydrate_missing_identity_events(
+    client: httpx.AsyncClient,
+    events: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int, int]:
+    candidates = [event for event in events if _needs_identity_hydration(event)]
+    if not candidates:
+        return events, 0, 0
+
+    replacement_by_id: dict[str, dict[str, Any]] = {}
+
+    # Re-fetch the occurrence itself by ID. We do not derive the canonical UID
+    # from the series master because that can collapse multiple instances.
+    for event in candidates:
+        event_id = str(event["id"])
+        details = await _fetch_event_details(client, event_id)
+        if details and isinstance(details.get("iCalUId"), str) and details["iCalUId"]:
+            replacement_by_id[event_id] = _merge_event_details(event, details)
+
+    hydrated_count = 0
+    unresolved_count = 0
+    hydrated_events: list[dict[str, Any]] = []
+    for event in events:
+        event_id = event.get("id")
+        replacement = replacement_by_id.get(event_id) if isinstance(event_id, str) else None
+        if replacement is not None:
+            hydrated_events.append(replacement)
+            hydrated_count += 1
+            continue
+        if _needs_identity_hydration(event):
+            unresolved_count += 1
+        hydrated_events.append(event)
+
+    return hydrated_events, hydrated_count, unresolved_count
 
 
 def _filter_old_events(
@@ -151,7 +254,7 @@ async def fetch_events(
 
     Microsoft Graph delta sync returns:
     - Added/modified events as regular event objects with FULL properties
-    - Deleted events with @removed annotation (we mark these with isCancelled=true)
+    - Deleted events with @removed annotation (we mark these as mailbox-level deletions)
     - A new deltaLink to use for the next sync
 
     Args:
@@ -299,6 +402,24 @@ async def fetch_events(
                     break
             else:
                 break
+
+        hydrated_count = 0
+        unresolved_hydration_count = 0
+        if all_items:
+            (
+                all_items,
+                hydrated_count,
+                unresolved_hydration_count,
+            ) = await _hydrate_missing_identity_events(
+                client,
+                all_items,
+            )
+            if hydrated_count > 0 or unresolved_hydration_count > 0:
+                logger.info(
+                    "Outlook Calendar: hydrated %d event(s) missing iCalUId; %d still unresolved",
+                    hydrated_count,
+                    unresolved_hydration_count,
+                )
 
     # For incremental syncs using unbounded delta, filter out very old events
     # to avoid processing events from years ago that were modified
