@@ -73,6 +73,7 @@ class DealListItem(BaseModel):
     deal_status: str
     probability: float | None
     close_date: datetime | None
+    expected_close_date: datetime | None = None
     stage_name: str | None
     stage_label: str | None
     pipeline_name: str | None
