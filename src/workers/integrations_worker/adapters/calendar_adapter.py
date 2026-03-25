@@ -37,7 +37,7 @@ async def upsert_calendar_incremental(
     integration: KnowledgeIntegration,
     provider: str,
     events: Iterable[dict[str, Any]],
-) -> int:
+) -> dict[str, Any]:
     """
     Sync calendar events using incremental optimization.
 
@@ -47,10 +47,9 @@ async def upsert_calendar_incremental(
     - Tracks action counts for observability
 
     Returns:
-        Number of successfully processed records
+        Full sync result dict with breakdown counts.
     """
     service = CalendarSyncService(session, organisation_id)
-    result = await service.sync_calendar_events_incremental(
+    return await service.sync_calendar_events_incremental(
         integration=integration, events=events, provider=provider
     )
-    return result.get("records_processed", 0)

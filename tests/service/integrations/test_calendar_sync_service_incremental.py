@@ -54,6 +54,9 @@ def _has_meaningful_event_changes(existing, incoming, provider) -> bool:
         # Organizer
         organizer = incoming.get("organizer", {})
         fields["organiser_email"] = organizer.get("email")
+        fields["organiser_name"] = organizer.get("displayName")
+        fields["calendar_external_id"] = incoming.get("calendarId")
+        fields["timezone"] = start.get("timeZone")
     else:  # microsoft/outlook
         is_cancelled = incoming.get("isCancelled", False)
         fields = {
@@ -82,6 +85,8 @@ def _has_meaningful_event_changes(existing, incoming, provider) -> bool:
         # Organizer
         organizer = incoming.get("organizer", {}).get("emailAddress", {})
         fields["organiser_email"] = organizer.get("address")
+        fields["organiser_name"] = organizer.get("name")
+        fields["timezone"] = start.get("timeZone")
 
     # Check source_modified_at as primary indicator
     incoming_modified = fields.get("source_modified_at")
@@ -104,6 +109,18 @@ def _has_meaningful_event_changes(existing, incoming, provider) -> bool:
 
     for existing_val, incoming_val in checks:
         if existing_val is None and incoming_val is None:
+            continue
+        if existing_val != incoming_val:
+            return True
+
+    optional_checks = [
+        (existing.organiser_name, fields.get("organiser_name")),
+        (existing.calendar_external_id, fields.get("calendar_external_id")),
+        (existing.timezone, fields.get("timezone")),
+    ]
+
+    for existing_val, incoming_val in optional_checks:
+        if incoming_val is None:
             continue
         if existing_val != incoming_val:
             return True
@@ -148,6 +165,9 @@ class TestCalendarEventHasMeaningfulChanges:
         event.status = "confirmed"
         event.conference_link = "https://meet.google.com/abc-defg-hij"
         event.organiser_email = "organizer@company.com"
+        event.organiser_name = "Organizer Name"
+        event.calendar_external_id = "primary"
+        event.timezone = "UTC"
         event.start_at = datetime(2024, 1, 15, 10, 0, 0)
         event.end_at = datetime(2024, 1, 15, 10, 30, 0)
         event.attendee_count = 5
@@ -235,6 +255,24 @@ class TestCalendarEventHasMeaningfulChanges:
         result = _has_meaningful_event_changes(mock_event, incoming, "google")
         assert result is True
 
+    def test_detects_sparse_field_rehydration(self, mock_event) -> None:
+        """Missing organiser_name/timezone on an old row should trigger refresh."""
+        mock_event.organiser_name = None
+        mock_event.timezone = None
+
+        incoming = {
+            "summary": "Team Standup",
+            "description": "Daily standup meeting",
+            "location": "Conference Room A",
+            "status": "confirmed",
+            "start": {"dateTime": "2024-01-15T10:00:00Z", "timeZone": "Asia/Kolkata"},
+            "end": {"dateTime": "2024-01-15T10:30:00Z"},
+            "attendees": [{}] * 5,
+            "organizer": {"email": "organizer@company.com", "displayName": "Organizer Name"},
+        }
+        result = _has_meaningful_event_changes(mock_event, incoming, "google")
+        assert result is True
+
     def test_no_change_returns_false(self, mock_event) -> None:
         """No meaningful change should return False."""
         incoming = {
@@ -242,7 +280,7 @@ class TestCalendarEventHasMeaningfulChanges:
             "description": "Daily standup meeting",
             "location": "Conference Room A",
             "status": "confirmed",
-            "start": {"dateTime": "2024-01-15T10:00:00Z"},
+            "start": {"dateTime": "2024-01-15T10:00:00Z", "timeZone": "UTC"},
             "end": {"dateTime": "2024-01-15T10:30:00Z"},
             "attendees": [{}] * 5,
             "conferenceData": {
@@ -250,7 +288,8 @@ class TestCalendarEventHasMeaningfulChanges:
                     {"entryPointType": "video", "uri": "https://meet.google.com/abc-defg-hij"}
                 ]
             },
-            "organizer": {"email": "organizer@company.com"},
+            "organizer": {"email": "organizer@company.com", "displayName": "Organizer Name"},
+            "calendarId": "primary",
         }
         result = _has_meaningful_event_changes(mock_event, incoming, "google")
         assert result is False
@@ -264,6 +303,9 @@ class TestCalendarEventHasMeaningfulChanges:
         mock_event.status = None
         mock_event.conference_link = None
         mock_event.organiser_email = None
+        mock_event.organiser_name = None
+        mock_event.calendar_external_id = None
+        mock_event.timezone = None
         mock_event.start_at = None
         mock_event.end_at = None
         mock_event.attendee_count = 0
@@ -386,6 +428,9 @@ class TestGoogleCalendarFieldExtraction:
         mock_event.status = None
         mock_event.conference_link = None
         mock_event.organiser_email = None
+        mock_event.organiser_name = None
+        mock_event.calendar_external_id = None
+        mock_event.timezone = None
         mock_event.start_at = datetime(2024, 1, 15, 0, 0, 0)
         mock_event.end_at = datetime(2024, 1, 16, 0, 0, 0)
         mock_event.attendee_count = 0
@@ -650,6 +695,9 @@ class TestCalendarIncrementalScenarios:
         mock_existing.status = "confirmed"
         mock_existing.conference_link = None
         mock_existing.organiser_email = "host@company.com"
+        mock_existing.organiser_name = None
+        mock_existing.calendar_external_id = None
+        mock_existing.timezone = None
         mock_existing.start_at = datetime(2024, 1, 15, 10, 0, 0)
         mock_existing.end_at = datetime(2024, 1, 15, 10, 30, 0)
         mock_existing.attendee_count = 5

@@ -1,29 +1,14 @@
-"""
-Tier 2: Organization-level calendar sync task.
+"""Tier 2: Organization-level calendar sync task.
 
-Syncs all calendar integrations for a specific organization.
+Syncs all active calendar integrations for one org. Dispatched by
+sync_calendar_all_orgs_task (Tier 1), calls provider APIs inline (not via
+sync_integration_data_task) because calendar sync needs cursor management
+that doesn't fit the generic dispatch pattern.
 
-This task:
-1. Queries org DB for all active calendar integrations
-2. For each integration, fetches events and syncs using CalendarSyncService
-3. Returns org-level aggregated results
-
-Architecture:
-    sync_calendar_all_orgs_task [Tier 1]
-        |
-    sync_calendar_org_task [Tier 2 - this file] (one per org)
-        |
-    CalendarSyncService (for each integration, inline)
-
-NOTE: This task calls the sync service directly (similar to CRM/Email pattern),
-not via sync_integration_data_task dispatch.
-
-Session Management:
-    This task follows the "fresh session" pattern to avoid holding database
-    connections during long-running external API calls:
-    1. Session 1: Query integrations, extract needed data, release session
-    2. Fetch events from external APIs (NO session held)
-    3. Session 2: Re-query integration, upsert events, update metadata, release
+Uses the fresh-session pattern: extract integration metadata → release DB
+connection → call external APIs → acquire fresh session to persist. This
+avoids holding a connection during potentially slow provider calls (Google
+Calendar / Outlook Graph can take 5-30s per page).
 """
 
 from __future__ import annotations
@@ -71,11 +56,11 @@ logger = get_logger(__name__)
 
 @dataclass
 class IntegrationFetchData:
-    """Data extracted from integration needed for fetching events.
+    """Snapshot of integration state needed for external API calls.
 
-    This dataclass holds the minimal data needed to fetch events from
-    external APIs, allowing us to release the database session before
-    making potentially long-running API calls.
+    Extracted from the DB so the session can be released before slow
+    provider fetches. Fields are intentionally plain types (not ORM models)
+    to avoid detached-instance errors outside the session scope.
     """
 
     integration_id: UUID
@@ -89,7 +74,6 @@ class IntegrationFetchData:
     calendar_delta_link: str | None  # Outlook deltaLink or Google syncToken
 
 
-# Calendar integration types to sync
 CALENDAR_INTEGRATION_TYPES = (
     IntegrationType.GOOGLE_CALENDAR,
     IntegrationType.OUTLOOK_CALENDAR,
@@ -101,20 +85,23 @@ def _resolve_provider_config_key(
     integration_type: IntegrationType,
     connection_metadata: dict[str, Any] | None,
 ) -> str:
-    """Resolve provider config key with metadata-first strategy.
+    """Resolve Nango provider config key, preferring metadata over defaults.
 
-    Why this exists:
-    - Nango provider config keys can differ across environments.
-    - For Google Calendar, some environments use
-      `google-calendar` as the provider key used by proxy calls.
+    Nango provider keys differ across environments (e.g. Google Calendar uses
+    `google-calendar` in some envs). Metadata-first lets per-connection
+    overrides win without environment-specific branching.
     """
     metadata = connection_metadata or {}
     metadata_key = metadata.get("provider_config_key")
-    if isinstance(metadata_key, str) and metadata_key.strip():
-        return metadata_key.strip()
 
     if integration_type == IntegrationType.GOOGLE_CALENDAR:
+        normalized_metadata_key = metadata_key.strip() if isinstance(metadata_key, str) else ""
+        if normalized_metadata_key in {"google-calendar", "google_calendar"}:
+            return "google-calendar"
         return to_nango_connect_integration_key(integration_type)
+
+    if isinstance(metadata_key, str) and metadata_key.strip():
+        return metadata_key.strip()
 
     return to_nango_provider_key(integration_type)
 
@@ -123,59 +110,37 @@ def _resolve_provider_config_key(
     name="integrations.sync_calendar_org",
     bind=True,
     max_retries=2,
-    default_retry_delay=120,  # 2 minutes between retries
+    default_retry_delay=120,
+    # acks_late: if the worker crashes mid-sync, the message returns to the queue
+    # and another worker retries — prevents silent data loss on OOM or deploy.
     acks_late=True,
-    soft_time_limit=600,  # 10 minutes soft limit
-    time_limit=660,  # 11 minutes hard limit
+    soft_time_limit=600,
+    time_limit=660,
 )
 def sync_calendar_org_task(
     self: Task,
     organisation_id: str,
 ) -> dict[str, Any]:
-    """
-    Tier 2: Sync all calendar integrations for one organization.
+    """Sync all calendar integrations for one organization.
 
-    Triggered by: sync_calendar_all_orgs_task (Tier 1)
-
-    This task loops through all active calendar integrations for the org
-    and syncs calendar events using CalendarSyncService.
+    Triggered by sync_calendar_all_orgs_task (Tier 1). Iterates each active
+    calendar integration, fetches events from the provider, and persists them.
+    On success, dispatches deal-matching to link new events to deals.
 
     Args:
-        organisation_id: The organization UUID string
+        organisation_id: The organization UUID string.
 
     Returns:
-        Dictionary with org-level sync results:
-        {
-            "status": "completed",
-            "organisation_id": "uuid",
-            "started_at": "...",
-            "completed_at": "...",
-            "summary": {
-                "total_integrations": 2,
-                "successful": 2,
-                "failed": 0,
-                "total_events_synced": 150
-            },
-            "integration_results": [...]
-        }
+        Dict with status, summary counts, and per-integration results.
     """
     started_at = datetime.now(UTC).isoformat()
     org_id = UUID(organisation_id)
 
     async def _sync_org() -> dict[str, Any]:
-        """Sync all calendar integrations for the organization.
-
-        Uses fresh session pattern:
-        1. Session 1: Query integrations, extract data, release session
-        2. Fetch events from external APIs (NO session held)
-        3. Session 2: Re-query integration, upsert events, update metadata
-        """
         logger.info("Starting calendar sync for organization (Tier 2): %s", org_id)
 
-        # ─────────────────────────────────────────────────────────────────────
-        # Phase 1: Query integrations and extract data needed for fetching
-        # Session is released after this block
-        # ─────────────────────────────────────────────────────────────────────
+        # Session released after this block — extract into plain dataclass so
+        # the connection returns to the pool before slow provider API calls.
         integration_fetch_list: list[IntegrationFetchData] = []
 
         async for session in acquire_org_async_session(org_id):
@@ -209,9 +174,10 @@ def sync_calendar_org_task(
                 org_id,
             )
 
-            # Extract data needed for fetching (to release session before API calls)
             for integration_row in integrations:
                 connection_id = integration_row.connection_id
+                # Not redundant with the isnot(None) filter above — catches empty
+                # strings which pass IS NOT NULL but are unusable as connection IDs.
                 if not connection_id:
                     logger.warning(
                         "Skipping integration with no connection_id: %s",
@@ -219,18 +185,22 @@ def sync_calendar_org_task(
                     )
                     continue
 
+                # SQLModel sometimes returns the raw string instead of the enum
+                # instance depending on driver/session state — normalize here.
                 int_type = (
                     IntegrationType(integration_row.integration_type)
                     if isinstance(integration_row.integration_type, str)
                     else integration_row.integration_type
                 )
+
+                # Get Integration type from providers
                 _, provider = categorize_integration_type(int_type)
                 provider_config_key = _resolve_provider_config_key(
                     integration_type=int_type,
                     connection_metadata=integration_row.connection_metadata,
                 )
 
-                # Single shared calendar cursor key per integration row.
+                # Only fetch cursor on incremental syncs — initial syncs use time-bounded window
                 connection_metadata = integration_row.connection_metadata or {}
                 calendar_delta_link = None
                 if integration_row.last_synced_at is not None:
@@ -249,8 +219,6 @@ def sync_calendar_org_task(
                         calendar_delta_link=calendar_delta_link,
                     )
                 )
-        # Session is now released
-
         if not integration_fetch_list:
             return {
                 "status": "completed",
@@ -266,10 +234,6 @@ def sync_calendar_org_task(
                 "integration_results": [],
             }
 
-        # ─────────────────────────────────────────────────────────────────────
-        # Phase 2 & 3: For each integration, fetch events then persist
-        # External API calls happen WITHOUT holding a database session
-        # ─────────────────────────────────────────────────────────────────────
         integration_results: list[dict[str, Any]] = []
         successful = 0
         failed = 0
@@ -286,9 +250,7 @@ def sync_calendar_org_task(
                 )
 
                 try:
-                    # ─────────────────────────────────────────────────────────
-                    # Phase 2: Fetch events from external API (NO session held)
-                    # ─────────────────────────────────────────────────────────
+                    # exhaustion when Google/Outlook APIs are slow.
                     events: list[dict[str, Any]]
                     new_calendar_delta_link: str | None = None
 
@@ -327,11 +289,9 @@ def sync_calendar_org_task(
                         fetch_data.integration_id,
                     )
 
-                    # ─────────────────────────────────────────────────────────
-                    # Phase 3: Persist to database (acquire fresh session)
-                    # ─────────────────────────────────────────────────────────
+                    # Fresh session for persist — re-query integration because
+                    # the Phase 1 instance is detached from any session.
                     async for session in acquire_org_async_session(org_id):
-                        # Re-query integration to get fresh instance attached to session
                         stmt = select(KnowledgeIntegration).where(
                             col(KnowledgeIntegration.integration_id) == fetch_data.integration_id,
                         )
@@ -354,16 +314,17 @@ def sync_calendar_org_task(
                             )
                             continue
 
-                        # Sync events to database
-                        records_synced = await upsert_calendar_incremental(
+                        sync_result = await upsert_calendar_incremental(
                             session=session,
                             organisation_id=org_id,
                             integration=integration_db,
                             provider=fetch_data.provider,
                             events=events,
                         )
+                        records_synced = sync_result.get("records_processed", 0)
 
-                        # Persist cursor after successful fetch+persist.
+                        # Save cursor only after successful persist — if we crash
+                        # before commit, the next sync re-fetches from the old cursor.
                         updated_metadata = dict(integration_db.connection_metadata or {})
                         if new_calendar_delta_link:
                             updated_metadata = set_calendar_delta_link(
@@ -378,7 +339,8 @@ def sync_calendar_org_task(
                             )
                         integration_db.connection_metadata = updated_metadata
 
-                        # Update last_synced_at
+                        # Strip tzinfo — column is `timestamp without time zone`; asyncpg
+                        # rejects tz-aware datetimes for tz-naive columns.
                         integration_db.last_synced_at = datetime.now(UTC).replace(tzinfo=None)
                         session.add(integration_db)
                         await session.commit()
@@ -392,10 +354,9 @@ def sync_calendar_org_task(
                                 "integration_type": fetch_data.integration_type_value,
                                 "status": "success",
                                 "events_synced": records_synced,
+                                "sync_breakdown": sync_result,
                             }
                         )
-                    # Session released after this block
-
                 except Exception as e:
                     logger.error(
                         "Failed to sync calendar integration: org=%s integration=%s error=%s",
@@ -418,7 +379,6 @@ def sync_calendar_org_task(
 
         completed_at = datetime.now(UTC).isoformat()
 
-        # Determine overall status
         if failed == 0:
             status = "completed"
         elif successful == 0:
@@ -434,7 +394,8 @@ def sync_calendar_org_task(
             total_events,
         )
 
-        # Dispatch Task 2: Match calendar events to deals
+        # Trigger deal matching only when new events were persisted — avoids
+        # unnecessary deal_worker load on no-op syncs.
         if total_events > 0:
             app.send_task(
                 "deal.match_calendar_to_deals_org",
@@ -467,7 +428,6 @@ def sync_calendar_org_task(
             exc_info=True,
         )
 
-        # Check if we should retry
         if self.request.retries < self.max_retries:
             logger.info(
                 "Retrying calendar org sync: org=%s attempt=%d/%d",

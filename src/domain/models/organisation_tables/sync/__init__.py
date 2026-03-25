@@ -6,6 +6,7 @@ from .calendar import (
     CalendarAttendee,
     CalendarEvent,
     CalendarEventDealAssociation,
+    CalendarEventUserState,
     GenerationStatus,
 )
 
@@ -111,6 +112,7 @@ __all__ = [
     "CalendarEvent",
     "CalendarAttendee",
     "CalendarEventDealAssociation",
+    "CalendarEventUserState",
     "AssociationStatus",
     "GenerationStatus",
     "IntegrationType",
