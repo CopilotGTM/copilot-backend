@@ -48,7 +48,7 @@ class DealWorkerConfig(BaseWorkerConfig):
             "stakeholder.sync_deal_stakeholders",
             "stakeholder.sync_all_deals_stakeholders_org",
             "stakeholder.sync_all_deals_stakeholders_all_orgs",
-            "stakeholder.trigger_analysis_all_orgs",
+            # "stakeholder.trigger_analysis_all_orgs",  # Disabled — uses pipeline dispatch now
             # Deal import
             "deal_import_task.process",
             # Calendar matching
@@ -87,7 +87,7 @@ class DealWorkerConfig(BaseWorkerConfig):
             "deal_summary_task.process",
             # Stakeholder analysis tasks (LLM heavy)
             "stakeholder.analyze_deal_stakeholders_task",
-            "stakeholder.analyze_org_stakeholders_task",
+            # "stakeholder.analyze_org_stakeholders_task",  # Disabled — uses pipeline dispatch now
             # Transcript upload tasks
             "transcript_upload_task.process",
             # Risk/Blocker extraction tasks

@@ -6,11 +6,9 @@ from .deal_asset_post_upload_task import deal_asset_post_upload
 from .deal_import_tasks import process_deal_import_job
 from .deal_insight_tasks import (
     analyze_deal_stakeholders_task,
-    analyze_org_stakeholders_task,
     extract_deal_risks_blockers_task,
     process_deal_summary_job,
     trigger_extraction_all_orgs,
-    trigger_stakeholder_analysis_all_orgs,
 )
 from .deal_mappers import (
     exclude_timeline_event_task,
@@ -55,8 +53,6 @@ __all__ = [
     "process_deal_import_job",
     # Stakeholder analysis tasks
     "analyze_deal_stakeholders_task",
-    "analyze_org_stakeholders_task",
-    "trigger_stakeholder_analysis_all_orgs",
     # Risk/blocker extraction tasks
     "extract_deal_risks_blockers_task",
     "trigger_extraction_all_orgs",
