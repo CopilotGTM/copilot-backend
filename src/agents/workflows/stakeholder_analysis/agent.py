@@ -22,6 +22,7 @@ from uuid import UUID
 from agno.agent import Agent
 from agno.models.azure.openai_chat import AzureOpenAI
 
+from src.agents.common.token_tracking import TokenUsageData, extract_token_usage
 from src.agents.context import AgentContext
 from src.agents.tools.registry import get_tools_for_agent
 from src.agents.workflows.stakeholder_analysis.models import DealStakeholdersAnalysisData
@@ -58,6 +59,7 @@ class StakeholderAnalysisAgent:
         self.organisation_id = organisation_id
         self.deal_id = deal_id
         self.publisher = publisher
+        self.last_token_usage: TokenUsageData | None = None
 
         self.context = AgentContext(
             organisation_id=organisation_id,
@@ -112,6 +114,9 @@ class StakeholderAnalysisAgent:
         )
 
         response = await self.agent.arun(user_prompt)
+
+        self.last_token_usage = extract_token_usage(response, agent_name="StakeholderAnalysisAgent")
+
         content = response.content
 
         logger.info("StakeholderAnalysisAgent completed analysis for deal %s", self.deal_id)

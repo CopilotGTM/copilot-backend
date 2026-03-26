@@ -112,6 +112,7 @@ class RiskBlockerExtractionService:
         """
         self.organisation_id = organisation_id
         self.publisher = publisher
+        self.last_token_usage = None
 
     def _publish_progress(self, message: str, step: str, progress: float) -> None:
         """Publish progress update if publisher is available."""
@@ -249,6 +250,7 @@ class RiskBlockerExtractionService:
             org_name=org_name,
         )
         result = await agent.extract()
+        self.last_token_usage = agent.last_token_usage
 
         # Phase 3: Save result (fresh session)
         self._publish_progress("Creating risk/blocker records...", "saving", 0.9)

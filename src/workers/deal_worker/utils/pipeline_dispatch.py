@@ -22,7 +22,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.domain.models.organisation_tables.job_models import DealJobs, DealJobType, JobStatus
+from src.infra.database.sessions import org_session_scope
+from src.infra.utils.logger import get_logger
 from src.workers.deal_worker.client import get_deal_celery_client
+
+logger = get_logger(__name__)
 
 AUTOMATED_PIPELINE_USER_ID = UUID("00000000-0000-0000-0000-000000000001")
 
@@ -119,6 +123,56 @@ async def get_or_create_deal_memory_job(
     return job.job_id, True
 
 
+def _create_pipeline_jobs(
+    organisation_id: str,
+    deal_id: str,
+) -> tuple[str, str]:
+    """Create DealJobs records for risk/blocker extraction and stakeholder analysis.
+
+    Jobs are created BEFORE Celery dispatch so the UI can show PENDING status
+    immediately and costing data has a record to attach to.
+
+    Returns:
+        Tuple of (risk_blocker_job_id, stakeholder_job_id) as strings.
+    """
+    org_uuid = UUID(organisation_id)
+    deal_uuid = UUID(deal_id)
+
+    with org_session_scope(org_uuid) as session:
+        risk_job = DealJobs(
+            organisation_id=org_uuid,
+            user_id=AUTOMATED_PIPELINE_USER_ID,
+            job_type=DealJobType.RISK_BLOCKER_EXTRACTION,
+            deal_id=deal_uuid,
+            status=JobStatus.PENDING,
+            job_metadata={"source": "automated_pipeline"},
+        )
+        stakeholder_job = DealJobs(
+            organisation_id=org_uuid,
+            user_id=AUTOMATED_PIPELINE_USER_ID,
+            job_type=DealJobType.STAKEHOLDER_ANALYSIS,
+            deal_id=deal_uuid,
+            status=JobStatus.PENDING,
+            job_metadata={"source": "automated_pipeline"},
+        )
+        session.add(risk_job)
+        session.add(stakeholder_job)
+        session.flush()
+
+        risk_job_id = str(risk_job.job_id)
+        stakeholder_job_id = str(stakeholder_job.job_id)
+
+        session.commit()
+
+    logger.info(
+        "Created pipeline jobs for deal %s: risk=%s, stakeholder=%s",
+        deal_id,
+        risk_job_id,
+        stakeholder_job_id,
+    )
+    return risk_job_id, stakeholder_job_id
+
+
 def build_deal_insight_pipeline(
     organisation_id: str,
     deal_id: str,
@@ -143,6 +197,9 @@ def build_deal_insight_pipeline(
     """
     celery_app = get_deal_celery_client()
 
+    # Create DealJobs records for risk/stakeholder BEFORE dispatch
+    risk_job_id, stakeholder_job_id = _create_pipeline_jobs(organisation_id, deal_id)
+
     # Deal Memory runs first — builds the foundational deal narrative.
     deal_memory_sig = celery_app.signature(
         "deal_memory.process_job",
@@ -153,13 +210,21 @@ def build_deal_insight_pipeline(
     # Risk and Stakeholder run in parallel after deal memory completes.
     risk_blocker_sig = celery_app.signature(
         "risk_blocker.extract_deal_risks_blockers_task",
-        args=[organisation_id, deal_id],
+        kwargs={
+            "organisation_id": organisation_id,
+            "deal_id": deal_id,
+            "job_id": risk_job_id,
+        },
         queue="deal_jobs",
         immutable=True,
     )
     stakeholder_sig = celery_app.signature(
         "stakeholder.analyze_deal_stakeholders_task",
-        args=[organisation_id, deal_id],
+        kwargs={
+            "organisation_id": organisation_id,
+            "deal_id": deal_id,
+            "job_id": stakeholder_job_id,
+        },
         queue="deal_jobs",
         immutable=True,
     )

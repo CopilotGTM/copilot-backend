@@ -19,6 +19,7 @@ See docs/Technical Documentation/deal/risk-blocker-extraction-tasks.md for full 
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
@@ -27,6 +28,7 @@ from sqlalchemy import select
 from sqlmodel import col
 
 from src.domain.models.master_tables.organisation_models import Organisation, OrganisationStatus
+from src.domain.models.organisation_tables.job_models import DealJobs, DealJobType, JobStatus
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal, CRMDealStatus
 from src.infra.database.factory import get_async_provider
 from src.infra.database.sessions import acquire_org_async_session
@@ -36,6 +38,7 @@ from src.workers.deal_worker.celery_app import app
 from src.workers.deal_worker.services.deal_insight_services.risk_blocker_extraction_service import (
     RiskBlockerExtractionService,
 )
+from src.workers.deal_worker.utils.pipeline_dispatch import AUTOMATED_PIPELINE_USER_ID
 
 logger = get_logger(__name__)
 
@@ -52,6 +55,7 @@ def extract_deal_risks_blockers_task(
     self: Task,
     organisation_id: str,
     deal_id: str,
+    job_id: str | None = None,
     force: bool = False,
 ) -> dict[str, Any]:
     """Extract risks and blockers for a specific deal.
@@ -62,24 +66,64 @@ def extract_deal_risks_blockers_task(
     Args:
         organisation_id: UUID of the organization (string for JSON serialization)
         deal_id: UUID of the deal (string for JSON serialization)
+        job_id: Optional pre-created DealJobs ID for costing. Created inline if absent.
         force: Whether to re-process all sources
 
     Returns:
         Dictionary with extraction results
     """
     logger.info(
-        "Starting risk/blocker extraction for deal %s in org %s",
+        "Starting risk/blocker extraction for deal %s in org %s (job=%s)",
         deal_id,
         organisation_id,
+        job_id,
     )
 
     async def _run() -> dict[str, Any]:
         org_uuid = UUID(organisation_id)
         deal_uuid = UUID(deal_id)
+        job_uuid: UUID | None = UUID(job_id) if job_id else None
 
-        # Service manages its own sessions (fresh session pattern)
+        # Phase 1: Mark job as IN_PROGRESS (if job exists)
+        if job_uuid:
+            async for session in acquire_org_async_session(org_uuid):
+                job = await session.get(DealJobs, job_uuid)
+                if job:
+                    job.status = JobStatus.IN_PROGRESS
+                    await session.commit()
+
+        # Phase 2: Call service (service manages its own sessions)
         service = RiskBlockerExtractionService(org_uuid)
-        return await service.process_deal(deal_uuid, force=force)
+        try:
+            result = await service.process_deal(deal_uuid, force=force)
+        except Exception as e:
+            if job_uuid:
+                async for session in acquire_org_async_session(org_uuid):
+                    job = await session.get(DealJobs, job_uuid)
+                    if job:
+                        job.status = JobStatus.FAILED
+                        job.error_message = str(e)[:500]
+                        await session.commit()
+            raise
+
+        # Phase 3: Save costing (fresh session)
+        if job_uuid:
+            token_usage = service.last_token_usage
+            async for session in acquire_org_async_session(org_uuid):
+                job = await session.get(DealJobs, job_uuid)
+                if job:
+                    job.status = JobStatus.COMPLETED
+                    job.result_data = result
+                    if token_usage:
+                        job.token_usage = token_usage.to_dict()
+                        job.model_name = token_usage.model_name
+                        if token_usage.cost is not None:
+                            job.cost = Decimal(str(token_usage.cost))
+                        if token_usage.duration_seconds is not None:
+                            job.latency_ms = int(token_usage.duration_seconds * 1000)
+                    await session.commit()
+
+        return result
 
     try:
         result = run_async(_run())
@@ -140,12 +184,27 @@ def trigger_extraction_all_orgs(self: Task) -> dict[str, int]:
                     )
                     deal_ids = [str(row[0]) for row in deal_result.all()]
 
-                    for deal_id in deal_ids:
+                    for d_id in deal_ids:
+                        # Create job before dispatching
+                        risk_job = DealJobs(
+                            organisation_id=org.organisation_id,
+                            user_id=AUTOMATED_PIPELINE_USER_ID,
+                            job_type=DealJobType.RISK_BLOCKER_EXTRACTION,
+                            deal_id=UUID(d_id),
+                            status=JobStatus.PENDING,
+                            job_metadata={"source": "periodic_trigger"},
+                        )
+                        session.add(risk_job)
+                        await session.flush()
+
                         extract_deal_risks_blockers_task.delay(
                             organisation_id=str(org.organisation_id),
-                            deal_id=deal_id,
+                            deal_id=d_id,
+                            job_id=str(risk_job.job_id),
                         )
                         triggered_count += 1
+
+                    await session.commit()
 
             except Exception as e:
                 logger.warning(
