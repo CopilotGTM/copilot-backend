@@ -12,7 +12,6 @@ Session Handling:
 from __future__ import annotations
 
 import io
-import re
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -27,7 +26,6 @@ from src.domain.models.organisation_tables.sync.meeting_intelligence import (
     Meeting,
     MeetingSource,
     MeetingStatus,
-    TranscriptSegment,
 )
 from src.infra.database.sessions import acquire_org_async_session
 from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
@@ -152,65 +150,71 @@ class TranscriptUploadService:
                 paragraphs.append(para.text)
         return "\n\n".join(paragraphs)
 
-    # Pattern: @MM:SS or @H:MM:SS followed by " - Speaker Name"
-    _SPEAKER_RE = re.compile(r"^@(\d{1,2}:\d{2}(?::\d{2})?)\s*-\s*(.+)$")
+    # --- Segment parsing disabled: all consumers now use full_transcript ---
+    # Kept for reference in case we re-enable structured segments later.
 
-    def _parse_timestamp(self, ts: str) -> float:
-        """Convert MM:SS or H:MM:SS to seconds."""
-        parts = ts.split(":")
-        if len(parts) == 2:
-            return int(parts[0]) * 60 + int(parts[1])
-        return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
-
-    def _parse_segments(self, transcript_text: str) -> list[dict]:
-        """Parse transcript text into speaker segments.
-
-        Recognises the @MM:SS - Speaker Name pattern commonly found in
-        meeting transcripts exported from Otter.ai, Fireflies, etc.
-        """
-        segments: list[dict] = []
-        current_speaker: str | None = None
-        current_time: float | None = None
-        current_lines: list[str] = []
-
-        for line in transcript_text.split("\n"):
-            line = line.strip()
-            if not line:
-                continue
-
-            match = self._SPEAKER_RE.match(line)
-            if match:
-                # Flush previous segment
-                if current_speaker and current_lines:
-                    segments.append(
-                        {
-                            "speaker_name": current_speaker,
-                            "start_time_seconds": current_time,
-                            "content": " ".join(current_lines),
-                        }
-                    )
-                current_time = self._parse_timestamp(match.group(1))
-                current_speaker = match.group(2).strip()
-                current_lines = []
-            else:
-                current_lines.append(line)
-
-        # Flush last segment
-        if current_speaker and current_lines:
-            segments.append(
-                {
-                    "speaker_name": current_speaker,
-                    "start_time_seconds": current_time,
-                    "content": " ".join(current_lines),
-                }
-            )
-
-        return segments
+    # # Pattern: @MM:SS or @H:MM:SS followed by " - Speaker Name"
+    # _SPEAKER_RE = re.compile(r"^@(\d{1,2}:\d{2}(?::\d{2})?)\s*-\s*(.+)$")
+    #
+    # def _parse_timestamp(self, ts: str) -> float:
+    #     """Convert MM:SS or H:MM:SS to seconds."""
+    #     parts = ts.split(":")
+    #     if len(parts) == 2:
+    #         return int(parts[0]) * 60 + int(parts[1])
+    #     return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+    #
+    # def _parse_segments(self, transcript_text: str) -> list[dict]:
+    #     """Parse transcript text into speaker segments.
+    #
+    #     Recognises the @MM:SS - Speaker Name pattern commonly found in
+    #     meeting transcripts exported from Otter.ai, Fireflies, etc.
+    #     """
+    #     segments: list[dict] = []
+    #     current_speaker: str | None = None
+    #     current_time: float | None = None
+    #     current_lines: list[str] = []
+    #
+    #     for line in transcript_text.split("\n"):
+    #         line = line.strip()
+    #         if not line:
+    #             continue
+    #
+    #         match = self._SPEAKER_RE.match(line)
+    #         if match:
+    #             # Flush previous segment
+    #             if current_speaker and current_lines:
+    #                 segments.append(
+    #                     {
+    #                         "speaker_name": current_speaker,
+    #                         "start_time_seconds": current_time,
+    #                         "content": " ".join(current_lines),
+    #                     }
+    #                 )
+    #             current_time = self._parse_timestamp(match.group(1))
+    #             current_speaker = match.group(2).strip()
+    #             current_lines = []
+    #         else:
+    #             current_lines.append(line)
+    #
+    #     # Flush last segment
+    #     if current_speaker and current_lines:
+    #         segments.append(
+    #             {
+    #                 "speaker_name": current_speaker,
+    #                 "start_time_seconds": current_time,
+    #                 "content": " ".join(current_lines),
+    #             }
+    #         )
+    #
+    #     return segments
 
     async def _save_meeting(self, transcript_text: str, storage_path: str) -> UUID:
-        """Create or update Meeting record with extracted transcript and segments."""
-        segments = self._parse_segments(transcript_text)
+        """Create or update Meeting record with extracted transcript.
 
+        Segments are NOT written — all consumers now read from full_transcript
+        directly. Segment parsing only handled one format (@MM:SS) anyway;
+        keeping it out avoids partial/broken data for other note-taker formats.
+        """
         async for session in acquire_org_async_session(self.organisation_id):
             # Check if a meeting already exists for this event
             stmt = select(Meeting).where(
@@ -248,24 +252,11 @@ class TranscriptUploadService:
                 await session.refresh(meeting)
                 meeting_id = meeting.meeting_id
 
-            # Save transcript segments
-            for idx, seg in enumerate(segments):
-                session.add(
-                    TranscriptSegment(
-                        meeting_id=meeting_id,
-                        segment_index=idx,
-                        speaker_name=seg["speaker_name"],
-                        start_time_seconds=seg["start_time_seconds"],
-                        content=seg["content"],
-                    )
-                )
-
             await session.commit()
 
             logger.info(
-                "Saved meeting %s with %d transcript segments",
+                "Saved meeting %s (full_transcript only, no segments)",
                 meeting_id,
-                len(segments),
             )
             return meeting_id
 
