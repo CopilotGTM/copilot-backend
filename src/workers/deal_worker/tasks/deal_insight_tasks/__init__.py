@@ -20,8 +20,6 @@ from src.workers.deal_worker.tasks.deal_insight_tasks.risk_blocker_extraction_ta
 )
 from src.workers.deal_worker.tasks.deal_insight_tasks.stakeholder_analysis_task import (
     analyze_deal_stakeholders_task,
-    analyze_org_stakeholders_task,
-    trigger_stakeholder_analysis_all_orgs,
 )
 
 __all__ = [
@@ -29,8 +27,6 @@ __all__ = [
     "process_deal_summary_job",
     # Stakeholder analysis
     "analyze_deal_stakeholders_task",
-    "analyze_org_stakeholders_task",
-    "trigger_stakeholder_analysis_all_orgs",
     # Risk/blocker extraction
     "extract_deal_risks_blockers_task",
     "trigger_extraction_all_orgs",
