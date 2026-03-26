@@ -79,6 +79,7 @@ class DealMemoryService:
         """
         self.organisation_id = organisation_id
         self.publisher = publisher
+        self.last_token_usage = None
 
     def _publish_progress(self, message: str, step: str, progress: float) -> None:
         """Publish progress update if publisher is available."""
@@ -167,6 +168,7 @@ class DealMemoryService:
                 trigger_type=trigger_type,
                 trigger_source_id=(str(trigger_source_id) if trigger_source_id else None),
             )
+            self.last_token_usage = agent.last_token_usage
         except Exception as exc:
             raise DealMemoryError(
                 f"AI generation failed: {exc}",

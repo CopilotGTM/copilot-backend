@@ -102,6 +102,7 @@ class DealSummaryService:
         """
         self.organisation_id = organisation_id
         self.publisher = publisher
+        self.last_token_usage = None
 
     def _publish_progress(self, message: str, step: str, progress: float) -> None:
         """Publish progress update if publisher is available."""
@@ -158,6 +159,7 @@ class DealSummaryService:
         )
         try:
             summary_data = await agent.generate()
+            self.last_token_usage = agent.last_token_usage
         except DealSummaryError:
             raise
         except Exception as exc:

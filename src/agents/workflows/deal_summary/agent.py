@@ -21,6 +21,7 @@ from uuid import UUID
 from agno.agent import Agent
 from agno.models.azure.openai_chat import AzureOpenAI
 
+from src.agents.common.token_tracking import TokenUsageData, extract_token_usage
 from src.agents.context import AgentContext
 from src.agents.tools.registry import get_tools_for_agent
 from src.agents.workflows.deal_summary.models import DealHealthStatus, DealSummaryData
@@ -72,6 +73,7 @@ class DealSummaryAgent:
         self.organisation_id = organisation_id
         self.deal_id = deal_id
         self.publisher = publisher
+        self.last_token_usage: TokenUsageData | None = None
 
         # Build context for tools (no session - tools acquire on-demand)
         # SECURITY: Both organisation_id and deal_id are immutable in context
@@ -136,6 +138,8 @@ class DealSummaryAgent:
         self._publish_progress("AI is gathering information...", "tools", 0.5)
 
         response = await self.agent.arun(user_prompt)
+
+        self.last_token_usage = extract_token_usage(response, agent_name="DealSummaryAgent")
 
         self._publish_progress("Finalizing summary...", "finalizing", 0.9)
 

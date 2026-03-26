@@ -12,6 +12,7 @@ from agno.agent import Agent
 from agno.models.azure.openai_chat import AzureOpenAI
 from agno.models.message import Message
 
+from src.agents.common.token_tracking import TokenUsageData, extract_token_usage
 from src.agents.context import AgentContext
 from src.agents.tools.registry import get_tools_for_agent
 from src.agents.workflows.deal_memory.prompts import (
@@ -37,6 +38,7 @@ class DealMemoryAgent:
         self.organisation_id = organisation_id
         self.deal_id = deal_id
         self.publisher = publisher
+        self.last_token_usage: TokenUsageData | None = None
         self.org_name = org_name or "Our Organization"
 
         self.context = AgentContext(
@@ -100,6 +102,8 @@ class DealMemoryAgent:
         ]
 
         response = await self.agent.arun(message_list)
+
+        self.last_token_usage = extract_token_usage(response, agent_name="DealMemoryAgent")
 
         content = response.content
         if isinstance(content, str):
