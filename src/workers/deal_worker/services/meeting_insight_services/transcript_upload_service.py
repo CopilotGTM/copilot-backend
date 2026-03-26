@@ -273,8 +273,10 @@ class TranscriptUploadService:
 
     async def _trigger_meeting_summary(self) -> UUID:
         """Create a MEETING_SUMMARY job and enqueue it."""
-        from src.workers.deal_worker.client import send_deal_task
+        from src.workers.deal_worker.client import send_deal_task_async
 
+        # Create job record (release session before Celery dispatch)
+        summary_job_id: UUID | None = None
         async for session in acquire_org_async_session(self.organisation_id):
             job = DealJobs(
                 organisation_id=self.organisation_id,
@@ -291,19 +293,22 @@ class TranscriptUploadService:
             session.add(job)
             await session.commit()
             await session.refresh(job)
+            summary_job_id = job.job_id
 
-            send_deal_task(
-                "meeting_summary_task.process",
-                args=[str(self.organisation_id), str(job.job_id)],
-                queue="deal_jobs",
-                routing_key="deal_jobs",
-            )
+        if not summary_job_id:
+            raise RuntimeError("Failed to acquire session")
 
-            logger.info(
-                "Triggered meeting summary job %s after transcript upload for event %s",
-                job.job_id,
-                self.event_id,
-            )
-            return job.job_id
+        # Dispatch Celery task AFTER session is released
+        await send_deal_task_async(
+            "meeting_summary_task.process",
+            args=[str(self.organisation_id), str(summary_job_id)],
+            queue="deal_jobs",
+            routing_key="deal_jobs",
+        )
 
-        raise RuntimeError("Failed to acquire session")
+        logger.info(
+            "Triggered meeting summary job %s after transcript upload for event %s",
+            summary_job_id,
+            self.event_id,
+        )
+        return summary_job_id
