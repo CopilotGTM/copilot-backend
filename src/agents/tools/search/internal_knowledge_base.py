@@ -1,6 +1,7 @@
 """Internal knowledge base search tool.
 
-Searches organisation documents and returns normalized results.
+Searches organisation documents using vector similarity (pgvector)
+with ILIKE fallback when embeddings are unavailable.
 """
 
 from __future__ import annotations
@@ -10,7 +11,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.agents.tools.base import db_session_lock, execute_with_capabilities
@@ -23,6 +24,28 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+async def _generate_query_embedding(query: str) -> list[float] | None:
+    """Generate an embedding vector for the search query.
+
+    Uses AzureOpenAIEmbedder (same model that indexed the documents)
+    so cosine similarity scores are meaningful.
+
+    Returns None on failure so callers can fall back to ILIKE.
+    """
+    try:
+        from agno.knowledge.embedder.azure_openai import AzureOpenAIEmbedder
+
+        embedder = AzureOpenAIEmbedder()
+        embedding = await embedder.async_get_embedding(query)
+        if embedding and len(embedding) > 0:
+            return embedding
+        logger.warning("Embedder returned empty vector for query: '%s'", query)
+        return None
+    except Exception as exc:
+        logger.warning("Failed to generate query embedding: %s", exc)
+        return None
+
+
 async def internal_knowledge_base(
     session: AsyncSession | None = None,
     organisation_id: UUID | None = None,
@@ -32,32 +55,16 @@ async def internal_knowledge_base(
     user_id: UUID | None = None,
     deal_id: str | None = None,
     context: AgentContext | None = None,
+    query_embedding: list[float] | None = None,
 ) -> list[dict[str, str]]:
-    """Search internal knowledge base (organisation documents) and return normalized results.
+    """Search internal knowledge base using vector similarity with ILIKE fallback.
 
-    Can be called with either explicit parameters OR an AgentContext object:
-    - New style: internal_knowledge_base(context=ctx, query="...", limit=5)
-    - Legacy style: internal_knowledge_base(session=s, organisation_id=oid, query="...", ...)
+    Primary strategy: use a pre-computed query embedding with pgvector
+    cosine distance (<=>) to find semantically similar documents.
+    Fallback: ILIKE substring match when no embedding is provided.
 
-    Returns a list of dictionaries with keys ``label``, ``url``, and ``snippet``.
-    - ``label``: Document name or a fallback identifier
-    - ``url``: Internal link format ``kb://org/{org_id}/doc/{document_id}#page={page}`` (if page available)
-    - ``snippet``: Content excerpt (first 200 chars)
-
-    Filters applied:
-    - ``is_searchable = True``
-    - ``is_archived = False``
-    - Organisation-wide docs (``is_org_wide = True``) OR user's personal docs
-    - Optional: filter by ``deal_id`` if provided
-
-    Args:
-        session: SQLAlchemy async session (organisation-scoped) - ignored if context provided
-        organisation_id: The organisation UUID - ignored if context provided
-        query: Search query string (basic ILIKE match on content)
-        limit: Maximum number of results to return (default 5)
-        user_id: Optional user UUID for filtering personal documents - ignored if context provided
-        deal_id: Optional deal identifier for filtering by deal - ignored if context provided
-        context: AgentContext object (preferred, contains session + metadata)
+    The caller should generate the embedding *before* acquiring locks/sessions
+    to avoid holding resources during the external API call.
     """
     # Extract parameters from context if provided
     use_context_session = False
@@ -88,7 +95,14 @@ async def internal_knowledge_base(
     # Use table columns for SQLAlchemy operations (keeps type checker happy)
     c = cast(Any, OrganisationDocument).__table__.c
 
-    # Build query
+    use_vector_search = query_embedding is not None
+
+    if use_vector_search:
+        logger.info("InternalKnowledgeBase: using vector similarity search")
+    else:
+        logger.info("InternalKnowledgeBase: falling back to ILIKE text search")
+
+    # Build base filters
     stmt = select(OrganisationDocument).where(
         c.is_searchable.is_(True),
         c.is_archived.is_(False),
@@ -109,12 +123,19 @@ async def internal_knowledge_base(
     if deal_id:
         stmt = stmt.where(c.deal_id == deal_id)
 
-    # Basic text search (ILIKE on content)
-    like_pattern = f"%{trimmed_query}%"
-    stmt = stmt.where(c.content.ilike(like_pattern))
+    if use_vector_search:
+        # Vector similarity search using pgvector cosine distance
+        # Only consider docs that have embeddings
+        stmt = stmt.where(c.embedding.is_not(None))
+        embedding_literal = str(query_embedding)
+        distance_expr = c.embedding.op("<=>")(text(f"'{embedding_literal}'::vector"))
+        stmt = stmt.order_by(distance_expr)
+    else:
+        # Fallback: ILIKE substring match on content
+        like_pattern = f"%{trimmed_query}%"
+        stmt = stmt.where(c.content.ilike(like_pattern))
+        stmt = stmt.order_by(c.created_at.desc())
 
-    # Order by created_at desc (most recent first)
-    stmt = stmt.order_by(c.created_at.desc())
     stmt = stmt.limit(effective_limit)
 
     # Execute query - acquire session on-demand if using context
@@ -198,6 +219,10 @@ def create_search_internal_knowledge(
             logger.warning("InternalKnowledgeBase unavailable: missing organisation_id")
             return []
 
+        # Generate embedding outside the lock to avoid blocking other tools
+        # during the external API call
+        query_embedding = await _generate_query_embedding(query)
+
         # Use lock to prevent concurrent session access
         # Agno may call multiple tools in parallel, but AsyncSession doesn't support that
         async with db_session_lock():
@@ -206,9 +231,10 @@ def create_search_internal_knowledge(
                 tool_name="InternalKnowledgeBase",
                 tool_func=internal_knowledge_base,
                 parameters={
-                    "context": context,  # Use context mode - acquires session on-demand
+                    "context": context,
                     "query": query,
                     "limit": limit,
+                    "query_embedding": query_embedding,
                 },
                 description=f"Searching knowledge base for: {query}",
                 fallback_value=[],
