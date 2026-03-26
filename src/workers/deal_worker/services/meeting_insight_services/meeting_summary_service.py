@@ -129,6 +129,7 @@ class MeetingSummaryService:
         self.deal_id = deal_id
         self.event_id = event_id
         self.publisher = publisher
+        self.last_token_usage = None
 
     def _publish_progress(self, message: str, stage: str, progress: float) -> None:
         """Publish progress if publisher is available."""
@@ -258,6 +259,7 @@ class MeetingSummaryService:
             org_name=org_name,
         )
         summary_data = await agent.generate(input_data)
+        self.last_token_usage = agent.last_token_usage
 
         self._publish_progress("Saving results...", "Saving", 0.9)
 

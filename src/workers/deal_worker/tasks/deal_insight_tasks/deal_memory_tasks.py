@@ -107,8 +107,8 @@ def process_deal_memory_job(self: Task, organisation_id: str, job_id: str):
         publisher = DealJobRedisPublisher(org_uuid, job_uuid, job_type_str)
 
         # Phase 2: Call service (service manages its own sessions)
+        service = DealMemoryService(org_uuid, publisher)
         try:
-            service = DealMemoryService(org_uuid, publisher)
             content = await service.build_or_update(
                 deal_id,
                 trigger_type=trigger_type,
@@ -128,12 +128,22 @@ def process_deal_memory_job(self: Task, organisation_id: str, job_id: str):
             publisher.publish_finalize("error")
             raise
 
-        # Phase 3: Save result (fresh session)
+        # Phase 3: Save result and costing (fresh session)
+        token_usage = service.last_token_usage
         async for session in acquire_org_async_session(org_uuid):
             job = await session.get(DealJobs, job_uuid)
             if job:
                 job.status = JobStatus.COMPLETED
                 job.result_data = {"token_count": len(content.split()) * 2}
+                if token_usage:
+                    job.token_usage = token_usage.to_dict()
+                    job.model_name = token_usage.model_name
+                    if token_usage.cost is not None:
+                        from decimal import Decimal
+
+                        job.cost = Decimal(str(token_usage.cost))
+                    if token_usage.duration_seconds is not None:
+                        job.latency_ms = int(token_usage.duration_seconds * 1000)
                 await session.commit()
 
         publisher.publish_finalize("done")

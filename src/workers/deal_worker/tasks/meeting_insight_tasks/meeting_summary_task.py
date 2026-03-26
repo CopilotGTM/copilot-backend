@@ -148,14 +148,14 @@ def process_meeting_summary(self: Task, organisation_id: str, job_id: str):
         publisher = DealJobRedisPublisher(org_uuid, job_uuid, job_type_str)
 
         # Phase 2: Call service (service manages its own sessions)
+        service = MeetingSummaryService(
+            organisation_id=org_uuid,
+            deal_id=deal_id,
+            event_id=event_id,
+            publisher=publisher,
+        )
         try:
             logger.info("Generating meeting summary for job %s", job_id)
-            service = MeetingSummaryService(
-                organisation_id=org_uuid,
-                deal_id=deal_id,
-                event_id=event_id,
-                publisher=publisher,
-            )
             result = await service.generate()
 
         except NonRetryableJobError as e:
@@ -198,12 +198,22 @@ def process_meeting_summary(self: Task, organisation_id: str, job_id: str):
             publisher.publish_finalize("error")
             raise
 
-        # Phase 3: Save result (fresh session)
+        # Phase 3: Save result and costing (fresh session)
+        token_usage = service.last_token_usage
         async for session in acquire_org_async_session(org_uuid):
             job = await session.get(DealJobs, job_uuid)
             if job:
                 job.status = JobStatus.COMPLETED
                 job.result_data = result
+                if token_usage:
+                    job.token_usage = token_usage.to_dict()
+                    job.model_name = token_usage.model_name
+                    if token_usage.cost is not None:
+                        from decimal import Decimal
+
+                        job.cost = Decimal(str(token_usage.cost))
+                    if token_usage.duration_seconds is not None:
+                        job.latency_ms = int(token_usage.duration_seconds * 1000)
                 await session.commit()
 
         publisher.publish_result(result)
