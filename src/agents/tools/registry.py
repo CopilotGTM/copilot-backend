@@ -102,6 +102,8 @@ class ToolName(str, Enum):
     # -------------------------------------------------------------------------
     LIST_DEAL_EMAILS = "list_deal_emails"
     GET_EMAIL_DETAILS = "get_email_details"
+    READ_CHAT_ATTACHMENT = "read_chat_attachment"
+    LIST_CHAT_ATTACHMENTS = "list_chat_attachments"
     LIST_DEAL_NOTES = "list_deal_notes"
     LIST_DEAL_CHANNEL_MESSAGES = "list_deal_channel_messages"
     FETCH_TEAMS_CHAT_MESSAGES = "fetch_teams_chat_messages"
@@ -223,6 +225,7 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         # Communication tools
         ToolName.LIST_DEAL_EMAILS,
         ToolName.GET_EMAIL_DETAILS,
+        ToolName.READ_CHAT_ATTACHMENT,
         ToolName.LIST_DEAL_NOTES,
         ToolName.LIST_DEAL_CHANNEL_MESSAGES,
         ToolName.CREATE_VISUALIZATION_CARD,  # Send visualization summary card
@@ -276,6 +279,7 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         # Communication tools
         ToolName.LIST_DEAL_EMAILS,
         ToolName.GET_EMAIL_DETAILS,
+        ToolName.READ_CHAT_ATTACHMENT,
         ToolName.LIST_DEAL_CHANNEL_MESSAGES,
         ToolName.LIST_DEAL_NOTES,  # Internal notes contain prep context
     },
@@ -320,6 +324,7 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         # Communication tools
         ToolName.LIST_DEAL_EMAILS,
         ToolName.GET_EMAIL_DETAILS,
+        ToolName.READ_CHAT_ATTACHMENT,
         ToolName.LIST_DEAL_CHANNEL_MESSAGES,
     },
     # -------------------------------------------------------------------------
@@ -347,6 +352,7 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         # Communication tools (targeted drill-down for quotes/evidence)
         ToolName.LIST_DEAL_EMAILS,
         ToolName.GET_EMAIL_DETAILS,
+        ToolName.READ_CHAT_ATTACHMENT,
         ToolName.LIST_DEAL_CHANNEL_MESSAGES,
         ToolName.LIST_DEAL_NOTES,
         # Knowledge base — verify technical risks against actual capabilities
@@ -373,6 +379,7 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         # Communication tools
         ToolName.LIST_DEAL_EMAILS,
         ToolName.GET_EMAIL_DETAILS,
+        ToolName.READ_CHAT_ATTACHMENT,
         ToolName.LIST_DEAL_NOTES,
         ToolName.LIST_DEAL_CHANNEL_MESSAGES,
     },
@@ -400,6 +407,7 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         # Communication tools
         ToolName.LIST_DEAL_EMAILS,
         ToolName.GET_EMAIL_DETAILS,
+        ToolName.READ_CHAT_ATTACHMENT,
         ToolName.LIST_DEAL_NOTES,
         ToolName.LIST_DEAL_CHANNEL_MESSAGES,  # Slack/Teams channel messages
     },
@@ -452,6 +460,8 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     # Communication
     ToolName.LIST_DEAL_EMAILS: ToolCategory.COMMUNICATION,
     ToolName.GET_EMAIL_DETAILS: ToolCategory.COMMUNICATION,
+    ToolName.READ_CHAT_ATTACHMENT: ToolCategory.COMMUNICATION,
+    ToolName.LIST_CHAT_ATTACHMENTS: ToolCategory.COMMUNICATION,
     ToolName.LIST_DEAL_CHANNEL_MESSAGES: ToolCategory.COMMUNICATION,
     ToolName.FETCH_TEAMS_CHAT_MESSAGES: ToolCategory.COMMUNICATION,
     ToolName.CREATE_VISUALIZATION_CARD: ToolCategory.COMMUNICATION,
@@ -503,8 +513,10 @@ class ToolRegistry:
             create_create_visualization_card,
             create_fetch_teams_chat_messages,
             create_get_email_details,
+            create_list_chat_attachments,
             create_list_deal_channel_messages,
             create_list_deal_emails,
+            create_read_chat_attachment,
         )
         from src.agents.tools.crm import (
             create_add_deal_note,
@@ -664,6 +676,12 @@ class ToolRegistry:
             self.context, self.capabilities_getter
         )
         self._tool_factories[ToolName.GET_EMAIL_DETAILS] = lambda: create_get_email_details(
+            self.context, self.capabilities_getter
+        )
+        self._tool_factories[ToolName.READ_CHAT_ATTACHMENT] = lambda: create_read_chat_attachment(
+            self.context, self.capabilities_getter
+        )
+        self._tool_factories[ToolName.LIST_CHAT_ATTACHMENTS] = lambda: create_list_chat_attachments(
             self.context, self.capabilities_getter
         )
         self._tool_factories[ToolName.LIST_DEAL_CHANNEL_MESSAGES] = (

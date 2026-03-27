@@ -152,10 +152,32 @@ class TeamsBotService:
             return
 
         text: str = activity.get("text") or ""
-        if not text.strip():
+
+        # Extract file attachments (ignore Adaptive Cards and other non-file attachments).
+        # File uploads arrive as "application/vnd.microsoft.teams.file.download.info",
+        # inline/pasted images arrive as "image/*".
+        raw_attachments = activity.get("attachments", [])
+        logger.info(
+            "Teams raw attachments (%d): %s",
+            len(raw_attachments),
+            [
+                {"contentType": a.get("contentType"), "name": a.get("name", "?")}
+                for a in raw_attachments
+            ],
+        )
+        teams_files = self._extract_file_attachments(raw_attachments)
+
+        if not text.strip() and not teams_files:
             logger.info("Ignoring empty message from user %s", user.email)
             await self._send_reply(activity, "I received an empty message.", service_url)
             return
+
+        if teams_files:
+            logger.info(
+                "Teams message from %s includes %d file attachment(s)",
+                user.email,
+                len(teams_files),
+            )
 
         # Teams sends the user's IANA timezone (e.g. "Asia/Kolkata") on the activity
         local_timezone = activity.get("localTimezone", "")
@@ -172,6 +194,7 @@ class TeamsBotService:
                 external_user_id=teams_user_id,
                 external_tenant_id=teams_tenant_id,
                 local_timezone=local_timezone,
+                teams_files=teams_files or None,
             )
 
         elif conversation_type in ["groupChat", "channel", "meeting"]:
@@ -185,6 +208,7 @@ class TeamsBotService:
                 external_user_id=teams_user_id,
                 external_tenant_id=teams_tenant_id,
                 local_timezone=local_timezone,
+                teams_files=teams_files or None,
             )
         else:
             logger.warning("Teams unexpected conversationType: %s", conversation_type)
@@ -234,18 +258,24 @@ class TeamsBotService:
         external_user_id: str = "",
         external_tenant_id: str = "",
         local_timezone: str = "",
+        teams_files: list[dict[str, Any]] | None = None,
     ) -> str | None:
         """Handle a message from an authenticated user.
 
         Enqueues a Celery task to process the message through the GeneralAgent.
         The agent response will be sent back as a proactive message.
 
-        Sends a typing indicator on success (returns None).
+        Sends a thinking indicator on success (returns None).
         Returns an error string only if enqueue fails.
         """
+        from src.infra.database.sessions import acquire_org_async_session
+        from src.service.chat.chat_attachment_manifest import serialize_attachment_context
+        from src.service.chat.external_chat_attachment_ingest_service import (
+            ExternalChatAttachmentIngestService,
+        )
         from src.workers.chat_worker.client import send_chat_task_async
 
-        bot_context: dict[str, str] = {
+        bot_context: dict[str, Any] = {
             "conversation_type": conversation_type,
             "teams_conversation_id": conversation_id,
             "user_aad_object_id": user_aad_object_id,
@@ -255,8 +285,29 @@ class TeamsBotService:
         if local_timezone:
             bot_context["user_timezone"] = local_timezone
 
-        # Create job BEFORE dispatching so it exists in PENDING state
-        # even if the Celery worker never picks it up.
+        attachment_refs: list[dict[str, Any]] = []
+        if teams_files:
+            # Ingest before enqueue so later worker execution never depends on Teams
+            # activity-scoped download URLs still being valid.
+            async for db in acquire_org_async_session(user.organisation_id):
+                ingest_service = ExternalChatAttachmentIngestService(
+                    org_session=db,
+                    organisation_id=user.organisation_id,
+                    user_id=user.user_id,
+                )
+                try:
+                    ingested_attachments = await ingest_service.ingest_teams_files(
+                        teams_files,
+                        token_getter=self._get_teams_token,
+                    )
+                    attachment_refs = serialize_attachment_context(ingested_attachments)
+                finally:
+                    await ingest_service.close()
+                break
+
+            if attachment_refs:
+                bot_context["current_attachments"] = attachment_refs
+
         job_id: str | None = None
         try:
             job_id = str(
@@ -264,6 +315,7 @@ class TeamsBotService:
                     user=user,
                     message_text=text,
                     conversation_type=conversation_type,
+                    attachment_refs=attachment_refs,
                 )
             )
         except Exception:
@@ -301,13 +353,10 @@ class TeamsBotService:
                 "Please try again in a moment."
             )
 
-        # Send a thinking placeholder message (can be updated with tool status)
         thinking_activity_id = await self.send_thinking_message(
             service_url, conversation_id, "Thinking..."
         )
         if thinking_activity_id:
-            # Store activity ID so the worker can update it with tool status
-            # and finally replace it with the answer
             try:
                 from src.infra.messaging.redis_client import get_redis_client
 
@@ -315,12 +364,11 @@ class TeamsBotService:
                 redis.set(
                     f"teams_thinking_conv:{conversation_id}",
                     thinking_activity_id,
-                    ex=300,  # 5 min TTL
+                    ex=300,
                 )
             except Exception:
                 logger.debug("Failed to cache Teams thinking activity ID", exc_info=True)
         else:
-            # Fall back to typing indicator if thinking message fails
             await self._send_typing(service_url, conversation_id)
         return None
 
@@ -329,16 +377,18 @@ class TeamsBotService:
         user: User,
         message_text: str,
         conversation_type: str,
+        attachment_refs: list[dict[str, Any]] | None = None,
     ) -> UUID:
         """Create a PENDING ChatMessageJob before dispatching the Celery task.
 
-        For personal chats: creates session + user message + job (message_id set).
+        For personal chats: creates session + user message + attachment links + job.
         For group/channel chats: creates job only (message_id=None).
         """
         from sqlalchemy.exc import IntegrityError
         from sqlmodel import col, select
         from src.domain.models.organisation_tables.chat_message_models import (
             ChatMessage,
+            ChatMessageAttachmentLink,
             ChatMessageRole,
             ChatMessageType,
         )
@@ -352,9 +402,9 @@ class TeamsBotService:
         org_id = user.organisation_id
         message_id: UUID | None = None
         session_id: UUID | None = None
+        attachment_refs = attachment_refs or []
 
         if conversation_type == "personal":
-            # Get or create bot session
             async for db in acquire_org_async_session(org_id):
                 stmt = select(ChatSession).where(
                     col(ChatSession.user_id) == user.user_id,
@@ -367,11 +417,13 @@ class TeamsBotService:
                 if existing:
                     session_id = existing.session_id
                 else:
-                    new_session = ChatSession(
-                        user_id=user.user_id,
-                        organisation_id=org_id,
-                        chat_type=ChatType.TEAMS_CHAT,
-                        title="Teams Chat",
+                    new_session = ChatSession.model_validate(
+                        {
+                            "user_id": user.user_id,
+                            "organisation_id": org_id,
+                            "chat_type": ChatType.TEAMS_CHAT,
+                            "title": "Teams Chat",
+                        }
                     )
                     db.add(new_session)
                     try:
@@ -382,9 +434,11 @@ class TeamsBotService:
                         result = await db.execute(stmt)
                         existing = result.scalars().first()
                         session_id = existing.session_id if existing else None
+                break
 
-            # Create user message
             if session_id:
+                # Only persisted personal chats get attachment links. Group and channel
+                # messages keep transient attachment access through bot_context.
                 async for db in acquire_org_async_session(org_id):
                     msg = ChatMessage(
                         session_id=session_id,
@@ -393,10 +447,33 @@ class TeamsBotService:
                         content={"text": message_text},
                     )
                     db.add(msg)
+                    await db.flush()
+
+                    # Preserve attachment order so the manifest mirrors the UI order the user saw.
+                    for index, attachment_ref in enumerate(attachment_refs):
+                        raw_attachment_id = attachment_ref.get("attachment_id")
+                        if not raw_attachment_id:
+                            continue
+                        try:
+                            attachment_id = UUID(str(raw_attachment_id))
+                        except Exception:
+                            logger.warning(
+                                "Skipping invalid Teams attachment ref %s",
+                                raw_attachment_id,
+                            )
+                            continue
+                        db.add(
+                            ChatMessageAttachmentLink(
+                                message_id=msg.message_id,
+                                attachment_id=attachment_id,
+                                attachment_order=index,
+                            )
+                        )
+
                     await db.commit()
                     message_id = msg.message_id
+                    break
 
-        # Create the job — works for both personal (with message_id) and group (without)
         async for db in acquire_org_async_session(org_id):
             job = ChatMessageJob(
                 message_id=message_id,
@@ -414,11 +491,12 @@ class TeamsBotService:
             db.add(job)
             await db.commit()
             logger.info(
-                "Created Teams bot job=%s message=%s session=%s type=%s",
+                "Created Teams bot job=%s message=%s session=%s type=%s attachments=%d",
                 job.job_id,
                 message_id,
                 session_id,
                 conversation_type,
+                len(attachment_refs),
             )
             return job.job_id
 
@@ -577,6 +655,121 @@ class TeamsBotService:
                 "type": "application/vnd.microsoft.card.adaptive",
                 "value": build_error_card("Sorry, I couldn't process that form submission."),
             }
+
+    async def _get_teams_token(
+        self, scope: str = "https://api.botframework.com/.default"
+    ) -> str | None:
+        """Get an Azure AD token for Teams file downloads during API-side ingestion.
+
+        The attachment ingest service needs a scope-aware token getter because inline
+        images use Bot Framework auth while OneDrive/SharePoint files use Graph auth.
+        """
+        if not await self._ensure_credentials():
+            return None
+        if not self._app_id or not self._app_secret:
+            logger.warning("Cannot get Teams token: bot credentials unavailable")
+            return None
+
+        tenant = self._tenant_id or "botframework.com"
+        token_url = f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
+        data = {
+            "grant_type": "client_credentials",
+            "client_id": self._app_id,
+            "client_secret": self._app_secret,
+            "scope": scope,
+        }
+
+        try:
+            async with (
+                aiohttp.ClientSession() as session,
+                session.post(token_url, data=data) as response,
+            ):
+                if response.status == 200:
+                    result = await response.json()
+                    access_token = result.get("access_token")
+                    return access_token if isinstance(access_token, str) else None
+
+                response_text = await response.text()
+                logger.warning(
+                    "Failed to get Teams token (scope=%s): status=%s response=%s",
+                    scope,
+                    response.status,
+                    response_text[:200],
+                )
+                return None
+        except Exception:
+            logger.warning("Failed to get Teams token for scope=%s", scope, exc_info=True)
+            return None
+
+    @staticmethod
+    def _extract_file_attachments(attachments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Extract downloadable file metadata from Teams activity attachments.
+
+        Three attachment types are handled:
+        1. Local file uploads: contentType "application/vnd.microsoft.teams.file.download.info"
+           → pre-authenticated downloadUrl (no auth needed).
+        2. OneDrive/SharePoint shares: contentType "application/vnd.microsoft.teams.card.file.info"
+           → contentUrl points to SharePoint; requires Graph API token to download.
+        3. Inline/pasted images: contentType "image/*"
+           → contentUrl requires bot access token.
+
+        Adaptive Cards, text/html, and other non-file attachments are filtered out.
+        """
+        file_download_ct = "application/vnd.microsoft.teams.file.download.info"
+        file_info_ct = "application/vnd.microsoft.teams.card.file.info"
+        files: list[dict[str, Any]] = []
+
+        for att in attachments:
+            ct = (att.get("contentType") or "").lower()
+
+            if ct == file_download_ct:
+                # Local file upload → pre-authenticated download URL
+                content = att.get("content") or {}
+                download_url = content.get("downloadUrl", "")
+                if download_url:
+                    files.append(
+                        {
+                            "name": att.get("name", "file"),
+                            "download_url": download_url,
+                            "content_url": att.get("contentUrl", ""),
+                            "file_type": content.get("fileType", ""),
+                            "source": "upload",
+                            "auth_required": False,
+                        }
+                    )
+
+            elif ct == file_info_ct:
+                # OneDrive/SharePoint file share → requires Graph API
+                content_url = att.get("contentUrl", "")
+                content = att.get("content") or {}
+                if content_url:
+                    files.append(
+                        {
+                            "name": att.get("name", "file"),
+                            "download_url": content_url,
+                            "content_url": content_url,
+                            "file_type": content.get("fileType", ""),
+                            "source": "onedrive",
+                            "auth_required": True,
+                        }
+                    )
+
+            elif ct.startswith("image/"):
+                # Inline/pasted image → requires bot access token
+                content_url = att.get("contentUrl", "")
+                if content_url:
+                    files.append(
+                        {
+                            "name": att.get("name", "image"),
+                            "download_url": content_url,
+                            "content_url": content_url,
+                            "mimetype": ct,
+                            "source": "inline",
+                            "auth_required": True,
+                        }
+                    )
+
+        return files
 
     def _get_welcome_message(self) -> str:
         """Generate welcome message for new users."""

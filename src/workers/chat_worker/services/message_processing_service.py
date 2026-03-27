@@ -21,7 +21,10 @@ from uuid import UUID
 from sqlmodel import col
 
 from src.domain.models.organisation_tables.chat_message_models import (
+    Attachment,
+    AttachmentStatus,
     ChatMessage,
+    ChatMessageAttachmentLink,
     ChatMessageRole,
     ChatMessageType,
 )
@@ -59,6 +62,16 @@ FRAME_TYPE_TOKEN_USAGE = "token.usage"
 
 
 @dataclass
+class AttachmentInfo:
+    """Minimal attachment metadata for media resolution."""
+
+    attachment_id: UUID
+    storage_path: str
+    mimetype: str
+    filename: str
+
+
+@dataclass
 class ConversationData:
     """Data loaded from database for message processing."""
 
@@ -73,6 +86,7 @@ class ConversationData:
     user_message_type: ChatMessageType
     user_email: str | None = None
     history: list[dict] = field(default_factory=list)
+    attachments: list[AttachmentInfo] = field(default_factory=list)
 
 
 @dataclass
@@ -228,7 +242,13 @@ class MessageProcessingService:
             if not user_message:
                 raise RuntimeError(f"User message {user_message_id} not found")
 
-            # Load conversation history
+            from src.service.chat.chat_attachment_manifest import (
+                AttachmentContextItem,
+                build_attachment_manifest,
+            )
+
+            # Rebuild manifests from canonical attachment links on every run. We do not persist
+            # fully expanded file text in chat history because that would bloat prompts and go stale.
             history_records = (
                 session.query(ChatMessage)
                 .filter(col(ChatMessage.session_id) == session_id)
@@ -236,8 +256,63 @@ class MessageProcessingService:
                 .limit(30)
                 .all()
             )
+            history_message_ids = [msg.message_id for msg in history_records]
 
-            # Convert history to serializable format (detach from session)
+            stored_attachments_by_message: dict[UUID, list[AttachmentInfo]] = {}
+            manifest_items_by_message: dict[UUID, list[AttachmentContextItem]] = {}
+            if history_message_ids:
+                attachment_rows = (
+                    session.query(
+                        ChatMessageAttachmentLink.message_id,
+                        Attachment.attachment_id,
+                        Attachment.storage_path,
+                        Attachment.mimetype,
+                        Attachment.filename,
+                        Attachment.source_provider,
+                    )
+                    .join(
+                        Attachment,
+                        Attachment.attachment_id == ChatMessageAttachmentLink.attachment_id,
+                    )
+                    .filter(
+                        ChatMessageAttachmentLink.message_id.in_(history_message_ids),
+                        Attachment.organisation_id == self.organisation_id,
+                        Attachment.is_deleted.is_(False),
+                        Attachment.status.notin_(
+                            [
+                                AttachmentStatus.PENDING_UPLOAD.value,
+                                AttachmentStatus.FAILED.value,
+                            ]
+                        ),
+                    )
+                    .order_by(
+                        ChatMessageAttachmentLink.message_id,
+                        ChatMessageAttachmentLink.attachment_order,
+                    )
+                    .all()
+                )
+                for row in attachment_rows:
+                    stored_attachments_by_message.setdefault(row.message_id, []).append(
+                        AttachmentInfo(
+                            attachment_id=row.attachment_id,
+                            storage_path=row.storage_path,
+                            mimetype=row.mimetype,
+                            filename=row.filename,
+                        )
+                    )
+                    manifest_items_by_message.setdefault(row.message_id, []).append(
+                        AttachmentContextItem(
+                            attachment_id=str(row.attachment_id),
+                            filename=row.filename,
+                            mimetype=row.mimetype,
+                            source_provider=(
+                                getattr(row.source_provider, "value", row.source_provider)
+                                if row.source_provider
+                                else None
+                            ),
+                        )
+                    )
+
             history = []
             for msg in history_records:
                 history.append(
@@ -245,10 +320,15 @@ class MessageProcessingService:
                         "message_id": str(msg.message_id),
                         "role": msg.role.value if hasattr(msg.role, "value") else str(msg.role),
                         "content": msg.content,
+                        "attachment_manifest": build_attachment_manifest(
+                            manifest_items_by_message.get(msg.message_id, [])
+                        )
+                        or None,
                         "created_at": msg.created_at.isoformat() if msg.created_at else None,
                     }
                 )
 
+            attachments = stored_attachments_by_message.get(user_message_id, [])
             # Look up user email from master schema (org role can't access public.users)
             user_email: str | None = None
             if chat_session.user_id:
@@ -279,6 +359,7 @@ class MessageProcessingService:
                 user_message_parent_id=user_message.message_id,
                 user_message_type=user_message.message_type,
                 history=history,
+                attachments=attachments,
             )
 
         # Should not reach here, but satisfy type checker
@@ -361,12 +442,28 @@ class MessageProcessingService:
             user_id=data.user_id,
             user_email=data.user_email,
             message_id=str(data.assistant_message_id),
+            metadata={
+                # Security boundary for attachment reads: the tool can only open files that
+                # belong to this session or the explicitly allowed current-turn attachment IDs.
+                "chat_session_id": str(data.session_id),
+                "current_user_message_id": str(data.user_message_id),
+                "allowed_attachment_ids": [
+                    str(attachment.attachment_id) for attachment in data.attachments
+                ],
+            },
         )
+
+        # Current-turn images stay as native vision input. Non-image files remain out of the
+        # prompt and are read on demand through the attachment tool. Message history already carries
+        # per-message attachment manifests for all persisted files in the conversation.
+        images = await self._resolve_attachments(data.attachments)
 
         async for frame in run_agent_for_chat(
             chat_type=data.chat_type,
             messages=data.history,
             context=context,
+            images=images or None,
+            attachment_text=None,
         ):
             try:
                 frame_data = frame.model_dump()
@@ -718,3 +815,136 @@ class MessageProcessingService:
         return AgentResult(
             answer="I apologize, but I encountered an error processing your request.",
         )
+
+    async def _resolve_attachments(self, attachments: list[AttachmentInfo]) -> list:
+        """Prepare current-turn image attachments for native vision input."""
+        if not attachments:
+            return []
+
+        from agno.media import Image as AgnoImage
+
+        from src.infra.media.chat_attachment_text import is_image_mimetype
+        from src.infra.storage.azure_org_blob_storage import AzureOrganisationBlobStorage
+
+        images: list[AgnoImage] = []
+        image_attachments = [
+            attachment for attachment in attachments if is_image_mimetype(attachment.mimetype)
+        ]
+        if not image_attachments:
+            return images
+
+        storage = AzureOrganisationBlobStorage(organisation_id=self.organisation_id)
+        try:
+            for attachment in image_attachments:
+                if not attachment.storage_path:
+                    logger.warning(
+                        "Skipping image attachment %s: no storage_path",
+                        attachment.attachment_id,
+                    )
+                    continue
+
+                try:
+                    content = await storage.get_blob_content(attachment.storage_path)
+                    images.append(
+                        AgnoImage(
+                            content=content,
+                            format=(attachment.mimetype or "image/png").split("/")[-1],
+                        )
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to load image attachment %s (%s), skipping",
+                        attachment.attachment_id,
+                        attachment.filename,
+                        exc_info=True,
+                    )
+        finally:
+            await storage.close()
+
+        logger.info("Attachment resolution: %d native images", len(images))
+        return images
+
+    @staticmethod
+    def _extract_text(content: bytes, mimetype: str, filename: str) -> str:
+        """Extract text from document bytes based on mimetype."""
+        import io
+
+        if mimetype == "application/pdf":
+            from pypdf import PdfReader
+
+            reader = PdfReader(io.BytesIO(content))
+            pages = []
+            for page in reader.pages:
+                text = page.extract_text()
+                if text:
+                    pages.append(text)
+            return "\n\n".join(pages)
+
+        if mimetype == ("application/vnd.openxmlformats-officedocument.wordprocessingml.document"):
+            from docx import Document
+
+            doc = Document(io.BytesIO(content))
+            paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+            return "\n\n".join(paragraphs)
+
+        if mimetype == (
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        ):
+            from pptx import Presentation
+            from pptx.enum.shapes import MSO_SHAPE_TYPE
+
+            prs = Presentation(io.BytesIO(content))
+            parts: list[str] = []
+            for slide_num, slide in enumerate(prs.slides, 1):
+                slide_parts: list[str] = [f"--- Slide {slide_num} ---"]
+                for shape in slide.shapes:
+                    if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+                        for child in shape.shapes:
+                            if hasattr(child, "text") and child.text.strip():
+                                slide_parts.append(child.text.strip())
+                    elif shape.has_table:
+                        for row in shape.table.rows:
+                            row_text = "\t".join(c.text.strip() for c in row.cells)
+                            if row_text.strip():
+                                slide_parts.append(row_text)
+                    elif hasattr(shape, "text") and shape.text.strip():
+                        slide_parts.append(shape.text.strip())
+                if slide.has_notes_slide:
+                    ntf = slide.notes_slide.notes_text_frame
+                    if ntf is not None and ntf.text.strip():
+                        slide_parts.append(f"[Notes] {ntf.text.strip()}")
+                if len(slide_parts) > 1:
+                    parts.extend(slide_parts)
+            return "\n".join(parts)
+
+        if mimetype == ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"):
+            import openpyxl
+
+            wb = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+            parts_xl: list[str] = []
+            try:
+                for sheet_name in wb.sheetnames:
+                    ws = wb[sheet_name]
+                    sheet_rows: list[str] = []
+                    for row in ws.iter_rows(values_only=True):
+                        vals = [str(v).strip() if v is not None else "" for v in row]
+                        if any(vals):
+                            sheet_rows.append("\t".join(vals))
+                    if sheet_rows:
+                        parts_xl.append(f"--- Sheet: {sheet_name} ---")
+                        parts_xl.extend(sheet_rows)
+            finally:
+                wb.close()
+            return "\n".join(parts_xl)
+
+        if mimetype.startswith("text/") or mimetype in (
+            "application/json",
+            "application/xml",
+            "application/x-ndjson",
+            "application/ndjson",
+            "application/jsonl",
+        ):
+            return content.decode("utf-8", errors="replace")
+
+        logger.warning("No text extractor for mimetype %s (%s)", mimetype, filename)
+        return ""

@@ -124,6 +124,27 @@ class EmbedderConfig:
     AZURE_EMBEDDER_DEPLOYMENT: str | None = os.getenv("AZURE_EMBEDDER_DEPLOYMENT")
 
 
+class TranscriptionConfig:
+    """Configuration for Azure OpenAI audio transcription (gpt-4o-transcribe).
+
+    Falls back to the main OpenAI credentials if dedicated transcription
+    env vars are not set, so no extra config is needed for most deployments.
+    """
+
+    AZURE_TRANSCRIPTION_API_KEY: str | None = os.getenv(
+        "AZURE_TRANSCRIPTION_API_KEY", os.getenv("AZURE_OPENAI_API_KEY")
+    )
+    AZURE_TRANSCRIPTION_ENDPOINT: str | None = os.getenv(
+        "AZURE_TRANSCRIPTION_ENDPOINT", os.getenv("AZURE_OPENAI_ENDPOINT")
+    )
+    AZURE_TRANSCRIPTION_DEPLOYMENT: str = os.getenv(
+        "AZURE_TRANSCRIPTION_DEPLOYMENT", "gpt-4o-transcribe"
+    )
+    AZURE_TRANSCRIPTION_API_VERSION: str = os.getenv(
+        "AZURE_TRANSCRIPTION_API_VERSION", "2025-03-01-preview"
+    )
+
+
 class CloudStorageConfig:
     """Configuration for Cloud Storage"""
 
@@ -450,17 +471,38 @@ class ChatFileUploadConfig:
     # Max file size in bytes (e.g., 50 * 1024 * 1024 for 50MB)
     MAX_FILE_SIZE_BYTES: int = int(os.getenv("MAX_UPLOAD_FILE_SIZE_BYTES", "52428800"))
 
-    # Allowed MIME types for uploads
-    # Requirement: restrict to only PDF and plain text for chat attachments.
+    # Allowed MIME types for chat attachment uploads
+    _DEFAULT_CHAT_MIMETYPES = (
+        # Documents
+        "application/pdf, "
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document, "
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation, "
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, "
+        # Text formats
+        "text/plain, text/csv, text/tab-separated-values, text/tsv, "
+        "text/markdown, text/x-markdown, "
+        # Data formats
+        "application/x-ndjson, application/ndjson, application/jsonl, application/json, "
+        # Images
+        "image/png, image/jpeg, image/gif, image/webp, "
+        # Audio
+        "audio/mpeg, audio/mp3, audio/wav, audio/ogg, audio/webm, audio/mp4, audio/x-m4a"
+    )
+
     ALLOWED_MIMETYPES: list[str] = [
         item.strip()
-        for item in os.getenv(
-            "ALLOWED_MIMETYPES",
-            "application/pdf, text/plain, text/csv, text/tab-separated-values, text/tsv, "
-            "text/markdown, text/x-markdown, application/x-ndjson, application/ndjson, application/jsonl, application/json",
-        ).split(",")
+        for item in os.getenv("ALLOWED_MIMETYPES", _DEFAULT_CHAT_MIMETYPES).split(",")
         if item.strip()
     ]
+    BOT_ATTACHMENT_DOWNLOAD_TIMEOUT_SECONDS: int = int(
+        os.getenv("BOT_ATTACHMENT_DOWNLOAD_TIMEOUT_SECONDS", "60")
+    )
+    BOT_ATTACHMENT_MAX_INGEST_BYTES: int = int(
+        os.getenv("BOT_ATTACHMENT_MAX_INGEST_BYTES", str(MAX_FILE_SIZE_BYTES))
+    )
+    ATTACHMENT_MANIFEST_MAX_ITEMS: int = int(os.getenv("CHAT_ATTACHMENT_MANIFEST_MAX_ITEMS", "10"))
+    ATTACHMENT_READ_MAX_CHARS: int = int(os.getenv("CHAT_ATTACHMENT_READ_MAX_CHARS", "12000"))
+    ATTACHMENT_RETENTION_DAYS: int = int(os.getenv("CHAT_ATTACHMENT_RETENTION_DAYS", "30"))
 
 
 class KnowledgeFileUploadConfig:
@@ -632,6 +674,7 @@ database_config = DatabaseConfig()
 app_config = AppConfig()
 openai_config = OpenAIConfig()
 embedder_config = EmbedderConfig()
+transcription_config = TranscriptionConfig()
 cloud_storage_config = CloudStorageConfig()
 resend_config = ResendConfig()
 super_admin_config = SuperAdminConfig()

@@ -120,6 +120,23 @@ _GENERAL_PROMPT_TEMPLATE = dedent(
 
     ---
 
+    ## File Attachments
+
+    Treat file attachments as first-class conversation context, but do not assume every file is preloaded into the prompt.
+
+    **How to handle:**
+    - **Current-turn images**: If image input is present, analyze it directly with vision.
+    - **All other file types**: Read the attachment manifest attached to each user message. When you need the actual file contents, call `read_chat_attachment` with the attachment ID shown in that manifest.
+    - **Previous-turn files**: If the user refers to a file from earlier in the chat, look at that earlier message's attachment manifest and read the relevant attachment again before answering.
+
+    **Important:**
+    - If the user's message is just a file with no explicit question, inspect the current-message attachment(s) and proactively summarize the key points.
+    - Use targeted retrieval. Read the relevant attachment content instead of assuming the whole conversation prompt already contains it.
+    - Do not claim you read an attachment unless you actually saw it through current-turn image input or a chat attachment tool call.
+    - If an attachment cannot be retrieved, say that clearly and continue with whatever context is available.
+
+    ---
+
     ## Response Formatting
 
     Use Markdown naturally based on what the content needs:
