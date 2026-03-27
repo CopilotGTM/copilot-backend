@@ -15,6 +15,8 @@ async def run_agent_for_chat(
     chat_type: ChatType | str,
     messages: Sequence[ChatMessage | dict[str, Any]],
     context: AgentContext,
+    images: Sequence[Any] | None = None,
+    attachment_text: str | None = None,
 ) -> AsyncIterator[Frame]:
     """Run the agent for the given chat type and stream back the results.
 
@@ -28,11 +30,13 @@ async def run_agent_for_chat(
             all current interactive chat flows use GeneralAgent.
         messages: Conversation history (can be ChatMessage objects or dicts)
         context: AgentContext object with immutable security boundaries
+        images: Optional Agno Image objects for the current user message
+        attachment_text: Optional extracted text from attachments (PDF, DOCX, audio transcript)
 
     Yields:
         Frame objects representing agent output
     """
     _ = chat_type
     agent = GeneralAgent(context=context)
-    async for frame in agent.run_stream(messages):
+    async for frame in agent.run_stream(messages, images=images, attachment_text=attachment_text):
         yield frame

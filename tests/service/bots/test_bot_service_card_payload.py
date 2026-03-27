@@ -259,3 +259,52 @@ class TestFormSubmissionCardPayload:
 
         bot_service._send_reply.assert_called_once()
         assert "couldn't process" in bot_service._send_reply.call_args[0][1].lower()
+
+
+@pytest.mark.asyncio
+async def test_get_teams_token_uses_requested_scope(monkeypatch: pytest.MonkeyPatch) -> None:
+    service = TeamsBotService()
+    service._app_id = "app-id"
+    service._app_secret = "app-secret"
+    service._tenant_id = "tenant-id"
+    service._credentials_loaded = True
+
+    captured: dict[str, object] = {}
+
+    class _FakeResponse:
+        status = 200
+
+        async def json(self) -> dict[str, str]:
+            return {"access_token": "token-123"}
+
+    class _RequestContext:
+        async def __aenter__(self):
+            return _FakeResponse()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    class _FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        def post(self, url, data):
+            captured["url"] = url
+            captured["data"] = data
+            return _RequestContext()
+
+    monkeypatch.setattr("src.service.bots.teams_bot_service.aiohttp.ClientSession", _FakeSession)
+
+    token = await service._get_teams_token("https://graph.microsoft.com/.default")
+
+    assert token == "token-123"
+    assert captured["url"] == "https://login.microsoftonline.com/tenant-id/oauth2/v2.0/token"
+    assert captured["data"] == {
+        "grant_type": "client_credentials",
+        "client_id": "app-id",
+        "client_secret": "app-secret",
+        "scope": "https://graph.microsoft.com/.default",
+    }

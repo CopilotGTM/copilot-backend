@@ -64,6 +64,14 @@ class AttachmentStatus(str, Enum):
     FAILED = "failed"
 
 
+class AttachmentSourceProvider(str, Enum):
+    """Origin of an attachment ingested into chat storage."""
+
+    WEB = "web"
+    SLACK = "slack"
+    TEAMS = "teams"
+
+
 class Attachment(TimestampMixin, table=True):
     """
     Represents a centrally-managed file attachment.
@@ -80,6 +88,16 @@ class Attachment(TimestampMixin, table=True):
         index=True, description="The organisation this attachment belongs to."
     )
     user_id: UUID = Field(index=True, description="The user who uploaded the attachment.")
+    source_provider: AttachmentSourceProvider = Field(
+        default=AttachmentSourceProvider.WEB,
+        sa_column=Column(String(32), nullable=False, server_default=text("'web'")),
+        description="Source channel/provider for this attachment.",
+    )
+    source_external_id: str | None = Field(
+        default=None,
+        max_length=255,
+        description="Provider-specific external file identifier when available.",
+    )
     filename: str = Field(description="The original filename of the attachment.")
     storage_path: str = Field(
         unique=True,
@@ -210,7 +228,7 @@ class ChatMessage(TimestampMixin, table=True):
         description="Stores agent-specific data, structure depends on message_type.",
     )
 
-    # back‑ref to session
+    # back-ref to session
     session: "ChatSession" = Relationship(back_populates="messages")
 
     # self-referencing relationship for message threads

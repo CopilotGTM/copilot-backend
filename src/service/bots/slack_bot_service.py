@@ -348,11 +348,20 @@ class SlackBotService:
         channel_id = event.get("channel", "")
         text = event.get("text", "")
         thread_ts = event.get("thread_ts")
+        slack_files = event.get("files", [])
+
+        logger.info(
+            "Slack mention received: user=%s text_len=%d files=%d file_names=%s",
+            slack_user_id,
+            len(text),
+            len(slack_files),
+            [f.get("name") for f in slack_files] if slack_files else [],
+        )
 
         # Strip the bot mention from the text (e.g., "<@U12345> what is...")
         text = self._strip_bot_mention(text)
 
-        if not text.strip():
+        if not text.strip() and not slack_files:
             await self._send_message(
                 slack_team_id, channel_id, "I received an empty message. How can I help?"
             )
@@ -365,6 +374,7 @@ class SlackBotService:
             channel_id=channel_id,
             conversation_type="channel",
             thread_ts=thread_ts,
+            slack_files=slack_files or None,
         )
 
     async def _handle_dm(self, event: dict[str, Any], envelope: dict[str, Any]) -> None:
@@ -375,8 +385,17 @@ class SlackBotService:
         text = event.get("text", "")
         # thread_ts is present when the user replies inside a thread
         thread_ts = event.get("thread_ts")
+        slack_files = event.get("files", [])
 
-        if not text.strip():
+        logger.info(
+            "Slack DM received: user=%s text_len=%d files=%d file_names=%s",
+            slack_user_id,
+            len(text),
+            len(slack_files),
+            [f.get("name") for f in slack_files] if slack_files else [],
+        )
+
+        if not text.strip() and not slack_files:
             await self._send_message(
                 slack_team_id, channel_id, "I received an empty message. How can I help?"
             )
@@ -389,7 +408,13 @@ class SlackBotService:
             channel_id=channel_id,
             conversation_type="personal",
             thread_ts=thread_ts,
+            slack_files=slack_files or None,
         )
+
+    @staticmethod
+    def _is_slack_audio_recording(file_info: dict[str, Any]) -> bool:
+        """Slack voice recordings carry a dedicated subtype that uploaded audio files do not."""
+        return str(file_info.get("subtype") or "").lower() == "slack_audio"
 
     async def _route_message(
         self,
@@ -399,12 +424,14 @@ class SlackBotService:
         channel_id: str,
         conversation_type: str,
         thread_ts: str | None = None,
+        slack_files: list[dict[str, Any]] | None = None,
     ) -> None:
         """Route message based on identity mapping.
 
         Args:
             thread_ts: If the user's message is inside a thread, this is the
                 parent message ts. Replies will be posted to the same thread.
+            slack_files: File objects from the Slack event (if user attached files).
         """
         user, _ = await self._get_linked_user(slack_user_id, slack_team_id)
 
@@ -434,6 +461,7 @@ class SlackBotService:
             thinking_message_ts=thinking_ts,
             user_timezone=user_info.get("tz"),
             thread_ts=thread_ts,
+            slack_files=slack_files,
         )
 
         if response:
@@ -475,6 +503,7 @@ class SlackBotService:
         thinking_message_ts: str | None = None,
         user_timezone: str | None = None,
         thread_ts: str | None = None,
+        slack_files: list[dict[str, Any]] | None = None,
     ) -> str | None:
         """Handle a message from an authenticated user.
 
@@ -483,9 +512,14 @@ class SlackBotService:
 
         Returns an error string only if enqueue fails.
         """
+        from src.infra.database.sessions import acquire_org_async_session
+        from src.service.chat.chat_attachment_manifest import serialize_attachment_context
+        from src.service.chat.external_chat_attachment_ingest_service import (
+            ExternalChatAttachmentIngestService,
+        )
         from src.workers.chat_worker.client import send_chat_task_async
 
-        bot_context: dict[str, str] = {
+        bot_context: dict[str, Any] = {
             "conversation_type": conversation_type,
             "slack_channel_id": channel_id,
             "external_user_id": external_user_id,
@@ -493,6 +527,65 @@ class SlackBotService:
         }
         if user_timezone:
             bot_context["user_timezone"] = user_timezone
+
+        message_text = text
+        attachment_refs: list[dict[str, Any]] = []
+        audio_files = [
+            file_info
+            for file_info in (slack_files or [])
+            if self._is_slack_audio_recording(file_info)
+        ]
+        attachment_files = [
+            file_info
+            for file_info in (slack_files or [])
+            if not self._is_slack_audio_recording(file_info)
+        ]
+
+        bot_token: str | None = None
+        if attachment_files:
+            bot_token = await self._get_workspace_token(slack_team_id)
+            if not bot_token:
+                logger.warning(
+                    "Skipping Slack attachment ingestion for team=%s: bot token unavailable",
+                    slack_team_id,
+                )
+
+        if audio_files:
+            # The API should ack Slack quickly. The worker downloads and transcribes
+            # the voice note so media processing stays off the webhook tier.
+            bot_context["slack_audio_files"] = [
+                {
+                    "name": file_info.get("name"),
+                    "mimetype": file_info.get("mimetype"),
+                    "size": file_info.get("size"),
+                    "subtype": file_info.get("subtype"),
+                    "url_private_download": file_info.get("url_private_download"),
+                }
+                for file_info in audio_files
+                if file_info.get("url_private_download")
+            ]
+
+        if attachment_files and bot_token:
+            # Non-voice-note files still go through the attachment pipeline so the agent can
+            # reopen them later by attachment ID instead of depending on Slack URLs.
+            async for db in acquire_org_async_session(user.organisation_id):
+                ingest_service = ExternalChatAttachmentIngestService(
+                    org_session=db,
+                    organisation_id=user.organisation_id,
+                    user_id=user.user_id,
+                )
+                try:
+                    ingested_attachments = await ingest_service.ingest_slack_files(
+                        attachment_files,
+                        bot_token=bot_token,
+                    )
+                    attachment_refs = serialize_attachment_context(ingested_attachments)
+                finally:
+                    await ingest_service.close()
+                break
+
+        if attachment_refs:
+            bot_context["current_attachments"] = attachment_refs
 
         reply_context: dict[str, str] = {
             "channel_id": channel_id,
@@ -503,14 +596,14 @@ class SlackBotService:
         if thread_ts:
             reply_context["thread_ts"] = thread_ts
 
-        # Create job BEFORE dispatching so it exists in PENDING state
         job_id: str | None = None
         try:
             job_id = str(
                 await self._create_bot_job(
                     user=user,
-                    message_text=text,
+                    message_text=message_text,
                     conversation_type=conversation_type,
+                    attachment_refs=attachment_refs,
                 )
             )
         except Exception:
@@ -522,7 +615,7 @@ class SlackBotService:
                 args=[
                     str(user.organisation_id),
                     str(user.user_id),
-                    text,
+                    message_text,
                     "slack",
                     reply_context,
                 ],
@@ -555,16 +648,18 @@ class SlackBotService:
         user: User,
         message_text: str,
         conversation_type: str,
+        attachment_refs: list[dict[str, Any]] | None = None,
     ) -> UUID:
         """Create a PENDING ChatMessageJob before dispatching the Celery task.
 
-        For personal chats: creates session + user message + job (message_id set).
+        For personal chats: creates session + user message + attachment links + job.
         For channel chats: creates job only (message_id=None).
         """
         from sqlalchemy.exc import IntegrityError
         from sqlmodel import col, select
         from src.domain.models.organisation_tables.chat_message_models import (
             ChatMessage,
+            ChatMessageAttachmentLink,
             ChatMessageRole,
             ChatMessageType,
         )
@@ -578,9 +673,9 @@ class SlackBotService:
         org_id = user.organisation_id
         message_id: UUID | None = None
         session_id: UUID | None = None
+        attachment_refs = attachment_refs or []
 
         if conversation_type == "personal":
-            # Get or create bot session
             async for db in acquire_org_async_session(org_id):
                 stmt = select(ChatSession).where(
                     col(ChatSession.user_id) == user.user_id,
@@ -593,11 +688,13 @@ class SlackBotService:
                 if existing:
                     session_id = existing.session_id
                 else:
-                    new_session = ChatSession(
-                        user_id=user.user_id,
-                        organisation_id=org_id,
-                        chat_type=ChatType.SLACK_CHAT,
-                        title="Slack Chat",
+                    new_session = ChatSession.model_validate(
+                        {
+                            "user_id": user.user_id,
+                            "organisation_id": org_id,
+                            "chat_type": ChatType.SLACK_CHAT,
+                            "title": "Slack Chat",
+                        }
                     )
                     db.add(new_session)
                     try:
@@ -608,9 +705,11 @@ class SlackBotService:
                         result = await db.execute(stmt)
                         existing = result.scalars().first()
                         session_id = existing.session_id if existing else None
+                break
 
-            # Create user message
             if session_id:
+                # Only persisted personal chats get attachment links. Channel messages keep
+                # transient attachment access through bot_context for the current turn only.
                 async for db in acquire_org_async_session(org_id):
                     msg = ChatMessage(
                         session_id=session_id,
@@ -619,10 +718,33 @@ class SlackBotService:
                         content={"text": message_text},
                     )
                     db.add(msg)
+                    await db.flush()
+
+                    # Preserve attachment order so the manifest mirrors the UI order the user saw.
+                    for index, attachment_ref in enumerate(attachment_refs):
+                        raw_attachment_id = attachment_ref.get("attachment_id")
+                        if not raw_attachment_id:
+                            continue
+                        try:
+                            attachment_id = UUID(str(raw_attachment_id))
+                        except Exception:
+                            logger.warning(
+                                "Skipping invalid Slack attachment ref %s",
+                                raw_attachment_id,
+                            )
+                            continue
+                        db.add(
+                            ChatMessageAttachmentLink(
+                                message_id=msg.message_id,
+                                attachment_id=attachment_id,
+                                attachment_order=index,
+                            )
+                        )
+
                     await db.commit()
                     message_id = msg.message_id
+                    break
 
-        # Create the job — works for both personal (with message_id) and channel (without)
         async for db in acquire_org_async_session(org_id):
             job = ChatMessageJob(
                 message_id=message_id,
@@ -640,11 +762,12 @@ class SlackBotService:
             db.add(job)
             await db.commit()
             logger.info(
-                "Created Slack bot job=%s message=%s session=%s type=%s",
+                "Created Slack bot job=%s message=%s session=%s type=%s attachments=%d",
                 job.job_id,
                 message_id,
                 session_id,
                 conversation_type,
+                len(attachment_refs),
             )
             return job.job_id
 

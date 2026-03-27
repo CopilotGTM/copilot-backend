@@ -54,13 +54,15 @@ class ChatSessionService:
             except Exception:
                 chat_type = ChatType.GENERAL_CHAT
 
-        chat = ChatSession(
-            user_id=self.user_id,
-            organisation_id=self.organisation_id,
-            title=title,
-            chat_type=chat_type,
-            properties=properties or {},
-            tags=tags or [],
+        chat = ChatSession.model_validate(
+            {
+                "user_id": self.user_id,
+                "organisation_id": self.organisation_id,
+                "title": title,
+                "chat_type": chat_type,
+                "properties": properties or {},
+                "tags": tags or [],
+            }
         )
         self.db.add(chat)
         await self.db.commit()

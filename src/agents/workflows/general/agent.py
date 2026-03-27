@@ -95,12 +95,22 @@ class GeneralAgent(BaseAgent):
         )
 
     def run_stream(
-        self, message_list: Sequence[ChatMessage | dict[str, Any]]
+        self,
+        message_list: Sequence[ChatMessage | dict[str, Any]],
+        *,
+        images: Sequence[Any] | None = None,
+        attachment_text: str | None = None,
     ) -> AsyncIterator[Frame]:
         """Run with enhanced JSON streaming and transparency support."""
 
+        logger.info(
+            "GeneralAgent.run_stream: images=%d, attachment_text=%d chars",
+            len(images or []),
+            len(attachment_text or ""),
+        )
+
         async def _run() -> AsyncIterator[Frame]:
-            processed_messages = prepare_messages(message_list)
+            processed_messages = prepare_messages(message_list, attachment_text=attachment_text)
             frame_message_id = self._get_frame_message_id()
 
             # Use an asyncio.Queue so tool frames are available immediately,
@@ -112,7 +122,10 @@ class GeneralAgent(BaseAgent):
                 # Agno V2: arun(stream=True) returns async generator directly (no await)
                 # stream_events=True enables RunCompleted event for token metrics
                 chat_response = self.general_agent.arun(
-                    input=processed_messages, stream=True, stream_events=True
+                    input=processed_messages,
+                    stream=True,
+                    stream_events=True,
+                    images=images,
                 )
 
                 buffer = StreamingAnswerBuffer(self.separators, logger=logger)
