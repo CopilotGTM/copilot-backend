@@ -1,7 +1,7 @@
 {
   "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.17/MicrosoftTeams.schema.json",
   "manifestVersion": "1.17",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "id": "a726a205-7f3c-4116-8dcb-2e69ab2ffa8a",
   "developer": {
     "name": "CopilotGTM",
@@ -26,7 +26,7 @@
     {
       "botId": "a726a205-7f3c-4116-8dcb-2e69ab2ffa8a",
       "scopes": ["personal", "groupChat"],
-      "supportsFiles": false,
+      "supportsFiles": true,
       "isNotificationOnly": false,
       "commandLists": [
         {

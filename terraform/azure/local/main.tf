@@ -321,6 +321,13 @@ module "azure_openai" {
       capacity        = 1
       version         = "2025-10-15"
     }
+    gpt4o_transcribe = {
+      deployment_name = "gpt-4o-transcribe"
+      model_name      = "gpt-4o-transcribe"
+      sku             = "GlobalStandard"
+      capacity        = 30
+      version         = "2025-03-20"
+    }
     embedder = {
       deployment_name = "text-embedding-3-large"
       model_name      = "text-embedding-3-large"
