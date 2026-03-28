@@ -27,9 +27,9 @@ class _FakeStorage:
 
 
 class _FakeImage:
-    def __init__(self, content: bytes, image_format: str):
+    def __init__(self, content: bytes, format: str = "png"):  # noqa: A002
         self.content = content
-        self.format = image_format
+        self.format = format
 
 
 def _patch_storage(monkeypatch, storage_cls=_FakeStorage):
