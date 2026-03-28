@@ -268,6 +268,7 @@ dev = [
     "detect-secrets>=1.5.0",
     "pre-commit>=4.3.0",
     "locust>=2.32.0",
+    "pytest-bdd>=8.1.0",
 ]
 
 # Lightweight quality tooling group for CI - no heavy ML/runtime dependencies
