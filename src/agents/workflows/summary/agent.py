@@ -13,12 +13,15 @@ Tools cannot accept organisation_id as a parameter, preventing cross-org access.
 
 from __future__ import annotations
 
+import json
+import re
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 from uuid import UUID
 
 from agno.agent import Agent
 from agno.models.azure.openai_chat import AzureOpenAI
+from pydantic import ValidationError
 
 from src.agents.common.token_tracking import TokenUsageData, extract_token_usage
 from src.agents.context import AgentContext
@@ -123,6 +126,56 @@ class SummaryAgent:
         if self.publisher:
             self.publisher.publish_progress(message, step, progress)
 
+    @staticmethod
+    def _strip_summary_fences(text: str) -> str:
+        """Remove outer markdown fences commonly returned around meeting summaries."""
+        stripped = text.strip()
+        fenced_match = re.match(r"^```[^\n]*\n(?P<body>.*)\n```$", stripped, re.DOTALL)
+        if fenced_match:
+            return fenced_match.group("body").strip()
+        return stripped
+
+    def _normalize_summary_output(self, content: object) -> SummaryData:
+        """Normalize imperfect model output into `SummaryData` when safely possible."""
+        if isinstance(content, SummaryData):
+            return content
+
+        if isinstance(content, dict):
+            try:
+                validated = SummaryData.model_validate(content)
+                return SummaryData(
+                    meeting_summary=self._strip_summary_fences(validated.meeting_summary),
+                )
+            except ValidationError as e:
+                raise ValueError("dict output failed validation") from e
+
+        if isinstance(content, str):
+            stripped = content.strip()
+
+            try:
+                validated = SummaryData.model_validate_json(stripped)
+                return SummaryData(
+                    meeting_summary=self._strip_summary_fences(validated.meeting_summary),
+                )
+            except (ValidationError, json.JSONDecodeError):
+                pass
+
+            try:
+                payload = json.loads(stripped)
+                if isinstance(payload, dict):
+                    validated = SummaryData.model_validate(payload)
+                    return SummaryData(
+                        meeting_summary=self._strip_summary_fences(validated.meeting_summary),
+                    )
+            except (ValidationError, json.JSONDecodeError, TypeError):
+                pass
+
+            # Last-resort salvage path: if the model returned plain markdown rather than
+            # structured JSON, keep the summary text instead of dropping the output.
+            return SummaryData(meeting_summary=self._strip_summary_fences(stripped))
+
+        raise ValueError("unsupported summary output type")
+
     async def generate(self, input_data: SummaryInput) -> SummaryData:
         """Generate a meeting summary using tools.
 
@@ -160,12 +213,12 @@ class SummaryAgent:
         )
 
         content = response.content
-        if isinstance(content, SummaryData):
-            return content
-
-        logger.warning(
-            "SummaryAgent returned non-structured response for meeting %s: %.200s",
-            input_data.event_id,
-            str(content),
-        )
-        return SummaryData(meeting_summary="")
+        try:
+            return self._normalize_summary_output(content)
+        except ValueError:
+            logger.warning(
+                "SummaryAgent returned non-structured response for meeting %s: %.200s",
+                input_data.event_id,
+                str(content),
+            )
+            return SummaryData(meeting_summary="")

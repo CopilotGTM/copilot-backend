@@ -15,7 +15,6 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from src.agents.tools.base import execute_with_capabilities
-from src.agents.tools.crm.internal_user_guard import is_internal_email
 from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     ApprovalStatus,
     DealStakeholder,
@@ -24,6 +23,7 @@ from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     StakeholderStance,
     StakeholderTemperature,
 )
+from src.service.crm.guards.internal_user_guard import is_internal_email
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext

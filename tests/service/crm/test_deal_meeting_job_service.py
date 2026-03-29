@@ -215,11 +215,43 @@ class TestCreateMeetingJobTranscriptCheck:
         svc.get_active_job = AsyncMock(return_value=None)
         svc._verify_transcript_for_summary = AsyncMock()
         svc.create_job = AsyncMock(return_value=SimpleNamespace(job_id=uuid4()))
+        svc._has_completed_meeting_summary = AsyncMock(return_value=False)
 
         await svc.create_meeting_job(deal_id, event_id, DealJobType.MEETING_SUMMARY)
 
         svc._verify_transcript_for_summary.assert_awaited_once_with(event_id)
-        svc.create_job.assert_awaited_once()
+        svc.create_job.assert_awaited_once_with(
+            job_type=DealJobType.MEETING_SUMMARY,
+            deal_id=deal_id,
+            event_id=event_id,
+            metadata={"event_id": str(event_id)},
+        )
+
+    @pytest.mark.asyncio
+    async def test_summary_regeneration_marks_job_to_skip_pipeline(
+        self, org_id, user_id, deal_id, event_id
+    ):
+        """Existing completed summary should create a regeneration job that skips insight fan-out."""
+        session = AsyncMock()
+        svc = DealMeetingJobService(session, org_id, user_id)
+
+        svc.get_active_job = AsyncMock(return_value=None)
+        svc._verify_transcript_for_summary = AsyncMock()
+        svc.create_job = AsyncMock(return_value=SimpleNamespace(job_id=uuid4()))
+        svc._has_completed_meeting_summary = AsyncMock(return_value=True)
+
+        await svc.create_meeting_job(deal_id, event_id, DealJobType.MEETING_SUMMARY)
+
+        svc.create_job.assert_awaited_once_with(
+            job_type=DealJobType.MEETING_SUMMARY,
+            deal_id=deal_id,
+            event_id=event_id,
+            metadata={
+                "event_id": str(event_id),
+                "trigger_type": "manual_regeneration",
+                "skip_insight_pipeline": True,
+            },
+        )
 
     @pytest.mark.asyncio
     async def test_briefing_job_skips_verify_transcript(self, org_id, user_id, deal_id, event_id):

@@ -554,7 +554,14 @@ class StakeholderSyncService:
             org_result = await master_session.execute(org_stmt)
             domains_raw = org_result.scalar_one_or_none()
             if domains_raw and isinstance(domains_raw, list):
-                domains = {d.strip().lower() for d in domains_raw if d and d.strip()}
+                for d in domains_raw:
+                    if not d or not d.strip():
+                        continue
+                    d_lower = d.strip().lower()
+                    domains.add(d_lower)
+                    # Strip www. prefix so "www.acme.com" also blocks "@acme.com"
+                    if d_lower.startswith("www."):
+                        domains.add(d_lower[4:])
 
         # Tier 2: Derive from all USER participant emails in the org
         if not domains:

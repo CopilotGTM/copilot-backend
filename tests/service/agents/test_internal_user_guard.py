@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from uuid import UUID, uuid4
 
 import pytest
-from src.agents.tools.crm.internal_user_guard import (
+from src.service.crm.guards.internal_user_guard import (
     _KEY_DOMAINS,
     _KEY_EMAILS,
     _KEY_LOADED,

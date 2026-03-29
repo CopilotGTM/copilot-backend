@@ -21,7 +21,6 @@ from typing import TYPE_CHECKING
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import col
-
 from src.domain.models.master_tables.organisation_models import Organisation
 from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDealParticipant,
@@ -91,7 +90,14 @@ async def _load_internal_user_data(
             org_result = await session.execute(org_stmt)
             domains_raw = org_result.scalar_one_or_none()
             if domains_raw and isinstance(domains_raw, list):
-                internal_domains = {d.strip().lower() for d in domains_raw if d and d.strip()}
+                for d in domains_raw:
+                    if not d or not d.strip():
+                        continue
+                    d_lower = d.strip().lower()
+                    internal_domains.add(d_lower)
+                    # Strip www. prefix so "www.acme.com" also blocks "@acme.com"
+                    if d_lower.startswith("www."):
+                        internal_domains.add(d_lower[4:])
         except SQLAlchemyError:
             with contextlib.suppress(Exception):
                 await session.rollback()

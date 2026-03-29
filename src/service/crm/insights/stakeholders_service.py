@@ -16,6 +16,7 @@ from src.api.schemas.crm_models import (
     StakeholderListResponse,
     UpdateStakeholderRequest,
 )
+from src.domain.models.master_tables.organisation_models import Organisation
 from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.deals import CRMDeal, CRMDealParticipant
 from src.domain.models.organisation_tables.sync.crm.stakeholders import (
@@ -51,6 +52,33 @@ class StakeholdersService:
     @property
     def session(self) -> AsyncSession:
         return self.org_session
+
+    async def _get_internal_domains(self) -> set[str]:
+        """Load the organisation's internal email domains from Organisation.domain."""
+        stmt = select(col(Organisation.domain)).where(
+            col(Organisation.organisation_id) == self.organisation_id,
+        )
+        result = await self.session.execute(stmt)
+        domains_raw = result.scalar_one_or_none()
+        domains: set[str] = set()
+        if domains_raw and isinstance(domains_raw, list):
+            for d in domains_raw:
+                if not d or not d.strip():
+                    continue
+                d_lower = d.strip().lower()
+                domains.add(d_lower)
+                # Strip www. prefix so "www.acme.com" also blocks "@acme.com"
+                if d_lower.startswith("www."):
+                    domains.add(d_lower[4:])
+        return domains
+
+    async def _is_internal_email(self, email: str) -> bool:
+        """Check whether an email belongs to an internal org domain."""
+        if not email or "@" not in email:
+            return False
+        domain = email.strip().lower().split("@")[-1]
+        internal_domains = await self._get_internal_domains()
+        return domain in internal_domains
 
     @staticmethod
     def _serialize_external_links(external_links: list | None) -> list[dict] | None:
@@ -303,11 +331,20 @@ class StakeholdersService:
         Raises:
             StakeholdersServiceError: If email already exists for this deal.
         """
+        # Guardrail: reject internal team members
+        email_normalized = request.email.lower().strip()
+        if await self._is_internal_email(email_normalized):
+            raise StakeholdersServiceError(
+                "This email belongs to an internal team member and cannot be added "
+                "as a stakeholder. Stakeholders must be external contacts only.",
+                status_code=403,
+            )
+
         # Check for duplicate email
         existing_stmt = select(DealStakeholder).where(
             col(DealStakeholder.deal_id) == deal_id,
             col(DealStakeholder.organisation_id) == self.organisation_id,
-            col(DealStakeholder.email) == request.email.lower().strip(),
+            col(DealStakeholder.email) == email_normalized,
         )
         existing_result = await self.session.execute(existing_stmt)
         if existing_result.scalar_one_or_none():

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from src.service.bots.form_handlers.add_stakeholder_handler import (
@@ -90,3 +91,55 @@ class TestAddStakeholderHandler:
 
         assert result.success is False
         assert "invalid" in result.message.lower()
+
+    @pytest.mark.asyncio
+    async def test_rejects_internal_email_via_service(
+        self,
+        handler: AddStakeholderFormHandler,
+        activity: dict,
+    ) -> None:
+        """Internal team member emails rejected at service layer return clear message."""
+        from uuid import UUID
+
+        from src.service.crm.insights.stakeholders_service import StakeholdersServiceError
+
+        # Mock user resolution
+        fake_user = MagicMock()
+        fake_user.organisation_id = UUID(VALID_DATA["organisation_id"])
+        fake_user.user_id = UUID("33333333-3333-3333-3333-333333333333")
+
+        # Mock service that raises 403 for internal email
+        mock_service_instance = MagicMock()
+        mock_service_instance.create_stakeholder = AsyncMock(
+            side_effect=StakeholdersServiceError(
+                "This email belongs to an internal team member",
+                status_code=403,
+            )
+        )
+        mock_service_cls = MagicMock(return_value=mock_service_instance)
+
+        mock_session = AsyncMock()
+
+        async def fake_acquire_gen(org_id):
+            yield mock_session
+
+        with (
+            patch(
+                "src.service.bots.form_handlers.add_stakeholder_handler.resolve_user_from_activity",
+                new_callable=AsyncMock,
+                return_value=(fake_user, None),
+            ),
+            patch(
+                "src.infra.database.sessions.acquire_org_async_session",
+                side_effect=fake_acquire_gen,
+            ),
+            patch(
+                "src.service.crm.insights.stakeholders_service.StakeholdersService",
+                mock_service_cls,
+            ),
+        ):
+            data = {**VALID_DATA, "email": "seller@mycompany.com"}
+            result = await handler.handle(activity, data)
+
+        assert result.success is False
+        assert "internal team member" in result.message.lower()
