@@ -18,6 +18,7 @@ def mock_context() -> MagicMock:
         "service_url": "https://smba.trafficmanager.net/teams/",
         "conversation_id": "conv-123",
     }
+    # Default: no internal domains loaded (guard won't block anything)
     return ctx
 
 
@@ -88,12 +89,18 @@ class TestAddStakeholderForm:
         mock_bot.send_proactive_payload.assert_called_once()
 
     @pytest.mark.asyncio
+    @patch(
+        "src.agents.tools.crm.add_stakeholder.is_internal_email",
+        new_callable=AsyncMock,
+        return_value=False,
+    )
     @patch("src.service.bots.teams_bot_service.TeamsBotService")
     @patch("src.agents.tools.crm.add_stakeholder.get_card_builder")
     async def test_prefilled_fields_passed_to_builder(
         self,
         mock_builder_fn: MagicMock,
         mock_bot_cls: MagicMock,
+        mock_is_internal: AsyncMock,
         mock_context: MagicMock,
     ) -> None:
         """Pre-filled fields should be included in the form definition."""
@@ -253,3 +260,88 @@ class TestAddStakeholderForm:
         assert result is not None
         assert result["status"] == "form_sent"
         mock_slack.send_block_kit_message.assert_called_once()
+
+    @pytest.mark.asyncio
+    @patch("src.agents.tools.crm.add_stakeholder.is_internal_email", new_callable=AsyncMock)
+    async def test_rejects_internal_email(
+        self,
+        mock_is_internal: AsyncMock,
+        mock_context: MagicMock,
+    ) -> None:
+        """Pre-filled email matching an internal domain is rejected before form is sent."""
+        mock_is_internal.return_value = True
+
+        result = await add_stakeholder_form(
+            context=mock_context,
+            deal_id=DEAL_ID,
+            deal_name=DEAL_NAME,
+            email="seller@mycompany.com",
+        )
+
+        assert result is not None
+        assert result["status"] == "rejected_internal_user"
+        assert "internal team member" in result["message"].lower()
+        mock_is_internal.assert_called_once_with(mock_context, "seller@mycompany.com")
+
+    @pytest.mark.asyncio
+    @patch(
+        "src.agents.tools.crm.add_stakeholder.is_internal_email",
+        new_callable=AsyncMock,
+        return_value=False,
+    )
+    @patch("src.service.bots.teams_bot_service.TeamsBotService")
+    @patch("src.agents.tools.crm.add_stakeholder.get_card_builder")
+    async def test_allows_external_email(
+        self,
+        mock_builder_fn: MagicMock,
+        mock_bot_cls: MagicMock,
+        mock_is_internal: AsyncMock,
+        mock_context: MagicMock,
+    ) -> None:
+        """External email passes the guard and form is sent."""
+        mock_builder = MagicMock()
+        mock_builder.build = MagicMock(return_value={"text": "card"})
+        mock_builder_fn.return_value = mock_builder
+
+        mock_bot = MagicMock()
+        mock_bot.send_proactive_payload = AsyncMock(return_value=True)
+        mock_bot_cls.return_value = mock_bot
+
+        result = await add_stakeholder_form(
+            context=mock_context,
+            deal_id=DEAL_ID,
+            deal_name=DEAL_NAME,
+            email="buyer@customer.com",
+        )
+
+        assert result is not None
+        assert result["status"] == "form_sent"
+        mock_is_internal.assert_called_once_with(mock_context, "buyer@customer.com")
+
+    @pytest.mark.asyncio
+    @patch("src.service.bots.teams_bot_service.TeamsBotService")
+    @patch("src.agents.tools.crm.add_stakeholder.get_card_builder")
+    async def test_no_email_skips_guard_check(
+        self,
+        mock_builder_fn: MagicMock,
+        mock_bot_cls: MagicMock,
+        mock_context: MagicMock,
+    ) -> None:
+        """When no email is pre-filled, the guard check is skipped."""
+        mock_builder = MagicMock()
+        mock_builder.build = MagicMock(return_value={"text": "card"})
+        mock_builder_fn.return_value = mock_builder
+
+        mock_bot = MagicMock()
+        mock_bot.send_proactive_payload = AsyncMock(return_value=True)
+        mock_bot_cls.return_value = mock_bot
+
+        result = await add_stakeholder_form(
+            context=mock_context,
+            deal_id=DEAL_ID,
+            deal_name=DEAL_NAME,
+            email=None,
+        )
+
+        assert result is not None
+        assert result["status"] == "form_sent"

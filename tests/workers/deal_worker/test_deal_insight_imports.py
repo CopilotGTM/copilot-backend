@@ -25,20 +25,22 @@ class TestDealInsightTaskImports:
         """Test importing from deal_insight_tasks __init__."""
         from src.workers.deal_worker.tasks.deal_insight_tasks import (
             analyze_deal_stakeholders_task,
-            analyze_org_stakeholders_task,
+            build_deal_memory_org,
             extract_deal_risks_blockers_task,
+            process_deal_memory_job,
             process_deal_summary_job,
+            trigger_deal_memory_backfill_all_orgs,
             trigger_extraction_all_orgs,
-            trigger_stakeholder_analysis_all_orgs,
         )
 
         # Verify they are callable (Celery tasks)
         assert callable(analyze_deal_stakeholders_task)
-        assert callable(analyze_org_stakeholders_task)
+        assert callable(build_deal_memory_org)
         assert callable(extract_deal_risks_blockers_task)
+        assert callable(process_deal_memory_job)
         assert callable(process_deal_summary_job)
+        assert callable(trigger_deal_memory_backfill_all_orgs)
         assert callable(trigger_extraction_all_orgs)
-        assert callable(trigger_stakeholder_analysis_all_orgs)
 
     def test_import_from_main_tasks_init(self):
         """Test importing deal insight tasks from main tasks __init__."""

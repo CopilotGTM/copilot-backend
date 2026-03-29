@@ -18,9 +18,11 @@ from sqlalchemy import or_, select
 from sqlalchemy.sql.expression import cast
 from sqlalchemy.types import String
 from sqlmodel import col
+from src.domain.models.master_tables.organisation_models import Organisation
 from src.domain.models.organisation_tables.job_models import DealJobs, DealJobType, JobStatus
 from src.domain.models.organisation_tables.sync.calendar import (
     AssociationStatus,
+    CalendarAttendee,
     CalendarEvent,
     CalendarEventDealAssociation,
     GenerationStatus,
@@ -37,7 +39,7 @@ from src.workers.deal_worker.utils.deal_job_utils import (
     get_organisation_name,
 )
 from src.workers.deal_worker.utils.pipeline_dispatch import (
-    dispatch_deal_insight_pipeline,
+    dispatch_deal_insight_pipeline_async,
     get_or_create_deal_memory_job,
 )
 
@@ -48,6 +50,43 @@ SCHEMA_VERSION = "1.0"
 
 # System user UUID for automated pipeline jobs
 AUTOMATED_PIPELINE_USER_ID = UUID("00000000-0000-0000-0000-000000000001")
+
+
+def _normalize_internal_domains(domains_raw: list[str] | None) -> list[str]:
+    """Normalize admin-configured internal domains for prompt use.
+
+    Summary-side attendee classification should rely only on explicitly
+    configured seller domains, not inferred participant data.
+    """
+    normalized: set[str] = set()
+    if not domains_raw:
+        return []
+
+    for domain in domains_raw:
+        if not domain or not domain.strip():
+            continue
+        cleaned = domain.strip().lower()
+        normalized.add(cleaned)
+        if cleaned.startswith("www."):
+            normalized.add(cleaned.removeprefix("www."))
+
+    return sorted(normalized)
+
+
+def _build_summary_attendees(
+    attendees: list[CalendarAttendee],
+) -> list[dict[str, str | bool | None]]:
+    """Convert calendar attendees into the prompt input format."""
+    return [
+        {
+            "email": attendee.email,
+            "name": attendee.display_name,
+            "response_status": attendee.response_status,
+            "is_organiser": attendee.is_organiser,
+        }
+        for attendee in attendees
+        if attendee.email
+    ]
 
 
 class NonRetryableJobError(Exception):
@@ -160,12 +199,19 @@ class MeetingSummaryService:
         self._publish_progress("Loading meeting context...", "Querying Database", 0.1)
 
         org_name: str | None = None
+        internal_domains: list[str] = []
         association_id: UUID | None = None
         online_meeting_id: str | None = None
         online_meeting_provider: str | None = None
+        attendee_roster: list[dict[str, str | bool | None]] = []
 
         async for master_session in acquire_master_async_session():
             org_name = await get_organisation_name(master_session, self.organisation_id)
+            org_stmt = select(col(Organisation.domain)).where(
+                col(Organisation.organisation_id) == self.organisation_id,
+            )
+            org_result = await master_session.execute(org_stmt)
+            internal_domains = _normalize_internal_domains(org_result.scalar_one_or_none())
 
         async for session in acquire_org_async_session(self.organisation_id):
             deal = await get_deal(session, self.organisation_id, self.deal_id)
@@ -177,6 +223,7 @@ class MeetingSummaryService:
             # Store event info for error messages
             online_meeting_id = event.online_meeting_id
             online_meeting_provider = event.online_meeting_provider
+            attendee_roster = _build_summary_attendees(list(event.attendees))
 
             association = await get_association(
                 session, self.organisation_id, self.deal_id, self.event_id
@@ -244,6 +291,8 @@ class MeetingSummaryService:
         input_data = SummaryInput(
             event_id=str(self.event_id),
             deal_id=str(self.deal_id),
+            attendees=attendee_roster,
+            internal_domains=internal_domains,
             current_datetime=current_dt.isoformat(),
         )
 
@@ -380,7 +429,7 @@ class MeetingSummaryService:
 
         if deal_memory_job_id:
             try:
-                dispatch_deal_insight_pipeline(
+                await dispatch_deal_insight_pipeline_async(
                     str(self.organisation_id),
                     str(deal_id),
                     str(deal_memory_job_id),
@@ -575,7 +624,7 @@ class MeetingSummaryService:
             task_signatures.append(sig)
 
         try:
-            dispatch_deal_insight_pipeline(
+            await dispatch_deal_insight_pipeline_async(
                 str(self.organisation_id),
                 str(deal_id),
                 str(deal_memory_job_id),

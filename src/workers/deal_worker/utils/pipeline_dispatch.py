@@ -22,7 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.domain.models.organisation_tables.job_models import DealJobs, DealJobType, JobStatus
-from src.infra.database.sessions import org_session_scope
+from src.infra.database.sessions import org_async_session_scope, org_session_scope
 from src.infra.utils.logger import get_logger
 from src.workers.deal_worker.client import get_deal_celery_client
 
@@ -173,10 +173,55 @@ def _create_pipeline_jobs(
     return risk_job_id, stakeholder_job_id
 
 
-def build_deal_insight_pipeline(
+async def _create_pipeline_jobs_async(
+    organisation_id: str,
+    deal_id: str,
+) -> tuple[str, str]:
+    """Async equivalent of pipeline job creation for async worker call sites."""
+    org_uuid = UUID(organisation_id)
+    deal_uuid = UUID(deal_id)
+
+    async with org_async_session_scope(org_uuid) as session:
+        risk_job = DealJobs(
+            organisation_id=org_uuid,
+            user_id=AUTOMATED_PIPELINE_USER_ID,
+            job_type=DealJobType.RISK_BLOCKER_EXTRACTION,
+            deal_id=deal_uuid,
+            status=JobStatus.PENDING,
+            job_metadata={"source": "automated_pipeline"},
+        )
+        stakeholder_job = DealJobs(
+            organisation_id=org_uuid,
+            user_id=AUTOMATED_PIPELINE_USER_ID,
+            job_type=DealJobType.STAKEHOLDER_ANALYSIS,
+            deal_id=deal_uuid,
+            status=JobStatus.PENDING,
+            job_metadata={"source": "automated_pipeline"},
+        )
+        session.add(risk_job)
+        session.add(stakeholder_job)
+        await session.flush()
+        await session.refresh(risk_job)
+        await session.refresh(stakeholder_job)
+
+        risk_job_id = str(risk_job.job_id)
+        stakeholder_job_id = str(stakeholder_job.job_id)
+
+    logger.info(
+        "Created async pipeline jobs for deal %s: risk=%s, stakeholder=%s",
+        deal_id,
+        risk_job_id,
+        stakeholder_job_id,
+    )
+    return risk_job_id, stakeholder_job_id
+
+
+def _build_deal_insight_canvas(
     organisation_id: str,
     deal_id: str,
     job_id: str,
+    risk_job_id: str,
+    stakeholder_job_id: str,
 ):
     """Build the deal memory -> parallel risk+stakeholder pipeline.
 
@@ -196,9 +241,6 @@ def build_deal_insight_pipeline(
         A Celery canvas representing ``chain(deal_memory, group(risk, stakeholder))``.
     """
     celery_app = get_deal_celery_client()
-
-    # Create DealJobs records for risk/stakeholder BEFORE dispatch
-    risk_job_id, stakeholder_job_id = _create_pipeline_jobs(organisation_id, deal_id)
 
     # Deal Memory runs first — builds the foundational deal narrative.
     deal_memory_sig = celery_app.signature(
@@ -232,6 +274,22 @@ def build_deal_insight_pipeline(
     return chain(deal_memory_sig, group(risk_blocker_sig, stakeholder_sig))
 
 
+def build_deal_insight_pipeline(
+    organisation_id: str,
+    deal_id: str,
+    job_id: str,
+):
+    """Build the deal memory -> parallel risk+stakeholder pipeline."""
+    risk_job_id, stakeholder_job_id = _create_pipeline_jobs(organisation_id, deal_id)
+    return _build_deal_insight_canvas(
+        organisation_id,
+        deal_id,
+        job_id,
+        risk_job_id,
+        stakeholder_job_id,
+    )
+
+
 def dispatch_deal_insight_pipeline(
     organisation_id: str,
     deal_id: str,
@@ -254,6 +312,28 @@ def dispatch_deal_insight_pipeline(
             the deal insight pipeline (e.g. meeting summary tasks).
     """
     pipeline = build_deal_insight_pipeline(organisation_id, deal_id, job_id)
+    if prefix_signatures:
+        pipeline = chain(*prefix_signatures, pipeline)
+
+    pipeline.apply_async()
+
+
+async def dispatch_deal_insight_pipeline_async(
+    organisation_id: str,
+    deal_id: str,
+    job_id: str,
+    *,
+    prefix_signatures: Sequence | None = None,
+) -> None:
+    """Async-safe dispatch variant for code paths already running inside an event loop."""
+    risk_job_id, stakeholder_job_id = await _create_pipeline_jobs_async(organisation_id, deal_id)
+    pipeline = _build_deal_insight_canvas(
+        organisation_id,
+        deal_id,
+        job_id,
+        risk_job_id,
+        stakeholder_job_id,
+    )
     if prefix_signatures:
         pipeline = chain(*prefix_signatures, pipeline)
 

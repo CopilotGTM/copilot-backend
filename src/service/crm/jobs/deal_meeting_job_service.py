@@ -8,7 +8,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 from src.domain.models.organisation_tables.job_models import DealJobs, DealJobType, JobStatus
-from src.domain.models.organisation_tables.sync.calendar import CalendarEvent
+from src.domain.models.organisation_tables.sync.calendar import (
+    AssociationStatus,
+    CalendarEvent,
+    CalendarEventDealAssociation,
+    GenerationStatus,
+)
 from src.domain.models.organisation_tables.sync.meeting_intelligence import Meeting, MeetingStatus
 from src.infra.utils.logger import get_logger
 from src.workers.deal_worker.client import send_deal_task_async
@@ -149,11 +154,40 @@ class DealMeetingJobService:
         if job_type == DealJobType.MEETING_SUMMARY:
             await self._verify_transcript_for_summary(event_id)
 
+        metadata: dict[str, object] = {"event_id": str(event_id)}
+        if job_type == DealJobType.MEETING_SUMMARY and await self._has_completed_meeting_summary(
+            deal_id, event_id
+        ):
+            metadata["trigger_type"] = "manual_regeneration"
+            metadata["skip_insight_pipeline"] = True
+
         return await self.create_job(
             job_type=job_type,
             deal_id=deal_id,
             event_id=event_id,
-            metadata={"event_id": str(event_id)},
+            metadata=metadata,
+        )
+
+    async def _has_completed_meeting_summary(self, deal_id: UUID, event_id: UUID) -> bool:
+        """Return True when the meeting already has a completed summary payload.
+
+        Regeneration should refresh only the meeting summary itself, not kick off the
+        downstream deal insight pipeline again.
+        """
+        stmt = select(CalendarEventDealAssociation).where(
+            col(CalendarEventDealAssociation.organisation_id) == self.organisation_id,
+            col(CalendarEventDealAssociation.deal_id) == deal_id,
+            col(CalendarEventDealAssociation.event_id) == event_id,
+            col(CalendarEventDealAssociation.status) == AssociationStatus.ACTIVE,
+        )
+        result = await self.session.execute(stmt)
+        association = result.scalars().first()
+        if not association:
+            return False
+
+        return (
+            association.meeting_summary_status == GenerationStatus.COMPLETED
+            and association.meeting_summary_data is not None
         )
 
     async def _verify_transcript_for_summary(self, event_id: UUID) -> None:

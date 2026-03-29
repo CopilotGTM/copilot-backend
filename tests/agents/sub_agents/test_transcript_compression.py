@@ -160,6 +160,12 @@ class TestToolRegistration:
         assert ToolName.GET_MEETING_TRANSCRIPT in AGENT_TOOLS["GeneralAgent"]
         assert ToolName.GET_MEETING_TRANSCRIPT in AGENT_TOOLS["SummaryAgent"]
 
+    def test_compressed_transcript_is_available_for_summary_agent(self):
+        """SummaryAgent can use condensed transcript context for long meetings."""
+        from src.agents.tools.registry import AGENT_TOOLS, ToolName
+
+        assert ToolName.GET_COMPRESSED_TRANSCRIPT in AGENT_TOOLS["SummaryAgent"]
+
     def test_tool_factory_import(self):
         """create_get_compressed_transcript can be imported."""
         from src.agents.tools.intelligence import create_get_compressed_transcript
@@ -175,5 +181,5 @@ class TestAgentConfig:
         from src.infra.config.agent_config import agent_config
 
         config = agent_config.get_config("transcript_compression_agent")
-        assert config.model == "gpt-5o-mini"
-        assert config.timeout_seconds == 60
+        assert config.model == "gpt-5-mini"
+        assert config.timeout_seconds == 300

@@ -54,7 +54,8 @@ class TestDispatchInsightPipelineForManualSummary:
             ) as mock_get_or_create,
             patch(
                 "src.workers.deal_worker.tasks.meeting_insight_tasks"
-                ".meeting_summary_task.dispatch_deal_insight_pipeline",
+                ".meeting_summary_task.dispatch_deal_insight_pipeline_async",
+                new_callable=AsyncMock,
             ) as mock_dispatch,
         ):
             mock_acquire.return_value = fake_session_gen(org_id)
@@ -72,7 +73,7 @@ class TestDispatchInsightPipelineForManualSummary:
                 source="transcript_upload",
                 trigger="meeting_summary_completed",
             )
-            mock_dispatch.assert_called_once_with(
+            mock_dispatch.assert_awaited_once_with(
                 str(org_id),
                 str(deal_id),
                 str(memory_job_id),
@@ -104,7 +105,8 @@ class TestDispatchInsightPipelineForManualSummary:
             ),
             patch(
                 "src.workers.deal_worker.tasks.meeting_insight_tasks"
-                ".meeting_summary_task.dispatch_deal_insight_pipeline",
+                ".meeting_summary_task.dispatch_deal_insight_pipeline_async",
+                new_callable=AsyncMock,
             ) as mock_dispatch,
         ):
             mock_acquire.return_value = fake_session_gen(org_id)
@@ -115,7 +117,7 @@ class TestDispatchInsightPipelineForManualSummary:
 
             await _dispatch_insight_pipeline_for_manual_summary(org_id, deal_id)
 
-            mock_dispatch.assert_called_once_with(
+            mock_dispatch.assert_awaited_once_with(
                 str(org_id),
                 str(deal_id),
                 str(existing_job_id),
@@ -146,7 +148,8 @@ class TestDispatchInsightPipelineForManualSummary:
             ),
             patch(
                 "src.workers.deal_worker.tasks.meeting_insight_tasks"
-                ".meeting_summary_task.dispatch_deal_insight_pipeline",
+                ".meeting_summary_task.dispatch_deal_insight_pipeline_async",
+                new_callable=AsyncMock,
                 side_effect=RuntimeError("Redis down"),
             ),
         ):
@@ -176,7 +179,8 @@ class TestDispatchInsightPipelineForManualSummary:
             ) as mock_acquire,
             patch(
                 "src.workers.deal_worker.tasks.meeting_insight_tasks"
-                ".meeting_summary_task.dispatch_deal_insight_pipeline",
+                ".meeting_summary_task.dispatch_deal_insight_pipeline_async",
+                new_callable=AsyncMock,
             ) as mock_dispatch,
         ):
             mock_acquire.return_value = failing_session_gen(org_id)
@@ -249,6 +253,19 @@ class TestIsAutomatedGate:
             or job_metadata.get("source") == "automated_pipeline"
         )
         assert is_automated is False
+
+    def test_manual_regeneration_can_skip_pipeline(self):
+        """Manual regeneration should skip downstream insight pipeline dispatch."""
+        user_id = uuid4()
+        job_metadata = {"skip_insight_pipeline": True}
+        is_automated = (
+            user_id == AUTOMATED_PIPELINE_USER_ID
+            or job_metadata.get("source") == "automated_pipeline"
+        )
+        skip_insight_pipeline = bool(job_metadata.get("skip_insight_pipeline"))
+
+        assert is_automated is False
+        assert skip_insight_pipeline is True
 
 
 # =============================================================================

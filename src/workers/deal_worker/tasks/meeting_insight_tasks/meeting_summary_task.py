@@ -29,7 +29,7 @@ from src.workers.deal_worker.services.meeting_insight_services import (
     NonRetryableJobError,
 )
 from src.workers.deal_worker.utils.pipeline_dispatch import (
-    dispatch_deal_insight_pipeline,
+    dispatch_deal_insight_pipeline_async,
     get_or_create_deal_memory_job,
 )
 
@@ -60,7 +60,7 @@ async def _dispatch_insight_pipeline_for_manual_summary(
             await session.commit()
 
         if deal_memory_job_id:
-            dispatch_deal_insight_pipeline(
+            await dispatch_deal_insight_pipeline_async(
                 str(organisation_id),
                 str(deal_id),
                 str(deal_memory_job_id),
@@ -223,7 +223,8 @@ def process_meeting_summary(self: Task, organisation_id: str, job_id: str):
 
         # Trigger insight pipeline for non-automated jobs (e.g. manual transcript uploads).
         # Automated pipeline jobs already have the insight chain wired by process_deal_pipeline.
-        if not is_automated:
+        skip_insight_pipeline = bool(job_metadata.get("skip_insight_pipeline"))
+        if not is_automated and not skip_insight_pipeline:
             await _dispatch_insight_pipeline_for_manual_summary(org_uuid, deal_id)
 
         return {

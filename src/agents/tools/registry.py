@@ -71,6 +71,7 @@ class ToolName(str, Enum):
     # -------------------------------------------------------------------------
     LIST_DEAL_STAKEHOLDERS = "list_deal_stakeholders"
     GET_STAKEHOLDER_DETAILS = "get_stakeholder_details"
+    CREATE_STAKEHOLDER_IF_MISSING = "create_stakeholder_if_missing"
     UPSERT_STAKEHOLDER = "upsert_stakeholder"  # Create-or-update stakeholder by email
     ENRICH_STAKEHOLDER = "enrich_stakeholder"  # Enrich stakeholder with LinkedIn data
     GET_EXISTING_RISKS_BLOCKERS = "get_existing_risks_blockers"
@@ -290,6 +291,7 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
     # -------------------------------------------------------------------------
     "SummaryAgent": {
         # Meeting tools
+        ToolName.GET_COMPRESSED_TRANSCRIPT,
         ToolName.GET_MEETING_TRANSCRIPT,
         ToolName.GET_MEETING_DETAILS,
         ToolName.GET_MEETING_DEAL_CONTEXT,
@@ -297,9 +299,9 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         # Stakeholder tools
         ToolName.LIST_DEAL_STAKEHOLDERS,
         ToolName.GET_STAKEHOLDER_DETAILS,
-        # Risk context
-        ToolName.GET_EXISTING_RISKS_BLOCKERS,  # Identify if discussed items are known risks
+        ToolName.CREATE_STAKEHOLDER_IF_MISSING,  # Create net-new external stakeholders only
         ToolName.LIST_DEAL_NOTES,  # Notes may contain additional stakeholder mentions
+        ToolName.RESEARCH_LINKEDIN_PROFILE,  # Fallback identity confirmation for discussed people
     },
     # -------------------------------------------------------------------------
     # DealSummaryAgent - Deal Summary Agent
@@ -434,6 +436,7 @@ TOOL_CATEGORIES: dict[ToolName, ToolCategory] = {
     # CRM/Stakeholder
     ToolName.LIST_DEAL_STAKEHOLDERS: ToolCategory.CRM,
     ToolName.GET_STAKEHOLDER_DETAILS: ToolCategory.CRM,
+    ToolName.CREATE_STAKEHOLDER_IF_MISSING: ToolCategory.CRM,
     ToolName.UPSERT_STAKEHOLDER: ToolCategory.CRM,
     ToolName.ENRICH_STAKEHOLDER: ToolCategory.CRM,
     ToolName.GET_EXISTING_RISKS_BLOCKERS: ToolCategory.CRM,
@@ -522,6 +525,7 @@ class ToolRegistry:
             create_add_deal_note,
             create_add_stakeholder,
             create_create_deal,
+            create_create_stakeholder_if_missing,
             create_dismiss_risk_blocker,
             create_enrich_stakeholder,
             create_get_deal_change_history,
@@ -620,6 +624,9 @@ class ToolRegistry:
         )
         self._tool_factories[ToolName.GET_STAKEHOLDER_DETAILS] = (
             lambda: create_get_stakeholder_details(self.context, self.capabilities_getter)
+        )
+        self._tool_factories[ToolName.CREATE_STAKEHOLDER_IF_MISSING] = (
+            lambda: create_create_stakeholder_if_missing(self.context, self.capabilities_getter)
         )
         self._tool_factories[ToolName.GET_EXISTING_RISKS_BLOCKERS] = (
             lambda: create_get_existing_risks_blockers(self.context, self.capabilities_getter)

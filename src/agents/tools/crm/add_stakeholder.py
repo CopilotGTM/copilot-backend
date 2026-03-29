@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 from src.adapters.card_builders import FormDefinition, FormField, get_card_builder
 from src.agents.tools.base import execute_with_capabilities
+from src.service.crm.guards.internal_user_guard import is_internal_email
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
@@ -82,6 +83,22 @@ async def add_stakeholder_form(
     if not organisation_id:
         logger.warning("add_stakeholder_form: missing organisation_id in context")
         return None
+
+    # Guardrail: reject internal team members before sending the form
+    if email and await is_internal_email(context, email):
+        logger.info(
+            "add_stakeholder_form: blocked internal email=%s org=%s",
+            email,
+            organisation_id,
+        )
+        return {
+            "status": "rejected_internal_user",
+            "message": (
+                "This email belongs to an internal team member and cannot be added "
+                "as a stakeholder. Stakeholders must be external contacts only "
+                "(clients, prospects, partners)."
+            ),
+        }
 
     channel = (context.channel or "teams").lower()
     service_url = context.metadata.get("service_url", "")
@@ -246,6 +263,10 @@ def create_add_stakeholder(
         decision_power: str | None = None,
     ) -> dict[str, Any] | None:
         """Send an interactive form to add a stakeholder to an existing deal.
+
+        IMPORTANT: Only add EXTERNAL contacts (clients, prospects, partners) as
+        stakeholders. Do NOT add internal team members or anyone from your own
+        organisation. Internal emails are rejected automatically.
 
         IMPORTANT: Before calling this tool, you MUST first use search_deals to
         find the deal and confirm it with the user. Do NOT call this tool without

@@ -156,6 +156,15 @@ class AddStakeholderFormHandler(BaseFormHandler):
                         e.message,
                         e.status_code,
                     )
+                    if e.status_code == 403:
+                        return FormHandlerResult(
+                            success=False,
+                            message=(
+                                "This email belongs to an internal team member and "
+                                "cannot be added as a stakeholder. Only external "
+                                "contacts (clients, prospects) can be stakeholders."
+                            ),
+                        )
                     if e.status_code == 409:
                         return FormHandlerResult(
                             success=False,
