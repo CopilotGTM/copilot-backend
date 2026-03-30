@@ -609,4 +609,3 @@ async def remove_stakeholder(
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
         )
-
