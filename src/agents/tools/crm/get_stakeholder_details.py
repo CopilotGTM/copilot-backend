@@ -117,6 +117,10 @@ async def get_stakeholder_details(
             "source": stakeholder.source.value
             if isinstance(stakeholder.source, StakeholderSource)
             else stakeholder.source,
+            "stakeholder_research": stakeholder.stakeholder_research,
+            "last_researched_at": stakeholder.last_researched_at.isoformat()
+            if stakeholder.last_researched_at
+            else None,
         }
     # Session released
 

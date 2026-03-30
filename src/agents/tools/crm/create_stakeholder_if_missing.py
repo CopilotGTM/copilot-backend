@@ -142,6 +142,24 @@ async def create_stakeholder_if_missing(
             await session.commit()
             await session.refresh(new_stakeholder)
 
+            # Dispatch stakeholder research (fire-and-forget)
+            try:
+                from src.workers.deal_worker.utils.stakeholder_research_dispatch import (
+                    dispatch_stakeholder_research_async,
+                )
+
+                await dispatch_stakeholder_research_async(
+                    organisation_id=organisation_id,
+                    stakeholder_id=new_stakeholder.stakeholder_id,
+                    deal_id=actual_deal_id,
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to dispatch research for %s",
+                    new_stakeholder.stakeholder_id,
+                    exc_info=True,
+                )
+
             result = _format_upsert_output(
                 new_stakeholder,
                 action="created",

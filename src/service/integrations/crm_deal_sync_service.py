@@ -299,18 +299,19 @@ class CRMDealSyncService:
             len(deal_ids),
         )
 
-        from src.workers.deal_worker.tasks.deal_mappers.stakeholder_tasks import (
-            sync_deal_stakeholders_task,
-        )
+        from src.workers.deal_worker.client import send_deal_task_async
 
         for deal_id in deal_ids:
-            sync_deal_stakeholders_task.delay(  # type: ignore
-                organisation_id=str(self.organisation_id),
-                deal_id=str(deal_id),
-                change_type=StakeholderChangeType.NEW_DEAL.value,  # Task will determine actual type
-                integration_id=str(integration_id),
-                integration_type=integration_type.value,
-                trigger_rematching=True,
+            await send_deal_task_async(
+                "stakeholder.sync_deal_stakeholders",
+                kwargs={
+                    "organisation_id": str(self.organisation_id),
+                    "deal_id": str(deal_id),
+                    "change_type": StakeholderChangeType.NEW_DEAL.value,
+                    "integration_id": str(integration_id),
+                    "integration_type": integration_type.value,
+                    "trigger_rematching": True,
+                },
             )
 
         return len(deal_ids)

@@ -65,6 +65,7 @@ class DealMeetingMatcher:
         self._contact_cache_by_id: dict[UUID, CRMContact] = {}
         self._contact_cache_by_external: dict[str, CRMContact] = {}
         self._internal_domains: set[str] | None = None  # Lazy-loaded cache
+        self._pending_research: list[tuple[UUID, UUID]] = []  # (stakeholder_id, deal_id)
 
     def _normalize_email(self, email: str | None) -> str | None:
         """Normalize email string by stripping whitespace and converting to lowercase."""
@@ -362,8 +363,9 @@ class DealMeetingMatcher:
                 col(DealStakeholder.email) == email,
             )
             result = await session.execute(stmt)
-            if result.scalars().first():
-                continue  # Already exists
+            existing = result.scalars().first()
+            if existing:
+                continue
 
             # Count existing discovered stakeholders for 5-limit
             count_stmt = select(func.count()).where(
@@ -394,6 +396,8 @@ class DealMeetingMatcher:
                 last_contact_at=contact_time,
             )
             session.add(stakeholder)
+            await session.flush()
+            self._pending_research.append((stakeholder.stakeholder_id, deal.deal_id))
             discovered += 1
 
             if approval_status == ApprovalStatus.PENDING:
@@ -404,6 +408,31 @@ class DealMeetingMatcher:
                 )
 
         return discovered
+
+    async def _dispatch_pending_research(self) -> None:
+        """Dispatch research for stakeholders queued during sync."""
+        if not self._pending_research:
+            return
+        try:
+            from src.workers.deal_worker.utils.stakeholder_research_dispatch import (
+                dispatch_stakeholder_research_async,
+            )
+
+            for stakeholder_id, deal_id in self._pending_research:
+                try:
+                    await dispatch_stakeholder_research_async(
+                        organisation_id=self.organisation_id,
+                        stakeholder_id=stakeholder_id,
+                        deal_id=deal_id,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to dispatch research for stakeholder %s",
+                        stakeholder_id,
+                        exc_info=True,
+                    )
+        finally:
+            self._pending_research.clear()
 
     async def process_organisation(self) -> dict[str, int]:
         """
@@ -468,6 +497,7 @@ class DealMeetingMatcher:
 
             await session.commit()
 
+        await self._dispatch_pending_research()
         return stats
 
     async def process_deal(self, deal_id: UUID) -> dict[str, int]:
@@ -511,6 +541,7 @@ class DealMeetingMatcher:
         )
 
         await session.commit()
+        await self._dispatch_pending_research()
 
         return {
             "deals_processed": 1,

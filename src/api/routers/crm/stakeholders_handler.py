@@ -206,6 +206,36 @@ async def create_stakeholder(
     try:
         stakeholder = await service.create_stakeholder(deal_id, request)
         await service.trigger_deal_mapping_if_ready(deal_id)
+
+        # Dispatch research after mapping tasks are queued (ensures Celery client
+        # is initialized and mapper tasks don't race with the research dispatch)
+        try:
+            from src.workers.deal_worker.utils.stakeholder_research_dispatch import (
+                dispatch_stakeholder_research_async,
+            )
+
+            logger.info(
+                "Dispatching stakeholder research from handler: stakeholder=%s deal=%s",
+                stakeholder.stakeholder_id,
+                deal_id,
+            )
+            job_id = await dispatch_stakeholder_research_async(
+                organisation_id=service.organisation_id,
+                stakeholder_id=stakeholder.stakeholder_id,
+                deal_id=deal_id,
+            )
+            logger.info(
+                "Stakeholder research dispatch result: stakeholder=%s job=%s",
+                stakeholder.stakeholder_id,
+                job_id,
+            )
+        except Exception:
+            logger.error(
+                "Failed to dispatch stakeholder research for %s",
+                stakeholder.stakeholder_id,
+                exc_info=True,
+            )
+
         return Response.created_response(
             message="Stakeholder created successfully",
             data=stakeholder,

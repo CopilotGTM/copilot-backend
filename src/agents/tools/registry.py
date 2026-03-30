@@ -413,6 +413,16 @@ AGENT_TOOLS: dict[str, set[ToolName]] = {
         ToolName.LIST_DEAL_NOTES,
         ToolName.LIST_DEAL_CHANNEL_MESSAGES,  # Slack/Teams channel messages
     },
+    # -------------------------------------------------------------------------
+    # StakeholderResearchAgent - Stakeholder Research Agent
+    # Location: src/agents/workflows/stakeholder_research/agent.py
+    # Purpose: Researches individual stakeholders via Apollo + LinkedIn.
+    # -------------------------------------------------------------------------
+    "StakeholderResearchAgent": {
+        ToolName.ENRICH_STAKEHOLDER,
+        ToolName.ENRICH_LINKEDIN_PROFILE,
+        ToolName.RESEARCH_LINKEDIN_PROFILE,
+    },
 }
 
 

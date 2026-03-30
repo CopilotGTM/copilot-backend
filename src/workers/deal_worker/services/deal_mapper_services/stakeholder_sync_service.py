@@ -138,6 +138,7 @@ class StakeholderSyncService:
         """
         self.organisation_id = organisation_id
         self._internal_domains: set[str] | None = None  # Lazy-loaded cache
+        self._pending_research: list[tuple[UUID, UUID]] = []  # (stakeholder_id, deal_id)
 
     @staticmethod
     def _get_manual_overrides(stakeholder: DealStakeholder) -> set[str]:
@@ -198,9 +199,11 @@ class StakeholderSyncService:
                         result.errors.extend(deal_result.errors[:3])  # Limit per deal
 
                     await session.commit()
+                    await self._dispatch_pending_research()
 
                 except Exception as e:
                     await session.rollback()
+                    self._pending_research.clear()
                     result.failed_deals += 1
                     result.errors.append(f"Deal {deal_id}: {str(e)}")
                     logger.warning(
@@ -249,6 +252,7 @@ class StakeholderSyncService:
                 result.deactivated,
                 result.skipped,
             )
+            await self._dispatch_pending_research()
             return result
 
         raise RuntimeError("Failed to acquire organization session")
@@ -478,7 +482,34 @@ class StakeholderSyncService:
         await self._enrich_from_contact(session, stakeholder, email)
 
         session.add(stakeholder)
+        await session.flush()  # Generate stakeholder_id
+        self._pending_research.append((stakeholder.stakeholder_id, deal.deal_id))
         return True
+
+    async def _dispatch_pending_research(self) -> None:
+        """Dispatch research for stakeholders queued during sync."""
+        if not self._pending_research:
+            return
+        try:
+            from src.workers.deal_worker.utils.stakeholder_research_dispatch import (
+                dispatch_stakeholder_research_async,
+            )
+
+            for stakeholder_id, deal_id in self._pending_research:
+                try:
+                    await dispatch_stakeholder_research_async(
+                        organisation_id=self.organisation_id,
+                        stakeholder_id=stakeholder_id,
+                        deal_id=deal_id,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to dispatch research for stakeholder %s",
+                        stakeholder_id,
+                        exc_info=True,
+                    )
+        finally:
+            self._pending_research.clear()
 
     async def _enrich_from_contact(
         self,

@@ -203,6 +203,18 @@ async def upsert_stakeholder(
             stakeholder = existing_result.scalar_one_or_none()
 
             if stakeholder:
+                # If previously removed/rejected/deleted, reactivate first
+                if (
+                    stakeholder.approval_status in (ApprovalStatus.REMOVED, ApprovalStatus.REJECTED)
+                    or stakeholder.is_deleted
+                ):
+                    stakeholder.approval_status = ApprovalStatus.APPROVED
+                    stakeholder.is_deleted = False
+                    stakeholder.source = StakeholderSource.MANUAL
+                    # Reset research so it gets re-researched
+                    stakeholder.stakeholder_research = None
+                    stakeholder.last_researched_at = None
+
                 updated_fields: list[str] = []
                 only_fill_missing = input_data.only_fill_missing
 
@@ -282,6 +294,28 @@ async def upsert_stakeholder(
                     await session.commit()
                     await session.refresh(stakeholder)
 
+                    # Dispatch research if stakeholder was reactivated
+                    if "approval_status" not in updated_fields and (
+                        stakeholder.stakeholder_research is None
+                        and stakeholder.last_researched_at is None
+                    ):
+                        try:
+                            from src.workers.deal_worker.utils.stakeholder_research_dispatch import (
+                                dispatch_stakeholder_research_async,
+                            )
+
+                            await dispatch_stakeholder_research_async(
+                                organisation_id=organisation_id,
+                                stakeholder_id=stakeholder.stakeholder_id,
+                                deal_id=actual_deal_id,
+                            )
+                        except Exception:
+                            logger.warning(
+                                "Failed to dispatch research for reactivated %s",
+                                stakeholder.stakeholder_id,
+                                exc_info=True,
+                            )
+
                 action = "updated" if updated_fields else "no_change"
                 return _with_action(
                     _format_upsert_output(
@@ -334,6 +368,25 @@ async def upsert_stakeholder(
             session.add(new_stakeholder)
             await session.commit()
             await session.refresh(new_stakeholder)
+
+            # Dispatch stakeholder research for newly created stakeholder
+            try:
+                from src.workers.deal_worker.utils.stakeholder_research_dispatch import (
+                    dispatch_stakeholder_research_async,
+                )
+
+                await dispatch_stakeholder_research_async(
+                    organisation_id=organisation_id,
+                    stakeholder_id=new_stakeholder.stakeholder_id,
+                    deal_id=actual_deal_id,
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to dispatch research for %s",
+                    new_stakeholder.stakeholder_id,
+                    exc_info=True,
+                )
+
             return _with_action(_format_upsert_output(new_stakeholder, action="created"), "created")
         except Exception:
             await session.rollback()

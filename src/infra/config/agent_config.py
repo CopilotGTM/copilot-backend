@@ -91,6 +91,13 @@ class AgentConfig:
     DEAL_MEMORY_DEBUG: bool = os.getenv("AGENT_DEAL_MEMORY_DEBUG", "false").lower() == "true"
     DEAL_MEMORY_TIMEOUT: int = int(os.getenv("AGENT_DEAL_MEMORY_TIMEOUT", "600"))
 
+    # Stakeholder Research Agent — researches individual stakeholders via Apollo + LinkedIn
+    STAKEHOLDER_RESEARCH_MODEL: str = os.getenv("AGENT_STAKEHOLDER_RESEARCH_MODEL", "gpt-5-mini")
+    STAKEHOLDER_RESEARCH_DEBUG: bool = (
+        os.getenv("AGENT_STAKEHOLDER_RESEARCH_DEBUG", "false").lower() == "true"
+    )
+    STAKEHOLDER_RESEARCH_TIMEOUT: int = int(os.getenv("AGENT_STAKEHOLDER_RESEARCH_TIMEOUT", "120"))
+
     # ==========================================================================
     # SUB-AGENTS
     # ==========================================================================
@@ -150,6 +157,11 @@ class AgentConfig:
             "TRANSCRIPT_COMPRESSION_MODEL",
             "TRANSCRIPT_COMPRESSION_DEBUG",
             "TRANSCRIPT_COMPRESSION_TIMEOUT",
+        ),
+        "stakeholder_research_agent": (
+            "STAKEHOLDER_RESEARCH_MODEL",
+            "STAKEHOLDER_RESEARCH_DEBUG",
+            "STAKEHOLDER_RESEARCH_TIMEOUT",
         ),
     }
 
