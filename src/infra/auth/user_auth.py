@@ -181,5 +181,3 @@ class UserAuth:
 
 # Create a global instance
 user_auth = UserAuth()
-
-

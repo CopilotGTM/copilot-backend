@@ -157,6 +157,3 @@ def process_stakeholder_research_job(self: Task, organisation_id: str, job_id: s
         raise self.retry(exc=e, countdown=30 * (2**self.request.retries)) from e
     finally:
         release_task_lock(lock_key)
-
-
-

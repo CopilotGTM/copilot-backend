@@ -103,4 +103,3 @@ secrets_manager = SecretsManager()
 master_secrets_manager = SecretsManager(
     provider=AzureKeyVaultSecretProvider(vault_url=secret_manager_config.AZURE_MASTER_KEY_VAULT_URL)
 )
-

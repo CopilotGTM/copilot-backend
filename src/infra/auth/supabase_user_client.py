@@ -498,6 +498,3 @@ class SupabaseUserClient:
 
 # Create global instance
 supabase_user_client = SupabaseUserClient()
-
-
-

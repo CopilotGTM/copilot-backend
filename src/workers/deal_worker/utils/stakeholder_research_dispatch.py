@@ -199,4 +199,3 @@ async def dispatch_stakeholder_research_async(
         },
     )
     return job_id_str
-

@@ -85,4 +85,3 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
                 _logger.debug("HTTP request completed", extra=extra)
             elif success_level <= logging.INFO:
                 _logger.info("HTTP request completed", extra=extra)
-

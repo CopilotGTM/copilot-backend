@@ -812,5 +812,3 @@ class Config:
     def get_redis_client_details(self):
         redis_details = self._config["redis_client"]
         return redis_details["host"], redis_details["port"], redis_details["password"]
-
-

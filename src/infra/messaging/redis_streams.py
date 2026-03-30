@@ -392,4 +392,3 @@ async def close_async_redis_pool() -> None:
     Close the async Redis connection pool.
     """
     await _async_redis_manager.close_pool()
-

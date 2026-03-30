@@ -172,5 +172,3 @@ def process_deal_import_job(self: Task, organisation_id: str, job_id: str):
 
         # Exponential backoff
         raise self.retry(exc=exc, countdown=60 * (2**retries)) from exc
-
-

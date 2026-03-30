@@ -45,5 +45,3 @@ def deal_asset_post_upload(self, organisation_id: str, asset_id: str):  # noqa: 
             "Deal asset post-upload failed",
             extra={"organisation_id": organisation_id, "asset_id": asset_id},
         )
-
-

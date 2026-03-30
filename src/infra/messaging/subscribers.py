@@ -101,4 +101,3 @@ class AsyncRedisSubscriber:
             await self.pubsub.unsubscribe(channel)
             await self.pubsub.close()
             self.pubsub = None
-

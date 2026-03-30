@@ -454,5 +454,3 @@ async def user_logout(
         return Response.internal_server_error_response(
             UserAuthErrors.LOGOUT_FAILED, response=response
         )
-
-

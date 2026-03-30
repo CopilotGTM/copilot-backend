@@ -68,5 +68,3 @@ def worker_shutdown_handler(sender=None, **kwargs):
 
 
 # Explicitly import task modules to ensure registration
-
-

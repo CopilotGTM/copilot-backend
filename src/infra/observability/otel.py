@@ -193,5 +193,3 @@ def _auto_instrument() -> None:
         logging.getLogger(__name__).debug("Redis instrumentation not installed")
     except Exception:
         logging.getLogger(__name__).debug("Failed to auto-instrument Redis", exc_info=True)
-
-

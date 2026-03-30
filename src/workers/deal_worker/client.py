@@ -190,4 +190,3 @@ class DealWorkerAsyncClient:
         """
         self.db_session = db_session
         self.organisation_id = organisation_id
-

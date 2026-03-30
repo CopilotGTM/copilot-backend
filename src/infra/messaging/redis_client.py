@@ -152,4 +152,3 @@ def close_redis_pool() -> None:
     if _redis_manager is not None:
         _redis_manager.close_pool()
         _redis_manager = None
-

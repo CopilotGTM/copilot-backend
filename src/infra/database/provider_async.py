@@ -222,4 +222,3 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
 
 
 __all__ = ["AsyncSqlAlchemyProvider"]
-

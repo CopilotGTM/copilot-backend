@@ -173,7 +173,10 @@ class NangoClient:
 
     @staticmethod
     def _event_extra(event: str, **fields: Any) -> dict[str, Any]:
-        return {"event": event, **{key: value for key, value in fields.items() if value is not None}}
+        return {
+            "event": event,
+            **{key: value for key, value in fields.items() if value is not None},
+        }
 
     @staticmethod
     def verify_webhook_signature(
@@ -921,6 +924,3 @@ class NangoClient:
         """Close the httpx client connection."""
         await self.client.aclose()
         logger.debug("Closed Nango REST API client")
-
-
-

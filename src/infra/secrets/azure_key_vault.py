@@ -336,4 +336,3 @@ class AzureKeyVaultSecretProvider(SecretProvider):
             ),
             "vault_url": secret_manager_config.AZURE_KEY_VAULT_URL,
         }
-

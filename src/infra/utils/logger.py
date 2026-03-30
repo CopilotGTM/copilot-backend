@@ -193,7 +193,9 @@ class _ConsoleFormatter(logging.Formatter):
         level = f"{color}{record.levelname:<7}{_RESET}"
 
         # Preserve uvicorn logger names so `uvicorn.error` does not look like an actual error level.
-        short_name = record.name if record.name.startswith("uvicorn.") else record.name.rsplit(".", 1)[-1]
+        short_name = (
+            record.name if record.name.startswith("uvicorn.") else record.name.rsplit(".", 1)[-1]
+        )
 
         # request_id helps follow a single request across log lines;
         # process name distinguishes concurrent uvicorn workers
@@ -431,8 +433,3 @@ def get_logger(
         )
 
     return logger
-
-
-
-
-

@@ -255,6 +255,8 @@ def test_configure_logging_renders_uvicorn_logger_name_without_color_message(cap
     assert "[uvicorn.error]" in rendered
     assert "color_message=" not in rendered
     assert "Started server process [9]" in rendered
+
+
 def test_create_fastapi_app_instruments_shared_app_instance(mocker):
     mocker.patch.object(otel_config, "OTEL_EXPORTER_OTLP_ENDPOINT", "")
 
@@ -353,12 +355,6 @@ def test_init_sentry_is_noop_even_with_dsn_configured(mocker):
 
     init_mock.assert_not_called()
     assert sentry_runtime._sentry_initialized is True
-
-
-
-
-
-
 
 
 def test_configure_logging_suppresses_celery_internal_loggers():
@@ -488,7 +484,6 @@ def test_verify_token_logs_auth_failure_event(capsys, monkeypatch):
     assert payload["auth_operation"] == "verify_token"
 
 
-
 def test_secrets_manager_logs_secret_fetch_failure_events(capsys, monkeypatch):
     import src.infra.secrets.manager as secrets_manager_runtime
 
@@ -517,7 +512,6 @@ def test_secrets_manager_logs_secret_fetch_failure_events(capsys, monkeypatch):
     assert failure_payload["message"] == "Secret fetch failed after retries"
 
 
-
 def test_nango_connect_session_logs_structured_fields(capsys, monkeypatch):
     import src.service.integrations.nango_client as nango_runtime
 
@@ -542,7 +536,9 @@ def test_nango_connect_session_logs_structured_fields(capsys, monkeypatch):
     monkeypatch.setenv("LOG_LEVEL", "DEBUG")
     configure_logging(component="api", force=True)
     monkeypatch.setattr(nango_runtime.httpx, "AsyncClient", _FakeAsyncClient)
-    monkeypatch.setattr(nango_runtime.nango_integration_config, "NANGO_BASE_URL", "https://api.nango.dev")
+    monkeypatch.setattr(
+        nango_runtime.nango_integration_config, "NANGO_BASE_URL", "https://api.nango.dev"
+    )
     monkeypatch.setattr(nango_runtime.nango_integration_config, "NANGO_SECRET_KEY", "secret")
 
     client = nango_runtime.NangoClient()
@@ -567,4 +563,3 @@ def test_nango_connect_session_logs_structured_fields(capsys, monkeypatch):
     assert payload["integration_id"] == "hubspot"
 
     asyncio.run(client.close())
-

@@ -606,7 +606,3 @@ class SupabaseAdminClient:
 
 # Create global instance
 supabase_admin_client = SupabaseAdminClient()
-
-
-
-

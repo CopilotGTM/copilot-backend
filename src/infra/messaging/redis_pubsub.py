@@ -165,4 +165,3 @@ class AsyncRedisPubSub:
 
         except Exception as e:
             logger.warning(f"Error closing Redis connections: {e}")
-
