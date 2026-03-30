@@ -34,6 +34,7 @@ async def dispatch_stakeholder_research_async(
     stakeholder_id: UUID,
     deal_id: UUID | None = None,
     user_id: UUID | None = None,
+    force: bool = False,
 ) -> str | None:
     """Create a DealJobs record and dispatch research task (async variant).
 
@@ -42,6 +43,7 @@ async def dispatch_stakeholder_research_async(
         stakeholder_id: The stakeholder to research
         deal_id: Optional — stored on job for context
         user_id: Who triggered this (defaults to automated pipeline)
+        force: Skip cooldown check (for manual user-triggered research)
 
     Returns:
         job_id string, or None if skipped (cooldown / not approved)
@@ -64,48 +66,50 @@ async def dispatch_stakeholder_research_async(
 
         email = stakeholder.email
 
-        # Email-based dedup: check if ANY stakeholder with this email was
-        # recently researched (same person can appear on multiple deals)
-        recent_research_stmt = (
-            select(DealStakeholder)
-            .where(
-                col(DealStakeholder.organisation_id) == organisation_id,
-                col(DealStakeholder.email) == email,
-                col(DealStakeholder.last_researched_at).isnot(None),
+        # When force=True (manual trigger), skip cooldown — user explicitly wants fresh research
+        if not force:
+            # Email-based dedup: check if ANY stakeholder with this email was
+            # recently researched (same person can appear on multiple deals)
+            recent_research_stmt = (
+                select(DealStakeholder)
+                .where(
+                    col(DealStakeholder.organisation_id) == organisation_id,
+                    col(DealStakeholder.email) == email,
+                    col(DealStakeholder.last_researched_at).isnot(None),
+                )
+                .order_by(col(DealStakeholder.last_researched_at).desc())
+                .limit(1)
             )
-            .order_by(col(DealStakeholder.last_researched_at).desc())
-            .limit(1)
-        )
-        result = await session.execute(recent_research_stmt)
-        already_researched = result.scalar_one_or_none()
+            result = await session.execute(recent_research_stmt)
+            already_researched = result.scalar_one_or_none()
 
-        if already_researched and already_researched.last_researched_at:
-            age = datetime.now(UTC) - already_researched.last_researched_at
-            if age < timedelta(days=RESEARCH_COOLDOWN_DAYS):
-                # Copy research from the existing record to avoid re-researching
-                if already_researched.stakeholder_research:
-                    from sqlalchemy import update
+            if already_researched and already_researched.last_researched_at:
+                age = datetime.now(UTC) - already_researched.last_researched_at
+                if age < timedelta(days=RESEARCH_COOLDOWN_DAYS):
+                    # Copy research from the existing record to avoid re-researching
+                    if already_researched.stakeholder_research:
+                        from sqlalchemy import update
 
-                    copy_stmt = (
-                        update(DealStakeholder)
-                        .where(
-                            col(DealStakeholder.organisation_id) == organisation_id,
-                            col(DealStakeholder.stakeholder_id) == stakeholder_id,
+                        copy_stmt = (
+                            update(DealStakeholder)
+                            .where(
+                                col(DealStakeholder.organisation_id) == organisation_id,
+                                col(DealStakeholder.stakeholder_id) == stakeholder_id,
+                            )
+                            .values(
+                                stakeholder_research=already_researched.stakeholder_research,
+                                last_researched_at=already_researched.last_researched_at,
+                            )
                         )
-                        .values(
-                            stakeholder_research=already_researched.stakeholder_research,
-                            last_researched_at=already_researched.last_researched_at,
+                        await session.execute(copy_stmt)
+                        await session.commit()
+                        logger.info(
+                            "dispatch_stakeholder_research: copied research from %s to %s (email=%s)",
+                            already_researched.stakeholder_id,
+                            stakeholder_id,
+                            email,
                         )
-                    )
-                    await session.execute(copy_stmt)
-                    await session.commit()
-                    logger.info(
-                        "dispatch_stakeholder_research: copied research from %s to %s (email=%s)",
-                        already_researched.stakeholder_id,
-                        stakeholder_id,
-                        email,
-                    )
-                return None
+                    return None
 
         # Check for existing active job for this email to avoid duplicate work
         existing_job_stmt = (

@@ -392,6 +392,76 @@ async def reject_stakeholder(
         )
 
 
+@stakeholders_router.post(
+    "/{deal_id}/stakeholders/{stakeholder_id}/research",
+    response_model=GenericResponse[dict],
+    summary="Trigger stakeholder research",
+)
+async def trigger_stakeholder_research(
+    deal_id: UUID,
+    stakeholder_id: UUID,
+    response: FastAPIResponse,
+    user_ids: UserIDs = Depends(get_current_user),
+    service: StakeholdersService = Depends(get_stakeholders_service),
+) -> GenericResponse[dict]:
+    """Manually trigger LinkedIn research for a stakeholder.
+
+    Dispatches a research job to enrich the stakeholder's profile.
+    If research was already run recently (within 30 days), it will be skipped.
+
+    Returns the job_id if dispatched, or a message if skipped.
+    """
+    try:
+        # Verify stakeholder exists and belongs to this deal
+        detail = await service.get_stakeholder_detail(deal_id, stakeholder_id)
+        if not detail:
+            return Response.error_response(
+                message="Stakeholder not found", status_code=404, response=response
+            )
+
+        from src.workers.deal_worker.utils.stakeholder_research_dispatch import (
+            dispatch_stakeholder_research_async,
+        )
+
+        job_id = await dispatch_stakeholder_research_async(
+            organisation_id=service.organisation_id,
+            stakeholder_id=stakeholder_id,
+            deal_id=deal_id,
+            user_id=user_ids.user_id,
+            force=True,
+        )
+
+        if job_id:
+            logger.info(
+                "Stakeholder research triggered: stakeholder=%s job=%s user=%s",
+                stakeholder_id,
+                job_id,
+                user_ids.user_id,
+            )
+            return Response.success_response(
+                message="Research job dispatched",
+                data={"job_id": job_id},
+            )
+
+        return Response.success_response(
+            message="Research skipped — already researched recently",
+            data={"job_id": None},
+        )
+    except StakeholdersServiceError as e:
+        return Response.error_response(
+            message=e.message, status_code=e.status_code, response=response
+        )
+    except Exception:
+        logger.exception(
+            "Failed to trigger research for stakeholder %s deal %s",
+            stakeholder_id,
+            deal_id,
+        )
+        return Response.error_response(
+            message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
+        )
+
+
 @stakeholders_router.delete(
     "/{deal_id}/stakeholders/{stakeholder_id}",
     response_model=GenericResponse[StakeholderDetail],
