@@ -26,6 +26,7 @@ from src.domain.models.organisation_tables.sync.crm.deals import (
     CRMDealParticipant,
     CRMParticipantType,
 )
+from src.infra.database.sessions import acquire_master_async_session
 
 if TYPE_CHECKING:
     from src.agents.context import AgentContext
@@ -81,13 +82,13 @@ async def _load_internal_user_data(
     internal_domains: set[str] = set()
     internal_emails: set[str] = set()
 
-    async with context.acquire_session() as session:
-        # Tier 1: public schema table via org session (search_path includes public)
-        try:
+    # Tier 1: Organisation.domain from public schema (requires master session)
+    try:
+        async for master_session in acquire_master_async_session():
             org_stmt = select(col(Organisation.domain)).where(
                 col(Organisation.organisation_id) == context.organisation_id,
             )
-            org_result = await session.execute(org_stmt)
+            org_result = await master_session.execute(org_stmt)
             domains_raw = org_result.scalar_one_or_none()
             if domains_raw and isinstance(domains_raw, list):
                 for d in domains_raw:
@@ -95,13 +96,12 @@ async def _load_internal_user_data(
                         continue
                     d_lower = d.strip().lower()
                     internal_domains.add(d_lower)
-                    # Strip www. prefix so "www.acme.com" also blocks "@acme.com"
                     if d_lower.startswith("www."):
                         internal_domains.add(d_lower[4:])
-        except SQLAlchemyError:
-            with contextlib.suppress(Exception):
-                await session.rollback()
+    except SQLAlchemyError:
+        logger.warning("Failed to load org domains from public schema", exc_info=True)
 
+    async with context.acquire_session() as session:
         # Tier 2: If no org domains found, derive from USER participant emails
         if not internal_domains and context.deal_id:
             try:

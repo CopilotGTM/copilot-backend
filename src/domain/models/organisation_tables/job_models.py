@@ -194,6 +194,9 @@ class DealJobType(str, Enum):
     # Deal memory
     DEAL_MEMORY_BUILD = "deal_memory_build"  # Build or update deal memory document
 
+    # Stakeholder research
+    STAKEHOLDER_RESEARCH = "stakeholder_research"
+
 
 class DealJobs(TimestampMixin, table=True):
     """

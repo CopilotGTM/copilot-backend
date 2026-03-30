@@ -129,11 +129,30 @@ class AddStakeholderFormHandler(BaseFormHandler):
                         organisation_id=org_id,
                     )
 
-                    await service.create_stakeholder(
+                    stakeholder = await service.create_stakeholder(
                         deal_id=deal_id,
                         request=request,
                     )
-                    # StakeholdersService.create_stakeholder commits internally
+
+                    # Trigger deal mapping + research (same as REST handler)
+                    await service.trigger_deal_mapping_if_ready(deal_id)
+
+                    try:
+                        from src.workers.deal_worker.utils.stakeholder_research_dispatch import (
+                            dispatch_stakeholder_research_async,
+                        )
+
+                        await dispatch_stakeholder_research_async(
+                            organisation_id=org_id,
+                            stakeholder_id=stakeholder.stakeholder_id,
+                            deal_id=deal_id,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Failed to dispatch stakeholder research for %s",
+                            stakeholder.stakeholder_id,
+                            exc_info=True,
+                        )
 
                     display_name = name or email
                     logger.info(

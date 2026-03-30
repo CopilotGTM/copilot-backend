@@ -25,6 +25,7 @@ from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     StakeholderSource,
 )
 from src.domain.models.organisation_tables.sync.timeline_models import TimelineEventType
+from src.infra.database.sessions import acquire_master_async_session
 from src.infra.utils.logger import get_logger
 from src.service.crm.timeline.deal_timeline_sync_service import (
     build_stakeholder_timeline_event,
@@ -54,11 +55,16 @@ class StakeholdersService:
         return self.org_session
 
     async def _get_internal_domains(self) -> set[str]:
-        """Load the organisation's internal email domains from Organisation.domain."""
+        """Load the organisation's internal email domains from Organisation.domain.
+
+        Uses a master session because Organisation lives in the public schema,
+        which org-scoped DB users cannot read.
+        """
         stmt = select(col(Organisation.domain)).where(
             col(Organisation.organisation_id) == self.organisation_id,
         )
-        result = await self.session.execute(stmt)
+        async for master_session in acquire_master_async_session():
+            result = await master_session.execute(stmt)
         domains_raw = result.scalar_one_or_none()
         domains: set[str] = set()
         if domains_raw and isinstance(domains_raw, list):
@@ -303,7 +309,24 @@ class StakeholdersService:
 
         stakeholder.approval_status = ApprovalStatus.REMOVED
 
-        # Create timeline event for the stakeholder removal
+        # Remove any existing STAKEHOLDER_REMOVED timeline event for this stakeholder
+        # (handles re-add then re-remove scenario without violating unique constraint)
+        # Uses raw DELETE to avoid ORM flush/lazy-load issues (MissingGreenlet)
+        from sqlalchemy import delete
+        from src.domain.models.organisation_tables.sync.timeline_models import (
+            DealTimelineEvent,
+        )
+
+        delete_stmt = delete(DealTimelineEvent).where(
+            col(DealTimelineEvent.deal_id) == deal_id,
+            col(DealTimelineEvent.event_type) == TimelineEventType.STAKEHOLDER_REMOVED,
+            col(DealTimelineEvent.source_record_id) == str(stakeholder.stakeholder_id),
+        )
+        await self.session.execute(delete_stmt)
+        # Refresh stakeholder after DELETE to prevent expired-attribute lazy-load errors
+        await self.session.refresh(stakeholder)
+
+        # Create fresh timeline event for the removal
         timeline_event = build_stakeholder_timeline_event(
             organisation_id=self.organisation_id,
             deal_id=deal_id,
@@ -340,14 +363,55 @@ class StakeholdersService:
                 status_code=403,
             )
 
-        # Check for duplicate email
+        # Check for duplicate email — but allow re-adding REMOVED/REJECTED stakeholders
         existing_stmt = select(DealStakeholder).where(
             col(DealStakeholder.deal_id) == deal_id,
             col(DealStakeholder.organisation_id) == self.organisation_id,
             col(DealStakeholder.email) == email_normalized,
         )
         existing_result = await self.session.execute(existing_stmt)
-        if existing_result.scalar_one_or_none():
+        existing_stakeholder = existing_result.scalar_one_or_none()
+        if existing_stakeholder:
+            if (
+                existing_stakeholder.approval_status
+                in (
+                    ApprovalStatus.REMOVED,
+                    ApprovalStatus.REJECTED,
+                )
+                or existing_stakeholder.is_deleted
+            ):
+                # Reactivate: user explicitly wants this stakeholder back
+                existing_stakeholder.approval_status = ApprovalStatus.APPROVED
+                existing_stakeholder.is_deleted = False
+                existing_stakeholder.name = request.name or existing_stakeholder.name
+                existing_stakeholder.job_title = request.job_title or existing_stakeholder.job_title
+                existing_stakeholder.phone_number = (
+                    request.phone_number or existing_stakeholder.phone_number
+                )
+                existing_stakeholder.department = (
+                    request.department or existing_stakeholder.department
+                )
+                existing_stakeholder.source = StakeholderSource.MANUAL
+                if request.external_links:
+                    existing_stakeholder.external_links = self._serialize_external_links(
+                        request.external_links
+                    )
+                if request.stance:
+                    existing_stakeholder.stance = request.stance
+                if request.decision_power:
+                    existing_stakeholder.decision_power = request.decision_power
+                if request.motivation:
+                    existing_stakeholder.motivation = request.motivation
+                if request.pain_points:
+                    existing_stakeholder.pain_points = request.pain_points
+                # Reset research so it gets re-researched
+                existing_stakeholder.stakeholder_research = None
+                existing_stakeholder.last_researched_at = None
+                await self.session.commit()
+                await self.session.refresh(existing_stakeholder)
+
+                return StakeholderDetail.model_validate(existing_stakeholder)
+
             raise StakeholdersServiceError(
                 "A stakeholder with this email already exists for this deal",
                 status_code=409,
@@ -649,36 +713,35 @@ class StakeholdersService:
             if not should_trigger:
                 return
 
-            from celery import chord, group
+            from src.workers.deal_worker.client import send_deal_task_async
             from src.workers.deal_worker.services.deal_change_detector import (
                 StakeholderChangeType,
-            )
-            from src.workers.deal_worker.tasks.deal_mappers import (
-                match_calendar_to_deals_task,
-                match_email_to_deals_task,
-            )
-            from src.workers.deal_worker.tasks.deal_mappers.stakeholder_tasks import (
-                sync_deal_stakeholders_task,
             )
 
             org_id = str(self.organisation_id)
             deal_id_str = str(deal_id)
 
-            mapping_group = group(
-                match_calendar_to_deals_task.s(org_id, deal_id_str),
-                match_email_to_deals_task.s(org_id, deal_id_str),
+            # Dispatch calendar + email matching, then stakeholder sync
+            # Using send_deal_task_async to avoid importing task modules in the API process
+            await send_deal_task_async(
+                "deal.match_calendar_to_deals",
+                kwargs={"organisation_id": org_id, "deal_id": deal_id_str},
             )
-
-            follow_up = sync_deal_stakeholders_task.s(
-                org_id,
-                deal_id_str,
-                StakeholderChangeType.MANUAL_REFRESH.value,
-                None,
-                None,
-                False,
+            await send_deal_task_async(
+                "deal.match_email_to_deals",
+                kwargs={"organisation_id": org_id, "deal_id": deal_id_str},
             )
-
-            chord(mapping_group)(follow_up)
+            await send_deal_task_async(
+                "stakeholder.sync_deal_stakeholders",
+                kwargs={
+                    "organisation_id": org_id,
+                    "deal_id": deal_id_str,
+                    "change_type": StakeholderChangeType.MANUAL_REFRESH.value,
+                    "integration_id": None,
+                    "integration_type": None,
+                    "trigger_rematching": False,
+                },
+            )
         except Exception:
             logger.warning(
                 "Failed to trigger deal mapping after stakeholder update for deal %s",
