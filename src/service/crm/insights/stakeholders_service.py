@@ -224,6 +224,8 @@ class StakeholdersService:
             "source": stakeholder.source,
             "approval_status": stakeholder.approval_status,
             "engagement_history": engagement_history,
+            "stakeholder_research": stakeholder.stakeholder_research,
+            "last_researched_at": stakeholder.last_researched_at,
             "created_at": stakeholder.created_at,
             "updated_at": stakeholder.updated_at,
         }
