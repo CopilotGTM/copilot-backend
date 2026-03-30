@@ -96,7 +96,7 @@ async def get_deal_stakeholders(
         return Response.error_response(
             message=e.message, status_code=e.status_code, response=response
         )
-    except Exception as e:
+    except Exception:
         logger.error("Error fetching stakeholders", extra={"deal_id": str(deal_id)}, exc_info=True)
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
@@ -134,7 +134,7 @@ async def get_deal_stakeholders(
 #         return Response.error_response(
 #             message=e.message, status_code=e.status_code, response=response
 #         )
-#     except Exception as e:
+#     except Exception:
 #         logger.error("Unexpected error listing available contacts: %s", e, exc_info=True)
 #         return Response.error_response(
 #             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
@@ -609,3 +609,4 @@ async def remove_stakeholder(
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
         )
+
