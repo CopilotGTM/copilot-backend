@@ -73,7 +73,10 @@ async def list_available_deal_integrations(
     linked to the specified deal.
     """
     try:
-        logger.info(f"Listing available deal integrations for deal {deal_id}")
+        logger.info(
+            "Listing available deal integrations",
+            extra={"deal_id": str(deal_id)},
+        )
         # Get active integrations for the deal
         connected_integrations = await service.list_all_active_integrations(
             user_id=user_ids.user_id

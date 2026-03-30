@@ -27,6 +27,7 @@ _EXCLUDED_EXTRA_FIELDS = {
     "ctx_celery_queue",
     "ctx_trace_id",
     "ctx_span_id",
+    "color_message",
 }
 _CONSOLE_IGNORED_EXTRA_FIELDS = {"event", "color_message", "asctime", "message"}
 _CONSOLE_EXTRA_ALIASES = {
@@ -272,6 +273,9 @@ def _reduce_noisy_third_party_logs() -> None:
         "celery.apps.worker",
         "kombu.connection",
         "kombu.pidbox",
+        "alembic.runtime.plugins",
+        "alembic.runtime.migration",
+        "celery.worker.strategy",
     ]:
         logger = logging.getLogger(noisy)
         if logger.level == logging.NOTSET or logger.level < logging.WARNING:

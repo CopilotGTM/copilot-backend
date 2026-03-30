@@ -285,6 +285,32 @@ def test_create_celery_app_defers_otel_init_until_worker_process_start(mocker):
     init_mock.assert_any_call(service_name_suffix="-unit_worker")
 
 
+def test_otel_log_sanitizer_drops_source_location_fields():
+    from src.infra.observability.otel import _OtelLogSanitizer
+
+    record = logging.LogRecord(
+        name="uvicorn.error",
+        level=logging.INFO,
+        pathname="/app/server.py",
+        lineno=84,
+        msg="Started server process [8]",
+        args=(),
+        exc_info=None,
+        func="_serve",
+    )
+    record.color_message = "Started server process [%d]"
+
+    allowed = _OtelLogSanitizer().filter(record)
+
+    assert allowed is True
+    assert record.pathname == ""
+    assert record.filename == ""
+    assert record.module == ""
+    assert record.funcName == ""
+    assert record.lineno == 0
+    assert record.color_message == ""
+
+
 def test_init_otel_is_noop_when_disabled(mocker):
     import src.infra.observability.otel as otel_runtime
 

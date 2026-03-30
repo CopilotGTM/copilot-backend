@@ -94,7 +94,10 @@ def sync_crm_contacts_org_task(
            a. Fetch contacts from API (NO session held)
            b. Session N: Write contacts to DB, update integration, run enrichment
         """
-        logger.info("Starting CRM contacts sync for organization (Tier 2): %s", org_id)
+        logger.info(
+            "Starting CRM contacts sync (Tier 2)",
+            extra={"organisation_id": str(org_id)},
+        )
 
         # ─────────────────────────────────────────────────────────────────────
         # Phase 1: Query integrations and extract data needed for fetching

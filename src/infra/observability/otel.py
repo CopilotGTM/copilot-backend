@@ -11,6 +11,21 @@ from __future__ import annotations
 
 import logging
 
+
+class _OtelLogSanitizer(logging.Filter):
+    """Strip low-value source-location metadata from exported OTel logs."""
+
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003 - matches logging API
+        record.pathname = ""
+        record.filename = ""
+        record.module = ""
+        record.funcName = ""
+        record.lineno = 0
+        if hasattr(record, "color_message"):
+            record.color_message = ""
+        return True
+
+
 _otel_initialized = False
 _otel_log_handler = None
 
@@ -103,6 +118,7 @@ def _setup_logging(otel_config, suffix: str) -> None:
     # (app loggers use propagate=False, so root handler wouldn't see them)
     global _otel_log_handler
     _otel_log_handler = LoggingHandler(level=logging.INFO, logger_provider=log_provider)
+    _otel_log_handler.addFilter(_OtelLogSanitizer())
     # Also attach to root for any loggers that DO propagate
     logging.getLogger().addHandler(_otel_log_handler)
 

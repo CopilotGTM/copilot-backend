@@ -69,7 +69,7 @@ async def user_login(
                 UserAuthErrors.USER_NOT_FOUND, response=response
             )
 
-        logger.info(f"User found in database: {user_email}")
+        logger.debug("User found in database")
 
         # External call to Supabase — no DB session held
         try:

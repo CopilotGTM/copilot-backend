@@ -179,7 +179,7 @@ class SupabaseUserClient:
             response = self.client.auth.sign_in_with_password(
                 {"email": email, "password": password}
             )
-            logger.info(f"User signed in successfully: {email}")
+            logger.debug("User signed in successfully")
             return response.model_dump()
         except Exception as e:
             logger.warning("Sign in failed for %s: %s", email, str(e))
