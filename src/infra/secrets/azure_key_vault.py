@@ -62,7 +62,7 @@ class AzureKeyVaultSecretProvider(SecretProvider):
         if self._client is not None:
             # Check if we need to recreate client due to auth failures
             if self._last_auth_failure and time.time() - self._last_auth_failure < 300:  # 5 minutes
-                logger.info("Recreating Azure Key Vault client due to recent auth failure")
+                logger.debug("Recreating Azure Key Vault client due to recent auth failure")
                 await self._recreate_client()
             else:
                 return
@@ -105,7 +105,7 @@ class AzureKeyVaultSecretProvider(SecretProvider):
             # Create new credential based on environment
             credential: AsyncTokenCredential
             if os.getenv("ENV") == "local":
-                logger.info("Auth strategy (secrets): DefaultAzureCredential (local)")
+                logger.debug("Auth strategy (secrets): DefaultAzureCredential (local)")
                 credential = DefaultAzureCredential(
                     exclude_interactive_browser_credential=True,
                     exclude_visual_studio_code_credential=False,
@@ -114,7 +114,7 @@ class AzureKeyVaultSecretProvider(SecretProvider):
                 tenant_id = cloud_infra_config.AZURE_TENANT_ID
                 client_id = cloud_infra_config.AZURE_CLIENT_ID
                 if tenant_id and client_id:
-                    logger.info("Auth strategy (secrets): Workload Identity")
+                    logger.debug("Auth strategy (secrets): Workload Identity")
                     allowed_tenants = [
                         t.strip()
                         for t in (
@@ -128,7 +128,7 @@ class AzureKeyVaultSecretProvider(SecretProvider):
                         additionally_allowed_tenants=allowed_tenants or ["*"],
                     )
                 else:
-                    logger.info("Auth strategy (secrets): Managed Identity fallback")
+                    logger.debug("Auth strategy (secrets): Managed Identity fallback")
                     credential = ManagedIdentityCredential()
 
             # Create new client
@@ -136,7 +136,7 @@ class AzureKeyVaultSecretProvider(SecretProvider):
             self._client = SecretClient(vault_url=key_vault_url, credential=credential)
             self._client_creation_time = time.time()
             self._auth_failure_count = 0
-            logger.info(f"Azure Key Vault client created successfully for: {key_vault_url}")
+            logger.debug(f"Azure Key Vault client created successfully for: {key_vault_url}")
 
         except Exception as e:
             logger.error(f"Failed to create Azure Key Vault client: {e}")
@@ -146,7 +146,7 @@ class AzureKeyVaultSecretProvider(SecretProvider):
 
     async def _recreate_client(self):
         """Force recreation of the client (used after auth failures)."""
-        logger.info("Forcing recreation of Azure Key Vault client")
+        logger.debug("Forcing recreation of Azure Key Vault client")
         self._client = None
         self._credential = None
         await self._create_client()
@@ -296,7 +296,7 @@ class AzureKeyVaultSecretProvider(SecretProvider):
             final_results[name] = value
 
         success_count = sum(1 for v in final_results.values() if v is not None)
-        logger.info(f"Bulk fetch completed: {success_count}/{len(names_list)} secrets retrieved")
+        logger.debug(f"Bulk fetch completed: {success_count}/{len(names_list)} secrets retrieved")
 
         return final_results
 
@@ -336,3 +336,4 @@ class AzureKeyVaultSecretProvider(SecretProvider):
             ),
             "vault_url": secret_manager_config.AZURE_KEY_VAULT_URL,
         }
+

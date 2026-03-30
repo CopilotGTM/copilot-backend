@@ -1,7 +1,7 @@
 """OpenTelemetry initialization shared by FastAPI and all Celery workers.
 
 Call ``init_otel(service_name_suffix)`` once at process startup.
-Disabled when OTEL_EXPORTER_OTLP_ENDPOINT is empty (local dev).
+Disabled when OTEL_ENABLED is false or OTEL_EXPORTER_OTLP_ENDPOINT is empty.
 
 Instruments: Celery, httpx, requests, SQLAlchemy, Redis.
 Also bridges Python ``logging`` so every log record gets trace_id/span_id.
@@ -28,7 +28,7 @@ def init_otel(service_name_suffix: str = "") -> None:
 
     from src.infra.config.configs import otel_config
 
-    if not otel_config.OTEL_EXPORTER_OTLP_ENDPOINT:
+    if not otel_config.OTEL_ENABLED or not otel_config.OTEL_EXPORTER_OTLP_ENDPOINT:
         return
 
     _otel_initialized = True
@@ -116,7 +116,7 @@ def instrument_fastapi_app(app) -> None:
     """Instrument the shared FastAPI app instance once it exists."""
     from src.infra.config.configs import otel_config
 
-    if not otel_config.OTEL_EXPORTER_OTLP_ENDPOINT:
+    if not otel_config.OTEL_ENABLED or not otel_config.OTEL_EXPORTER_OTLP_ENDPOINT:
         return
 
     if getattr(app.state, "_otel_fastapi_instrumented", False):
@@ -193,3 +193,5 @@ def _auto_instrument() -> None:
         logging.getLogger(__name__).debug("Redis instrumentation not installed")
     except Exception:
         logging.getLogger(__name__).debug("Failed to auto-instrument Redis", exc_info=True)
+
+

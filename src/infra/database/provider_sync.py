@@ -113,11 +113,26 @@ class SyncSqlAlchemyProvider(SyncDatabaseProvider):
                 if not password:
                     password = asyncio.run(secrets_manager.get(secret_name))
             except Exception as e:
-                logger.error("Secret fetch failed for '%s': %s", secret_name, e)
+                logger.error(
+                    "Secret fetch failed",
+                    extra={
+                        "event": "secret_fetch_failed",
+                        "secret_name": secret_name,
+                        "organisation_id": str(org_id),
+                        "failure_reason": str(e),
+                    },
+                )
                 password = None
 
             if not password:
-                logger.error(f"Password secret '{secret_name}' unavailable for org_id {org_id}")
+                logger.error(
+                    "Tenant secret unavailable",
+                    extra={
+                        "event": "secret_fetch_failed",
+                        "secret_name": secret_name,
+                        "organisation_id": str(org_id),
+                    },
+                )
                 raise RuntimeError(f"Tenant secret '{secret_name}' unavailable")
 
             eng_new = self._build_tenant_engine(role_name, password)
@@ -191,3 +206,4 @@ class SyncSqlAlchemyProvider(SyncDatabaseProvider):
 
 
 __all__ = ["SyncSqlAlchemyProvider"]
+

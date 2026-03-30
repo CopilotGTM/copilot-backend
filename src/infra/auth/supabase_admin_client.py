@@ -479,10 +479,10 @@ class SupabaseAdminClient:
                 raise SupabaseAuthError(
                     SupabaseErrors.TOKEN_VERIFICATION_FAILED_GENERIC, status_code=401
                 )
-            logger.info("Token verified successfully")
+            logger.debug("Token verified successfully")
             return response.model_dump()
         except Exception as e:
-            logger.error(f"Token verification failed: {str(e)}")
+            logger.warning(f"Token verification failed: {str(e)}")
             raise SupabaseAuthError(
                 SupabaseErrors.TOKEN_VERIFICATION_FAILED.format(str(e)), status_code=401
             ) from e
@@ -503,10 +503,10 @@ class SupabaseAdminClient:
                 raise SupabaseAuthError(SupabaseErrors.INVALID_TOKEN, status_code=400)
 
             response = self.client.auth.refresh_session(refresh_token)
-            logger.info("Access token refreshed successfully")
+            logger.debug("Access token refreshed successfully")
             return response.model_dump()
         except Exception as e:
-            logger.error(f"Token refresh failed: {str(e)}")
+            logger.warning(f"Token refresh failed: {str(e)}")
             raise SupabaseAuthError(
                 SupabaseErrors.TOKEN_REFRESH_FAILED.format(str(e)), status_code=401
             ) from e
@@ -606,3 +606,7 @@ class SupabaseAdminClient:
 
 # Create global instance
 supabase_admin_client = SupabaseAdminClient()
+
+
+
+

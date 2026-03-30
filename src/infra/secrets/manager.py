@@ -49,10 +49,25 @@ class SecretsManager:
                 self._last_failure_time = time.time()
                 if attempt < self.max_retries:
                     delay = min(self.initial_retry_delay * (2**attempt), self.max_retry_delay)
-                    logger.warning("Retrying secret '%s' in %.2fs after error: %s", name, delay, e)
+                    logger.warning(
+                        "Retrying secret fetch",
+                        extra={
+                            "event": "secret_fetch_retry",
+                            "secret_name": name,
+                            "retry_delay_s": delay,
+                            "failure_reason": str(e),
+                        },
+                    )
                     await asyncio.sleep(delay)
                 else:
-                    logger.error("Failed to fetch secret '%s' after retries: %s", name, e)
+                    logger.error(
+                        "Secret fetch failed after retries",
+                        extra={
+                            "event": "secret_fetch_failed",
+                            "secret_name": name,
+                            "failure_reason": str(e),
+                        },
+                    )
         # If all attempts failed or provider returned None each time
         return None
 
@@ -88,3 +103,4 @@ secrets_manager = SecretsManager()
 master_secrets_manager = SecretsManager(
     provider=AzureKeyVaultSecretProvider(vault_url=secret_manager_config.AZURE_MASTER_KEY_VAULT_URL)
 )
+

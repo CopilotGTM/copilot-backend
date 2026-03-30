@@ -122,7 +122,7 @@ class AsyncRedisConnectionManager:
         test_client = redis_async.Redis(connection_pool=self._async_pool)
         try:
             await test_client.ping()
-            logger.info(
+            logger.debug(
                 "Async Redis connection pool initialized successfully (host=%s, ssl=%s)",
                 redis_host,
                 ssl_enabled,
@@ -141,7 +141,7 @@ class AsyncRedisConnectionManager:
             await self._async_pool.disconnect()
             self._async_pool = None
             self._initialized = False
-            logger.info("Async Redis connection pool closed")
+            logger.debug("Async Redis connection pool closed")
 
 
 # Global async connection manager instance
@@ -192,7 +192,7 @@ class AsyncRedisStreams:
         client = await self._client()
         try:
             await client.xgroup_create(stream_key, group_name, start_id, mkstream=True)
-            logger.info("Created consumer group %s for stream %s", group_name, stream_key)
+            logger.debug("Created consumer group %s for stream %s", group_name, stream_key)
             return True
         except Exception as e:
             if "BUSYGROUP" in str(e):
@@ -272,7 +272,7 @@ class AsyncRedisStreams:
         try:
             result = await client.delete(stream_key)
             if result:
-                logger.info("Deleted stream %s", stream_key)
+                logger.debug("Deleted stream %s", stream_key)
             return bool(result)
         except Exception as e:
             logger.error("Failed to delete stream %s: %s", stream_key, e)
@@ -392,3 +392,4 @@ async def close_async_redis_pool() -> None:
     Close the async Redis connection pool.
     """
     await _async_redis_manager.close_pool()
+

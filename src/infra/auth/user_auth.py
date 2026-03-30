@@ -4,7 +4,7 @@ import string
 from fastapi import HTTPException, Request, status
 from sqlalchemy import select
 from src.domain.models.master_tables import AdminUserStatus, SupabaseUserStatus, User
-from src.infra.auth.supabase_user_client import supabase_user_client
+from src.infra.auth.supabase_user_client import SupabaseAuthError, supabase_user_client
 from src.infra.config.constant import UserAuthErrors
 from src.infra.database.sessions import master_async_session_scope
 from src.infra.utils.logger import get_logger
@@ -145,8 +145,30 @@ class UserAuth:
 
         except HTTPException:
             raise
+        except SupabaseAuthError as e:
+            logger.warning(
+                "Authentication failed",
+                extra={
+                    "event": "auth_failure",
+                    "auth_operation": "get_current_user",
+                    "failure_reason": e.message,
+                    "status_code": e.status_code,
+                },
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=UserAuthErrors.AUTHENTICATION_FAILED,
+            ) from e
         except Exception as e:
-            logger.error(f"Authentication error: {str(e)}")
+            logger.error(
+                "Authentication error",
+                extra={
+                    "event": "auth_failure",
+                    "auth_operation": "get_current_user",
+                    "failure_reason": str(e),
+                },
+                exc_info=True,
+            )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=UserAuthErrors.AUTHENTICATION_FAILED,
@@ -159,3 +181,5 @@ class UserAuth:
 
 # Create a global instance
 user_auth = UserAuth()
+
+

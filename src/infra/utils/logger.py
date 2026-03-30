@@ -28,6 +28,24 @@ _EXCLUDED_EXTRA_FIELDS = {
     "ctx_trace_id",
     "ctx_span_id",
 }
+_CONSOLE_IGNORED_EXTRA_FIELDS = {"event", "color_message", "asctime", "message"}
+_CONSOLE_EXTRA_ALIASES = {
+    "http_method": "method",
+    "http_path": "path",
+    "http_status_code": "status",
+}
+_CONSOLE_EXTRA_PRIORITY = [
+    "http_method",
+    "http_path",
+    "http_status_code",
+    "duration_ms",
+    "organisation_id",
+    "user_id",
+    "deal_id",
+    "stakeholder_id",
+    "job_id",
+    "integration_id",
+]
 
 
 class _ContextFilter(logging.Filter):
@@ -53,8 +71,8 @@ class _ContextFilter(logging.Filter):
             trace_id = ""
             span_id = ""
 
-        record.ctx_trace_id = trace_id  # type: ignore[attr-defined]
-        record.ctx_span_id = span_id  # type: ignore[attr-defined]
+        record.ctx_trace_id = trace_id
+        record.ctx_span_id = span_id
         return True
 
 
@@ -118,6 +136,50 @@ _LEVEL_COLORS = {
 _RESET = "\033[0m"
 
 
+def _stringify_console_value(value: Any) -> str:
+    if isinstance(value, str):
+        return value.replace("\n", "\\n")
+    if isinstance(value, bool | int | float):
+        return str(value)
+    if isinstance(value, (dict, list, tuple, set)):
+        return json_dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+    return str(value)
+
+
+def _iter_console_extra_pairs(record: logging.LogRecord) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    seen_keys: set[str] = set()
+
+    for source_key, display_key in [
+        ("ctx_celery_task_name", "celery_task"),
+        ("ctx_celery_task_id", "celery_task_id"),
+        ("ctx_celery_queue", "celery_queue"),
+    ]:
+        value = getattr(record, source_key, "")
+        if value:
+            pairs.append((display_key, _stringify_console_value(value)))
+            seen_keys.add(source_key)
+
+    extra_values: dict[str, Any] = {}
+    for key, value in record.__dict__.items():
+        if key in _STANDARD_LOG_RECORD_FIELDS or key in _EXCLUDED_EXTRA_FIELDS:
+            continue
+        if key in _CONSOLE_IGNORED_EXTRA_FIELDS or key in seen_keys:
+            continue
+        if key.startswith("_") or value is None or value == "":
+            continue
+        extra_values[key] = value
+
+    ordered_keys = [key for key in _CONSOLE_EXTRA_PRIORITY if key in extra_values]
+    ordered_keys.extend(sorted(key for key in extra_values if key not in _CONSOLE_EXTRA_PRIORITY))
+
+    for key in ordered_keys:
+        display_key = _CONSOLE_EXTRA_ALIASES.get(key, key)
+        pairs.append((display_key, _stringify_console_value(extra_values[key])))
+
+    return pairs
+
+
 class _ConsoleFormatter(logging.Formatter):
     """Human-readable colored formatter for local development."""
 
@@ -130,8 +192,8 @@ class _ConsoleFormatter(logging.Formatter):
         ts = datetime.fromtimestamp(record.created, tz=UTC).strftime("%H:%M:%S.%f")[:-3]
         level = f"{color}{record.levelname:<7}{_RESET}"
 
-        # Short logger name: last segment only
-        short_name = record.name.rsplit(".", 1)[-1]
+        # Preserve uvicorn logger names so `uvicorn.error` does not look like an actual error level.
+        short_name = record.name if record.name.startswith("uvicorn.") else record.name.rsplit(".", 1)[-1]
 
         # request_id helps follow a single request across log lines;
         # process name distinguishes concurrent uvicorn workers
@@ -140,7 +202,12 @@ class _ConsoleFormatter(logging.Formatter):
         prefix = " ".join(filter(None, [pid_tag, req_id[:8] if req_id else ""]))
         prefix_str = f" ({prefix})" if prefix else ""
 
-        parts = [f"{ts} {level} [{short_name}]{prefix_str} {record.getMessage()}"]
+        extra_pairs = _iter_console_extra_pairs(record)
+        extra_suffix = ""
+        if extra_pairs:
+            extra_suffix = " " + " ".join(f"{key}={value}" for key, value in extra_pairs)
+
+        parts = [f"{ts} {level} [{short_name}]{prefix_str} {record.getMessage()}{extra_suffix}"]
 
         if record.exc_info:
             parts.append(self.formatException(record.exc_info))
@@ -196,6 +263,13 @@ def _reduce_noisy_third_party_logs() -> None:
         "urllib3.connectionpool",
         "httpx",
         "httpcore",
+        "celery.worker.consumer.connection",
+        "celery.worker.consumer.mingle",
+        "celery.worker.consumer.control",
+        "celery.worker.control",
+        "celery.apps.worker",
+        "kombu.connection",
+        "kombu.pidbox",
     ]:
         logger = logging.getLogger(noisy)
         if logger.level == logging.NOTSET or logger.level < logging.WARNING:
@@ -357,3 +431,8 @@ def get_logger(
         )
 
     return logger
+
+
+
+
+

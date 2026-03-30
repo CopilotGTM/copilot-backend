@@ -54,7 +54,7 @@ class SupabaseUserClient:
         self.client: Client = create_client(self.supabase_url, self.supabase_anon_key)
         self.admin_client: Client = create_client(self.supabase_url, self.supabase_service_role_key)
 
-        logger.info("Supabase User client initialized")
+        logger.debug("Supabase User client initialized")
 
     def _validate_config(self) -> None:
         """
@@ -182,7 +182,7 @@ class SupabaseUserClient:
             logger.info(f"User signed in successfully: {email}")
             return response.model_dump()
         except Exception as e:
-            logger.error(f"Sign in failed for {email}: {str(e)}")
+            logger.warning("Sign in failed for %s: %s", email, str(e))
             raise SupabaseAuthError(
                 SupabaseErrors.SIGN_IN_FAILED.format(str(e)), status_code=401
             ) from e
@@ -330,10 +330,17 @@ class SupabaseUserClient:
                     SupabaseErrors.TOKEN_VERIFICATION_FAILED.format("No user returned"),
                     status_code=401,
                 )
-            logger.info("Token verified successfully")
+            logger.debug("Token verified successfully")
             return response.model_dump()
         except Exception as e:
-            logger.error(f"Token verification failed: {str(e)}")
+            logger.warning(
+                "Token verification failed",
+                extra={
+                    "event": "auth_failure",
+                    "auth_operation": "verify_token",
+                    "failure_reason": str(e),
+                },
+            )
             raise SupabaseAuthError(
                 SupabaseErrors.TOKEN_VERIFICATION_FAILED.format(str(e)), status_code=401
             ) from e
@@ -359,10 +366,17 @@ class SupabaseUserClient:
                     SupabaseErrors.TOKEN_REFRESH_FAILED.format("No session returned"),
                     status_code=401,
                 )
-            logger.info("Access token refreshed successfully")
+            logger.debug("Access token refreshed successfully")
             return response.model_dump()
         except Exception as e:
-            logger.error(f"Token refresh failed: {str(e)}")
+            logger.warning(
+                "Token refresh failed",
+                extra={
+                    "event": "auth_failure",
+                    "auth_operation": "refresh_access_token",
+                    "failure_reason": str(e),
+                },
+            )
             raise SupabaseAuthError(
                 SupabaseErrors.TOKEN_REFRESH_FAILED.format(str(e)), status_code=401
             ) from e
@@ -484,3 +498,6 @@ class SupabaseUserClient:
 
 # Create global instance
 supabase_user_client = SupabaseUserClient()
+
+
+
