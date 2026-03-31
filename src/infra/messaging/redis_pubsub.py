@@ -78,7 +78,7 @@ class AsyncRedisPubSub:
             self._pubsub = redis_client.pubsub()
             await self._pubsub.subscribe(channel)
 
-            logger.info(f"Subscribed to Redis channel: {channel}")
+            logger.debug(f"Subscribed to Redis channel: {channel}")
 
             async for message in self._pubsub.listen():
                 if message["type"] == "message":
@@ -110,7 +110,7 @@ class AsyncRedisPubSub:
             self._pubsub = redis_client.pubsub()
             await self._pubsub.subscribe(channel)
 
-            logger.info(f"Subscribed to Redis channel (polling): {channel}")
+            logger.debug(f"Subscribed to Redis channel (polling): {channel}")
 
             while True:
                 message = await self._pubsub.get_message(

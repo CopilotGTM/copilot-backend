@@ -84,7 +84,7 @@ class NangoClient:
             },
             timeout=30.0,
         )
-        logger.info(f"Initialized Nango REST API client with base URL: {self.base_url}")
+        logger.debug(f"Initialized Nango REST API client with base URL: {self.base_url}")
 
     @staticmethod
     def _lookup_error_message(payload: Any) -> str | None:
@@ -170,6 +170,13 @@ class NangoClient:
 
         message = NangoClient._lookup_error_message(payload)
         return status_code, payload, message
+
+    @staticmethod
+    def _event_extra(event: str, **fields: Any) -> dict[str, Any]:
+        return {
+            "event": event,
+            **{key: value for key, value in fields.items() if value is not None},
+        }
 
     @staticmethod
     def verify_webhook_signature(
@@ -284,9 +291,14 @@ class NangoClient:
             raw = response.json()
             result = self._normalize_connect_session_response(cast(dict[str, Any], raw))
 
-            logger.info(
-                f"Created Connect Session for user={end_user_id}, "
-                f"org={organization_id}, integration={integration_id}"
+            logger.debug(
+                "Connect session created",
+                extra=self._event_extra(
+                    "integration_connect_session_created",
+                    organisation_id=organization_id,
+                    user_id=end_user_id,
+                    integration_id=integration_id,
+                ),
             )
 
             return result
@@ -419,7 +431,7 @@ class NangoClient:
             # Nango handles token exchange automatically, so we just verify the connection
             connection = await self.get_connection(provider, connection_id)
 
-            logger.info(f"Successfully verified connection for provider={provider}")
+            logger.debug(f"Successfully verified connection for provider={provider}")
             return connection
 
         except Exception as e:
@@ -467,7 +479,14 @@ class NangoClient:
 
             connection: dict[str, Any] = cast(dict[str, Any], response.json())
 
-            logger.info(f"Retrieved connection for provider={provider}, id={connection_id}")
+            logger.debug(
+                "Integration connection retrieved",
+                extra=self._event_extra(
+                    "integration_connection_retrieved",
+                    provider_config_key=provider,
+                    connection_id=connection_id,
+                ),
+            )
             return connection
 
         except httpx.HTTPStatusError as e:
@@ -524,11 +543,26 @@ class NangoClient:
                 force_refresh=True,
             )
 
-            logger.info(f"Successfully refreshed token for provider={provider}")
+            logger.debug(
+                "Integration token refreshed",
+                extra=self._event_extra(
+                    "integration_token_refreshed",
+                    provider_config_key=provider,
+                    connection_id=connection_id,
+                ),
+            )
             return connection
 
         except Exception as e:
-            logger.error(f"Failed to refresh token: {str(e)}")
+            logger.error(
+                "Integration token refresh failed",
+                extra=self._event_extra(
+                    "integration_token_refresh_failed",
+                    provider_config_key=provider,
+                    connection_id=connection_id,
+                    failure_reason=str(e),
+                ),
+            )
             raise NangoTokenError(f"Failed to refresh token: {str(e)}") from e
 
     async def delete_connection(
@@ -556,7 +590,14 @@ class NangoClient:
             response = await self.client.delete(url, params=params)
             response.raise_for_status()
 
-            logger.info(f"Deleted connection for provider={provider}, id={connection_id}")
+            logger.debug(
+                "Integration connection deleted",
+                extra=self._event_extra(
+                    "integration_connection_deleted",
+                    provider_config_key=provider,
+                    connection_id=connection_id,
+                ),
+            )
 
         except httpx.HTTPStatusError as e:
             status_code, payload, detail = self._extract_error_details(e.response)
@@ -672,10 +713,14 @@ class NangoClient:
 
             result: dict[str, Any] = cast(dict[str, Any], response.json())
 
-            logger.info(
-                "Nango action completed: provider=%s, action=%s",
-                provider_config_key,
-                action_name,
+            logger.debug(
+                "Integration action completed",
+                extra=self._event_extra(
+                    "integration_action_completed",
+                    provider_config_key=provider_config_key,
+                    connection_id=connection_id,
+                    action_name=action_name,
+                ),
             )
             return result
 
@@ -696,10 +741,14 @@ class NangoClient:
             ) from None
         except Exception as e:
             logger.error(
-                "Failed to trigger action (provider=%s, action=%s): %s",
-                provider_config_key,
-                action_name,
-                str(e),
+                "Integration action failed",
+                extra=self._event_extra(
+                    "integration_action_failed",
+                    provider_config_key=provider_config_key,
+                    connection_id=connection_id,
+                    action_name=action_name,
+                    failure_reason=str(e),
+                ),
             )
             raise NangoConnectionError(f"Action {action_name} failed: {str(e)}") from None
 
@@ -773,11 +822,15 @@ class NangoClient:
 
             result: dict[str, Any] = cast(dict[str, Any], response.json())
 
-            logger.info(
-                "Proxy request to %s:%s (method=%s) succeeded",
-                provider_config_key,
-                endpoint,
-                method,
+            logger.debug(
+                "Integration proxy request succeeded",
+                extra=self._event_extra(
+                    "integration_proxy_request_succeeded",
+                    provider_config_key=provider_config_key,
+                    connection_id=connection_id,
+                    endpoint=endpoint,
+                    http_method=method.upper(),
+                ),
             )
             return result
 
@@ -798,7 +851,17 @@ class NangoClient:
                 payload=error_payload,
             ) from None
         except Exception as e:
-            logger.error(f"Proxy request failed: {str(e)}")
+            logger.error(
+                "Integration proxy request failed",
+                extra=self._event_extra(
+                    "integration_proxy_request_failed",
+                    provider_config_key=provider_config_key,
+                    connection_id=connection_id,
+                    endpoint=endpoint,
+                    http_method=method.upper(),
+                    failure_reason=str(e),
+                ),
+            )
             raise NangoConnectionError(f"Proxy request failed: {str(e)}") from None
 
     def parse_token_expiry(self, expires_value: int | str | None = None) -> datetime | None:
@@ -860,4 +923,4 @@ class NangoClient:
     async def close(self):
         """Close the httpx client connection."""
         await self.client.aclose()
-        logger.info("Closed Nango REST API client")
+        logger.debug("Closed Nango REST API client")

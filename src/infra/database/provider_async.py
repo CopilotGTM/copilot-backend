@@ -151,7 +151,14 @@ class AsyncSqlAlchemyProvider(AsyncDatabaseProvider):
                 password = await secrets_manager.get(secret_name)
 
             if not password:
-                logger.error("Password secret '%s' unavailable for org_id %s", secret_name, org_id)
+                logger.error(
+                    "Tenant secret unavailable",
+                    extra={
+                        "event": "secret_fetch_failed",
+                        "secret_name": secret_name,
+                        "organisation_id": str(org_id),
+                    },
+                )
                 raise RuntimeError(f"Tenant secret '{secret_name}' unavailable")
 
             url = self._build_tenant_url(role_name, password)

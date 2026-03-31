@@ -96,8 +96,8 @@ async def get_deal_stakeholders(
         return Response.error_response(
             message=e.message, status_code=e.status_code, response=response
         )
-    except Exception as e:
-        logger.error("Error fetching stakeholders: %s", e, exc_info=True)
+    except Exception:
+        logger.error("Error fetching stakeholders", extra={"deal_id": str(deal_id)}, exc_info=True)
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
         )
@@ -134,7 +134,7 @@ async def get_deal_stakeholders(
 #         return Response.error_response(
 #             message=e.message, status_code=e.status_code, response=response
 #         )
-#     except Exception as e:
+#     except Exception:
 #         logger.error("Unexpected error listing available contacts: %s", e, exc_info=True)
 #         return Response.error_response(
 #             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
@@ -215,9 +215,13 @@ async def create_stakeholder(
             )
 
             logger.info(
-                "Dispatching stakeholder research from handler: stakeholder=%s deal=%s",
-                stakeholder.stakeholder_id,
-                deal_id,
+                "Stakeholder research dispatch requested",
+                extra={
+                    "event": "stakeholder_research_dispatch_requested",
+                    "organisation_id": str(service.organisation_id),
+                    "stakeholder_id": str(stakeholder.stakeholder_id),
+                    "deal_id": str(deal_id),
+                },
             )
             job_id = await dispatch_stakeholder_research_async(
                 organisation_id=service.organisation_id,
@@ -225,14 +229,23 @@ async def create_stakeholder(
                 deal_id=deal_id,
             )
             logger.info(
-                "Stakeholder research dispatch result: stakeholder=%s job=%s",
-                stakeholder.stakeholder_id,
-                job_id,
+                "Stakeholder research dispatch completed",
+                extra={
+                    "event": "stakeholder_research_dispatch_completed",
+                    "organisation_id": str(service.organisation_id),
+                    "stakeholder_id": str(stakeholder.stakeholder_id),
+                    "deal_id": str(deal_id),
+                    "job_id": job_id,
+                },
             )
         except Exception:
             logger.error(
-                "Failed to dispatch stakeholder research for %s",
-                stakeholder.stakeholder_id,
+                "Failed to dispatch stakeholder research",
+                extra={
+                    "organisation_id": str(service.organisation_id),
+                    "stakeholder_id": str(stakeholder.stakeholder_id),
+                    "deal_id": str(deal_id),
+                },
                 exc_info=True,
             )
 
@@ -242,12 +255,25 @@ async def create_stakeholder(
             response=response,
         )
     except StakeholdersServiceError as e:
-        logger.warning("Create stakeholder error: %s", e.message)
+        logger.warning(
+            "Create stakeholder error",
+            extra={
+                "organisation_id": str(service.organisation_id),
+                "deal_id": str(deal_id),
+                "failure_reason": e.message,
+            },
+        )
         return Response.error_response(
             message=e.message, status_code=e.status_code, response=response
         )
     except Exception:
-        logger.exception("Failed to create stakeholder for deal %s", deal_id)
+        logger.exception(
+            "Failed to create stakeholder",
+            extra={
+                "organisation_id": str(service.organisation_id),
+                "deal_id": str(deal_id),
+            },
+        )
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
         )
@@ -284,12 +310,27 @@ async def get_stakeholder_detail(
             )
         return Response.success_response(message="Stakeholder detail retrieved", data=detail)
     except StakeholdersServiceError as e:
-        logger.warning("Get stakeholder detail error: %s", e.message)
+        logger.warning(
+            "Get stakeholder detail error",
+            extra={
+                "organisation_id": str(service.organisation_id),
+                "deal_id": str(deal_id),
+                "stakeholder_id": str(stakeholder_id),
+                "failure_reason": e.message,
+            },
+        )
         return Response.error_response(
             message=e.message, status_code=e.status_code, response=response
         )
     except Exception:
-        logger.exception("Failed to get stakeholder %s for deal %s", stakeholder_id, deal_id)
+        logger.exception(
+            "Failed to get stakeholder",
+            extra={
+                "organisation_id": str(service.organisation_id),
+                "deal_id": str(deal_id),
+                "stakeholder_id": str(stakeholder_id),
+            },
+        )
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
         )
@@ -312,12 +353,27 @@ async def update_stakeholder(
         stakeholder = await service.update_stakeholder(deal_id, stakeholder_id, request)
         return Response.success_response(message="Stakeholder updated", data=stakeholder)
     except StakeholdersServiceError as e:
-        logger.warning("Update stakeholder error: %s", e.message)
+        logger.warning(
+            "Update stakeholder error",
+            extra={
+                "organisation_id": str(service.organisation_id),
+                "deal_id": str(deal_id),
+                "stakeholder_id": str(stakeholder_id),
+                "failure_reason": e.message,
+            },
+        )
         return Response.error_response(
             message=e.message, status_code=e.status_code, response=response
         )
     except Exception:
-        logger.exception("Failed to update stakeholder %s for deal %s", stakeholder_id, deal_id)
+        logger.exception(
+            "Failed to update stakeholder",
+            extra={
+                "organisation_id": str(service.organisation_id),
+                "deal_id": str(deal_id),
+                "stakeholder_id": str(stakeholder_id),
+            },
+        )
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
         )
@@ -345,12 +401,27 @@ async def approve_stakeholder(
         stakeholder = await service.approve_stakeholder(deal_id, stakeholder_id)
         return Response.success_response(message="Stakeholder approved", data=stakeholder)
     except StakeholdersServiceError as e:
-        logger.warning("Approve stakeholder error: %s", e.message)
+        logger.warning(
+            "Approve stakeholder error",
+            extra={
+                "organisation_id": str(service.organisation_id),
+                "deal_id": str(deal_id),
+                "stakeholder_id": str(stakeholder_id),
+                "failure_reason": e.message,
+            },
+        )
         return Response.error_response(
             message=e.message, status_code=e.status_code, response=response
         )
     except Exception:
-        logger.exception("Failed to approve stakeholder %s for deal %s", stakeholder_id, deal_id)
+        logger.exception(
+            "Failed to approve stakeholder",
+            extra={
+                "organisation_id": str(service.organisation_id),
+                "deal_id": str(deal_id),
+                "stakeholder_id": str(stakeholder_id),
+            },
+        )
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
         )
@@ -381,12 +452,27 @@ async def reject_stakeholder(
         stakeholder = await service.reject_stakeholder(deal_id, stakeholder_id)
         return Response.success_response(message="Stakeholder rejected", data=stakeholder)
     except StakeholdersServiceError as e:
-        logger.warning("Reject stakeholder error: %s", e.message)
+        logger.warning(
+            "Reject stakeholder error",
+            extra={
+                "organisation_id": str(service.organisation_id),
+                "deal_id": str(deal_id),
+                "stakeholder_id": str(stakeholder_id),
+                "failure_reason": e.message,
+            },
+        )
         return Response.error_response(
             message=e.message, status_code=e.status_code, response=response
         )
     except Exception:
-        logger.exception("Failed to reject stakeholder %s for deal %s", stakeholder_id, deal_id)
+        logger.exception(
+            "Failed to reject stakeholder",
+            extra={
+                "organisation_id": str(service.organisation_id),
+                "deal_id": str(deal_id),
+                "stakeholder_id": str(stakeholder_id),
+            },
+        )
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
         )
@@ -433,10 +519,15 @@ async def trigger_stakeholder_research(
 
         if job_id:
             logger.info(
-                "Stakeholder research triggered: stakeholder=%s job=%s user=%s",
-                stakeholder_id,
-                job_id,
-                user_ids.user_id,
+                "Stakeholder research triggered",
+                extra={
+                    "event": "stakeholder_research_triggered",
+                    "organisation_id": str(service.organisation_id),
+                    "stakeholder_id": str(stakeholder_id),
+                    "deal_id": str(deal_id),
+                    "job_id": job_id,
+                    "user_id": str(user_ids.user_id),
+                },
             )
             return Response.success_response(
                 message="Research job dispatched",
@@ -453,9 +544,12 @@ async def trigger_stakeholder_research(
         )
     except Exception:
         logger.exception(
-            "Failed to trigger research for stakeholder %s deal %s",
-            stakeholder_id,
-            deal_id,
+            "Failed to trigger research for stakeholder",
+            extra={
+                "organisation_id": str(service.organisation_id),
+                "stakeholder_id": str(stakeholder_id),
+                "deal_id": str(deal_id),
+            },
         )
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
@@ -491,12 +585,27 @@ async def remove_stakeholder(
         stakeholder = await service.remove_stakeholder(deal_id, stakeholder_id)
         return Response.success_response(message="Stakeholder removed", data=stakeholder)
     except StakeholdersServiceError as e:
-        logger.warning("Remove stakeholder error: %s", e.message)
+        logger.warning(
+            "Remove stakeholder error",
+            extra={
+                "organisation_id": str(service.organisation_id),
+                "deal_id": str(deal_id),
+                "stakeholder_id": str(stakeholder_id),
+                "failure_reason": e.message,
+            },
+        )
         return Response.error_response(
             message=e.message, status_code=e.status_code, response=response
         )
     except Exception:
-        logger.exception("Failed to remove stakeholder %s for deal %s", stakeholder_id, deal_id)
+        logger.exception(
+            "Failed to remove stakeholder",
+            extra={
+                "organisation_id": str(service.organisation_id),
+                "deal_id": str(deal_id),
+                "stakeholder_id": str(stakeholder_id),
+            },
+        )
         return Response.error_response(
             message=_UNEXPECTED_ERR_MSG, status_code=500, response=response
         )

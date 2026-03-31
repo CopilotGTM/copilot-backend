@@ -1,7 +1,7 @@
 """OpenTelemetry initialization shared by FastAPI and all Celery workers.
 
 Call ``init_otel(service_name_suffix)`` once at process startup.
-Disabled when OTEL_EXPORTER_OTLP_ENDPOINT is empty (local dev).
+Disabled when OTEL_ENABLED is false or OTEL_EXPORTER_OTLP_ENDPOINT is empty.
 
 Instruments: Celery, httpx, requests, SQLAlchemy, Redis.
 Also bridges Python ``logging`` so every log record gets trace_id/span_id.
@@ -10,6 +10,21 @@ Also bridges Python ``logging`` so every log record gets trace_id/span_id.
 from __future__ import annotations
 
 import logging
+
+
+class _OtelLogSanitizer(logging.Filter):
+    """Strip low-value source-location metadata from exported OTel logs."""
+
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003 - matches logging API
+        record.pathname = ""
+        record.filename = ""
+        record.module = ""
+        record.funcName = ""
+        record.lineno = 0
+        if hasattr(record, "color_message"):
+            record.color_message = ""
+        return True
+
 
 _otel_initialized = False
 _otel_log_handler = None
@@ -28,7 +43,7 @@ def init_otel(service_name_suffix: str = "") -> None:
 
     from src.infra.config.configs import otel_config
 
-    if not otel_config.OTEL_EXPORTER_OTLP_ENDPOINT:
+    if not otel_config.OTEL_ENABLED or not otel_config.OTEL_EXPORTER_OTLP_ENDPOINT:
         return
 
     _otel_initialized = True
@@ -103,6 +118,7 @@ def _setup_logging(otel_config, suffix: str) -> None:
     # (app loggers use propagate=False, so root handler wouldn't see them)
     global _otel_log_handler
     _otel_log_handler = LoggingHandler(level=logging.INFO, logger_provider=log_provider)
+    _otel_log_handler.addFilter(_OtelLogSanitizer())
     # Also attach to root for any loggers that DO propagate
     logging.getLogger().addHandler(_otel_log_handler)
 
@@ -116,7 +132,7 @@ def instrument_fastapi_app(app) -> None:
     """Instrument the shared FastAPI app instance once it exists."""
     from src.infra.config.configs import otel_config
 
-    if not otel_config.OTEL_EXPORTER_OTLP_ENDPOINT:
+    if not otel_config.OTEL_ENABLED or not otel_config.OTEL_EXPORTER_OTLP_ENDPOINT:
         return
 
     if getattr(app.state, "_otel_fastapi_instrumented", False):

@@ -41,11 +41,26 @@ def process_stakeholder_research_job(self: Task, organisation_id: str, job_id: s
         organisation_id: The organisation ID (string for JSON serialization)
         job_id: The DealJobs ID to process
     """
-    logger.info("Processing stakeholder research job org=%s job=%s", organisation_id, job_id)
+    logger.info(
+        "Stakeholder research job started",
+        extra={
+            "event": "stakeholder_research_started",
+            "organisation_id": organisation_id,
+            "job_id": job_id,
+        },
+    )
 
     lock_key = f"task_lock:stakeholder_research:{job_id}"
     if not acquire_task_lock(lock_key, ttl=180):
-        logger.info("Stakeholder research job %s already running, skipping", job_id)
+        logger.info(
+            "Stakeholder research job skipped",
+            extra={
+                "event": "stakeholder_research_skipped",
+                "organisation_id": organisation_id,
+                "job_id": job_id,
+                "skip_reason": "already_running",
+            },
+        )
         return {"status": "skipped", "reason": "already_running"}
 
     async def _run():
@@ -75,7 +90,17 @@ def process_stakeholder_research_job(self: Task, organisation_id: str, job_id: s
                 deal_id=deal_id,
             )
         except StakeholderResearchError as e:
-            logger.error("Stakeholder research failed %s: %s", job_id, e.message)
+            logger.error(
+                "Stakeholder research failed",
+                extra={
+                    "event": "stakeholder_research_failed",
+                    "organisation_id": organisation_id,
+                    "job_id": job_id,
+                    "stakeholder_id": str(stakeholder_id),
+                    "deal_id": str(deal_id) if deal_id else None,
+                    "failure_reason": e.message,
+                },
+            )
             async for session in acquire_org_async_session(org_uuid):
                 job = await session.get(DealJobs, job_uuid)
                 if job:
@@ -104,13 +129,31 @@ def process_stakeholder_research_job(self: Task, organisation_id: str, job_id: s
                         job.latency_ms = int(token_usage.duration_seconds * 1000)
                 await session.commit()
 
-        logger.info("Stakeholder research completed: job=%s stakeholder=%s", job_id, stakeholder_id)
+        logger.info(
+            "Stakeholder research completed",
+            extra={
+                "event": "stakeholder_research_completed",
+                "organisation_id": organisation_id,
+                "job_id": job_id,
+                "stakeholder_id": str(stakeholder_id),
+                "deal_id": str(deal_id) if deal_id else None,
+            },
+        )
         return {"status": "completed", "job_id": job_id}
 
     try:
         return run_async(_run())
     except Exception as e:
-        logger.error("Stakeholder research task failed %s: %s", job_id, e, exc_info=True)
+        logger.error(
+            "Stakeholder research task failed",
+            extra={
+                "event": "stakeholder_research_failed",
+                "organisation_id": organisation_id,
+                "job_id": job_id,
+                "failure_reason": str(e),
+            },
+            exc_info=True,
+        )
         raise self.retry(exc=e, countdown=30 * (2**self.request.retries)) from e
     finally:
         release_task_lock(lock_key)

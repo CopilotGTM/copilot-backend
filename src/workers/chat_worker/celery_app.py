@@ -38,13 +38,13 @@ app.conf.update(
 broker_url_masked = config.broker_url
 if config.redis_password:
     broker_url_masked = config.broker_url.replace(config.redis_password, "****")
-logger.info(f"Chat worker broker URL: {broker_url_masked}")
-logger.info(
+logger.debug(f"Chat worker broker URL: {broker_url_masked}")
+logger.debug(
     f"Chat worker backend URL: {config.backend_url.replace(config.redis_password, '****') if config.redis_password else config.backend_url}"
 )
-logger.info(f"Chat worker SSL config: {config.ssl_config}")
-logger.info(f"Chat worker queues: {[q.name for q in config.task_queues]}")
-logger.info(f"Chat worker default queue: {config.task_default_queue}")
+logger.debug(f"Chat worker SSL config: {config.ssl_config}")
+logger.debug(f"Chat worker queues: {[q.name for q in config.task_queues]}")
+logger.debug(f"Chat worker default queue: {config.task_default_queue}")
 
 
 # Add signal handlers for debugging and resource management

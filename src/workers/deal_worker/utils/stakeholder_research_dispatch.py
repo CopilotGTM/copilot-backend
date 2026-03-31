@@ -104,10 +104,13 @@ async def dispatch_stakeholder_research_async(
                         await session.execute(copy_stmt)
                         await session.commit()
                         logger.info(
-                            "dispatch_stakeholder_research: copied research from %s to %s (email=%s)",
-                            already_researched.stakeholder_id,
-                            stakeholder_id,
-                            email,
+                            "Stakeholder research copied from recent result",
+                            extra={
+                                "event": "stakeholder_research_reused",
+                                "organisation_id": str(organisation_id),
+                                "stakeholder_id": str(stakeholder_id),
+                                "source_stakeholder_id": str(already_researched.stakeholder_id),
+                            },
                         )
                     return None
 
@@ -139,8 +142,13 @@ async def dispatch_stakeholder_research_async(
                 existing.error_message = "Stale PENDING job — re-dispatching"
                 await session.commit()
                 logger.info(
-                    "dispatch_stakeholder_research: marked stale job %s as FAILED, re-creating",
-                    existing.job_id,
+                    "Stakeholder research stale job marked failed",
+                    extra={
+                        "event": "stakeholder_research_job_recreated",
+                        "organisation_id": str(organisation_id),
+                        "job_id": str(existing.job_id),
+                        "stakeholder_id": str(stakeholder_id),
+                    },
                 )
             else:
                 logger.debug(
@@ -180,9 +188,14 @@ async def dispatch_stakeholder_research_async(
     )
 
     logger.info(
-        "Dispatched stakeholder research: org=%s stakeholder=%s job=%s",
-        organisation_id,
-        stakeholder_id,
-        job_id_str,
+        "Stakeholder research dispatched",
+        extra={
+            "event": "stakeholder_research_dispatched",
+            "organisation_id": str(organisation_id),
+            "stakeholder_id": str(stakeholder_id),
+            "deal_id": str(deal_id) if deal_id else None,
+            "job_id": job_id_str,
+            "user_id": str(user_id) if user_id else None,
+        },
     )
     return job_id_str

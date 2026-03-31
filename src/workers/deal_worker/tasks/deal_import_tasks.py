@@ -57,7 +57,10 @@ def _mark_job_failed(organisation_id: UUID, job_id: UUID, error_message: str) ->
     time_limit=IMPORT_TASK_TIME_LIMIT_SECONDS,
 )
 def process_deal_import_job(self: Task, organisation_id: str, job_id: str):
-    logger.info("Processing deal import job org=%s job=%s", organisation_id, job_id)
+    logger.info(
+        "Deal import job started",
+        extra={"organisation_id": organisation_id, "job_id": job_id},
+    )
 
     async def _run():
         org_uuid = UUID(organisation_id)
@@ -108,11 +111,13 @@ def process_deal_import_job(self: Task, organisation_id: str, job_id: str):
         publisher.publish_result(result_data)
         publisher.publish_finalize("done")
         logger.info(
-            "Deal import job completed org=%s job=%s created=%s failed=%s",
-            organisation_id,
-            job_id,
-            result_data.get("created_count", 0),
-            result_data.get("failed_count", 0),
+            "Deal import job completed",
+            extra={
+                "organisation_id": organisation_id,
+                "job_id": job_id,
+                "created_count": result_data.get("created_count", 0),
+                "failed_count": result_data.get("failed_count", 0),
+            },
         )
         return {"status": "completed", "job_id": job_id}
 
@@ -120,7 +125,14 @@ def process_deal_import_job(self: Task, organisation_id: str, job_id: str):
         return run_async(_run())
     except DealWriteServiceError as exc:
         error_message = exc.message
-        logger.info("Deal import job failed %s: %s", job_id, error_message)
+        logger.info(
+            "Deal import job failed",
+            extra={
+                "organisation_id": organisation_id,
+                "job_id": job_id,
+                "failure_reason": error_message,
+            },
+        )
         org_uuid = UUID(organisation_id)
         job_uuid = UUID(job_id)
         publisher = DealJobRedisPublisher(org_uuid, job_uuid, DealJobType.DEAL_IMPORT.value)
@@ -129,12 +141,27 @@ def process_deal_import_job(self: Task, organisation_id: str, job_id: str):
         publisher.publish_finalize("error")
         return {"status": "failed", "job_id": job_id, "error": error_message}
     except Exception as exc:
-        logger.error("Deal import task failed %s: %s", job_id, exc, exc_info=True)
+        logger.error(
+            "Deal import task failed",
+            extra={
+                "organisation_id": organisation_id,
+                "job_id": job_id,
+                "failure_reason": str(exc),
+            },
+            exc_info=True,
+        )
         retries = getattr(self.request, "retries", 0)
         max_retries = getattr(self, "max_retries", 0) or 0
         if retries >= max_retries:
             error_message = f"Deal import task failed after retries: {exc}"
-            logger.error("Deal import job reached max retries %s: %s", job_id, error_message)
+            logger.error(
+                "Deal import job reached max retries",
+                extra={
+                    "organisation_id": organisation_id,
+                    "job_id": job_id,
+                    "failure_reason": error_message,
+                },
+            )
             org_uuid = UUID(organisation_id)
             job_uuid = UUID(job_id)
             _mark_job_failed(org_uuid, job_uuid, error_message)

@@ -87,7 +87,7 @@ class RedisConnectionManager:
         test_client = redis.Redis(connection_pool=self._sync_pool)
         try:
             test_client.ping()
-            logger.info(
+            logger.debug(
                 "Redis connection pool initialized successfully (host=%s, ssl=%s)",
                 redis_host,
                 ssl_enabled,
@@ -116,7 +116,7 @@ class RedisConnectionManager:
             self._sync_pool.disconnect()
             self._sync_pool = None
             self._initialized = False
-            logger.info("Redis connection pool closed")
+            logger.debug("Redis connection pool closed")
 
 
 # Lazy, module-level singleton (do not initialize at import time)

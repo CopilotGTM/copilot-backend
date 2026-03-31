@@ -15,13 +15,20 @@ logger = get_logger()
 class OTelConfig:
     """Configuration for OpenTelemetry tracing and log export.
 
-    Active when OTEL_EXPORTER_OTLP_ENDPOINT is set. No endpoint = no export.
+    Active when OTEL_ENABLED resolves true and OTEL_EXPORTER_OTLP_ENDPOINT is set.
+    Local defaults to disabled unless explicitly opted in.
     Grafana Cloud OTLP endpoint example:
         https://otlp-gateway-prod-us-central-0.grafana.net/otlp
     Auth is via OTEL_EXPORTER_OTLP_HEADERS (e.g. "Authorization=Basic <base64>").
     """
 
     OTEL_SERVICE_NAME: str = os.getenv("OTEL_SERVICE_NAME", "copilotgtm-backend")
+    _OTEL_ENABLED_RAW = os.getenv("OTEL_ENABLED")
+    OTEL_ENABLED: bool = (
+        _OTEL_ENABLED_RAW.lower() == "true"
+        if _OTEL_ENABLED_RAW is not None
+        else os.getenv("ENV", "dev") != "local"
+    )
     OTEL_EXPORTER_OTLP_ENDPOINT: str = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
     OTEL_EXPORTER_OTLP_HEADERS: str = os.getenv("OTEL_EXPORTER_OTLP_HEADERS", "")
     OTEL_TRACES_SAMPLE_RATE: float = float(os.getenv("OTEL_TRACES_SAMPLE_RATE", "0.2"))

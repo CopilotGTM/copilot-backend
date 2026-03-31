@@ -28,15 +28,20 @@ def deal_asset_post_upload(self, organisation_id: str, asset_id: str):  # noqa: 
     The service follows the fresh session pattern internally.
     """
     logger.info(
-        "Deal asset post-upload task started org=%s asset=%s",
-        organisation_id,
-        asset_id,
+        "Deal asset post-upload task started",
+        extra={"organisation_id": organisation_id, "asset_id": asset_id},
     )
 
     service = DealAssetPostUploadService(organisation_id)
     success = service.process(asset_id)
 
     if success:
-        logger.info("Deal asset post-upload completed asset=%s", asset_id)
+        logger.info(
+            "Deal asset post-upload completed",
+            extra={"organisation_id": organisation_id, "asset_id": asset_id},
+        )
     else:
-        logger.warning("Deal asset post-upload failed asset=%s", asset_id)
+        logger.warning(
+            "Deal asset post-upload failed",
+            extra={"organisation_id": organisation_id, "asset_id": asset_id},
+        )

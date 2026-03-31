@@ -69,7 +69,7 @@ async def user_login(
                 UserAuthErrors.USER_NOT_FOUND, response=response
             )
 
-        logger.info(f"User found in database: {user_email}")
+        logger.debug("User found in database")
 
         # External call to Supabase — no DB session held
         try:
@@ -310,12 +310,28 @@ async def refresh_token(
                 ),
             )
         else:
-            logger.warning("Refresh token is invalid or expired - logging out user")
+            logger.warning(
+                "Refresh token is invalid or expired",
+                extra={
+                    "event": "auth_failure",
+                    "auth_operation": "refresh_access_token",
+                    "failure_reason": UserAuthErrors.REFRESH_TOKEN_INVALID,
+                },
+            )
             return Response.unauthorized_error_response(
                 UserAuthErrors.REFRESH_TOKEN_INVALID, response=response
             )
     except SupabaseAuthError as e:
-        logger.error(f"Token refresh failed: {e.message}")
+        log_method = logger.warning if e.status_code in {400, 401} else logger.error
+        log_method(
+            "Token refresh failed",
+            extra={
+                "event": "auth_failure",
+                "auth_operation": "refresh_access_token",
+                "failure_reason": e.message,
+                "status_code": e.status_code,
+            },
+        )
         # Use the status code and message from the custom exception
         if e.status_code == 400:
             return Response.bad_request_error_response(e.message, response=response)
