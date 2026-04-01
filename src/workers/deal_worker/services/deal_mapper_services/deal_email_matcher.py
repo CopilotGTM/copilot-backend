@@ -175,6 +175,46 @@ class DealEmailMatcher:
         """Resolve canonical contact time for stakeholder engagement from an email."""
         return email.received_at or email.sent_at
 
+    async def _discover_from_existing_email_associations(
+        self,
+        session: AsyncSession,
+        deal_id: UUID,
+        info: DealStakeholderInfo,
+    ) -> int:
+        """Re-scan already-associated emails for undiscovered stakeholders.
+
+        Queries emails linked to this deal and runs discovery using current
+        company_domains. The per-email discovery method is idempotent —
+        it skips participants who are already stakeholders.
+        """
+        from src.domain.models.organisation_tables.sync.email_models import (
+            DealEmailAssociation,
+            Email,
+        )
+
+        stmt = (
+            select(Email)
+            .join(
+                DealEmailAssociation,
+                col(DealEmailAssociation.internet_message_id) == col(Email.internet_message_id),
+            )
+            .where(
+                col(DealEmailAssociation.deal_id) == deal_id,
+                col(DealEmailAssociation.organisation_id) == self.organisation_id,
+                col(Email.is_deleted).is_(False),
+            )
+            .distinct()
+        )
+        result = await session.execute(stmt)
+        emails = list(result.scalars().all())
+
+        total_discovered = 0
+        for email in emails:
+            discovered = await self._discover_stakeholders_from_email(session, email, deal_id, info)
+            total_discovered += discovered
+
+        return total_discovered
+
     async def _discover_stakeholders_from_email(
         self,
         session: AsyncSession,
@@ -856,6 +896,22 @@ class DealEmailMatcher:
                                     session, email, match.deal_id, info
                                 )
                                 stats["stakeholders_discovered"] += discovered
+
+            await session.commit()
+
+        # =================================================================
+        # Phase 3: Re-scan existing email associations for undiscovered stakeholders.
+        # Handles the case where customer domains expanded since emails were
+        # first associated (e.g., new stakeholder added, new CRM contact synced).
+        # =================================================================
+        async for session in acquire_org_async_session(self.organisation_id):
+            for deal_id, info in self._deal_info.items():
+                if not info.company_domains:
+                    continue
+                discovered = await self._discover_from_existing_email_associations(
+                    session, deal_id, info
+                )
+                stats["stakeholders_discovered"] += discovered
 
             await session.commit()
 
