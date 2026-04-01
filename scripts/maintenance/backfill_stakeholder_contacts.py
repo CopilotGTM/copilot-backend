@@ -34,9 +34,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
-import sys
 from datetime import UTC, datetime
-from pathlib import Path
 from uuid import UUID, uuid4
 
 from dotenv import load_dotenv
@@ -58,9 +56,6 @@ from src.infra.database.sessions import (
     acquire_org_async_session,
 )
 from src.service.crm.internal.internal_crm_setup_service import InternalCRMSetupService
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(PROJECT_ROOT))
 
 SYSTEM_USER_ID = UUID("00000000-0000-0000-0000-000000000001")
 
@@ -304,7 +299,8 @@ async def backfill_org(org_id: UUID, dry_run: bool) -> dict[str, int]:
             await session.commit()
             print("  Committed changes")
         else:
-            print("  DRY RUN — no changes committed")
+            await session.rollback()
+            print("  DRY RUN — rolled back, no changes persisted")
 
     return stats
 

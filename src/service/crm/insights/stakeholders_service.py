@@ -34,6 +34,23 @@ from src.service.crm.timeline.deal_timeline_sync_service import (
 
 logger = get_logger("stakeholders_service")
 
+PERSONAL_EMAIL_DOMAINS = frozenset(
+    {
+        "gmail.com",
+        "yahoo.com",
+        "hotmail.com",
+        "outlook.com",
+        "aol.com",
+        "icloud.com",
+        "mail.com",
+        "protonmail.com",
+        "live.com",
+        "msn.com",
+        "ymail.com",
+        "googlemail.com",
+    }
+)
+
 
 class StakeholdersServiceError(Exception):
     """Custom exception for stakeholders service errors."""
@@ -121,21 +138,7 @@ class StakeholdersService:
         if await self._is_internal_email(email_normalized):
             return None
         domain = email_normalized.split("@")[-1] if "@" in email_normalized else ""
-        _personal_email_domains = {
-            "gmail.com",
-            "yahoo.com",
-            "hotmail.com",
-            "outlook.com",
-            "aol.com",
-            "icloud.com",
-            "mail.com",
-            "protonmail.com",
-            "live.com",
-            "msn.com",
-            "ymail.com",
-            "googlemail.com",
-        }
-        if domain in _personal_email_domains:
+        if domain in PERSONAL_EMAIL_DOMAINS:
             return None
 
         # Check if a CRMContact already exists by email in this org
@@ -207,7 +210,11 @@ class StakeholdersService:
 
         # Load the deal to check its integration
         deal = await self.session.get(CRMDeal, deal_id)
-        if not deal or deal.integration_id != integration.integration_id:
+        if (
+            not deal
+            or deal.organisation_id != self.organisation_id
+            or deal.integration_id != integration.integration_id
+        ):
             return False
 
         email_normalized = email.lower().strip()

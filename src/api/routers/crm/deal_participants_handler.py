@@ -109,6 +109,8 @@ async def add_deal_participants(
                         "organisation_id": str(service.organisation_id),
                         "deal_id": str(deal_id),
                         "change_type": StakeholderChangeType.PARTICIPANT_ADDED.value,
+                        "integration_id": None,
+                        "integration_type": None,
                         "trigger_rematching": True,
                     },
                 )
@@ -183,6 +185,8 @@ async def remove_deal_participant(
                         "organisation_id": str(service.organisation_id),
                         "deal_id": str(deal_id),
                         "change_type": StakeholderChangeType.PARTICIPANT_REMOVED.value,
+                        "integration_id": None,
+                        "integration_type": None,
                         "trigger_rematching": True,
                     },
                 )
