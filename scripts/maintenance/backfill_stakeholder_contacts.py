@@ -120,10 +120,12 @@ async def _ensure_participant(
         return False
 
     now = datetime.now(UTC)
+    participant_id = uuid4()
     participant = CRMDealParticipant(
+        participant_id=participant_id,
         organisation_id=org_id,
         integration_id=integration_id,
-        external_id=str(contact_id),
+        external_id=str(participant_id),
         deal_id=stakeholder.deal_id,
         participant_type=CRMParticipantType.CONTACT,
         related_external_id=str(contact_id),
