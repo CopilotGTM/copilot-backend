@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
+from sqlmodel import col
 
 from src.agents.tools.base import execute_with_capabilities
 from src.agents.tools.crm.upsert_stakeholder import (
@@ -29,6 +30,7 @@ from src.agents.tools.crm.upsert_stakeholder import (
     _normalize_optional_stance,
     _normalize_optional_temperature,
 )
+from src.domain.models.organisation_tables.sync.crm.contacts import CRMContact
 from src.domain.models.organisation_tables.sync.crm.stakeholders import (
     ApprovalStatus,
     DealStakeholder,
@@ -106,12 +108,20 @@ async def create_stakeholder_if_missing(
                 result["message"] = "Stakeholder already exists; no changes applied"
                 return result
 
+            # Link to existing CRMContact if one exists
+            contact_stmt = select(col(CRMContact.contact_id)).where(
+                col(CRMContact.organisation_id) == organisation_id,
+                col(CRMContact.email) == email,
+            )
+            contact_result = await session.execute(contact_stmt)
+            found_contact_id = contact_result.scalar_one_or_none()
+
             stakeholder_data: dict[str, Any] = {
                 "stakeholder_id": uuid4(),
                 "organisation_id": organisation_id,
                 "integration_id": None,
                 "deal_id": actual_deal_id,
-                "contact_id": None,
+                "contact_id": found_contact_id,
                 "email": email,
                 "name": _clean_text(input_data.name),
                 "job_title": _clean_text(input_data.job_title),

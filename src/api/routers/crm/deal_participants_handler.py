@@ -97,7 +97,26 @@ async def add_deal_participants(
             await service.session.refresh(participant)
 
         if contact_changed:
-            logger.debug("Triggering stakeholder sync after participant addition")
+            try:
+                from src.workers.deal_worker.client import send_deal_task_async
+                from src.workers.deal_worker.services.deal_change_detector import (
+                    StakeholderChangeType,
+                )
+
+                await send_deal_task_async(
+                    "stakeholder.sync_deal_stakeholders",
+                    kwargs={
+                        "organisation_id": str(service.organisation_id),
+                        "deal_id": str(deal_id),
+                        "change_type": StakeholderChangeType.PARTICIPANT_ADDED.value,
+                        "trigger_rematching": True,
+                    },
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to trigger stakeholder sync after participant addition",
+                    exc_info=True,
+                )
 
         payload = DealParticipantsWriteResponse(
             created=[_map_participant_item(p) for p in created],
@@ -152,7 +171,26 @@ async def remove_deal_participant(
         await service.session.refresh(participant)
 
         if contact_changed:
-            logger.debug("Triggering stakeholder sync after participant removal")
+            try:
+                from src.workers.deal_worker.client import send_deal_task_async
+                from src.workers.deal_worker.services.deal_change_detector import (
+                    StakeholderChangeType,
+                )
+
+                await send_deal_task_async(
+                    "stakeholder.sync_deal_stakeholders",
+                    kwargs={
+                        "organisation_id": str(service.organisation_id),
+                        "deal_id": str(deal_id),
+                        "change_type": StakeholderChangeType.PARTICIPANT_REMOVED.value,
+                        "trigger_rematching": True,
+                    },
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to trigger stakeholder sync after participant removal",
+                    exc_info=True,
+                )
 
         payload = _map_participant_item(participant)
         return Response.success_response(message="Participant removed successfully", data=payload)

@@ -81,6 +81,11 @@ class DealStakeholder(FlexibleSyncedRecordMixin, table=True):
     # Links
     deal_id: UUID = Field(foreign_key="crm_deals.deal_id", index=True)
     contact_id: UUID | None = Field(default=None, foreign_key="crm_contacts.contact_id", index=True)
+    created_by_user_id: UUID | None = Field(
+        default=None,
+        index=True,
+        description="User who added this stakeholder. NULL for legacy records. AUTOMATED_PIPELINE_USER_ID for automated sources.",
+    )
 
     # Identity
     email: str = Field(sa_column=Column(String(255), nullable=False))

@@ -381,6 +381,14 @@ class DealMeetingMatcher:
                 else ApprovalStatus.PENDING
             )
 
+            # Link to existing CRMContact if one exists
+            contact_stmt = select(col(CRMContact.contact_id)).where(
+                col(CRMContact.organisation_id) == self.organisation_id,
+                col(CRMContact.email) == email,
+            )
+            contact_result = await session.execute(contact_stmt)
+            found_contact_id = contact_result.scalar_one_or_none()
+
             # Create stakeholder
             stakeholder = DealStakeholder(
                 organisation_id=self.organisation_id,
@@ -388,6 +396,7 @@ class DealMeetingMatcher:
                 deal_id=deal.deal_id,
                 email=email,
                 name=attendee.display_name,
+                contact_id=found_contact_id,
                 source=StakeholderSource.CALENDAR_DISCOVERY,
                 approval_status=approval_status,
                 stance=StakeholderStance.UNKNOWN,
