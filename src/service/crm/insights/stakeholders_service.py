@@ -229,11 +229,15 @@ class StakeholdersService:
         if result.scalars().first():
             return False
 
+        from uuid import uuid4
+
         now = datetime.now(UTC)
+        participant_id = uuid4()
         participant = CRMDealParticipant(
+            participant_id=participant_id,
             organisation_id=self.organisation_id,
             integration_id=integration.integration_id,
-            external_id=str(contact_id),
+            external_id=str(participant_id),
             deal_id=deal_id,
             participant_type=CRMParticipantType.CONTACT,
             related_external_id=str(contact_id),
